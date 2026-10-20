@@ -4,8 +4,8 @@
 use converter::mesh::MeshConverter;
 use dummy_content::nif::{
     BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, StaticShape,
-    legacy_dynamic_skinned_shape, legacy_lod_skinned_shape, legacy_skinned_shape,
-    static_shape_with_bodies,
+    legacy_dynamic_skinned_shape, legacy_lod_skinned_shape, legacy_nested_skinned_shape,
+    legacy_skinned_shape, static_shape, static_shape_with_bodies,
 };
 use serde_json::Value;
 use std::{
@@ -124,6 +124,17 @@ fn skeleton_body(node_name: &str) -> BoxBody<'_> {
         max_linear_velocity: 104.4,
         max_angular_velocity: 31.57,
     }
+}
+
+/// A skeleton with a single `BSFadeNode` of `name`. Its shape child is a
+/// `BSTriShape`, so it is also a non-`NiNode` child.
+fn write_single_node_skeleton(directory: &Path, name: &str) -> PathBuf {
+    let mut bytes = static_shape(&skeleton_shape(name)).unwrap();
+    let header = parse_header(&bytes).expect("fixture header must parse");
+    bytes[header.block_start(0)..header.block_start(0) + 4].copy_from_slice(&0u32.to_le_bytes());
+    let path = directory.join("skeleton.nif");
+    fs::write(&path, bytes).unwrap();
+    path
 }
 
 /// A skeleton with `root` plus one `NiNode` per entry of `nodes`, so a fixture
@@ -561,6 +572,154 @@ fn legacy_skeleton_duplicate_joint_keeps_the_first_node() {
         serde_json::json!([0.0, 0.0, 5.0]),
         "the kept joint must carry the first duplicate's transform"
     );
+}
+
+#[test]
+fn legacy_skin_binds_mesh_local_joints_when_the_skeleton_covers_half() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let nif_path = write_fixture(directory.path(), &fixture);
+    let skeleton_path = write_single_node_skeleton(directory.path(), "Bone0");
+    let glb_path = directory.path().join("skin.glb");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+
+    let glb = read_glb(&glb_path);
+    assert_skinned_primitives(&glb);
+    let local_index = gltf_nodes(&glb)
+        .iter()
+        .position(|node| node["name"] == "Bone1:0")
+        .expect("the mesh-local joint must be exported");
+    for (index, node) in gltf_nodes(&glb).iter().enumerate() {
+        if let Some(children) = node["children"].as_array() {
+            assert!(
+                !children
+                    .iter()
+                    .any(|child| child.as_u64() == Some(local_index as u64)),
+                "node {index} parents the local joint although its NIF parent is the root"
+            );
+        }
+    }
+    let skin = &glb.json["skins"][0];
+    assert_eq!(skin["joints"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn legacy_skin_leaves_a_rig_without_skeleton_coverage_unresolved() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let nif_path = write_fixture(directory.path(), &fixture);
+    let skeleton_path = write_single_node_skeleton(directory.path(), "SkeletonRoot");
+    let glb_path = directory.path().join("skin.glb");
+    let error = convert(&nif_path, &skeleton_path, &glb_path).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("skin joints could not be resolved"),
+        "a rig below the coverage gate must keep the unresolved-joint error: {message}"
+    );
+    assert!(!glb_path.exists(), "a static GLB was published anyway");
+}
+
+#[test]
+fn legacy_skin_binds_missing_ancestors_under_the_skeleton_bone() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let nif_path = directory.path().join("nested.nif");
+    fs::write(&nif_path, legacy_nested_skinned_shape(&fixture).unwrap()).unwrap();
+    let skeleton_path = write_single_node_skeleton(directory.path(), "Bone0");
+    let glb_path = directory.path().join("nested.glb");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+
+    let glb = read_glb(&glb_path);
+    assert_skinned_primitives(&glb);
+    let nodes = gltf_nodes(&glb);
+    let index_of = |name: &str| {
+        nodes
+            .iter()
+            .position(|node| node["name"] == name)
+            .unwrap_or_else(|| panic!("GLB has no node named {name}"))
+    };
+    let children_of = |index: usize| -> Vec<u64> {
+        nodes[index]["children"]
+            .as_array()
+            .map(|children| children.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node["name"] == "Bone0:0")
+            .count(),
+        1,
+        "the skeleton bone must exist once"
+    );
+    let skeleton_bone = index_of("Bone0:0");
+    let intermediate = index_of("NestedParent:0");
+    let joint = index_of("Bone1:0");
+
+    assert!(
+        children_of(skeleton_bone).contains(&(intermediate as u64)),
+        "the skeleton bone must parent the intermediate node"
+    );
+    assert!(
+        !children_of(skeleton_bone).contains(&(joint as u64)),
+        "the skeleton bone must not parent the local joint directly"
+    );
+    assert!(
+        children_of(intermediate).contains(&(joint as u64)),
+        "the intermediate node must parent the local joint"
+    );
+    assert!(
+        children_of(joint).is_empty(),
+        "the local joint must not parent anything"
+    );
+
+    let mut parent = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(children) = node["children"].as_array() {
+            for child in children {
+                let child = child.as_u64().unwrap();
+                assert!(
+                    parent.insert(child, index as u64).is_none(),
+                    "node {child} appears in more than one children array"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        parent.get(&(intermediate as u64)),
+        Some(&(skeleton_bone as u64)),
+        "the intermediate node must hang under the skeleton bone, not under a joint or the scene"
+    );
+    assert_eq!(parent.get(&(joint as u64)), Some(&(intermediate as u64)));
+
+    let joints = glb.json["skins"][0]["joints"].as_array().unwrap();
+    assert_eq!(joints.len(), 2);
+    for index in [skeleton_bone, joint] {
+        assert!(
+            joints
+                .iter()
+                .any(|value| value.as_u64() == Some(index as u64)),
+            "skin joint node {index} is missing"
+        );
+    }
 }
 
 fn actor_root() -> Option<PathBuf> {

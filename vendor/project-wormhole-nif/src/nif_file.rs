@@ -355,6 +355,8 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                 mesh.bones.add_bone(node_name, bone_data)?;
             }
 
+            bind_mesh_local_legacy_joints(nif, &mut mesh.bones);
+
             let (meshes, material_indices) = if nif.get_skins().is_empty() {
                 legacy_skinned_meshes(nif, &mesh.bones)?
             } else {
@@ -617,6 +619,181 @@ fn shape_material_index(
     0
 }
 
+/// Below half coverage the skeleton is more likely the wrong one than the mesh carrying the extras.
+const MIN_SKELETON_COVERAGE: f32 = 0.5;
+
+/// The `(block, name)` pair for every node a legacy skin instance binds, in
+/// joint order.
+fn legacy_skin_joint_nodes(
+    nif: &NifFile,
+    instance: &NiSkinInstance,
+) -> Result<Vec<(u32, String)>, String> {
+    let mut joint_nodes = Vec::with_capacity(instance.bones.len());
+    for joint in &instance.bones {
+        let node = match nif.blocks.get(*joint as usize) {
+            Some(NifBlock::NiNode(node)) => node,
+            _ => return Err(format!("bone reference {joint} is not a NiNode")),
+        };
+        let name = nif
+            .header
+            .get_string(node.name() as usize)
+            .map_err(|error| format!("bone block {joint} has an invalid name: {error}"))?;
+        joint_nodes.push((*joint, name.to_string()));
+    }
+    Ok(joint_nodes)
+}
+
+fn nif_node(nif: &NifFile, block: u32) -> Option<&NiNode> {
+    match nif.blocks.get(block as usize)? {
+        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(node),
+        NifBlock::BSMultiBoundNode(node) => Some(&node.node),
+        _ => None,
+    }
+}
+
+fn nif_node_name(nif: &NifFile, block: u32) -> Option<&str> {
+    nif.header
+        .get_string(nif_node(nif, block)?.name() as usize)
+        .ok()
+}
+
+/// Adds the legacy skin joints the skeleton does not carry, together with the
+/// ancestors they need, from the mesh's own node hierarchy.
+///
+/// A legacy NIF copies its whole bone hierarchy, so binding every missing joint
+/// would also make a mesh bound to the wrong skeleton look resolved. Only a
+/// skeleton that already covers most joints is treated as the right one.
+fn bind_mesh_local_legacy_joints(nif: &NifFile, bones: &mut BoneTree) {
+    let mut joint_nodes = Vec::new();
+    for (index, _) in nif.blocks.iter().enumerate() {
+        let Some(instance) = nif.skin_instance_at(index as u32) else {
+            continue;
+        };
+        let instance = match instance {
+            SkinInstanceRef::Ni(instance) => instance,
+            SkinInstanceRef::Dismember(instance) => &instance.skin_instance,
+            SkinInstanceRef::Bs(_) => continue,
+        };
+        let Ok(nodes) = legacy_skin_joint_nodes(nif, instance) else {
+            continue;
+        };
+        joint_nodes.extend(nodes);
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut joints = Vec::new();
+    for (block, name) in joint_nodes {
+        if seen.insert(name.clone()) {
+            joints.push((block, name));
+        }
+    }
+    let total = joints.len();
+    let missing = joints
+        .into_iter()
+        .filter(|(_, name)| !bones.has_bone(name))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
+    }
+    let covered = total - missing.len();
+    if (covered as f32 / total as f32) < MIN_SKELETON_COVERAGE {
+        return;
+    }
+
+    let mut parents = BTreeMap::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let children = match block {
+            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => &node.children,
+            NifBlock::BSMultiBoundNode(node) => &node.node.children,
+            _ => continue,
+        };
+        for child in children {
+            parents.entry(*child).or_insert(index as u32);
+        }
+    }
+
+    let mut bound = Vec::new();
+    for (block, name) in missing {
+        let mut chain = vec![(block, name.clone())];
+        let mut current = block;
+        let mut parent_bone = None;
+        let mut visited = BTreeSet::from([block]);
+        while let Some(&parent) = parents.get(&current) {
+            // Block 0 is the scene root: the placing reference replaces its
+            // transform, so it never becomes a bone.
+            if parent == 0 {
+                break;
+            }
+            let Some(parent_name) = nif_node_name(nif, parent) else {
+                break;
+            };
+            if bones.has_bone(parent_name) {
+                parent_bone = Some(parent_name.to_string());
+                break;
+            }
+            if !visited.insert(parent) {
+                break;
+            }
+            chain.push((parent, parent_name.to_string()));
+            current = parent;
+        }
+
+        // `chain` is joint-first: each entry sits directly below the next one,
+        // so a bone's children point one index down, never at the node above.
+        let mut unique = BTreeSet::new();
+        let insertable = chain
+            .iter()
+            .all(|(_, chain_name)| !bones.has_bone(chain_name) && unique.insert(chain_name));
+        if !insertable {
+            continue;
+        }
+        let chain_nodes = chain
+            .iter()
+            .map(|(chain_block, _)| nif_node(nif, *chain_block))
+            .collect::<Option<Vec<_>>>();
+        let Some(chain_nodes) = chain_nodes else {
+            continue;
+        };
+
+        let mut landed = true;
+        for (index, ((_, chain_name), node)) in chain.iter().zip(&chain_nodes).enumerate() {
+            let children = index
+                .checked_sub(1)
+                .map(|below| chain[below].1.clone())
+                .into_iter()
+                .collect();
+            let bone_data = BoneData {
+                transform: BoneTransform::new(
+                    Some(node.translation().0),
+                    Some(node.rotation().0),
+                    Some(node.scale().0),
+                ),
+                children,
+            };
+            if bones.add_bone(chain_name, bone_data).is_err() {
+                landed = false;
+                break;
+            }
+        }
+        if !landed {
+            continue;
+        }
+
+        if let Some(parent_bone) = parent_bone {
+            if let Some(parent) = bones.bones.get_mut(&parent_bone) {
+                parent.children.insert(chain[chain.len() - 1].1.clone());
+            }
+        }
+        bound.push(name);
+    }
+
+    if !bound.is_empty() {
+        warn!(
+            "legacy skin joints {bound:?} are missing from the skeleton and were bound from the mesh's own node hierarchy"
+        );
+    }
+}
+
 fn legacy_skinned_mesh(
     nif: &NifFile,
     shape_index: u32,
@@ -646,26 +823,15 @@ fn legacy_skinned_mesh(
         ));
     }
 
-    let mut joint_names = Vec::with_capacity(instance.bones.len());
-    for joint in &instance.bones {
-        let node = match nif.blocks.get(*joint as usize) {
-            Some(NifBlock::NiNode(node)) => node,
-            _ => {
-                return Err(format!(
-                    "shape block {shape_index} ({block_type}): skin instance block {instance_block} bone reference {joint} is not a NiNode"
-                ))
-            }
-        };
-        let joint_name = nif
-            .header
-            .get_string(node.name() as usize)
-            .map_err(|error| {
-                format!(
-                    "shape block {shape_index} ({block_type}): skin instance block {instance_block} bone block {joint} has an invalid name: {error}"
-                )
-            })?;
-        joint_names.push(joint_name.to_string());
-    }
+    let joint_names = legacy_skin_joint_nodes(nif, instance)
+        .map_err(|error| {
+            format!(
+                "shape block {shape_index} ({block_type}): skin instance block {instance_block}: {error}"
+            )
+        })?
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect::<Vec<String>>();
 
     let inverse_bind_matrices = skin_data
         .bones

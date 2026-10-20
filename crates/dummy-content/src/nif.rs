@@ -158,7 +158,13 @@ pub fn static_shape_with_bodies(
 
 /// Generates a legacy-skinned NIF from `spec`, byte-stable for identical input.
 pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false)
+}
+
+/// Generates a legacy-skinned NIF whose second bone hangs off an extra `NiNode`
+/// under the first bone, so a skin joint can have a missing ancestor chain.
+pub fn legacy_nested_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, true)
 }
 
 /// Z offset applied to a dynamic fixture's live positions so they differ from
@@ -172,14 +178,14 @@ pub const DYNAMIC_POSITION_OFFSET: f32 = 7.0;
 /// positions come from the trailing dynamic array. Those positions are offset
 /// by [`DYNAMIC_POSITION_OFFSET`] so a test can tell which source won.
 pub fn legacy_dynamic_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic, false)
 }
 
 /// Generates a legacy-skinned NIF whose geometry block is a `BSLODTriShape`.
 /// The legacy skin exporter does not emit LOD shapes, so this exercises the
 /// diagnostic that names the shape type no exported mesh claimed.
 pub fn legacy_lod_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Lod)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Lod, false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,13 +195,28 @@ enum LegacyShapeKind {
     Lod,
 }
 
-fn legacy_skinned_shape_with(spec: &LegacySkin<'_>, kind: LegacyShapeKind) -> Result<Vec<u8>> {
+fn legacy_skinned_shape_with(
+    spec: &LegacySkin<'_>,
+    kind: LegacyShapeKind,
+    nested: bool,
+) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
-    let bone0 = 1_u32;
-    let bone1 = 2_u32;
-    let shape_block = spec.with_geometry.then_some(3_u32);
-    let instance_block = if spec.with_geometry { 4 } else { 3 };
+    let (bone0, bone1, shape_block, instance_block) = if nested {
+        (
+            1_u32,
+            3_u32,
+            spec.with_geometry.then_some(4_u32),
+            if spec.with_geometry { 5 } else { 4 },
+        )
+    } else {
+        (
+            1_u32,
+            2_u32,
+            spec.with_geometry.then_some(3_u32),
+            if spec.with_geometry { 4 } else { 3 },
+        )
+    };
     let data_block = instance_block + 1;
     let partition_block = data_block + 1;
     let shader_block = partition_block + 1;
@@ -208,14 +229,32 @@ fn legacy_skinned_shape_with(spec: &LegacySkin<'_>, kind: LegacyShapeKind) -> Re
         .map(|vertex| vertex.position)
         .collect::<Vec<_>>();
 
-    let strings = vec![spec.name, "Bone0", "Bone1"];
-    let mut children = vec![bone0, bone1];
-    if let Some(shape) = shape_block {
-        children.push(shape);
-    }
-
-    let mut blocks = vec![fade_node(&children), bone_node(1), bone_node(2)];
-    let mut block_types = vec!["BSFadeNode", "NiNode", "NiNode"];
+    let mut strings = vec![spec.name, "Bone0", "Bone1"];
+    let (mut blocks, mut block_types) = if nested {
+        strings.push("NestedParent");
+        let mut children = vec![bone0];
+        if let Some(shape) = shape_block {
+            children.push(shape);
+        }
+        (
+            vec![
+                fade_node(&children),
+                bone_node_with_children(1, &[2]),
+                bone_node_with_children(3, &[bone1]),
+                bone_node(2),
+            ],
+            vec!["BSFadeNode", "NiNode", "NiNode", "NiNode"],
+        )
+    } else {
+        let mut children = vec![bone0, bone1];
+        if let Some(shape) = shape_block {
+            children.push(shape);
+        }
+        (
+            vec![fade_node(&children), bone_node(bone0), bone_node(bone1)],
+            vec!["BSFadeNode", "NiNode", "NiNode"],
+        )
+    };
     if shape_block.is_some() {
         match kind {
             LegacyShapeKind::Plain => {
@@ -592,9 +631,16 @@ fn dynamic_tri_shape(
 }
 
 fn bone_node(name: u32) -> Vec<u8> {
+    bone_node_with_children(name, &[])
+}
+
+fn bone_node_with_children(name: u32, children: &[u32]) -> Vec<u8> {
     let mut node = Vec::new();
     push_av_object(&mut node, name);
-    push_u32(&mut node, 0);
+    push_u32(&mut node, children.len() as u32);
+    for child in children {
+        push_u32(&mut node, *child);
+    }
     push_u32(&mut node, 0);
     node
 }
