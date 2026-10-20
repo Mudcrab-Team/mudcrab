@@ -2934,6 +2934,45 @@ mod tests {
         }
     }
 
+    /// `weapons/iron/irondagger.nif` carries its blood overlays as shapes with the `Hidden` flag
+    /// set; `dlc2smelter.nif` hides a whole node. Neither draws in Skyrim.
+    #[test]
+    fn hidden_shapes_and_shapes_under_hidden_nodes_are_excluded() {
+        use nom_derive::Parse;
+        use project_wormhole_nif::nif_block::NiAVObjectFlags;
+        let flags = |hidden: bool| {
+            NiAVObjectFlags::parse(&(0x0008_000E_u32 | u32::from(hidden)).to_le_bytes())
+                .unwrap()
+                .1
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        for node_hidden in [false, true] {
+            for shape_hidden in [false, true] {
+                let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+                let (NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) = &mut nif.blocks[0]
+                else {
+                    unreachable!()
+                };
+                node.set_flags(flags(node_hidden));
+                let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                    unreachable!()
+                };
+                shape.av.flags = flags(shape_hidden);
+                let contract = build_nif_material_contract(&nif, &input).unwrap();
+                let hidden = node_hidden || shape_hidden;
+                match &contract[0].disposition {
+                    NifMaterialDisposition::Excluded { reason } => {
+                        assert!(hidden);
+                        assert_eq!(reason, "hidden NiAVObject");
+                    }
+                    NifMaterialDisposition::Validated { .. } => assert!(!hidden),
+                }
+            }
+        }
+    }
+
     #[test]
     fn v15_source_uv_fields_survive_nif_contract() {
         use project_wormhole_nif::nif_enum::TexClampMode;
