@@ -3,7 +3,8 @@ use color_eyre::{Result, eyre::ensure};
 use project_wormhole_nif::{
     bs::prelude::{BSShaderTextureSet, BSTriShape},
     nif_block::{
-        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObject, NiAlphaProperty, NifBlock,
+        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObjectFlags, NiAlphaProperty,
+        NifBlock,
     },
     nif_file::NifFile,
 };
@@ -227,7 +228,7 @@ fn hidden_blocks(blocks: &[NifBlock]) -> BTreeSet<usize> {
     let mut pending = blocks
         .iter()
         .enumerate()
-        .filter(|(_, block)| av_object(block).is_some_and(|av| av.flags.hidden()))
+        .filter(|(_, block)| av_flags(block).is_some_and(NiAVObjectFlags::hidden))
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     while let Some(index) = pending.pop() {
@@ -249,11 +250,12 @@ fn hidden_blocks(blocks: &[NifBlock]) -> BTreeSet<usize> {
     hidden
 }
 
-fn av_object(block: &NifBlock) -> Option<&NiAVObject> {
+fn av_flags(block: &NifBlock) -> Option<&NiAVObjectFlags> {
     match block {
-        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(&node.av),
-        NifBlock::BSMultiBoundNode(block) => Some(&block.node.av),
-        _ => modern_shape(block).map(|shape| &shape.av),
+        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(&node.av.flags),
+        NifBlock::BSMultiBoundNode(block) => Some(&block.node.av.flags),
+        NifBlock::NiTriShape(shape) => Some(&shape.flags),
+        _ => modern_shape(block).map(|shape| &shape.av.flags),
     }
 }
 
