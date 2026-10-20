@@ -67,18 +67,20 @@ fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>, sample_in
 }
 
 // x = how far the colour has moved from shallow to deep, y = the body's opacity, both 0..1.
-// This is Skyrim's above-water fog: the colour moves linearly until the far distance, and the
-// body clouds from clear at the near distance to opaque at the far one along a curve whose
-// exponent is the fog amount, so a water with no fog amount stays clear at any depth. When the
-// depth is unknown the water draws as its deep colour at its ANAM opacity, as Skyrim draws water
-// it has no depth for.
-fn water_body(path: f32) -> vec2<f32> {
+// Skyrim's above-water fog measures two different distances: the colour follows the water's
+// vertical depth, while the body clouds with the length of the view ray through it. They differ
+// by the sine of the view's pitch, so a lake seen at a grazing angle keeps its shallow tint until
+// the alpha clouds it. Alpha runs from clear at the near fog distance to opaque at the far one
+// along a curve whose exponent is the fog amount, so a water with no fog amount stays clear at
+// any depth. When the depth is unknown the water draws as its deep colour at its ANAM opacity, as
+// Skyrim draws water it has no depth for.
+fn water_body(path: f32, vertical_depth: f32) -> vec2<f32> {
     if path < 0.0 {
         return vec2<f32>(1.0, water.body.x);
     }
     let near = water.body.y;
     let far = max(water.body.z, near + 1.0);
-    let colour = clamp(path / far, 0.0, 1.0);
+    let colour = clamp(vertical_depth / far, 0.0, 1.0);
     let amount = water.body.w;
     if amount <= 0.0 {
         return vec2<f32>(colour, 0.0);
@@ -99,7 +101,12 @@ fn fragment(
     let sample_index = 0u;
 #endif
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    let body = water_body(water_path_length(in.position, in.world_position.xyz, sample_index));
+    let path = water_path_length(in.position, in.world_position.xyz, sample_index);
+    // The bed lies on the view ray, so the water's vertical depth is the path times the sine of
+    // the ray's pitch - what the colour mix uses instead of the path itself.
+    let to_surface = in.world_position.xyz - view.world_position.xyz;
+    let vertical_depth = path * abs(to_surface.y) / max(length(to_surface), 1e-4);
+    let body = water_body(path, vertical_depth);
     let deep = pbr_input.material.base_color.rgb;
     pbr_input.material.base_color = vec4<f32>(mix(water.shallow_color.rgb, deep, body.x), 1.0);
     let scale = water.wave_scale_speed_strength.x;
