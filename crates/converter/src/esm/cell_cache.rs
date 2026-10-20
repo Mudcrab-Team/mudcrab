@@ -52,6 +52,14 @@ pub fn write_cell_cache(records: &HashMap<u32, RawRecord>, path: &Path) -> Resul
     write_cell_cache_with_source_order(records, &HashMap::new(), path)
 }
 
+/// Preserve every normalized legacy terrain layer for consumers without the material's limit.
+pub(crate) fn write_preserved_cell_cache(
+    records: &HashMap<u32, RawRecord>,
+    path: &Path,
+) -> Result<usize> {
+    write_preserved_cell_cache_with_source_layers(records, &HashMap::new(), &HashMap::new(), path)
+}
+
 /// Rank a winning LAND by plugin priority, native position, and a deterministic fallback.
 fn land_source_priority(record: &RawRecord, source_offsets: &HashMap<u32, u64>) -> (u32, u64, u32) {
     (
@@ -126,7 +134,8 @@ pub(crate) fn write_cell_cache_with_preserved_layers(
 }
 
 /// Archive every normalized source layer without imposing the runtime material's capacity.
-/// This auxiliary cache is for preservation; the engine continues to load `cell_cache.rkyv`.
+/// Grass baking uses this complete projection; the engine's terrain material continues to load
+/// `cell_cache.rkyv` with its existing layer limit.
 pub(crate) fn write_preserved_cell_cache_with_source_layers(
     records: &HashMap<u32, RawRecord>,
     source_offsets: &HashMap<u32, u64>,

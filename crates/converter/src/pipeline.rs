@@ -10,8 +10,9 @@ use crate::{
     config::{PipelineConfig, TextureEncoder},
     esm::{
         EsmParser,
-        cell_cache::write_cell_cache,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
         exporter::validate_database,
+        grass_cache::write_grass_cache,
         lodsettings::{LodSettings, sidecar_path},
         plugins_txt::read_with_selection_diagnostics,
     },
@@ -396,6 +397,7 @@ impl AssetPipeline {
     /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
     /// Preserves usable outputs through texture repair, alias publication, pruning, and artifact
     /// verification, and returns the report for pack publication.
+    /// Optional grass-mask omissions are recorded as notices.
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -807,6 +809,7 @@ impl AssetPipeline {
                 crate::esm::inhouse::write_terrain_caches(&merged, &db_path, staging)?;
             } else {
                 write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+                write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
             }
             crate::esm::inhouse::write_reader_identity_with_schemas(
                 staging,
@@ -817,13 +820,11 @@ impl AssetPipeline {
                 report
                     .artifacts
                     .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-                report
-                    .artifacts
-                    .push(PathBuf::from("cell_cache_preserved.rkyv"));
             }
             report.artifacts.extend([
                 PathBuf::from("skyrim_world.db"),
                 PathBuf::from("cell_cache.rkyv"),
+                PathBuf::from("cell_cache_preserved.rkyv"),
                 PathBuf::from("record-reader.json"),
             ]);
         }
@@ -1147,6 +1148,23 @@ impl AssetPipeline {
                 ));
             }
             report.integration = Some(integration);
+            let grass = write_grass_cache(
+                &Connection::open(staging.join("skyrim_world.db"))?,
+                staging,
+                &staging.join("cell_cache_preserved.rkyv"),
+                Some(&config.output_dir.join("grass_cache.rkyv")),
+                &staging.join("grass_cache.rkyv"),
+            )?;
+            // Integration already reports failed model conversion. Missing bounds or geometry the
+            // optional sampler cannot inspect only limit the mask; they do not fail this conversion.
+            report.notices.extend(grass.notices());
+            let grass_warnings = grass.warnings();
+            if !grass_warnings.is_empty() {
+                // Asset repair cannot restore rules or terrain omitted by the grass bake.
+                manifest.record_data_complete = Some(false);
+            }
+            report.warnings.extend(grass_warnings);
+            report.artifacts.push(PathBuf::from("grass_cache.rkyv"));
             report
                 .artifacts
                 .push(PathBuf::from("integration-report.json"));
@@ -2385,6 +2403,9 @@ pub(crate) fn validate_artifact(
                 .map_err(|error| {
                     color_eyre::eyre::eyre!("invalid Luau artifact {}: {error}", path.display())
                 })?;
+        }
+        Some("rkyv") if relative == Path::new("grass_cache.rkyv") => {
+            crate::esm::grass_cache::validate_grass_cache(&path)?;
         }
         _ => {}
     }
@@ -6117,6 +6138,288 @@ mod tests {
                 "{glb} lost the texture that does exist: {uris:?}"
             );
         }
+    }
+
+    /// Encodes a top-level synthetic record with ordinary subrecord framing.
+    fn grass_policy_record(tag: &[u8; 4], id: u32, fields: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (tag, bytes) in fields {
+            payload.extend_from_slice(*tag);
+            payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            payload.extend_from_slice(bytes);
+        }
+        [
+            tag.as_slice(),
+            &(payload.len() as u32).to_le_bytes(),
+            &[0; 4],
+            &id.to_le_bytes(),
+            &[0; 8],
+            &payload,
+        ]
+        .concat()
+    }
+
+    /// A converted bounded model beyond the sampler's depth limit only loses its optional mask.
+    #[tokio::test]
+    async fn unsampleable_grass_obstructions_publish_complete_cache_with_notices() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("meshes/architecture")).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Grass cache regression",
+            worldspace: "DeepModelWorld",
+            cells: &[dummy_content::esm::PRESET_EXTERIOR_CELL],
+            model_path: "architecture/deep.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut grass_data = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            grass_data.extend(value.to_le_bytes());
+        }
+        grass_data.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[
+                (b"MODL", b"grass/optional.nif\0".to_vec()),
+                (b"DATA", grass_data),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let shape = dummy_content::nif::StaticShape {
+            name: "DeepBlocker",
+            positions: &[[0.0, 0.0, 32.0], [64.0, 0.0, 32.0], [0.0, 64.0, 32.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0]; 3],
+            indices: &[[0, 1, 2]],
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        };
+        fs::write(
+            data.join("meshes/architecture/deep.nif"),
+            dummy_content::nif::static_shape(&shape).unwrap(),
+        )
+        .unwrap();
+        let first = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(first.complete, "{:?}", first.warnings);
+        assert!(first.integration.as_ref().unwrap().passed);
+        let mesh = output.join("meshes/architecture/deep.glb");
+        let original_bounds = MeshConverter::glb_bounds(&mesh).unwrap();
+        let bytes = fs::read(&mesh).unwrap();
+        let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&bytes[20..20 + json_length]).unwrap();
+        let roots = document["scenes"][0]["nodes"].clone();
+        let nodes = document["nodes"].as_array_mut().unwrap();
+        let first_wrapper = nodes.len();
+        for index in 0..129 {
+            let children = if index == 128 {
+                roots.clone()
+            } else {
+                serde_json::json!([first_wrapper + index + 1])
+            };
+            nodes.push(serde_json::json!({"children": children}));
+        }
+        document["scenes"][0]["nodes"] = serde_json::json!([first_wrapper]);
+        let mut json = serde_json::to_vec(&document).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let suffix = &bytes[20 + json_length..];
+        let mut deep = bytes[..8].to_vec();
+        deep.extend(((20 + json.len() + suffix.len()) as u32).to_le_bytes());
+        deep.extend((json.len() as u32).to_le_bytes());
+        deep.extend_from_slice(b"JSON");
+        deep.extend(json);
+        deep.extend_from_slice(suffix);
+        fs::remove_file(&mesh).unwrap();
+        fs::write(&mesh, deep).unwrap();
+        assert_eq!(MeshConverter::glb_bounds(&mesh).unwrap(), original_bounds);
+        let mut manifest =
+            ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        let entry = manifest
+            .entries
+            .get_mut("meshes/architecture/deep.nif")
+            .unwrap();
+        entry.output_size = fs::metadata(&mesh).unwrap().len();
+        entry.output_hash = hash_file(&mesh).unwrap();
+        manifest
+            .save(&output.join("conversion-manifest.json"))
+            .unwrap();
+        fs::remove_file(output.join("grass_cache.rkyv")).unwrap();
+
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(
+            report.cache_hits > 0,
+            "the converted obstruction must be reused"
+        );
+        assert!(report.integration.as_ref().unwrap().passed);
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.cells.len(), 1);
+        assert_eq!(archived.types.len(), 1);
+        drop(cache);
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM grass_types WHERE id=?1",
+                    [0x0100_0801u32],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("1 missing or invalid obstruction models"))
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("hierarchy exceeds inspection depth"))
+        );
+        assert!(
+            ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+    }
+
+    /// Broken grass definitions warn without preventing publication of neighboring grass cells.
+    #[tokio::test]
+    async fn broken_grass_rules_publish_healthy_neighbor_cells_with_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Broken grass regression",
+            worldspace: "GrassRecoveryWorld",
+            cells: &[
+                dummy_content::esm::Cell {
+                    grid_x: 3,
+                    grid_y: -2,
+                },
+                dummy_content::esm::Cell {
+                    grid_x: 4,
+                    grid_y: -2,
+                },
+            ],
+            model_path: "architecture/unavailable.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/healthy.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0802,
+            &[
+                (b"MODL", b"grass/broken.nif\0".to_vec()),
+                (b"DATA", vec![1, 2, 3]),
+            ],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0802u32.to_le_bytes().to_vec()),
+            ],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(!report.complete);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|message| message.contains("1 incomplete or invalid grass rules")),
+            "{:?}",
+            report.warnings
+        );
+        let cache = crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+            .unwrap();
+        let archived =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&cache).unwrap();
+        assert_eq!(archived.types.len(), 1);
+        assert_eq!(archived.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(archived.cells.len(), 2);
+        assert!(
+            !ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+    }
+
+    /// Missing optional obstruction geometry leaves a complete, valid published grass cache.
+    #[tokio::test]
+    async fn unavailable_grass_obstructions_do_not_make_conversion_incomplete() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        let plugin = dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+            author: "Grass cache regression",
+            worldspace: "MissingModelWorld",
+            cells: &[dummy_content::esm::PRESET_EXTERIOR_CELL],
+            model_path: "architecture/unavailable.nif",
+            diffuse: "textures/unavailable.dds",
+            normal_texture: "textures/unavailable_n.dds",
+        })
+        .unwrap();
+        fs::write(data.join("Skyrim.esm"), plugin).unwrap();
+        let report = run_without_progress(PipelineConfig::new(&data, &output)).await;
+        assert!(report.integration.as_ref().unwrap().passed);
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|message| message.contains("1 exterior references"))
+        );
+        assert!(
+            ConversionManifest::load(&output.join("conversion-manifest.json"))
+                .unwrap()
+                .complete
+        );
+        crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv")).unwrap();
     }
 
     #[tokio::test]

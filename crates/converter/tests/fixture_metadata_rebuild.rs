@@ -88,6 +88,120 @@ fn enable_parent_target() -> Vec<u8> {
     .concat()
 }
 
+/// Encode a synthetic plugin subrecord without depending on exporter internals.
+fn grass_subrecord(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u16).to_le_bytes(),
+        payload,
+    ]
+    .concat()
+}
+
+/// Encode a synthetic uncompressed record with its plugin-local FormID.
+fn grass_record(tag: &[u8; 4], id: u32, payload: Vec<u8>) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u32).to_le_bytes(),
+        &[0; 4],
+        &id.to_le_bytes(),
+        &[0; 8],
+        &payload,
+    ]
+    .concat()
+}
+
+/// Add a mod-owned grass rule to the generated terrain's winning texture override.
+fn add_grass_plugin(data: &Path) {
+    let header = [
+        grass_subrecord(b"MAST", b"Skyrim.esm\0"),
+        grass_subrecord(b"DATA", &[0; 8]),
+    ]
+    .concat();
+    let mut rule = vec![37, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for value in [12.0f32, 0.25, 0.5, 1.75] {
+        rule.extend(value.to_le_bytes());
+    }
+    rule.extend([0; 4]);
+    let model = format!("{}\0", layout::GENERATED_MODEL_PATH);
+    let grass = grass_record(
+        b"GRAS",
+        0x0100_0801,
+        [
+            grass_subrecord(b"EDID", b"RebuildGrass\0"),
+            grass_subrecord(b"MODL", model.as_bytes()),
+            grass_subrecord(b"DATA", &rule),
+        ]
+        .concat(),
+    );
+    let texture = grass_record(
+        b"LTEX",
+        4,
+        [
+            grass_subrecord(b"TNAM", &2u32.to_le_bytes()),
+            grass_subrecord(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
+    fs::write(
+        data.join("Grass.esp"),
+        [grass_record(b"TES4", 0, header), grass, texture].concat(),
+    )
+    .unwrap();
+}
+
+/// Rebuilding metadata preserves a nonempty grass archive and reuses source cells.
+#[tokio::test]
+async fn metadata_rebuild_preserves_grass_cache_and_reuses_unchanged_cells() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    add_grass_plugin(&data);
+    convert(&data, &source).await;
+    let source_cache = source.join("grass_cache.rkyv");
+    let original_hash = hash_file(&source_cache).unwrap();
+    let original_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let map = converter::esm::grass_cache::validate_grass_cache(&source_cache).unwrap();
+    let cache =
+        rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+    assert_eq!(cache.types.len(), 1);
+    assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+    assert_eq!(
+        cache.cells.len(),
+        1,
+        "fixture must contain grass-bearing terrain"
+    );
+    let cell_count = cache.cells.len();
+    assert!(cache.cells[0].quadrants.iter().any(|quadrant| {
+        quadrant
+            .layers
+            .iter()
+            .any(|layer| !layer.grass_ids.is_empty())
+    }));
+    drop(map);
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    let rebuilt_cache = output.join("grass_cache.rkyv");
+    assert!(
+        rebuilt_cache.is_file(),
+        "metadata rebuild must publish the grass cache"
+    );
+    converter::esm::grass_cache::validate_grass_cache(&rebuilt_cache).unwrap();
+    assert!(report.complete);
+    assert!(report.artifacts.contains(&"grass_cache.rkyv".into()));
+    assert_eq!(hash_file(&rebuilt_cache).unwrap(), original_hash);
+    assert_eq!(hash_file(&source_cache).unwrap(), original_hash);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        original_manifest
+    );
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
+    assert_eq!(provenance["grass_baked_cells"], 0);
+    assert_eq!(provenance["grass_reused_cells"], cell_count);
+}
+
 /// Generate complete assets and a light whose enable-parent resolves to an authored reference.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();

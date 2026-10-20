@@ -19,6 +19,7 @@ pub mod doors;
 pub mod emittance;
 pub mod exporter;
 pub mod extractors;
+pub mod grass_cache;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;

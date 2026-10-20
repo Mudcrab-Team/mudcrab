@@ -12,7 +12,12 @@ use crate::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, configuration_hash, hash_bytes, hash_file,
         retained_configuration_matches_for_reader,
     },
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
+    esm::{
+        EsmParser,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
+        exporter::validate_database,
+        grass_cache::write_grass_cache,
+    },
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
@@ -54,6 +59,10 @@ struct MetadataProvenance {
     retained_asset_configuration_hash: String,
     retained_asset_hashes: BTreeMap<String, String>,
     replay_verified_pruned_assets: BTreeSet<String>,
+    /// Grass cells newly baked during this metadata rebuild.
+    grass_baked_cells: usize,
+    /// Unchanged cells reused from the source package's valid grass cache.
+    grass_reused_cells: usize,
 }
 
 /// Frozen source and original-asset schema facts validated before staging is created.
@@ -68,7 +77,7 @@ impl AssetPipeline {
     /// Publishes only to a new, disjoint directory. The source package and its
     /// retained GLB/KTX2/Luau bytes are never modified or relabeled in place.
     /// MO2 source selection is unsupported by this package-matched Data route.
-    /// Reader data-loss warnings keep the rebuilt report and manifest incomplete;
+    /// Reader and grass data-loss warnings keep the rebuilt report and manifest incomplete;
     /// successful compatibility notices do not affect their shared completeness rule.
     pub async fn rebuild_metadata_async(
         mut config: PipelineConfig,
@@ -396,7 +405,7 @@ async fn rebuild_into(
     .await;
     let (retained, replay_verified_pruned_assets) =
         copy_verified_assets(source, staging, manifest)?;
-    let provenance = MetadataProvenance {
+    let mut provenance = MetadataProvenance {
         record_reader: crate::esm::inhouse::reader_identity_with_schemas(
             config.record_reader,
             config.schemas()?.as_ref(),
@@ -415,6 +424,8 @@ async fn rebuild_into(
             .unwrap_or_else(|| manifest.configuration_hash.clone()),
         retained_asset_hashes: retained.clone(),
         replay_verified_pruned_assets,
+        grass_baked_cells: 0,
+        grass_reused_cells: 0,
     };
     let mut report = PipelineReport {
         load_order: plugins
@@ -529,6 +540,7 @@ async fn rebuild_into(
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
     } else {
         write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+        write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
     }
     crate::esm::inhouse::write_reader_identity_with_schemas(
         staging,
@@ -540,10 +552,10 @@ async fn rebuild_into(
         report
             .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-        report
-            .artifacts
-            .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
+    report
+        .artifacts
+        .push(PathBuf::from("cell_cache_preserved.rkyv"));
     drop(merged);
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {
@@ -605,18 +617,41 @@ async fn rebuild_into(
         integration.issues
     );
     report.integration = Some(integration);
+    let grass = write_grass_cache(
+        &Connection::open(&database)?,
+        staging,
+        &staging.join("cell_cache_preserved.rkyv"),
+        Some(&source.join("grass_cache.rkyv")),
+        &staging.join("grass_cache.rkyv"),
+    )?;
+    provenance.grass_baked_cells = grass.baked_cells;
+    provenance.grass_reused_cells = grass.reused_cells;
+    // Unavailable geometry only limits the optional obstruction mask.
+    report.notices.extend(grass.notices());
+    let grass_warnings = grass.warnings();
+    if !grass_warnings.is_empty() {
+        // Retained asset repair cannot restore grass data omitted by this rebuild.
+        manifest.record_data_complete = Some(false);
+    }
+    report.warnings.extend(grass_warnings);
+    report.artifacts.push(PathBuf::from("grass_cache.rkyv"));
     report
         .artifacts
         .push(PathBuf::from("integration-report.json"));
-    // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately.
-    let payloads = report
+    // Validate new LOD payloads and the rebuilt grass cache. Retained textures
+    // match the source manifest; validate copied model dependencies separately.
+    let rebuilt_artifacts = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod"))
+        .filter(|path| path.starts_with("lod") || *path == Path::new("grass_cache.rkyv"))
         .cloned()
         .collect::<Vec<_>>();
-    validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
+    validate_artifacts(
+        staging,
+        &rebuilt_artifacts,
+        &BTreeMap::new(),
+        config.cpu_jobs,
+    )?;
     for path in retained.keys().filter(|path| path.ends_with(".glb")) {
         for dependency in MeshConverter::glb_texture_dependencies(&staging.join(path))? {
             ensure!(

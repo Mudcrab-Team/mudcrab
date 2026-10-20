@@ -181,10 +181,12 @@ construction accepts placeholders in any slot; a nonzero texture with missing
 converted images still fails its
 existing lookup checks. Original native fields and padding remain in the source
 table independently of these derived caches, including superseded slot
-assignments, native NULLs and their weights. The preserved cache is auxiliary;
-the engine continues to load only the runtime cache. The cache layout and
-runtime selection are unchanged; normal conversion and metadata rebuild
-regenerate both caches and the layer table.
+assignments, native NULLs and their weights. Both readers produce the complete
+preserved cache for grass baking; legacy selection keeps its existing priority
+and FormID tie breaker. The terrain renderer continues to load the capped runtime
+cache. The cache layout and runtime selection are unchanged. Normal conversion
+and metadata rebuild regenerate both caches; in-house output also regenerates
+its source layer table.
 
 Explicit player selection is available through `--plugins-file FILE`. Optional `--skyrim-ccc-file FILE` overrides the game-folder Creation list, and `--skyrim-ini-file FILE` supplies General test-file settings without reading ambient profiles. These options also exist as `PipelineConfig.plugins_file`, `skyrim_ccc_file` and `skyrim_ini_file`. Selection rules and recoverable missing-master behavior are documented in [the database specification](db-schema.md). Automatic discovery remains the default.
 
@@ -365,11 +367,17 @@ the output locks, verifies existing outputs, updates the manifest and database,
 and publishes transactionally with recovery of the last good output after an
 interrupted swap. Missing winning sources remain failures; known authoring resources and geometryless overlay templates are recorded as excluded.
 Repaired outputs retain per-kind asset settings and source/integrity proofs.
+After finalizing model bounds, repair re-bakes and validates the staged grass cache,
+reuses unchanged cells from the published cache, and publishes it in the same transaction.
+Packs without `cell_cache_preserved.rkyv` need normal conversion to regenerate the full
+terrain projection, or a metadata rebuild using a complete verified asset pack.
+Repair does not substitute the capped runtime terrain cache.
 The manifest records record-data completeness separately from asset failures.
 Only normal conversion or a metadata rebuild can establish that proof from a
 fresh record read. Asset repair preserves unresolved record loss and missing
 historical proof: corrected assets may publish, but the pack remains incomplete
-and the repair CLI warns and exits `1`. Run normal conversion to recheck record
+and the repair CLI warns and exits `1`. Grass warnings from the repair bake also
+clear the proof; advisory notices do not. Run normal conversion to recheck record
 data; verified assets remain eligible for reuse. A healthy record source with
 only asset failures can become complete after repair. Preview remains separate
 from publication and succeeds when its assets and recorded record proof are valid.

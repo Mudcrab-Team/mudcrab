@@ -8,6 +8,7 @@ expression: report
     "cell_cache.rkyv",
     "cell_cache_preserved.rkyv",
     "conversion-manifest.json",
+    "grass_cache.rkyv",
     "inhouse-reader-diagnostics.json",
     "integration-report.json",
     "lod-manifest.json",
