@@ -2774,6 +2774,8 @@ dependencies = [
  "ddsfile",
  "lz4_flex",
  "miniz_oxide",
+ "nom-derive",
+ "project-wormhole-nif",
  "tempfile",
 ]
 

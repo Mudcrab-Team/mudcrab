@@ -18,6 +18,10 @@ const NULL_REF: u32 = u32::MAX;
 const SHADER_TYPE_DEFAULT: u32 = 0;
 const VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | 0x0008;
 const VERTEX_STRIDE: u8 = 6;
+const SKIN_VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | 0x0008 | 0x0040;
+const SKIN_VERTEX_STRIDE: u8 = 9;
+const SKIN_VERTEX_SIZE: u32 = 36;
+const IDENTITY_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// A triangle mesh rendered as a single static shape.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +98,44 @@ pub enum BodyShape {
     },
 }
 
+/// Which skin-instance block a [`LegacySkin`] writes. `Dismember` emits a
+/// `BSDismemberSkinInstance` with its trailing body-part array; `Plain` emits a
+/// bare `NiSkinInstance` with no trailing array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinInstanceKind {
+    Dismember,
+    Plain,
+}
+
+/// A deterministic legacy-skinned NIF: a `BSTriShape` bound to two bones through
+/// a `NiSkinInstance` (or `BSDismemberSkinInstance`) → `NiSkinData` →
+/// `NiSkinPartition` chain.
+///
+/// The block set is `BSFadeNode` → `NiNode` × 2 (bones) → `BSTriShape` → skin
+/// instance → `NiSkinData` → `NiSkinPartition`, plus `BSLightingShaderProperty`
+/// → `BSShaderTextureSet` so the material path stays exercised.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegacySkin<'a> {
+    /// Shape name stored in the NIF string table.
+    pub name: &'a str,
+    /// `BSDismemberSkinInstance` (with trailing array) or bare `NiSkinInstance`.
+    pub instance_kind: SkinInstanceKind,
+    /// Non-identity inverse binds for the two bones: `(translation, xyzw
+    /// rotation, scale)`.
+    pub bone_transforms: [([f32; 3], [f32; 4], f32); 2],
+    /// Partition bone palette (indices into the instance's bone list), shuffled
+    /// relative to identity so a missing palette remap is observable.
+    pub palette: &'a [u16],
+    /// Per-vertex influence weights; one row per vertex, four influences that
+    /// deliberately do not sum to 1.0 before normalization.
+    pub weights: &'a [[f32; 4]],
+    /// When false, the skin blocks and bones are emitted without a `BSTriShape`.
+    pub with_geometry: bool,
+    /// Raw palette indices for vertex 0's influences, used to build the
+    /// out-of-range-joint case.
+    pub joint_override: Option<[u8; 4]>,
+}
+
 /// Generates a minimal static NIF containing one triangle mesh.
 pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
     static_shape_with_colors(shape, &[])
@@ -114,61 +156,153 @@ pub fn static_shape_with_bodies(
     build_static_shape(shape, &[], bodies)
 }
 
-fn build_static_shape(
-    shape: &StaticShape<'_>,
-    colors: &[[u8; 4]],
-    bodies: &[BoxBody<'_>],
-) -> Result<Vec<u8>> {
-    validate(shape)?;
-    ensure!(
-        colors.is_empty() || colors.len() == shape.positions.len(),
-        "vertex color count mismatch"
-    );
-    for body in bodies {
-        validate_body(body)?;
-    }
-    let mut strings = vec![shape.name];
-    strings.extend(bodies.iter().map(|body| body.node_name));
-    let first_body_block = 4_u32;
-    let mut children = vec![1_u32];
-    children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
-    let mut blocks = vec![
-        fade_node(&children),
-        triangle_shape(shape, colors)?,
-        lighting_shader_property(!colors.is_empty()),
-        texture_set(shape)?,
-    ];
-    let mut block_types = vec![
-        "BSFadeNode",
-        "BSTriShape",
-        "BSLightingShaderProperty",
-        "BSShaderTextureSet",
-    ];
-    for (index, body) in bodies.iter().enumerate() {
-        let node_block = first_body_block + 4 * index as u32;
-        let mut node = Vec::new();
-        push_av_object_with(&mut node, 1 + index as u32, node_block + 1);
-        push_u32(&mut node, 0); // children
-        push_u32(&mut node, 0); // effects
-        blocks.push(node);
-        block_types.push("NiNode");
-        let mut object = Vec::new();
-        push_u32(&mut object, node_block); // target
-        push_u16(&mut object, 1); // flags
-        push_u32(&mut object, node_block + 2); // body
-        blocks.push(object);
-        block_types.push("bhkCollisionObject");
-        blocks.push(rigid_body(body, node_block + 3));
-        block_types.push(if body.transform.is_some() {
-            "bhkRigidBodyT"
-        } else {
-            "bhkRigidBody"
-        });
-        let (shape, kind) = body_shape(body);
-        blocks.push(shape);
-        block_types.push(kind);
+/// Generates a legacy-skinned NIF from `spec`, byte-stable for identical input.
+pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain)
+}
+
+/// Z offset applied to a dynamic fixture's live positions so they differ from
+/// the partition copy of the same vertices.
+pub const DYNAMIC_POSITION_OFFSET: f32 = 7.0;
+
+/// Generates a legacy-skinned NIF whose shape is a `BSDynamicTriShape`.
+///
+/// The base `BSTriShape` carries no vertex or triangle payload, mirroring
+/// retail facegen heads: the partition holds normals, UVs and triangles, while
+/// positions come from the trailing dynamic array. Those positions are offset
+/// by [`DYNAMIC_POSITION_OFFSET`] so a test can tell which source won.
+pub fn legacy_dynamic_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic)
+}
+
+/// Generates a legacy-skinned NIF whose geometry block is a `BSLODTriShape`.
+/// The legacy skin exporter does not emit LOD shapes, so this exercises the
+/// diagnostic that names the shape type no exported mesh claimed.
+pub fn legacy_lod_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Lod)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyShapeKind {
+    Plain,
+    Dynamic,
+    Lod,
+}
+
+fn legacy_skinned_shape_with(spec: &LegacySkin<'_>, kind: LegacyShapeKind) -> Result<Vec<u8>> {
+    validate_skin(spec)?;
+
+    let bone0 = 1_u32;
+    let bone1 = 2_u32;
+    let shape_block = spec.with_geometry.then_some(3_u32);
+    let instance_block = if spec.with_geometry { 4 } else { 3 };
+    let data_block = instance_block + 1;
+    let partition_block = data_block + 1;
+    let shader_block = partition_block + 1;
+    let texture_block = shader_block + 1;
+
+    let vertices = skin_vertices(spec);
+    let triangles = fan_triangles(vertices.len());
+    let positions = vertices
+        .iter()
+        .map(|vertex| vertex.position)
+        .collect::<Vec<_>>();
+
+    let strings = vec![spec.name, "Bone0", "Bone1"];
+    let mut children = vec![bone0, bone1];
+    if let Some(shape) = shape_block {
+        children.push(shape);
     }
 
+    let mut blocks = vec![fade_node(&children), bone_node(1), bone_node(2)];
+    let mut block_types = vec!["BSFadeNode", "NiNode", "NiNode"];
+    if shape_block.is_some() {
+        match kind {
+            LegacyShapeKind::Plain => {
+                blocks.push(skinned_tri_shape(
+                    0,
+                    &positions,
+                    instance_block,
+                    shader_block,
+                    &vertices,
+                    &triangles,
+                )?);
+                block_types.push("BSTriShape");
+            }
+            LegacyShapeKind::Dynamic => {
+                let dynamic_positions = positions
+                    .iter()
+                    .map(|position| {
+                        [
+                            position[0],
+                            position[1],
+                            position[2] + DYNAMIC_POSITION_OFFSET,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                blocks.push(dynamic_tri_shape(
+                    0,
+                    &dynamic_positions,
+                    instance_block,
+                    shader_block,
+                )?);
+                block_types.push("BSDynamicTriShape");
+            }
+            LegacyShapeKind::Lod => {
+                let mut block = skinned_tri_shape(
+                    0,
+                    &positions,
+                    instance_block,
+                    shader_block,
+                    &vertices,
+                    &triangles,
+                )?;
+                push_u32(&mut block, 0);
+                push_u32(&mut block, 0);
+                push_u32(&mut block, 0);
+                push_u32(&mut block, 0);
+                blocks.push(block);
+                block_types.push("BSLODTriShape");
+            }
+        }
+    }
+    blocks.push(skin_instance(
+        spec.instance_kind,
+        data_block,
+        partition_block,
+        bone0,
+        bone1,
+    ));
+    block_types.push(match spec.instance_kind {
+        SkinInstanceKind::Dismember => "BSDismemberSkinInstance",
+        SkinInstanceKind::Plain => "NiSkinInstance",
+    });
+    blocks.push(skin_data(&spec.bone_transforms, spec.weights)?);
+    block_types.push("NiSkinData");
+    blocks.push(skin_partition(
+        &vertices,
+        &triangles,
+        spec.palette,
+        spec.weights,
+    )?);
+    block_types.push("NiSkinPartition");
+    blocks.push(lighting_shader_property(false, texture_block));
+    block_types.push("BSLightingShaderProperty");
+    blocks.push(texture_set_with_paths(
+        "textures/generated_skin.dds",
+        "textures/generated_skin_n.dds",
+    )?);
+    block_types.push("BSShaderTextureSet");
+
+    assemble(blocks, block_types, strings)
+}
+
+/// Writes the header and block table shared by every fixture in this module.
+fn assemble(
+    blocks: Vec<Vec<u8>>,
+    block_types: Vec<&'static str>,
+    strings: Vec<&str>,
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
     push_u32(&mut bytes, NIF_VERSION);
@@ -186,7 +320,7 @@ fn build_static_shape(
         &mut bytes,
         u16::try_from(block_types.len()).map_err(|_| eyre!("NIF block type overflow"))?,
     );
-    for block_type in block_types {
+    for block_type in &block_types {
         push_u32(
             &mut bytes,
             u32::try_from(block_type.len()).map_err(|_| eyre!("NIF block type overflow"))?,
@@ -222,6 +356,418 @@ fn build_static_shape(
         bytes.extend_from_slice(&block);
     }
     Ok(bytes)
+}
+
+fn validate_skin(spec: &LegacySkin<'_>) -> Result<()> {
+    ensure!(!spec.name.is_empty(), "NIF shape name is empty");
+    ensure!(
+        spec.name.bytes().all(|byte| (0x20..0x7f).contains(&byte)),
+        "NIF shape name is not printable ASCII: {:?}",
+        spec.name
+    );
+    ensure!(
+        spec.palette.len() == 2,
+        "NIF skin needs a 2-entry bone palette, got {}",
+        spec.palette.len()
+    );
+    ensure!(!spec.weights.is_empty(), "NIF skin has no vertex weights");
+    ensure!(
+        spec.weights.len() <= u16::MAX as usize,
+        "NIF skin exceeds 65535 vertices"
+    );
+    for (translation, quaternion, scale) in spec.bone_transforms {
+        ensure!(
+            translation.iter().all(|value| value.is_finite())
+                && quaternion.iter().all(|value| value.is_finite())
+                && scale.is_finite(),
+            "NIF skin contains a non-finite inverse bind"
+        );
+        ensure!(scale != 0.0, "NIF skin inverse bind scale is zero");
+    }
+    ensure!(
+        spec.weights.iter().flatten().all(|value| value.is_finite()),
+        "NIF skin contains a non-finite weight"
+    );
+    Ok(())
+}
+
+/// A single skinned vertex: position, normal, UV and its four influences.
+struct SkinVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    weights: [f32; 4],
+    joints: [u8; 4],
+}
+
+fn skin_vertices(spec: &LegacySkin<'_>) -> Vec<SkinVertex> {
+    let count = spec.weights.len();
+    (0..count)
+        .map(|index| {
+            let position = vertex_position(index, count);
+            let joints = if index == 0 {
+                spec.joint_override.unwrap_or([0, 1, 0, 0])
+            } else {
+                [0, 1, 0, 0]
+            };
+            SkinVertex {
+                position,
+                normal: [0.0, 0.0, 1.0],
+                uv: [0.5 + 0.5 * position[0], 0.5 + 0.5 * position[1]],
+                weights: spec.weights[index],
+                joints,
+            }
+        })
+        .collect()
+}
+
+fn vertex_position(index: usize, count: usize) -> [f32; 3] {
+    if count <= 1 || index == 0 {
+        return [0.0, 0.0, 0.0];
+    }
+    let angle = std::f32::consts::TAU * (index - 1) as f32 / (count - 1) as f32;
+    [angle.cos(), angle.sin(), 0.0]
+}
+
+fn fan_triangles(count: usize) -> Vec<[u16; 3]> {
+    (1..count.saturating_sub(1))
+        .map(|index| [0, index as u16, (index + 1) as u16])
+        .collect()
+}
+
+/// Row-major rotation matrix from an xyzw quaternion (nif.xml convention).
+fn quat_xyzw_to_matrix(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ],
+        [
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ],
+        [
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+fn push_ni_transform(
+    out: &mut Vec<u8>,
+    rotation: &[[f32; 3]; 3],
+    translation: [f32; 3],
+    scale: f32,
+) {
+    for row in rotation {
+        for value in row {
+            push_f32(out, *value);
+        }
+    }
+    for value in translation {
+        push_f32(out, value);
+    }
+    push_f32(out, scale);
+}
+
+fn skin_vertex_desc() -> u64 {
+    u64::from(SKIN_VERTEX_STRIDE)
+        | (4 << 8)
+        | (5 << 16)
+        | (6 << 28)
+        | (u64::from(SKIN_VERTEX_FLAGS) << 44)
+}
+
+fn push_skinned_vertices(out: &mut Vec<u8>, vertices: &[SkinVertex]) {
+    for vertex in vertices {
+        for value in vertex.position {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&0.0f32.to_le_bytes());
+        out.extend_from_slice(&encode_half(vertex.uv[0]).to_le_bytes());
+        out.extend_from_slice(&encode_half(vertex.uv[1]).to_le_bytes());
+        out.push(pack_normal(vertex.normal[0]));
+        out.push(pack_normal(vertex.normal[1]));
+        out.push(pack_normal(vertex.normal[2]));
+        out.push(0);
+        for weight in vertex.weights {
+            out.extend_from_slice(&encode_half(weight).to_le_bytes());
+        }
+        out.extend_from_slice(&vertex.joints);
+    }
+}
+
+fn skinned_tri_shape(
+    name: u32,
+    positions: &[[f32; 3]],
+    skin: u32,
+    shader_property: u32,
+    vertices: &[SkinVertex],
+    triangles: &[[u16; 3]],
+) -> Result<Vec<u8>> {
+    let vertex_bytes = vertices
+        .len()
+        .checked_mul(SKIN_VERTEX_SIZE as usize)
+        .ok_or_else(|| eyre!("NIF vertex data overflow"))?;
+    let triangle_bytes = triangles
+        .len()
+        .checked_mul(6)
+        .ok_or_else(|| eyre!("NIF triangle data overflow"))?;
+    let data_size = vertex_bytes
+        .checked_add(triangle_bytes)
+        .ok_or_else(|| eyre!("NIF geometry size overflow"))?;
+
+    let (center, radius) = bounds(positions);
+    let mut block = Vec::with_capacity(72 + 16 + 24 + data_size);
+    push_av_object(&mut block, name);
+    for value in center {
+        block.extend_from_slice(&value.to_le_bytes());
+    }
+    block.extend_from_slice(&radius.to_le_bytes());
+    push_u32(&mut block, skin);
+    push_u32(&mut block, shader_property);
+    push_u32(&mut block, NULL_REF);
+    push_u64(&mut block, skin_vertex_desc());
+    push_u16(
+        &mut block,
+        u16::try_from(triangles.len()).map_err(|_| eyre!("NIF triangle count overflow"))?,
+    );
+    push_u16(
+        &mut block,
+        u16::try_from(vertices.len()).map_err(|_| eyre!("NIF vertex count overflow"))?,
+    );
+    push_u32(
+        &mut block,
+        u32::try_from(data_size).map_err(|_| eyre!("NIF geometry size overflow"))?,
+    );
+    push_skinned_vertices(&mut block, vertices);
+    for triangle in triangles {
+        for index in triangle {
+            block.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+    Ok(block)
+}
+
+fn dynamic_tri_shape(
+    name: u32,
+    positions: &[[f32; 3]],
+    skin: u32,
+    shader_property: u32,
+) -> Result<Vec<u8>> {
+    let vertex_count =
+        u16::try_from(positions.len()).map_err(|_| eyre!("NIF vertex count overflow"))?;
+    let dynamic_data_size = u32::try_from(positions.len())
+        .map_err(|_| eyre!("NIF dynamic vertex count overflow"))?
+        .checked_mul(16)
+        .ok_or_else(|| eyre!("NIF dynamic geometry size overflow"))?;
+
+    let (center, radius) = bounds(positions);
+    let mut block = Vec::with_capacity(72 + 16 + 24 + positions.len() * 16);
+    push_av_object(&mut block, name);
+    for value in center {
+        block.extend_from_slice(&value.to_le_bytes());
+    }
+    block.extend_from_slice(&radius.to_le_bytes());
+    push_u32(&mut block, skin);
+    push_u32(&mut block, shader_property);
+    push_u32(&mut block, NULL_REF);
+    push_u64(&mut block, skin_vertex_desc());
+    push_u16(&mut block, 0);
+    push_u16(&mut block, vertex_count);
+    push_u32(&mut block, 0);
+    push_u32(&mut block, 0);
+    push_u32(&mut block, dynamic_data_size);
+    for position in positions {
+        for value in position {
+            push_f32(&mut block, *value);
+        }
+        push_f32(&mut block, 0.0);
+    }
+    Ok(block)
+}
+
+fn bone_node(name: u32) -> Vec<u8> {
+    let mut node = Vec::new();
+    push_av_object(&mut node, name);
+    push_u32(&mut node, 0);
+    push_u32(&mut node, 0);
+    node
+}
+
+fn skin_instance(
+    kind: SkinInstanceKind,
+    data: u32,
+    skin_partition: u32,
+    bone0: u32,
+    bone1: u32,
+) -> Vec<u8> {
+    let mut block = Vec::with_capacity(32);
+    push_u32(&mut block, data);
+    push_u32(&mut block, skin_partition);
+    push_u32(&mut block, 0);
+    push_u32(&mut block, 2);
+    push_u32(&mut block, bone0);
+    push_u32(&mut block, bone1);
+    if kind == SkinInstanceKind::Dismember {
+        push_u32(&mut block, 1);
+        push_u16(&mut block, 257);
+        push_u16(&mut block, 32);
+    }
+    block
+}
+
+fn skin_data(
+    bone_transforms: &[([f32; 3], [f32; 4], f32); 2],
+    weights: &[[f32; 4]],
+) -> Result<Vec<u8>> {
+    let vertex_count = weights.len();
+    let mut block = Vec::new();
+    push_ni_transform(&mut block, &IDENTITY_ROTATION, [0.0; 3], 1.0);
+    push_u32(&mut block, 2);
+    block.push(1);
+    for (bone_index, (translation, quaternion, scale)) in bone_transforms.iter().enumerate() {
+        let rotation = quat_xyzw_to_matrix(*quaternion);
+        push_ni_transform(&mut block, &rotation, *translation, *scale);
+        for value in *translation {
+            push_f32(&mut block, value);
+        }
+        push_f32(&mut block, 1.0);
+        push_u16(
+            &mut block,
+            u16::try_from(vertex_count).map_err(|_| eyre!("NIF skin vertex count overflow"))?,
+        );
+        for (index, row) in weights.iter().enumerate() {
+            push_u16(
+                &mut block,
+                u16::try_from(index).map_err(|_| eyre!("NIF skin vertex index overflow"))?,
+            );
+            push_f32(&mut block, row[bone_index]);
+        }
+    }
+    Ok(block)
+}
+
+fn skin_partition(
+    vertices: &[SkinVertex],
+    triangles: &[[u16; 3]],
+    palette: &[u16],
+    weights: &[[f32; 4]],
+) -> Result<Vec<u8>> {
+    let data_size = vertices
+        .len()
+        .checked_mul(SKIN_VERTEX_SIZE as usize)
+        .ok_or_else(|| eyre!("NIF partition vertex data overflow"))?;
+    let mut block = Vec::new();
+    push_u32(&mut block, 1);
+    push_u32(
+        &mut block,
+        u32::try_from(data_size).map_err(|_| eyre!("NIF partition size overflow"))?,
+    );
+    push_u32(&mut block, SKIN_VERTEX_SIZE);
+    push_u64(&mut block, skin_vertex_desc());
+    push_skinned_vertices(&mut block, vertices);
+    push_u16(
+        &mut block,
+        u16::try_from(vertices.len()).map_err(|_| eyre!("NIF partition vertex count overflow"))?,
+    );
+    push_u16(
+        &mut block,
+        u16::try_from(triangles.len())
+            .map_err(|_| eyre!("NIF partition triangle count overflow"))?,
+    );
+    push_u16(
+        &mut block,
+        u16::try_from(palette.len()).map_err(|_| eyre!("NIF partition bone count overflow"))?,
+    );
+    push_u16(&mut block, 0);
+    push_u16(&mut block, 4);
+    for bone in palette {
+        push_u16(&mut block, *bone);
+    }
+    block.push(0);
+    block.push(1);
+    for row in weights {
+        for weight in row {
+            push_f32(&mut block, *weight);
+        }
+    }
+    block.push(0);
+    block.push(1);
+    for vertex in vertices {
+        block.extend_from_slice(&vertex.joints);
+    }
+    block.push(0);
+    block.push(0);
+    push_u64(&mut block, skin_vertex_desc());
+    for triangle in triangles {
+        for index in triangle {
+            push_u16(&mut block, *index);
+        }
+    }
+    Ok(block)
+}
+
+fn build_static_shape(
+    shape: &StaticShape<'_>,
+    colors: &[[u8; 4]],
+    bodies: &[BoxBody<'_>],
+) -> Result<Vec<u8>> {
+    validate(shape)?;
+    ensure!(
+        colors.is_empty() || colors.len() == shape.positions.len(),
+        "vertex color count mismatch"
+    );
+    for body in bodies {
+        validate_body(body)?;
+    }
+    let mut strings = vec![shape.name];
+    strings.extend(bodies.iter().map(|body| body.node_name));
+    let first_body_block = 4_u32;
+    let mut children = vec![1_u32];
+    children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
+    let mut blocks = vec![
+        fade_node(&children),
+        triangle_shape(shape, colors)?,
+        lighting_shader_property(!colors.is_empty(), 3),
+        texture_set(shape)?,
+    ];
+    let mut block_types = vec![
+        "BSFadeNode",
+        "BSTriShape",
+        "BSLightingShaderProperty",
+        "BSShaderTextureSet",
+    ];
+    for (index, body) in bodies.iter().enumerate() {
+        let node_block = first_body_block + 4 * index as u32;
+        let mut node = Vec::new();
+        push_av_object_with(&mut node, 1 + index as u32, node_block + 1);
+        push_u32(&mut node, 0); // children
+        push_u32(&mut node, 0); // effects
+        blocks.push(node);
+        block_types.push("NiNode");
+        let mut object = Vec::new();
+        push_u32(&mut object, node_block); // target
+        push_u16(&mut object, 1); // flags
+        push_u32(&mut object, node_block + 2); // body
+        blocks.push(object);
+        block_types.push("bhkCollisionObject");
+        blocks.push(rigid_body(body, node_block + 3));
+        block_types.push(if body.transform.is_some() {
+            "bhkRigidBodyT"
+        } else {
+            "bhkRigidBody"
+        });
+        let (shape, kind) = body_shape(body);
+        blocks.push(shape);
+        block_types.push(kind);
+    }
+
+    assemble(blocks, block_types, strings)
 }
 
 fn validate(shape: &StaticShape<'_>) -> Result<()> {
@@ -513,7 +1059,7 @@ fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>
     Ok(block)
 }
 
-fn lighting_shader_property(colors: bool) -> Vec<u8> {
+fn lighting_shader_property(colors: bool, texture_set: u32) -> Vec<u8> {
     let mut block = Vec::with_capacity(100);
     push_u32(&mut block, SHADER_TYPE_DEFAULT);
     push_u32(&mut block, NULL_REF);
@@ -525,7 +1071,7 @@ fn lighting_shader_property(colors: bool) -> Vec<u8> {
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 1.0);
     push_f32(&mut block, 1.0);
-    push_u32(&mut block, 3);
+    push_u32(&mut block, texture_set);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 0.0);
@@ -549,17 +1095,11 @@ fn lighting_shader_property(colors: bool) -> Vec<u8> {
 }
 
 fn texture_set(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
-    let slots = [
-        shape.diffuse,
-        shape.normal_texture,
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-    ];
+    texture_set_with_paths(shape.diffuse, shape.normal_texture)
+}
+
+fn texture_set_with_paths(diffuse: &str, normal: &str) -> Result<Vec<u8>> {
+    let slots = [diffuse, normal, "", "", "", "", "", "", ""];
     let mut block = Vec::new();
     push_u32(
         &mut block,
@@ -657,6 +1197,42 @@ fn bounds(positions: &[[f32; 3]]) -> ([f32; 3], f32) {
 }
 
 #[cfg(test)]
+const SKIN_WEIGHTS: [[f32; 4]; 4] = [
+    [0.7, 0.3, 0.0, 0.0],
+    [0.25, 0.75, 0.0, 0.0],
+    [0.5, 0.2, 0.0, 0.0],
+    [0.4, 0.6, 0.0, 0.0],
+];
+
+#[cfg(test)]
+const SKIN_PALETTE: [u16; 2] = [1, 0];
+
+#[cfg(test)]
+fn skinned_spec() -> LegacySkin<'static> {
+    LegacySkin {
+        name: "GeneratedSkin",
+        instance_kind: SkinInstanceKind::Dismember,
+        bone_transforms: [
+            (
+                [0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ],
+                1.0,
+            ),
+            ([0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0], 1.0),
+        ],
+        palette: &SKIN_PALETTE,
+        weights: &SKIN_WEIGHTS,
+        with_geometry: true,
+        joint_override: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -710,5 +1286,191 @@ mod tests {
         let mut shape = quad();
         shape.diffuse = "";
         assert!(static_shape(&shape).is_err());
+    }
+
+    #[test]
+    fn legacy_skin_writes_the_expected_header() {
+        let bytes = legacy_skinned_shape(&skinned_spec()).unwrap();
+        let line = b"Gamebryo File Format, Version 20.2.0.7\n";
+        assert!(bytes.starts_with(line));
+        let version = u32::from_le_bytes(bytes[line.len()..line.len() + 4].try_into().unwrap());
+        assert_eq!(version, NIF_VERSION);
+        assert_eq!(bytes[line.len() + 4], 1);
+        let user = u32::from_le_bytes(bytes[line.len() + 5..line.len() + 9].try_into().unwrap());
+        assert_eq!(user, USER_VERSION);
+        let blocks = u32::from_le_bytes(bytes[line.len() + 9..line.len() + 13].try_into().unwrap());
+        assert_eq!(blocks, 9);
+    }
+
+    #[test]
+    fn legacy_skin_output_is_deterministic() {
+        let spec = skinned_spec();
+        assert_eq!(
+            legacy_skinned_shape(&spec).unwrap(),
+            legacy_skinned_shape(&spec).unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_skin_instance_kinds_differ_by_the_trailing_array() {
+        let dismember = skin_instance(SkinInstanceKind::Dismember, 5, 6, 1, 2);
+        let plain = skin_instance(SkinInstanceKind::Plain, 5, 6, 1, 2);
+        // Trailing array = num_partitions u32 + one (i16 part_flag, i16 body_part).
+        assert_eq!(dismember.len() - plain.len(), 8);
+    }
+
+    #[test]
+    fn legacy_skin_without_geometry_omits_the_shape() {
+        let mut spec = skinned_spec();
+        spec.with_geometry = false;
+        let bytes = legacy_skinned_shape(&spec).unwrap();
+        let line = b"Gamebryo File Format, Version 20.2.0.7\n";
+        let blocks = u32::from_le_bytes(bytes[line.len() + 9..line.len() + 13].try_into().unwrap());
+        assert_eq!(blocks, 8);
+    }
+
+    #[test]
+    fn legacy_skin_rejects_a_non_two_bone_palette() {
+        let mut spec = skinned_spec();
+        spec.palette = &[0, 1, 0];
+        assert!(legacy_skinned_shape(&spec).is_err());
+    }
+}
+
+/// Parses the emitted fixture with the real `project-wormhole-nif` parser to
+/// prove the writer's byte layout is accepted, not merely self-consistent.
+#[cfg(test)]
+mod skin_parser_tests {
+    use super::{SkinInstanceKind, legacy_skinned_shape, skinned_spec};
+    use nom_derive::Parse;
+    use project_wormhole_nif::bs::prelude::{BsDismemberSkinInstance, NiSkinData, NiSkinPartition};
+    use project_wormhole_nif::nif_block::NifBlock;
+    use project_wormhole_nif::nif_file::NifFile;
+
+    fn parse(bytes: &[u8]) -> NifFile {
+        let (rest, nif) = NifFile::parse(bytes).expect("fixture must parse");
+        assert_eq!(nif.blocks.len(), nif.header.block_count as usize);
+        // `NifFile::parse` returns the header's leftover (the block data), so
+        // the block table covers it exactly when there is no trailing data.
+        let declared: usize = nif
+            .header
+            .block_size_index
+            .iter()
+            .map(|size| *size as usize)
+            .sum();
+        assert_eq!(
+            rest.len(),
+            declared,
+            "block table does not cover the block data exactly"
+        );
+        nif
+    }
+
+    fn skin_data<'a>(nif: &'a NifFile, instance: &BsDismemberSkinInstance) -> &'a NiSkinData {
+        match nif.blocks.get(instance.skin_instance.data as usize) {
+            Some(NifBlock::NiSkinData(data)) => data,
+            other => panic!("skin data reference is not NiSkinData: {other:?}"),
+        }
+    }
+
+    fn skin_partition<'a>(
+        nif: &'a NifFile,
+        instance: &BsDismemberSkinInstance,
+    ) -> &'a NiSkinPartition {
+        match nif
+            .blocks
+            .get(instance.skin_instance.skin_partition as usize)
+        {
+            Some(NifBlock::NiSkinPartition(partition)) => partition,
+            other => panic!("skin partition reference is not NiSkinPartition: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_dismember_skin_parses_with_the_real_parser() {
+        let spec = skinned_spec();
+        assert_eq!(spec.instance_kind, SkinInstanceKind::Dismember);
+        let bytes = legacy_skinned_shape(&spec).unwrap();
+        let nif = parse(&bytes);
+        assert_eq!(nif.blocks.len(), nif.header.block_count as usize);
+
+        let (instance_index, instance) = nif
+            .blocks
+            .iter()
+            .enumerate()
+            .find_map(|(index, block)| match block {
+                NifBlock::BsDismemberSkinInstance(instance) => Some((index, instance)),
+                _ => None,
+            })
+            .expect("no BSDismemberSkinInstance");
+        assert_eq!(instance.skin_instance.bones.len(), 2);
+
+        let data = skin_data(&nif, instance);
+        assert_eq!(data.bone_count, 2);
+
+        let partition = skin_partition(&nif, instance);
+        assert_eq!(partition.bone_palette, spec.palette.to_vec());
+
+        let shapes = nif.get_shapes();
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(
+            partition.weights.len(),
+            shapes[0].get_vertex_positions().len()
+        );
+
+        println!(
+            "dismember fixture={}B blocks={} instance_block={} bones={} palette={:?} vertices={} weights={}",
+            bytes.len(),
+            nif.blocks.len(),
+            instance_index,
+            data.bone_count,
+            partition.bone_palette,
+            partition.vertex_data.len(),
+            partition.weights.len(),
+        );
+    }
+
+    #[test]
+    fn legacy_plain_skin_parses_with_the_real_parser() {
+        let mut spec = skinned_spec();
+        spec.instance_kind = SkinInstanceKind::Plain;
+        let bytes = legacy_skinned_shape(&spec).unwrap();
+        let nif = parse(&bytes);
+
+        let instance = nif
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                NifBlock::NiSkinInstance(instance) => Some(instance),
+                _ => None,
+            })
+            .expect("no NiSkinInstance");
+        assert_eq!(instance.bones.len(), 2);
+
+        let data = match nif.blocks.get(instance.data as usize) {
+            Some(NifBlock::NiSkinData(data)) => data,
+            other => panic!("skin data reference is not NiSkinData: {other:?}"),
+        };
+        assert_eq!(data.bone_count, 2);
+
+        let partition = match nif.blocks.get(instance.skin_partition as usize) {
+            Some(NifBlock::NiSkinPartition(partition)) => partition,
+            other => panic!("skin partition reference is not NiSkinPartition: {other:?}"),
+        };
+        assert_eq!(partition.bone_palette, spec.palette.to_vec());
+        assert_eq!(
+            partition.weights.len(),
+            nif.get_shapes()[0].get_vertex_positions().len()
+        );
+
+        println!(
+            "plain fixture={}B blocks={} bones={} palette={:?} vertices={} weights={}",
+            bytes.len(),
+            nif.blocks.len(),
+            data.bone_count,
+            partition.bone_palette,
+            partition.vertex_data.len(),
+            partition.weights.len(),
+        );
     }
 }
