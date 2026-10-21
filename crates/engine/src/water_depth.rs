@@ -318,6 +318,10 @@ fn prepare_water_depth_pipelines(
     }
 }
 
+/// What the snapshot holds on a frame its resolve could not run. Reverse-Z depth is never negative,
+/// so `water.wgsl` reads any negative value as "no bed depth this frame".
+const UNRESOLVED_BED_DEPTH: f32 = -1.0;
+
 #[derive(Default)]
 struct SnapshotLog {
     resolved: bool,
@@ -326,6 +330,10 @@ struct SnapshotLog {
 }
 
 /// Copies the opaque pass's depth into the snapshot before the transparent pass attaches it.
+///
+/// Whenever the copy cannot run for the water view (pipeline still compiling, a size or sample
+/// mismatch), the snapshot is cleared to [`UNRESOLVED_BED_DEPTH`] instead, so water falls back to
+/// its ANAM opacity rather than reading last frame's depth or an uninitialised texture.
 fn run_water_depth_snapshot(
     view: ViewQuery<(
         &ViewDepthTexture,
@@ -340,9 +348,6 @@ fn run_water_depth_snapshot(
     mut log: Local<SnapshotLog>,
 ) {
     let (depth, pipeline_id, marked) = view.into_inner();
-    let Some(pipeline_id) = pipeline_id else {
-        return;
-    };
     if !marked {
         return;
     }
@@ -353,13 +358,15 @@ fn run_water_depth_snapshot(
     else {
         return;
     };
-    if target.texture.width() != depth.texture.width()
+    let samples = snapshot.samples;
+    let pipeline = pipeline_id.and_then(|id| pipeline_cache.get_render_pipeline(id.0));
+    let resolvable = if target.texture.width() != depth.texture.width()
         || target.texture.height() != depth.texture.height()
     {
         if !log.size_mismatch {
             warn!(
-                "water bed depth snapshot {}x{} does not match the view depth {}x{}; water reads no \
-                 bed depth until they match",
+                "water bed depth snapshot {}x{} does not match the view depth {}x{}; water draws \
+                 at its ANAM opacity until they match",
                 target.texture.width(),
                 target.texture.height(),
                 depth.texture.width(),
@@ -367,37 +374,41 @@ fn run_water_depth_snapshot(
             );
             log.size_mismatch = true;
         }
-        return;
-    }
-    let Some(pipeline) = pipeline_cache.get_render_pipeline(pipeline_id.0) else {
-        return;
-    };
-
-    let samples = snapshot.samples;
-    if depth.texture.sample_count() != samples {
+        None
+    } else if depth.texture.sample_count() != samples {
         if !log.sample_mismatch {
             warn!(
                 "water bed depth snapshot was built for {samples} samples but the view depth has \
-                 {}; water reads no bed depth until they match",
+                 {}; water draws at its ANAM opacity until they match",
                 depth.texture.sample_count()
             );
             log.sample_mismatch = true;
         }
-        return;
-    }
-    let source = depth.view();
-    let bind_group = match &mut *cached {
-        Some((id, bind_group)) if source.id() == *id => bind_group,
-        cached => {
-            let bind_group = ctx.render_device().create_bind_group(
-                None,
-                &pipeline_cache.get_bind_group_layout(&snapshot_layout(samples)),
-                &BindGroupEntries::single(source),
-            );
-            &cached.insert((source.id(), bind_group)).1
-        }
+        None
+    } else {
+        pipeline
     };
+    let resolve = resolvable.map(|pipeline| {
+        let source = depth.view();
+        let bind_group = match &mut *cached {
+            Some((id, bind_group)) if source.id() == *id => bind_group.clone(),
+            cached => {
+                let bind_group = ctx.render_device().create_bind_group(
+                    None,
+                    &pipeline_cache.get_bind_group_layout(&snapshot_layout(samples)),
+                    &BindGroupEntries::single(source),
+                );
+                cached.insert((source.id(), bind_group)).1.clone()
+            }
+        };
+        (pipeline, bind_group)
+    });
 
+    let clear = if resolve.is_some() {
+        0.0
+    } else {
+        f64::from(UNRESOLVED_BED_DEPTH)
+    };
     let pass_descriptor = RenderPassDescriptor {
         label: Some("water_depth_snapshot"),
         color_attachments: &[Some(RenderPassColorAttachment {
@@ -405,7 +416,12 @@ fn run_water_depth_snapshot(
             depth_slice: None,
             resolve_target: None,
             ops: Operations {
-                load: LoadOp::Clear(Default::default()),
+                load: LoadOp::Clear(wgpu::Color {
+                    r: clear,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }),
                 store: StoreOp::Store,
             },
         })],
@@ -416,8 +432,11 @@ fn run_water_depth_snapshot(
     };
 
     let mut render_pass = ctx.command_encoder().begin_render_pass(&pass_descriptor);
+    let Some((pipeline, bind_group)) = resolve else {
+        return;
+    };
     render_pass.set_pipeline(pipeline);
-    render_pass.set_bind_group(0, bind_group, &[]);
+    render_pass.set_bind_group(0, &bind_group, &[]);
     render_pass.draw(0..3, 0..1);
     drop(render_pass);
     if !log.resolved {
@@ -428,5 +447,70 @@ fn run_water_depth_snapshot(
             samples
         );
         log.resolved = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::WaterExtension;
+
+    fn water_app(snapshot: WaterDepthSnapshot) -> (App, Handle<WaterMaterial>) {
+        let mut app = App::new();
+        app.init_resource::<Assets<WaterMaterial>>()
+            .insert_resource(snapshot)
+            .add_systems(Last, sync_water_depth_materials);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<WaterMaterial>>()
+            .add(WaterMaterial {
+                base: StandardMaterial::default(),
+                extension: WaterExtension::default(),
+            });
+        (app, handle)
+    }
+
+    fn bed_depth_of(app: &App, handle: &Handle<WaterMaterial>) -> Option<Handle<Image>> {
+        app.world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(handle)
+            .expect("water material")
+            .extension
+            .bed_depth()
+            .cloned()
+    }
+
+    #[test]
+    fn materials_follow_the_snapshot_and_steady_frames_write_nothing() {
+        let image = Handle::<Image>::default();
+        let (mut app, water) = water_app(WaterDepthSnapshot {
+            handle: Some(image.clone()),
+            size: UVec2::new(64, 32),
+            samples: 4,
+        });
+        app.update();
+        assert_eq!(bed_depth_of(&app, &water), Some(image));
+
+        let settled = app
+            .world()
+            .get_resource_change_ticks::<Assets<WaterMaterial>>()
+            .unwrap()
+            .changed;
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .get_resource_change_ticks::<Assets<WaterMaterial>>()
+                .unwrap()
+                .changed,
+            settled,
+            "a steady snapshot must not take the materials mutably"
+        );
+
+        // Losing the snapshot (no water camera, or `--water-depth constant`) unbinds it.
+        app.world_mut().resource_mut::<WaterDepthSnapshot>().handle = None;
+        app.update();
+        assert_eq!(bed_depth_of(&app, &water), None);
     }
 }

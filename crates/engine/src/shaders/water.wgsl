@@ -60,6 +60,11 @@ fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>) -> f32 {
         return -1.0;
     }
     let ndc = textureLoad(bed_depth, vec2<i32>(frag_coord.xy), 0).x;
+    if ndc < 0.0 {
+        // The engine could not resolve the bed this frame and cleared the snapshot to
+        // `UNRESOLVED_BED_DEPTH`; draw the body as if this view had no depth.
+        return -1.0;
+    }
     if ndc <= 0.0 {
         // Nothing opaque behind the water (reverse-Z: 0 is infinitely far).
         return MAX_WATER_PATH;

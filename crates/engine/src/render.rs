@@ -793,6 +793,12 @@ impl WaterExtension {
         }
     }
 
+    /// x = opacity 0..1, y/z = above-water fog near and far, w = fog amount, as the shader reads them.
+    #[cfg(test)]
+    pub(crate) fn body(&self) -> Vec4 {
+        self.settings.body
+    }
+
     /// The depth snapshot this material reads the bed from, when it has one.
     pub(crate) fn bed_depth(&self) -> Option<&Handle<Image>> {
         self.bed_depth.as_ref()
@@ -2078,6 +2084,22 @@ mod tests {
             wanted_water_settings(&current, ANIMATED_WAVE_PHASE, None),
             current.settings,
             "a steady interactive frame must not rewrite the material"
+        );
+        let settled = app
+            .world()
+            .get_resource_change_ticks::<Assets<WaterMaterial>>()
+            .unwrap()
+            .changed;
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .get_resource_change_ticks::<Assets<WaterMaterial>>()
+                .unwrap()
+                .changed,
+            settled,
+            "steady interactive frames must not take the materials mutably"
         );
     }
 
