@@ -70,11 +70,7 @@ impl NifFile {
     pub fn get_nodes(&self) -> Vec<&NiNode> {
         self.blocks
             .iter()
-            .filter_map(|block| match block {
-                NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(node),
-                NifBlock::BSMultiBoundNode(block) => Some(&block.node),
-                _ => None,
-            })
+            .filter_map(|block| block.as_node().ok())
             .collect()
     }
 
@@ -322,12 +318,11 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                             );
                             return None;
                         };
-                        let child_node = match child_block {
-                            NifBlock::NiNode(child) | NifBlock::BSFadeNode(child) => child,
-                            NifBlock::BSMultiBoundNode(child) => &child.node,
-                            other => {
+                        let child_node = match child_block.as_node() {
+                            Ok(child) => child,
+                            Err(_) => {
                                 warn!(
-                                    "skeleton node {node_name:?} references child block {index} of type {other:?}, which is not a skeleton node; skipping it"
+                                    "skeleton node {node_name:?} references child block {index} of type {child_block:?}, which is not a skeleton node; skipping it"
                                 );
                                 return None;
                             }
@@ -640,9 +635,12 @@ fn legacy_skin_joint_nodes(
 ) -> Result<Vec<(u32, String)>, String> {
     let mut joint_nodes = Vec::with_capacity(instance.bones.len());
     for joint in &instance.bones {
-        let node = match nif.blocks.get(*joint as usize) {
-            Some(NifBlock::NiNode(node)) => node,
-            _ => return Err(format!("bone reference {joint} is not a NiNode")),
+        let Some(node) = nif
+            .blocks
+            .get(*joint as usize)
+            .and_then(|block| block.as_node().ok())
+        else {
+            return Err(format!("bone reference {joint} is not a NiNode"));
         };
         let name = nif
             .header
@@ -654,11 +652,7 @@ fn legacy_skin_joint_nodes(
 }
 
 fn nif_node(nif: &NifFile, block: u32) -> Option<&NiNode> {
-    match nif.blocks.get(block as usize)? {
-        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(node),
-        NifBlock::BSMultiBoundNode(node) => Some(&node.node),
-        _ => None,
-    }
+    nif.blocks.get(block as usize)?.as_node().ok()
 }
 
 fn nif_node_name(nif: &NifFile, block: u32) -> Option<&str> {
@@ -746,11 +740,10 @@ fn insert_mesh_local_joint_chains(
 ) -> Vec<String> {
     let mut parents = BTreeMap::new();
     for (index, block) in nif.blocks.iter().enumerate() {
-        let children = match block {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => &node.children,
-            NifBlock::BSMultiBoundNode(node) => &node.node.children,
-            _ => continue,
+        let Ok(node) = block.as_node() else {
+            continue;
         };
+        let children = &node.children;
         for child in children {
             parents.entry(*child).or_insert(index as u32);
         }

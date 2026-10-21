@@ -630,7 +630,9 @@ mod multi_bound {
         assert_eq!(children(2), vec![3]);
         assert_eq!(children(3), vec![4]);
 
-        let (gltf, _) = model.to_gltf("ordered-node-regression".to_string());
+        let (gltf, _) = model
+            .to_gltf("ordered-node-regression".to_string())
+            .unwrap();
         let node_index = |name: &str| {
             gltf.nodes
                 .iter()
