@@ -222,7 +222,7 @@ We welcome community contributions! Whether you're fixing bugs in asset converte
 
 ### Licensing
 
-Mudcrab is licensed under the **GNU General Public License v3 or later** ([`LICENSE`](LICENSE)).
+Mudcrab is licensed under the **GNU General Public License v3 or later** ([`LICENSE`](LICENSE)). Some files derived from other projects keep their own terms; see [`THIRD_PARTY.md`](THIRD_PARTY.md).
 
 ### Legal Notice & Trademark Disclaimer
 
