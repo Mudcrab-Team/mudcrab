@@ -46,12 +46,12 @@ P3|planned|fixed static collision|P2 accepted|player blocked by rock/wall, passe
 
 - I.launcher_lod: implemented launcher LOD reporting; planned existing-assets build action; contract and gates in `docs/specs/modding/launcher-lod.md`. Fiji RC excludes build action.
 - cmd: `--physics-fixture` → interactive primitive hill/wall arena, WALK/NOCLIP toggle, auto-spawned debug tankards; no Skyrim asset install required.
-- runtime: P1+ interactive exterior → first-person NOCLIP at start-cell view; fixture supports both modes from P1. P2 enables WALK over streamed terrain.
+- runtime: P1+ interactive exterior → first-person WALK at start-cell view with an active capsule; primitive fixture starts in NOCLIP and supports both modes. Startup and WALK teleports hold movement/gravity until Rapier sees destination world collision and the usual safe capsule placement succeeds; validated local terrain samples bound startup and sampled-cell queries but do not prove collision readiness. After 30 fixed-step seconds without collision, fall back to NOCLIP with a visible reason. V/tcl cancels a hold or toggles/retries WALK; NOCLIP teleports remain camera-only.
 - key: NOCLIP `W/A/S/D` fly relative to view; `Space` rise; `Ctrl` descend; `Shift` accelerate.
 - input: mouse look; click viewport captures pointer; `F3` or focus loss releases pointer; `Escape` opens/closes settings; uncaptured pointer → no movement/look.
-- debug: `NOCLIP: ON` or `NOCLIP: OFF`, no player glyph; blocked WALK entry shows reason. Controls are listed in the Escape settings menu.
+- debug: `NOCLIP: ON` or `NOCLIP: OFF`; WALK collision wait and blocked WALK entry show status/reason. Controls are listed in the Escape settings menu.
 - debug: interactive Riverwood Graphics settings or `tcg` toggles Rapier collision outlines; status reports ON/OFF.
-- key: `V` → toggle NOCLIP ↔ WALK once per press; NOCLIP default ON on interactive start.
+- key: `V` → toggle NOCLIP ↔ WALK once per press; interactive world starts in WALK, primitive physics fixture starts in NOCLIP.
 - key: WALK `W/A/S/D` move relative to yaw; mouse look; `Space` jump; `Shift` walk slowly; `Alt` press while moving toggles sprint; no movement input, focus loss, or NOCLIP switch clears sprint. No stamina cost.
 - key: P2+ `T` → spawn one debug tankard ahead of camera only when local terrain collider ready; bounded live count; fixture auto-spawns several in P1.
 - key: P2+ `E` → pick aimed nearby debug tankard; next `E` drops it. Held item follows view with collision/gravity suspended; release restores dynamic physics.
@@ -114,7 +114,7 @@ V1: P2 ∀ valid visible terrain quadrants → matching fixed collider from same
 V2: P2 collider build error → reported asset/cell failure, no panic or invented floor; existing render/streaming acceptance behavior preserved.
 V3: P3 ∀ eligible fixed placements → collider follows full instance/node transform & cell lifetime; source marked original or proxy; unsupported assets skipped & counted. Base record type distinguishes fixed statics from `MISC`/other movable clutter; no duplicate fixed/dynamic collider.
 V4: P3 player blocks at rock/wall, passes doorway/opening & excluded visual; tankard hits same rock/wall without tunneling, falls through opening as geometry permits; unload/reload leaves no stale collider; P2 gate remains green.
-V5: P1 interactive exterior → one streaming camera, NOCLIP ON, walking collider/gravity disabled; camera crosses fixture/world geometry; noninteractive paths unchanged.
+V5: P1 interactive exterior → one streaming camera, WALK with collider active and view yaw preserved. Startup and WALK teleport holds prevent movement/gravity until a bounded downward Rapier query hits enabled world collision, then apply the normal bounded free-capsule placement search. A validated local terrain sample bounds startup and sampled-cell teleport queries; missing/invalid samples use the two-capsule fallback and never count as collision proof. Blocked placement or a 30-second fixed-step collision timeout switches to NOCLIP with a visible reason. Door-crossing and console/settings-menu guards gate hold release and movement; crossing recovery can still cancel holds by switching to NOCLIP. V/tcl cancels holds or toggles modes; WALK teleports rearm a fresh destination hold, while NOCLIP teleports remain camera-only. Primitive fixture starts in NOCLIP; noninteractive paths unchanged.
 V6: P1 mouse yaw/pitch controls view, pitch bounded; uncaptured/unfocused input cannot move or look; focus loss clears held keys; render-origin rebase preserves position & view.
 V7: P1 debug overlay reports actual mode every frame; key bindings and control instructions live in the Escape settings menu. Overlay never obscures center view or screenshot path.
 V8: P1 `V` press toggles once; NOCLIP→WALK at any height when capsule fits; failed overlap search leaves NOCLIP ON with visible reason; WALK→NOCLIP removes collision/gravity immediately.

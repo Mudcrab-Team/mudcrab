@@ -1,4 +1,10 @@
-use crate::{skyrim_ini::SkyrimIni, world::components::CELL_SIZE};
+use crate::{
+    color_pipeline::{SCENE_GRADE_VALUES, SceneGradeMode, SceneVisualPreset},
+    skyrim_ini::SkyrimIni,
+    tone_mapping::SceneToneMapMode,
+    world::components::CELL_SIZE,
+    world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
+};
 use bevy::prelude::Resource;
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
@@ -75,6 +81,10 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    pub sun_shadow_distance_limit: Option<f32>,
+    /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
+    pub sun_position: Option<(f32, f32)>,
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -112,6 +122,24 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Select the cinematic A/B experiment without changing scene lighting.
+    pub color_grade: SceneGradeMode,
+    /// Named sky, fog and grading look; Vivid preserves the approved configuration.
+    pub visual_preset: SceneVisualPreset,
+    /// Optional approved-look JSON override; authored records are retained separately.
+    pub grade_preset: Option<PathBuf>,
+    /// Display transform selection; native-curve experiments require explicit parameters.
+    pub tone_map: SceneToneMapMode,
+    pub tone_map_params: Option<PathBuf>,
+    pub image_space: Option<u32>,
+    pub image_space_weather: Option<u32>,
+    pub image_space_slot: Option<ImageSpaceSlot>,
+    /// Seed a live world camera from a validated one-pose shots file.
+    pub start_shot: Option<PathBuf>,
+    /// Accept developer console commands on this process's stdin.
+    pub stdin_console: bool,
+    /// Disable Bevy's GPU timing and pipeline-statistics query collection.
+    pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
@@ -174,6 +202,8 @@ pub struct EngineConfig {
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
+    /// Maximum settling time per shot, in seconds.
+    pub shots_settle_timeout: f32,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -198,6 +228,8 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            sun_shadow_distance_limit: None,
+            sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -227,6 +259,17 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            color_grade: SceneGradeMode::SnapshotSrgb,
+            visual_preset: SceneVisualPreset::CoolGray,
+            grade_preset: None,
+            tone_map: SceneToneMapMode::Tony,
+            tone_map_params: None,
+            image_space: None,
+            image_space_weather: None,
+            image_space_slot: None,
+            start_shot: None,
+            stdin_console: false,
+            no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
@@ -265,6 +308,7 @@ impl Default for EngineConfig {
             shots: None,
             matched_route: None,
             shots_out: None,
+            shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -295,6 +339,9 @@ Assets and start position:
   --worldspace <id>                     worldspace form id, decimal or 0x-hex (default: 0x3c)
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
+  --start-shot <file>                  start the live camera at one exterior shot pose
+  --stdin-console                     accept developer console commands on stdin
+  --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
@@ -346,7 +393,17 @@ Benchmark and profiling:
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
+  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear|record-srgb (default: snapshot-srgb)
+  --grade-preset <json>                approved-look JSON override (snapshot-srgb and Cool Gray sky)
+  --tone-map <tony|retail-curve>       display transform (default: tony); retail curve is experimental
+  --tone-map-params <json>             explicit curve/scales and fixed luminance samples; requires selected IMGS
+  --image-space <FormID>               load an authored IMGS record for record-srgb experiments
+  --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
+  --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
+  --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
+  --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
   --profile-output <dir>                profile bundle directory (default: no bundle)
@@ -532,6 +589,37 @@ impl EngineConfig {
         self.streaming_headroom_mib
             .checked_mul(1024 * 1024)
             .expect("streaming headroom size must fit bytes") as u64
+    }
+
+    /// Select only explicitly authored data; this does not simulate effective weather.
+    pub fn image_space_selection(&self) -> color_eyre::Result<Option<ImageSpaceSelection>> {
+        use color_eyre::eyre::ensure;
+        ensure!(
+            self.image_space.is_none()
+                || (self.image_space_weather.is_none() && self.image_space_slot.is_none()),
+            "--image-space cannot be combined with --image-space-weather or --image-space-slot"
+        );
+        ensure!(
+            self.image_space_weather.is_some() == self.image_space_slot.is_some(),
+            "--image-space-weather and --image-space-slot must be supplied together"
+        );
+        let selection = self
+            .image_space
+            .map(ImageSpaceSelection::Direct)
+            .or_else(|| {
+                self.image_space_weather
+                    .zip(self.image_space_slot)
+                    .map(|(form_id, slot)| ImageSpaceSelection::Weather { form_id, slot })
+            });
+        ensure!(
+            self.color_grade != SceneGradeMode::RecordSrgb || selection.is_some(),
+            "record-srgb requires an explicit --image-space or --image-space-weather with --image-space-slot"
+        );
+        ensure!(
+            self.tone_map != SceneToneMapMode::RetailCurve || selection.is_some(),
+            "retail-curve requires an explicit --image-space or --image-space-weather with --image-space-slot"
+        );
+        Ok(selection)
     }
 
     /// The per-frame render-asset upload budget in bytes, or `None` when
@@ -1043,8 +1131,112 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--color-grade" => {
+                    let raw = take_raw("--color-grade", SCENE_GRADE_VALUES, args.next())?;
+                    config.color_grade = SceneGradeMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--color-grade", Some(raw), SCENE_GRADE_VALUES)
+                    })?;
+                }
+                "--grade-preset" => {
+                    config.grade_preset =
+                        Some(take_value("--grade-preset", "a JSON file", args.next())?);
+                }
+                "--tone-map" => {
+                    let raw = take_raw("--tone-map", "tony or retail-curve", args.next())?;
+                    config.tone_map = SceneToneMapMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--tone-map", Some(raw), "tony or retail-curve")
+                    })?;
+                }
+                "--tone-map-params" => {
+                    config.tone_map_params =
+                        Some(take_value("--tone-map-params", "a JSON file", args.next())?);
+                }
+                "--image-space" => {
+                    let raw =
+                        take_raw("--image-space", "a FormID, decimal or 0x-hex", args.next())?;
+                    config.image_space = Some(parse_u32(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--image-space",
+                            Some(raw),
+                            "a FormID, decimal or 0x-hex",
+                        )
+                    })?);
+                }
+                "--image-space-weather" => {
+                    let raw = take_raw(
+                        "--image-space-weather",
+                        "a FormID, decimal or 0x-hex",
+                        args.next(),
+                    )?;
+                    config.image_space_weather = Some(parse_u32(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--image-space-weather",
+                            Some(raw),
+                            "a FormID, decimal or 0x-hex",
+                        )
+                    })?);
+                }
+                "--image-space-slot" => {
+                    let raw = take_raw(
+                        "--image-space-slot",
+                        "sunrise, day, sunset or night",
+                        args.next(),
+                    )?;
+                    config.image_space_slot =
+                        Some(ImageSpaceSlot::parse(&raw).ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--image-space-slot",
+                                Some(raw),
+                                "sunrise, day, sunset or night",
+                            )
+                        })?);
+                }
+                "--visual-preset" => {
+                    let raw = take_raw("--visual-preset", "vivid or cool-gray", args.next())?;
+                    config.visual_preset = SceneVisualPreset::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--visual-preset",
+                            Some(raw),
+                            "vivid or cool-gray",
+                        )
+                    })?;
+                }
+                "--sun-position" => {
+                    let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
+                    config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--sun-position",
+                            Some(raw),
+                            SUN_POSITION_EXPECTED,
+                        )
+                    })?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
+                }
+                "--start-shot" => {
+                    config.start_shot = Some(take_value(
+                        "--start-shot",
+                        "a one-pose shots file",
+                        args.next(),
+                    )?);
+                }
+                "--stdin-console" => config.stdin_console = true,
+                "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-settle-timeout" => {
+                    const EXPECTED: &str = "a positive number of seconds up to 600";
+                    let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
+                    config.shots_settle_timeout = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| value.is_finite() && *value > 0.0 && *value <= 600.0)
+                        .ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--shots-settle-timeout",
+                                Some(raw),
+                                EXPECTED,
+                            )
+                        })?;
                 }
                 "--shots-out" => {
                     config.shots_out = Some(take_value(
@@ -1196,6 +1388,10 @@ pub const MAX_STREAM_RADIUS: i32 = (i32::MAX - 3) / 2;
 /// equal.
 const STREAM_RADIUS_EXPECTED: &str = "a cell count from 0 to 1073741822";
 
+/// What `--sun-position` takes: azimuth clockwise from north, then elevation above the horizon.
+const SUN_POSITION_EXPECTED: &str =
+    "two finite angles in degrees: azimuth,elevation (elevation 0 to 90)";
+
 /// Test shorthand for a command line that must ask for a run.
 #[cfg(test)]
 impl EngineConfig {
@@ -1233,6 +1429,20 @@ fn parse_grid(value: &str) -> Option<(i32, i32)> {
     let x: i32 = parts.next()?.trim().parse().ok()?;
     let y: i32 = parts.next()?.trim().parse().ok()?;
     parts.next().is_none().then_some((x, y))
+}
+
+fn parse_sun_position(value: &str) -> Option<(f32, f32)> {
+    let mut parts = value.split(',');
+    let azimuth: f32 = parts.next()?.trim().parse().ok()?;
+    let elevation: f32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some()
+        || !azimuth.is_finite()
+        || !elevation.is_finite()
+        || !(0.0..=90.0).contains(&elevation)
+    {
+        return None;
+    }
+    Some((azimuth.rem_euclid(360.0), elevation))
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -1471,6 +1681,81 @@ mod tests {
         "--output-dir", // analyze-streaming-comparison.py
         "--bootstrap-samples", // analyze-streaming-comparison.py
         "--comparison", // analyze-streaming-comparison.py
+        "--output", // world inspection, profiling, startup runner
+        "--pairs-output", // correlate_drawables.py
+        "--native-preset", // prepare_skyrim_comparison.py
+        "--calibration", // prepare_skyrim_comparison.py
+        "--timeout", // run_skyrim_comparison.py
+        "--user",   // systemctl
+        "--property", // systemctl
+        "--value",  // systemctl
+        "--onlyvisible", // xdotool
+        "--name",   // xdotool
+        "--sync",   // xdotool
+        "--psm",    // tesseract
+        "--radius", // world-inspect
+        "--library-path", // ld-linux
+        "--meshes", // audit-collision.py
+        "--min-x",  // audit-collision.py
+        "--max-x",  // audit-collision.py
+        "--min-y",  // audit-collision.py
+        "--max-y",  // audit-collision.py
+        "--out",    // audit-collision.py
+        "--expect-solid", // audit-collision.py
+        "--expect-passable", // audit-collision.py
+        "--original", // audit_asset_sizes.py
+        "--json",   // audit_asset_sizes.py
+        "--candidate-inventory", // audit-riverwood-reuse.py
+        "--reference-inventory", // audit-riverwood-reuse.py
+        "--manifest", // audit-riverwood-reuse.py
+        "--include", // audit-z-fighting.py
+        "--materials-only", // audit-z-fighting.py
+        "--no-placements", // audit-z-fighting.py
+        "--plane-tolerance", // audit-z-fighting.py
+        "--min-overlap-area", // audit-z-fighting.py
+        "--max-triangles", // audit-z-fighting.py
+        "--max-comparisons", // audit-z-fighting.py
+        "--max-examples", // audit-z-fighting.py
+        "--progress", // audit-z-fighting.py
+        "--jobs",   // audit-z-fighting.py
+        "--locked", // cargo run
+        "--manifest-path", // cargo run
+        "--cpu-jobs", // converter
+        "--io-jobs", // converter
+        "--binary", // git diff
+        "--porcelain", // git status
+        "--engine", // repeat-terrain-startup.py
+        "--repeats", // repeat-terrain-startup.py
+        "--upload-budgets", // repeat-terrain-startup.py
+        "--warmup", // repeat-terrain-startup.py
+        "--duration", // repeat-terrain-startup.py
+        "--timeout", // repeat-terrain-startup.py
+        "--launch-prefix", // repeat-terrain-startup.py
+        "--commit", // repeat-terrain-startup.py
+        "--config", // capture_tonemap_tuning.py
+        "--validate-only", // capture_tonemap_tuning.py
+        "--clearmodifiers", // xdotool
+        "--delay",  // xdotool
+        "--console-open", // capture_skyrim_tonemap_state.py
+        "--event",  // inspect_skyrim_gpu_capture.py, sample_skyrim_tonemap_gpu.py
+        "--max-actions", // inspect_skyrim_gpu_capture.py
+        "--max-resource-mib", // inspect_skyrim_gpu_capture.py
+        "--max-resources", // inspect_skyrim_gpu_capture.py
+        "--max-total-mib", // inspect_skyrim_gpu_capture.py
+        "--previews", // inspect_skyrim_gpu_capture.py
+        "--tail",   // inspect_skyrim_gpu_capture.py
+        "--exe",    // inspect_skyrim_tonemap_memory.py
+        "--pid",    // inspect_skyrim_tonemap_memory.py
+        "--atol",   // replay_skyrim_tonemap.py
+        "--dot-mode", // replay_skyrim_tonemap.py
+        "--input",  // replay_skyrim_tonemap.py
+        "--mad-mode", // replay_skyrim_tonemap.py
+        "--rtol",   // replay_skyrim_tonemap.py
+        "--capture-sha256", // sample_skyrim_tonemap_gpu.py
+        "--output-id", // sample_skyrim_tonemap_gpu.py
+        "--pixel",  // sample_skyrim_tonemap_gpu.py
+        "--shader-id", // sample_skyrim_tonemap_gpu.py
+        "--source-shader", // sample_skyrim_tonemap_gpu.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1842,6 +2127,151 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    #[test]
+    fn parses_live_start_camera_and_opt_in_stdin_console() {
+        let config = run_config(&[
+            "--start-shot",
+            "camera.json",
+            "--stdin-console",
+            "--no-render-diagnostics",
+        ]);
+        assert_eq!(config.start_shot, Some(PathBuf::from("camera.json")));
+        assert!(config.stdin_console);
+        assert!(config.no_render_diagnostics);
+        assert!(config.interactive_world_physics());
+        assert!(!EngineConfig::default().stdin_console);
+        assert!(!EngineConfig::default().no_render_diagnostics);
+        assert!(
+            parse_error(&["--start-shot"])
+                .to_string()
+                .contains("--start-shot")
+        );
+    }
+
+    #[test]
+    fn parses_visual_preset_without_changing_diagnostic_grade() {
+        assert_eq!(
+            EngineConfig::default().visual_preset,
+            SceneVisualPreset::CoolGray
+        );
+        for (value, expected) in [
+            ("vivid", SceneVisualPreset::Vivid),
+            ("COOL-GRAY", SceneVisualPreset::CoolGray),
+        ] {
+            let config = run_config(&["--visual-preset", value, "--color-grade", "saturation"]);
+            assert_eq!(config.visual_preset, expected);
+            assert_eq!(config.color_grade, SceneGradeMode::Saturation);
+        }
+        for args in [
+            &["--visual-preset"][..],
+            &["--visual-preset", "invalid"][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--visual-preset"));
+        }
+    }
+
+    #[test]
+    fn parses_explicit_image_space_sources_and_rejects_ambiguous_selections() {
+        let direct = run_config(&[
+            "--color-grade",
+            "record-srgb",
+            "--image-space",
+            "0x12F88",
+            "--grade-preset",
+            "look.json",
+        ]);
+        assert_eq!(
+            direct.image_space_selection().unwrap(),
+            Some(ImageSpaceSelection::Direct(0x12F88))
+        );
+        assert_eq!(direct.grade_preset, Some(PathBuf::from("look.json")));
+        let weather = run_config(&["--image-space-weather", "2074", "--image-space-slot", "DAY"]);
+        assert_eq!(
+            weather.image_space_selection().unwrap(),
+            Some(ImageSpaceSelection::Weather {
+                form_id: 0x81A,
+                slot: ImageSpaceSlot::Day
+            })
+        );
+        for args in [
+            &["--color-grade", "record-srgb"][..],
+            &[
+                "--image-space",
+                "100",
+                "--image-space-weather",
+                "2074",
+                "--image-space-slot",
+                "day",
+            ][..],
+            &["--image-space-weather", "2074"][..],
+            &["--image-space-slot", "day"][..],
+        ] {
+            assert!(run_config(args).image_space_selection().is_err());
+        }
+        for args in [
+            &["--image-space", "0xZZ"][..],
+            &["--image-space-slot", "noon"][..],
+            &["--grade-preset"][..],
+        ] {
+            assert!(EngineConfig::from_args(args.iter().map(|v| (*v).into())).is_err());
+        }
+    }
+
+    #[test]
+    fn tone_map_selection_is_explicit_and_keeps_the_approved_default() {
+        let default = EngineConfig::default();
+        assert_eq!(default.tone_map, SceneToneMapMode::Tony);
+        assert!(default.tone_map_params.is_none());
+        assert_eq!(default.color_grade, SceneGradeMode::SnapshotSrgb);
+        let experiment = run_config(&[
+            "--tone-map",
+            "retail-curve",
+            "--tone-map-params",
+            "curve.json",
+            "--image-space",
+            "0x12F87",
+        ]);
+        assert_eq!(experiment.tone_map, SceneToneMapMode::RetailCurve);
+        assert_eq!(
+            experiment.tone_map_params,
+            Some(PathBuf::from("curve.json"))
+        );
+        assert!(experiment.image_space_selection().unwrap().is_some());
+        assert!(
+            run_config(&["--tone-map", "retail-curve"])
+                .image_space_selection()
+                .is_err()
+        );
+        assert!(EngineConfig::from_args(["--tone-map".into(), "native".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_color_grade_and_rejects_unknown_modes() {
+        for (value, wanted) in [
+            ("off", SceneGradeMode::Off),
+            ("saturation", SceneGradeMode::Saturation),
+            ("FULL", SceneGradeMode::Full),
+            ("SNAPSHOT-SRGB", SceneGradeMode::SnapshotSrgb),
+            ("snapshot-linear", SceneGradeMode::SnapshotLinear),
+        ] {
+            assert_eq!(run_config(&["--color-grade", value]).color_grade, wanted);
+        }
+        assert_eq!(
+            EngineConfig::default().color_grade,
+            SceneGradeMode::SnapshotSrgb
+        );
+        assert!(
+            parse_error(&["--color-grade", "bad"])
+                .to_string()
+                .contains(SCENE_GRADE_VALUES)
+        );
+        assert!(
+            parse_error(&["--color-grade"])
+                .to_string()
+                .contains("--color-grade")
+        );
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
@@ -2232,6 +2662,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_optional_sun_bearing_and_elevation() {
+        let config = run_config(&["--sun-position", "450,35"]);
+        assert_eq!(config.sun_position, Some((90.0, 35.0)));
+
+        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
+            assert!(
+                matches!(
+                    parse_error(&["--sun-position", value]),
+                    ConfigError::InvalidValue {
+                        option: "--sun-position",
+                        ..
+                    }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
     fn a_malformed_screenshot_camera_offset_is_refused() {
         assert_eq!(
             parse_error(&["--screenshot-camera-offset", "0,6000"]).to_string(),
@@ -2340,6 +2789,22 @@ mod tests {
                 .window_title()
                 .contains("matched-route")
         );
+    }
+
+    #[test]
+    fn shots_settle_timeout_is_finite_positive_and_bounded() {
+        assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
+        assert_eq!(
+            run_config(&["--shots-settle-timeout", "120"]).shots_settle_timeout,
+            120.0
+        );
+        for value in ["0", "-1", "NaN", "inf", "601"] {
+            assert!(
+                parse_error(&["--shots-settle-timeout", value])
+                    .to_string()
+                    .contains("--shots-settle-timeout")
+            );
+        }
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a
@@ -2977,7 +3442,7 @@ mod tests {
         } else {
             script
         };
-        for flag in option_tokens(scanned) {
+        for flag in script_cli_options(scanned) {
             // This database-only tool owns --verify. Keep it scoped to the tool:
             // an engine launcher passing --verify must still fail the audit.
             let observation_option = path.file_name().is_some_and(|name| {
@@ -3045,6 +3510,41 @@ mod tests {
         assert!(
             checked >= 20,
             "the script scan found {checked} engine flags; the scripts moved or changed shape"
+        );
+    }
+
+    fn script_cli_options(script: &str) -> Vec<&str> {
+        option_tokens(script)
+            .into_iter()
+            .filter(|flag| {
+                // HTML-producing utilities use CSS custom properties. Keep an
+                // identically named CLI argument visible to the parser check.
+                let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
+                let prefix = &script[..offset];
+                !(prefix.trim_end().ends_with("var(")
+                    || prefix.ends_with(".setProperty('")
+                    || prefix.ends_with(".setProperty(\""))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn script_scan_ignores_css_references_but_keeps_identically_named_cli_arguments() {
+        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); args=['--foreground','--assets','pack'];";
+        assert_eq!(script_cli_options(script), ["--foreground", "--assets"]);
+    }
+
+    #[test]
+    fn checked_script_audit_ignores_css_but_rejects_the_same_unknown_cli_option() {
+        let path = std::path::Path::new("capture_tonemap_tuning.py");
+        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
+        assert_eq!(checked_script_engine_flags(script, path), 2);
+
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("color:var(--foreground); engine --foreground", path)
+            })
+            .is_err()
         );
     }
 

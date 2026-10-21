@@ -1,0 +1,25 @@
+{
+  "name": "approved-sleeping-giant",
+  "source": "Rounded Photo Mode UI snapshot, 2026-10-13; user-approved sRGB brightness +20% and snowy Cool Gray sky/fog, 2026-10-14. This is an artistic override, not a Skyrim runtime extraction.",
+  "raw_snapshot": {
+    "saturation": 1.66,
+    "brightness": 1.15,
+    "contrast": 1.50,
+    "tint_amount": 0.56,
+    "tint_rgb": [0.88, 0.81, 0.72]
+  },
+  "grade": {
+    "saturation": 1.66,
+    "brightness": 1.38,
+    "contrast": 1.50,
+    "tint_amount": 0.56,
+    "tint_rgb": [0.88, 0.81, 0.72]
+  },
+  "sky": {
+    "upper_srgb_u8": [178, 187, 198],
+    "lower_srgb_u8": [194, 202, 209],
+    "horizon_srgb_u8": [207, 214, 220],
+    "fog_far_srgb_u8": [210, 222, 235],
+    "fog_density_scale": 0.25
+  }
+}

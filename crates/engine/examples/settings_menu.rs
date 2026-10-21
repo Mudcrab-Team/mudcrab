@@ -12,7 +12,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 use engine::{
-    color_pipeline::SceneColorPipeline,
+    color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
     config::EngineConfig,
     console::ConsolePlugin,
     lights::LightsPlugin,
@@ -45,6 +45,7 @@ fn main() {
         .insert_resource(EngineConfig::default())
         .insert_resource(RenderingSettings::default())
         .init_resource::<ProfilingState>()
+        .init_resource::<engine::color_pipeline::SceneGradeOverrides>()
         .insert_resource(PreviewCapture {
             directory,
             stage: 0,
@@ -56,6 +57,7 @@ fn main() {
             SkyPlugin,
             ConsolePlugin,
             LightsPlugin,
+            SkyrimCinematicPostPlugin,
             SettingsPlugin,
         ))
         .add_systems(PostStartup, setup)

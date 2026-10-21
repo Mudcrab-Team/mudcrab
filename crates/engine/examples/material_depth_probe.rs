@@ -15,7 +15,7 @@ use bevy::{
     window::{ExitCondition, WindowPlugin},
 };
 use engine::{
-    color_pipeline::SceneColorPipeline,
+    color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
     nif_depth::{DECAL, DEPTH_TEST, DEPTH_WRITE, DYNAMIC_DECAL, NifDepthMaterial},
     nif_material::NifMaterialPlugin,
     prepass_vertex_alpha::PrepassVertexAlphaPlugin,
@@ -226,6 +226,7 @@ fn main() {
             .disable::<bevy::audio::AudioPlugin>(),
     )
     .add_plugins((NifMaterialPlugin, PrepassVertexAlphaPlugin))
+    .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));

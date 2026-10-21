@@ -22,7 +22,7 @@ use bevy::{
     window::{ExitCondition, WindowPlugin},
 };
 use engine::{
-    color_pipeline::SceneColorPipeline,
+    color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
     nif_depth::{NifDepthMaterial, NifDepthState},
     nif_material::NifMaterialPlugin,
     prepass_vertex_alpha::PrepassVertexAlphaPlugin,
@@ -181,6 +181,7 @@ fn main() {
         PrepassVertexAlphaPlugin,
         MaterialPlugin::<IdMaterial>::default(),
     ))
+    .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));

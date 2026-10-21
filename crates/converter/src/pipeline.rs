@@ -1654,6 +1654,12 @@ fn reusable_manifest(
                         == crate::cache::legacy_projection_v2_configuration_hash(
                             &settings, producer,
                         )?;
+                    if crate::esm::inhouse::is_english(&settings.language) {
+                        matched |= recorded
+                            == crate::cache::legacy_projection_v3_configuration_hash(
+                                &settings, producer,
+                            )?;
+                    }
                 }
             }
             matched

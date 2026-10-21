@@ -373,11 +373,11 @@ pub fn insert_text(buffer: &mut String, text: &str) {
     buffer.extend(text.chars().filter(|c| !c.is_control()).take(room));
 }
 
-/// Run one entered line: echo it, find the command, show its output or error.
-pub fn execute_line(world: &mut World, line: &str) {
+/// Run one entered line: echo it, show its output or error, and return the complete result.
+pub fn execute_line(world: &mut World, line: &str) -> String {
     let line = line.trim();
     let Some((name, args)) = parse_line(line) else {
-        return;
+        return String::new();
     };
     push_output(world, &format!("> {line}"));
     let (handler, names) = {
@@ -397,6 +397,7 @@ pub fn execute_line(world: &mut World, line: &str) {
     if !output.is_empty() {
         push_output(world, &output);
     }
+    output
 }
 
 fn push_output(world: &mut World, text: &str) {
@@ -807,6 +808,45 @@ mod tests {
             nearest("tcx", NAMES).as_deref().map(|n| &n[..2]),
             Some("tc")
         );
+    }
+
+    #[test]
+    fn command_results_are_complete_independent_of_scrollback() {
+        let mut app = console_app();
+        let output = (0..SCROLLBACK_CAP + 25)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expected = output.clone();
+        app.add_console_command(ConsoleCommand {
+            name: "ManyLines",
+            short: None,
+            usage: "ManyLines",
+            help: "test complete output",
+            handler: Box::new(move |_, _| Ok(output.clone())),
+        });
+        assert_eq!(execute_line(app.world_mut(), "ManyLines"), expected);
+        assert_eq!(
+            app.world().resource::<ConsoleState>().scrollback.len(),
+            SCROLLBACK_CAP
+        );
+        assert_eq!(execute_line(app.world_mut(), "ClearConsole"), "");
+        assert!(app.world().resource::<ConsoleState>().scrollback.is_empty());
+        assert_eq!(execute_line(app.world_mut(), "  "), "");
+        let help = execute_line(app.world_mut(), "Help");
+        assert!(help.lines().count() >= 3);
+        app.add_console_command(ConsoleCommand {
+            name: "Failure",
+            short: None,
+            usage: "Failure",
+            help: "test errors",
+            handler: Box::new(|_, _| Err("first\nsecond".into())),
+        });
+        assert_eq!(
+            execute_line(app.world_mut(), "Failure"),
+            "error: first\nsecond"
+        );
+        assert!(execute_line(app.world_mut(), "Unknown").contains("unknown command"));
     }
 
     #[test]

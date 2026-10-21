@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "name": "AutoTest",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/42520",
+      "mod_id": 42520,
+      "observed_version": "1.2.0",
+      "status": "future-evaluation"
+    },
+    {
+      "name": "KreatE",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/83757",
+      "mod_id": 83757,
+      "observed_version": "1.5.2",
+      "status": "deployed-native-startup-verified",
+      "user_file_id": 591476,
+      "selected_file_id": 808240
+    },
+    {
+      "name": "Start On Save - Autoload Game",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/50054",
+      "mod_id": 50054,
+      "observed_version": "2.8.0",
+      "status": "deployed-native-startup-verified",
+      "selected_file_id": 795157
+    },
+    {
+      "name": "Where Are You - Lookup And Track Followers and other NPCs",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/76063",
+      "mod_id": 76063,
+      "observed_version": "2.0.2",
+      "status": "future-evaluation"
+    },
+    {
+      "name": "More Informative Console",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/19250",
+      "mod_id": 19250,
+      "observed_version": "1.2.3.1",
+      "status": "future-evaluation"
+    },
+    {
+      "name": "SkyrimModToolkit",
+      "url": "https://www.nexusmods.com/skyrimspecialedition/mods/189554",
+      "mod_id": 189554,
+      "observed_version": "0.1.0",
+      "status": "future-evaluation"
+    },
+    {
+      "name": "Lilac",
+      "url": "https://github.com/chesko256/Lilac",
+      "status": "future-evaluation"
+    },
+    {
+      "name": "Lonely Skyrim - Experience True Loneliness",
+      "url": "https://www.nexusmods.com/skyrim/mods/87586",
+      "domain": "skyrim",
+      "mod_id": 87586,
+      "status": "future-evaluation",
+      "notes": "Original Skyrim listing. SE compatibility unverified. Removes base-game NPCs and optionally creatures; excludes DLC and other-mod NPCs. Keep disabled pending compatibility checks."
+    }
+  ]
+}

@@ -793,16 +793,16 @@ impl MaterialExtension for WaterExtension {
 }
 
 /// The wave phase every water material carries this frame: `--water-time` when the run pins it,
-/// the fixture's fixed phase when that fixture is running, and the clock otherwise.
+/// the capture default for a fixture or shot run, and the clock otherwise.
 fn water_phase(config: Option<&crate::config::EngineConfig>, elapsed: f32) -> f32 {
     match config {
-        Some(config) => config
-            .water_time
-            .unwrap_or(if config.terrain_water_fixture {
+        Some(config) => config.water_time.unwrap_or(
+            if config.terrain_water_fixture || config.shots.is_some() {
                 1.0
             } else {
                 elapsed
-            }),
+            },
+        ),
         None => elapsed,
     }
 }

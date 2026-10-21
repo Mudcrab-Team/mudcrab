@@ -17,6 +17,7 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 - Water reflections and reflection multiplier; waves, flow normals, wave scale, speed and strength. The reflection multiplier layers over each water's converted Fresnel and reflectivity values.
 - CPU frustum culling, GPU indirect drawing, GPU occlusion culling and depth prepass. Enabling occlusion enables its depth-prepass and indirect-drawing dependencies; disabling either dependency disables occlusion.
 - MSAA, exposure, tone mapping, vertical FOV, VSync, window mode and windowed resolution. Walking sprint adds its existing FOV bonus to the chosen base FOV.
+- Color grading: Off, Saturation, Full (legacy), Approved sRGB, Snapshot linear and Record sRGB, with live saturation, brightness, contrast, pivot, tint amount and tint RGB. Defaults preserve the approved Sleeping Giant sRGB appearance and Cool Gray sky/fog. Stage-dependent rows dim while inactive. Reflections stay ungraded. Console commands synchronize the menu. See the integration contract below for domains, persistence, launch precedence and capture isolation.
 - Status HUD and diagnostic asset fallbacks for subsequent loads. Existing failed instances keep their current fallback state. Collision outlines remain a session-only toggle available in the Graphics tab and the console.
 
 The panel lists room culling as unavailable until #188 supplies an implementation. HDR scene composition stays enabled. Renderer backend and adapter information are displayed; backend/device capabilities require renderer initialization. Authored material colors, texture tiling, and per-water factors remain asset data.
@@ -49,12 +50,83 @@ The Controls tab lists menu/cursor keys, console entry and completion, mouse loo
 
 ## Native preview
 
-`cargo run --profile quick -p engine --example settings_menu` opens the actual menu over an asset-free scene using the real sky, fog, water, and renderer systems. It does not load or save personal preferences.
+`python3 scripts/workspace.py cargo run --profile quick -p engine --example settings_menu` opens the actual menu over an asset-free scene using the real sky, fog, water, and renderer systems. It does not load or save personal preferences.
 
 For a bounded capture of all three tabs:
 
 ```sh
-MUDCRAB_UI_PREVIEW_DIR=/tmp/mudcrab-ui cargo run --profile quick -p engine --example settings_menu
+MUDCRAB_UI_PREVIEW_DIR=/tmp/mudcrab-ui python3 scripts/workspace.py cargo run --profile quick -p engine --example settings_menu
 ```
 
 The preview saves `graphics.png`, `streaming.png`, and `controls.png`, then exits after the final screenshot completes. This verifies the native UI/render path; it is not a gameplay or performance acceptance run.
+
+## Approved grading integration
+
+PR #262 incorporates the complete #257 head (including review fix 5db0b05), and
+also requires the settings foundation in #229. Keep #257 as the grading/capture
+owner; merge both foundations before integrating the menu. No grading code needs
+to be copied back into #257.
+
+| Mode | Saturation | Brightness, contrast and tint |
+| --- | --- | --- |
+| Off | Identity | Disabled |
+| Saturation only | Bevy linear post-tonemap | Disabled |
+| Full (legacy) | Bevy linear post-tonemap | sRGB post pass |
+| Approved sRGB | sRGB post pass | sRGB post pass |
+| Snapshot linear | Linear post pass | Linear post pass |
+| Record sRGB | Loaded IMGS CNAM/TNAM in sRGB post pass | sRGB post pass |
+
+Fresh interactive preferences and Reset defaults select Approved sRGB and Cool
+Gray: saturation 1.66, brightness 1.38, contrast 1.50, tint amount 0.56 toward RGB
+(0.88, 0.81, 0.72), pivot 0.18. Cool Gray retains #257's quarter-density blue-white
+fog. The menu's sky/fog preset does not discard custom grading values.
+
+All six modes, preset, tuning and pivot persist in the existing validated JSON.
+The override mask records only fields explicitly changed by the user. Unedited
+rows display the resolved source values, including authored values outside the
+menu's edit range; loading those values does not turn them into overrides.
+Console SceneGrade and ScenePreset select the canonical mode/preset grade and
+synchronize the menu and tuning. Rejected commands leave source and settings
+unchanged. Reset clears the override mask and restores the approved sRGB / Cool
+Gray defaults.
+
+Startup precedence is field-specific. Valid INI values and explicit CLI options
+overlay saved preferences for their corresponding fields. `--color-grade`
+owns the active mode and clears saved numeric overrides for that launch, so the
+selected source supplies canonical values. `--visual-preset` owns only the
+preset and keeps saved mode and tuning. Explicit `--grade-preset`, `--tone-map`
+and `--tone-map-params` sources protect the active mode and numeric overrides
+from stale saved values. An image-space selector pins authored source data but
+does not select Record sRGB by itself. A previously saved Record sRGB mode uses
+that source only when selection is explicit; without a selection it reports
+unavailability and uses the approved default. The grade source and tuning
+resolve before the first visible camera frame.
+
+Save preserves the stored grade mode and override values for fields owned by
+launch sources, while saving unrelated menu changes. It does not write the
+current CLI/source-derived grade into preferences. Legacy Vivid is available
+with `--visual-preset vivid --color-grade full`.
+
+The Bevy tone-map menu selection flows through the shared resolver. Explicit
+`--tone-map retail-curve` owns camera tonemapping (`None`) and keeps its loaded
+HNAM White and curve parameters across unrelated menu edits; the Bevy tone-map
+choice remains available on the Tony path. Exposure still applies to scene and
+reflection cameras, while reflections remain ungraded.
+
+Interactive tuning exists only in interactive world runs (and the asset-free
+preview). Hidden-window, shots, acceptance, benchmark and fixture runs do not load
+preferences or create tuning. They retain #257's mode/preset resolution and receipt
+contracts, including the original 1.15 brightness for snapshot-linear. The
+cinematic shader, capture script, comparison fixtures and review corrections are
+unchanged from #257. Reflections remain HDR and ungraded; tuning affects scene
+views only.
+
+Default sun and ambient colors now derive from WeatherLighting instead of the
+settings foundation's earlier white/blue approximations. The fog-density slider
+scales atmospheric extinction and inscattering while retaining the preset,
+including its quarter-density Cool Gray baseline.
+
+At commit `52266688`, 1,054 engine-library CPU tests passed with 1 ignored,
+strict engine/shared Clippy passed for all targets and features with `-D warnings`,
+and workspace formatting passed. Native UI, GPU behavior, visual parity, gameplay
+and performance were not exercised. CI on the published head remains a merge gate.

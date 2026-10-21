@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+comparison_root=/home/taylor/Games/MudcrabComparison
+export XDG_CONFIG_HOME="$comparison_root/config"
+exec amethyst-mod-manager "$@"

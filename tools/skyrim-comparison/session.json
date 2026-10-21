@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "name": "mudcrab-comparison",
+  "target_host": "fiji-desktop",
+  "status": "running-headless-startup-verified",
+  "manager": {
+    "name": "Amethyst Mod Manager",
+    "upstream": "https://github.com/ChrisDKN/Amethyst-Mod-Manager",
+    "config_isolation": "dedicated XDG_CONFIG_HOME",
+    "profile": "mudcrab-comparison",
+    "profile_specific_mods": true,
+    "profile_ini_files": true,
+    "profile_saves": true
+  },
+  "runtime": {
+    "steam_app_id": 489830,
+    "game_directory": "/home/taylor/Games/MudcrabComparison/SkyrimSE",
+    "game_exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "game_version": "1.7.104.0",
+    "proton_version": "GE-Proton11-5",
+    "compatdata_directory": "/home/taylor/Games/MudcrabComparison/compatdata",
+    "skse_version": "2.3.1"
+  },
+  "mods": [
+    {
+      "name": "SKSE64",
+      "domain": "skyrimspecialedition",
+      "mod_id": 30379,
+      "enabled": true,
+      "observed_version": "2.3.1",
+      "file_id": 795992,
+      "archive_sha256": "7bad616ed360823a027f8828801d91e3a4aa2eacd952023af7f3e31adb2ae250"
+    },
+    {
+      "name": "Photo Mode",
+      "domain": "skyrimspecialedition",
+      "mod_id": 91701,
+      "observed_version": "3.0.4",
+      "enabled": true,
+      "file_id": 803668,
+      "archive_sha256": "8eadc70601ca4ecbc0c2244ee0b2ae1a32d22d12342281fec5cd503ca022c302"
+    },
+    {
+      "name": "Address Library for SKSE Plugins",
+      "domain": "skyrimspecialedition",
+      "mod_id": 32444,
+      "observed_version": "13",
+      "enabled": true,
+      "file_id": 795954,
+      "archive_sha256": "be0c7c07fb63fd1c1403690d4797c7a8fdf8799118acceb605f285d7b0ee055f"
+    },
+    {
+      "name": "MCM Helper",
+      "domain": "skyrimspecialedition",
+      "mod_id": 53000,
+      "observed_version": "1.6.3",
+      "enabled": true,
+      "file_id": 795510,
+      "archive_sha256": "505af9c27062febd497be09b661d5df82e013ae4a205ffbec99698adf4503f52"
+    },
+    {
+      "name": "powerofthree's Tweaks",
+      "domain": "skyrimspecialedition",
+      "mod_id": 51073,
+      "observed_version": "1.17.1",
+      "enabled": true,
+      "file_id": 794717,
+      "archive_sha256": "5aeadd195dce06e3d72d7684373bab9116f8eadf3833af5cdf45c0d2ad4f9268"
+    },
+    {
+      "name": "ImGui Icons",
+      "domain": "skyrimspecialedition",
+      "mod_id": 114790,
+      "observed_version": "1.2.0",
+      "enabled": true,
+      "file_id": 690123,
+      "archive_sha256": "af1ebf8be8fa0d2c44bece5bc8c2c5e56a28f875f96ca80befb203a39cf41086"
+    },
+    {
+      "name": "FreeCamera Framework",
+      "domain": "skyrimspecialedition",
+      "mod_id": 174046,
+      "observed_version": "1.1.0",
+      "enabled": false,
+      "file_id": 800894,
+      "archive_sha256": "4f7d7ab3da424fded61a81de8a8e51e280e5effac6c02e07a112e340b5a542ca"
+    },
+    {
+      "name": "SkyUI",
+      "domain": "skyrimspecialedition",
+      "mod_id": 12604,
+      "enabled": true,
+      "file_id": 749043,
+      "archive_sha256": "4eb0c9fc5241e5c3dd2fd773ee8a89627c924bf4445cf70373d3a4c7c4393ff1",
+      "observed_version": "6.11"
+    },
+    {
+      "name": "Start On Save - Autoload Game",
+      "domain": "skyrimspecialedition",
+      "mod_id": 50054,
+      "enabled": true,
+      "observed_version": "2.8.0",
+      "file_id": 795157,
+      "archive_sha256": "22a25909f8206f8bd0964231f9a501e7730105ee65145f1e03147025cf3f4cc3"
+    },
+    {
+      "name": "KreatE",
+      "domain": "skyrimspecialedition",
+      "mod_id": 83757,
+      "enabled": true,
+      "observed_version": "1.5.2",
+      "file_id": 808240,
+      "archive_sha256": "b34ab2eaec80607487516ac7d73872a7548de75202dd8805a9a6e90b4a9964a5"
+    }
+  ],
+  "capture": {
+    "shots": "crates/engine/tests/fixtures/color-grade-riverwood-shots.json",
+    "camera": "Photo Mode JSON presets",
+    "width": 1920,
+    "height": 1080,
+    "weather_form_id": null,
+    "game_hour": null,
+    "freeze_time": true,
+    "hud_visible": false,
+    "image_filters_enabled": false,
+    "overlook": {
+      "input": "tools/skyrim-comparison/riverwood-overlook-input.json",
+      "native_readback": "tools/skyrim-comparison/riverwood-overlook-readback.json",
+      "native_position": [
+        26000,
+        -50000,
+        6000
+      ],
+      "yaw_degrees": 330,
+      "pitch_degrees": 35,
+      "native_world_fov_degrees": 75,
+      "native_pose_verified": true,
+      "projection_matched_to_mudcrab": false,
+      "freeze_command": "tfc 1",
+      "artifact_directory": "/home/taylor/Games/MudcrabComparison/artifacts/riverwood-overlook-20261012",
+      "screenshot_sha256": "65dca779236bd4c5231caa1eb125fd6bb9dc920f82fb90cbdc94368ae0ad848f"
+    }
+  },
+  "required_lock_fields": [
+    "game_exe_sha256",
+    "game_version",
+    "proton_version",
+    "skse_version",
+    "file_id",
+    "archive_sha256"
+  ],
+  "artifacts": [
+    "native camera template",
+    "projection calibration",
+    "mod and plugin load order",
+    "Skyrim INIs",
+    "camera input and readback",
+    "screenshot PNG and SHA256",
+    "capture receipt"
+  ],
+  "installer_selections": [
+    {
+      "mod_id": 91701,
+      "staging": "Photo Mode",
+      "fomod_options": [
+        "SSE/AE v1.7.99+ (\"Anniversary/Special Edition\")"
+      ]
+    },
+    {
+      "mod_id": 51073,
+      "staging": "powerofthree's Tweaks",
+      "fomod_options": [
+        "SSE/AE v1.7.99+ (\"Anniversary/Special Edition\")"
+      ]
+    },
+    {
+      "mod_id": 53000,
+      "staging": "MCM Helper",
+      "fomod_options": [
+        "Skyrim Special Edition",
+        "ESL",
+        "Loose"
+      ]
+    },
+    {
+      "mod_id": 32444,
+      "staging": "Address Library"
+    },
+    {
+      "mod_id": 114790,
+      "staging": "ImGui Icons"
+    },
+    {
+      "mod_id": 12604,
+      "staging": "SkyUI"
+    },
+    {
+      "mod_id": 174046,
+      "staging": "FreeCamera Framework",
+      "enabled": false
+    },
+    {
+      "mod_id": 50054,
+      "staging": "Start On Save",
+      "fomod_options": [
+        "SSE/AE v1.7.99+ (\"Anniversary/Special Edition\")"
+      ]
+    },
+    {
+      "mod_id": 83757,
+      "staging": "KreatE",
+      "version": "1.5.2",
+      "baseline": "No preset edits or optional DALC fix enabled"
+    }
+  ],
+  "session_root": "/home/taylor/Games/MudcrabComparison",
+  "save": {
+    "source_path": "/home/taylor/Games/MudcrabComparison/extracted/downloaded-save/stormcloack/Save4_B7F8F1CA_0_4D722E20436C65616E_Tamriel_000015_20161031203641_1_1.ess",
+    "character": "Mr. Clean",
+    "level": 1,
+    "location": "Skyrim",
+    "header_version": 12,
+    "form_version": 77,
+    "plugins": [
+      "Skyrim.esm",
+      "Update.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "Dawnguard.esm"
+    ],
+    "light_plugins": [],
+    "missing_from_comparison": [],
+    "native_load_verified": true,
+    "save_filename": "Save4_B7F8F1CA_0_4D722E20436C65616E_Tamriel_000015_20161031203641_1_1.ess",
+    "save_sha256": "4682a11ee2624b8c7dc3f3b22825e833c1311ee6636d541c9c99041a13871dd8",
+    "archive_path": "/home/taylor/Downloads/Stormcloack Save-1966-.7z",
+    "archive_sha256": "348a570dd5687bbb9506d5d5565447aefeb4e7e149ecfe3209f1aeafeb3c6ac6",
+    "autoload_enabled": true
+  },
+  "verification": {
+    "deployment_complete": true,
+    "native_plugin_startup": true,
+    "autoload_target_verified_in_game": true,
+    "matched_retail_screenshots": false,
+    "desktop_display_available": true,
+    "unattended_fresh_start_verified": true
+  },
+  "visual_editor": {
+    "name": "KreatE",
+    "hotkey": "END",
+    "baseline_preset_edits": false,
+    "optional_dalc_fix_configured": false
+  },
+  "automation": {
+    "runner": "scripts/run_skyrim_comparison.py",
+    "backend": "Gamescope headless",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "fresh_start_receipt": "/home/taylor/Games/MudcrabComparison/artifacts/automatic-fresh-start-20261012/receipt.json",
+    "user_login_required": false,
+    "startup_notices": [
+      "acknowledge achievements notice",
+      "decline survival mode"
+    ],
+    "matched_camera_verified": false,
+    "capture_backend": "Gamescope base plane",
+    "photo_mode_hotkey": "F10",
+    "photo_mode_keyboard_navigation": true,
+    "dxvk_frame_rate_cap": 60
+  }
+}

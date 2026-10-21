@@ -29,8 +29,9 @@ use std::{
 pub const ADAPTER_VERSION: u32 = 12;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
+/// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 3;
+pub const LEGACY_PROJECTION_VERSION: u32 = 4;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
@@ -105,6 +106,18 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_links",
     "reference_rooms",
     "room_graph_stats",
+    "cell_environment",
+    "cell_regions",
+    "cell_lighting",
+    "worldspace_environment",
+    "lighting_templates",
+    "weathers",
+    "weather_colors",
+    "weather_directional_ambient",
+    "climates",
+    "climate_weathers",
+    "region_weathers",
+    "image_spaces",
     "door_links",
     "emittance",
 ];
@@ -154,14 +167,19 @@ pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
 }
 
 /// As [`reader_identity`], for names read from `language`'s string tables. English tables are
-/// Windows-1252 like plugin text, so an English identity is the one English-only adapters
-/// stamped; another language's tables are UTF-8 ([`decode_table_text`]), which its identity
-/// records. The legacy reader does not read string tables, so its identity has no language.
+/// Windows-1252 like plugin text; other tables are UTF-8 with Windows-1252 fallback.
 pub fn reader_identity_in_language(reader: RecordReader, language: &str) -> serde_json::Value {
     match reader {
-        RecordReader::Legacy => serde_json::json!({
-            "mode": "legacy", "projection_version": LEGACY_PROJECTION_VERSION,
-        }),
+        RecordReader::Legacy => {
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": LEGACY_PROJECTION_VERSION,
+                "language": language, "text_encoding": "windows-1252",
+            });
+            if !is_english(language) {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            identity
+        }
         RecordReader::Inhouse => {
             let mut identity = serde_json::json!({
                 "mode": "inhouse", "adapter_version": ADAPTER_VERSION,
@@ -1469,7 +1487,7 @@ fn localized_bank(
 }
 
 /// A zero localized key stays null even when an invalid table gives it a value.
-fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
+pub(crate) fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
     if id == 0 {
         None
     } else {
@@ -1501,7 +1519,7 @@ fn runtime_text(text: &str, source: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Encode a resolved or normalized runtime string as UTF-8 followed by one NUL.
-fn runtime_string(text: &str) -> Vec<u8> {
+pub(crate) fn runtime_string(text: &str) -> Vec<u8> {
     let mut bytes = text.as_bytes().to_vec();
     bytes.push(0);
     bytes
@@ -1563,7 +1581,7 @@ pub(crate) fn resolve_localized_bank(
 }
 
 /// Read the resolved bank, or an empty table when no bank exists for this plugin.
-fn read_plugin_strings(
+pub(super) fn read_plugin_strings(
     plugin: &Path,
     string_sources: StringSources<'_>,
     bank: &str,

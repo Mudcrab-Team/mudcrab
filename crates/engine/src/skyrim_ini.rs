@@ -12,6 +12,7 @@
 //! | Section | Key | Engine setting |
 //! |---|---|---|
 //! | `[General]` | `uGridsToLoad` | full-detail grid: `stream_radius = (uGridsToLoad - 1) / 2` |
+//! | `[Display]` | `fShadowDistance` | upper bound for sun shadow cascades, in Creation units |
 //! | `[TerrainManager]` | `fBlockLevel0Distance` | level-4 terrain LOD distance, before the multiplier |
 //! | `[TerrainManager]` | `fBlockLevel1Distance` | level-8 terrain LOD distance, before the multiplier |
 //! | `[TerrainManager]` | `fBlockMaximumDistance` | level-16 terrain LOD distance, before the multiplier |
@@ -19,6 +20,10 @@
 
 use crate::config::{EngineConfig, MAX_STREAM_RADIUS};
 use std::{collections::HashMap, path::Path};
+
+/// The first cascade reaches 10 metres (700 Creation units); a smaller maximum would make the
+/// cascade builder's bounds invalid.
+const MIN_SUN_SHADOW_DISTANCE: f32 = 700.0;
 
 /// Values from one or more INI files, keyed by lower-cased section and key.
 #[derive(Debug, Default)]
@@ -85,6 +90,16 @@ impl SkyrimIni {
                 ),
             }
         }
+        if let Some(raw) = self.get("Display", "fShadowDistance") {
+            match raw.parse::<f32>() {
+                Ok(value) if value.is_finite() && value >= MIN_SUN_SHADOW_DISTANCE => {
+                    config.sun_shadow_distance_limit = Some(value);
+                }
+                _ => eprintln!(
+                    "warning: ignoring fShadowDistance={raw:?}; expected at least {MIN_SUN_SHADOW_DISTANCE} Creation units"
+                ),
+            }
+        }
         let lod = &mut config.terrain_lod;
         for (key, setting) in [
             ("fBlockLevel0Distance", &mut lod.block_level0_distance),
@@ -136,11 +151,12 @@ mod tests {
     #[test]
     fn reads_skyrim_prefs_keys_case_insensitively_with_a_bom() {
         let config = apply(
-            "\u{feff}[General]\nuGridsToLoad=7\n; comment\n[TERRAINMANAGER]\n\
+            "\u{feff}[General]\nuGridsToLoad=7\n; comment\n[DISPLAY]\nfShadowDistance=8000.0000\n[TERRAINMANAGER]\n\
              fblocklevel0distance=40000.0000\nfBlockLevel1Distance = 80000.0000\n\
              fBlockMaximumDistance=300000.0000\nfSplitDistanceMult=2.0000\n",
         );
         assert_eq!((config.stream_radius, config.unload_radius), (3, 4));
+        assert_eq!(config.sun_shadow_distance_limit, Some(8_000.0));
         let lod = config.terrain_lod;
         assert_eq!(
             (
@@ -185,6 +201,14 @@ mod tests {
             let config = apply(text);
             assert_eq!(config.stream_radius, defaults.stream_radius, "{text}");
             assert_eq!(config.terrain_lod, defaults.terrain_lod, "{text}");
+        }
+    }
+
+    #[test]
+    fn malformed_or_unusable_shadow_distances_leave_the_limit_unset() {
+        for value in ["0", "699", "NaN", "inf", "far"] {
+            let config = apply(&format!("[Display]\nfShadowDistance={value}\n"));
+            assert_eq!(config.sun_shadow_distance_limit, None, "{value}");
         }
     }
 }

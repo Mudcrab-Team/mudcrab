@@ -23,7 +23,7 @@ use crate::{
 use bevy::{
     prelude::*,
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
-    window::{PrimaryWindow, WindowResolution},
+    window::WindowResolution,
 };
 use serde::Deserialize;
 use std::{
@@ -132,8 +132,8 @@ impl ShotsFile {
         Ok(())
     }
 
-    /// The window size the file asks for, in physical pixels: the scale factor is pinned to 1, so
-    /// the window - and so the PNG - is exactly this many pixels whatever the display is set to.
+    /// Initial window size matching the requested image target. Display scaling may alter the
+    /// window, while the dedicated capture target retains the exact requested dimensions.
     pub fn window_resolution(&self) -> WindowResolution {
         WindowResolution::new(self.width, self.height).with_scale_factor_override(1.0)
     }
@@ -539,11 +539,26 @@ pub struct ShotsPlugin {
     pub run: ShotsRun,
 }
 
+/// Exact-size render target shared by the world camera and screenshot requests.
+#[derive(Resource)]
+pub(crate) struct ShotOutputImage(pub Handle<Image>);
+
 impl Plugin for ShotsPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<Assets<Image>>();
+        let image = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_target_texture(
+                self.run.file.width,
+                self.run.file.height,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
         // In `Update`, so the pose is in the camera's `Transform` before `PostUpdate` reads it
         // (the sky dome follows the camera there, and transforms propagate).
         app.insert_resource(self.run.clone())
+            .insert_resource(ShotOutputImage(image))
             .add_systems(Update, run_shots);
     }
 }
@@ -555,6 +570,7 @@ pub struct ShotsRun {
     pub output_dir: PathBuf,
     /// The worldspace the run streams; shots in another one are skipped.
     pub worldspace_id: u32,
+    pub(crate) settle_timeout_seconds: f32,
     pub(crate) route_checkpoints: Option<BTreeSet<usize>>,
     transition_capture: bool,
     shot: usize,
@@ -572,8 +588,7 @@ pub struct ShotsRun {
     /// screenshot is still on its way back from the renderer.
     capture: Option<Result<(), String>>,
     directory_made: bool,
-    window_checked: bool,
-    /// The window's size when the last screenshot was asked for, when a window was found.
+    /// The render target's size when the last screenshot was requested.
     window_size: Option<(u32, u32)>,
     /// This run has created `shots.log`: the first line truncates what an earlier run left there.
     log_started: bool,
@@ -605,6 +620,7 @@ impl ShotsRun {
             file,
             output_dir,
             worldspace_id,
+            settle_timeout_seconds: SETTLE_TIMEOUT_SECONDS,
             route_checkpoints: None,
             transition_capture: false,
             shot: 0,
@@ -616,7 +632,6 @@ impl ShotsRun {
             timed_out: false,
             capture: None,
             directory_made: false,
-            window_checked: false,
             window_size: None,
             log_started: false,
             log_failed: false,
@@ -743,11 +758,11 @@ fn run_shots(
     mut commands: Commands,
     time: Res<Time>,
     mut run: ResMut<ShotsRun>,
+    output: Res<ShotOutputImage>,
     origin: Res<RenderOrigin>,
     mut camera: Query<(&mut Transform, &mut Projection), With<StreamingCamera>>,
     streaming: Res<StreamingMetrics>,
     renderer: Res<RendererMetrics>,
-    windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
     profiler: Res<crate::profiling::ProfilingState>,
     uploads: Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
@@ -809,10 +824,6 @@ fn run_shots(
                     return;
                 }
             }
-            if !run.window_checked {
-                run.window_checked = true;
-                warn_window_size(run, &windows);
-            }
             place_camera(
                 shot,
                 run.file.aspect(),
@@ -825,7 +836,7 @@ fn run_shots(
             if let Some(checkpoints) = &run.route_checkpoints {
                 if checkpoints.contains(&run.shot) {
                     run.transition_capture = true;
-                    request_capture(&mut commands, run, main_frame.0);
+                    request_capture(&mut commands, run, main_frame.0, &output.0);
                 } else {
                     run.enter(Phase::Traverse);
                 }
@@ -889,7 +900,7 @@ fn run_shots(
             // frame's).
             run.counts = advance_settle(counts);
             let settled = shots_settled(&run.counts);
-            if settled || run.timer >= SETTLE_TIMEOUT_SECONDS {
+            if settled || run.timer >= run.settle_timeout_seconds {
                 run.timed_out = !settled;
                 if !settled {
                     // The shot is taken with what is resident, but a shot the run gave up on must
@@ -898,13 +909,14 @@ fn run_shots(
                     run.failed = true;
                     warn!(
                         target: "shots",
-                        "shot \"{}\" did not settle within {SETTLE_TIMEOUT_SECONDS:.0} s ({}); \
+                        "shot \"{}\" did not settle within {:.0} s ({}); \
                          shooting anyway and failing the run",
                         shot.name,
+                        run.settle_timeout_seconds,
                         run.counts.describe()
                     );
                 }
-                run.window_size = window_physical_size(&windows);
+                run.window_size = Some((run.file.width, run.file.height));
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
                     // The old image would be taken for this shot's, so the shot fails instead.
@@ -914,7 +926,7 @@ fn run_shots(
                     return;
                 }
                 run.transition_capture = false;
-                request_capture(&mut commands, run, main_frame.0);
+                request_capture(&mut commands, run, main_frame.0, &output.0);
             }
         }
         Phase::Capture => {
@@ -957,9 +969,14 @@ fn run_shots(
     }
 }
 
-/// A serialized runner has one primary-window request in flight. Keep the ticket on that
+/// A serialized runner has one image-target request in flight. Keep the ticket on that
 /// entity until its readback arrives; callback arrival time is deliberately not its frame ID.
-fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u32) {
+fn request_capture(
+    commands: &mut Commands,
+    run: &mut ShotsRun,
+    request_frame: u32,
+    output: &Handle<Image>,
+) {
     let shot = &run.file.shots[run.shot];
     let path = run.shot_path(shot);
     if let Err(reason) = discard_previous_shot(&path) {
@@ -978,7 +995,7 @@ fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u
     let counts = run.counts;
     run.capture = None;
     commands
-        .spawn((Screenshot::primary_window(), ticket))
+        .spawn((Screenshot::image(output.clone()), ticket))
         .observe(move |trigger: On<ScreenshotCaptured>, mut run: ResMut<ShotsRun>| {
             if run.shot != index
                 || run.transition_capture != transition
@@ -1004,6 +1021,7 @@ fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u
                     if !transition && !run.timed_out && !receipt.work.is_quiet() {
                         return Err("captured settled frame has pending or unavailable work".into());
                     }
+                    let grading = receipt.grading.as_ref().ok_or("captured frame has no grading source receipt")?;
                     write_shot(trigger.image.clone(), &path)?;
                     let line = serde_json::json!({
                         "capture": index,
@@ -1016,7 +1034,13 @@ fn request_capture(commands: &mut Commands, run: &mut ShotsRun, request_frame: u
                         "settle_counts": counts,
                         "timed_out": run.timed_out,
                         "image": path,
-                        "dimensions": dimensions
+                        "dimensions": dimensions,
+                        "color_grade": grading.color_grade,
+                        "visual_preset": grading.visual_preset,
+                        "preset_saturation": grading.preset_saturation,
+                        "grading_source": grading.source,
+                        "resolved_grade": grading.resolved_grade,
+                        "water_time_seconds": if run.route_checkpoints.is_none() { Some(1.0) } else { None }
                     });
                     run.note(line.to_string());
                     if run.log_failed {
@@ -1119,33 +1143,6 @@ fn place_camera(
         perspective.fov = vertical_fov_degrees(shot.hfov, aspect).to_radians();
         perspective.aspect_ratio = aspect;
     }
-}
-
-/// The primary window's size in physical pixels, when there is a window: the size of every
-/// screenshot taken of it, which is what the file's frame is supposed to be.
-fn window_physical_size(windows: &Query<&Window, With<PrimaryWindow>>) -> Option<(u32, u32)> {
-    let window = windows.single().ok()?;
-    Some((
-        window.resolution.physical_width(),
-        window.resolution.physical_height(),
-    ))
-}
-
-/// Says once whether the window is the size the file's images are supposed to be.
-fn warn_window_size(run: &ShotsRun, windows: &Query<&Window, With<PrimaryWindow>>) {
-    let Some((width, height)) = window_physical_size(windows) else {
-        return;
-    };
-    if (width, height) == (run.file.width, run.file.height) {
-        return;
-    }
-    warn!(
-        target: "shots",
-        "the window is {width}x{height}, not the {}x{} the file asks for: the image will not match \
-         the reference's frame",
-        run.file.width,
-        run.file.height
-    );
 }
 
 /// Removes a PNG an earlier run left at this shot's path, so that the file appearing is proof that
@@ -1772,7 +1769,7 @@ mod tests {
         let mut world = bevy::ecs::world::World::new();
         {
             let mut commands = world.commands();
-            request_capture(&mut commands, &mut run, 7);
+            request_capture(&mut commands, &mut run, 7, &Handle::<Image>::default());
         }
         world.flush();
         let mut query = world.query::<&crate::capture_frame::CaptureTicket>();

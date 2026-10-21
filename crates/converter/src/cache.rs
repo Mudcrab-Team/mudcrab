@@ -545,6 +545,18 @@ pub(crate) fn legacy_projection_v1_configuration_hash(
     )
 }
 
+/// Reproduce the exact version-3 legacy projection proof for retained assets.
+pub(crate) fn legacy_projection_v3_configuration_hash(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    configuration_hash_with_identity(
+        config,
+        schema,
+        Some(&serde_json::json!({"mode": "legacy", "projection_version": 3})),
+    )
+}
+
 /// Reproduce the exact version-2 legacy projection proof for retained assets.
 pub(crate) fn legacy_projection_v2_configuration_hash(
     config: &crate::config::PipelineConfig,
@@ -958,6 +970,15 @@ pub(crate) fn retained_configuration_matches_for_reader(
         && identity == &serde_json::json!({"mode": "legacy", "projection_version": 2})
     {
         return Ok(recorded == legacy_projection_v2_configuration_hash(config, schema)?);
+    }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy", "projection_version": 3})
+    {
+        // Projection v3 resolved only English banks. Preserve old proofs under that contract.
+        if !crate::esm::inhouse::is_english(&config.language) {
+            return Ok(false);
+        }
+        return Ok(recorded == legacy_projection_v3_configuration_hash(config, schema)?);
     }
     let current = crate::esm::inhouse::configured_reader_identity(config)?;
     if identity == &current {
