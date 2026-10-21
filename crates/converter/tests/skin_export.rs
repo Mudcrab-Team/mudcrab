@@ -76,18 +76,6 @@ fn write_skeleton_fixture(directory: &Path, spec: &LegacySkin<'_>) -> PathBuf {
     path
 }
 
-/// A skeleton whose two `Bone0` leaves differ only by transform, so a test can
-/// tell which duplicate the bone tree kept.
-fn write_skeleton_with_duplicate_joint(directory: &Path) -> PathBuf {
-    let path = write_node_skeleton(directory, "Root", &["Bone0", "Bone0", "Bone1"]);
-    let mut bytes = fs::read(&path).unwrap();
-    let header = parse_header(&bytes).expect("fixture header must parse");
-    let first_duplicate = header.block_start(4);
-    bytes[first_duplicate + 24..first_duplicate + 28].copy_from_slice(&5.0f32.to_le_bytes());
-    fs::write(&path, bytes).unwrap();
-    path
-}
-
 fn skeleton_shape(name: &str) -> StaticShape<'_> {
     StaticShape {
         name,
@@ -154,13 +142,6 @@ fn write_node_skeleton(directory: &Path, root: &str, nodes: &[&str]) -> PathBuf 
 
 fn gltf_nodes(glb: &Glb) -> &[Value] {
     glb.json["nodes"].as_array().unwrap()
-}
-
-fn gltf_node_named<'a>(glb: &'a Glb, name: &str) -> &'a Value {
-    gltf_nodes(glb)
-        .iter()
-        .find(|node| node["name"] == name)
-        .unwrap_or_else(|| panic!("GLB has no node named {name}"))
 }
 
 fn convert(nif_path: &Path, skeleton_path: &Path, glb_path: &Path) -> color_eyre::Result<()> {
@@ -552,7 +533,7 @@ fn legacy_skeleton_duplicate_leaf_names_keep_the_first_and_skip_non_nodes() {
 }
 
 #[test]
-fn legacy_skeleton_duplicate_joint_keeps_the_first_node() {
+fn legacy_skeleton_duplicate_bound_joint_is_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = spec(
         SkinInstanceKind::Dismember,
@@ -562,17 +543,17 @@ fn legacy_skeleton_duplicate_joint_keeps_the_first_node() {
         None,
     );
     let nif_path = write_fixture(directory.path(), &fixture);
-    let skeleton_path = write_skeleton_with_duplicate_joint(directory.path());
+    let skeleton_path = write_node_skeleton(directory.path(), "Root", &["Bone0", "Bone0", "Bone1"]);
     let glb_path = directory.path().join("skin.glb");
-    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
-
-    let glb = read_glb(&glb_path);
-    assert_skinned_primitives(&glb);
-    let joint = gltf_node_named(&glb, "Bone0:0");
-    assert_eq!(
-        joint["translation"],
-        serde_json::json!([0.0, 0.0, 5.0]),
-        "the kept joint must carry the first duplicate's transform"
+    let error = convert(&nif_path, &skeleton_path, &glb_path).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("\"Bone0\"") && message.contains("more than one skeleton node"),
+        "error does not name the ambiguous joint: {message}"
+    );
+    assert!(
+        !glb_path.exists(),
+        "a GLB was published for an ambiguous skin"
     );
 }
 

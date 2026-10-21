@@ -295,6 +295,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                 let skel_nodes = skeleton.get_nodes();
 
                 // Loop through nodes and add them to the bone tree
+                let mut duplicate_names = BTreeSet::new();
                 for skel_node in skel_nodes {
                     // Get node name
                     let node_name = skeleton
@@ -350,16 +351,30 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     };
 
                     // Add bone to bone tree. Retail skeletons repeat a few helper
-                    // leaves, and no skin binds a duplicated name, so the first
-                    // occurrence wins and the later copy is dropped whole (its
-                    // children are duplicates too).
+                    // leaves no skin binds, so the first occurrence wins and the
+                    // later copy is dropped whole (its children are duplicates
+                    // too). A skin that does bind such a name is rejected below.
                     if mesh.bones.has_bone(node_name) {
                         warn!(
                             "skeleton node {node_name:?} appears more than once; keeping the first occurrence"
                         );
+                        duplicate_names.insert(node_name.to_string());
                         continue;
                     }
                     mesh.bones.add_bone(node_name, bone_data)?;
+                }
+
+                // Either copy could be the bone the skin was authored against,
+                // and merging them would invent a joint the file does not hold.
+                let bound_duplicates = legacy_skin_joints(nif)
+                    .into_iter()
+                    .map(|(_, name)| name)
+                    .filter(|name| duplicate_names.contains(name))
+                    .collect::<BTreeSet<_>>();
+                if !bound_duplicates.is_empty() {
+                    return Err(format!(
+                        "skin joints {bound_duplicates:?} name more than one skeleton node, so the bone they bind is ambiguous"
+                    ));
                 }
 
                 bind_mesh_local_legacy_joints(nif, &mut mesh.bones);
