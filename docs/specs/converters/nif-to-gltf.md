@@ -18,7 +18,7 @@ This document details the technical specification for converting Bethesda NetImm
 | :----------------------------------------------- | :---------------------- | :-------------------------------------------------------------------------------- |
 | **`NiHeader`**                                   | `asset` metadata        | Copy generator & version tags                                                     |
 | **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`)    |
-| **`BSTriShape` / `BSDynamicTriShape`**           | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers               |
+| **`BSTriShape` / `BSDynamicTriShape` / `NiTriShape`** | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers; `NiTriShape` is static geometry only (§7.2) |
 | **`BSLightingShaderProperty`**                   | `materials`             | Map Bethesda shader flags to glTF PBR Metallic Roughness properties               |
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
 | **`NiSkinInstance` / `BSDismemberSkinInstance`** | `skins`                 | Map bone indices (`JOINTS_0`) and vertex weights (`WEIGHTS_0`); see §7             |
@@ -251,11 +251,17 @@ and world data, so no cached GLB keeps the older collision extras.
   partition channel by channel, not all-or-nothing.
 - **Partition layouts:** both the SSE layout (inline vertex buffer plus per-partition records) and
   the legacy Bethesda layout. Multi-partition blocks are merged into one bone palette, and a
-  partition whose palette differs is remapped into the merged one. When partitions repeat shared
-  vertices, the concatenated vertex map ties each weight row back to its shape vertex.
-- Per-vertex bone indices are palette-local; they are remapped through `bone_palette` to indices in
-  the skin instance's bone list. Only influences with a non-zero weight are validated, and weights
-  are normalised to sum to 1.
+  partition whose palette differs is remapped into the merged one. The concatenated vertex map
+  ties each weight row to its shape vertex, including when the row count equals the vertex count
+  (the map can be a permutation) and when partitions repeat shared vertices. Rows are read in
+  shape-vertex order only when the partition has no map.
+- Bone indices in a shared vertex buffer (the shape's, or the partition's SSE copy) address the
+  skin instance's bone list directly. Only the per-partition `bone_indices` rows are palette-local
+  and are remapped through `bone_palette`. Only influences with a non-zero weight are validated,
+  and weights are normalised to sum to 1.
+- Inverse binds come from each `NiSkinData` bone transform as translation · rotation · scale.
+- A skeleton that repeats a node name keeps the first occurrence; a skin that binds a repeated
+  name is rejected, because either copy could be the bone it was authored against.
 - Each skinned shape becomes one `SkeletalMesh` that records its source block, so material and
   vertex-colour contracts associate by block instead of by shape-type enumeration order.
 
