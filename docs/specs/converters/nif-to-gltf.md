@@ -23,6 +23,15 @@ This document details the technical specification for converting Bethesda NetImm
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
 | **`NiSkinInstance` / `BSDismemberSkinInstance`** | `skins`                 | Map bone indices (`JOINTS_0`) and vertex weights (`WEIGHTS_0`)                    |
 
+`BSMultiBoundNode`, `BSOrderedNode`, `NiBillboardNode` and `BSValueNode` are `NiNode`s with a few
+trailing fields, and convert like `NiNode`: their transform and children join the scene, and the
+extra fields are read but not exported. A billboard keeps its authored orientation instead of
+turning to face the camera. Before these node types were parsed, shapes under them lost every
+parent transform and sat at the scene root (#288): a forge's glow, flames and quench water
+floated about 170 units away from the forge.
+There is no converter schema bump: conversions made before this change keep their cached GLBs
+until they are reconverted.
+
 ---
 
 ## 3. Detailed Data Extraction Steps
