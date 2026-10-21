@@ -279,6 +279,13 @@ substitute and does not emit an empty scene. The diagnostic names the NIF path a
 indices, lists every skin instance that no exported shape claimed together with the block type that
 references it, and reports all unresolved joint names at once rather than the first one.
 
-Classes that still fail, each owned by its own issue: a skeleton that only a RACE record identifies
-(for example Alduin), FX meshes skinned to their own controller bones, duplicate bone names in a
-resolved skeleton, and meshes whose resolved skeleton lacks a joint they reference.
+Classes that still fail:
+
+- a rig that some skeleton covers at 50% or more, while no skeleton covers it fully and no path
+  candidate covers it at 50%: the resolver does not guess between partial matches;
+- a skin that binds a name its resolved skeleton repeats (§7.1).
+
+Not failures, but approximations with their own follow-ups: a rig no skeleton covers at 50% converts
+self-contained from its own hierarchy (FX meshes skinned to their own controller bones are the
+retail case), and a skeleton only a RACE record identifies (for example Alduin) is chosen by joint
+coverage instead, which can pick a near-identical rig.
