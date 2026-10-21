@@ -1435,7 +1435,11 @@ fn setup_terrain_water_fixture(
                 },
                 extension: WaterExtension::with_reflection(reflection.0.clone(), Some(flow_normal))
                     .with_reflection_color(DEFAULT_WATER_REFLECTION_COLOR)
-                    .with_body(DEFAULT_WATER_SHALLOW_COLOR, DEFAULT_WATER_OPACITY),
+                    .with_body(
+                        DEFAULT_WATER_SHALLOW_COLOR,
+                        DEFAULT_WATER_OPACITY,
+                        Default::default(),
+                    ),
             }),
         ),
         Transform::from_xyz(CELL_SIZE_HALF, 12.0, -CELL_SIZE_HALF),
