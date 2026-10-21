@@ -2130,23 +2130,19 @@ pub enum SkeletonResolution {
     Unresolved { best_coverage: f32 },
 }
 
-impl SkeletonResolution {
-    /// Maps a winning skeleton back to its logical source key. Repair verifies
-    /// provenance by key: two archives can share one physical blob, so the
-    /// key, not the path, identifies the winner.
-    fn into_logical(self, index: &SkeletonIndex) -> Self {
-        match self {
-            SkeletonResolution::Skeleton(source) => {
-                let key = index
-                    .entries
-                    .iter()
-                    .find(|entry| entry.source == source)
-                    .map_or(source.clone(), |entry| PathBuf::from(&entry.key));
-                SkeletonResolution::Skeleton(key)
-            }
-            other => other,
-        }
-    }
+/// How a resolver names the skeleton it chose.
+type SkeletonName = fn(&SkeletonEntry) -> PathBuf;
+
+/// The readable file, for resolving meshes on disk.
+fn skeleton_source(entry: &SkeletonEntry) -> PathBuf {
+    entry.source.clone()
+}
+
+/// The logical source key. Repair verifies provenance by key, and two archives
+/// can share one physical blob, so only the chosen entry's own key identifies
+/// the winner; mapping its path back to a key could name the other archive.
+fn skeleton_key(entry: &SkeletonEntry) -> PathBuf {
+    PathBuf::from(&entry.key)
 }
 
 struct SkeletonEntry {
@@ -2437,12 +2433,16 @@ fn first_covering_candidate<'a>(
 
 /// A mesh with no joints to rank by keeps the old candidate lookup: the first
 /// path candidate that exists wins, and without one it has no skeleton.
-fn resolve_without_joints(candidates: &[PathBuf], index: &SkeletonIndex) -> SkeletonResolution {
+fn resolve_without_joints(
+    candidates: &[PathBuf],
+    index: &SkeletonIndex,
+    name: SkeletonName,
+) -> SkeletonResolution {
     candidates
         .iter()
         .find_map(|candidate| index.get(&normalize_path_key(candidate)))
         .map_or(SkeletonResolution::SelfContained, |entry| {
-            SkeletonResolution::Skeleton(entry.source.clone())
+            SkeletonResolution::Skeleton(name(entry))
         })
 }
 
@@ -2455,9 +2455,10 @@ fn resolve_against(
     candidates: &[PathBuf],
     index: &SkeletonIndex,
     joints: &BTreeSet<String>,
+    name: SkeletonName,
 ) -> SkeletonResolution {
     if let Some(entry) = first_covering_candidate(candidates, index, joints) {
-        return SkeletonResolution::Skeleton(entry.source.clone());
+        return SkeletonResolution::Skeleton(name(entry));
     }
 
     let mut full: Vec<&SkeletonEntry> = index
@@ -2510,7 +2511,7 @@ fn resolve_against(
                 );
             }
         }
-        return SkeletonResolution::Skeleton(chosen.source.clone());
+        return SkeletonResolution::Skeleton(name(chosen));
     }
 
     let mut best_path: Option<(&SkeletonEntry, f32)> = None;
@@ -2529,7 +2530,7 @@ fn resolve_against(
     if let Some((entry, candidate_coverage)) = best_path
         && candidate_coverage >= MIN_SKELETON_COVERAGE
     {
-        return SkeletonResolution::Skeleton(entry.source.clone());
+        return SkeletonResolution::Skeleton(name(entry));
     }
 
     let best_coverage = index
@@ -2579,9 +2580,9 @@ pub(crate) fn resolve_skeleton_with_index(
         };
     let candidates = skeleton_candidates(&key_path);
     if !has_skeleton || joints.is_empty() {
-        return resolve_without_joints(&candidates, index).into_logical(index);
+        return resolve_without_joints(&candidates, index, skeleton_key);
     }
-    resolve_against(&key, mesh_source, &candidates, index, &joints).into_logical(index)
+    resolve_against(&key, mesh_source, &candidates, index, &joints, skeleton_key)
 }
 
 fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
@@ -2623,13 +2624,20 @@ pub fn find_skeleton(nif_path: &Path) -> SkeletonResolution {
     let mut index =
         SkeletonIndex::from_paths(candidates.iter().filter(|path| path.is_file()).cloned());
     if !nif.has_skeleton() || joints.is_empty() {
-        return resolve_without_joints(&candidates, &index);
+        return resolve_without_joints(&candidates, &index, skeleton_source);
     }
     if let Some(entry) = first_covering_candidate(&candidates, &index, &joints) {
         return SkeletonResolution::Skeleton(entry.source.clone());
     }
     index.add_actor_tree(nif_path);
-    resolve_against(&key, Some(nif_path), &candidates, &index, &joints)
+    resolve_against(
+        &key,
+        Some(nif_path),
+        &candidates,
+        &index,
+        &joints,
+        skeleton_source,
+    )
 }
 
 fn actor_root(path: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -2877,6 +2885,23 @@ mod tests {
         assert_eq!(
             resolve_skeleton(relative, &sources),
             SkeletonResolution::SelfContained
+        );
+    }
+
+    #[test]
+    fn shared_blob_skeleton_resolves_to_the_chosen_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob = dir.path().join("shared-blob");
+        let relative = Path::new("meshes/actors/character/armor/body.nif");
+        // Sorts first, so a path-to-key lookup would find this entry before
+        // the candidate that was actually chosen.
+        let other = PathBuf::from("meshes/actors/aaa/skeleton.nif");
+        let chosen = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
+        let sources =
+            std::collections::BTreeMap::from([(other, blob.clone()), (chosen.clone(), blob)]);
+        assert_eq!(
+            resolve_skeleton(relative, &sources),
+            SkeletonResolution::Skeleton(chosen)
         );
     }
 
