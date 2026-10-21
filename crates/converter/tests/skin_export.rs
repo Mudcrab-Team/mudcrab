@@ -1214,6 +1214,10 @@ fn retail_actor_sample_skin_rate() {
     for (kind, count) in &error_kinds {
         println!("ERROR_KIND kind={kind} count={count}");
     }
+    assert_eq!(
+        errored, 0,
+        "{errored} sampled skinned NIFs failed conversion; see the FAIL lines above"
+    );
 }
 
 /// The vendor exporter panics with the missing joint name; the converter
