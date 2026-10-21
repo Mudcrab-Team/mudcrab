@@ -353,6 +353,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::mesh_residency_audit::MeshResidencyAuditPlugin,
             SkyPlugin,
             SkyrimCinematicPostPlugin,
+            crate::height_fog::HeightFogPlugin,
             ConsolePlugin,
             crate::bug_report::BugReportPlugin,
             crate::nif_material::NifMaterialPlugin,
