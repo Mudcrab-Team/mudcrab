@@ -54,6 +54,9 @@ pub struct RenderingSettings {
     pub sky_brightness_scale: f32,
     pub fog: bool,
     pub fog_density_scale: f32,
+    pub height_fog: bool,
+    pub height_fog_density_scale: f32,
+    pub height_fog_height: f32,
     pub water_reflections: bool,
     pub water_reflection_strength: f32,
     pub water_waves: bool,
@@ -123,6 +126,9 @@ impl Default for RenderingSettings {
             sky_brightness_scale: 1.0,
             fog: true,
             fog_density_scale: 1.0,
+            height_fog: false,
+            height_fog_density_scale: 1.0,
+            height_fog_height: crate::height_fog::DEFAULT_HEIGHT,
             water_reflections: true,
             water_reflection_strength: 1.0,
             water_waves: true,
@@ -292,6 +298,11 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     toggle!("Sky and fog", "Exterior distance fog", fog),
     number!(Graphics, "Sky and fog", "Fog-density multiplier", fog_density_scale; 0.0, 4.0, 0.1)
         .when(|s| s.fog),
+    toggle!("Sky and fog", "Exponential height fog", height_fog).when(|s| s.fog),
+    number!(Graphics, "Sky and fog", "Height-fog density multiplier", height_fog_density_scale; 0.0, 20.0, 0.25)
+        .when(|s| s.fog && s.height_fog),
+    number!(Graphics, "Sky and fog", "Height-fog base height", height_fog_height; -20000.0, 40000.0, 250.0)
+        .when(|s| s.fog && s.height_fog),
     toggle!("Water", "Water reflections", water_reflections),
     number!(Graphics, "Water", "Water reflection multiplier", water_reflection_strength; 0.0, 1.0, 0.1)
         .when(|s| s.water_reflections),
