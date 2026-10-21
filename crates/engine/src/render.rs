@@ -1,7 +1,10 @@
 use crate::{
     color_pipeline::{DEFAULT_SCENE_EV100, SceneColorPipeline},
     profiling::ProfilingState,
-    world::{cache::TerrainSnapshot, database::AssetCatalog},
+    world::{
+        cache::TerrainSnapshot,
+        database::{AssetCatalog, WaterFog},
+    },
 };
 use bevy::{
     app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
@@ -42,6 +45,10 @@ pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 /// distance; a stronger tilt striped lakes with bright and dark bands.
 pub(crate) const WAVE_STRENGTH: f32 = 0.05;
 
+/// A phase below zero makes the shader run the waves on the frame clock instead of a phase the CPU
+/// uploaded, so an interactive run does not rewrite every water material every frame.
+pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
+
 /// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a Reflectivity Amount of 0.8
 /// (WATR `DNAM`). Used when a water has no decoded colours yet, e.g. a database converted before
 /// `crates/converter` started reading them.
@@ -57,26 +64,23 @@ pub const DEFAULT_WATER_DEEP_COLOR: [u8; 3] = [0x05, 0x0E, 0x12];
 pub const DEFAULT_WATER_SHALLOW_COLOR: [u8; 3] = [0x26, 0x27, 0x18];
 /// DefaultWater's opacity (WATR ANAM, 0-100).
 pub const DEFAULT_WATER_OPACITY: u8 = 50;
-/// DefaultWater's above-water fog (WATR DNAM): the distance through water, in world units, at
-/// which the view into the water starts to cloud and at which it is opaque, and the exponent of
-/// the curve between them (0 keeps the water clear). Every water uses these until the converter
-/// exports its own.
-pub(crate) const DEFAULT_WATER_FOG_NEAR: f32 = -10.0;
-pub(crate) const DEFAULT_WATER_FOG_FAR: f32 = 150.0;
-pub(crate) const DEFAULT_WATER_FOG_AMOUNT: f32 = 0.7;
-
 fn linear_rgb(rgb: [u8; 3]) -> Vec4 {
     let linear = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
     Vec4::new(linear.red, linear.green, linear.blue, 0.0)
 }
 
-fn default_water_body() -> Vec4 {
+/// x = opacity 0..1, y/z = above-water fog near and far in world units, w = fog amount.
+fn water_body(opacity: u8, fog: WaterFog) -> Vec4 {
     Vec4::new(
-        f32::from(DEFAULT_WATER_OPACITY) / 100.0,
-        DEFAULT_WATER_FOG_NEAR,
-        DEFAULT_WATER_FOG_FAR,
-        DEFAULT_WATER_FOG_AMOUNT,
+        f32::from(opacity.min(100)) / 100.0,
+        fog.near,
+        fog.far,
+        fog.amount,
     )
+}
+
+fn default_water_body() -> Vec4 {
+    water_body(DEFAULT_WATER_OPACITY, WaterFog::default())
 }
 
 /// One rendering layer per role, so no view list is a bare literal.
@@ -155,16 +159,14 @@ impl Plugin for VercidiumRendererPlugin {
             MaterialPlugin::<TerrainMaterial>::default(),
             MaterialPlugin::<WaterMaterial>::default(),
             crate::prepass_vertex_alpha::PrepassVertexAlphaPlugin,
+            crate::water_depth::WaterDepthPlugin,
         ))
         .init_resource::<RendererMetrics>()
         .add_systems(Startup, setup_water_reflection)
+        .add_systems(PostUpdate, animate_water_materials)
         .add_systems(
             Update,
-            (
-                animate_water_materials,
-                update_water_reflection_camera,
-                sync_renderer_metrics,
-            )
+            (update_water_reflection_camera, sync_renderer_metrics)
                 .after(crate::settings_ui::SettingsUiSet),
         );
 
@@ -690,9 +692,11 @@ pub struct WaterExtension {
     #[texture(103)]
     #[sampler(104)]
     flow_normal: Option<Handle<Image>>,
+    #[texture(105, filterable = false)]
+    bed_depth: Option<Handle<Image>>,
 }
 
-#[derive(ShaderType, Reflect, Debug, Clone)]
+#[derive(ShaderType, Reflect, Debug, Clone, PartialEq)]
 struct WaterSettings {
     wave_scale_speed_strength: Vec4,
     flow_direction: Vec4,
@@ -707,13 +711,21 @@ struct WaterSettings {
     /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y, z = above-water fog
     /// near and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
     body: Vec4,
+    /// x = 1 when `bed_depth` holds the opaque bed's depth snapshot, 0 when the depth is unknown and
+    /// the body falls back to its ANAM opacity. yzw unused.
+    depth_params: Vec4,
 }
 
 impl Default for WaterExtension {
     fn default() -> Self {
         Self {
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, 0.0),
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
@@ -724,9 +736,11 @@ impl Default for WaterExtension {
                 reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
                 shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
                 body: default_water_body(),
+                depth_params: Vec4::ZERO,
             },
             reflection: None,
             flow_normal: None,
+            bed_depth: None,
         }
     }
 }
@@ -761,15 +775,33 @@ impl WaterExtension {
             reflection: Some(reflection),
             flow_normal,
             settings: WaterSettings {
-                wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
+                wave_scale_speed_strength: Vec4::new(
+                    0.006,
+                    0.15,
+                    WAVE_STRENGTH,
+                    ANIMATED_WAVE_PHASE,
+                ),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
                 // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
                 reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
                 shallow_color: linear_rgb(DEFAULT_WATER_SHALLOW_COLOR),
                 body: default_water_body(),
+                depth_params: Vec4::ZERO,
             },
+            bed_depth: None,
         }
+    }
+
+    /// The depth snapshot this material reads the bed from, when it has one.
+    pub(crate) fn bed_depth(&self) -> Option<&Handle<Image>> {
+        self.bed_depth.as_ref()
+    }
+
+    /// Points the material at a new bed-depth snapshot, or at the constant fallback when `None`.
+    pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
+        self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
+        self.bed_depth = handle;
     }
 
     /// Sets the water's own Reflection Color (WATR DNAM, as stored bytes).
@@ -778,10 +810,10 @@ impl WaterExtension {
         self
     }
 
-    /// Sets the water's Shallow Color (stored sRGB bytes) and opacity (0-100).
-    pub fn with_body(mut self, shallow: [u8; 3], opacity: u8) -> Self {
+    /// Sets the water's Shallow Color (stored sRGB bytes), opacity (0-100) and above-water fog.
+    pub fn with_body(mut self, shallow: [u8; 3], opacity: u8, fog: WaterFog) -> Self {
         self.settings.shallow_color = linear_rgb(shallow);
-        self.settings.body.x = f32::from(opacity.min(100)) / 100.0;
+        self.settings.body = water_body(opacity, fog);
         self
     }
 }
@@ -792,53 +824,70 @@ impl MaterialExtension for WaterExtension {
     }
 }
 
-/// The wave phase every water material carries this frame: `--water-time` when the run pins it,
-/// a fixed phase for the terrain fixture and for screenshot runs (so a shot is reproducible),
-/// and the clock otherwise.
-fn water_phase(config: Option<&crate::config::EngineConfig>, elapsed: f32) -> f32 {
-    match config {
-        Some(config) => config.water_time.unwrap_or(
-            if config.terrain_water_fixture || config.shots.is_some() {
-                1.0
-            } else {
-                elapsed
-            },
-        ),
-        None => elapsed,
-    }
+/// The wave phase a capture pins, in seconds: `--water-time` when the run sets it, and the capture
+/// default for a terrain/water fixture or a shot run. `None` leaves an interactive run's waves on
+/// the shader clock.
+fn water_phase(config: Option<&crate::config::EngineConfig>) -> Option<f32> {
+    config.and_then(|config| {
+        config
+            .water_time
+            .or_else(|| (config.terrain_water_fixture || config.shots.is_some()).then_some(1.0))
+    })
 }
 
+/// The settings a water material should carry: the resolved phase and the live rendering settings,
+/// with every other field left as the material set it.
+fn wanted_water_settings(
+    current: &WaterExtension,
+    phase: f32,
+    settings: Option<&crate::settings::RenderingSettings>,
+) -> WaterSettings {
+    let mut wanted = current.settings.clone();
+    wanted.wave_scale_speed_strength.w = phase;
+    if let Some(settings) = settings {
+        wanted.wave_scale_speed_strength.x = settings.wave_scale;
+        wanted.wave_scale_speed_strength.y = settings.wave_speed;
+        wanted.wave_scale_speed_strength.z = if settings.water_waves {
+            settings.wave_strength
+        } else {
+            0.0
+        };
+        wanted.flow_direction.w = if settings.water_flow_normals && current.flow_normal.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        wanted.fresnel_reflectivity.z = if settings.water_reflections {
+            settings.water_reflection_strength
+        } else {
+            0.0
+        };
+    }
+    wanted
+}
+
+/// Writes the phase and the live water settings into each water material, touching a material only
+/// when a value actually changes: the asset is re-extracted and re-uploaded on every write, and an
+/// interactive frame keeps the phase at the sentinel the shader runs on its own clock.
 fn animate_water_materials(
-    time: Res<Time>,
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
-    let elapsed = water_phase(config.as_deref(), time.elapsed_secs());
-    for (_, material) in materials.iter_mut() {
-        material.extension.settings.wave_scale_speed_strength.w = elapsed;
-        if let Some(settings) = settings.as_deref() {
-            let water = &mut material.extension;
-            water.settings.wave_scale_speed_strength.x = settings.wave_scale;
-            water.settings.wave_scale_speed_strength.y = settings.wave_speed;
-            water.settings.wave_scale_speed_strength.z = if settings.water_waves {
-                settings.wave_strength
-            } else {
-                0.0
-            };
-            water.settings.flow_direction.w =
-                if settings.water_flow_normals && water.flow_normal.is_some() {
-                    1.0
-                } else {
-                    0.0
-                };
-            water.settings.fresnel_reflectivity.z = if settings.water_reflections {
-                settings.water_reflection_strength
-            } else {
-                0.0
-            };
+    let phase = water_phase(config.as_deref()).unwrap_or(ANIMATED_WAVE_PHASE);
+    let ids: Vec<_> = materials.ids().collect();
+    for id in ids {
+        let Some(current) = materials.get(id) else {
+            continue;
+        };
+        let wanted = wanted_water_settings(&current.extension, phase, settings.as_deref());
+        if wanted == current.extension.settings {
+            continue;
+        }
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.settings = wanted;
         }
     }
     profiler.record_elapsed("render/water_animation", started);
@@ -1980,78 +2029,145 @@ mod tests {
         }
     }
 
-    #[test]
-    fn animated_water_advances_the_shader_phase() {
+    fn water_app(config: Option<crate::config::EngineConfig>) -> App {
         let mut app = App::new();
-        app.init_resource::<Time>()
-            .init_resource::<Assets<WaterMaterial>>()
+        app.init_resource::<Assets<WaterMaterial>>()
             .init_resource::<ProfilingState>()
-            .add_systems(Update, animate_water_materials);
-        let handle = app
-            .world_mut()
+            .add_systems(PostUpdate, animate_water_materials);
+        if let Some(config) = config {
+            app.insert_resource(config);
+        }
+        app
+    }
+
+    fn add_water(app: &mut App) -> Handle<WaterMaterial> {
+        app.world_mut()
             .resource_mut::<Assets<WaterMaterial>>()
             .add(WaterMaterial {
                 base: StandardMaterial::default(),
                 extension: WaterExtension::default(),
-            });
-        app.world_mut()
-            .resource_mut::<Time>()
-            .advance_by(std::time::Duration::from_secs(2));
+            })
+    }
+
+    fn water_phase_of(app: &App, handle: &Handle<WaterMaterial>) -> f32 {
+        app.world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(handle)
+            .expect("water material")
+            .extension
+            .settings
+            .wave_scale_speed_strength
+            .w
+    }
+
+    #[test]
+    fn an_interactive_run_leaves_the_waves_on_the_shader_clock() {
+        let mut app = water_app(None);
+        let handle = add_water(&mut app);
         app.update();
-        let material = app
+        assert_eq!(water_phase_of(&app, &handle), ANIMATED_WAVE_PHASE);
+
+        let current = app
             .world()
             .resource::<Assets<WaterMaterial>>()
             .get(&handle)
-            .unwrap();
-        assert_eq!(material.extension.settings.wave_scale_speed_strength.w, 2.0);
+            .unwrap()
+            .extension
+            .clone();
+        assert_eq!(
+            wanted_water_settings(&current, ANIMATED_WAVE_PHASE, None),
+            current.settings,
+            "a steady interactive frame must not rewrite the material"
+        );
+    }
+
+    #[test]
+    fn a_capture_pins_every_water_material_including_late_ones() {
+        let mut app = water_app(Some(crate::config::EngineConfig {
+            shots: Some(std::path::PathBuf::from("shots.toml")),
+            ..default()
+        }));
+        let first = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &first), 1.0);
+
+        let late = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &late), 1.0);
+    }
+
+    #[test]
+    fn an_explicit_water_time_outranks_the_capture_default() {
+        let mut app = water_app(Some(crate::config::EngineConfig {
+            terrain_water_fixture: true,
+            water_time: Some(0.0),
+            ..default()
+        }));
+        let handle = add_water(&mut app);
+        app.update();
+        assert_eq!(water_phase_of(&app, &handle), 0.0);
     }
 
     #[test]
     fn water_phase_pins_only_when_asked() {
         use crate::config::EngineConfig;
-        assert_eq!(water_phase(None, 12.5), 12.5);
+        assert_eq!(water_phase(None), None);
+        assert_eq!(water_phase(Some(&EngineConfig::default())), None);
+
         let fixture = EngineConfig {
             terrain_water_fixture: true,
             ..default()
         };
-        assert_eq!(water_phase(Some(&fixture), 12.5), 1.0);
+        assert_eq!(water_phase(Some(&fixture)), Some(1.0));
+
+        let shot = EngineConfig {
+            shots: Some(std::path::PathBuf::from("shots.toml")),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&shot)), Some(1.0));
+
         let pinned = EngineConfig {
             water_time: Some(3.25),
             ..default()
         };
-        assert_eq!(water_phase(Some(&pinned), 12.5), 3.25);
-        // An explicit capture time outranks the fixture's own phase.
+        assert_eq!(water_phase(Some(&pinned)), Some(3.25));
+
+        let pinned_zero = EngineConfig {
+            water_time: Some(0.0),
+            ..default()
+        };
+        assert_eq!(water_phase(Some(&pinned_zero)), Some(0.0));
+
+        // An explicit capture time outranks the capture default.
         let pinned_fixture = EngineConfig {
             terrain_water_fixture: true,
             water_time: Some(3.25),
             ..default()
         };
-        assert_eq!(water_phase(Some(&pinned_fixture), 12.5), 3.25);
-        // Screenshot runs freeze the phase too: a shot has to be reproducible.
-        let shots = EngineConfig {
-            shots: Some("poses.json".into()),
-            ..default()
-        };
-        assert_eq!(water_phase(Some(&shots), 12.5), 1.0);
-        // An explicit capture time still outranks the frozen phase.
+        assert_eq!(water_phase(Some(&pinned_fixture)), Some(3.25));
+        // An explicit capture time outranks the shot default just as it outranks the fixture.
         let pinned_shots = EngineConfig {
             shots: Some("poses.json".into()),
             water_time: Some(3.25),
             ..default()
         };
-        assert_eq!(water_phase(Some(&pinned_shots), 12.5), 3.25);
+        assert_eq!(water_phase(Some(&pinned_shots)), Some(3.25));
     }
 
     #[test]
     fn with_body_sets_the_shallow_colour_and_clamps_opacity() {
-        let water = WaterExtension::default().with_body(DEFAULT_WATER_SHALLOW_COLOR, 50);
+        let water = WaterExtension::default().with_body(
+            DEFAULT_WATER_SHALLOW_COLOR,
+            50,
+            WaterFog::default(),
+        );
         assert_eq!(water.settings.body.x, 0.5);
         assert_eq!(
             water.settings.body.yzw(),
             Vec3::new(
-                DEFAULT_WATER_FOG_NEAR,
-                DEFAULT_WATER_FOG_FAR,
-                DEFAULT_WATER_FOG_AMOUNT
+                WaterFog::default().near,
+                WaterFog::default().far,
+                WaterFog::default().amount
             )
         );
         assert_eq!(
@@ -2059,8 +2175,23 @@ mod tests {
             linear_rgb(DEFAULT_WATER_SHALLOW_COLOR)
         );
         // A WATR ANAM above 100 must not push the body past fully opaque.
-        let clamped = WaterExtension::default().with_body(DEFAULT_WATER_SHALLOW_COLOR, 250);
+        let clamped = WaterExtension::default().with_body(
+            DEFAULT_WATER_SHALLOW_COLOR,
+            250,
+            WaterFog::default(),
+        );
         assert_eq!(clamped.settings.body.x, 1.0);
+    }
+
+    #[test]
+    fn with_body_takes_the_records_fog_including_a_clear_body() {
+        let puddle = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        let water = WaterExtension::default().with_body([1, 2, 3], 25, puddle);
+        assert_eq!(water.settings.body, Vec4::new(0.25, 0.0, 10.0, 0.0));
     }
 
     #[test]

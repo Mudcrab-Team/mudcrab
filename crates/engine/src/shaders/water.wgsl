@@ -4,10 +4,7 @@
     forward_io::{VertexOutput, FragmentOutput},
     view_transformations::{depth_ndc_to_view_z, position_world_to_view},
 }
-#import bevy_pbr::mesh_view_bindings::view
-#ifdef DEPTH_PREPASS
-#import bevy_pbr::prepass_utils::prepass_depth
-#endif
+#import bevy_pbr::mesh_view_bindings::{globals, view}
 
 struct WaterSettings {
     wave_scale_speed_strength: vec4<f32>,
@@ -24,6 +21,9 @@ struct WaterSettings {
     // x = opacity 0..1 (WATR ANAM), used where the depth is unknown; y, z = above-water fog near
     // and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
     body: vec4<f32>,
+    // x = 1 when bed_depth holds the bed's depth snapshot, 0 when the depth is unknown and the
+    // body falls back to its ANAM opacity.
+    depth_params: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -32,6 +32,9 @@ struct WaterSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var water_reflection_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var water_flow_normal: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var water_flow_normal_sampler: sampler;
+// The opaque bed's reverse-Z NDC depth, one sample per pixel, written by the engine before the
+// transparent pass. See `water_depth.rs`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var bed_depth: texture_2d<f32>;
 
 // Clamp on the distance the view travels through water; anything longer is treated as bottomless.
 const MAX_WATER_PATH: f32 = 16384.0;
@@ -47,13 +50,16 @@ const REFLECTION_DISTORTION: f32 = 24.0;
 const MAX_REFLECTION_OFFSET: f32 = 0.04;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
-// lies behind this fragment; negative when that is unknown because there is no depth prepass.
-// The ratio below is a perspective identity - surface and bed share a ray from the camera - so
-// this and the vertical depth in the fragment assume a perspective view. The engine's world and
-// reflection cameras are always perspective; an orthographic view would need parallel rays.
-fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>, sample_index: u32) -> f32 {
-#ifdef DEPTH_PREPASS
-    let ndc = prepass_depth(frag_coord, sample_index);
+// lies behind this fragment; negative when that is unknown because this view has no bed-depth
+// snapshot. The ratio below is a perspective identity - surface and bed share a ray from the
+// camera - so this and the vertical depth in the fragment assume a perspective view. The engine's
+// world and reflection cameras are always perspective; an orthographic view would need parallel
+// rays.
+fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>) -> f32 {
+    if water.depth_params.x < 0.5 {
+        return -1.0;
+    }
+    let ndc = textureLoad(bed_depth, vec2<i32>(frag_coord.xy), 0).x;
     if ndc <= 0.0 {
         // Nothing opaque behind the water (reverse-Z: 0 is infinitely far).
         return MAX_WATER_PATH;
@@ -64,9 +70,6 @@ fn water_path_length(frag_coord: vec4<f32>, world_position: vec3<f32>, sample_in
     // their view depths (both negative in front of the camera); the part past the surface is water.
     let past_surface = max(bed_view_z / min(surface.z, -1e-4) - 1.0, 0.0);
     return min(length(surface) * past_surface, MAX_WATER_PATH);
-#else
-    return -1.0;
-#endif
 }
 
 // x = how far the colour has moved from shallow to deep, y = the body's opacity, both 0..1.
@@ -93,18 +96,9 @@ fn water_body(path: f32, vertical_depth: f32) -> vec2<f32> {
 }
 
 @fragment
-fn fragment(
-    in: VertexOutput,
-    @builtin(front_facing) is_front: bool,
-#ifdef MULTISAMPLED
-    @builtin(sample_index) sample_index: u32,
-#endif
-) -> FragmentOutput {
-#ifndef MULTISAMPLED
-    let sample_index = 0u;
-#endif
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    let path = water_path_length(in.position, in.world_position.xyz, sample_index);
+    let path = water_path_length(in.position, in.world_position.xyz);
     // The bed lies on the view ray, so the water's vertical depth is the path times the sine of
     // the ray's pitch - what the colour mix uses instead of the path itself.
     let to_surface = in.world_position.xyz - view.world_position.xyz;
@@ -113,7 +107,10 @@ fn fragment(
     let deep = pbr_input.material.base_color.rgb;
     pbr_input.material.base_color = vec4<f32>(mix(water.shallow_color.rgb, deep, body.x), 1.0);
     let scale = water.wave_scale_speed_strength.x;
-    let phase = water.wave_scale_speed_strength.w * water.wave_scale_speed_strength.y;
+    // A negative phase runs the waves on the frame clock; zero or more pins them (`ANIMATED_WAVE_PHASE`).
+    let pinned = water.wave_scale_speed_strength.w;
+    let time = select(globals.time, pinned, pinned >= 0.0);
+    let phase = time * water.wave_scale_speed_strength.y;
     let strength = water.wave_scale_speed_strength.z;
     let p = in.world_position.xz * scale + water.flow_direction.xy * phase;
     var dx = cos(p.x + sin(p.y * 1.7)) * strength;

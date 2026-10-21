@@ -1714,6 +1714,9 @@ fn spawn_cell(
                         water_colors.map_or(crate::render::DEFAULT_WATER_OPACITY, |colors| {
                             colors.opacity
                         }),
+                        water_colors
+                            .and_then(|colors| colors.fog)
+                            .unwrap_or_default(),
                     ),
                 });
                 parent.spawn((

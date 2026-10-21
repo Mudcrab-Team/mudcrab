@@ -70,6 +70,16 @@ impl TerrainLodDistances {
     }
 }
 
+/// Where the water surface reads the depth of the bed behind it (`--water-depth`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WaterDepthSource {
+    /// Snapshot the main opaque pass depth before the transparent pass draws water.
+    #[default]
+    Snapshot,
+    /// Draw water as its deep colour at its ANAM opacity, as if no depth were available.
+    Constant,
+}
+
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
     /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
@@ -194,6 +204,10 @@ pub struct EngineConfig {
     /// the same pose draw the same waves. `None` lets the waves run on the clock, or on the
     /// terrain/water fixture's fixed phase.
     pub water_time: Option<f32>,
+    /// `--water-depth <snapshot|constant>`: how water learns the depth of the bed behind it.
+    /// `constant` exists to measure and diagnose the fallback, which a snapshot-less run would
+    /// otherwise reach silently.
+    pub water_depth: WaterDepthSource,
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
@@ -308,6 +322,7 @@ impl Default for EngineConfig {
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
             water_time: None,
+            water_depth: WaterDepthSource::Snapshot,
             shots: None,
             matched_route: None,
             shots_out: None,
@@ -410,6 +425,7 @@ Benchmark and profiling:
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --water-time <seconds>                pin the water's wave phase so captures match
+  --water-depth <snapshot|constant>     how water reads the bed depth (default: snapshot)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
   --profile-scenario <name>             scenario name recorded in the profile (default: adhoc)
@@ -1257,6 +1273,21 @@ impl EngineConfig {
                         Bound::NonNegative,
                         args.next(),
                     )?);
+                }
+                "--water-depth" => {
+                    const EXPECTED: &str = "\"snapshot\" or \"constant\"";
+                    let raw = take_raw("--water-depth", EXPECTED, args.next())?;
+                    config.water_depth = if raw == "snapshot" {
+                        WaterDepthSource::Snapshot
+                    } else if raw == "constant" {
+                        WaterDepthSource::Constant
+                    } else {
+                        return Err(ConfigError::invalid_value(
+                            "--water-depth",
+                            Some(raw),
+                            EXPECTED,
+                        ));
+                    };
                 }
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
@@ -2669,25 +2700,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_optional_sun_bearing_and_elevation() {
-        let config = run_config(&["--sun-position", "450,35"]);
-        assert_eq!(config.sun_position, Some((90.0, 35.0)));
-
-        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
-            assert!(
-                matches!(
-                    parse_error(&["--sun-position", value]),
-                    ConfigError::InvalidValue {
-                        option: "--sun-position",
-                        ..
-                    }
-                ),
-                "{value} was accepted"
-            );
-        }
-    }
-
-    #[test]
     fn parses_a_pinned_water_time() {
         assert_eq!(run_config(&["--water-time", "1.5"]).water_time, Some(1.5));
         assert_eq!(run_config(&["--water-time", "0"]).water_time, Some(0.0));
@@ -2701,6 +2713,48 @@ mod tests {
                 matches!(
                     parse_error(&["--water-time", value]),
                     ConfigError::InvalidValue { .. }
+                ),
+                "{value} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_the_water_depth_source() {
+        assert_eq!(
+            run_config(&["--water-depth", "constant"]).water_depth,
+            WaterDepthSource::Constant
+        );
+        assert_eq!(
+            run_config(&["--water-depth", "snapshot"]).water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert_eq!(
+            EngineConfig::default().water_depth,
+            WaterDepthSource::Snapshot
+        );
+        assert!(matches!(
+            parse_error(&["--water-depth", "deep"]),
+            ConfigError::InvalidValue {
+                option: "--water-depth",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_the_optional_sun_bearing_and_elevation() {
+        let config = run_config(&["--sun-position", "450,35"]);
+        assert_eq!(config.sun_position, Some((90.0, 35.0)));
+
+        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
+            assert!(
+                matches!(
+                    parse_error(&["--sun-position", value]),
+                    ConfigError::InvalidValue {
+                        option: "--sun-position",
+                        ..
+                    }
                 ),
                 "{value} was accepted"
             );
