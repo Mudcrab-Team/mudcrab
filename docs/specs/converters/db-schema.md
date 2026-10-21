@@ -1015,8 +1015,8 @@ since the table was first created, so `water_colors` reads it without a probe.
 `fog_near`/`fog_far`/`fog_amount` are additive and probed the same way: they are appended to the
 table and the converter writes NULL for any water whose `DNAM` does not carry a complete, finite
 fog triple. A database without them still yields the colours and factors above but no fog, and the
-engine falls back to Skyrim's DefaultWater fog per record (`render::DEFAULT_WATER_FOG_NEAR`,
-`DEFAULT_WATER_FOG_FAR`, `DEFAULT_WATER_FOG_AMOUNT`) until a reconversion populates them. Adding
+engine falls back to Skyrim's DefaultWater fog per record (`WaterFog::default()` in
+`crates/engine/src/world/database.rs`) until a reconversion populates them. Adding
 any of these did **not** bump `shared::WORLD_DATABASE_SCHEMA_VERSION`: nothing that already reads
 `waters` depends on their presence, and the fallback exists specifically so a reconversion is not
 required.
