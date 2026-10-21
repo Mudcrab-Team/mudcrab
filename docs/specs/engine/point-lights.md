@@ -154,8 +154,9 @@ exactly as it did before this feature, and the acceptance, profiling and benchma
   comparison of rendered frames, as does any per-space ambient.
 - **Skyrim's own attenuation.** The record's exponent column is published but not read, and Bevy's
   inverse-square curve is used instead of the game's own falloff curve.
-- **Fade and flicker.** The `FNAM` fade, the `DATA` time field, flicker period and amplitude, the
-  `FOV` cone and the near clip are all loaded by the converter and unused here: a converted torch
-  burns steadily and lights in every direction.
+- **Fade and flicker.** The converter publishes the `FNAM` fade and, since #269, the `DATA` time
+  field, flicker period and amplitudes, the `FOV` cone and the near clip in `lights`
+  (`db-schema.md` §12). The engine reads none of them: a converted torch burns steadily and lights
+  in every direction.
 - **Shadows.** Off for every converted light; a light therefore also lights the far side of the wall
   it is mounted on.
