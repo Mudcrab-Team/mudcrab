@@ -207,6 +207,21 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              race_id INTEGER, class_id INTEGER, flags INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_npcs_editor_id ON npcs(editor_id);
+         CREATE TABLE IF NOT EXISTS actor_models (
+             id INTEGER PRIMARY KEY,          -- NPC_ FormID
+             race_id INTEGER NOT NULL,
+             sex TEXT NOT NULL,               -- 'male' | 'female'
+             skin_armo_id INTEGER,            -- RACE/WNAM
+             head_model TEXT,                 -- FaceGen or default head NIF path
+             head_source TEXT,                -- 'facegen' | 'default'
+             resolution TEXT NOT NULL         -- 'body', 'body_head', 'unresolved'
+         );
+         CREATE TABLE IF NOT EXISTS actor_model_parts (
+             npc_id INTEGER NOT NULL,
+             slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
+             model_path TEXT NOT NULL,
+             PRIMARY KEY (npc_id, slot)
+         );
          CREATE TABLE IF NOT EXISTS movement_types (
              id INTEGER PRIMARY KEY, editor_id TEXT NOT NULL,
              left_walk REAL NOT NULL, left_run REAL NOT NULL,
@@ -489,6 +504,8 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS race_movement_links;
         DROP TABLE IF EXISTS movement_types;
         DROP TABLE IF EXISTS npcs;
+        DROP TABLE IF EXISTS actor_model_parts;
+        DROP TABLE IF EXISTS actor_models;
         DROP TABLE IF EXISTS lights;
         DROP TABLE IF EXISTS statics;
         DROP TABLE IF EXISTS land;
@@ -943,6 +960,9 @@ fn export_records(
         }
     }
     drop(records_insert);
+    if runtime_views {
+        insert_actor_models(&tx, master)?;
+    }
     // Derived snapshots like the grass tables: only a full load-order export owns them, so the
     // movement annotator's subset export leaves them alone, and diagnostic archives defer them.
     // The emittance pass holds every reference and the records their XEMI names, and may run on
@@ -955,6 +975,76 @@ fn export_records(
         super::doors::project_door_links(&tx)?;
     }
     tx.commit()
+}
+
+/// Publishes the actor model catalog from the merged records in the same transaction.
+///
+/// The resolver needs the whole record map, so it runs once after the record loop. Each
+/// `NPC_`'s own row and parts are replaced, which keeps a subset export's unrelated rows
+/// and a complete snapshot's freshly created tables consistent with `master`.
+fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -> Result<()> {
+    let plugin_names: HashMap<u32, String> = tx
+        .prepare("SELECT form_id, plugin_name FROM formid_map WHERE record_type='NPC_'")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_>>()?;
+    let catalog = crate::actor_models::resolve_actor_models(master, &plugin_names);
+
+    let mut delete_model = tx.prepare_cached("DELETE FROM actor_models WHERE id=?1")?;
+    let mut delete_parts = tx.prepare_cached("DELETE FROM actor_model_parts WHERE npc_id=?1")?;
+    let mut insert_model = tx.prepare_cached(
+        "INSERT OR REPLACE INTO actor_models(id, race_id, sex, skin_armo_id, head_model, head_source, resolution) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    let mut insert_part = tx.prepare_cached(
+        "INSERT OR REPLACE INTO actor_model_parts(npc_id, slot, model_path) VALUES (?1, ?2, ?3)",
+    )?;
+    for row in &catalog.models {
+        delete_model.execute([row.id])?;
+        delete_parts.execute([row.id])?;
+        insert_model.execute(params![
+            row.id,
+            row.race_id,
+            row.sex,
+            row.skin_armo_id,
+            row.head_model,
+            row.head_source,
+            row.resolution
+        ])?;
+    }
+    for part in &catalog.parts {
+        insert_part.execute(params![part.npc_id, part.slot.as_str(), part.model_path])?;
+    }
+    report_actor_model_diagnostics(&catalog.diagnostics);
+    Ok(())
+}
+
+/// Summarizes the catalog's diagnostics and names every unrecognized biped slot.
+fn report_actor_model_diagnostics(diagnostics: &[crate::actor_models::ActorModelDiagnostic]) {
+    use crate::actor_models::UnresolvedReason;
+    if diagnostics.is_empty() {
+        return;
+    }
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for diagnostic in diagnostics {
+        *counts.entry(diagnostic.reason.as_str()).or_default() += 1;
+    }
+    let summary: Vec<String> = counts
+        .iter()
+        .map(|(reason, count)| format!("{reason}={count}"))
+        .collect();
+    eprintln!(
+        "actor models: {} diagnostic(s): {}",
+        diagnostics.len(),
+        summary.join(", ")
+    );
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.reason == UnresolvedReason::UnrecognizedSlot)
+    {
+        eprintln!(
+            "actor model: NPC {:08X} has an armature with no stored biped slot",
+            diagnostic.npc_id
+        );
+    }
 }
 
 /// Rebuilds `emittance`: one row per `XEMI` target in `references` that resolves to a colour.

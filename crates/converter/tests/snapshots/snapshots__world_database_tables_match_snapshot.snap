@@ -1,9 +1,20 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 204
 expression: snapshot
 ---
 {
+  "actor_model_parts": [],
+  "actor_models": [
+    {
+      "head_model": null,
+      "head_source": null,
+      "id": 7,
+      "race_id": 10,
+      "resolution": "unresolved",
+      "sex": "male",
+      "skin_armo_id": null
+    }
+  ],
   "cells": [
     {
       "data": {
@@ -147,6 +158,16 @@ expression: snapshot
       "material_type": 8,
       "restitution": 30.0,
       "texture_set_id": 2
+    }
+  ],
+  "npcs": [
+    {
+      "class_id": null,
+      "editor_id": "Player",
+      "flags": 0,
+      "full_name": null,
+      "id": 7,
+      "race_id": 10
     }
   ],
   "references": [

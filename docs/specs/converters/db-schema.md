@@ -1396,3 +1396,86 @@ it through a `LEFT JOIN` on `references`, only when the table exists with every 
 | Door without `XTEL`, or with a malformed one | no row | scenery |
 | Destination cell has no resolvable record | no row | scenery |
 | Row with a NULL arrival value | n/a | not a load door |
+
+---
+
+### 18. Actor Model Catalog (`actor_models`, `actor_model_parts`)
+
+Every referenced `NPC_` base gets one `actor_models` row describing its race, sex, skin armor,
+body/head resolution and head path, plus one `actor_model_parts` row per biped slot the race skin
+resolves. The catalog is resolved once, after the record loop, from the merged record map; the
+tables are projected from canonical records, not from either reader's raw `records.data`, so the
+legacy and in-house frontends publish identical rows.
+
+```sql
+CREATE TABLE IF NOT EXISTS actor_models (
+    id INTEGER PRIMARY KEY,          -- NPC_ FormID
+    race_id INTEGER NOT NULL,
+    sex TEXT NOT NULL,               -- 'male' | 'female'
+    skin_armo_id INTEGER,            -- RACE/WNAM
+    head_model TEXT,                 -- FaceGen or default head NIF path
+    head_source TEXT,                -- 'facegen' | 'default'
+    resolution TEXT NOT NULL         -- 'body', 'body_head', 'unresolved'
+);
+CREATE TABLE IF NOT EXISTS actor_model_parts (
+    npc_id INTEGER NOT NULL,
+    slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
+    model_path TEXT NOT NULL,
+    PRIMARY KEY (npc_id, slot)
+);
+```
+
+**Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
+`missing_acbs` diagnostic.
+
+**Body resolver chain.** `NPC_/RNAM` -> the `RACE` record -> `RACE/WNAM` (the naked skin armor) ->
+every `ARMO/MODL` armature in list order -> each `ARMA`:
+
+1. An armature whose `ARMA/RNAM` equals the NPC's race is exact.
+2. Otherwise, an armature whose `ARMA/RNAM` is `25` (`DefaultRace`) is the shared humanoid body.
+3. Exact-race armatures are considered before `DefaultRace`, whatever order `ARMO/MODL` lists
+   them in, so a race's own armature is never shadowed by the shared body. If neither matches, no
+   part is written and `no_matching_arma` is recorded (the resolver never picks the first `ARMA`).
+4. `MOD2` is the male path and `MOD3` the female path.
+5. The slot is the armature's biped bit: bit 2 = body, bit 3 = hands, bit 7 = feet (slot number
+   minus 30). The resolver reads `ARMA/BOD2` when present and falls back to `ARMA/BODT`, which is
+   the field retail Skyrim's `ARMA` records actually carry (the same `u32` slot word at offset 0;
+   `ARMO` is the record with `BOD2`). An armature with neither recognized bit is rejected loudly
+   with an `unrecognized_slot` diagnostic; a slot is never inferred from the filename.
+6. Paths are deduplicated case-insensitively, and a slot already filled keeps the higher-priority
+   armature.
+
+**Head.** The `RACE/DATA` `facegen_head` flag (bit 1 of the flags word at offset 32) selects the
+FaceGen geometry `meshes/actors/character/facegendata/facegeom/<plugin>/<formid>.nif`, lowercased,
+with `<plugin>` from `formid_map.plugin_name` and `<formid>` the eight-digit lower-case hex FormID
+(`head_source = 'facegen'`). Otherwise, when the resolved body is humanoid (a part path contains
+`malebody` or `femalebody`), the race/sex default head is used (`head_source = 'default'`):
+`meshes/actors/character/character assets/` plus `malehead.nif`/`femalehead.nif`, with the
+`maleheadargonian.nif`/`maleheadkhajiit.nif` variants when the race EditorID names Argonian or
+Khajiit. A creature body never gets a humanoid default head.
+
+This slice computes the head *path string* only; it does not compose a head NIF and does not treat
+`HDPT/PNAM` as the head mesh. FaceGen presence is the race flag, not a per-NPC file probe: the ESM
+export path has no asset index, so PR-6 validates the path before loading.
+
+**Reason codes.** A base that fails to resolve records the reason it was rejected: `no_rnam`,
+`no_race_record`, `race_no_wnam`, `no_armo_record`, `armo_no_modl`, `no_matching_arma`. A base with
+no head path also records `no_facegen_and_no_default`, so a base with no body carries that reason
+alongside its body failure; the reasons are not mutually exclusive and a report that counts them
+counts a base once per reason.
+`unrecognized_slot` and `missing_acbs` are recorded wherever they occur. Diagnostics are printed
+by the exporter and returned by `converter::actor_models::resolve_actor_models`; they are not
+stored in the database.
+
+**Resolution.** `body_head` when at least one part and a head path resolve, `body` when parts
+resolve without a head, and `unresolved` otherwise. A base with no `RNAM` is still written with
+`race_id = 0` and `resolution = 'unresolved'`, so it is recorded rather than dropped.
+
+**Ownership.** A complete load-order export drops and rebuilds both tables in the record
+transaction; the movement-annotation subset export replaces only the rows for the `NPC_` bases it
+received, and a diagnostic archive (which defers every runtime view) leaves both tables empty.
+`NPC_` bases are never written into `statics`.
+
+**These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
+they only add tables, and the engine probes for them. No mandatory join is added to
+`REFERENCE_JOIN`; a database without them still opens and renders statics.
