@@ -9,7 +9,7 @@ use dummy_content::nif::{
 };
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, Once, OnceLock},
@@ -142,6 +142,73 @@ fn write_node_skeleton(directory: &Path, root: &str, nodes: &[&str]) -> PathBuf 
 
 fn gltf_nodes(glb: &Glb) -> &[Value] {
     glb.json["nodes"].as_array().unwrap()
+}
+
+/// Parent of every node, plus every node reachable from the scene roots.
+fn scene_graph(glb: &Glb) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
+    let nodes = gltf_nodes(glb);
+    let mut parents = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(children) = node["children"].as_array() {
+            for child in children {
+                let child = child.as_u64().unwrap() as usize;
+                assert!(
+                    parents.insert(child, index).is_none(),
+                    "node {child} has more than one parent"
+                );
+            }
+        }
+    }
+
+    let mut reachable = BTreeSet::new();
+    let mut stack: Vec<usize> = glb.json["scenes"][0]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|node| node.as_u64().unwrap() as usize)
+        .collect();
+    while let Some(index) = stack.pop() {
+        if reachable.insert(index)
+            && let Some(children) = nodes[index]["children"].as_array()
+        {
+            stack.extend(
+                children
+                    .iter()
+                    .map(|child| child.as_u64().unwrap() as usize),
+            );
+        }
+    }
+    (parents, reachable)
+}
+
+fn skeleton_node_names(path: &Path) -> BTreeSet<String> {
+    use project_wormhole_nif::{nif_block::NiObjectNETTraits, nif_file::NifFile};
+
+    let nif = NifFile::open(path.to_str().unwrap()).unwrap();
+    nif.get_nodes()
+        .iter()
+        .filter_map(|node| nif.header.get_string(node.name() as usize).ok())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn resolved_bone_names(nif_path: &Path, skeleton_path: &Path) -> BTreeSet<String> {
+    use project_wormhole_nif::nif_file::{NifFile, nif_to_model};
+
+    let nif = NifFile::open(nif_path.to_str().unwrap()).unwrap();
+    let skeleton = NifFile::open(skeleton_path.to_str().unwrap()).unwrap();
+    let model = nif_to_model(&nif, Some(&skeleton)).unwrap();
+    let first = model
+        .skeletal_meshes
+        .first()
+        .expect("retail mesh must have a skeletal mesh");
+    for (index, mesh) in model.skeletal_meshes.iter().enumerate().skip(1) {
+        assert_eq!(
+            mesh.bones, first.bones,
+            "skeletal mesh {index} has its own bone tree"
+        );
+    }
+    first.bones.bones.keys().cloned().collect()
 }
 
 fn convert(nif_path: &Path, skeleton_path: &Path, glb_path: &Path) -> color_eyre::Result<()> {
@@ -527,7 +594,7 @@ fn legacy_skeleton_duplicate_leaf_names_keep_the_first_and_skip_non_nodes() {
     assert_skinned_primitives(&glb);
     let helpers = gltf_nodes(&glb)
         .iter()
-        .filter(|node| node["name"] == "Helper:0")
+        .filter(|node| node["name"] == "Helper")
         .count();
     assert_eq!(helpers, 1, "the duplicate helper leaf must be kept once");
 }
@@ -576,9 +643,18 @@ fn legacy_skin_binds_mesh_local_joints_when_the_skeleton_covers_half() {
     assert_skinned_primitives(&glb);
     let local_index = gltf_nodes(&glb)
         .iter()
-        .position(|node| node["name"] == "Bone1:0")
+        .position(|node| node["name"] == "Bone1")
         .expect("the mesh-local joint must be exported");
+    let scene_roots: BTreeSet<usize> = glb.json["scenes"][0]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|node| node.as_u64().unwrap() as usize)
+        .collect();
     for (index, node) in gltf_nodes(&glb).iter().enumerate() {
+        if scene_roots.contains(&index) {
+            continue;
+        }
         if let Some(children) = node["children"].as_array() {
             assert!(
                 !children
@@ -646,16 +722,13 @@ fn legacy_skin_binds_missing_ancestors_under_the_skeleton_bone() {
             .unwrap_or_default()
     };
     assert_eq!(
-        nodes
-            .iter()
-            .filter(|node| node["name"] == "Bone0:0")
-            .count(),
+        nodes.iter().filter(|node| node["name"] == "Bone0").count(),
         1,
         "the skeleton bone must exist once"
     );
-    let skeleton_bone = index_of("Bone0:0");
-    let intermediate = index_of("NestedParent:0");
-    let joint = index_of("Bone1:0");
+    let skeleton_bone = index_of("Bone0");
+    let intermediate = index_of("NestedParent");
+    let joint = index_of("Bone1");
 
     assert!(
         children_of(skeleton_bone).contains(&(intermediate as u64)),
@@ -1062,13 +1135,71 @@ fn retail_malebody_has_skin_and_joint_nodes() {
         }
     }
 
-    let head = glb.json["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let skeleton_path = match find_skeleton(&nif_path) {
+        SkeletonResolution::Skeleton(path) => path,
+        other => panic!("malebody_1 must resolve a skeleton, got {other:?}"),
+    };
+    let skeleton_names = skeleton_node_names(&skeleton_path);
+    assert!(!skeleton_names.is_empty(), "skeleton has no nodes");
+    let bone_names = resolved_bone_names(&nif_path, &skeleton_path);
+
+    let nodes = gltf_nodes(&glb);
+    let mut bone_nodes = BTreeSet::new();
+    for name in &bone_names {
+        assert!(
+            !name.contains(':'),
+            "bone {name} must not carry a mesh-index suffix"
+        );
+        let matching: Vec<usize> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node["name"].as_str() == Some(name.as_str()))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "bone {name} must appear exactly once across nodes"
+        );
+        bone_nodes.insert(matching[0]);
+    }
+    assert_eq!(
+        bone_nodes.len(),
+        skeleton_names.len(),
+        "unique bone nodes must equal the unique bone names of the resolved skeleton"
+    );
+
+    let (parents, reachable) = scene_graph(&glb);
+    assert_eq!(
+        reachable.len(),
+        nodes.len(),
+        "every node must be reachable from scenes[0].nodes, but {} are orphaned",
+        nodes.len() - reachable.len()
+    );
+    for (skin_index, skin) in skins.iter().enumerate() {
+        for joint in skin["joints"].as_array().unwrap() {
+            let joint = joint.as_u64().unwrap() as usize;
+            assert!(
+                reachable.contains(&joint),
+                "skin {skin_index} joint node {joint} is unreachable from the scene"
+            );
+        }
+    }
+
+    let npc_head = nodes
+        .iter()
         .filter_map(|node| node["name"].as_str())
-        .any(|name| name.starts_with("NPC Head [Head]"));
-    println!("skins={} npc_head_node_present={head}", skins.len());
+        .any(|name| name == "NPC Head [Head]");
+    assert!(npc_head, "NPC Head [Head] must be present");
+    println!(
+        "skins={} nodes={} reachable={} bone_nodes={} skeleton_bones={} parents={} npc_head_node_present={npc_head}",
+        skins.len(),
+        nodes.len(),
+        reachable.len(),
+        bone_nodes.len(),
+        skeleton_names.len(),
+        parents.len(),
+    );
 }
 
 #[test]
