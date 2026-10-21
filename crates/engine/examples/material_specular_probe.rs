@@ -23,7 +23,7 @@ use converter::{
 use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
 use engine::{
     color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
-    nif_material::NifMaterialPlugin,
+    nif_material::{EffectPaletteMaterialPlugin, NifMaterialPlugin},
 };
 use std::{
     path::PathBuf,
@@ -271,7 +271,7 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>(),
     )
-    .add_plugins(NifMaterialPlugin)
+    .add_plugins((EffectPaletteMaterialPlugin, NifMaterialPlugin))
     .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
