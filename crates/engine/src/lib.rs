@@ -1,3 +1,4 @@
+pub mod actor_animation;
 pub mod actors;
 pub mod app;
 pub mod bug_report;

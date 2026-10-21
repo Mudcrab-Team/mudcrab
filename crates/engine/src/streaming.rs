@@ -1755,6 +1755,12 @@ fn spawn_cell(
                 if let Some(head) = &plan.head {
                     entity.insert(head.clone());
                 }
+                if actor_catalog.composed_body_scene(plan.actor.sex).is_some() {
+                    entity.insert(crate::actor_animation::ActorIdleClip::load(
+                        asset_server,
+                        plan.actor.sex,
+                    ));
+                }
             }
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
@@ -8253,6 +8259,8 @@ mod tests {
             .init_asset::<WaterMaterial>()
             // A reference with a model path asks the asset server for its converted scene.
             .init_asset::<WorldAsset>()
+            // A composed-body actor asks for its idle clip.
+            .init_asset::<bevy::gltf::Gltf>()
             .insert_resource(config)
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .init_resource::<ActiveSpace>()
