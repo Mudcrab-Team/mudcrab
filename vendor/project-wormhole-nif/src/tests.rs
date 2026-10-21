@@ -999,9 +999,84 @@ mod legacy_skin {
         );
     }
 
+    /// Two bones behind a palette that swaps them, so an index read through
+    /// the palette and the same index read directly name different joints.
+    fn swapped_palette_fixture(shape_vertex: BSVertexData, partition: NiSkinPartition) -> NifFile {
+        nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::NiNode(node(1)),
+                NifBlock::BSTriShape(shape(2, 3, vec![shape_vertex])),
+                NifBlock::NiSkinInstance(instance(vec![0, 1], 4, 5)),
+                NifBlock::NiSkinData(skin_data(vec![bone(Vec3::ZERO), bone(Vec3::ZERO)])),
+                NifBlock::NiSkinPartition(partition),
+            ],
+            &["BoneA", "BoneB", "Shape"],
+        )
+    }
+
     #[test]
-    fn rejects_a_palette_entry_outside_the_palette() {
+    fn reads_vertex_buffer_bone_indices_as_instance_bones() {
+        let nif = swapped_palette_fixture(
+            vertex(Vec3::ZERO, [0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]),
+            partition(vec![1, 0]),
+        );
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+
+        assert_eq!(model.skeletal_meshes[0].joints[0].to_array()[0], 0);
+    }
+
+    #[test]
+    fn reads_partition_bone_indices_through_the_palette() {
+        let mut partition = partition(vec![1, 0]);
+        partition.weights = vec![vec![1.0, 0.0, 0.0, 0.0]];
+        partition.bone_indices = vec![vec![0, 0, 0, 0]];
+        let nif = swapped_palette_fixture(
+            BSVertexData {
+                position: Some(Vec3::ZERO),
+                ..Default::default()
+            },
+            partition,
+        );
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+
+        assert_eq!(model.skeletal_meshes[0].joints[0].to_array()[0], 1);
+    }
+
+    #[test]
+    fn rejects_a_vertex_buffer_index_outside_the_instance_bones() {
         let nif = one_bone_fixture([5, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], Vec3::ZERO);
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(error.contains("maps to joint 5"), "{error}");
+        assert!(error.contains("shape block 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_partition_index_outside_the_palette() {
+        let mut partition = partition(vec![0]);
+        partition.weights = vec![vec![1.0, 0.0, 0.0, 0.0]];
+        partition.bone_indices = vec![vec![5, 0, 0, 0]];
+        let nif = nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::BSTriShape(shape(
+                    1,
+                    2,
+                    vec![BSVertexData {
+                        position: Some(Vec3::ZERO),
+                        ..Default::default()
+                    }],
+                )),
+                NifBlock::NiSkinInstance(instance(vec![0], 3, 4)),
+                NifBlock::NiSkinData(skin_data(vec![bone(Vec3::ZERO)])),
+                NifBlock::NiSkinPartition(partition),
+            ],
+            &["BoneA", "Shape"],
+        );
 
         let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
 

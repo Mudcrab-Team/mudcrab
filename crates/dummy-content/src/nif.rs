@@ -132,7 +132,8 @@ pub struct LegacySkin<'a> {
     /// When false, the skin blocks and bones are emitted without a `BSTriShape`.
     pub with_geometry: bool,
     /// Raw palette indices for vertex 0's influences, used to build the
-    /// out-of-range-joint case.
+    /// out-of-range-joint case. An index outside the palette is written into
+    /// the vertex buffers unchanged.
     pub joint_override: Option<[u8; 4]>,
 }
 
@@ -436,7 +437,10 @@ struct SkinVertex {
     normal: [f32; 3],
     uv: [f32; 2],
     weights: [f32; 4],
+    /// Skin-instance bone indices, as the shared vertex buffers store them.
     joints: [u8; 4],
+    /// Partition palette indices, as the per-partition index arrays store them.
+    palette_joints: [u8; 4],
 }
 
 fn skin_vertices(spec: &LegacySkin<'_>) -> Vec<SkinVertex> {
@@ -444,17 +448,24 @@ fn skin_vertices(spec: &LegacySkin<'_>) -> Vec<SkinVertex> {
     (0..count)
         .map(|index| {
             let position = vertex_position(index, count);
-            let joints = if index == 0 {
+            let palette_joints = if index == 0 {
                 spec.joint_override.unwrap_or([0, 1, 0, 0])
             } else {
                 [0, 1, 0, 0]
             };
+            let joints = palette_joints.map(|local| {
+                spec.palette
+                    .get(usize::from(local))
+                    .and_then(|bone| u8::try_from(*bone).ok())
+                    .unwrap_or(local)
+            });
             SkinVertex {
                 position,
                 normal: [0.0, 0.0, 1.0],
                 uv: [0.5 + 0.5 * position[0], 0.5 + 0.5 * position[1]],
                 weights: spec.weights[index],
                 joints,
+                palette_joints,
             }
         })
         .collect()
@@ -745,7 +756,7 @@ fn skin_partition(
     block.push(0);
     block.push(1);
     for vertex in vertices {
-        block.extend_from_slice(&vertex.joints);
+        block.extend_from_slice(&vertex.palette_joints);
     }
     block.push(0);
     block.push(0);

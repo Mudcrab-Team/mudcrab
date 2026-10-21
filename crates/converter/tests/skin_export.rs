@@ -351,7 +351,7 @@ fn legacy_niskininstance_skin_exports_skin() {
 }
 
 #[test]
-fn legacy_skin_remaps_partition_palette() {
+fn legacy_skin_reads_buffer_indices_as_instance_bones() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = spec(
         SkinInstanceKind::Dismember,
@@ -371,17 +371,19 @@ fn legacy_skin_remaps_partition_palette() {
         .as_u64()
         .unwrap();
     let joints = accessor_u8x4(&glb, joints_accessor);
-    // Vertex 0's raw slot 0 is palette index 0; the shuffled palette maps that
-    // to joint 1. Emitting the raw index here means the remap was skipped.
+    // Vertex 0's first influence is palette entry 0, which the shuffled
+    // palette names as instance bone 1, and the vertex buffer stores that
+    // bone directly. Mapping the buffer index through the palette a second
+    // time would emit joint 0.
     assert_eq!(
         u16::from(joints[0][0]),
         SHUFFLED_PALETTE[0],
-        "vertex 0 joint was not remapped through the partition palette"
+        "vertex 0 joint is not the instance bone its vertex buffer names"
     );
     assert_ne!(
-        u16::from(joints[0][0]),
-        0,
-        "palette must differ from the raw joint to make the remap observable"
+        SHUFFLED_PALETTE[usize::from(SHUFFLED_PALETTE[0])],
+        SHUFFLED_PALETTE[0],
+        "palette must not be idempotent, or a second remap would go unnoticed"
     );
     assert_zero_weight_slots_are_joint_zero(&glb, mesh_index, 0);
 }
@@ -406,8 +408,8 @@ fn legacy_skin_rejects_out_of_range_joint() {
         "error does not name the offending shape/block: {message}"
     );
     assert!(
-        message.contains("palette"),
-        "error does not mention the palette: {message}"
+        message.contains("the skin instance has 2 bones"),
+        "error does not name the skin instance's bone count: {message}"
     );
     assert!(!glb_path.exists(), "a static GLB was published anyway");
 }

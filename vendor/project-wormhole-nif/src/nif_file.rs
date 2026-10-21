@@ -891,7 +891,7 @@ fn legacy_skinned_mesh(
         ));
     }
 
-    let influences = vertex_influences(
+    let (influences, indexing) = vertex_influences(
         shape_index,
         block_type,
         shape,
@@ -906,13 +906,17 @@ fn legacy_skinned_mesh(
         ));
     }
 
+    let palette = match indexing {
+        InfluenceIndices::InstanceBones => None,
+        InfluenceIndices::PartitionPalette => Some(partition.bone_palette.as_slice()),
+    };
     let mut joints = Vec::with_capacity(position_count);
     let mut weights = Vec::with_capacity(position_count);
     for (vertex_index, (raw_joints, raw_weights)) in influences.into_iter().enumerate() {
         let (vertex_joints, vertex_weights) = normalize_vertex_influences(
             raw_joints,
             raw_weights,
-            &partition.bone_palette,
+            palette,
             instance.bones.len(),
             shape_index,
             vertex_index,
@@ -987,6 +991,17 @@ fn legacy_shape_mesh(
 
 type RawInfluences = Vec<([u8; 4], [f32; 4])>;
 
+/// What the raw bone indices of a set of influences address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfluenceIndices {
+    /// A shared vertex buffer (the shape's, or the partition's SSE copy)
+    /// stores indices into the skin instance's bone list.
+    InstanceBones,
+    /// The per-partition index arrays store indices into the partition's bone
+    /// palette.
+    PartitionPalette,
+}
+
 fn vertex_influences(
     shape_index: u32,
     block_type: &str,
@@ -994,7 +1009,7 @@ fn vertex_influences(
     partition_block: u32,
     partition: &NiSkinPartition,
     position_count: usize,
-) -> Result<RawInfluences, String> {
+) -> Result<(RawInfluences, InfluenceIndices), String> {
     let buffer = if shape
         .vertex_data
         .iter()
@@ -1026,7 +1041,7 @@ fn vertex_influences(
                 [weights.x, weights.y, weights.z, weights.w],
             ));
         }
-        return Ok(influences);
+        return Ok((influences, InfluenceIndices::InstanceBones));
     }
 
     if partition.weights.is_empty() || partition.bone_indices.is_empty() {
@@ -1059,7 +1074,7 @@ fn vertex_influences(
                 row_indices,
             )?);
         }
-        return Ok(influences);
+        return Ok((influences, InfluenceIndices::PartitionPalette));
     }
 
     // Partitions may repeat shared vertices: their row count then exceeds the
@@ -1098,7 +1113,7 @@ fn vertex_influences(
                 };
                 influences.push(row);
             }
-            return Ok(influences);
+            return Ok((influences, InfluenceIndices::PartitionPalette));
         }
     }
 
@@ -1140,7 +1155,7 @@ fn influence_from_row(
 fn normalize_vertex_influences(
     raw_joints: [u8; 4],
     raw_weights: [f32; 4],
-    palette: &[u16],
+    palette: Option<&[u16]>,
     bone_count: usize,
     shape_index: u32,
     vertex_index: usize,
@@ -1166,14 +1181,16 @@ fn normalize_vertex_influences(
                 "shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"
             ));
         }
-        let palette_index = usize::from(raw_joints[slot]);
-        let bone = palette.get(palette_index).copied().ok_or_else(|| {
-            format!(
-                "shape block {shape_index} vertex {vertex_index} references palette entry {palette_index} but the palette has {} entries",
-                palette.len()
-            )
-        })?;
-        let joint = usize::from(bone);
+        let raw_index = usize::from(raw_joints[slot]);
+        let joint = match palette {
+            Some(palette) => usize::from(palette.get(raw_index).copied().ok_or_else(|| {
+                format!(
+                    "shape block {shape_index} vertex {vertex_index} references palette entry {raw_index} but the palette has {} entries",
+                    palette.len()
+                )
+            })?),
+            None => raw_index,
+        };
         if joint >= bone_count {
             return Err(format!(
                 "shape block {shape_index} vertex {vertex_index} maps to joint {joint} but the skin instance has {bone_count} bones"
