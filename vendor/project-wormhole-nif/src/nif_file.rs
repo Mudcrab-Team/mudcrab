@@ -512,17 +512,15 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {
-            matches!(
-                block,
-                NifBlock::NiNode(_)
-                    | NifBlock::BSFadeNode(_)
-                    | NifBlock::BSMultiBoundNode(_)
-                    | NifBlock::BSTriShape(_)
-                    | NifBlock::BSDynamicTriShape(_)
-                    | NifBlock::BSSubIndexTriShape(_)
-                    | NifBlock::BSLODTriShape(_)
-                    | NifBlock::NiTriShape(_)
-            )
+            (block.as_node().is_ok()
+                || matches!(
+                    block,
+                    NifBlock::BSTriShape(_)
+                        | NifBlock::BSDynamicTriShape(_)
+                        | NifBlock::BSSubIndexTriShape(_)
+                        | NifBlock::BSLODTriShape(_)
+                        | NifBlock::NiTriShape(_)
+                ))
             .then_some(index as u32)
         })
         .collect();
@@ -544,14 +542,17 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                     None,
                 ));
             }
-            NifBlock::BSMultiBoundNode(block) => {
+            // Node subtypes whose extra fields the static scene does not use.
+            NifBlock::BSMultiBoundNode(_)
+            | NifBlock::BSOrderedNode(_)
+            | NifBlock::NiBillboardNode(_)
+            | NifBlock::BSValueNode(_) => {
+                let node = block.as_node()?;
                 model.static_nodes.push(static_node_from_av(
                     nif,
                     block_index,
-                    &block.node.av,
-                    block
-                        .node
-                        .children
+                    &node.av,
+                    node.children
                         .iter()
                         .copied()
                         .filter(|child| supported_blocks.contains(child))

@@ -211,6 +211,20 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             spawn_ground_height,
         ))
     };
+    // Authored lighting, weather, climate and image space, when the database has them (#269).
+    // Read only; nothing renders from it yet.
+    let environment = runtime_data.as_ref().map(|_| {
+        crate::world::environment::EnvironmentCatalog::open(
+            &config.assets_dir.join("skyrim_world.db"),
+        )
+        .unwrap_or_else(|error| {
+            // LogPlugin is installed later, so report this startup failure directly.
+            eprintln!(
+                "warning: environment: cannot open the world database ({error}); using an empty catalog"
+            );
+            Default::default()
+        })
+    });
     // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
     // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
     let terrain_merge = runtime_data
@@ -375,6 +389,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .add_systems(PreUpdate, drive_streaming_benchmark_route);
     }
     if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
+        if let Some(environment) = environment {
+            app.insert_resource(environment);
+        }
         app.insert_resource(database)
             .insert_resource(catalog)
             .insert_resource(cache)
@@ -776,7 +793,7 @@ impl StreamingFixtureDirectory {
             r#"CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
-            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
+            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
             CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);
             CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);

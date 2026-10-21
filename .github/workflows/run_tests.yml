@@ -67,6 +67,7 @@ jobs:
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_schema_validation" '^(tools/schema_validation/|\.github/workflows/run_tests\.yml$)'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
@@ -74,6 +75,7 @@ jobs:
       check_native_profiling: ${{ steps.filter.outputs.check_native_profiling }}
       check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
       check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
+      check_schema_validation: ${{ steps.filter.outputs.check_schema_validation }}
 
   format:
     needs: [orchestrate]
@@ -191,6 +193,32 @@ jobs:
 
       - name: Test reference observation input preservation
         run: python3 -m unittest discover -s scripts/tests -p test_reference_enable_observations.py -v
+
+  schema_validation:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_schema_validation == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: macos-latest
+            python: '3.11'
+          - os: windows-latest
+            python: '3.13'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Test standalone schema evidence tools
+        run: python -B -m unittest discover -s tools/schema_validation -p 'test_*.py' -v
 
   clippy:
     needs: [orchestrate]
@@ -335,6 +363,7 @@ jobs:
       - native_profiling
       - z_fighting_audit
       - enable_observations
+      - schema_validation
       - clippy
       - test
       - security
@@ -361,6 +390,7 @@ jobs:
           check_result "native_profiling" "$RESULT_NATIVE_PROFILING"
           check_result "z_fighting_audit" "$RESULT_Z_FIGHTING_AUDIT"
           check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
+          check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -374,6 +404,7 @@ jobs:
           RESULT_NATIVE_PROFILING: ${{ needs.native_profiling.result }}
           RESULT_Z_FIGHTING_AUDIT: ${{ needs.z_fighting_audit.result }}
           RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}
+          RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}

@@ -39,7 +39,7 @@ fn fixture(data: &Path) {
         ]
         .concat(),
     );
-    // Localized input has deliberately absent lookup keys; usable records still publish.
+    // The absent string bank leaves 128 unresolved IDs; usable records still publish.
     let mut plugin = record(b"TES4", 0, 0x80, &header);
     for index in (0..128u32).rev() {
         plugin.extend(record(
@@ -173,7 +173,8 @@ fn diagnostics_are_byte_identical_in_fresh_folders() {
             diagnostics["decoder"]["synthetic.esm"]["invalid_links"],
             128
         );
-        assert_eq!(diagnostics["adapter"]["synthetic.esm"][0], 128);
+        // Retain each unresolved ID and the separate missing-bank observation.
+        assert_eq!(diagnostics["adapter"]["synthetic.esm"][0], 129);
         let query = "SELECT * FROM record_diagnostics ORDER BY diagnostic_id";
         assert_eq!(sql_rows(first, query), sql_rows(second, query));
         assert!(

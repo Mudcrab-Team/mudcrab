@@ -276,11 +276,12 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
         report.warnings
     );
     assert!(
-        report.warnings.iter().any(|warning| {
-            warning.contains("names.esp") && warning.contains("inhouse adapter reported")
+        report.notices.iter().any(|notice| {
+            notice.contains("names.esp")
+                && notice.contains("localized IDs missing from readable string tables")
         }),
         "{:?}",
-        report.warnings
+        report.notices
     );
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
     let profile: serde_json::Value =
@@ -436,7 +437,14 @@ async fn inhouse_publishes_valid_neighbors_and_correct_typed_projections() {
             .unwrap()
             >= 1
     );
-    assert_eq!(diagnostic["adapter"]["names.esp"][0].as_u64().unwrap(), 1);
+    assert!(diagnostic["adapter"].get("names.esp").is_none());
+    assert_eq!(diagnostic["adapter_notices"]["names.esp"][0], 1);
+    assert!(
+        diagnostic["adapter_notices"]["names.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("01000801 name missing localized ID 99")
+    );
     let armor: Vec<u8> = db
         .query_row(
             "SELECT data FROM records WHERE form_id=16779267",

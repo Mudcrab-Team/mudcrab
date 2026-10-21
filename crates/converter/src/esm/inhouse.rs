@@ -29,8 +29,9 @@ use std::{
 pub const ADAPTER_VERSION: u32 = 12;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
+/// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 3;
+pub const LEGACY_PROJECTION_VERSION: u32 = 4;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
@@ -105,6 +106,21 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_links",
     "reference_rooms",
     "room_graph_stats",
+    "cell_environment",
+    "cell_regions",
+    "cell_lighting",
+    "worldspace_environment",
+    "lighting_templates",
+    "weathers",
+    "weather_colors",
+    "weather_directional_ambient",
+    "climates",
+    "climate_weathers",
+    "region_weathers",
+    "image_spaces",
+    "reference_linked_refs",
+    "reference_activate_parents",
+    "reference_details",
     "door_links",
     "emittance",
 ];
@@ -154,14 +170,19 @@ pub fn reader_identity(reader: RecordReader) -> serde_json::Value {
 }
 
 /// As [`reader_identity`], for names read from `language`'s string tables. English tables are
-/// Windows-1252 like plugin text, so an English identity is the one English-only adapters
-/// stamped; another language's tables are UTF-8 ([`decode_table_text`]), which its identity
-/// records. The legacy reader does not read string tables, so its identity has no language.
+/// Windows-1252 like plugin text; other tables are UTF-8 with Windows-1252 fallback.
 pub fn reader_identity_in_language(reader: RecordReader, language: &str) -> serde_json::Value {
     match reader {
-        RecordReader::Legacy => serde_json::json!({
-            "mode": "legacy", "projection_version": LEGACY_PROJECTION_VERSION,
-        }),
+        RecordReader::Legacy => {
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": LEGACY_PROJECTION_VERSION,
+                "language": language, "text_encoding": "windows-1252",
+            });
+            if !is_english(language) {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            identity
+        }
         RecordReader::Inhouse => {
             let mut identity = serde_json::json!({
                 "mode": "inhouse", "adapter_version": ADAPTER_VERSION,
@@ -493,6 +514,8 @@ pub(crate) fn localized_string_paths(plugins: &[PathBuf], language: &str) -> BTr
 struct Warnings {
     summary: BTreeMap<String, (u64, String)>,
     summary_keys: BTreeMap<String, records::DiagnosticSummaryKey>,
+    notices: BTreeMap<String, (u64, String)>,
+    notice_keys: BTreeMap<String, records::DiagnosticSummaryKey>,
     logs: BTreeMap<String, records::diagnostics::EventLog>,
 }
 
@@ -503,21 +526,38 @@ impl Warnings {
         plugin: &str,
         context: records::diagnostics::EventContext,
         message: String,
+        readable_table: bool,
     ) {
         self.logs
             .entry(plugin.to_owned())
             .or_default()
             .append(&context, "adapter", &message);
+        let is_notice = readable_table
+            && context.stage == "localization"
+            && context.action == Some("unresolved");
         let key = records::DiagnosticSummaryKey::new(&context, "adapter", &message);
-        let entry = self.summary.entry(plugin.to_owned()).or_default();
-        entry.0 += 1;
-        if self
-            .summary_keys
-            .get(plugin)
-            .is_none_or(|chosen| key < *chosen)
-        {
-            self.summary_keys.insert(plugin.to_owned(), key);
-            entry.1 = records::diagnostics::bounded_summary(message);
+        if is_notice {
+            let entry = self.notices.entry(plugin.to_owned()).or_default();
+            entry.0 += 1;
+            if self
+                .notice_keys
+                .get(plugin)
+                .is_none_or(|chosen| key < *chosen)
+            {
+                self.notice_keys.insert(plugin.to_owned(), key);
+                entry.1 = records::diagnostics::bounded_summary(message.clone());
+            }
+        } else {
+            let entry = self.summary.entry(plugin.to_owned()).or_default();
+            entry.0 += 1;
+            if self
+                .summary_keys
+                .get(plugin)
+                .is_none_or(|chosen| key < *chosen)
+            {
+                self.summary_keys.insert(plugin.to_owned(), key);
+                entry.1 = records::diagnostics::bounded_summary(message.clone());
+            }
         }
     }
 
@@ -532,6 +572,18 @@ impl Warnings {
             lines.push(line);
         }
         lines
+    }
+
+    /// Print faithful missing-ID outcomes without affecting completeness.
+    fn report_notices(&self) -> Vec<String> {
+        self.notices
+            .iter()
+            .map(|(plugin, (count, first))| {
+                let line = format!("notice: {plugin}: {count} localized IDs missing from readable string tables (first: {first})");
+                eprintln!("{line}");
+                line
+            })
+            .collect()
     }
 }
 
@@ -859,6 +911,7 @@ fn convert_plugins_with_text_sources_report_impl(
                         "skipped",
                     ),
                     format!("{:08X} terrain layer provenance: {error}", record.form_id),
+                    false,
                 ),
             }
         }
@@ -937,14 +990,18 @@ fn convert_plugins_with_text_sources_report_impl(
             }
             if let Value::LocalizedString(id) = &field.value {
                 let bank = localized_bank(&prepared, record.record_type, field);
-                let table = runtime_text_table(
-                    &mut tables,
-                    priority,
-                    &plugin_paths[priority],
-                    string_sources,
-                    bank,
-                );
-                if !table.reported {
+                let mut table = (*id != 0).then(|| {
+                    runtime_text_table(
+                        &mut tables,
+                        priority,
+                        &plugin_paths[priority],
+                        string_sources,
+                        bank,
+                    )
+                });
+                if let Some(table) = table.as_deref_mut()
+                    && !table.reported
+                {
                     if let Some(error) = &table.error {
                         warnings.skipped(
                             plugin,
@@ -955,12 +1012,28 @@ fn convert_plugins_with_text_sources_report_impl(
                                 ..Default::default()
                             },
                             format!("localized table: {error}"),
+                            false,
+                        );
+                    }
+                    for malformed_id in &table.malformed_ids {
+                        warnings.skipped(
+                            plugin,
+                            records::diagnostics::EventContext {
+                                stage: "localization_bank_entry",
+                                field: Some(bank.to_owned()),
+                                action: Some("malformed"),
+                                ..Default::default()
+                            },
+                            format!("malformed {bank} entry for localized ID {malformed_id}"),
+                            false,
                         );
                     }
                     table.reported = true;
                 }
                 // Zero is a null key even if a malformed table gives it text.
-                let resolved = localized_text(*id, &table.values);
+                let resolved = table
+                    .as_ref()
+                    .and_then(|table| localized_text(*id, &table.values));
                 let status = if *id == 0 {
                     "null_id"
                 } else if resolved.is_some() {
@@ -990,6 +1063,23 @@ fn convert_plugins_with_text_sources_report_impl(
                     runtime_text_updates.push((index, runtime_string("")));
                     unresolved.insert(index);
                     if *id != 0 {
+                        let malformed = table
+                            .as_ref()
+                            .is_some_and(|table| table.malformed_ids.contains(id));
+                        let readable = table
+                            .as_ref()
+                            .is_some_and(|table| table.error.is_none() && !malformed);
+                        let message = if malformed {
+                            format!(
+                                "{:08X} {} references malformed {bank} entry for localized ID {id}",
+                                record.form_id, field.name
+                            )
+                        } else {
+                            format!(
+                                "{:08X} {} missing localized ID {id}",
+                                record.form_id, field.name
+                            )
+                        };
                         warnings.skipped(
                             plugin,
                             adapter_context(
@@ -1002,10 +1092,8 @@ fn convert_plugins_with_text_sources_report_impl(
                                 )),
                                 "unresolved",
                             ),
-                            format!(
-                                "{:08X} {} missing localized ID {id}",
-                                record.form_id, field.name
-                            ),
+                            message,
+                            readable,
                         );
                     }
                 }
@@ -1036,6 +1124,7 @@ fn convert_plugins_with_text_sources_report_impl(
                     raw.form_id,
                     String::from_utf8_lossy(&raw.record_type)
                 ),
+                false,
             );
             continue;
         }
@@ -1186,7 +1275,9 @@ fn convert_plugins_with_text_sources_report_impl(
         fs::write(
             path,
             serde_json::to_vec_pretty(&serde_json::json!({
-                "decoder": decoded.diagnostics, "adapter": warnings.summary,
+                "decoder": decoded.diagnostics,
+                "adapter": warnings.summary,
+                "adapter_notices": warnings.notices,
             }))?,
         )?;
     }
@@ -1195,7 +1286,7 @@ fn convert_plugins_with_text_sources_report_impl(
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.warning_summary_lines(name))
         .collect::<Vec<_>>();
-    let report_notices = decoded
+    let mut report_notices = decoded
         .diagnostics
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
@@ -1204,6 +1295,7 @@ fn convert_plugins_with_text_sources_report_impl(
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
+    report_notices.extend(warnings.report_notices());
     phases.insert(
         "reader_target_validation_and_diagnostics".into(),
         diagnostics_started.elapsed().as_secs_f64(),
@@ -1278,15 +1370,23 @@ fn validate_candidate_with_string_sources(
         if let Value::LocalizedString(id) = &field.value {
             let priority = record.load_order as usize;
             let bank = localized_bank(prepared, record.record_type, field);
-            let table = runtime_text_table(
-                tables,
-                priority,
-                &plugin_paths[priority],
-                string_sources,
-                bank,
+            let table = if *id == 0 {
+                None
+            } else {
+                Some(runtime_text_table(
+                    tables,
+                    priority,
+                    &plugin_paths[priority],
+                    string_sources,
+                    bank,
+                ))
+            };
+            raw.subrecords[index].1 = runtime_string(
+                table
+                    .as_ref()
+                    .and_then(|table| localized_text(*id, &table.values))
+                    .unwrap_or(""),
             );
-            raw.subrecords[index].1 =
-                runtime_string(localized_text(*id, &table.values).unwrap_or(""));
         }
     }
     if record.supported {
@@ -1423,7 +1523,14 @@ fn take_canonical_record(record: &mut records::DecodedRecord) -> RawRecord {
 struct RuntimeTextTable {
     values: HashMap<u32, String>,
     error: Option<String>,
+    malformed_ids: BTreeSet<u32>,
     reported: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct ParsedTextTable {
+    pub(crate) values: HashMap<u32, String>,
+    pub(crate) malformed_ids: BTreeSet<u32>,
 }
 
 /// Load the same authoritative loose/VFS snapshot once; an unreadable bank remains unresolved.
@@ -1437,13 +1544,20 @@ fn runtime_text_table<'a>(
     tables
         .entry((priority, bank.to_owned()))
         .or_insert_with(|| {
-            let (values, error) = match read_plugin_strings(plugin, string_sources, bank) {
-                Ok(values) => (values, None),
-                Err(error) => (HashMap::new(), Some(error.to_string())),
-            };
+            let (values, malformed_ids, error) =
+                match read_plugin_strings(plugin, string_sources, bank) {
+                    Ok(Some(table)) => (table.values, table.malformed_ids, None),
+                    Ok(None) => (
+                        HashMap::new(),
+                        BTreeSet::new(),
+                        Some(format!("missing {bank} string table")),
+                    ),
+                    Err(error) => (HashMap::new(), BTreeSet::new(), Some(error.to_string())),
+                };
             RuntimeTextTable {
                 values,
                 error,
+                malformed_ids,
                 reported: false,
             }
         })
@@ -1469,7 +1583,7 @@ fn localized_bank(
 }
 
 /// A zero localized key stays null even when an invalid table gives it a value.
-fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
+pub(crate) fn localized_text(id: u32, table: &HashMap<u32, String>) -> Option<&str> {
     if id == 0 {
         None
     } else {
@@ -1501,7 +1615,7 @@ fn runtime_text(text: &str, source: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Encode a resolved or normalized runtime string as UTF-8 followed by one NUL.
-fn runtime_string(text: &str) -> Vec<u8> {
+pub(crate) fn runtime_string(text: &str) -> Vec<u8> {
     let mut bytes = text.as_bytes().to_vec();
     bytes.push(0);
     bytes
@@ -1563,18 +1677,19 @@ pub(crate) fn resolve_localized_bank(
 }
 
 /// Read the resolved bank, or an empty table when no bank exists for this plugin.
-fn read_plugin_strings(
+pub(crate) fn read_plugin_strings(
     plugin: &Path,
     string_sources: StringSources<'_>,
     bank: &str,
-) -> Result<HashMap<u32, String>> {
+) -> Result<Option<ParsedTextTable>> {
     match resolve_localized_bank(string_sources, plugin, bank)? {
         Some(source) => parse_text_table(
             &fs::read(source.path)?,
             bank != "strings",
             string_sources.language,
-        ),
-        None => Ok(HashMap::new()),
+        )
+        .map(Some),
+        None => Ok(None),
     }
 }
 
@@ -1622,7 +1737,7 @@ fn parse_text_table(
     bytes: &[u8],
     length_prefixed: bool,
     language: &str,
-) -> Result<HashMap<u32, String>> {
+) -> Result<ParsedTextTable> {
     let word = |offset: usize| {
         bytes
             .get(offset..offset + 4)
@@ -1642,6 +1757,7 @@ fn parse_text_table(
         .ok_or_else(|| color_eyre::eyre::eyre!("truncated STRINGS directory/data"))?;
     let data = &bytes[data_start..data_end];
     let mut strings = HashMap::with_capacity(count);
+    let mut malformed_ids = BTreeSet::new();
     for index in 0..count {
         let id = word(8 + index * 8).expect("bounded directory");
         let offset = word(12 + index * 8).expect("bounded directory") as usize;
@@ -1658,9 +1774,14 @@ fn parse_text_table(
             && let Some(end) = tail.iter().position(|byte| *byte == 0)
         {
             strings.insert(id, decode_table_text(&tail[..end], language));
+        } else {
+            malformed_ids.insert(id);
         }
     }
-    Ok(strings)
+    Ok(ParsedTextTable {
+        values: strings,
+        malformed_ids,
+    })
 }
 
 #[cfg(test)]
@@ -1693,9 +1814,10 @@ mod tests {
         table.extend(4u32.to_le_bytes());
         table.extend(b"yes\0");
         let decoded = parse_text_table(&table, true, crate::config::DEFAULT_LANGUAGE).unwrap();
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[&42], "yes");
-        assert!(!decoded.contains_key(&41));
+        assert_eq!(decoded.values.len(), 1);
+        assert_eq!(decoded.values[&42], "yes");
+        assert!(!decoded.values.contains_key(&41));
+        assert_eq!(decoded.malformed_ids, BTreeSet::from([41]));
         table[4..8].copy_from_slice(&13u32.to_le_bytes());
         assert!(parse_text_table(&table, true, crate::config::DEFAULT_LANGUAGE).is_err());
     }

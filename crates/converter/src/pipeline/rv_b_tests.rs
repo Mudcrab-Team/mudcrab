@@ -299,12 +299,17 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         "historical",
         "projection-1",
         "projection-2",
+        "projection-3",
+        "projection-3-nonenglish",
         "current",
         "unproven",
     ] {
         let fixture = Fixture::new(true);
         append_broken_stat_neighbors(&fixture.data);
-        let config = fixture.config(RecordReader::Legacy);
+        let mut config = fixture.config(RecordReader::Legacy);
+        if contract == "projection-3-nonenglish" {
+            config.language = "french".to_owned();
+        }
         publish(config.clone()).await;
         let expected = asset_bytes(&fixture.output);
         let mut original = manifest(&fixture.output);
@@ -324,6 +329,13 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
                 CONVERTER_SCHEMA_VERSION,
             )
             .unwrap(),
+            "projection-3" | "projection-3-nonenglish" => {
+                crate::cache::legacy_projection_v3_configuration_hash(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                )
+                .unwrap()
+            }
             "current" => configuration_hash(&config).unwrap(),
             _ => "unproven-settings".into(),
         };
@@ -334,6 +346,9 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
             "historical" => Some(serde_json::json!({"mode": "legacy"})),
             "projection-1" => Some(serde_json::json!({"mode": "legacy", "projection_version": 1})),
             "projection-2" => Some(serde_json::json!({"mode": "legacy", "projection_version": 2})),
+            "projection-3" | "projection-3-nonenglish" => {
+                Some(serde_json::json!({"mode": "legacy", "projection_version": 3}))
+            }
             _ => None,
         };
         if let Some(source_reader) = source_reader {
@@ -344,11 +359,9 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
             .unwrap();
         }
         let report = publish(config.clone()).await;
-        assert_eq!(report.converted, if contract == "unproven" { 5 } else { 0 });
-        assert_eq!(
-            report.cache_hits,
-            if contract == "unproven" { 1 } else { 6 }
-        );
+        let rejected = matches!(contract, "unproven" | "projection-3-nonenglish");
+        assert_eq!(report.converted, if rejected { 5 } else { 0 });
+        assert_eq!(report.cache_hits, if rejected { 1 } else { 6 });
         assert_asset_bytes(&fixture.output, &expected);
         let published = manifest(&fixture.output);
         assert_eq!(published.archives, archive_proof);
@@ -358,7 +371,10 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         );
         assert_eq!(
             json_artifact(&fixture.output, "record-reader.json"),
-            serde_json::json!({"mode": "legacy", "projection_version": crate::esm::inhouse::LEGACY_PROJECTION_VERSION})
+            crate::esm::inhouse::reader_identity_in_language(
+                RecordReader::Legacy,
+                &config.language
+            )
         );
         let database = Connection::open(fixture.output.join("skyrim_world.db")).unwrap();
         let neighbor: String = database
@@ -652,7 +668,7 @@ async fn repeated_metadata_migrations_preserve_recorded_asset_producer() {
 /// Mode-only and previous versioned proofs survive multiple retained publications unchanged.
 #[tokio::test]
 async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations() {
-    for projection_version in [None, Some(1), Some(2)] {
+    for projection_version in [None, Some(1), Some(2), Some(3)] {
         let fixture = Fixture::new(true);
         let legacy = fixture.config(RecordReader::Legacy);
         publish(legacy.clone()).await;
@@ -666,6 +682,11 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
             )
             .unwrap(),
             Some(2) => crate::cache::legacy_projection_v2_configuration_hash(
+                &legacy,
+                CONVERTER_SCHEMA_VERSION,
+            )
+            .unwrap(),
+            Some(3) => crate::cache::legacy_projection_v3_configuration_hash(
                 &legacy,
                 CONVERTER_SCHEMA_VERSION,
             )
@@ -720,7 +741,7 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
         );
         assert_eq!(
             json_artifact(&second_output, "record-reader.json"),
-            serde_json::json!({"mode": "legacy", "projection_version": crate::esm::inhouse::LEGACY_PROJECTION_VERSION})
+            crate::esm::inhouse::reader_identity(RecordReader::Legacy)
         );
         assert_ne!(
             manifest(&second_output).configuration_hash,

@@ -278,6 +278,7 @@ pub struct PluginDiagnostics {
     pub skipped_records: u64,
     pub skipped_fields: u64,
     pub unexpected_subrecords: u64,
+    /// Links faithfully cleared when their targets are absent, disallowed or outside the master list.
     pub invalid_links: u64,
     /// Successful required-header compatibility remaps, including later rejected candidates.
     pub compatibility_headers: u64,
@@ -300,25 +301,25 @@ pub struct PluginDiagnostics {
 }
 
 impl PluginDiagnostics {
-    /// Build bounded data-loss warnings for terminal output and conversion reports.
+    /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
-        if let Some(example) = ["record", "field", "link", "unexpected"]
+        if let Some(example) = ["record", "field", "unexpected"]
             .iter()
             .find_map(|category| self.first_by_category.get(*category))
         {
             lines.push(format!(
-                "warning: {plugin}: in-house reader skipped {} records, {} fields, {} unexpected subrecords; cleared {} invalid links (first: {example})",
+                "warning: {plugin}: in-house reader skipped {} records, {} fields, {} unexpected subrecords (first: {example})",
                 self.skipped_records,
                 self.skipped_fields,
-                self.unexpected_subrecords,
-                self.invalid_links
+                self.unexpected_subrecords
             ));
         }
         lines
     }
 
-    /// Successful supplier-self remaps are advisory, even when another issue loses data.
+    /// Summarize supplier-self remaps and faithfully cleared links as separate bounded notices.
+    /// Independent record or field loss still produces its own warning.
     pub(crate) fn notice_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
         if self.compatibility_headers != 0
@@ -329,18 +330,46 @@ impl PluginDiagnostics {
                 self.compatibility_headers
             ));
         }
+        if self.invalid_links != 0
+            && let Some(example) = self.first_by_category.get("link")
+        {
+            lines.push(format!(
+                "notice: {plugin}: in-house reader cleared {} links to absent or disallowed targets (first: {example})",
+                self.invalid_links
+            ));
+        }
         lines
     }
 
     /// Journal every observation while retaining the least source example per category.
+    /// Unrecognized recovery categories remain field-loss warnings rather than link notices.
     pub(crate) fn note(&mut self, category: &str, example: impl FnOnce() -> String) {
-        match category {
-            "record" => self.skipped_records += 1,
-            "field" => self.skipped_fields += 1,
-            "unexpected" => self.unexpected_subrecords += 1,
-            "compatibility" => self.compatibility_headers += 1,
-            _ => self.invalid_links += 1,
-        }
+        let summary_category = match category {
+            "record" => {
+                self.skipped_records += 1;
+                category
+            }
+            "field" => {
+                self.skipped_fields += 1;
+                category
+            }
+            "unexpected" => {
+                self.unexpected_subrecords += 1;
+                category
+            }
+            "compatibility" => {
+                self.compatibility_headers += 1;
+                category
+            }
+            "link" => {
+                self.invalid_links += 1;
+                category
+            }
+            _ => {
+                self.skipped_fields += 1;
+                "field"
+            }
+        };
         let example = example();
         let mut context = self.event_context.clone();
         if category != "link" {
@@ -349,7 +378,7 @@ impl PluginDiagnostics {
         }
         self.event_log.append(&context, category, &example);
         let key = DiagnosticSummaryKey::new(&context, category, &example);
-        self.remember_summary(category, key, diagnostics::bounded_summary(example));
+        self.remember_summary(summary_category, key, diagnostics::bounded_summary(example));
     }
 
     /// Keep category and global examples under the same total order, without changing counts.
@@ -488,7 +517,9 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
     decoder::decode_string(bytes)
 }
 
-pub(crate) use decoder::{PreparedSchemas, prepare_runtime_schema, string_table_with_prepared};
+pub(crate) use decoder::{
+    PreparedSchemas, localized_field_bank, prepare_runtime_schema, string_table_with_prepared,
+};
 
 /// Scan in load order using the converter's single slot/master authority.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {

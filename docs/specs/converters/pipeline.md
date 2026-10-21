@@ -68,8 +68,10 @@ with loose files taking precedence. `--language` (`PipelineConfig.language`, def
 digits and underscores, since it is part of a file name. Resume commands keep it. Every validated occurrence remains in canonical records. Null or
 missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
-columns remain NULL. Missing nonzero keys produce counted warnings. Explicitly
-resolved empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
+columns remain NULL. Missing nonzero keys in readable tables produce counted
+notices; missing or unreadable tables and referenced malformed entries produce
+warnings. A null ID does not require its declared bank. Explicitly resolved
+empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.
 Ordinary plugin text and English string banks use Windows-1252, including bytes

@@ -15,6 +15,7 @@ pub mod mesh;
 mod metadata;
 pub mod pipeline;
 pub mod progress;
+pub mod reader_diff;
 pub mod records;
 pub mod repair;
 pub mod script;

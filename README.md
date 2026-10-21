@@ -3,10 +3,10 @@
 ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Mudcrab-Team/mudcrab?utm_source=oss&utm_medium=github&utm_campaign=Mudcrab-Team%2Fmudcrab&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange.svg)](https://www.rust-lang.org/)
 [![Engine](https://img.shields.io/badge/Engine-Bevy_0.19-blue.svg)](https://bevyengine.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)](#-quick-start-development-setup)
 [![Platforms](https://img.shields.io/badge/Platforms-Windows_%7C_Linux_%7C_Android-purple.svg)](docs/specs/meta/platforms.md)
+[![Discord](https://img.shields.io/badge/Discord-Join_the_community-5865F2?logo=discord&logoColor=white)](https://discord.gg/29GRf8QShH)
 
 An open-source, high-performance game engine reimplementation compatible with **The Elder Scrolls V: Skyrim (Special Edition)** assets, built from the ground up in **Rust** using the **Bevy Engine**.
 
@@ -214,6 +214,7 @@ We welcome community contributions! Whether you're fixing bugs in asset converte
 - 📖 **[CONTRIBUTING.md](CONTRIBUTING.md)** — Guide on development workflow, code style (`cargo fmt`/`clippy`), and PR guidelines.
 - 📜 **[LEGAL.md](LEGAL.md)** — Intellectual property policy and compatibility guidelines.
 - 🐛 **[Issue Tracker](../../issues)** — Search existing issues or report a new bug using our template.
+- 💬 **[Discord](https://discord.gg/29GRf8QShH)** — Join the Mudcrab community to ask questions, discuss development, and coordinate contributions.
 
 ---
 
@@ -221,10 +222,7 @@ We welcome community contributions! Whether you're fixing bugs in asset converte
 
 ### Licensing
 
-Mudcrab is dual-licensed under either of the following licenses at your option:
-
-- **MIT License** ([`LICENSE-MIT`](LICENSE-MIT))
-- **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
+Mudcrab is licensed under the **GNU General Public License v3 or later** ([`LICENSE`](LICENSE)).
 
 ### Legal Notice & Trademark Disclaimer
 
