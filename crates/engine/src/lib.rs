@@ -1,3 +1,4 @@
+pub mod actors;
 pub mod app;
 pub mod bug_report;
 mod capture_frame;

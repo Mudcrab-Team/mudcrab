@@ -156,6 +156,7 @@ fn cell_pipeline_fixture(
     let (database, requests, responses) = WorldDatabase::channel_fixture(capacity);
     app.insert_resource(database)
         .insert_resource(AssetCatalog::open(&path).unwrap())
+        .init_resource::<crate::world::actor_catalog::ActorCatalog>()
         .insert_resource(CellCache::open(&cache_path).unwrap())
         .insert_resource(RenderOrigin(IVec2::ZERO))
         .insert_resource(WaterReflectionTexture(Handle::default()))
@@ -1461,6 +1462,7 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
     .unwrap();
     app.insert_resource(WorldDatabase::open(&database_path).unwrap())
         .insert_resource(AssetCatalog::open(&database_path).unwrap())
+        .init_resource::<crate::world::actor_catalog::ActorCatalog>()
         .insert_resource(CellCache::open(&cache_path).unwrap())
         .insert_resource(RenderOrigin(IVec2::ZERO))
         .insert_resource(WaterReflectionTexture(Handle::default()))

@@ -20,6 +20,7 @@ use crate::{
     },
     tone_mapping::SceneToneMapSource,
     world::{
+        actor_catalog::ActorCatalog,
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
             CellRef, ExpectedModelBounds, FormId, InstanceBounds, StreamedCellRoot, StreamingCamera,
@@ -225,6 +226,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             Default::default()
         })
     });
+    // The actor model catalog (#109): the referenced `NPC_` bases this world converted. The spawn
+    // path reads it once per cell commit; a database without the optional tables gives an empty
+    // catalog and every reference spawns exactly as before.
+    let actor_catalog = runtime_data
+        .as_ref()
+        .map(|_| ActorCatalog::open(&config.assets_dir.join("skyrim_world.db")));
     // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
     // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
     let terrain_merge = runtime_data
@@ -392,6 +399,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
         if let Some(environment) = environment {
             app.insert_resource(environment);
+        }
+        if let Some(actor_catalog) = actor_catalog {
+            app.insert_resource(actor_catalog);
         }
         app.insert_resource(database)
             .insert_resource(catalog)
@@ -3609,6 +3619,7 @@ mod tests {
         .insert_resource(config)
         .insert_resource(WorldDatabase::open(&database_path).unwrap())
         .insert_resource(AssetCatalog::open(&database_path).unwrap())
+        .init_resource::<ActorCatalog>()
         .insert_resource(CellCache::open(&cache_path).unwrap())
         .insert_resource(RenderOrigin(IVec2::ZERO))
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
