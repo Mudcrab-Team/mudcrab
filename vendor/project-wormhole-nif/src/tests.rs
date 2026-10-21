@@ -774,7 +774,7 @@ fn retail_male_body_retains_legacy_skin() {
 
 mod legacy_skin {
     use project_wormhole_ba2::dev::Bounds;
-    use project_wormhole_shared::glam::{Mat3, Mat4, U8Vec4, Vec3, Vec4};
+    use project_wormhole_shared::glam::{Mat3, Mat4, Quat, U8Vec4, Vec3, Vec4};
 
     use crate::dev::*;
 
@@ -1115,6 +1115,69 @@ mod legacy_skin {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
         }
         assert_eq!(actual.w_axis, Vec4::new(1.0, 2.0, 3.0, 1.0));
+    }
+
+    #[test]
+    fn keeps_the_skin_transform_scale_in_the_inverse_bind() {
+        let mut nif = one_bone_fixture([0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], Vec3::ZERO);
+        if let NifBlock::NiSkinData(data) = &mut nif.blocks[3] {
+            data.bones[0].skin_transform.scale = 0.5;
+            data.bones[0].skin_transform.translation = BSVec3(Vec3::new(1.0, 2.0, 3.0));
+        } else {
+            panic!("fixture block 3 is not NiSkinData");
+        }
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+        let actual = model.skeletal_meshes[0].inverse_bind_matrices[0].0;
+
+        let expected = Mat4::from_scale_rotation_translation(
+            Vec3::splat(0.5),
+            Quat::IDENTITY,
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn places_partition_rows_through_a_permuting_vertex_map() {
+        let mut partition = partition(vec![0, 1, 2]);
+        partition.weights = vec![vec![1.0, 0.0, 0.0, 0.0]; 3];
+        partition.bone_indices = vec![vec![0, 0, 0, 0], vec![1, 0, 0, 0], vec![2, 0, 0, 0]];
+        partition.vertex_map = Some(vec![2, 0, 1]);
+        let position = |x: f32| BSVertexData {
+            position: Some(Vec3::new(x, 0.0, 0.0)),
+            ..Default::default()
+        };
+        let nif = nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::NiNode(node(1)),
+                NifBlock::NiNode(node(2)),
+                NifBlock::BSTriShape(shape(
+                    3,
+                    4,
+                    vec![position(0.0), position(1.0), position(2.0)],
+                )),
+                NifBlock::NiSkinInstance(instance(vec![0, 1, 2], 5, 6)),
+                NifBlock::NiSkinData(skin_data(vec![
+                    bone(Vec3::ZERO),
+                    bone(Vec3::ZERO),
+                    bone(Vec3::ZERO),
+                ])),
+                NifBlock::NiSkinPartition(partition),
+            ],
+            &["BoneA", "BoneB", "BoneC", "Shape"],
+        );
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+
+        // Row r belongs to vertex map[r]: rows 0, 1, 2 land on vertices 2, 0, 1.
+        let first_joints = model.skeletal_meshes[0]
+            .joints
+            .iter()
+            .map(|joints| joints.to_array()[0])
+            .collect::<Vec<_>>();
+        assert_eq!(first_joints, vec![1, 2, 0]);
     }
 
     #[test]

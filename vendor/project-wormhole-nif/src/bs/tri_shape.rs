@@ -157,9 +157,10 @@ impl Parse<&[u8]> for NiTransform {
 }
 
 impl NiTransform {
-    /// Same convention as `BSSkinBoneTrans::into_matrix4`.
+    /// Same convention as `BSSkinBoneTrans::into_matrix4`, with the uniform
+    /// scale applied to the rotation basis (translation · rotation · scale).
     pub fn into_matrix4(&self) -> BSMatrix4 {
-        let mut m4 = glam::Mat4::from_mat3(self.rotation.0);
+        let mut m4 = glam::Mat4::from_mat3(self.rotation.0 * self.scale);
         m4.w_axis = glam::Vec4::new(
             self.translation.0.x,
             self.translation.0.y,

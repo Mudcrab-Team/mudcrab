@@ -1072,29 +1072,10 @@ fn vertex_influences(
         ));
     }
 
-    let mut influences = Vec::with_capacity(position_count);
-    if partition.weights.len() == position_count {
-        for (vertex_index, (row_weights, row_indices)) in partition
-            .weights
-            .iter()
-            .zip(&partition.bone_indices)
-            .enumerate()
-        {
-            influences.push(influence_from_row(
-                shape_index,
-                block_type,
-                partition_block,
-                vertex_index,
-                row_weights,
-                row_indices,
-            )?);
-        }
-        return Ok((influences, InfluenceIndices::PartitionPalette));
-    }
-
-    // Partitions may repeat shared vertices: their row count then exceeds the
-    // shape's vertex count, and the concatenated vertex map is what ties each
-    // row back to a position.
+    // Rows run in partition order, and the concatenated vertex map ties each
+    // one to its shape vertex. That holds even when the row count equals the
+    // vertex count: the map can still be a permutation. Partitions that repeat
+    // shared vertices have more rows than positions.
     if let Some(vertex_map) = partition.vertex_map.as_ref() {
         if vertex_map.len() == partition.weights.len() {
             let mut merged: Vec<Option<([u8; 4], [f32; 4])>> = vec![None; position_count];
@@ -1130,6 +1111,27 @@ fn vertex_influences(
             }
             return Ok((influences, InfluenceIndices::PartitionPalette));
         }
+    }
+
+    // Without a map the rows can only be read in shape-vertex order.
+    if partition.vertex_map.is_none() && partition.weights.len() == position_count {
+        let mut influences = Vec::with_capacity(position_count);
+        for (vertex_index, (row_weights, row_indices)) in partition
+            .weights
+            .iter()
+            .zip(&partition.bone_indices)
+            .enumerate()
+        {
+            influences.push(influence_from_row(
+                shape_index,
+                block_type,
+                partition_block,
+                vertex_index,
+                row_weights,
+                row_indices,
+            )?);
+        }
+        return Ok((influences, InfluenceIndices::PartitionPalette));
     }
 
     Err(format!(
