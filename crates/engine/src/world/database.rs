@@ -41,6 +41,9 @@ pub struct ReferenceRow {
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
     pub base_record_type: Option<String>,
+    /// Whether the base record carries the `Is Marker` header flag: an editor-only object, such as
+    /// a map or furniture marker, that the game never draws.
+    pub base_is_marker: bool,
     pub model_path: Option<String>,
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -853,6 +856,15 @@ const EMITTANCE_COLUMNS: &str = "e.day_r,e.day_g,e.day_b";
 const ABSENT_EMITTANCE_COLUMNS: &str = "NULL,NULL,NULL";
 const EMITTANCE_JOIN: &str = " LEFT JOIN emittance e ON e.id=r.emittance_id";
 
+/// The base record's header flags, which [`map_reference`] reads for [`MARKER_RECORD_FLAG`].
+/// `NULL` for a reference whose base has no `statics` row.
+const STATIC_FLAGS_COLUMN: &str = "s.flags";
+/// Appended after the three enable-state columns so it never shifts their positions.
+const STATIC_FLAGS_INDEX: usize = REFERENCE_ENABLE_START + 3;
+
+/// The record header flag Skyrim sets on editor-only base records (`0x00800000`, "Is Marker").
+const MARKER_RECORD_FLAG: u32 = 0x0080_0000;
+
 fn has_records(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
         .prepare_cached("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'")?
@@ -1011,7 +1023,8 @@ impl ReferenceQuery {
         Ok(Self {
             columns: format!(
                 "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
-                 {door_columns},{emittance_columns},{reference_enable_columns}"
+                 {door_columns},{emittance_columns},{reference_enable_columns},\
+                 {STATIC_FLAGS_COLUMN}"
             ),
             joins,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
@@ -1168,6 +1181,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         Some(red) => Some([red, row.get(35)?, row.get(36)?]),
         None => None,
     };
+    let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
     Ok((
         ReferenceRow {
             form_id: row.get(0)?,
@@ -1175,6 +1189,7 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
             cell_id: row.get(1)?,
             base_form_id: row.get(2)?,
             base_record_type,
+            base_is_marker: base_flags.is_some_and(|flags| flags & MARKER_RECORD_FLAG != 0),
             model_path: row.get(3)?,
             position: [row.get(4)?, row.get(5)?, row.get(6)?],
             rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
@@ -1230,11 +1245,11 @@ mod tests {
                 INSERT INTO schema_info VALUES(6);
                 CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
                 CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
-                CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
+                CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
                 CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);
                 INSERT INTO cells VALUES(10,60,2,-3);
-                INSERT INTO statics VALUES(20,'architecture/wall.nif',-1,-2,-3,1,2,3,1);
+                INSERT INTO statics VALUES(20,'architecture/wall.nif',-1,-2,-3,1,2,3,1,0);
                 INSERT INTO "references" VALUES(30,10,20,8200,-12200,50,0,0,0,1);
                 INSERT INTO exterior_spatial VALUES(30,8200,8200,-12200,-12200,50,50,10,60);
                 INSERT INTO "references" VALUES(31,99,20,8250,-12150,55,0,0,0,1);
@@ -1971,7 +1986,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
                  INSERT INTO records VALUES(20,'STAT');
-                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1);
+                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1,0);
                  INSERT INTO records VALUES(22,'MISC');
                  INSERT INTO \"references\" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
                  INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);",
@@ -1991,6 +2006,48 @@ mod tests {
         let movable = payload.references.iter().find(|r| r.form_id == 40).unwrap();
         assert_eq!(fixed.base_record_type.as_deref(), Some("STAT"));
         assert_eq!(movable.base_record_type.as_deref(), Some("MISC"));
+    }
+
+    #[test]
+    fn base_is_marker_reads_the_records_marker_flag_not_its_model_name() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let exterior = CellKey::Exterior {
+            worldspace_id: 60,
+            grid_x: 2,
+            grid_y: -3,
+        };
+        // The map marker carries the flag; the Civil War map flag has "marker" in its filename
+        // but no flag. A marker flag on a model without "marker" in its path is still authoritative.
+        connection
+            .execute_batch(
+                "INSERT INTO statics VALUES(23,'marker_map.nif',-1,-1,-1,1,1,1,1,8388608);
+                 INSERT INTO statics VALUES(24,'clutter/civilwar/cwmapmarkers01.nif',-1,-1,-1,1,1,1,1,0);
+                 INSERT INTO \"references\" VALUES(41,10,23,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(41,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO \"references\" VALUES(42,10,24,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(42,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO statics VALUES(25,'architecture/wall.nif',-1,-1,-1,1,1,1,1,8388608);
+                 INSERT INTO \"references\" VALUES(43,10,25,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(43,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO \"references\" VALUES(44,10,999,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(44,8250,8250,-12150,-12150,55,55,10,60);",
+            )
+            .unwrap();
+        let payload = load_cell(&connection, 1, exterior).unwrap();
+        let marker = |form_id| {
+            payload
+                .references
+                .iter()
+                .find(|r| r.form_id == form_id)
+                .unwrap()
+                .base_is_marker
+        };
+        assert!(marker(41));
+        assert!(!marker(42));
+        assert!(!marker(30));
+        assert!(marker(43));
+        assert!(!marker(44));
     }
 
     #[test]
