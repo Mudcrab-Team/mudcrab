@@ -1423,6 +1423,14 @@ pub(crate) struct SkinnedModelBuild {
     pub material_contract: Vec<NifShapeMaterial>,
 }
 
+/// [`build_skinned_model_with_materials`] for callers that need only the geometry and bones.
+pub(crate) fn build_skinned_model(
+    nif_path: &Path,
+    skeleton_path: &Path,
+) -> Result<project_wormhole_nif::model::all::Model> {
+    Ok(build_skinned_model_with_materials(nif_path, skeleton_path)?.model)
+}
+
 /// Builds one part of a composed actor through the skinned export path, without
 /// the static fallback that a standalone conversion may take. The material contract comes back
 /// in exported mesh order, so callers that compose several NIFs can publish materials over the

@@ -26,6 +26,14 @@ use std::{
     path::Path,
 };
 
+/// Whether a staging-relative, `/`-separated path is an emitted animation clip.
+///
+/// Clips have no source NIF at their own path, so the staging cleanups that drop
+/// outputs without a matching source must leave them alone.
+pub fn is_animation_output(relative: &str) -> bool {
+    relative.starts_with("meshes/actors/character/animations/") && relative.ends_with(".glb")
+}
+
 /// Writes `clip` as a GLB whose nodes are `body_bones`, binding the clip's track names first.
 ///
 /// Returns the binding report so callers can record which tracks were case-aliased or skipped.

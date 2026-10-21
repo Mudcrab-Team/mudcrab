@@ -8,7 +8,7 @@ pub mod glb;
 mod packfile;
 mod spline;
 
-pub use glb::write_clip_glb;
+pub use glb::{is_animation_output, write_clip_glb};
 
 use classes::{Binding, Skeleton, SplineAnimation};
 use color_eyre::{
