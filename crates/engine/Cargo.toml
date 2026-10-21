@@ -2,6 +2,7 @@
 name = "engine"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
