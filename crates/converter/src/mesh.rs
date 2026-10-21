@@ -2329,7 +2329,7 @@ impl SkeletonIndex {
     }
 }
 
-fn normalize_path_key(path: &Path) -> String {
+pub(crate) fn normalize_path_key(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
         .to_ascii_lowercase()

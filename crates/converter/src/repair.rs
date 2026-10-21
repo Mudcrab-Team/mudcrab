@@ -26,6 +26,7 @@ use color_eyre::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
@@ -387,6 +388,9 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         .iter()
         .map(|(key, source)| (PathBuf::from(key), source.path.clone()))
         .collect();
+    // Parsing every skeleton is costly, so it happens at most once per run and
+    // only if a mesh needs repair.
+    let skeletons = OnceCell::new();
     for extension in ["nif", "dds", "pex"] {
         let count = sources
             .keys()
@@ -447,6 +451,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &key,
             &sources,
             &mesh_sources,
+            &skeletons,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -550,6 +555,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &key,
             &sources,
             &mesh_sources,
+            &skeletons,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -714,6 +720,7 @@ fn attempt(
     key: &str,
     sources: &BTreeMap<String, Source>,
     mesh_sources: &BTreeMap<PathBuf, PathBuf>,
+    skeletons: &OnceCell<crate::mesh::SkeletonIndex>,
     verified: &mut BTreeSet<PathBuf>,
     semantics: &BTreeMap<String, BTreeSet<crate::texture::TextureSemantic>>,
     manifest: &mut ConversionManifest,
@@ -730,13 +737,28 @@ fn attempt(
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
         if ext == "nif" {
-            let skeleton_key = crate::mesh::resolve_skeleton(Path::new(key), mesh_sources);
+            let skeletons =
+                skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
+            let skeleton_key =
+                crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
             let skeleton = match skeleton_key {
                 crate::mesh::SkeletonResolution::Skeleton(path) => {
-                    let dependency_key = path
-                        .to_str()
-                        .ok_or_else(|| color_eyre::eyre::eyre!("invalid skeleton key"))?;
-                    let dependency_source = &sources[dependency_key];
+                    // The resolver returns the normalized key, while archive
+                    // keys keep their original case.
+                    let (dependency_key, dependency_source) = sources
+                        .get_key_value(path.to_string_lossy().as_ref())
+                        .or_else(|| {
+                            sources.iter().find(|(candidate, _)| {
+                                crate::mesh::normalize_path_key(Path::new(candidate.as_str()))
+                                    == crate::mesh::normalize_path_key(&path)
+                            })
+                        })
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!(
+                                "resolved skeleton {} has no winning source",
+                                path.display()
+                            )
+                        })?;
                     source_hash.push(':');
                     source_hash.push_str(&verified_source_hash(
                         dependency_source,
@@ -1253,7 +1275,9 @@ mod tests {
         let archive = root.path().join("source.bsa");
         fs::write(&archive, "archive provenance fixture").unwrap();
         let key = "meshes/actors/character/armor/body.nif";
-        let skeleton_key = "meshes/actors/character/character assets/skeleton.nif";
+        // Archive keys keep their authored case; the resolver answers with a
+        // normalized key, so the lookup must not depend on matching spelling.
+        let skeleton_key = "meshes/actors/character/Character Assets/skeleton.nif";
         let skeleton = Source {
             path: blob.clone(),
             archive: Some((archive.clone(), hash_file(&archive).unwrap())),
@@ -1306,6 +1330,7 @@ mod tests {
                 key,
                 &sources,
                 &mesh_sources,
+                &OnceCell::new(),
                 &mut BTreeSet::new(),
                 &BTreeMap::new(),
                 &mut manifest,
