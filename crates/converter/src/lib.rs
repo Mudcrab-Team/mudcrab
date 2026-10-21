@@ -6,6 +6,7 @@ pub mod asset_path;
 pub mod cache;
 pub mod check;
 pub mod collision;
+pub mod compose;
 pub mod config;
 pub mod esm;
 pub mod integration;

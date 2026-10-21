@@ -121,7 +121,10 @@ impl MeshConverter {
         };
         let primary = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, skeleton.as_ref())));
         let (mut model, used_static_fallback) = match primary {
-            Ok(Ok(model)) => (model, false),
+            Ok(Ok(model)) => (
+                finish_skinned_model(&nif, nif_path, model, &material_contract)?,
+                false,
+            ),
             primary => {
                 let primary_error = match primary {
                     Ok(Err(error)) => format!("NIF model conversion failed: {error}"),
@@ -140,26 +143,12 @@ impl MeshConverter {
                     .map_err(|_| color_eyre::eyre::eyre!("static NIF fallback panicked"))?
                     .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))
                     .wrap_err(primary_error)?;
-                (static_model, true)
+                (
+                    finish_skinned_model(&nif, nif_path, static_model, &material_contract)?,
+                    true,
+                )
             }
         };
-        if declares_skin && model.skeletal_meshes.is_empty() {
-            let unclaimed = unclaimed_skin_instances(&nif, &model);
-            let detail = if unclaimed.is_empty() {
-                "no skin instance blocks are present".to_owned()
-            } else {
-                unclaimed.join("; ")
-            };
-            return Err(color_eyre::eyre::eyre!(
-                "NIF {} declares a skin but produced no skeletal mesh: {detail}; refusing to publish a static mesh",
-                nif_path.display()
-            ));
-        }
-        model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
-        model
-            .validate()
-            .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
-        apply_vertex_color_contract(&mut model, &nif, &material_contract)?;
         let name = nif_path
             .file_stem()
             .unwrap_or_default()
@@ -1425,7 +1414,86 @@ pub struct TextureDependency {
     pub required: bool,
 }
 
-fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
+/// A skinned export together with the material contract needed to publish it.
+pub(crate) struct SkinnedModelBuild {
+    pub model: project_wormhole_nif::model::all::Model,
+    pub material_contract: Vec<NifShapeMaterial>,
+}
+
+/// Builds one part of a composed actor through the skinned export path, without
+/// the static fallback that a standalone conversion may take. The material contract comes back
+/// in exported mesh order, so callers that compose several NIFs can publish materials over the
+/// merged mesh list.
+pub(crate) fn build_skinned_model_with_materials(
+    nif_path: &Path,
+    skeleton_path: &Path,
+) -> Result<SkinnedModelBuild> {
+    let (nif, _diagnostics, material_contract) = open_nif_resilient(nif_path)?;
+    let skeleton = open_nif_resilient(skeleton_path)
+        .wrap_err_with(|| format!("failed to open skeleton {}", skeleton_path.display()))?
+        .0;
+    let model = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, Some(&skeleton))))
+        .map_err(|_| {
+            color_eyre::eyre::eyre!("NIF model conversion panicked for {}", nif_path.display())
+        })?
+        .map_err(|error| {
+            color_eyre::eyre::eyre!(
+                "NIF {} model conversion failed: {error}",
+                nif_path.display()
+            )
+        })?;
+    let model = finish_skinned_model(&nif, nif_path, model, &material_contract)?;
+    let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
+    let exported_contract = shape_blocks
+        .iter()
+        .map(|block| {
+            material_contract
+                .iter()
+                .find(|shape| shape.shape_block == *block)
+                .cloned()
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "exported mesh references shape block {block} without a material contract"
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SkinnedModelBuild {
+        model,
+        material_contract: exported_contract,
+    })
+}
+
+/// Applies the contract every skinned export shares: a declared skin may never
+/// silently produce nothing, and the model must validate and carry the runtime
+/// coordinate rotation and vertex-colour policy.
+fn finish_skinned_model(
+    nif: &NifFile,
+    nif_path: &Path,
+    mut model: project_wormhole_nif::model::all::Model,
+    material_contract: &[NifShapeMaterial],
+) -> Result<project_wormhole_nif::model::all::Model> {
+    if nif.declares_skin() && model.skeletal_meshes.is_empty() {
+        let unclaimed = unclaimed_skin_instances(nif, &model);
+        let detail = if unclaimed.is_empty() {
+            "no skin instance blocks are present".to_owned()
+        } else {
+            unclaimed.join("; ")
+        };
+        return Err(color_eyre::eyre::eyre!(
+            "NIF {} declares a skin but produced no skeletal mesh: {detail}; refusing to publish a static mesh",
+            nif_path.display()
+        ));
+    }
+    model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+    model
+        .validate()
+        .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
+    apply_vertex_color_contract(&mut model, nif, material_contract)?;
+    Ok(model)
+}
+
+pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1937,7 +2005,7 @@ impl BoundsAccumulator {
     }
 }
 
-fn rewrite_materials_and_texture_uris(
+pub(crate) fn rewrite_materials_and_texture_uris(
     glb: Vec<u8>,
     material_contract: &[NifShapeMaterial],
     shape_blocks: &[u32],
