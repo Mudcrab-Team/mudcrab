@@ -4,8 +4,11 @@
 //! `hk_2010.2.0-r1`. The decoded clip is plain data; GLB emission belongs to a later stage.
 
 mod classes;
+pub mod glb;
 mod packfile;
 mod spline;
+
+pub use glb::write_clip_glb;
 
 use classes::{Binding, Skeleton, SplineAnimation};
 use color_eyre::{

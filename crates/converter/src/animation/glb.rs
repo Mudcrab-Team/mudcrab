@@ -1,0 +1,785 @@
+//! Writes a decoded clip as an animation-only GLB over a body's bone tree.
+//!
+//! The body owns the hierarchy: a channel target is a node path, so the clip can only address
+//! a bone if every ancestor of that bone exists too. The emitted node layout therefore mirrors
+//! the composed body's exporter — one node per body bone in name order, children sorted, and a
+//! single `Creation-to-glTF basis` wrapper whose index comes after the bones.
+
+use super::{AnimationClip, BoneBindingReport, bind_clip_to_bones};
+use crate::mesh::write_glb_atomic;
+use color_eyre::{
+    Result,
+    eyre::{WrapErr, ensure, eyre},
+};
+use gltf::json::{
+    Accessor, Animation, Buffer, Extras, Index, Node, Root, Scene, Value,
+    accessor::{ComponentType, GenericComponentType, Type},
+    animation::{Channel, Interpolation, Property, Sampler, Target},
+    buffer::View,
+    scene::UnitQuaternion,
+    validation::{Checked, USize64},
+};
+use project_wormhole_nif::model::all::BoneTree;
+use project_wormhole_shared::glam;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+
+/// Writes `clip` as a GLB whose nodes are `body_bones`, binding the clip's track names first.
+///
+/// Returns the binding report so callers can record which tracks were case-aliased or skipped.
+pub fn write_clip_glb(
+    clip: &mut AnimationClip,
+    body_bones: &BoneTree,
+    clip_name: &str,
+    output: &Path,
+) -> Result<BoneBindingReport> {
+    let body_bone_names: BTreeSet<String> = body_bones.bones.keys().cloned().collect();
+    let report = bind_clip_to_bones(clip, &body_bone_names);
+    let glb = encode_clip_glb(clip, body_bones, clip_name)?;
+    write_glb_atomic(output, &glb)?;
+    Ok(report)
+}
+
+fn encode_clip_glb(
+    clip: &AnimationClip,
+    body_bones: &BoneTree,
+    clip_name: &str,
+) -> Result<Vec<u8>> {
+    ensure!(
+        !body_bones.bones.is_empty(),
+        "cannot write a clip without body bones"
+    );
+    let frame_count = usize::try_from(clip.frame_count)
+        .map_err(|_| eyre!("clip has {} frames", clip.frame_count))?;
+    ensure!(frame_count > 0, "clip has no frames");
+    ensure!(
+        clip.frames_per_second.is_finite() && clip.frames_per_second > 0.0,
+        "clip frame rate {} is invalid",
+        clip.frames_per_second
+    );
+
+    let mut root = Root {
+        scene: Some(Index::new(0)),
+        ..Root::default()
+    };
+    root.scenes.push(Scene {
+        extensions: None,
+        extras: Extras::default(),
+        name: None,
+        nodes: Vec::new(),
+    });
+    root.buffers.push(Buffer {
+        byte_length: USize64(0),
+        name: None,
+        uri: None,
+        extensions: None,
+        extras: Extras::default(),
+    });
+
+    let mut bin = Vec::new();
+    let bone_nodes = push_bone_nodes(&mut root, body_bones)?;
+    push_wrapper(&mut root);
+    let input = push_input_accessor(&mut root, &mut bin, clip, frame_count);
+
+    let mut channels = Vec::new();
+    let mut samplers = Vec::new();
+    let mut values: Vec<f32> = Vec::with_capacity(frame_count * 4);
+    for track in &clip.tracks {
+        let Some(name) = track.bone_name.as_deref() else {
+            continue;
+        };
+        let &node = bone_nodes.get(name).ok_or_else(|| {
+            eyre!(
+                "clip track {} bound to bone {name}, which the body does not have",
+                track.bone_index
+            )
+        })?;
+        ensure!(
+            track.samples.len() == frame_count,
+            "clip track {} ({name}) has {} samples but the clip has {frame_count} frames",
+            track.bone_index,
+            track.samples.len()
+        );
+
+        values.clear();
+        values.extend(track.samples.iter().flat_map(|sample| sample.translation));
+        push_sampler(
+            &mut root,
+            &mut bin,
+            &mut channels,
+            &mut samplers,
+            input,
+            node,
+            Property::Translation,
+            Type::Vec3,
+            frame_count,
+            &values,
+        );
+
+        values.clear();
+        values.extend(track.samples.iter().flat_map(|sample| sample.rotation));
+        push_sampler(
+            &mut root,
+            &mut bin,
+            &mut channels,
+            &mut samplers,
+            input,
+            node,
+            Property::Rotation,
+            Type::Vec4,
+            frame_count,
+            &values,
+        );
+
+        values.clear();
+        values.extend(track.samples.iter().flat_map(|sample| sample.scale));
+        push_sampler(
+            &mut root,
+            &mut bin,
+            &mut channels,
+            &mut samplers,
+            input,
+            node,
+            Property::Scale,
+            Type::Vec3,
+            frame_count,
+            &values,
+        );
+    }
+
+    root.animations.push(Animation {
+        extensions: None,
+        extras: Extras::default(),
+        channels,
+        name: Some(clip_name.to_owned()),
+        samplers,
+    });
+    root.buffers[0].byte_length = USize64(bin.len() as u64);
+
+    pack_glb(&root, bin)
+}
+
+/// Emits one node per bone in name order and wires the sorted child lists.
+fn push_bone_nodes<'a>(
+    root: &mut Root,
+    body_bones: &'a BoneTree,
+) -> Result<BTreeMap<&'a str, Index<Node>>> {
+    let mut bone_nodes = BTreeMap::new();
+    for (name, bone) in &body_bones.bones {
+        let translation = bone
+            .transform
+            .get_translation()
+            .map(|value| value.0.to_array());
+        let rotation = bone.transform.get_rotation().map(|value| {
+            let quaternion = glam::Quat::from_mat3(&value.0);
+            UnitQuaternion([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+        });
+        let scale = bone
+            .transform
+            .get_scale()
+            .map(|value| [value, value, value]);
+
+        let node = Index::push(
+            &mut root.nodes,
+            Node {
+                camera: None,
+                children: None,
+                extensions: None,
+                extras: Extras::default(),
+                matrix: None,
+                mesh: None,
+                name: Some(name.clone()),
+                rotation,
+                scale,
+                translation,
+                skin: None,
+                weights: None,
+            },
+        );
+        bone_nodes.insert(name.as_str(), node);
+    }
+
+    let mut parented: BTreeSet<&str> = BTreeSet::new();
+    for (name, bone) in &body_bones.bones {
+        let parent = bone_nodes[name.as_str()];
+        let mut children: Vec<&String> = bone.children.iter().collect();
+        children.sort();
+        let mut child_indices = Vec::with_capacity(children.len());
+        for child in children {
+            let Some(&child_index) = bone_nodes.get(child.as_str()) else {
+                return Err(eyre!(
+                    "bone {name} lists child {child}, which the bone tree does not contain"
+                ));
+            };
+            child_indices.push(child_index);
+            parented.insert(child.as_str());
+        }
+        if !child_indices.is_empty() {
+            root.nodes[parent.value()].children = Some(child_indices);
+        }
+    }
+
+    for name in body_bones.bones.keys() {
+        if !parented.contains(name.as_str()) {
+            root.scenes[0].nodes.push(bone_nodes[name.as_str()]);
+        }
+    }
+
+    Ok(bone_nodes)
+}
+
+/// Appends the single root that carries the Creation-to-runtime rotation.
+fn push_wrapper(root: &mut Root) {
+    let children = std::mem::take(&mut root.scenes[0].nodes);
+    let wrapper = Index::push(
+        &mut root.nodes,
+        Node {
+            camera: None,
+            children: Some(children),
+            extensions: None,
+            extras: Extras::default(),
+            matrix: None,
+            mesh: None,
+            name: Some("Creation-to-glTF basis".to_owned()),
+            rotation: Some(UnitQuaternion(
+                shared::coordinates::CREATION_TO_RUNTIME_ROTATION,
+            )),
+            scale: None,
+            translation: None,
+            skin: None,
+            weights: None,
+        },
+    );
+    root.scenes[0].nodes.push(wrapper);
+}
+
+/// Writes the shared keyframe times: `[0, 1/fps, … (frames - 1)/fps]`.
+fn push_input_accessor(
+    root: &mut Root,
+    bin: &mut Vec<u8>,
+    clip: &AnimationClip,
+    frame_count: usize,
+) -> Index<Accessor> {
+    let times: Vec<f32> = (0..frame_count)
+        .map(|frame| frame as f32 / clip.frames_per_second)
+        .collect();
+    let last = times.last().copied().unwrap_or(0.0);
+    push_accessor(
+        root,
+        bin,
+        Type::Scalar,
+        frame_count,
+        &times,
+        Some(Value::Array(vec![Value::from(0.0_f32)])),
+        Some(Value::Array(vec![Value::from(last)])),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_sampler(
+    root: &mut Root,
+    bin: &mut Vec<u8>,
+    channels: &mut Vec<Channel>,
+    samplers: &mut Vec<Sampler>,
+    input: Index<Accessor>,
+    node: Index<Node>,
+    path: Property,
+    type_: Type,
+    count: usize,
+    values: &[f32],
+) {
+    let output = push_accessor(root, bin, type_, count, values, None, None);
+    let sampler = Index::push(
+        samplers,
+        Sampler {
+            extensions: None,
+            extras: Extras::default(),
+            input,
+            interpolation: Checked::Valid(Interpolation::Linear),
+            output,
+        },
+    );
+    channels.push(Channel {
+        sampler,
+        target: Target {
+            extensions: None,
+            extras: Extras::default(),
+            node,
+            path: Checked::Valid(path),
+        },
+        extensions: None,
+        extras: Extras::default(),
+    });
+}
+
+fn push_accessor(
+    root: &mut Root,
+    bin: &mut Vec<u8>,
+    type_: Type,
+    count: usize,
+    values: &[f32],
+    min: Option<Value>,
+    max: Option<Value>,
+) -> Index<Accessor> {
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let offset = bin.len();
+    for value in values {
+        bin.extend_from_slice(&value.to_le_bytes());
+    }
+    let length = bin.len() - offset;
+    let view = Index::push(
+        &mut root.buffer_views,
+        View {
+            buffer: Index::new(0),
+            byte_length: USize64(length as u64),
+            byte_offset: Some(USize64(offset as u64)),
+            byte_stride: None,
+            extensions: None,
+            extras: Extras::default(),
+            name: None,
+            target: None,
+        },
+    );
+    Index::push(
+        &mut root.accessors,
+        Accessor {
+            buffer_view: Some(view),
+            byte_offset: None,
+            count: USize64(count as u64),
+            component_type: Checked::Valid(GenericComponentType(ComponentType::F32)),
+            extensions: None,
+            extras: Extras::default(),
+            type_: Checked::Valid(type_),
+            min,
+            max,
+            name: None,
+            normalized: false,
+            sparse: None,
+        },
+    )
+}
+
+/// Packs JSON and BIN the way the vendor's `to_glb` does: both chunks 4-byte aligned, the JSON
+/// chunk padded with spaces and the BIN chunk with zeros.
+fn pack_glb(root: &Root, bin_data: Vec<u8>) -> Result<Vec<u8>> {
+    let mut json = root
+        .to_string()
+        .wrap_err("failed to serialize clip glTF JSON")?
+        .into_bytes();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let mut bin = bin_data;
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+
+    let total_len = 12usize
+        .saturating_add(8)
+        .saturating_add(json.len())
+        .saturating_add(8)
+        .saturating_add(bin.len());
+    let mut glb = Vec::with_capacity(total_len);
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+    glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&json);
+    glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"BIN\0");
+    glb.extend_from_slice(&bin);
+    Ok(glb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use project_wormhole_nif::model::all::{BoneData, BoneTransform};
+    use project_wormhole_shared::prelude::BSVec3;
+    use std::path::{Path, PathBuf};
+
+    use crate::animation::{TransformSample, TransformTrack, decode_clip_with_skeleton};
+
+    fn bone(transform: BoneTransform, children: &[&str]) -> BoneData {
+        BoneData {
+            transform,
+            children: children.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    fn fixture_bones() -> BoneTree {
+        let mut tree = BoneTree::new();
+        tree.add_bone(
+            "Root",
+            bone(
+                BoneTransform::new(
+                    Some(BSVec3(glam::Vec3::new(1.0, 2.0, 3.0))),
+                    None,
+                    Some(2.0),
+                ),
+                &["ChildA", "ChildB"],
+            ),
+        )
+        .expect("add root");
+        tree.add_bone("ChildA", bone(BoneTransform::default(), &[]))
+            .expect("add child a");
+        tree.add_bone("ChildB", bone(BoneTransform::default(), &[]))
+            .expect("add child b");
+        tree
+    }
+
+    fn sample(frame: f32) -> TransformSample {
+        TransformSample {
+            translation: [frame, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn fixture_clip() -> AnimationClip {
+        AnimationClip {
+            name: String::new(),
+            original_skeleton_name: "fixture".to_owned(),
+            duration_seconds: 2.0 / 30.0,
+            frame_count: 3,
+            frames_per_second: 30.0,
+            tracks: vec![
+                TransformTrack {
+                    bone_index: 0,
+                    bone_name: Some("ChildA".to_owned()),
+                    samples: vec![sample(0.0), sample(1.0), sample(2.0)],
+                },
+                TransformTrack {
+                    bone_index: 1,
+                    bone_name: Some("x_NPC Ghost".to_owned()),
+                    samples: vec![sample(0.0), sample(1.0), sample(2.0)],
+                },
+            ],
+        }
+    }
+
+    fn read_glb(path: &Path) -> (Root, Vec<u8>) {
+        let bytes = std::fs::read(path).expect("read GLB");
+        assert!(bytes.len() >= 20, "GLB is too short");
+        assert_eq!(&bytes[..4], b"glTF", "GLB magic");
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[16..20], b"JSON", "JSON chunk type");
+        let json = &bytes[20..20 + json_len];
+        let view_start = 20 + json_len;
+        let bin_len =
+            u32::from_le_bytes(bytes[view_start..view_start + 4].try_into().unwrap()) as usize;
+        assert_eq!(
+            &bytes[view_start + 4..view_start + 8],
+            b"BIN\0",
+            "BIN chunk type"
+        );
+        let bin = &bytes[view_start + 8..view_start + 8 + bin_len];
+        (
+            Root::from_slice(json).expect("parse GLB JSON"),
+            bin.to_vec(),
+        )
+    }
+
+    fn node_named<'a>(nodes: &'a [Node], name: &str) -> (usize, &'a Node) {
+        nodes
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("node {name} is missing"))
+    }
+
+    fn parents(nodes: &[Node]) -> Vec<Option<usize>> {
+        let mut parents = vec![None; nodes.len()];
+        for (index, node) in nodes.iter().enumerate() {
+            for child in node.children.as_deref().unwrap_or_default() {
+                parents[child.value()] = Some(index);
+            }
+        }
+        parents
+    }
+
+    fn accessor_values(root: &Root, bin: &[u8], index: usize) -> Vec<f32> {
+        let accessor = &root.accessors[index];
+        let view = &root.buffer_views[accessor
+            .buffer_view
+            .expect("accessor has a buffer view")
+            .value()];
+        let offset = view.byte_offset.map_or(0, |value| value.0 as usize)
+            + accessor.byte_offset.map_or(0, |value| value.0 as usize);
+        let components = match &accessor.type_ {
+            Checked::Valid(Type::Scalar) => 1,
+            Checked::Valid(Type::Vec2) => 2,
+            Checked::Valid(Type::Vec3) => 3,
+            Checked::Valid(Type::Vec4) => 4,
+            _ => panic!("unexpected accessor type"),
+        };
+        let count = accessor.count.0 as usize;
+        bin[offset..offset + count * components * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect()
+    }
+
+    #[test]
+    fn writes_body_hierarchy_with_channels_for_bound_tracks_only() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let output = directory.path().join("fixture.glb");
+        let mut clip = fixture_clip();
+        let report =
+            write_clip_glb(&mut clip, &fixture_bones(), "fixture", &output).expect("write clip");
+
+        assert_eq!(report.exact, 1);
+        assert!(report.aliased.is_empty());
+        assert_eq!(report.skipped, vec!["x_NPC Ghost".to_owned()]);
+
+        let (root, bin) = read_glb(&output);
+        assert_eq!(root.scenes.len(), 1);
+        assert_eq!(root.nodes.len(), 4, "three bones plus the wrapper");
+
+        let wrapper_index = root.scenes[0].nodes[0].value();
+        let wrapper = &root.nodes[wrapper_index];
+        assert_eq!(wrapper.name.as_deref(), Some("Creation-to-glTF basis"));
+        assert_eq!(
+            wrapper.rotation.expect("wrapper rotation").0,
+            shared::coordinates::CREATION_TO_RUNTIME_ROTATION,
+        );
+
+        for name in ["Root", "ChildA", "ChildB"] {
+            let matching = root
+                .nodes
+                .iter()
+                .filter(|node| node.name.as_deref() == Some(name))
+                .count();
+            assert_eq!(matching, 1, "bone {name} must appear exactly once");
+        }
+        for node in &root.nodes {
+            assert!(
+                !node.name.as_deref().unwrap_or_default().contains(':'),
+                "node names must stay plain"
+            );
+        }
+
+        assert_eq!(root.animations.len(), 1);
+        let animation = &root.animations[0];
+        assert_eq!(animation.name.as_deref(), Some("fixture"));
+        assert_eq!(
+            animation.channels.len(),
+            3,
+            "animated bone has three channels"
+        );
+        assert_eq!(animation.samplers.len(), 3);
+
+        let (animated_index, _) = node_named(&root.nodes, "ChildA");
+        let (root_index, _) = node_named(&root.nodes, "Root");
+        let (unanimated_index, _) = node_named(&root.nodes, "ChildB");
+        for channel in &animation.channels {
+            assert_eq!(channel.target.node.value(), animated_index);
+        }
+        assert!(
+            !animation
+                .channels
+                .iter()
+                .any(|channel| channel.target.node.value() == unanimated_index),
+            "an unanimated bone must not get a channel"
+        );
+
+        let parent_of = parents(&root.nodes);
+        assert_eq!(parent_of[animated_index], Some(root_index));
+        assert_eq!(parent_of[root_index], Some(wrapper_index));
+
+        let input = animation.samplers[0].input.value();
+        assert_eq!(root.accessors[input].count.0, 3);
+        let times = accessor_values(&root, &bin, input);
+        assert_eq!(times.len(), 3);
+        assert!((times[0] - 0.0).abs() <= 1e-6);
+        let max = root.accessors[input]
+            .max
+            .as_ref()
+            .expect("input max")
+            .as_array()
+            .expect("array")[0]
+            .as_f64()
+            .expect("number");
+        assert!((max - 2.0 / 30.0).abs() <= 1e-6, "input max {max}");
+
+        for sampler in &animation.samplers {
+            assert_eq!(root.accessors[sampler.output.value()].count.0, 3);
+        }
+
+        let second = directory.path().join("fixture-again.glb");
+        write_clip_glb(&mut fixture_clip(), &fixture_bones(), "fixture", &second)
+            .expect("write the same clip again");
+        assert_eq!(
+            std::fs::read(&output).expect("read first GLB"),
+            std::fs::read(&second).expect("read second GLB"),
+            "identical input must produce identical bytes"
+        );
+    }
+
+    fn animation_root() -> PathBuf {
+        std::env::var_os("MUDCRAB_ANIMATION_DIR")
+            .map(PathBuf::from)
+            .expect("MUDCRAB_ANIMATION_DIR must point at the extracted character directory")
+    }
+
+    fn actor_nif_root() -> PathBuf {
+        std::env::var_os("MUDCRAB_ACTOR_NIF_DIR")
+            .map(PathBuf::from)
+            .expect("MUDCRAB_ACTOR_NIF_DIR must point at the extracted actors directory")
+    }
+
+    fn body_bones(actor_root: &Path, body_name: &str) -> BoneTree {
+        use project_wormhole_nif::nif_file::{NifFile, nif_to_model};
+
+        let character = actor_root.join("character/character assets");
+        let body = NifFile::open(
+            character
+                .join(body_name)
+                .to_str()
+                .expect("body path is UTF-8"),
+        )
+        .expect("parse body NIF");
+        let skeleton = NifFile::open(
+            character
+                .join("skeleton.nif")
+                .to_str()
+                .expect("skeleton path is UTF-8"),
+        )
+        .expect("parse skeleton NIF");
+        let model = nif_to_model(&body, Some(&skeleton)).expect("build body model");
+        model
+            .skeletal_meshes
+            .first()
+            .expect("body has a skeletal mesh")
+            .bones
+            .clone()
+    }
+
+    fn assert_descendant(parent_of: &[Option<usize>], wrapper: usize, node: usize, label: &str) {
+        let mut current = Some(node);
+        while let Some(index) = current {
+            if index == wrapper {
+                return;
+            }
+            current = parent_of[index];
+        }
+        panic!("{label} node {node} is not a descendant of the wrapper");
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
+    fn retail_mt_idle_writes_channel_per_bound_bone() {
+        let animation_root = animation_root();
+        let actor_root = actor_nif_root();
+        let skeleton_bytes = std::fs::read(animation_root.join("character assets/skeleton.hkx"))
+            .expect("read skeleton.hkx");
+
+        let male_bytes = std::fs::read(animation_root.join("animations/male/mt_idle.hkx"))
+            .expect("read male mt_idle.hkx");
+        let mut male =
+            decode_clip_with_skeleton(&male_bytes, &skeleton_bytes).expect("decode male clip");
+        let male_bones = body_bones(&actor_root, "malebody_1.nif");
+        assert_eq!(male_bones.bones.len(), 99);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let male_output = directory.path().join("mt_idle.glb");
+        let report = write_clip_glb(&mut male, &male_bones, "mt_idle", &male_output)
+            .expect("write male clip");
+
+        assert_eq!(report.exact, 93);
+        assert_eq!(
+            report.aliased,
+            vec![
+                ("Quiver".to_owned(), "QUIVER".to_owned()),
+                ("Shield".to_owned(), "SHIELD".to_owned()),
+                ("Weapon".to_owned(), "WEAPON".to_owned()),
+            ]
+        );
+        assert_eq!(
+            report.skipped,
+            vec![
+                "x_NPC LookNode [Look]".to_owned(),
+                "x_NPC Rotate [Rot ]".to_owned(),
+                "x_NPC Translate [Pos ]".to_owned(),
+            ]
+        );
+        assert_eq!(report.bound(), 96);
+
+        let (root, bin) = read_glb(&male_output);
+        assert_eq!(root.nodes.len(), 100, "99 bones plus the wrapper");
+        for name in male_bones.bones.keys() {
+            let matching = root
+                .nodes
+                .iter()
+                .filter(|node| node.name.as_deref() == Some(name.as_str()))
+                .count();
+            assert_eq!(matching, 1, "bone {name} must appear exactly once");
+        }
+
+        let wrapper = root.scenes[0].nodes[0].value();
+        assert_eq!(
+            root.nodes[wrapper].name.as_deref(),
+            Some("Creation-to-glTF basis")
+        );
+        assert_eq!(
+            root.nodes[wrapper].rotation.expect("wrapper rotation").0,
+            shared::coordinates::CREATION_TO_RUNTIME_ROTATION,
+        );
+
+        let animation = &root.animations[0];
+        assert_eq!(animation.name.as_deref(), Some("mt_idle"));
+        assert_eq!(
+            animation.channels.len(),
+            288,
+            "96 bound tracks x 3 channels"
+        );
+        assert_eq!(animation.samplers.len(), 288);
+
+        let parent_of = parents(&root.nodes);
+        for channel in &animation.channels {
+            assert_descendant(
+                &parent_of,
+                wrapper,
+                channel.target.node.value(),
+                "channel target",
+            );
+        }
+
+        let input = animation.samplers[0].input.value();
+        let times = accessor_values(&root, &bin, input);
+        let max_time = times.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            (max_time - 9.133_333).abs() <= 1e-4,
+            "male max input time {max_time}"
+        );
+        assert_eq!(times.len(), 275);
+
+        let female_bytes = std::fs::read(animation_root.join("animations/female/mt_idle.hkx"))
+            .expect("read female mt_idle.hkx");
+        let mut female =
+            decode_clip_with_skeleton(&female_bytes, &skeleton_bytes).expect("decode female clip");
+        let female_bones = body_bones(&actor_root, "femalebody_1.nif");
+        let female_output = directory.path().join("female_mt_idle.glb");
+        let female_report = write_clip_glb(&mut female, &female_bones, "mt_idle", &female_output)
+            .expect("write female clip");
+        let (female_root, female_bin) = read_glb(&female_output);
+        let female_animation = &female_root.animations[0];
+        let female_input = female_animation.samplers[0].input.value();
+        let female_times = accessor_values(&female_root, &female_bin, female_input);
+        let female_max = female_times.iter().copied().fold(f32::MIN, f32::max);
+        println!(
+            "female mt_idle: {} channels, duration {:.6}s, {} bones",
+            female_animation.channels.len(),
+            female_max,
+            female_bones.bones.len()
+        );
+        assert_eq!(female_animation.channels.len(), female_report.bound() * 3);
+    }
+}
