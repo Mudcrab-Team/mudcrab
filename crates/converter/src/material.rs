@@ -102,8 +102,18 @@ pub enum NifTextureSemantic {
     EnvironmentCube,
     EnvironmentMask,
     InnerLayer,
+    /// The FaceGen tint texture of a `face_tint` head (slot 6), overlaid on the diffuse.
+    FacegenTint,
     Greyscale,
     Unclassified,
+}
+
+impl NifTextureSemantic {
+    /// Colour images published as sRGB: the runtime treats them like the diffuse, while the other
+    /// Skyrim-only slots hold masks, heights or cube data.
+    fn is_srgb_color(self) -> bool {
+        matches!(self, Self::Detail | Self::FacegenTint)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -661,11 +671,11 @@ fn publish_skyrim_extension(
             "texture": registry.texture(
                 &slot.path,
                 glb_output_path,
-                matches!(slot.semantic, NifTextureSemantic::Detail),
+                slot.semantic.is_srgb_color(),
                 material.texture_clamp_mode,
             )?,
             "required": slot.required,
-            "colorSpace": if matches!(slot.semantic, NifTextureSemantic::Detail) { "srgb" } else { "linear" }
+            "colorSpace": if slot.semantic.is_srgb_color() { "srgb" } else { "linear" }
         }));
     }
     let premultiplied_alpha = material.shader_flags_2 & SLSF2_PREMULTIPLIED_ALPHA != 0;
@@ -1028,6 +1038,9 @@ fn lighting_texture_slots(
             | LightingShaderType::ParallaxOcclusion
             | LightingShaderType::MultiLayerParallax
     );
+    // Slot 6 is the multilayer-parallax inner layer, but a FaceGen head keeps its tint texture
+    // there, which the `FACEGEN` lighting shader samples as `TexTintSampler`.
+    let facegen = matches!(shader_type, LightingShaderType::FaceTint);
     let mut slots = Vec::new();
     for (index, path) in set.textures.iter().enumerate() {
         let Some(path) = path else { continue };
@@ -1042,6 +1055,7 @@ fn lighting_texture_slots(
             4 => NifTextureSemantic::Unclassified,
             5 if environment => NifTextureSemantic::EnvironmentMask,
             5 => NifTextureSemantic::Unclassified,
+            6 if facegen => NifTextureSemantic::FacegenTint,
             6 => NifTextureSemantic::InnerLayer,
             7 => NifTextureSemantic::Specular,
             _ => NifTextureSemantic::Unclassified,
@@ -1784,6 +1798,90 @@ mod tests {
                 assert_eq!(material.get("emissiveTexture").is_some(), glow);
             }
         }
+    }
+
+    #[test]
+    fn slot_six_is_the_facegen_tint_only_on_face_tint_heads() {
+        let mut textures = vec![None; 7];
+        textures[0] = Some("textures/actors/character/male/malehead.dds".to_owned());
+        textures[3] = Some("textures/actors/character/male/blankdetailmap.dds".to_owned());
+        textures[6] = Some(
+            "textures/actors/character/facegendata/facetint/skyrim.esm/00013475.dds".to_owned(),
+        );
+        let set = BSShaderTextureSet {
+            textures,
+            diffuse: None,
+            normal: None,
+            glow: None,
+            height_or_detail: None,
+            environment: None,
+            environment_mask: None,
+            inner_layer: None,
+            specular: None,
+        };
+        for (shader, slot_3, slot_6) in [
+            (
+                LightingShaderType::FaceTint,
+                NifTextureSemantic::Detail,
+                NifTextureSemantic::FacegenTint,
+            ),
+            (
+                LightingShaderType::MultiLayerParallax,
+                NifTextureSemantic::Height,
+                NifTextureSemantic::InnerLayer,
+            ),
+            (
+                LightingShaderType::SkinTint,
+                NifTextureSemantic::Detail,
+                NifTextureSemantic::InnerLayer,
+            ),
+            (
+                LightingShaderType::Default,
+                NifTextureSemantic::Detail,
+                NifTextureSemantic::InnerLayer,
+            ),
+        ] {
+            let slots = lighting_texture_slots(&set, shader, 0, 0).unwrap();
+            let semantic = |index| {
+                slots
+                    .iter()
+                    .find(|slot| slot.slot == index)
+                    .map(|slot| slot.semantic)
+            };
+            assert_eq!(semantic(3), Some(slot_3), "{shader:?} slot 3");
+            assert_eq!(semantic(6), Some(slot_6), "{shader:?} slot 6");
+        }
+
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+        material.lighting_shader_type = Some(LightingShaderType::FaceTint);
+        material.textures = lighting_texture_slots(&set, LightingShaderType::FaceTint, 0, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|slot| slot.slot != 0)
+            .collect();
+        let mut document = gltf(1);
+        publish_gltf_materials(
+            &mut document,
+            &[shape(10, material)],
+            &[10],
+            Path::new("meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.glb"),
+        )
+        .unwrap();
+        let slots = document["materials"][0]["extensions"]["OPEN_SKYRIM_material"]["textureSlots"]
+            .as_array()
+            .unwrap();
+        let tint = slots.iter().find(|slot| slot["slot"] == 6).unwrap();
+        assert_eq!(tint["semantic"], "facegen_tint");
+        assert_eq!(tint["colorSpace"], "srgb");
+        let image = document["textures"][tint["texture"].as_u64().unwrap() as usize]["source"]
+            .as_u64()
+            .unwrap() as usize;
+        assert!(
+            document["images"][image]["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("facetint/skyrim.esm/00013475.opensky-srgb.ktx2")
+        );
     }
 
     #[test]

@@ -2140,6 +2140,7 @@ fn texture_dependencies(document: &serde_json::Value) -> Vec<TextureDependency> 
                         Some("environment_cube") => TextureSemantic::EnvironmentCube,
                         Some("environment_mask") => TextureSemantic::EnvironmentMask,
                         Some("inner_layer") => TextureSemantic::InnerLayer,
+                        Some("facegen_tint") => TextureSemantic::FacegenTint,
                         Some("greyscale") => TextureSemantic::Greyscale,
                         _ => TextureSemantic::Unclassified,
                     };
