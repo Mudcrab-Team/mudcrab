@@ -442,6 +442,8 @@ impl Model {
 
         for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
             let mut joints = Vec::new();
+            let mut mesh_weights = None;
+            let mut mesh_extras = Extras::default();
 
             for joint in &smesh.skin {
                 let Some(&node) = bone_nodes.get(joint.as_str()) else {
@@ -806,6 +808,133 @@ impl Model {
                 panic!("SkeletalMesh must have weights and joints")
             }
 
+            if !smesh.morph_targets.is_empty() {
+                let vertex_count = smesh.mesh.as_ref().unwrap().positions.len();
+                let mut targets = Vec::with_capacity(smesh.morph_targets.len());
+
+                for target in &smesh.morph_targets {
+                    assert_eq!(
+                        target.positions.len(),
+                        vertex_count,
+                        "morph target {:?} of skeletal mesh {index} has {} positions, expected {vertex_count}",
+                        target.name,
+                        target.positions.len()
+                    );
+                    assert_eq!(
+                        target.normals.len(),
+                        vertex_count,
+                        "morph target {:?} of skeletal mesh {index} has {} normals, expected {vertex_count}",
+                        target.name,
+                        target.normals.len()
+                    );
+
+                    let (min, max) = vec3_min_max(&target.positions);
+                    let positions_bytes = vec3_as_bytes(&target.positions);
+
+                    let positions_accessor = Index::new(root.accessors.len() as u32);
+                    root.accessors.push(Accessor {
+                        buffer_view: Some(Index::new(root.buffer_views.len() as u32)),
+                        byte_offset: None,
+                        count: USize64(target.positions.len() as u64),
+                        component_type: validation::Checked::Valid(GenericComponentType(
+                            accessor::ComponentType::F32,
+                        )),
+                        extensions: None,
+                        extras: Extras::default(),
+                        type_: validation::Checked::Valid(accessor::Type::Vec3),
+                        min: Some(Value::Array(vec![min.x.into(), min.y.into(), min.z.into()])),
+                        max: Some(Value::Array(vec![max.x.into(), max.y.into(), max.z.into()])),
+                        name: Some(format!(
+                            "MORPH_POSITIONS | MESH:{} | {}",
+                            root.meshes.len(),
+                            target.name
+                        )),
+                        normalized: false,
+                        sparse: None,
+                    });
+
+                    root.buffer_views.push(View {
+                        buffer: Index::new(0),
+                        byte_length: USize64(positions_bytes.len() as u64),
+                        byte_offset: Some(USize64(bin_data.len() as u64)),
+                        byte_stride: None,
+                        extensions: None,
+                        extras: Extras::default(),
+                        name: None,
+                        target: None,
+                    });
+
+                    bin_data.extend_from_slice(&positions_bytes);
+
+                    if bin_data.len() % 4 != 0 {
+                        let padding = 4 - (bin_data.len() % 4);
+                        bin_data.extend_from_slice(&vec![0; padding]);
+                    }
+
+                    let normals_bytes = vec3_as_bytes(&target.normals);
+
+                    let normals_accessor = Index::new(root.accessors.len() as u32);
+                    root.accessors.push(Accessor {
+                        buffer_view: Some(Index::new(root.buffer_views.len() as u32)),
+                        byte_offset: None,
+                        count: USize64(target.normals.len() as u64),
+                        component_type: validation::Checked::Valid(GenericComponentType(
+                            accessor::ComponentType::F32,
+                        )),
+                        extensions: None,
+                        extras: Extras::default(),
+                        type_: validation::Checked::Valid(accessor::Type::Vec3),
+                        min: None,
+                        max: None,
+                        name: Some(format!(
+                            "MORPH_NORMALS | MESH:{} | {}",
+                            root.meshes.len(),
+                            target.name
+                        )),
+                        normalized: false,
+                        sparse: None,
+                    });
+
+                    root.buffer_views.push(View {
+                        buffer: Index::new(0),
+                        byte_length: USize64(normals_bytes.len() as u64),
+                        byte_offset: Some(USize64(bin_data.len() as u64)),
+                        byte_stride: None,
+                        extensions: None,
+                        extras: Extras::default(),
+                        name: None,
+                        target: None,
+                    });
+
+                    bin_data.extend_from_slice(&normals_bytes);
+
+                    if bin_data.len() % 4 != 0 {
+                        let padding = 4 - (bin_data.len() % 4);
+                        bin_data.extend_from_slice(&vec![0; padding]);
+                    }
+
+                    targets.push(mesh::MorphTarget {
+                        positions: Some(positions_accessor),
+                        normals: Some(normals_accessor),
+                        tangents: None,
+                    });
+                }
+
+                mesh_weights = Some(vec![0.0; smesh.morph_targets.len()]);
+                let target_names: Vec<&str> = smesh
+                    .morph_targets
+                    .iter()
+                    .map(|target| target.name.as_str())
+                    .collect();
+                mesh_extras = Some(
+                    serde_json::value::to_raw_value(
+                        &serde_json::json!({ "targetNames": target_names }),
+                    )
+                    .expect("morph target names must serialize as JSON"),
+                );
+                primitives.targets = Some(targets);
+            }
+
             root.scenes[0]
                 .nodes
                 .push(Index::new(root.nodes.len() as u32));
@@ -827,10 +956,10 @@ impl Model {
 
             root.meshes.push(Mesh {
                 extensions: None,
-                extras: Extras::default(),
+                extras: mesh_extras,
                 name: smesh.name.clone(),
                 primitives: vec![primitives],
-                weights: None,
+                weights: mesh_weights,
             });
         }
 
@@ -1047,6 +1176,26 @@ impl Default for Model {
     }
 }
 
+fn vec3_min_max(values: &[glam::Vec3]) -> (glam::Vec3, glam::Vec3) {
+    let Some((first, rest)) = values.split_first() else {
+        return (glam::Vec3::ZERO, glam::Vec3::ZERO);
+    };
+
+    rest.iter().fold((*first, *first), |(min, max), value| {
+        (min.min(*value), max.max(*value))
+    })
+}
+
+fn vec3_as_bytes(values: &[glam::Vec3]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 12);
+    for value in values {
+        bytes.extend(value.x.to_le_bytes().as_slice());
+        bytes.extend(value.y.to_le_bytes().as_slice());
+        bytes.extend(value.z.to_le_bytes().as_slice());
+    }
+    bytes
+}
+
 fn validate_static_scene(nodes: &[StaticSceneNode], mesh_count: usize) -> Result<(), String> {
     let mut by_block = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
@@ -1192,6 +1341,7 @@ mod shared_skeleton_tests {
             bones,
             skin: skin.iter().map(|joint| (*joint).to_owned()).collect(),
             inverse_bind_matrices: vec![BSMatrix4(glam::Mat4::IDENTITY); skin.len()],
+            morph_targets: Vec::new(),
         }
     }
 
@@ -2162,3 +2312,129 @@ impl Default for SkeletalMesh {
         }
     }
 }*/
+
+#[cfg(test)]
+mod morph_target_tests {
+    use super::*;
+    use crate::dev::*;
+    use crate::model::all::{
+        BoneData, BoneTransform, BoneTree, MorphTarget, SkeletalMesh, StaticMesh,
+    };
+
+    fn skeletal_model(morph_targets: Vec<MorphTarget>) -> Model {
+        let mut bones = BoneTree::new();
+        bones
+            .add_bone(
+                "Root",
+                BoneData {
+                    transform: BoneTransform::default(),
+                    children: HashSet::new(),
+                },
+            )
+            .unwrap();
+
+        let mut mesh = StaticMesh::default();
+        mesh.name = Some("triangle".to_owned());
+        mesh.positions = vec![
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(1.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 1.0, 0.0),
+        ];
+        mesh.normals = vec![glam::Vec3::Z; 3];
+        mesh.uvs = vec![glam::Vec2::ZERO; 3];
+        mesh.triangles = vec![glam::u16::U16Vec3::new(0, 1, 2)];
+
+        let mut skeletal = SkeletalMesh::default();
+        skeletal.name = Some("triangle".to_owned());
+        skeletal.source_block = Some(0);
+        skeletal.mesh = Some(mesh);
+        skeletal.weights = vec![glam::Vec4::new(1.0, 0.0, 0.0, 0.0); 3];
+        skeletal.joints = vec![glam::u8::U8Vec4::ZERO; 3];
+        skeletal.bones = bones;
+        skeletal.skin = vec!["Root".to_owned()];
+        skeletal.inverse_bind_matrices = vec![BSMatrix4(glam::Mat4::IDENTITY)];
+        skeletal.morph_targets = morph_targets;
+
+        Model {
+            name: Some("morph".to_owned()),
+            static_meshes: Vec::new(),
+            static_nodes: Vec::new(),
+            skeletal_meshes: vec![skeletal],
+            materials: vec![Material {
+                diffuse: None,
+                normal: None,
+                glow: None,
+                specular: None,
+            }],
+            material_indices: vec![0],
+            scene_root_rotation: None,
+        }
+    }
+
+    fn thin_target() -> MorphTarget {
+        MorphTarget {
+            name: "thin".to_owned(),
+            positions: vec![
+                glam::Vec3::new(1.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 2.0, 0.0),
+                glam::Vec3::new(0.0, 0.0, 3.0),
+            ],
+            normals: vec![
+                glam::Vec3::new(0.1, 0.0, 0.0),
+                glam::Vec3::new(0.0, 0.2, 0.0),
+                glam::Vec3::new(0.0, 0.0, 0.3),
+            ],
+        }
+    }
+
+    #[test]
+    fn skeletal_mesh_writes_named_morph_target() {
+        let bytes = skeletal_model(vec![thin_target()])
+            .to_glb("morph".to_owned())
+            .unwrap();
+        let (document, buffers, _) = gltf::import_slice(&bytes).unwrap();
+
+        let mesh = document.meshes().next().unwrap();
+        assert_eq!(mesh.weights(), Some(&[0.0f32][..]));
+        let extras: serde_json::Value =
+            serde_json::from_str(mesh.extras().as_ref().unwrap().get()).unwrap();
+        assert_eq!(extras, serde_json::json!({ "targetNames": ["thin"] }));
+
+        let primitive = mesh.primitives().next().unwrap();
+        let target = primitive.morph_targets().next().unwrap();
+        let positions_accessor = target.positions().unwrap();
+        assert!(positions_accessor.min().is_some());
+        assert!(positions_accessor.max().is_some());
+        assert!(target.normals().unwrap().min().is_none());
+
+        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+        let (positions, normals, tangents) = reader.read_morph_targets().next().unwrap();
+        assert!(tangents.is_none());
+        let positions: Vec<[f32; 3]> = positions.unwrap().collect();
+        let normals: Vec<[f32; 3]> = normals.unwrap().collect();
+        assert_eq!(
+            positions,
+            vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]
+        );
+        assert_eq!(
+            normals,
+            vec![[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]]
+        );
+    }
+
+    #[test]
+    fn empty_morph_targets_emit_no_morph_data() {
+        let bytes = skeletal_model(Vec::new())
+            .to_glb("morph".to_owned())
+            .unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+
+        let mesh = &json["meshes"][0];
+        assert!(mesh.get("targets").is_none());
+        assert!(mesh.get("weights").is_none());
+        assert!(mesh.get("extras").is_none());
+        assert!(mesh["primitives"][0].get("targets").is_none());
+        assert_eq!(json["accessors"].as_array().unwrap().len(), 7);
+    }
+}
