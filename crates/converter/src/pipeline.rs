@@ -1262,7 +1262,7 @@ impl AssetPipeline {
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
         invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
-        compose_default_bodies(staging)?;
+        compose_default_bodies(staging, &source_paths)?;
         for sex in ["male", "female"] {
             let relative = compose::composed_body_path("default", sex);
             if staging.join(&relative).is_file() {
@@ -2481,22 +2481,26 @@ impl ConversionBatch<'_> {
     }
 }
 
-/// Composes the default actor bodies from the staged character part NIFs.
+/// Composes the default actor bodies from the character part NIFs.
 ///
 /// Runs after the mesh stage and before texture dependency collection so the
-/// composed GLBs' texture references take part in the texture stage. A load
-/// order missing any part leaves the body for that sex uncomposed rather than
-/// failing the conversion.
-fn compose_default_bodies(staging: &Path) -> Result<()> {
+/// composed GLBs' texture references take part in the texture stage. Every input is
+/// resolved through the winning source map first, so an MO2 loose override is composed
+/// from the same file the mesh stage converted; the staged vfs copy is the fallback for
+/// physical Data and for sources without a loose winner. A load order missing any part
+/// leaves the body for that sex uncomposed rather than failing the conversion.
+fn compose_default_bodies(staging: &Path, sources: &BTreeMap<PathBuf, PathBuf>) -> Result<()> {
     const PARTS: [(&str, BodyPartKind); 3] = [
         ("body_1.nif", BodyPartKind::Body),
         ("hands_1.nif", BodyPartKind::Hands),
         ("feet_1.nif", BodyPartKind::Feet),
     ];
     let assets = staging.join("vfs/meshes/actors/character/character assets");
-    let skeleton = assets.join("skeleton.nif");
+    let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
+    let skeleton = winning(assets.join("skeleton.nif"));
     for sex in ["male", "female"] {
-        let part_paths = PARTS.map(|(suffix, kind)| (assets.join(format!("{sex}{suffix}")), kind));
+        let part_paths =
+            PARTS.map(|(suffix, kind)| (winning(assets.join(format!("{sex}{suffix}"))), kind));
         if !part_paths.iter().any(|(path, _)| path.is_file()) {
             continue;
         }
@@ -6882,6 +6886,14 @@ mod tests {
         }
     }
 
+    fn staged_sources(staging: &Path) -> BTreeMap<PathBuf, PathBuf> {
+        discover(&staging.join("vfs"))
+            .unwrap()
+            .into_iter()
+            .map(|path| (path.clone(), path))
+            .collect()
+    }
+
     fn glb_skin_joints(path: &Path) -> Vec<Vec<usize>> {
         let bytes = fs::read(path).unwrap();
         let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
@@ -6912,7 +6924,7 @@ mod tests {
         let staging = directory.path();
         stage_default_actor_parts(staging);
 
-        compose_default_bodies(staging).unwrap();
+        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
 
         for sex in ["male", "female"] {
             let output = staging.join(crate::compose::composed_body_path("default", sex));
@@ -6925,6 +6937,48 @@ mod tests {
         }
     }
 
+    fn glb_node_names(path: &Path) -> BTreeSet<String> {
+        let bytes = fs::read(path).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        gltf.nodes()
+            .filter_map(|node| node.name().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn compose_default_bodies_uses_the_winning_source_map() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+
+        let mods = directory.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_skeleton(&mods, "ModRoot", &["Bone0", "Bone1"]);
+        write_actor_body_part(&mods, "malebody_1.nif");
+
+        let assets = actor_assets(staging);
+        let staged_body = assets.join("malebody_1.nif");
+        fs::remove_file(&staged_body).unwrap();
+        let mut sources = staged_sources(staging);
+        sources.insert(assets.join("skeleton.nif"), mods.join("skeleton.nif"));
+        sources.insert(staged_body, mods.join("malebody_1.nif"));
+
+        compose_default_bodies(staging, &sources).unwrap();
+
+        for sex in ["male", "female"] {
+            let output = staging.join(crate::compose::composed_body_path("default", sex));
+            let names = glb_node_names(&output);
+            assert!(
+                names.contains("ModRoot"),
+                "{sex} body did not use the winning skeleton: {names:?}"
+            );
+            assert!(
+                !names.contains("SkeletonRoot"),
+                "{sex} body used the losing staged skeleton: {names:?}"
+            );
+        }
+    }
+
     #[test]
     fn compose_default_bodies_is_idempotent() {
         let directory = tempfile::tempdir().unwrap();
@@ -6933,9 +6987,9 @@ mod tests {
         let outputs = ["male", "female"]
             .map(|sex| staging.join(crate::compose::composed_body_path("default", sex)));
 
-        compose_default_bodies(staging).unwrap();
+        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
         let first = outputs.each_ref().map(|path| fs::read(path).unwrap());
-        compose_default_bodies(staging).unwrap();
+        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
         let second = outputs.each_ref().map(|path| fs::read(path).unwrap());
 
         assert_eq!(
@@ -6955,7 +7009,7 @@ mod tests {
         write_actor_part(&assets, "malehands_1.nif");
         write_actor_part(&assets, "malefeet_1.nif");
 
-        compose_default_bodies(staging).unwrap();
+        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
 
         assert!(
             staging
