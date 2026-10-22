@@ -1847,6 +1847,7 @@ fn spawn_cell(
                         base_record_type: reference.base_record_type,
                         static_physics: terrain_physics,
                         cell_id: reference.cell_id,
+                        actor_scene: actor_plan.is_some(),
                     },
                 ));
             }
@@ -2485,6 +2486,9 @@ struct PendingAssetProfile {
     base_record_type: Option<String>,
     static_physics: bool,
     cell_id: u32,
+    /// An actor scene has no `statics` row, so its bounds come from the spawned hierarchy instead
+    /// of the converter's aggregate bounds.
+    actor_scene: bool,
 }
 
 #[derive(Component)]
@@ -2911,6 +2915,7 @@ fn track_asset_readiness(
                 global,
                 world_transform,
                 expected_bounds,
+                pending.actor_scene,
                 world_assets.get(&root.0),
                 &children,
                 &transforms,
@@ -3655,6 +3660,7 @@ fn validate_spawned_transforms_and_bounds(
     root_global: &GlobalTransform,
     world_transform: &WorldTransform,
     expected: Option<&ExpectedModelBounds>,
+    actor_scene: bool,
     converted_model: Option<&WorldAsset>,
     children: &Query<&Children>,
     transforms: &Query<(&Transform, &GlobalTransform)>,
@@ -3666,33 +3672,41 @@ fn validate_spawned_transforms_and_bounds(
     if matrix_max_difference(local_matrix, world_transform.0) > 1.0e-4 {
         return Err("WorldTransform differs from the spawned reference Transform".to_owned());
     }
-    let Some(expected) = expected else {
-        // A model the converter wrote no aggregate bounds for is an empty scene: a model with no
-        // renderable geometry, so there is nothing to place, draw or bound. What makes it empty is
-        // read from the converted model itself - the scene the converter wrote, which declares no
-        // node and no mesh - rather than from the spawned instance, so a hierarchy that has not
-        // spawned yet cannot pass as an empty model. A scene that does declare a node or a mesh
-        // and still arrived without aggregate bounds is a conversion defect, and stays as fatal as
-        // any other.
-        let scene = converted_model.ok_or_else(|| {
-            "the converted model is not loaded while validating its bounds; reconvert the asset"
-                .to_owned()
-        })?;
-        let contents = converted_scene_contents(scene);
-        return if contents.is_empty() {
-            Ok(TransformValidationSummary {
-                nodes: 0,
-                empty_model: true,
-            })
-        } else {
-            Err(format!(
-                "converted model has no validated aggregate bounds; reconvert the asset (its converted scene is not empty: {} mesh primitives, {} nodes)",
-                contents.meshes, contents.nodes
-            ))
-        };
+    let expected = match expected {
+        Some(expected) => Some(
+            ExpectedModelBounds::new(expected.min, expected.max).ok_or_else(|| {
+                "converted model bounds are non-finite, empty, or inverted".to_owned()
+            })?,
+        ),
+        None => {
+            // A model the converter wrote no aggregate bounds for is an empty scene: a model with
+            // no renderable geometry, so there is nothing to place, draw or bound. What makes it
+            // empty is read from the converted model itself - the scene the converter wrote, which
+            // declares no node and no mesh - rather than from the spawned instance, so a hierarchy
+            // that has not spawned yet cannot pass as an empty model. A scene that does declare a
+            // node or a mesh and still arrived without aggregate bounds is a conversion defect,
+            // unless it is an actor scene: actor references have no `statics` row, so their bounds
+            // come from the spawned hierarchy itself.
+            let scene = converted_model.ok_or_else(|| {
+                "the converted model is not loaded while validating its bounds; reconvert the asset"
+                    .to_owned()
+            })?;
+            let contents = converted_scene_contents(scene);
+            if contents.is_empty() {
+                return Ok(TransformValidationSummary {
+                    nodes: 0,
+                    empty_model: true,
+                });
+            }
+            if !actor_scene {
+                return Err(format!(
+                    "converted model has no validated aggregate bounds; reconvert the asset (its converted scene is not empty: {} mesh primitives, {} nodes)",
+                    contents.meshes, contents.nodes
+                ));
+            }
+            None
+        }
     };
-    ExpectedModelBounds::new(expected.min, expected.max)
-        .ok_or_else(|| "converted model bounds are non-finite, empty, or inverted".to_owned())?;
 
     let mut actual_min = Vec3::splat(f32::INFINITY);
     let mut actual_max = Vec3::splat(f32::NEG_INFINITY);
@@ -3717,17 +3731,19 @@ fn validate_spawned_transforms_and_bounds(
     if bounded_meshes == 0 {
         return Err("spawned hierarchy contains no bounded mesh".to_owned());
     }
-    let extent = (expected.max - expected.min).abs().max_element().max(1.0);
-    let tolerance = (extent * 1.0e-4).max(1.0e-3);
-    let error = (actual_min - expected.min)
-        .abs()
-        .max((actual_max - expected.max).abs())
-        .max_element();
-    if !error.is_finite() || error > tolerance {
-        return Err(format!(
-            "spawned hierarchy bounds diverge from conversion: expected {:?}..{:?}, actual {:?}..{:?}, tolerance {tolerance}",
-            expected.min, expected.max, actual_min, actual_max
-        ));
+    if let Some(expected) = expected {
+        let extent = (expected.max - expected.min).abs().max_element().max(1.0);
+        let tolerance = (extent * 1.0e-4).max(1.0e-3);
+        let error = (actual_min - expected.min)
+            .abs()
+            .max((actual_max - expected.max).abs())
+            .max_element();
+        if !error.is_finite() || error > tolerance {
+            return Err(format!(
+                "spawned hierarchy bounds diverge from conversion: expected {:?}..{:?}, actual {:?}..{:?}, tolerance {tolerance}",
+                expected.min, expected.max, actual_min, actual_max
+            ));
+        }
     }
     Ok(TransformValidationSummary {
         nodes,
@@ -6927,6 +6943,7 @@ mod tests {
                 base_record_type: None,
                 static_physics: false,
                 cell_id: 0x02D4E0,
+                actor_scene: false,
             },
         )
     }
@@ -7798,6 +7815,54 @@ mod tests {
         );
     }
 
+    /// Actor references have no `statics` row, so an actor scene never has converted aggregate
+    /// bounds. It still finishes readiness: its transforms and render assets are validated and the
+    /// spawned hierarchy supplies its own bounds.
+    #[test]
+    fn an_actor_scene_without_static_bounds_becomes_ready() {
+        let mut app = model_app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(2.0, 4.0, 6.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let handle = add_converted_model(&mut app, converted_scene_with_material(mesh, material));
+        let reference = spawn_model_reference(&mut app, handle, None);
+        app.world_mut()
+            .entity_mut(reference)
+            .get_mut::<PendingAssetProfile>()
+            .expect("the pending profile")
+            .actor_scene = true;
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 0,
+            "an actor has no static bounds to compare: {:?}",
+            metrics.asset_failures
+        );
+        assert!(
+            metrics.asset_failures.is_empty(),
+            "nothing is recorded as a failed asset: {:?}",
+            metrics.asset_failures
+        );
+        assert_eq!(metrics.assets_ready, 1);
+        assert_eq!(metrics.transform_instances_validated, 1);
+        assert_eq!(metrics.bounds_validated, 1);
+        assert_eq!(metrics.meshes_validated, 1);
+        assert_eq!(metrics.materials_validated, 1);
+        assert_eq!(metrics.empty_model_references, 0);
+        assert!(
+            !app.world()
+                .entity(reference)
+                .contains::<PendingAssetProfile>(),
+            "the actor scene is no longer pending"
+        );
+    }
+
     /// The other direction of the same rule: a model the converter *did* bound, whose spawned
     /// scene turns out to be empty, is not an empty model to wave through - the two disagree and
     /// the disagreement is fatal.
@@ -8007,6 +8072,7 @@ mod tests {
             &root_global,
             &world_transform,
             Some(&expected_bounds),
+            false,
             None,
             &children,
             &transforms,

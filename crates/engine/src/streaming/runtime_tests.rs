@@ -1092,6 +1092,7 @@ fn denied_late_subscriber_does_not_hold_prepared_scene_transient() {
                 base_record_type: None,
                 static_physics: false,
                 cell_id: 3,
+                actor_scene: false,
             },
         ))
         .id();
