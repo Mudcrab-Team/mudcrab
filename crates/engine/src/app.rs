@@ -356,6 +356,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::height_fog::HeightFogPlugin,
             ConsolePlugin,
             crate::bug_report::BugReportPlugin,
+            crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
         ))

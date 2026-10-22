@@ -15,7 +15,7 @@ Target: unmodded Skyrim SE. [Phase #131](https://github.com/Mudcrab-Team/mudcrab
 | Face / skin / hair tint | Base surface projection; source family retained | Specialized tint, subsurface and specular behavior |
 | Snow / sparkle snow | Base surface projection; source family retained | Native snow coverage and sparkle response |
 | NIF landscape / landscape LOD / cloud | Generic material projection with source classification | Specialized NIF shader paths; do not confuse these with the separate LAND renderer |
-| Effect shader | Source values, UVs and alpha property preserved in generic projection | Particle/greyscale/falloff/refraction/animation semantics. Fire-refraction surfaces are explicitly excluded, not rendered as opaque cards |
+| Effect shader | Source values, UVs and alpha property preserved in generic projection; greyscale-to-palette colour and alpha drawn unlit through the palette ([#289](specs/engine/color-pipeline.md#effect-palette-289)) | Particle/falloff/refraction/animation semantics, lighting influence and additive blending. Fire-refraction surfaces are explicitly excluded, not rendered as opaque cards |
 | Declared editor marker | Exact `EditorMarker` shape plus BSX editor flag excluded with recorded reason | Not runtime geometry; ordinary shapes without both conditions remain visible |
 | LAND terrain | Existing layer renderer participates in common output-domain probe; #102 sampler defaults integrated | Independent native terrain-normal direction proof, layer/material semantics and retail comparisons |
 | Sky / fog / water / reflections | Common HDR composition, synchronized linear reflection exposure, one output transform | Authored state/units and full-scene comparisons belong to later phases |
