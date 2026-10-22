@@ -1,56 +1,104 @@
-//! Idle animation for spawned actors.
+//! Gait animation for spawned actors.
 //!
 //! The composed body scene has no animations of its own, so Bevy's glTF loader never marks its
-//! bones as animation targets. The converter writes the idle clip separately over the body's exact
-//! hierarchy (PR-3): every node name from the `Creation-to-glTF basis` wrapper down to a bone. This
+//! bones as animation targets. The converter writes each gait clip separately over the body's
+//! exact hierarchy: every node name from the `Creation-to-glTF basis` wrapper down to a bone. This
 //! module rebuilds that path over the instantiated body scene and gives every node the same
-//! [`AnimationTargetId`] the clip writer used, then plays the clip from an [`AnimationPlayer`] on
-//! the actor root.
+//! [`AnimationTargetId`] the clip writer used, then installs one [`AnimationPlayer`] on the actor
+//! root whose graph holds the idle, walk, and run clips.
 //!
 //! A clip that did not load, a body scene without the wrapper, or a loaded clip without an
-//! animation is reported once and leaves the actor spawned in bind pose. Nothing here selects a
-//! gait or drives movement.
+//! animation is reported once. A missing idle clip leaves the actor in bind pose; a missing walk or
+//! run clip falls back to the nearest gait that did load. Nothing here selects a gait or drives
+//! movement; see [`crate::actor_drive`].
 
-use crate::actors::{Actor, ActorSex};
+use crate::{
+    actor_drive::{ActorGait, ActorGaitNodes, Gait},
+    actors::{Actor, ActorSex},
+};
 use bevy::{
     animation::{
         AnimatedBy, AnimationPlayer, AnimationTargetId,
-        prelude::{AnimationGraph, AnimationGraphHandle},
+        prelude::{AnimationGraph, AnimationGraphHandle, AnimationTransitions},
     },
     asset::LoadState,
     gltf::Gltf,
     prelude::*,
     world_serialization::WorldInstanceReady,
 };
+use std::time::Duration;
 
 /// The wrapper the converter puts between the scene root and the body's bone tree.
 pub const ANIMATION_ROOT_NODE: &str = "Creation-to-glTF basis";
 
-/// The animation name the converter gives the clip in `mt_idle.glb`.
+/// The animation name the converter gives the idle clip in `mt_idle.glb`.
 pub const IDLE_ANIMATION: &str = "mt_idle";
 
-/// The idle clip the converter publishes for `sex`.
-pub fn idle_clip_scene(sex: ActorSex) -> &'static str {
-    match sex {
-        ActorSex::Male => "meshes/actors/character/animations/male/mt_idle.glb",
-        ActorSex::Female => "meshes/actors/character/animations/female/mt_idle.glb",
+/// The animation name the converter gives the walk clip in `mt_walkforward.glb`.
+pub const WALK_ANIMATION: &str = "mt_walkforward";
+
+/// The animation name the converter gives the run clip in `mt_runforward.glb`.
+pub const RUN_ANIMATION: &str = "mt_runforward";
+
+/// The clip the converter publishes for `sex` and `gait`.
+pub fn gait_clip_scene(sex: ActorSex, gait: Gait) -> &'static str {
+    match (sex, gait) {
+        (ActorSex::Male, Gait::Idle) => "meshes/actors/character/animations/male/mt_idle.glb",
+        (ActorSex::Male, Gait::Walk) => {
+            "meshes/actors/character/animations/male/mt_walkforward.glb"
+        }
+        (ActorSex::Male, Gait::Run) => "meshes/actors/character/animations/male/mt_runforward.glb",
+        (ActorSex::Female, Gait::Idle) => "meshes/actors/character/animations/female/mt_idle.glb",
+        (ActorSex::Female, Gait::Walk) => {
+            "meshes/actors/character/animations/female/mt_walkforward.glb"
+        }
+        (ActorSex::Female, Gait::Run) => {
+            "meshes/actors/character/animations/female/mt_runforward.glb"
+        }
     }
 }
 
-/// The idle clip an actor asked for, as a glTF document so its named animation can be looked up.
-///
-/// The actor root carries this until [`start_actor_idle_animations`] either installs the player or
-/// reports that the clip is unusable.
-#[derive(Component, Clone, Debug)]
-pub struct ActorIdleClip {
-    pub gltf: Handle<Gltf>,
+/// The idle clip the converter publishes for `sex`.
+pub fn idle_clip_scene(sex: ActorSex) -> &'static str {
+    gait_clip_scene(sex, Gait::Idle)
 }
 
-impl ActorIdleClip {
-    /// Loads `sex`'s idle clip through the asset server.
+/// The animation name the converter gives `gait`'s clip.
+pub fn gait_animation_name(gait: Gait) -> &'static str {
+    match gait {
+        Gait::Idle => IDLE_ANIMATION,
+        Gait::Walk => WALK_ANIMATION,
+        Gait::Run => RUN_ANIMATION,
+    }
+}
+
+/// The three gait clips an actor asked for, as glTF documents so their named animations can be
+/// looked up.
+///
+/// The actor root carries this until [`start_actor_animations`] either installs the player or
+/// reports which clips are unusable.
+#[derive(Component, Clone, Debug)]
+pub struct ActorClips {
+    pub idle: Handle<Gltf>,
+    pub walk: Handle<Gltf>,
+    pub run: Handle<Gltf>,
+}
+
+impl ActorClips {
+    /// Loads `sex`'s three gait clips through the asset server.
     pub fn load(asset_server: &AssetServer, sex: ActorSex) -> Self {
         Self {
-            gltf: asset_server.load(idle_clip_scene(sex)),
+            idle: asset_server.load(gait_clip_scene(sex, Gait::Idle)),
+            walk: asset_server.load(gait_clip_scene(sex, Gait::Walk)),
+            run: asset_server.load(gait_clip_scene(sex, Gait::Run)),
+        }
+    }
+
+    fn handle(&self, gait: Gait) -> &Handle<Gltf> {
+        match gait {
+            Gait::Idle => &self.idle,
+            Gait::Walk => &self.walk,
+            Gait::Run => &self.run,
         }
     }
 }
@@ -154,15 +202,26 @@ fn mark_actor_body_ready(
 type PendingActorAnimations<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static ActorIdleClip, &'static Actor),
+    (Entity, &'static ActorClips, &'static Actor),
     (With<ActorBodyReady>, Without<AnimationPlayer>),
 >;
 
-/// Installs every bone's target id and starts the idle clip once both the body scene and the clip
-/// are available.
+/// The named animation of one loaded gait clip, or `None` when it has no animation.
+fn clip_animation(gltf: Option<&Gltf>, gait: Gait) -> Option<Handle<AnimationClip>> {
+    let gltf = gltf?;
+    let name = gait_animation_name(gait);
+    gltf.named_animations
+        .get(name)
+        .or_else(|| gltf.animations.first())
+        .cloned()
+}
+
+/// Installs every bone's target id and starts the idle clip once the body scene and the clips are
+/// available.
 ///
-/// A failure is reported once and removes the request, leaving the actor in bind pose.
-fn start_actor_idle_animations(
+/// An unusable idle clip is reported once and removes the request, leaving the actor in bind pose.
+/// An unusable walk or run clip is reported once and falls back to the nearest loaded gait.
+fn start_actor_animations(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     gltfs: Res<Assets<Gltf>>,
@@ -171,33 +230,40 @@ fn start_actor_idle_animations(
     pending: PendingActorAnimations,
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    for (actor, clip, actor_data) in &pending {
+    for (actor, clips, actor_data) in &pending {
         let form_id = format_args!("{:08X}", actor_data.base_form_id);
-        match asset_server.load_state(clip.gltf.id()) {
-            LoadState::Loaded => {}
-            LoadState::Failed(error) => {
-                warn!(
-                    form_id,
-                    %error, "actor idle clip failed to load; the actor stays in bind pose"
-                );
-                commands.entity(actor).remove::<ActorIdleClip>();
-                continue;
-            }
-            LoadState::NotLoaded | LoadState::Loading => continue,
-        }
-        let Some(gltf) = gltfs.get(&clip.gltf) else {
+        let [idle_state, walk_state, run_state] =
+            Gait::ALL.map(|gait| asset_server.load_state(clips.handle(gait).id()));
+        if [&idle_state, &walk_state, &run_state]
+            .iter()
+            .any(|state| matches!(state, LoadState::NotLoaded | LoadState::Loading))
+        {
             continue;
-        };
-        let Some(clip_handle) = gltf
-            .named_animations
-            .get(IDLE_ANIMATION)
-            .or_else(|| gltf.animations.first())
-        else {
+        }
+        let idle_gltf = gltfs.get(&clips.idle);
+        let walk_gltf = gltfs.get(&clips.walk);
+        let run_gltf = gltfs.get(&clips.run);
+        let loaded_but_missing = (matches!(&idle_state, LoadState::Loaded) && idle_gltf.is_none())
+            || (matches!(&walk_state, LoadState::Loaded) && walk_gltf.is_none())
+            || (matches!(&run_state, LoadState::Loaded) && run_gltf.is_none());
+        if loaded_but_missing {
+            continue;
+        }
+
+        if let LoadState::Failed(error) = idle_state {
+            warn!(
+                form_id,
+                %error, "actor idle clip failed to load; the actor stays in bind pose"
+            );
+            commands.entity(actor).remove::<ActorClips>();
+            continue;
+        }
+        let Some(idle_clip) = clip_animation(idle_gltf, Gait::Idle) else {
             warn!(
                 form_id,
                 "actor idle clip has no animation; the actor stays in bind pose"
             );
-            commands.entity(actor).remove::<ActorIdleClip>();
+            commands.entity(actor).remove::<ActorClips>();
             continue;
         };
         let targets = match animation_targets(actor, &names, &children) {
@@ -208,33 +274,76 @@ fn start_actor_idle_animations(
                     reason = error.as_str(),
                     "actor idle animation skipped; the actor stays in bind pose"
                 );
-                commands.entity(actor).remove::<ActorIdleClip>();
+                commands.entity(actor).remove::<ActorClips>();
                 continue;
             }
         };
+
+        let walk_clip = optional_gait_clip(walk_gltf, &walk_state, form_id, Gait::Walk);
+        let run_clip = optional_gait_clip(run_gltf, &run_state, form_id, Gait::Run);
+
         for target in &targets {
             commands
                 .entity(target.entity)
                 .insert((target.id, AnimatedBy(actor)));
         }
-        let (graph, animation) = AnimationGraph::from_clip(clip_handle.clone());
+        let mut graph = AnimationGraph::new();
+        let root = graph.root;
+        let idle_node = graph.add_clip(idle_clip, 1.0, root);
+        let walk_node = walk_clip.map_or(idle_node, |clip| graph.add_clip(clip, 1.0, root));
+        let run_node = run_clip.map_or(walk_node, |clip| graph.add_clip(clip, 1.0, root));
         let graph = graphs.add(graph);
         let mut player = AnimationPlayer::default();
-        player.play(animation).repeat();
+        let mut transitions = AnimationTransitions::new();
+        transitions
+            .play(&mut player, idle_node, Duration::ZERO)
+            .repeat();
         commands
             .entity(actor)
-            .insert((player, AnimationGraphHandle(graph)))
-            .remove::<ActorIdleClip>();
+            .insert((
+                player,
+                AnimationGraphHandle(graph),
+                transitions,
+                ActorGaitNodes::new(idle_node, walk_node, run_node),
+                ActorGait(Gait::Idle),
+            ))
+            .remove::<ActorClips>();
     }
 }
 
-/// Plays the idle clip on every actor whose body scene and clip are ready.
+/// Resolves a walk or run clip, reporting a failed load or missing animation once.
+fn optional_gait_clip(
+    gltf: Option<&Gltf>,
+    state: &LoadState,
+    form_id: std::fmt::Arguments<'_>,
+    gait: Gait,
+) -> Option<Handle<AnimationClip>> {
+    if let LoadState::Failed(error) = state {
+        warn!(
+            form_id,
+            gait = gait.as_str(),
+            %error, "actor gait clip failed to load; falling back"
+        );
+        return None;
+    }
+    let clip = clip_animation(gltf, gait);
+    if clip.is_none() {
+        warn!(
+            form_id,
+            gait = gait.as_str(),
+            "actor gait clip has no animation; falling back"
+        );
+    }
+    clip
+}
+
+/// Plays the gait clips on every actor whose body scene and clips are ready.
 pub struct ActorAnimationPlugin;
 
 impl Plugin for ActorAnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(mark_actor_body_ready)
-            .add_systems(Update, start_actor_idle_animations);
+            .add_systems(Update, start_actor_animations);
     }
 }
 
@@ -307,7 +416,7 @@ mod tests {
         world
     }
 
-    fn gltf_with_animation(clip: Handle<AnimationClip>) -> Gltf {
+    fn gltf_with_animation(animation: &str, clip: Handle<AnimationClip>) -> Gltf {
         Gltf {
             scenes: Vec::new(),
             named_scenes: HashMap::new(),
@@ -321,12 +430,20 @@ mod tests {
             named_skins: HashMap::new(),
             default_scene: None,
             animations: vec![clip.clone()],
-            named_animations: HashMap::from([(IDLE_ANIMATION.into(), clip)]),
+            named_animations: HashMap::from([(animation.into(), clip)]),
             source: None,
         }
     }
 
-    fn spawn_actor(app: &mut App, scene: Handle<WorldAsset>, clip: Handle<Gltf>) -> Entity {
+    fn clips_from_one(gltf: Handle<Gltf>) -> ActorClips {
+        ActorClips {
+            idle: gltf.clone(),
+            walk: gltf.clone(),
+            run: gltf,
+        }
+    }
+
+    fn spawn_actor(app: &mut App, scene: Handle<WorldAsset>, clips: ActorClips) -> Entity {
         app.world_mut()
             .spawn((
                 Actor::new(
@@ -335,7 +452,7 @@ mod tests {
                     ActorSex::Male,
                     crate::actors::ActorResolution::Body,
                 ),
-                ActorIdleClip { gltf: clip },
+                clips,
                 WorldAssetRoot(scene),
             ))
             .id()
@@ -448,7 +565,7 @@ mod tests {
         let clip_gltf = app
             .world()
             .resource::<AssetServer>()
-            .add(gltf_with_animation(clip));
+            .add(gltf_with_animation(IDLE_ANIMATION, clip));
         app.update();
         let scene = app
             .world()
@@ -456,14 +573,14 @@ mod tests {
             .add(WorldAsset::new(fixture_body_world()));
         app.update();
 
-        let actor = spawn_actor(&mut app, scene, clip_gltf);
+        let actor = spawn_actor(&mut app, scene, clips_from_one(clip_gltf));
         for _ in 0..8 {
             app.update();
         }
 
         assert!(app.world().get::<AnimationPlayer>(actor).is_some());
         assert!(app.world().get::<AnimationGraphHandle>(actor).is_some());
-        assert!(app.world().get::<ActorIdleClip>(actor).is_none());
+        assert!(app.world().get::<ActorClips>(actor).is_none());
 
         let mut query = app
             .world_mut()
@@ -520,7 +637,15 @@ mod tests {
             .world()
             .resource::<AssetServer>()
             .load(idle_clip_scene(ActorSex::Male));
-        let actor = spawn_actor(&mut app, scene, missing);
+        let actor = spawn_actor(
+            &mut app,
+            scene,
+            ActorClips {
+                idle: missing.clone(),
+                walk: missing.clone(),
+                run: missing,
+            },
+        );
 
         let warnings = WarningCount::default();
         let subscriber = Registry::default().with(warnings.clone());
@@ -544,7 +669,67 @@ mod tests {
             app.world().get::<AnimationPlayer>(actor).is_none(),
             "no player is installed without a clip"
         );
-        assert!(app.world().get::<ActorIdleClip>(actor).is_none());
+        assert!(app.world().get::<ActorClips>(actor).is_none());
+    }
+
+    #[test]
+    fn a_missing_walk_clip_keeps_idle_playing_and_warns_once() {
+        let (_directory, mut app) = fixture_app();
+        app.edit_schedule(Update, |schedule| {
+            schedule.set_executor(SingleThreadedExecutor::new());
+        });
+        let clip = app
+            .world_mut()
+            .resource_mut::<Assets<AnimationClip>>()
+            .add(AnimationClip::default());
+        let asset_server = app.world().resource::<AssetServer>().clone();
+        let idle = asset_server.add(gltf_with_animation(IDLE_ANIMATION, clip.clone()));
+        let run = asset_server.add(gltf_with_animation(RUN_ANIMATION, clip));
+        let missing: Handle<Gltf> = asset_server.load(gait_clip_scene(ActorSex::Male, Gait::Walk));
+        let scene = asset_server.add(WorldAsset::new(fixture_body_world()));
+        app.update();
+        let actor = spawn_actor(
+            &mut app,
+            scene,
+            ActorClips {
+                idle,
+                walk: missing,
+                run,
+            },
+        );
+
+        let warnings = WarningCount::default();
+        let subscriber = Registry::default().with(warnings.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            for _ in 0..60 {
+                app.update();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        assert_eq!(
+            warnings.0.load(Ordering::Relaxed),
+            1,
+            "the missing walk clip is reported exactly once"
+        );
+        assert!(
+            app.world().get::<AnimationPlayer>(actor).is_some(),
+            "the idle clip still plays"
+        );
+        let nodes = *app
+            .world()
+            .get::<ActorGaitNodes>(actor)
+            .expect("the gait nodes");
+        assert_eq!(
+            nodes.node(Gait::Walk),
+            nodes.node(Gait::Idle),
+            "a missing walk clip falls back to the idle node"
+        );
+        assert_eq!(
+            app.world().get::<ActorGait>(actor).copied(),
+            Some(ActorGait(Gait::Idle))
+        );
+        assert!(app.world().get_entity(actor).is_ok());
     }
 
     // ---- Retail asset check ----
@@ -613,8 +798,10 @@ mod tests {
             return;
         };
         let body_path = crate::actors::composed_body_scene(ActorSex::Male);
-        let clip_path = idle_clip_scene(ActorSex::Male);
-        if !assets.join(body_path).is_file() || !assets.join(clip_path).is_file() {
+        let clip_paths = Gait::ALL.map(|gait| gait_clip_scene(ActorSex::Male, gait));
+        if !assets.join(body_path).is_file()
+            || !clip_paths.iter().all(|path| assets.join(path).is_file())
+        {
             return;
         }
 
@@ -623,7 +810,8 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             let mut app = retail_app(&assets);
             let body: Handle<Gltf> = app.world().resource::<AssetServer>().load(body_path);
-            let clip: Handle<Gltf> = app.world().resource::<AssetServer>().load(clip_path);
+            let clips = ActorClips::load(app.world().resource::<AssetServer>(), ActorSex::Male);
+            let idle = clips.idle.clone();
             wait_until(&mut app, "the composed body", |app| {
                 matches!(
                     app.world().resource::<AssetServer>().load_state(body.id()),
@@ -632,7 +820,7 @@ mod tests {
             });
             wait_until(&mut app, "the idle clip", |app| {
                 matches!(
-                    app.world().resource::<AssetServer>().load_state(clip.id()),
+                    app.world().resource::<AssetServer>().load_state(idle.id()),
                     LoadState::Loaded
                 )
             });
@@ -657,7 +845,7 @@ mod tests {
                 .resource::<AssetServer>()
                 .add(WorldAsset::new(body_world));
             app.update();
-            let actor = spawn_actor(&mut app, scene, clip.clone());
+            let actor = spawn_actor(&mut app, scene, clips.clone());
 
             wait_until(&mut app, "the actor's animation player", |app| {
                 app.world().get::<AnimationPlayer>(actor).is_some()
@@ -667,7 +855,7 @@ mod tests {
                 let clips = app.world().resource::<Assets<AnimationClip>>();
                 let gltfs = app.world().resource::<Assets<Gltf>>();
                 let handle = gltfs
-                    .get(&clip)
+                    .get(&idle)
                     .and_then(|gltf| {
                         gltf.named_animations
                             .get(IDLE_ANIMATION)
@@ -713,5 +901,54 @@ mod tests {
             let warnings_seen = warnings.0.load(Ordering::Relaxed);
             assert_eq!(warnings_seen, 0, "no animation warning is emitted");
         });
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_CONVERTED_ASSETS with the three converted gait clips"]
+    fn retail_gait_clips_load_with_nonzero_durations() {
+        let Some(assets) =
+            std::env::var_os("MUDCRAB_CONVERTED_ASSETS").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        let clip_paths = Gait::ALL.map(|gait| gait_clip_scene(ActorSex::Male, gait));
+        if !clip_paths.iter().all(|path| assets.join(path).is_file()) {
+            return;
+        }
+
+        let mut app = retail_app(&assets);
+        let clips = ActorClips::load(app.world().resource::<AssetServer>(), ActorSex::Male);
+        for gait in Gait::ALL {
+            let path = gait_clip_scene(ActorSex::Male, gait);
+            let handle = clips.handle(gait);
+            wait_until(&mut app, path, |app| {
+                matches!(
+                    app.world()
+                        .resource::<AssetServer>()
+                        .load_state(handle.id()),
+                    LoadState::Loaded
+                )
+            });
+        }
+
+        let durations: HashMap<Gait, f32> = Gait::ALL
+            .into_iter()
+            .map(|gait| {
+                let gltfs = app.world().resource::<Assets<Gltf>>();
+                let handle = clip_animation(gltfs.get(clips.handle(gait)), gait)
+                    .expect("the loaded gait clip");
+                let clips = app.world().resource::<Assets<AnimationClip>>();
+                let duration = clips.get(&handle).expect("the clip asset").duration();
+                (gait, duration)
+            })
+            .collect();
+        assert!(
+            durations.values().all(|duration| *duration > 0.0),
+            "every gait clip has a duration: {durations:?}"
+        );
+        assert!(
+            durations[&Gait::Walk] < durations[&Gait::Idle],
+            "the walk clip is shorter than idle: {durations:?}"
+        );
     }
 }

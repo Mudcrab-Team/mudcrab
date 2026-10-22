@@ -1756,9 +1756,9 @@ fn spawn_cell(
                     entity.insert(head.clone());
                 }
                 if actor_catalog.composed_body_scene(plan.actor.sex).is_some() {
-                    entity.insert(crate::actor_animation::ActorIdleClip::load(
-                        asset_server,
-                        plan.actor.sex,
+                    entity.insert((
+                        crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
+                        crate::actor_drive::ActorDrive::default(),
                     ));
                 }
             }

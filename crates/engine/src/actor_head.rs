@@ -825,7 +825,10 @@ mod tests {
             .world()
             .resource::<AssetServer>()
             .load(GltfAssetLabel::Scene(0).from_asset(body_path));
-        let body_gltf: Handle<Gltf> = app.world().resource::<AssetServer>().load(body_path);
+        let clips = crate::actor_animation::ActorClips::load(
+            app.world().resource::<AssetServer>(),
+            ActorSex::Male,
+        );
         wait_until(&mut app, "the composed body", |app| {
             matches!(
                 app.world()
@@ -839,7 +842,7 @@ mod tests {
             .spawn((
                 Actor::new(0x10f5a1, 79686, ActorSex::Male, ActorResolution::BodyHead),
                 ActorHead::new(head_nif, ActorHeadSource::Facegen).unwrap(),
-                crate::actor_animation::ActorIdleClip { gltf: body_gltf },
+                clips,
                 WorldAssetRoot(body_scene),
             ))
             .id();

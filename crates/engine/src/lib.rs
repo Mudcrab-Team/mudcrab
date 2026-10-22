@@ -1,4 +1,5 @@
 pub mod actor_animation;
+pub mod actor_drive;
 pub mod actor_head;
 pub mod actors;
 pub mod app;
