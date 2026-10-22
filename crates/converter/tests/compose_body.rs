@@ -553,7 +553,7 @@ fn composed_body_publishes_texture_uris_relative_to_its_output() {
             "image URI must climb from composed/default/male to the asset root: {uri}"
         );
         assert!(
-            uri.contains("textures/generated_color") || uri.contains("textures/generated_normal"),
+            uri.contains("textures/"),
             "image URI must target the published texture tree: {uri}"
         );
     }

@@ -185,7 +185,7 @@ async fn producer_27_texture_containers_regenerate_under_producer_28() {
     // producer-27 proofs cannot name the current mesh contract.
     let reused_scripts = untouched
         .iter()
-        .filter(|key| key.ends_with(".luau"))
+        .filter(|key| current.entries[*key].output.ends_with(".luau"))
         .count();
     assert_eq!(rerun.cache_hits as usize, reused_scripts, "{rerun:?}");
     assert_eq!(
