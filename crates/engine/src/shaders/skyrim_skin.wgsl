@@ -7,7 +7,8 @@
 // the stock `VertexOutput` does not carry.
 //
 // The fragment stage is `bevy_pbr/render/pbr.wgsl` with the normal and the specular mask taken
-// from the model-space maps (`mudcrab::cs_lighting_msn`). Everything else is the stock
+// from the model-space maps (`mudcrab::cs_lighting_msn`) and, on FaceGen heads, the base colour
+// run through Skyrim's FaceGen tint and detail maps. Everything else is the stock
 // `StandardMaterial` path.
 
 #import bevy_pbr::{
@@ -26,6 +27,7 @@
 #import bevy_render::maths::mat2x4_f32_to_mat3x3_unpack
 #import mudcrab::cs_lighting_msn::{
     decode_model_space_normal,
+    get_facegen_base_color,
     material_glossiness,
     model_space_glossiness,
     model_space_world_normal,
@@ -43,12 +45,13 @@
 const FLAG_MODEL_SPACE_NORMALS: u32 = 1u;
 const FLAG_SPECULAR_MAP: u32 = 2u;
 const FLAG_SPECULAR: u32 = 4u;
+const FLAG_FACEGEN: u32 = 8u;
 const FLAG_DEBUG_WORLD_NORMAL: u32 = 65536u;
 const FLAG_DEBUG_VERTEX_NORMAL: u32 = 131072u;
 
 struct SkyrimSkinSettings {
     flags: u32,
-    // Reserved for the FaceGen and tint inputs; unused by this shader.
+    // Reserved for the skin and hair tints; unused by this shader.
     tint_color: vec4<f32>,
     detail: vec4<f32>,
 }
@@ -58,6 +61,10 @@ struct SkyrimSkinSettings {
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var model_space_normal_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var specular_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var specular_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var facegen_tint_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var facegen_tint_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var facegen_detail_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var facegen_detail_sampler: sampler;
 
 // `forward_io::VertexOutput` plus the normal transform at locations 8-10.
 struct SkinVertexOutput {
@@ -221,6 +228,20 @@ fn stock_vertex_output(skin_in: SkinVertexOutput) -> VertexOutput {
     return in;
 }
 
+// The sRGB transfer function and its inverse, extended past 1 with the power segment: the
+// FaceGen detail map can lift the encoded colour slightly above 1.
+fn srgb_encode(linear: vec3<f32>) -> vec3<f32> {
+    let low = linear * 12.92;
+    let high = 1.055 * pow(max(linear, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, linear <= vec3<f32>(0.0031308));
+}
+
+fn srgb_decode(encoded: vec3<f32>) -> vec3<f32> {
+    let low = encoded / 12.92;
+    let high = pow((max(encoded, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, encoded <= vec3<f32>(0.04045));
+}
+
 // Writes `value` (0..1) so that it lands unchanged in an sRGB render target.
 fn debug_color(value: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(pow(clamp(value, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2)), 1.0);
@@ -238,6 +259,28 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 
 #ifdef VERTEX_UVS_A
+    if (skin.flags & FLAG_FACEGEN) != 0u {
+        // Skyrim samples every texture without sRGB decoding and blends the FaceGen maps on
+        // those encoded values, so Bevy's decoded base colour is re-encoded first and the tint
+        // and detail maps are bound as linear (raw) images. Bevy has already multiplied the
+        // base colour factor and vertex colour in, which Skyrim applies after this blend; the two
+        // orders agree for the white factor and vertex colours FaceGen heads carry.
+        let uv = (pbr_input.material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;
+        let raw_base_color = srgb_encode(pbr_input.material.base_color.rgb);
+        let facegen = get_facegen_base_color(
+            raw_base_color,
+            uv,
+            facegen_tint_texture,
+            facegen_tint_sampler,
+            facegen_detail_texture,
+            facegen_detail_sampler,
+        );
+        pbr_input.material.base_color = vec4<f32>(
+            srgb_decode(facegen),
+            pbr_input.material.base_color.a,
+        );
+    }
+
     if (skin.flags & FLAG_MODEL_SPACE_NORMALS) != 0u {
         // The same UV and bias the base material samples its own textures with.
         let uv = (pbr_input.material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;

@@ -2,8 +2,8 @@
 use crate::{
     nif_depth::{NifDepthExtension, NifDepthMaterial, NifDepthState, depth_material},
     skin_material::{
-        SkyrimSkinImages, SkyrimSkinMaterial, gltf_sampler, load_linear_twin, skin_material,
-        specular_color_texture_index,
+        FacegenMaps, SkyrimSkinImages, SkyrimSkinMaterial, facegen_texture_indices, gltf_sampler,
+        load_linear_twin, skin_material, specular_color_texture_index,
     },
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
@@ -249,6 +249,16 @@ struct NativeMaterialHandler {
 }
 
 impl NativeMaterialHandler {
+    /// The linear twin of glTF texture `index`, loaded with that texture's sampler.
+    fn linear_texture(&self, context: &mut LoadContext<'_>, index: usize) -> Option<Handle<Image>> {
+        let sampler = self
+            .samplers
+            .get(&index)
+            .cloned()
+            .unwrap_or_else(ImageSamplerDescriptor::linear);
+        load_linear_twin(context, self.textures.get(index)?, sampler)
+    }
+
     fn palette(&self, material: &gltf::Material<'_>) -> Option<(PaletteLookup, Handle<Image>)> {
         let lookup = palette_lookup(material)?;
         Some((lookup, self.textures.get(lookup.texture)?.clone()))
@@ -256,7 +266,8 @@ impl NativeMaterialHandler {
 
     /// Adds `"{label}/skin"`, a [`SkyrimSkinMaterial`] over `base`, and `"{label}/skin_images"`,
     /// the holder its images load under. The `_s` mask is the linear twin of the sRGB texture the
-    /// converter published as the specular colour texture.
+    /// converter published as the specular colour texture; a FaceGen head's tint and detail maps
+    /// are the linear twins of its `facegen_tint` and `detail` slots.
     fn add_skin_material(
         &mut self,
         context: &mut LoadContext<'_>,
@@ -272,16 +283,24 @@ impl NativeMaterialHandler {
         let shader_flags_1 = native_depth_flags(source).map_or(0, |(flags_1, _)| flags_1);
         let holder = format!("{label}/skin_images");
         let mut specular = None;
+        let mut facegen = None;
         let Ok(_) = context.labeled_asset_scope(holder.clone(), |scope| {
             specular = specular_srgb
                 .as_ref()
                 .and_then(|srgb| load_linear_twin(scope, srgb, sampler));
+            facegen = facegen_texture_indices(source).and_then(|(tint, detail)| {
+                Some(FacegenMaps {
+                    tint: self.linear_texture(scope, tint)?,
+                    detail: self.linear_texture(scope, detail)?,
+                })
+            });
             Ok::<_, Infallible>(SkyrimSkinImages::new(
                 model_space_normal.clone(),
                 specular.clone(),
+                facegen.as_ref(),
             ))
         });
-        let material = skin_material(base, model_space_normal, specular, shader_flags_1);
+        let material = skin_material(base, model_space_normal, specular, facegen, shader_flags_1);
         let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
             scope.get_label_handle::<SkyrimSkinImages>(holder);
             Ok::<_, Infallible>(material)

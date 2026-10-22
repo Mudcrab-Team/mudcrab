@@ -275,3 +275,106 @@ fn model_space_material_with_a_depth_state_keeps_the_depth_material() {
     let mut depth = scene_world.query::<&MeshMaterial3d<NifDepthMaterial>>();
     assert_eq!(depth.iter(&scene_world).count(), 1);
 }
+
+/// [`write_model_space_gltf`] turned into a FaceGen head: a `face_tint` material whose detail and
+/// FaceGen tint slots point at sRGB aliases, as the converter publishes them.
+fn write_facegen_gltf(directory: &Path, tint_semantic: &str) {
+    write_model_space_gltf(directory, (1 << 31) | (1 << 12) | 1);
+    write_png(directory, "detail.opensky-srgb.png", [65, 64, 65, 255]);
+    write_png(directory, "detail.png", [65, 64, 65, 255]);
+    write_png(directory, "tint.opensky-srgb.png", [184, 162, 154, 255]);
+    write_png(directory, "tint.png", [184, 162, 154, 255]);
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for uri in ["detail.opensky-srgb.png", "tint.opensky-srgb.png"] {
+        let image = document["images"].as_array().unwrap().len();
+        document["images"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "uri": uri }));
+        document["textures"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({ "source": image, "sampler": 0 }));
+    }
+    document["extensionsUsed"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("OPEN_SKYRIM_material"));
+    document["materials"][0]["extensions"]["OPEN_SKYRIM_material"] = serde_json::json!({
+        "shaderFamily": "lighting",
+        "lightingShaderType": "face_tint",
+        "textureSlots": [
+            {"slot": 3, "semantic": "detail", "texture": 2, "colorSpace": "srgb"},
+            {"slot": 6, "semantic": tint_semantic, "texture": 3, "colorSpace": "srgb"}
+        ]
+    });
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
+fn load_skin_material(directory: &Path) -> (App, SkyrimSkinMaterial) {
+    let mut app = loader_app(directory);
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+    wait_for_dependencies(&mut app, &scene);
+    let mut scene_world = app
+        .world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .remove(&scene)
+        .unwrap()
+        .world;
+    let mut query = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    let handle = query.single(&scene_world).unwrap().0.clone();
+    let material = app
+        .world()
+        .resource::<Assets<SkyrimSkinMaterial>>()
+        .get(&handle)
+        .unwrap()
+        .clone();
+    (app, material)
+}
+
+#[test]
+fn facegen_head_binds_its_tint_and_detail_maps_linear() {
+    let directory = tempfile::tempdir().unwrap();
+    write_facegen_gltf(directory.path(), "facegen_tint");
+    let (app, skin) = load_skin_material(directory.path());
+    assert_eq!(
+        skin.extension.settings.flags,
+        SkyrimSkinFlags::MODEL_SPACE_NORMALS
+            | SkyrimSkinFlags::SPECULAR_MAP
+            | SkyrimSkinFlags::SPECULAR
+            | SkyrimSkinFlags::FACEGEN
+    );
+    let world = app.world();
+    let server = world.resource::<AssetServer>();
+    let images = world.resource::<Assets<Image>>();
+    for (handle, path) in [
+        (skin.extension.facegen_tint.as_ref().unwrap(), "tint.png"),
+        (
+            skin.extension.facegen_detail.as_ref().unwrap(),
+            "detail.png",
+        ),
+    ] {
+        assert_eq!(server.get_path(handle.id()).unwrap(), path.into());
+        let image = images.get(handle).unwrap();
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+        let ImageSampler::Descriptor(sampler) = &image.sampler else {
+            panic!("the glTF sampler is passed to the linear load");
+        };
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::ClampToEdge);
+    }
+}
+
+#[test]
+fn a_face_tint_head_from_an_older_pack_keeps_the_plain_skin_material() {
+    let directory = tempfile::tempdir().unwrap();
+    write_facegen_gltf(directory.path(), "inner_layer");
+    let (_app, skin) = load_skin_material(directory.path());
+    assert_eq!(skin.extension.settings.flags & SkyrimSkinFlags::FACEGEN, 0);
+    assert!(skin.extension.facegen_tint.is_none());
+    assert!(skin.extension.facegen_detail.is_none());
+}

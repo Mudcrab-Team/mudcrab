@@ -404,7 +404,8 @@ pub(crate) fn scene_demand(
         }
     }
     // `ExtendedMaterial` visits none of its handles, so the skin extension's own images (the
-    // `_msn` and the linear `_s`, which the base does not hold) are visited directly.
+    // `_msn`, the linear `_s` and FaceGen maps, which the base does not hold) are visited
+    // directly.
     if let Some(skin_materials) = skin_materials {
         for id in &skin {
             demand.materials.push((*id).into());
@@ -831,6 +832,8 @@ mod tests {
         let color = images.add(Image::default());
         let model_space_normal = images.add(Image::default());
         let specular = images.add(Image::default());
+        let facegen_tint = images.add(Image::default());
+        let facegen_detail = images.add(Image::default());
         let base = materials.add(StandardMaterial {
             base_color_texture: Some(color.clone()),
             ..default()
@@ -842,6 +845,10 @@ mod tests {
             },
             model_space_normal.clone(),
             Some(specular.clone()),
+            Some(crate::skin_material::FacegenMaps {
+                tint: facegen_tint.clone(),
+                detail: facegen_detail.clone(),
+            }),
             0,
         ));
         let mut scene_world = World::new();
@@ -873,7 +880,13 @@ mod tests {
         let mut expected_materials = vec![base.id().untyped(), skin.id().untyped()];
         expected_materials.sort_unstable();
         assert_eq!(demand.materials, expected_materials);
-        let mut expected_images = vec![color.id(), model_space_normal.id(), specular.id()];
+        let mut expected_images = vec![
+            color.id(),
+            model_space_normal.id(),
+            specular.id(),
+            facegen_tint.id(),
+            facegen_detail.id(),
+        ];
         expected_images.sort_unstable();
         assert_eq!(demand.images, expected_images);
     }
