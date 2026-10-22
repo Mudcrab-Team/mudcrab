@@ -148,7 +148,10 @@ fn select_actor_gait(
         if transitions.get_main_animation() == Some(node) {
             continue;
         }
-        transitions.play(&mut player, node, GAIT_TRANSITION);
+        // A transition starts a fresh animation in single-play mode; a held gait must loop.
+        transitions
+            .play(&mut player, node, GAIT_TRANSITION)
+            .repeat();
     }
 }
 
@@ -186,6 +189,7 @@ mod tests {
     use crate::actor_animation::{ANIMATION_ROOT_NODE, ActorAnimationPlugin, ActorClips};
     use crate::actors::{Actor, ActorResolution, ActorSex};
     use bevy::{
+        animation::RepeatAnimation,
         asset::AssetPlugin,
         ecs::system::RunSystemOnce,
         gltf::Gltf,
@@ -388,6 +392,16 @@ mod tests {
                     .expect("the player")
                     .is_playing_animation(gait_nodes.node(gait)),
                 "speed {speed} starts the {gait:?} clip"
+            );
+            assert_eq!(
+                app.world()
+                    .get::<AnimationPlayer>(actor)
+                    .expect("the player")
+                    .animation(gait_nodes.node(gait))
+                    .expect("the gait animation")
+                    .repeat_mode(),
+                RepeatAnimation::Forever,
+                "speed {speed} keeps the {gait:?} clip repeating"
             );
         };
 
