@@ -776,11 +776,13 @@ mod tests {
             },
             bevy::gltf::GltfPlugin::default(),
             bevy::animation::AnimationPlugin,
+            bevy::transform::TransformPlugin,
             WorldSerializationPlugin,
         ))
         .init_asset::<Mesh>()
         .init_asset::<Image>()
         .init_asset::<StandardMaterial>()
+        .init_asset::<SkinnedMeshInverseBindposes>()
         .register_type::<ChildOf>()
         .register_type::<Children>()
         .register_type::<GlobalTransform>()
@@ -865,6 +867,20 @@ mod tests {
         let body_entities: Vec<Entity> = bones.values().copied().collect();
         let skins = instance_skins(&mut app, actor);
         assert!(!skins.is_empty(), "the head asset carries skinned meshes");
+        println!(
+            "head: body has {} bones, head bone is {:?}, {} rehosted skins",
+            bones.len(),
+            app.world().get::<Name>(head_bone).map(Name::as_str),
+            skins.len()
+        );
+        for (_, skin) in &skins {
+            let joints: Vec<&str> = skin
+                .joints
+                .iter()
+                .filter_map(|joint| app.world().get::<Name>(*joint).map(Name::as_str))
+                .collect();
+            println!("head: skin binds {} joints {joints:?}", joints.len());
+        }
         for (_, skin) in &skins {
             assert!(
                 skin.joints
@@ -897,6 +913,9 @@ mod tests {
         assert_eq!(
             body_transform, joint_transform,
             "the head mesh's joint transform is the animated head bone transform"
+        );
+        println!(
+            "head: animated head bone transform {body_transform:?} (before idle: {head_before:?})"
         );
     }
 }

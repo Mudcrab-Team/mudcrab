@@ -358,6 +358,7 @@ mod tests {
             Registry,
             layer::{Layer, SubscriberExt},
         },
+        mesh::skinning::SkinnedMeshInverseBindposes,
         platform::collections::HashMap,
         world_serialization::{WorldAsset, WorldAssetRoot, WorldSerializationPlugin},
     };
@@ -744,11 +745,13 @@ mod tests {
             },
             bevy::gltf::GltfPlugin::default(),
             bevy::animation::AnimationPlugin,
+            bevy::transform::TransformPlugin,
             WorldSerializationPlugin,
         ))
         .init_asset::<Mesh>()
         .init_asset::<Image>()
         .init_asset::<StandardMaterial>()
+        .init_asset::<SkinnedMeshInverseBindposes>()
         .register_type::<ChildOf>()
         .register_type::<Children>()
         .register_type::<GlobalTransform>()
@@ -877,6 +880,11 @@ mod tests {
                 clip_targets.is_subset(&bound),
                 "every clip target is bound to a bone"
             );
+            println!(
+                "idle: {} clip targets, {} bound animation targets",
+                clip_targets.len(),
+                bound.len()
+            );
 
             let mut transform_query = app
                 .world_mut()
@@ -891,12 +899,28 @@ mod tests {
                 app.update();
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let moved = initial.iter().any(|(entity, before)| {
-                app.world()
-                    .get::<Transform>(*entity)
-                    .is_some_and(|after| after != before)
-            });
-            assert!(moved, "the idle clip changes at least one bone transform");
+            let moved: Vec<String> = initial
+                .iter()
+                .filter(|(entity, before)| {
+                    app.world()
+                        .get::<Transform>(*entity)
+                        .is_some_and(|after| after != before)
+                })
+                .filter_map(|(entity, _)| {
+                    app.world()
+                        .get::<Name>(*entity)
+                        .map(|name| name.as_str().to_owned())
+                })
+                .collect();
+            assert!(
+                !moved.is_empty(),
+                "the idle clip changes at least one bone transform"
+            );
+            println!(
+                "idle: {} bones moved, first {:?}",
+                moved.len(),
+                &moved[..moved.len().min(8)]
+            );
 
             let warnings_seen = warnings.0.load(Ordering::Relaxed);
             assert_eq!(warnings_seen, 0, "no animation warning is emitted");
@@ -942,6 +966,7 @@ mod tests {
                 (gait, duration)
             })
             .collect();
+        println!("gait durations: {durations:?}");
         assert!(
             durations.values().all(|duration| *duration > 0.0),
             "every gait clip has a duration: {durations:?}"
