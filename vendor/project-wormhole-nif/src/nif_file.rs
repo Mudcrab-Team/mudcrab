@@ -920,6 +920,12 @@ fn legacy_skinned_mesh(
             influences.len()
         ));
     }
+    if indexing == InfluenceIndices::PartitionPalette && partition.palette_overflow {
+        return Err(format!(
+            "shape block {shape_index} ({block_type}): NiSkinPartition block {} merges more than 255 bones, so its bone indices cannot address the merged palette",
+            instance.skin_partition
+        ));
+    }
 
     let palette = match indexing {
         InfluenceIndices::InstanceBones => None,

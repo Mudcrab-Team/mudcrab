@@ -298,6 +298,9 @@ pub struct NiSkinPartition {
     /// Concatenated vertex maps; `None` if any partition omitted its map.
     pub vertex_map: Option<Vec<u16>>,
     pub partition_flags: u16,
+    /// Whether a later partition's palette could not be folded into the merged palette with
+    /// `u8` indices, so its bone indices still address its own palette.
+    pub palette_overflow: bool,
 }
 
 impl NiSkinPartition {
@@ -318,6 +321,7 @@ impl NiSkinPartition {
             bone_indices: Vec::new(),
             vertex_map: None,
             partition_flags: 0,
+            palette_overflow: false,
         }
     }
 
@@ -359,6 +363,7 @@ impl NiSkinPartition {
                         }
                     }
                 } else {
+                    self.palette_overflow = true;
                     warn!(
                         "NiSkinPartition palette exceeds 255 bones; later partition bone indices left partition-local"
                     );

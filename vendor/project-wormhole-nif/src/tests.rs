@@ -855,6 +855,7 @@ mod legacy_skin {
             bone_indices: Vec::new(),
             vertex_map: None,
             partition_flags: 0,
+            palette_overflow: false,
         }
     }
 
@@ -1082,6 +1083,26 @@ mod legacy_skin {
 
         assert!(error.contains("palette entry 5"), "{error}");
         assert!(error.contains("shape block 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_partition_whose_merged_palette_overflowed() {
+        let mut partition = partition(vec![0]);
+        partition.weights = vec![vec![1.0, 0.0, 0.0, 0.0]];
+        partition.bone_indices = vec![vec![0, 0, 0, 0]];
+        partition.palette_overflow = true;
+        let nif = swapped_palette_fixture(
+            BSVertexData {
+                position: Some(Vec3::ZERO),
+                ..Default::default()
+            },
+            partition,
+        );
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(error.contains("more than 255"), "{error}");
+        assert!(error.contains("shape block 2"), "{error}");
     }
 
     #[test]
