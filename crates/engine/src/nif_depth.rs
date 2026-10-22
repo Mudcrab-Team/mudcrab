@@ -104,28 +104,54 @@ impl MaterialExtension for NifDepthExtension {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        // Shadow depth belongs to the light, not the authored camera depth state.
-        // Spawned mesh entities exclude casters only when Cast_Shadows is unset.
-        let color_pass = descriptor
-            .fragment
-            .as_ref()
-            .is_some_and(|fragment| fragment.targets.iter().any(Option::is_some));
-        if color_pass {
-            if let Some(depth) = descriptor.depth_stencil.as_mut() {
-                key.bind_group_data.apply(depth);
-            }
-            if key.bind_group_data.alpha_mask
-                && let Some(fragment) = descriptor.fragment.as_mut()
-            {
-                fragment.shader_defs.push("MAY_DISCARD".into());
-            }
-        }
+        specialize_nif_depth_descriptor(descriptor, key.bind_group_data);
         Ok(())
     }
 }
 
-pub fn depth_material(base: StandardMaterial, state: NifDepthState) -> NifDepthMaterial {
-    NifDepthMaterial {
+fn specialize_nif_depth_descriptor(
+    descriptor: &mut RenderPipelineDescriptor,
+    state: NifDepthState,
+) {
+    // Shadow depth belongs to the light, not the authored camera depth state.
+    // Spawned mesh entities exclude casters only when Cast_Shadows is unset.
+    let color_pass = descriptor
+        .fragment
+        .as_ref()
+        .is_some_and(|fragment| fragment.targets.iter().any(Option::is_some));
+    if state.alpha_mask
+        && let Some(fragment) = descriptor.fragment.as_mut()
+    {
+        let may_discard = fragment
+            .shader_defs
+            .iter_mut()
+            .find(|def| shader_def_name(def) == "MAY_DISCARD");
+        if let Some(def) = may_discard {
+            *def = "MAY_DISCARD".into();
+        } else {
+            fragment.shader_defs.push("MAY_DISCARD".into());
+        }
+    }
+    if color_pass && let Some(depth) = descriptor.depth_stencil.as_mut() {
+        state.apply(depth);
+    }
+}
+
+fn shader_def_name(def: &bevy::shader::ShaderDefVal) -> &str {
+    match def {
+        bevy::shader::ShaderDefVal::Bool(name, _)
+        | bevy::shader::ShaderDefVal::Int(name, _)
+        | bevy::shader::ShaderDefVal::UInt(name, _) => name,
+    }
+}
+
+/// Wraps `base` in the authored depth state. The extension has no shaders of its own, so the
+/// base keeps drawing with its own; effect palettes use this too (`crate::nif_material`).
+pub fn depth_material<B: Material>(
+    base: B,
+    state: NifDepthState,
+) -> ExtendedMaterial<B, NifDepthExtension> {
+    ExtendedMaterial {
         base,
         extension: NifDepthExtension { state },
     }
@@ -139,6 +165,109 @@ pub(crate) struct NifDepthMaterialSource(pub Handle<StandardMaterial>);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::render_resource::{
+        ColorTargetState, ColorWrites, FragmentState, TextureFormat,
+    };
+
+    fn descriptor(targets: Vec<Option<ColorTargetState>>) -> RenderPipelineDescriptor {
+        RenderPipelineDescriptor {
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(CompareFunction::Greater),
+                stencil: default(),
+                bias: default(),
+            }),
+            fragment: Some(FragmentState {
+                targets,
+                ..default()
+            }),
+            ..default()
+        }
+    }
+
+    fn color_target() -> Option<ColorTargetState> {
+        Some(ColorTargetState {
+            format: TextureFormat::Rgba8UnormSrgb,
+            blend: None,
+            write_mask: ColorWrites::ALL,
+        })
+    }
+
+    fn has_may_discard(descriptor: &RenderPipelineDescriptor) -> bool {
+        descriptor.fragment.as_ref().is_some_and(|fragment| {
+            fragment.shader_defs.iter().any(|def| {
+                shader_def_name(def) == "MAY_DISCARD"
+                    && matches!(def, bevy::shader::ShaderDefVal::Bool(_, true))
+            })
+        })
+    }
+
+    #[test]
+    fn masked_palette_specialization_discards_in_shadow_without_overriding_light_depth() {
+        let state =
+            NifDepthState::from_flags(DEPTH_TEST | DECAL, DEPTH_WRITE, AlphaMode::Mask(0.5))
+                .unwrap();
+        let mut shadow = descriptor(vec![None]);
+        shadow
+            .fragment
+            .as_mut()
+            .unwrap()
+            .shader_defs
+            .push(bevy::shader::ShaderDefVal::Bool(
+                "MAY_DISCARD".into(),
+                false,
+            ));
+        let light_depth = shadow.depth_stencil.clone().unwrap();
+
+        specialize_nif_depth_descriptor(&mut shadow, state);
+
+        assert!(has_may_discard(&shadow));
+        assert_eq!(shadow.fragment.unwrap().shader_defs.len(), 1);
+        assert_eq!(shadow.depth_stencil, Some(light_depth));
+    }
+
+    #[test]
+    fn color_pass_keeps_authored_depth_override_and_alpha_mask_definition() {
+        let state =
+            NifDepthState::from_flags(DEPTH_TEST | DECAL, DEPTH_WRITE, AlphaMode::Mask(0.5))
+                .unwrap();
+        let mut color = descriptor(vec![color_target()]);
+
+        specialize_nif_depth_descriptor(&mut color, state);
+
+        assert!(has_may_discard(&color));
+        let depth = color.depth_stencil.unwrap();
+        assert_eq!(depth.depth_compare, Some(CompareFunction::GreaterEqual));
+        assert_eq!(depth.depth_write_enabled, Some(true));
+        assert_eq!(depth.bias.constant, DECAL_DEPTH_BIAS);
+    }
+
+    #[test]
+    fn nonmask_colorless_and_fragmentless_variants_keep_pipeline_state() {
+        let nonmask = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Opaque).unwrap();
+        let mut shadow = descriptor(vec![None]);
+        let light_depth = shadow.depth_stencil.clone();
+        specialize_nif_depth_descriptor(&mut shadow, nonmask);
+        assert!(!has_may_discard(&shadow));
+        assert_eq!(shadow.depth_stencil, light_depth);
+
+        let mask = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Mask(0.5)).unwrap();
+        let mut no_fragment = RenderPipelineDescriptor {
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(CompareFunction::Greater),
+                stencil: default(),
+                bias: default(),
+            }),
+            ..default()
+        };
+        let light_depth = no_fragment.depth_stencil.clone();
+        specialize_nif_depth_descriptor(&mut no_fragment, mask);
+        assert!(!has_may_discard(&no_fragment));
+        assert_eq!(no_fragment.depth_stencil, light_depth);
+    }
 
     #[test]
     fn sorted_color_pass_keeps_authored_alpha_uniform_flags() {
