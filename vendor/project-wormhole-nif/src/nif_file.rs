@@ -301,7 +301,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     let node_name = skeleton
                         .header
                         .get_string(skel_node.name() as usize)
-                        .unwrap();
+                        .map_err(|error| format!("skeleton node has an invalid name: {error}"))?;
 
                     // Get children names from string indices. Only the block
                     // variants `get_nodes` walks may become bones, so a child of
