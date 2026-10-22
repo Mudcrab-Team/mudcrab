@@ -6,7 +6,10 @@ use crate::config::{PipelineConfig, RecordReader, TextureEncoder};
 /// Producer-24 compatibility is explicitly bound to the producer-26 contract.
 #[test]
 fn producer_24_mesh_compatibility_does_not_follow_a_future_producer() {
-    assert!(can_reuse_meshes_for_producer(24, 26));
+    assert_eq!(
+        can_reuse_meshes_for_producer(24, 26),
+        MESH_OUTPUT_CONTRACTS.is_empty()
+    );
     assert!(can_reuse_meshes_for_producer(26, 26));
     assert!(!can_reuse_meshes_for_producer(25, 26));
     assert!(!can_reuse_meshes_for_producer(27, 26));
@@ -15,11 +18,15 @@ fn producer_24_mesh_compatibility_does_not_follow_a_future_producer() {
     assert!(can_reuse_meshes_for_producer(27, 27));
 }
 
-/// Producer 28 changed only texture containers, so producer-27 GLBs remain valid at 28.
+/// Producer 28 changed only texture containers, so producer-27 GLBs remain valid at 28 while no
+/// named mesh contract is active. A named contract cannot be proven by a historical producer.
 /// Producers 24 and 26 never follow the pair transitively to the current schema.
 #[test]
 fn producer_27_mesh_compatibility_is_the_only_pair_into_producer_28() {
-    assert!(can_reuse_meshes_for_producer(27, 28));
+    assert_eq!(
+        can_reuse_meshes_for_producer(27, 28),
+        MESH_OUTPUT_CONTRACTS.is_empty()
+    );
     assert!(can_reuse_meshes_for_producer(28, 28));
     assert!(!can_reuse_meshes_for_producer(24, 28));
     assert!(!can_reuse_meshes_for_producer(26, 28));

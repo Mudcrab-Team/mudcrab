@@ -347,9 +347,13 @@ pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
 
 /// Check the explicit producer pair so later contracts cannot inherit old mesh reuse.
 /// Each pair names a byte-identical GLB contract; `(24, 26)` must never be read as
-/// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent.
+/// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent. A named
+/// [`MESH_OUTPUT_CONTRACTS`] entry changes GLB bytes without advancing the producer, which
+/// a historical producer's settings proof cannot name, so cross-producer reuse is suspended
+/// while any entry is active.
 pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
-    schema == current || matches!((schema, current), (24, 26) | (27, 28))
+    schema == current
+        || (MESH_OUTPUT_CONTRACTS.is_empty() && matches!((schema, current), (24, 26) | (27, 28)))
 }
 
 /// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
