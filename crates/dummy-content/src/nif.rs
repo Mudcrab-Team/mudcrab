@@ -18,9 +18,10 @@ const NULL_REF: u32 = u32::MAX;
 const SHADER_TYPE_DEFAULT: u32 = 0;
 const VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | 0x0008;
 const VERTEX_STRIDE: u8 = 6;
-const SKIN_VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | 0x0008 | 0x0040;
-const SKIN_VERTEX_STRIDE: u8 = 9;
-const SKIN_VERTEX_SIZE: u32 = 36;
+const VERTEX_FLAG_NORMAL: u16 = 0x0008;
+const SKIN_VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | VERTEX_FLAG_NORMAL | 0x0040;
+const SLSF1_SKINNED: u32 = 1 << 1;
+const SLSF1_MODEL_SPACE_NORMALS: u32 = 1 << 12;
 const IDENTITY_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// A triangle mesh rendered as a single static shape.
@@ -157,9 +158,73 @@ pub fn static_shape_with_bodies(
     build_static_shape(shape, &[], bodies)
 }
 
+/// How a legacy skin fixture supplies its shading normals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SkinNormals {
+    /// Packed normals in every vertex buffer, tangent-space normal map.
+    #[default]
+    Authored,
+    /// No vertex normals, and SLSF1 `Model_Space_Normals` set, as retail bodies, hands, feet
+    /// and FaceGen heads ship.
+    ModelSpaceMap,
+    /// No vertex normals and a tangent-space normal map.
+    Omitted,
+}
+
+impl SkinNormals {
+    fn in_vertices(self) -> bool {
+        self == Self::Authored
+    }
+
+    fn shader_flags_1(self) -> u32 {
+        match self {
+            Self::ModelSpaceMap => SLSF1_SKINNED | SLSF1_MODEL_SPACE_NORMALS,
+            Self::Authored | Self::Omitted => 0,
+        }
+    }
+
+    /// Bytes per vertex: position and bitangent X, UV, the optional normal word, then four
+    /// half weights and four bone indices.
+    fn vertex_size(self) -> u32 {
+        if self.in_vertices() { 36 } else { 32 }
+    }
+
+    fn vertex_desc(self) -> u64 {
+        let flags = if self.in_vertices() {
+            SKIN_VERTEX_FLAGS
+        } else {
+            SKIN_VERTEX_FLAGS & !VERTEX_FLAG_NORMAL
+        };
+        let quads = u64::from(self.vertex_size() / 4);
+        // Offsets in quads: UV after the 16-byte position, then the normal and skin data.
+        let offsets = if self.in_vertices() {
+            (4 << 8) | (5 << 16) | (6 << 28)
+        } else {
+            (4 << 8) | (5 << 28)
+        };
+        quads | offsets | (u64::from(flags) << 44)
+    }
+}
+
 /// Generates a legacy-skinned NIF from `spec`, byte-stable for identical input.
 pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, SkinNormals::Authored)
+}
+
+/// Like [`legacy_skinned_shape`], with the shading normals supplied as `normals` says.
+pub fn legacy_skinned_shape_with_normals(
+    spec: &LegacySkin<'_>,
+    normals: SkinNormals,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false, normals)
+}
+
+/// Like [`legacy_dynamic_skinned_shape`], with the shading normals supplied as `normals` says.
+pub fn legacy_dynamic_skinned_shape_with_normals(
+    spec: &LegacySkin<'_>,
+    normals: SkinNormals,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic, false, normals)
 }
 
 /// Generates one legacy-skinned NIF with one `BSTriShape` per spec, all bound
@@ -208,6 +273,7 @@ pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
             shader_block,
             &vertices,
             &triangles,
+            SkinNormals::Authored,
         )?);
         block_types.push("BSTriShape");
         blocks.push(skin_instance(
@@ -228,6 +294,7 @@ pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
             &triangles,
             spec.palette,
             spec.weights,
+            SkinNormals::Authored,
         )?);
         block_types.push("NiSkinPartition");
         blocks.push(lighting_shader_property(false, texture_block));
@@ -245,7 +312,7 @@ pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
 /// Generates a legacy-skinned NIF whose second bone hangs off an extra `NiNode`
 /// under the first bone, so a skin joint can have a missing ancestor chain.
 pub fn legacy_nested_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, true)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, true, SkinNormals::Authored)
 }
 
 /// Z offset applied to a dynamic fixture's live positions so they differ from
@@ -259,14 +326,14 @@ pub const DYNAMIC_POSITION_OFFSET: f32 = 7.0;
 /// positions come from the trailing dynamic array. Those positions are offset
 /// by [`DYNAMIC_POSITION_OFFSET`] so a test can tell which source won.
 pub fn legacy_dynamic_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic, false)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Dynamic, false, SkinNormals::Authored)
 }
 
 /// Generates a legacy-skinned NIF whose geometry block is a `BSLODTriShape`.
 /// The legacy skin exporter does not emit LOD shapes, so this exercises the
 /// diagnostic that names the shape type no exported mesh claimed.
 pub fn legacy_lod_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
-    legacy_skinned_shape_with(spec, LegacyShapeKind::Lod, false)
+    legacy_skinned_shape_with(spec, LegacyShapeKind::Lod, false, SkinNormals::Authored)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +347,7 @@ fn legacy_skinned_shape_with(
     spec: &LegacySkin<'_>,
     kind: LegacyShapeKind,
     nested: bool,
+    normals: SkinNormals,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -346,6 +414,7 @@ fn legacy_skinned_shape_with(
                     shader_block,
                     &vertices,
                     &triangles,
+                    normals,
                 )?);
                 block_types.push("BSTriShape");
             }
@@ -365,6 +434,7 @@ fn legacy_skinned_shape_with(
                     &dynamic_positions,
                     instance_block,
                     shader_block,
+                    normals,
                 )?);
                 block_types.push("BSDynamicTriShape");
             }
@@ -376,6 +446,7 @@ fn legacy_skinned_shape_with(
                     shader_block,
                     &vertices,
                     &triangles,
+                    normals,
                 )?;
                 push_u32(&mut block, 0);
                 push_u32(&mut block, 0);
@@ -404,9 +475,14 @@ fn legacy_skinned_shape_with(
         &triangles,
         spec.palette,
         spec.weights,
+        normals,
     )?);
     block_types.push("NiSkinPartition");
-    blocks.push(lighting_shader_property(false, texture_block));
+    blocks.push(lighting_shader_property_with_flags(
+        normals.shader_flags_1(),
+        0,
+        texture_block,
+    ));
     block_types.push("BSLightingShaderProperty");
     blocks.push(texture_set_with_paths(
         "textures/generated_skin.dds",
@@ -604,15 +680,7 @@ fn push_ni_transform(
     push_f32(out, scale);
 }
 
-fn skin_vertex_desc() -> u64 {
-    u64::from(SKIN_VERTEX_STRIDE)
-        | (4 << 8)
-        | (5 << 16)
-        | (6 << 28)
-        | (u64::from(SKIN_VERTEX_FLAGS) << 44)
-}
-
-fn push_skinned_vertices(out: &mut Vec<u8>, vertices: &[SkinVertex]) {
+fn push_skinned_vertices(out: &mut Vec<u8>, vertices: &[SkinVertex], normals: SkinNormals) {
     for vertex in vertices {
         for value in vertex.position {
             out.extend_from_slice(&value.to_le_bytes());
@@ -620,10 +688,12 @@ fn push_skinned_vertices(out: &mut Vec<u8>, vertices: &[SkinVertex]) {
         out.extend_from_slice(&0.0f32.to_le_bytes());
         out.extend_from_slice(&encode_half(vertex.uv[0]).to_le_bytes());
         out.extend_from_slice(&encode_half(vertex.uv[1]).to_le_bytes());
-        out.push(pack_normal(vertex.normal[0]));
-        out.push(pack_normal(vertex.normal[1]));
-        out.push(pack_normal(vertex.normal[2]));
-        out.push(0);
+        if normals.in_vertices() {
+            out.push(pack_normal(vertex.normal[0]));
+            out.push(pack_normal(vertex.normal[1]));
+            out.push(pack_normal(vertex.normal[2]));
+            out.push(0);
+        }
         for weight in vertex.weights {
             out.extend_from_slice(&encode_half(weight).to_le_bytes());
         }
@@ -638,10 +708,11 @@ fn skinned_tri_shape(
     shader_property: u32,
     vertices: &[SkinVertex],
     triangles: &[[u16; 3]],
+    normals: SkinNormals,
 ) -> Result<Vec<u8>> {
     let vertex_bytes = vertices
         .len()
-        .checked_mul(SKIN_VERTEX_SIZE as usize)
+        .checked_mul(normals.vertex_size() as usize)
         .ok_or_else(|| eyre!("NIF vertex data overflow"))?;
     let triangle_bytes = triangles
         .len()
@@ -661,7 +732,7 @@ fn skinned_tri_shape(
     push_u32(&mut block, skin);
     push_u32(&mut block, shader_property);
     push_u32(&mut block, NULL_REF);
-    push_u64(&mut block, skin_vertex_desc());
+    push_u64(&mut block, normals.vertex_desc());
     push_u16(
         &mut block,
         u16::try_from(triangles.len()).map_err(|_| eyre!("NIF triangle count overflow"))?,
@@ -674,7 +745,7 @@ fn skinned_tri_shape(
         &mut block,
         u32::try_from(data_size).map_err(|_| eyre!("NIF geometry size overflow"))?,
     );
-    push_skinned_vertices(&mut block, vertices);
+    push_skinned_vertices(&mut block, vertices, normals);
     for triangle in triangles {
         for index in triangle {
             block.extend_from_slice(&index.to_le_bytes());
@@ -688,6 +759,7 @@ fn dynamic_tri_shape(
     positions: &[[f32; 3]],
     skin: u32,
     shader_property: u32,
+    normals: SkinNormals,
 ) -> Result<Vec<u8>> {
     let vertex_count =
         u16::try_from(positions.len()).map_err(|_| eyre!("NIF vertex count overflow"))?;
@@ -706,7 +778,7 @@ fn dynamic_tri_shape(
     push_u32(&mut block, skin);
     push_u32(&mut block, shader_property);
     push_u32(&mut block, NULL_REF);
-    push_u64(&mut block, skin_vertex_desc());
+    push_u64(&mut block, normals.vertex_desc());
     push_u16(&mut block, 0);
     push_u16(&mut block, vertex_count);
     push_u32(&mut block, 0);
@@ -794,10 +866,11 @@ fn skin_partition(
     triangles: &[[u16; 3]],
     palette: &[u16],
     weights: &[[f32; 4]],
+    normals: SkinNormals,
 ) -> Result<Vec<u8>> {
     let data_size = vertices
         .len()
-        .checked_mul(SKIN_VERTEX_SIZE as usize)
+        .checked_mul(normals.vertex_size() as usize)
         .ok_or_else(|| eyre!("NIF partition vertex data overflow"))?;
     let mut block = Vec::new();
     push_u32(&mut block, 1);
@@ -805,9 +878,9 @@ fn skin_partition(
         &mut block,
         u32::try_from(data_size).map_err(|_| eyre!("NIF partition size overflow"))?,
     );
-    push_u32(&mut block, SKIN_VERTEX_SIZE);
-    push_u64(&mut block, skin_vertex_desc());
-    push_skinned_vertices(&mut block, vertices);
+    push_u32(&mut block, normals.vertex_size());
+    push_u64(&mut block, normals.vertex_desc());
+    push_skinned_vertices(&mut block, vertices, normals);
     push_u16(
         &mut block,
         u16::try_from(vertices.len()).map_err(|_| eyre!("NIF partition vertex count overflow"))?,
@@ -840,7 +913,7 @@ fn skin_partition(
     }
     block.push(0);
     block.push(0);
-    push_u64(&mut block, skin_vertex_desc());
+    push_u64(&mut block, normals.vertex_desc());
     for triangle in triangles {
         for index in triangle {
             push_u16(&mut block, *index);
@@ -1197,6 +1270,14 @@ fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>
 }
 
 fn lighting_shader_property(colors: bool, texture_set: u32) -> Vec<u8> {
+    if colors {
+        lighting_shader_property_with_flags(1 << 3, 1 << 5, texture_set)
+    } else {
+        lighting_shader_property_with_flags(0, 0, texture_set)
+    }
+}
+
+fn lighting_shader_property_with_flags(flags_1: u32, flags_2: u32, texture_set: u32) -> Vec<u8> {
     let mut block = Vec::with_capacity(100);
     push_u32(&mut block, SHADER_TYPE_DEFAULT);
     push_u32(&mut block, NULL_REF);
@@ -1223,10 +1304,8 @@ fn lighting_shader_property(colors: bool, texture_set: u32) -> Vec<u8> {
     push_f32(&mut block, 1.0);
     push_f32(&mut block, 0.3);
     push_f32(&mut block, 2.0);
-    if colors {
-        block[16..20].copy_from_slice(&(1u32 << 3).to_le_bytes());
-        block[20..24].copy_from_slice(&(1u32 << 5).to_le_bytes());
-    }
+    block[16..20].copy_from_slice(&flags_1.to_le_bytes());
+    block[20..24].copy_from_slice(&flags_2.to_le_bytes());
     debug_assert_eq!(block.len(), 100);
     block
 }

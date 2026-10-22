@@ -360,7 +360,7 @@ pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
 /// Each name enters the current producer's mesh settings proof, so a normal conversion rebuilds
 /// meshes an earlier converter of the same producer wrote. Append a name per change, never
 /// rename or reorder one, and clear the list when the producer advances.
-pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &["legacy-skin-export"];
+pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &["legacy-skin-export", "msn-vertex-normals"];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
 /// producers keep their recorded proofs; an empty list leaves every proof unchanged.
