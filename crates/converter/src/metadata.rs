@@ -32,7 +32,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use shared::asset_lock::AssetLock;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -323,7 +323,9 @@ fn settings_for_source_reader(
                     || identity
                         == &serde_json::json!({"mode": "legacy", "projection_version": 1})
                     || identity
-                        == &serde_json::json!({"mode": "legacy", "projection_version": 2}))
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 2})
+                    || identity
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 3}))
                 && schemas.identities().is_empty()),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
@@ -530,16 +532,14 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    if config.record_reader == crate::config::RecordReader::Inhouse {
-        let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
-        for archive in &archives {
-            // Strings are metadata inputs; decode only the selected plugin tables.
-            if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
-                eprintln!(
-                    "warning: {}: unable to extract localized names: {error}",
-                    archive.display()
-                );
-            }
+    // Both readers resolve localized names; decode only the selected plugin tables.
+    let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
+    for archive in &archives {
+        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+            eprintln!(
+                "warning: {}: unable to extract localized names: {error}",
+                archive.display()
+            );
         }
     }
     let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
@@ -576,7 +576,21 @@ async fn rebuild_into(
             .artifacts
             .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
-    drop(merged);
+    // Merged terrain (#215) keeps only the records its stage reads. The LAND each cell keeps is
+    // checked here, before the texture, mesh and LOD stages, so a bad load order fails in minutes;
+    // the positions are the ones the cell cache above was ordered by.
+    let source_offsets = if config.merged_terrain {
+        crate::terrain_pipeline::cell_cache_source_offsets(config.record_reader, &database)?
+    } else {
+        HashMap::new()
+    };
+    let merged_records = if config.merged_terrain {
+        crate::esm::cell_cache::merged_terrain_lands(&merged, &source_offsets)?;
+        Some(crate::terrain_pipeline::terrain_records(merged))
+    } else {
+        drop(merged);
+        None
+    };
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
@@ -630,6 +644,20 @@ async fn rebuild_into(
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();
+    // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
+    // are, so a rebuild with the option on produces it instead of ignoring the option.
+    if config.merged_terrain {
+        crate::terrain_pipeline::run_merged_terrain_stage(
+            staging,
+            merged_records,
+            source_offsets,
+            plugins,
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+            progress,
+            &mut report,
+        )
+        .await?;
+    }
     let integration = finalize_world_database(staging)?
         .ok_or_else(|| color_eyre::eyre::eyre!("missing rebuilt world database"))?;
     ensure!(
@@ -642,11 +670,12 @@ async fn rebuild_into(
         .artifacts
         .push(PathBuf::from("integration-report.json"));
     // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately.
+    // the source manifest; validate copied model dependencies separately. The merged terrain
+    // payloads (#215) are generated here too and are validated the same way.
     let payloads = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod"))
+        .filter(|path| path.starts_with("lod") || path.starts_with("terrain"))
         .cloned()
         .collect::<Vec<_>>();
     validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
@@ -1178,6 +1207,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy"}),
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
+            serde_json::json!({"mode": "legacy", "projection_version": 3}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1190,7 +1220,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 4}),
+            serde_json::json!({"mode": "legacy", "projection_version": 5}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

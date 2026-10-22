@@ -1,0 +1,6 @@
+[Unit]
+Description=Mudcrab comparison GPU headless display
+[Service]
+ExecStart=/run/wrappers/bin/gamescope --backend headless -W 1920 -H 1080 -w 1920 -h 1080 -r 60 --keep-alive -- /home/taylor/Games/MudcrabComparison/bin/display-ready
+WorkingDirectory=/home/taylor/Games/MudcrabComparison
+KillMode=control-group

@@ -1036,3 +1036,67 @@ fn rv_a_deferred_builtin_damaged_optional_coed_publishes_safe_neighbors() {
             .contains("\"Deferred\"")
     );
 }
+
+/// Both readers must archive identical canonical links when a patch's local
+/// master indices differ from normal/light load-order identities.
+#[test]
+fn race_base_movement_links_match_legacy_and_inhouse_publication() {
+    let tags = [b"WKMV", b"RNMV", b"SWMV", b"FLMV", b"SNMV", b"SPMV"];
+    for light in [false, true] {
+        for first_id in [0x340u32, 0x440] {
+            let mut fixture = Fixture::new();
+            fixture.add("Skyrim.esm", &[], 1, &[]);
+            fixture.add("Gap.esm", &[], 1, &[]);
+            let mut body = Vec::new();
+            let mut race = sub(b"EDID", b"MovementRace\0");
+            for (index, tag) in tags.iter().enumerate() {
+                let id = 0x0100_0000 | (first_id + index as u32);
+                race.extend(sub(tag, &id.to_le_bytes()));
+                body.extend(native_record(
+                    b"MOVT",
+                    id,
+                    0,
+                    &[
+                        sub(b"EDID", format!("Movement{index}\0").as_bytes()),
+                        sub(b"MNAM", format!("Movement{index}\0").as_bytes()),
+                        sub(b"SPED", &[100.0f32.to_le_bytes(); 11].concat()),
+                    ]
+                    .concat(),
+                ));
+            }
+            // Override a base-owned race. Only the link targets are patch-owned.
+            body.extend(native_record(b"RACE", 0x900, 0, &race));
+            fixture.add(
+                "Movement.esp",
+                &["Skyrim.esm"],
+                if light { 0x200 } else { 0 },
+                &body,
+            );
+            let (inhouse, db, _) = fixture.publish(None, &[*b"RACE", *b"MOVT"]);
+            let legacy = crate::esm::EsmParser::merge_plugins(&fixture.paths).unwrap();
+            let legacy_db = Connection::open_in_memory().unwrap();
+            create_tables(&legacy_db).unwrap();
+            crate::esm::exporter::export_to_db(&legacy_db, &legacy).unwrap();
+            let inhouse_stored = canonical(&db, 0x900);
+            let legacy_stored = canonical(&legacy_db, 0x900);
+            for (index, tag) in tags.iter().enumerate() {
+                let expected =
+                    (if light { 0xFE00_0000 } else { 0x0200_0000 }) | (first_id + index as u32);
+                for records in [&inhouse, &legacy] {
+                    let bytes = SubrecordView::new(&records[&0x900].subrecords);
+                    assert_eq!(word(bytes.find(tag).unwrap()), expected);
+                }
+                for stored in [&inhouse_stored, &legacy_stored] {
+                    let field = stored
+                        .subrecords
+                        .iter()
+                        .find(|field| &field.tag == *tag)
+                        .unwrap();
+                    assert_eq!(word(&field.data), expected);
+                }
+            }
+            assert_eq!(inhouse[&0x900].load_order, 2);
+            assert_eq!(legacy[&0x900].load_order, 2);
+        }
+    }
+}

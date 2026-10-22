@@ -205,6 +205,8 @@ pub struct SkyPalette {
     /// `NAM0`'s Fog Near colour: the colour vanilla's fog starts from at the camera.
     pub fog_near: Color,
     pub fog_far: Color,
+    /// Atmospheric density relative to the baseline visibility distance.
+    pub fog_density_scale: f32,
     /// Linear scale on the dome and clear colour, for calibrating the sky against lit surfaces.
     pub brightness: f32,
 }
@@ -219,6 +221,7 @@ impl SkyPalette {
         horizon: Color::srgb_u8(125, 163, 183),
         fog_near: Color::srgb_u8(35, 98, 124),
         fog_far: Color::srgb_u8(116, 168, 203),
+        fog_density_scale: 1.0,
         brightness: 1.0,
     };
 
@@ -307,7 +310,13 @@ pub const FOG_DIRECTIONAL_LIGHT_EXPONENT: f32 = 30.0;
 /// The distance fog for one weather: Bevy's visibility-based atmospheric fog, converging on
 /// the Fog Far colour.
 pub fn fog_for(palette: &SkyPalette) -> DistanceFog {
-    fog_with_visibility(palette, FOG_VISIBILITY)
+    fog_with_visibility(palette, fog_visibility(palette.fog_density_scale, 1.0))
+}
+
+/// Convert authored palette density and the player's multiplier to visibility. The floor keeps
+/// a zero multiplier finite; the multiplier composes with the palette instead of replacing it.
+fn fog_visibility(palette_density_scale: f32, user_multiplier: f32) -> f32 {
+    FOG_VISIBILITY / (palette_density_scale * user_multiplier).max(1.0e-3)
 }
 
 /// [`fog_for`] at another visibility distance. Extinction is inversely proportional to
@@ -590,10 +599,11 @@ fn apply_fog(
         (CameraSpace::Exterior, true) => {
             // The fog is the clear colour, so it takes the same brightness scale as the sky.
             let scaled = scaled_palette(&palette, settings.as_deref());
-            // The floor keeps a zero multiplier finite: it means almost no fog, not infinite visibility.
-            let visibility = settings.as_deref().map_or(FOG_VISIBILITY, |settings| {
-                FOG_VISIBILITY / settings.fog_density_scale.max(1.0e-3)
-            });
+            // The player's multiplier scales the authored weather density once.
+            let user_multiplier = settings
+                .as_deref()
+                .map_or(1.0, |settings| settings.fog_density_scale);
+            let visibility = fog_visibility(palette.fog_density_scale, user_multiplier);
             Some(fog_with_visibility(&scaled, visibility))
         }
         _ => None,
@@ -1073,6 +1083,38 @@ mod tests {
         }
         assert!(app.world().get::<DistanceFog>(unfogged).is_none());
 
+        *app.world_mut().resource_mut::<SkyPalette>() =
+            crate::color_pipeline::SceneVisualPreset::CoolGray.sky_palette();
+        app.update();
+        let lighter = app.world().get::<DistanceFog>(camera).unwrap();
+        assert_eq!(
+            lighter.color,
+            Color::srgb_u8(210, 222, 235).to_linear().into()
+        );
+        match (&fog.falloff, &lighter.falloff) {
+            (
+                FogFalloff::Atmospheric {
+                    extinction,
+                    inscattering,
+                },
+                FogFalloff::Atmospheric {
+                    extinction: lighter_extinction,
+                    inscattering: lighter_inscattering,
+                },
+            ) => {
+                assert_eq!(*lighter_extinction, *extinction * 0.25);
+                assert_eq!(*lighter_inscattering, *inscattering * 0.25);
+            }
+            _ => panic!("preset fog must remain atmospheric"),
+        }
+        assert!(app.world().get::<DistanceFog>(unfogged).is_none());
+        *app.world_mut().resource_mut::<SkyPalette>() = palette;
+        app.update();
+        assert!(same_fog(
+            app.world().get::<DistanceFog>(camera).unwrap(),
+            &fog
+        ));
+
         *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Interior;
         app.update();
         assert!(app.world().get::<DistanceFog>(camera).is_none());
@@ -1080,6 +1122,93 @@ mod tests {
         *app.world_mut().resource_mut::<CameraSpace>() = CameraSpace::Exterior;
         app.update();
         assert!(app.world().get::<DistanceFog>(camera).is_some());
+    }
+
+    #[test]
+    fn fog_density_multiplier_composes_with_palette_and_updates_live() {
+        let mut app = sky_app();
+        let palette = crate::color_pipeline::SceneVisualPreset::CoolGray.sky_palette();
+        *app.world_mut().resource_mut::<SkyPalette>() = palette;
+        app.insert_resource(crate::settings::RenderingSettings::default());
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default(), FogCamera))
+            .id();
+        app.update();
+
+        let authored = fog_for(&palette);
+        let current = app.world().get::<DistanceFog>(camera).unwrap();
+        assert!(same_fog(current, &authored));
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog_density_scale = 0.5;
+        app.update();
+        let half = app.world().get::<DistanceFog>(camera).unwrap().clone();
+        assert_fog_density_factor(&half, &authored, 0.5);
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog_density_scale = 2.0;
+        app.update();
+        let double = app.world().get::<DistanceFog>(camera).unwrap().clone();
+        assert_fog_density_factor(&double, &authored, 2.0);
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog_density_scale = 0.5;
+        app.update();
+        assert!(same_fog(
+            app.world().get::<DistanceFog>(camera).unwrap(),
+            &half
+        ));
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog = false;
+        app.update();
+        assert!(app.world().get::<DistanceFog>(camera).is_none());
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog = true;
+        app.update();
+        assert!(same_fog(
+            app.world().get::<DistanceFog>(camera).unwrap(),
+            &half
+        ));
+
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .fog_density_scale = 0.0;
+        app.update();
+        let zero = app.world().get::<DistanceFog>(camera).unwrap();
+        let FogFalloff::Atmospheric {
+            extinction,
+            inscattering,
+        } = &zero.falloff
+        else {
+            panic!("expected atmospheric fog");
+        };
+        assert!(extinction.is_finite() && inscattering.is_finite());
+    }
+
+    fn assert_fog_density_factor(actual: &DistanceFog, authored: &DistanceFog, factor: f32) {
+        assert_eq!(actual.color, authored.color);
+        let (
+            FogFalloff::Atmospheric {
+                extinction: authored_extinction,
+                inscattering: authored_inscattering,
+            },
+            FogFalloff::Atmospheric {
+                extinction: actual_extinction,
+                inscattering: actual_inscattering,
+            },
+        ) = (&authored.falloff, &actual.falloff)
+        else {
+            panic!("expected atmospheric fog");
+        };
+        assert_eq!(*actual_extinction, *authored_extinction * factor);
+        assert_eq!(*actual_inscattering, *authored_inscattering * factor);
     }
 
     #[test]

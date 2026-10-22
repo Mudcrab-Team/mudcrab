@@ -1009,6 +1009,7 @@ fn sample_scene_inventory(
     mut frames: Local<u64>,
     meshes: Query<(), With<Mesh3d>>,
     terrain: Query<&ViewVisibility, With<crate::world::components::TerrainPatch>>,
+    merged_terrain: Query<&ViewVisibility, With<crate::streaming::MergedTerrainCell>>,
     lod_terrain_batches: Query<(), With<crate::streaming::lod::LodTerrainBatch>>,
     structural_nodes: Query<
         (),
@@ -1047,6 +1048,13 @@ fn sample_scene_inventory(
     counts.insert(
         "scene/visible_terrain_patches".to_owned(),
         terrain.iter().filter(|visible| visible.get()).count() as f64,
+    );
+    // A terrain patch is one drawn terrain mesh: one per merged cell, four per quadrant-path cell.
+    let merged_cells = merged_terrain.iter().count();
+    counts.insert("scene/terrain_merged_cells".to_owned(), merged_cells as f64);
+    counts.insert(
+        "scene/terrain_quadrant_patches".to_owned(),
+        (terrain.iter().count() - merged_cells) as f64,
     );
     counts.insert(
         "scene/water_surfaces".to_owned(),

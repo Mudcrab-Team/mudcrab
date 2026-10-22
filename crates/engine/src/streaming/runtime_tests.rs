@@ -2032,3 +2032,236 @@ fn unknown_material_image_identity_keeps_catalog_texture_claims_conservative() {
     assert!(!runtime.scenes[&key].prepared);
     assert_eq!(runtime.ledger.totals().transient_bytes, 8 + 32);
 }
+
+/// The cell-pipeline fixture with a merged terrain setup still in progress (its arrays are not
+/// ready), and a cell cache in which cell 1 has terrain: a loaded exterior with terrain is held.
+fn held_setup_fixture() -> (
+    App,
+    tempfile::TempDir,
+    crossbeam_channel::Receiver<DatabaseRequest>,
+    crossbeam_channel::Sender<DatabaseResponse>,
+) {
+    use crate::{
+        streaming::StreamingCommitBudget,
+        terrain_merge::{MergeState, TerrainMerge, classes::TerrainClasses},
+        world::cache::CellCache,
+    };
+    let (mut app, directory, requests, responses) = cell_pipeline_fixture(4);
+    let cache_path = directory.path().join("held-cells.rkyv");
+    let cache = shared::CellCache {
+        version: shared::CELL_CACHE_VERSION,
+        cells: vec![shared::CachedLand {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![0.0; 33 * 33],
+            normals: vec![0; 33 * 33 * 3],
+            vertex_colors: vec![],
+            layers: (0..4)
+                .map(|quadrant| shared::TerrainLayer {
+                    texture_form_id: 1,
+                    quadrant,
+                    layer: 0,
+                    is_base: true,
+                    weights: vec![],
+                })
+                .collect(),
+            water_height: None,
+            water_type_form_id: None,
+        }],
+    };
+    std::fs::write(
+        &cache_path,
+        rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+    )
+    .unwrap();
+    app.insert_resource(CellCache::open(&cache_path).unwrap());
+    let classes = std::sync::Arc::new(
+        TerrainClasses::from_table(crate::terrain_merge::classes::tests::vanilla_table(9)).unwrap(),
+    );
+    app.insert_resource(TerrainMerge::with_state(
+        MergeState::AwaitingDevice(classes),
+        std::path::PathBuf::new(),
+    ));
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    (app, directory, requests, responses)
+}
+
+/// Marks `key` as an in-flight load: the entry `request_cell` would leave behind.
+fn in_flight(app: &mut App, key: CellKey, generation: u64) {
+    let mut streaming = app.world_mut().resource_mut::<StreamingWorld>();
+    streaming
+        .cells
+        .insert(key, CellStatus::Loading { generation });
+    streaming.outstanding_cells.insert(key, generation);
+}
+
+#[test]
+fn stale_held_responses_release_their_slots_while_setup_still_holds_cells() {
+    use crate::streaming::{StreamingCommitBudget, collect_cells, plan_cells};
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _directory, requests, responses) = held_setup_fixture();
+    let (left, right) = (cell_key(0), cell_key(1));
+    in_flight(&mut app, left, 1);
+    in_flight(&mut app, right, 2);
+    responses.send(returned_cell(1, left)).unwrap();
+    responses.send(returned_cell(2, right)).unwrap();
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    {
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert_eq!(
+            streaming.held_responses.len(),
+            2,
+            "both cells wait for setup"
+        );
+        assert_eq!(streaming.outstanding_cells.len(), 2);
+    }
+
+    // The camera leaves: both loads drop out of the active space while setup still holds them.
+    let camera = app
+        .world_mut()
+        .query_filtered::<Entity, With<StreamingCamera>>()
+        .single(app.world_mut())
+        .unwrap();
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation
+        .x = CELL_SIZE * 100.0;
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    assert!(requests.is_empty(), "two stale slots block the new load");
+    assert!(app.world().resource::<StreamingWorld>().cells.is_empty());
+
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    {
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert!(
+            streaming.held_responses.is_empty(),
+            "stale held entries are released"
+        );
+        assert!(
+            streaming.outstanding_cells.is_empty(),
+            "their slots are released"
+        );
+        assert_eq!(
+            app.world().resource::<StreamingMetrics>().stale_responses,
+            2,
+            "each stale held response is counted once"
+        );
+    }
+    app.world_mut().run_system_once(plan_cells).unwrap();
+    assert!(
+        matches!(
+            requests.try_recv(),
+            Ok(DatabaseRequest::Load { key, .. }) if key != left && key != right
+        ),
+        "the current wanted cell submits without waiting for setup"
+    );
+
+    // A response for a load no longer wanted is stale on arrival, not held behind setup.
+    let gone = cell_key(5);
+    in_flight(&mut app, gone, 9);
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .cells
+        .remove(&gone);
+    responses.send(returned_cell(9, gone)).unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    let streaming = app.world().resource::<StreamingWorld>();
+    assert!(streaming.held_responses.iter().all(|held| held.key != gone));
+    assert!(!streaming.outstanding_cells.contains_key(&gone));
+    assert_eq!(
+        app.world().resource::<StreamingMetrics>().stale_responses,
+        3
+    );
+    assert_eq!(
+        app.world()
+            .resource::<StreamingMetrics>()
+            .responses_received,
+        3,
+        "every first arrival is counted once"
+    );
+}
+
+#[test]
+fn a_current_held_response_keeps_its_slot_and_replays_once_when_setup_ends() {
+    use crate::streaming::{StreamingCommitBudget, collect_cells};
+    use crate::terrain_merge::TerrainMerge;
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _directory, _requests, responses) = held_setup_fixture();
+    let (current, dropped) = (cell_key(0), cell_key(1));
+    in_flight(&mut app, current, 1);
+    in_flight(&mut app, dropped, 2);
+    responses.send(returned_cell(1, current)).unwrap();
+    responses.send(returned_cell(2, dropped)).unwrap();
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .cells
+        .remove(&dropped);
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    {
+        let streaming = app.world().resource::<StreamingWorld>();
+        assert_eq!(
+            streaming.held_responses.len(),
+            1,
+            "only the current cell stays held"
+        );
+        assert_eq!(streaming.held_responses[0].key, current);
+        assert_eq!(
+            streaming.outstanding_cells.get(&current),
+            Some(&1),
+            "the held cell keeps its bounded slot"
+        );
+        assert!(!streaming.outstanding_cells.contains_key(&dropped));
+    }
+    assert_eq!(
+        app.world().resource::<StreamingMetrics>().stale_responses,
+        1
+    );
+    assert_eq!(
+        app.world()
+            .resource::<StreamingMetrics>()
+            .responses_received,
+        2
+    );
+
+    // Setup ends: the held cell replays once, in order, and is not counted as a new arrival.
+    app.world_mut().remove_resource::<TerrainMerge>();
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingCommitBudget>()
+        .remaining = 8;
+    app.world_mut().run_system_once(collect_cells).unwrap();
+    let streaming = app.world().resource::<StreamingWorld>();
+    assert!(streaming.held_responses.is_empty());
+    assert!(streaming.outstanding_cells.is_empty());
+    // The synthetic terrain is committed (resident or refused by validation); it is not stale.
+    assert!(!matches!(
+        streaming.cells.get(&current),
+        Some(CellStatus::Loading { .. }) | None
+    ));
+    let metrics = app.world().resource::<StreamingMetrics>();
+    assert_eq!(
+        metrics.responses_received, 2,
+        "a replay is not a new arrival"
+    );
+    assert_eq!(
+        metrics.stale_responses, 1,
+        "the replay is not counted stale"
+    );
+}

@@ -206,6 +206,16 @@ pub struct IngestionCacheEntry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub recipe: String,
     pub files: Vec<IngestedFile>,
+    /// Version of the archive reader that produced `files`, for formats whose reader changed
+    /// what it stores (BSA names are decoded as Windows-1252 from version 1). Absent means 0,
+    /// the reader before any such change; an entry is reused only when it matches the current
+    /// reader, so a changed reader re-extracts the archive once instead of keeping old paths.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reader_version: u32,
+}
+
+pub(crate) fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 const INGESTION_JOURNAL_FILE: &str = ".ingestion-archives.jsonl";
@@ -532,6 +542,18 @@ pub(crate) fn legacy_projection_v1_configuration_hash(
         config,
         schema,
         Some(&serde_json::json!({"mode": "legacy", "projection_version": 1})),
+    )
+}
+
+/// Reproduce the exact version-3 legacy projection proof for retained assets.
+pub(crate) fn legacy_projection_v3_configuration_hash(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    configuration_hash_with_identity(
+        config,
+        schema,
+        Some(&serde_json::json!({"mode": "legacy", "projection_version": 3})),
     )
 }
 
@@ -949,6 +971,15 @@ pub(crate) fn retained_configuration_matches_for_reader(
     {
         return Ok(recorded == legacy_projection_v2_configuration_hash(config, schema)?);
     }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy", "projection_version": 3})
+    {
+        // Projection v3 resolved only English banks. Preserve old proofs under that contract.
+        if !crate::esm::inhouse::is_english(&config.language) {
+            return Ok(false);
+        }
+        return Ok(recorded == legacy_projection_v3_configuration_hash(config, schema)?);
+    }
     let current = crate::esm::inhouse::configured_reader_identity(config)?;
     if identity == &current {
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
@@ -1311,6 +1342,7 @@ mod tests {
                 size: 4,
                 hash: "cd".repeat(32),
             }],
+            reader_version: 0,
         };
         let mut journal = IngestionJournal::open(directory.path()).unwrap();
         journal.record("base.bsa", &entry).unwrap();

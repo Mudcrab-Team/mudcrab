@@ -5,8 +5,10 @@
 //! folder records. Payloads are stored verbatim or as a `u32` uncompressed
 //! size followed by a zlib stream.
 //!
-//! Name hashes are written as zero because the converter resolves entries by
-//! table order; these fixtures are not intended for game clients.
+//! Folder and file name hashes are the real TES4 hashes, which the converter
+//! verifies. This writer computes them on its own (not shared with the
+//! converter), so the two implementations check each other. The payloads are
+//! not meant for game clients.
 
 use crate::Entry;
 use crate::bytes::{push_u32, push_u64};
@@ -162,8 +164,11 @@ fn archive(version: u32, entries: &[Entry<'_>], compression: Compression) -> Res
     );
     push_u32(&mut bytes, 0);
 
-    for entries in &grouped {
-        push_u64(&mut bytes, 0);
+    for (index, entries) in grouped.iter().enumerate() {
+        push_u64(
+            &mut bytes,
+            name_hash(&folders[index].replace('/', "\\"), false),
+        );
         push_u32(
             &mut bytes,
             u32::try_from(entries.len()).map_err(|_| eyre!("BSA folder entry count overflow"))?,
@@ -180,7 +185,7 @@ fn archive(version: u32, entries: &[Entry<'_>], compression: Compression) -> Res
         bytes.extend_from_slice(folder.as_bytes());
         bytes.push(0);
         for entry in &grouped[index] {
-            push_u64(&mut bytes, 0);
+            push_u64(&mut bytes, name_hash(&entry.file, true));
             push_u32(
                 &mut bytes,
                 u32::try_from(entry.payload.len())
@@ -203,6 +208,44 @@ fn archive(version: u32, entries: &[Entry<'_>], compression: Compression) -> Res
     }
     debug_assert_eq!(bytes.len(), total_size);
     Ok(bytes)
+}
+
+/// TES4 name hash of a lowercase name: the last, second-to-last, first byte and
+/// length in the low word; a CRC of the middle (and extension) in the high word.
+fn name_hash(name: &str, split_extension: bool) -> u64 {
+    let name = name.to_ascii_lowercase();
+    let bytes = name.as_bytes();
+    let (root, extension) = match bytes.iter().rposition(|&byte| byte == b'.') {
+        Some(dot) if split_extension => bytes.split_at(dot),
+        _ => (bytes, &bytes[..0]),
+    };
+    let crc = |part: &[u8]| {
+        part.iter().fold(0u32, |crc, &byte| {
+            crc.wrapping_mul(0x1003f).wrapping_add(u32::from(byte))
+        })
+    };
+    let mut low = 0u32;
+    let mut middle = 0u32;
+    if !root.is_empty() {
+        let length = root.len();
+        let second_last = if length > 2 { root[length - 2] } else { 0 };
+        low = u32::from(root[length - 1])
+            | u32::from(second_last) << 8
+            | (length as u32 & 0xff) << 16
+            | u32::from(root[0]) << 24;
+        if length > 3 {
+            middle = crc(&root[1..length - 2]);
+        }
+    }
+    low |= match extension {
+        b".kf" => 0x80,
+        b".nif" => 0x8000,
+        b".dds" => 0x8080,
+        b".wav" => 0x8000_0000,
+        b".adp" => 0x8000_8000,
+        _ => 0,
+    };
+    u64::from(middle.wrapping_add(crc(extension))) << 32 | u64::from(low)
 }
 
 fn encode_payload(data: &[u8], compression: Compression) -> Result<Vec<u8>> {

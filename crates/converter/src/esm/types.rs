@@ -1,16 +1,8 @@
-use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Archive, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ArchivedSubRecord {
-    pub tag: [u8; 4],
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Archive, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ArchivedRecordData {
-    pub subrecords: Vec<ArchivedSubRecord>,
-}
+pub use shared::records::{
+    ArchivedArchivedRecordData, ArchivedArchivedSubRecord, ArchivedRecordData, ArchivedSubRecord,
+};
 
 #[derive(Debug, Clone)]
 pub struct GroupHeader {

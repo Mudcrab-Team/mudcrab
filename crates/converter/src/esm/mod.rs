@@ -17,31 +17,45 @@ pub mod binary;
 pub mod cell_cache;
 pub mod doors;
 pub mod emittance;
+mod environment;
 pub mod exporter;
 pub mod extractors;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
+mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 pub mod plugins_txt;
 pub mod records;
+mod reference_links;
 pub mod rooms;
+pub mod terrain_mesh;
 pub mod types;
 pub use plugins_txt::{
     OFFICIAL_MASTERS, read_plugins_txt, read_plugins_txt_with_options, read_skyrim_ccc,
 };
 #[cfg(test)]
+mod base_model_parity_tests;
+#[cfg(test)]
+mod display_name_parity_tests;
+#[cfg(test)]
 mod emittance_parity_tests;
 #[cfg(test)]
+mod environment_parity_tests;
+#[cfg(test)]
+mod light_details_parity_tests;
+#[cfg(test)]
 mod plugin_table_tests;
+#[cfg(test)]
+mod reference_links_parity_tests;
 #[cfg(test)]
 mod report_warnings_official_tests;
 
 pub struct EsmParser;
 
-/// Winning records with bounded recovery warnings and harmless compatibility notices.
+/// Winning records with bounded data-loss warnings and faithful-outcome notices.
 #[derive(Debug)]
 pub(crate) struct RecordConversion {
     pub(crate) records: HashMap<u32, RawRecord>,
@@ -141,7 +155,7 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         match reader {
             crate::config::RecordReader::Legacy => {
-                Self::convert_plugins_with_records_report(plugin_paths, db_path)
+                Self::convert_legacy_plugins_report(plugin_paths, db_path, string_sources)
             }
             crate::config::RecordReader::Inhouse => {
                 inhouse::convert_plugins_with_string_sources_report(
@@ -173,12 +187,40 @@ impl EsmParser {
         plugin_paths: &[PathBuf],
         db_path: &Path,
     ) -> Result<RecordConversion> {
+        // Without a staged archive VFS, string tables come from each plugin's loose folder.
+        let loose = plugin_paths
+            .first()
+            .and_then(|path| path.parent())
+            .unwrap_or(Path::new("."));
+        Self::convert_legacy_plugins_report(
+            plugin_paths,
+            db_path,
+            inhouse::StringSources::default_language(inhouse::StringRoots::PluginLooseFirst(loose)),
+        )
+    }
+
+    /// Export legacy records, resolving localized text through the in-house string sources.
+    fn convert_legacy_plugins_report(
+        plugin_paths: &[PathBuf],
+        db_path: &Path,
+        string_sources: inhouse::StringSources<'_>,
+    ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
-        let master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        let (unresolved, localization_warnings) = legacy_text::resolve_localized_fields(
+            &mut master.records,
+            plugin_paths,
+            &order,
+            string_sources,
+        );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
-        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths)?;
+        exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
 
+        for warning in &localization_warnings {
+            eprintln!("{warning}");
+        }
+        master.warnings.extend(localization_warnings);
         Ok(master)
     }
 
@@ -518,9 +560,14 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"XCWT" if record_type == b"CELL" => Fixed(SINGLE),
         // RNAM is a compound large-reference payload and TNAM is a texture path;
         // preserve those bytes under the existing unsupported-layout policy.
-        b"NAM2" | b"NAM3" | b"WNAM" | b"CNAM" if record_type == b"WRLD" => Fixed(SINGLE),
+        // Music (`ZNAM`) as well, which the in-house schema remaps too.
+        b"NAM2" | b"NAM3" | b"WNAM" | b"CNAM" | b"ZNAM" if record_type == b"WRLD" => Fixed(SINGLE),
         b"RNAM" | b"CNAM" | b"INAM" if record_type == b"NPC_" => Fixed(SINGLE),
-        b"WKMV" | b"RNMV" if record_type == b"RACE" => Fixed(SINGLE),
+        // xEdit 9fb016884bec138ea6c7b872cec831537d464c3e,
+        // wbDefinitionsTES5.pas:9463-9468. Match the in-house actors schema.
+        b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {
+            Fixed(SINGLE)
+        }
         b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL" => Fixed(SINGLE),
         // Door destination reference, then position, rotation and flags.
         b"XTEL" if placed => Fixed(&[(32, &[0])]),
@@ -533,6 +580,10 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"XNDP" if placed => Fixed(&[(8, &[0])]),
         // Emitted light or region.
         b"XEMI" if placed => Fixed(SINGLE),
+        // Attached reference, which the in-house schema remaps too.
+        b"XATR" if placed => Fixed(SINGLE),
+        // A light's sound and lens flare, which the in-house schema remaps too.
+        b"SNAM" | b"LNAM" if record_type == b"LIGH" => Fixed(SINGLE),
         // Each activate parent is a separate subrecord: reference plus f32 delay.
         b"XAPR" if placed => Fixed(&[(8, &[0])]),
         // Location reference types.
@@ -569,6 +620,17 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
             stride: 12,
             form_ids: &[0, 8],
         },
+        // A climate's weathers, laid out like a region's.
+        b"WLST" if record_type == b"CLMT" => Array {
+            stride: 12,
+            form_ids: &[0, 8],
+        },
+        // A weather's precipitation, visual effect, sky static and sun glare lens.
+        b"MNAM" | b"NNAM" | b"TNAM" | b"GNAM" if record_type == b"WTHR" => Fixed(SINGLE),
+        // Its image spaces and volumetric lighting at sunrise, day, sunset and night.
+        b"IMSP" | b"HNAM" if record_type == b"WTHR" => Fixed(&[(16, &[0, 4, 8, 12])]),
+        // Each sound is its own subrecord: descriptor, then a u32 kind.
+        b"SNAM" if record_type == b"WTHR" => Fixed(&[(8, &[0])]),
         _ => return None,
     })
 }
@@ -953,6 +1015,88 @@ mod tests {
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn remaps_all_race_base_movement_links_for_normal_and_light_plugins() {
+        for light in [false, true] {
+            for global_index in [3, 7] {
+                let normal = HashMap::from([
+                    ("skyrim.esm".to_owned(), 0),
+                    ("movement.esp".to_owned(), global_index),
+                ]);
+                let lights = if light {
+                    HashMap::from([("movement.esp".to_owned(), global_index)])
+                } else {
+                    HashMap::new()
+                };
+                let tags = [b"WKMV", b"RNMV", b"SWMV", b"FLMV", b"SNMV", b"SPMV"];
+                // The patch owns each referenced MOVT at local index 1.
+                // Also retain a null link and unrelated authored bytes.
+                let mut subrecords: Vec<_> = tags
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tag)| {
+                        (
+                            tag.to_vec(),
+                            (0x0100_0340u32 + i as u32).to_le_bytes().to_vec(),
+                        )
+                    })
+                    .collect();
+                subrecords.push((b"SPMV".to_vec(), 0u32.to_le_bytes().to_vec()));
+                subrecords.push((b"DATA".to_vec(), vec![1, 2, 3, 4]));
+                let mut race = RawRecord {
+                    form_id: 0x0001_3746,
+                    record_type: *b"RACE",
+                    flags: 0,
+                    subrecords,
+                    cell_form_id: None,
+                    worldspace_form_id: None,
+                    load_order: global_index,
+                };
+                remap_record_form_ids(
+                    &mut race,
+                    "movement.esp",
+                    &["skyrim.esm".to_owned()],
+                    &normal,
+                    &lights,
+                    &RemapWarnings::default(),
+                )
+                .unwrap();
+                assert_eq!(race.form_id, 0x0001_3746);
+                for (i, (_, bytes)) in race.subrecords[..6].iter().enumerate() {
+                    let expected = if light {
+                        0xFE00_0000 | (global_index << 12) | (0x340 + i as u32)
+                    } else {
+                        (global_index << 24) | (0x340 + i as u32)
+                    };
+                    assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), expected);
+                }
+                assert_eq!(race.subrecords[6].1, 0u32.to_le_bytes());
+                assert_eq!(race.subrecords[7].1, [1, 2, 3, 4]);
+                // Exercise the actual stored raw-record path, not just the
+                // classifier. Future resolvers must see canonical identities.
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                exporter::create_tables(&conn).unwrap();
+                exporter::export_to_db(&conn, &HashMap::from([(race.form_id, race.clone())]))
+                    .unwrap();
+                let (blob, source): (Vec<u8>, u32) = conn
+                    .query_row(
+                        "SELECT data, load_order FROM records WHERE form_id=?1",
+                        [race.form_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                let stored =
+                    rkyv::from_bytes::<types::ArchivedRecordData, rkyv::rancor::Error>(&blob)
+                        .unwrap();
+                assert_eq!(source, global_index);
+                for (stored, (tag, bytes)) in stored.subrecords.iter().zip(&race.subrecords) {
+                    assert_eq!(stored.tag.as_slice(), tag);
+                    assert_eq!(&stored.data, bytes);
+                }
+            }
+        }
     }
 
     #[test]

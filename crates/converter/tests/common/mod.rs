@@ -1,4 +1,4 @@
-//! Assertions shared by synthetic publication fixtures with reader recovery warnings.
+//! Assertions shared by synthetic publication fixtures with reader warnings or notices.
 use converter::PipelineReport;
 use std::{
     fs,
@@ -48,5 +48,55 @@ pub fn assert_reader_warning_publication(report: &PipelineReport, output: &Path)
     assert!(manifest["failures"].as_object().unwrap().is_empty());
     for artifact in ["skyrim_world.db", "cell_cache.rkyv", "record-reader.json"] {
         assert!(output.join(artifact).is_file(), "unpublished {artifact}");
+    }
+}
+
+/// Faithful reader outcomes publish complete assets and retain bounded diagnostics.
+#[allow(
+    dead_code,
+    reason = "Each integration target selects its expected reader severity."
+)]
+pub fn assert_reader_notice_publication(report: &PipelineReport, output: &Path) {
+    assert!(report.complete, "faithful reader outcome: {report:?}");
+    assert_eq!(report.skipped, 0, "reader notice is not an asset failure");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report.notices.iter().any(|notice| {
+            notice.contains("in-house reader")
+                || notice.contains("localized IDs missing from readable string tables")
+        }),
+        "missing reader notice: {report:?}"
+    );
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["complete"], true);
+    assert_eq!(manifest["record_data_complete"], true);
+    assert!(manifest["failures"].as_object().unwrap().is_empty());
+
+    for artifact in ["skyrim_world.db", "cell_cache.rkyv", "record-reader.json"] {
+        assert!(output.join(artifact).is_file(), "unpublished {artifact}");
+    }
+    for artifact in ["record-reader.json", "inhouse-reader-diagnostics.json"] {
+        assert!(
+            report.artifacts.contains(&PathBuf::from(artifact)),
+            "reader report omitted {artifact}: {report:?}"
+        );
+    }
+
+    let reader: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(reader["mode"], "inhouse");
+    assert!(reader["schema_sha256"].as_str().is_some());
+
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
+            .unwrap();
+    for section in ["decoder", "adapter", "adapter_notices"] {
+        assert!(
+            diagnostics[section].is_object(),
+            "reader diagnostics omitted {section}: {diagnostics}"
+        );
     }
 }

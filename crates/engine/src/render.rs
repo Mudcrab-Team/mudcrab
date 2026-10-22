@@ -760,11 +760,12 @@ fn animate_water_materials(
     settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
-    let elapsed = if config.is_some_and(|config| config.terrain_water_fixture) {
-        1.0
-    } else {
-        time.elapsed_secs()
-    };
+    let elapsed =
+        if config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
+            1.0
+        } else {
+            time.elapsed_secs()
+        };
     for (_, material) in materials.iter_mut() {
         material.extension.settings.wave_scale_speed_strength.w = elapsed;
         if let Some(settings) = settings.as_deref() {

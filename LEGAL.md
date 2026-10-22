@@ -48,8 +48,7 @@ Mudcrab is an original, clean-room software engine reimplementation engineered i
 
 ## 6. Open-Source Licensing
 
-Original code in this repository is dual-licensed under:
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+Original code in this repository is licensed under:
+- **GNU General Public License v3 or later** ([LICENSE](LICENSE))
 
 This license applies **exclusively** to the original source code written by contributors to Mudcrab. It does not grant any rights to third-party assets, trademarks, or proprietary formats.

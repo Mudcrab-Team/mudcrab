@@ -5,9 +5,18 @@
 //! ScreenshotCaptured for the identical entity certifies completion of its readback.
 //! Automated runners serialize primary-window requests and keep the pose frozen.
 use crate::{
-    shots::shot_camera_translation, streaming::RenderOrigin, world::components::StreamingCamera,
+    color_pipeline::{
+        SceneGradeMode, SceneGradeOverrides, SceneGradeSource, SceneVisualPreset,
+        SkyrimCinematicPost,
+    },
+    shots::shot_camera_translation,
+    streaming::RenderOrigin,
+    tone_mapping::SceneToneMapSource,
+    world::components::StreamingCamera,
 };
 use bevy::{
+    camera::{CompositingSpace, Exposure},
+    core_pipeline::tonemapping::Tonemapping,
     diagnostic::FrameCount,
     prelude::*,
     render::{
@@ -15,6 +24,7 @@ use bevy::{
         mesh::RenderMesh,
         render_asset::{ExtractedAssets, RenderAssets, prepare_assets},
         texture::GpuImage,
+        view::ColorGrading,
         view::screenshot::Screenshot,
     },
 };
@@ -42,6 +52,104 @@ pub(crate) struct CaptureFrame {
     pub work: crate::shots::SettleCounts,
     pub terrain_coverage: Vec<serde_json::Value>,
     pub terrain_gauges: std::collections::BTreeMap<String, f64>,
+    pub grading: Option<CaptureGrade>,
+}
+
+/// Immutable grading evidence sampled with the rendered camera, before readback.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CaptureGrade {
+    pub color_grade: String,
+    pub visual_preset: String,
+    pub preset_saturation: f32,
+    pub resolved_grade: serde_json::Value,
+    pub source: serde_json::Value,
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn capture_grade(
+    source: Option<&SceneGradeSource>,
+    tone_source: Option<&SceneToneMapSource>,
+    mode: Option<&SceneGradeMode>,
+    preset: Option<&SceneVisualPreset>,
+    grading: Option<&ColorGrading>,
+    post: Option<&SkyrimCinematicPost>,
+    tonemapping: Option<&Tonemapping>,
+    exposure: Option<&Exposure>,
+    compositing: Option<&CompositingSpace>,
+) -> Option<CaptureGrade> {
+    capture_grade_with_overrides(
+        source,
+        tone_source,
+        mode,
+        preset,
+        grading,
+        post,
+        tonemapping,
+        exposure,
+        compositing,
+        SceneGradeOverrides::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_grade_with_overrides(
+    source: Option<&SceneGradeSource>,
+    tone_source: Option<&SceneToneMapSource>,
+    mode: Option<&SceneGradeMode>,
+    preset: Option<&SceneVisualPreset>,
+    grading: Option<&ColorGrading>,
+    post: Option<&SkyrimCinematicPost>,
+    tonemapping: Option<&Tonemapping>,
+    exposure: Option<&Exposure>,
+    compositing: Option<&CompositingSpace>,
+    overrides: SceneGradeOverrides,
+) -> Option<CaptureGrade> {
+    let (source, mode, preset, grading, post) = (source?, *mode?, *preset?, grading?, post?);
+    let fallback = SceneToneMapSource::default();
+    let tone = tone_source.unwrap_or(&fallback);
+    let resolved = tone
+        .resolve_with_overrides(source, mode, preset, overrides)
+        .ok()?;
+    let (tonemapping, exposure, compositing) = (tonemapping?, exposure?, compositing?);
+    // A source describes this frame only after its settings reached the camera.
+    if grading.global.post_saturation != resolved.bevy_saturation
+        || *post != resolved.post
+        || *tonemapping != resolved.tonemapping
+        || *compositing != CompositingSpace::Linear
+    {
+        return None;
+    }
+    let grade = resolved.grade;
+    let mut evidence = tone.evidence_with_overrides(source, mode, preset, overrides);
+    evidence["exposure_ev100"] = exposure.ev100.into();
+    evidence["actual_camera"] = serde_json::json!({
+        "tonemapping": format!("{tonemapping:?}"),
+        "exposure_ev100": exposure.ev100,
+        "compositing_space": format!("{compositing:?}"),
+    });
+    Some(CaptureGrade {
+        color_grade: mode.name().into(),
+        visual_preset: preset.name().into(),
+        preset_saturation: preset.grade().saturation,
+        resolved_grade: serde_json::json!({
+            "saturation": grade.saturation,
+            "brightness": grade.brightness,
+            "contrast": grade.contrast,
+            "tint_amount": grade.tint_amount,
+            "tint_rgb": grade.tint_rgb,
+            "bevy_saturation": grading.global.post_saturation,
+            "post_saturation": post.saturation,
+            "post_linear_domain": post.linear_domain,
+            "post_enabled": post.enabled,
+            "pivot": post.pivot,
+            "tone_operator": post.tone_operator,
+            "tone_coefficient": post.tone_coefficient,
+            "sampled_luminance": post.sampled_luminance,
+            "target_luminance": post.target_luminance,
+        }),
+        source: evidence,
+    })
 }
 
 impl CaptureTicket {
@@ -60,6 +168,11 @@ impl CaptureTicket {
 
     pub(crate) fn receipt(&self) -> Option<CaptureFrame> {
         self.receipt.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_receipt(&self, frame: CaptureFrame) {
+        *self.receipt.lock().unwrap() = Some(frame);
     }
 }
 
@@ -103,43 +216,76 @@ struct ExtractedCaptures {
     captures: Vec<(CaptureTicket, CaptureFrame)>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn extract_capture_frames(
     mut extracted: ResMut<ExtractedCaptures>,
-    frame: Extract<Res<FrameCount>>,
-    origin: Extract<Res<RenderOrigin>>,
-    camera: Extract<Query<(&Transform, &Projection), With<StreamingCamera>>>,
-    tickets: Extract<Query<&CaptureTicket, With<Screenshot>>>,
-    streaming: Extract<Res<crate::streaming::StreamingMetrics>>,
-    renderer: Extract<Res<crate::render::RendererMetrics>>,
-    profiler: Extract<Res<crate::profiling::ProfilingState>>,
-    uploads: Extract<Res<crate::terrain_upload::TerrainMeshUploadReadiness>>,
-    windows: Extract<Query<Entity, With<bevy::window::PrimaryWindow>>>,
-    surfaces: Extract<Query<(&crate::streaming::TerrainCoverage, &InheritedVisibility)>>,
-    batches: Extract<Query<&crate::streaming::lod::terrain_batching::LodTerrainBatches>>,
+    frame_inputs: Extract<(
+        Res<FrameCount>,
+        Res<RenderOrigin>,
+        Query<
+            (
+                &Transform,
+                &Projection,
+                Option<&ColorGrading>,
+                Option<&SkyrimCinematicPost>,
+                Option<&Tonemapping>,
+                Option<&Exposure>,
+                Option<&CompositingSpace>,
+            ),
+            With<StreamingCamera>,
+        >,
+        Query<&CaptureTicket, With<Screenshot>>,
+        Res<crate::streaming::StreamingMetrics>,
+        Res<crate::render::RendererMetrics>,
+        Res<crate::profiling::ProfilingState>,
+        Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
+    )>,
+    scene_inputs: Extract<(
+        Query<Entity, With<bevy::window::PrimaryWindow>>,
+        Query<(&crate::streaming::TerrainCoverage, &InheritedVisibility)>,
+        Query<&crate::streaming::lod::terrain_batching::LodTerrainBatches>,
+        Option<Res<SceneGradeSource>>,
+        Option<Res<SceneGradeMode>>,
+        Option<Res<SceneVisualPreset>>,
+        Option<Res<SceneToneMapSource>>,
+        Option<Res<SceneGradeOverrides>>,
+    )>,
 ) {
+    let (frame, origin, camera, tickets, streaming, renderer, profiler, uploads) = &*frame_inputs;
+    let (
+        windows,
+        surfaces,
+        batches,
+        grade_source,
+        grade_mode,
+        visual_preset,
+        tone_source,
+        grade_overrides,
+    ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
     if windows.single().is_err() || tickets.iter().all(|ticket| ticket.receipt().is_some()) {
         return;
     }
-    let Ok((transform, projection)) = camera.single() else {
+    let Ok((transform, projection, grading, post, tonemapping, exposure, compositing)) =
+        camera.single()
+    else {
         return;
     };
     // Reuse the same origin conversion as the pose driver; origin is an absolute cell offset.
     let offset = shot_camera_translation([0.0; 3], origin.0);
     let absolute = transform.translation - offset;
     let pose = shared::coordinates::runtime_to_creation_vector(absolute.to_array());
-    for ticket in &tickets {
+    for ticket in tickets {
         if ticket.receipt().is_some() {
             continue;
         }
         let work = captured_work(
             ticket,
-            &streaming,
-            &renderer,
-            &profiler,
-            &uploads,
+            streaming,
+            renderer,
+            profiler,
+            uploads,
             renderer.final_path_active(),
         );
         let record = CaptureFrame {
@@ -154,6 +300,18 @@ fn extract_capture_frames(
             render_origin: origin.0.to_array(),
             pending_specializations: None,
             work,
+            grading: capture_grade_with_overrides(
+                grade_source.as_deref(),
+                tone_source.as_deref(),
+                grade_mode.as_deref(),
+                visual_preset.as_deref(),
+                grading,
+                post,
+                tonemapping,
+                exposure,
+                compositing,
+                grade_overrides.as_deref().copied().unwrap_or_default(),
+            ),
             terrain_gauges: profiler.terrain_gauges(),
             terrain_coverage: surfaces
                 .iter()
@@ -230,9 +388,74 @@ mod tests {
     fn incomplete_capture_has_no_receipt() {
         assert!(validate_receipt(&CaptureTicket::default(), [0.0; 3]).is_err());
     }
+
+    #[test]
+    fn tuned_camera_and_capture_evidence_share_effective_resolution() {
+        let source = SceneGradeSource::default();
+        let tone = SceneToneMapSource::default();
+        let mode = SceneGradeMode::SnapshotSrgb;
+        let preset = SceneVisualPreset::CoolGray;
+        let overrides = SceneGradeOverrides {
+            brightness: Some(1.74),
+            tint_green: Some(0.67),
+            pivot: Some(0.29),
+            ..default()
+        };
+        let resolved = tone
+            .resolve_with_overrides(&source, mode, preset, overrides)
+            .unwrap();
+        let mut grading = ColorGrading::default();
+        grading.global.post_saturation = resolved.bevy_saturation;
+        let exposure = Exposure {
+            ev100: crate::color_pipeline::DEFAULT_SCENE_EV100,
+        };
+        let capture = capture_grade_with_overrides(
+            Some(&source),
+            Some(&tone),
+            Some(&mode),
+            Some(&preset),
+            Some(&grading),
+            Some(&resolved.post),
+            Some(&resolved.tonemapping),
+            Some(&exposure),
+            Some(&CompositingSpace::Linear),
+            overrides,
+        )
+        .expect("the same resolved grade labels the camera frame");
+        assert_eq!(
+            capture.resolved_grade["brightness"],
+            serde_json::json!(1.74_f32)
+        );
+        assert_eq!(
+            capture.resolved_grade["tint_rgb"][1],
+            serde_json::json!(0.67_f32)
+        );
+        assert_eq!(capture.resolved_grade["pivot"], serde_json::json!(0.29_f32));
+        assert_eq!(capture.source["pivot"], serde_json::json!(0.29_f32));
+        assert_eq!(capture.source["default_pivot"], serde_json::json!(0.18_f32));
+        assert_eq!(
+            capture.source["grade_overrides"]["brightness"],
+            serde_json::json!(1.74_f32)
+        );
+        assert_eq!(
+            capture.source["effective_grade"]["brightness"],
+            serde_json::json!(1.74_f32)
+        );
+        assert_eq!(
+            capture.source["effective_stages"]["pivot"],
+            serde_json::json!(0.29_f32)
+        );
+    }
+
     #[test]
     fn render_receipt_is_immutable_across_callback_delay() {
         let ticket = CaptureTicket::default();
+        let source = SceneGradeSource::default();
+        let mode = SceneGradeMode::SnapshotSrgb;
+        let preset = SceneVisualPreset::CoolGray;
+        let resolved = source.resolve(mode, preset).unwrap();
+        let mut grading = ColorGrading::default();
+        grading.global.post_saturation = resolved.bevy_saturation;
         let record = CaptureFrame {
             main_frame: 3,
             render_frame: 2,
@@ -244,6 +467,17 @@ mod tests {
             work: default(),
             terrain_gauges: default(),
             terrain_coverage: default(),
+            grading: capture_grade(
+                Some(&source),
+                None,
+                Some(&mode),
+                Some(&preset),
+                Some(&grading),
+                Some(&resolved.post),
+                Some(&Tonemapping::TonyMcMapface),
+                Some(&Exposure { ev100: 9.7 }),
+                Some(&CompositingSpace::Linear),
+            ),
         };
         use bevy::ecs::system::RunSystemOnce;
         let mut world = World::new();
@@ -257,12 +491,31 @@ mod tests {
         let mut later = record;
         later.main_frame = 99;
         later.render_frame = 98;
+        later.grading = Some(CaptureGrade {
+            color_grade: "record-srgb".into(),
+            visual_preset: "vivid".into(),
+            preset_saturation: 1.5,
+            resolved_grade: serde_json::json!({"brightness": 1.135}),
+            source: serde_json::json!({"source_kind": "authored-image-space-record"}),
+        });
         world
             .resource_mut::<ExtractedCaptures>()
             .captures
             .push((ticket.clone(), later));
         world.run_system_once(finalize_capture_frames).unwrap();
-        assert_eq!(validate_receipt(&ticket, [1.0; 3]).unwrap().render_frame, 2);
+        let captured = validate_receipt(&ticket, [1.0; 3]).unwrap();
+        assert_eq!(captured.render_frame, 2);
+        let captured_grade = captured.grading.unwrap();
+        assert_eq!(captured_grade.color_grade, "snapshot-srgb");
+        assert_eq!(captured_grade.visual_preset, "cool-gray");
+        assert_eq!(
+            captured_grade.resolved_grade["brightness"].as_f64(),
+            Some(f64::from(1.38_f32))
+        );
+        assert_eq!(
+            captured_grade.source["source_kind"],
+            "approved-artistic-override"
+        );
         assert!(validate_receipt(&ticket, [0.0; 3]).is_err());
     }
 
@@ -347,6 +600,52 @@ mod tests {
             captured_work(&ticket, &pending_lod, &renderer, &profiler, &uploads, true);
         observed(&mut pending);
         assert!(!pending.is_quiet(), "{}", pending.describe());
+    }
+
+    #[test]
+    fn source_must_match_extracted_camera_before_it_can_label_a_capture() {
+        let source = SceneGradeSource::default();
+        let mode = SceneGradeMode::SnapshotSrgb;
+        let preset = SceneVisualPreset::CoolGray;
+        let old_camera = crate::color_pipeline::SceneColorPipeline::default();
+        assert!(
+            capture_grade(
+                Some(&source),
+                None,
+                Some(&mode),
+                Some(&preset),
+                Some(&old_camera.grading),
+                Some(&old_camera.cinematic_post),
+                Some(&old_camera.tonemapping),
+                Some(&old_camera.exposure),
+                Some(&old_camera.compositing_space),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn tone_metadata_cannot_label_a_camera_with_a_different_mapper() {
+        let source = SceneGradeSource::default();
+        let mode = SceneGradeMode::SnapshotSrgb;
+        let preset = SceneVisualPreset::CoolGray;
+        let resolved = source.resolve(mode, preset).unwrap();
+        let mut grading = ColorGrading::default();
+        grading.global.post_saturation = resolved.bevy_saturation;
+        assert!(
+            capture_grade(
+                Some(&source),
+                None,
+                Some(&mode),
+                Some(&preset),
+                Some(&grading),
+                Some(&resolved.post),
+                Some(&Tonemapping::None),
+                Some(&Exposure { ev100: 9.7 }),
+                Some(&CompositingSpace::Linear),
+            )
+            .is_none()
+        );
     }
 }
 

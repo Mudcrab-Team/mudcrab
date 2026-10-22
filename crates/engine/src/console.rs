@@ -125,6 +125,8 @@ fn format_help_line(command: &RegisteredCommand) -> String {
 #[derive(Resource, Default)]
 pub struct ConsoleState {
     pub open: bool,
+    /// Hide the overlay for a bug-report image without relinquishing console input ownership.
+    pub capture_suppressed: bool,
     pub buffer: String,
     pub scrollback: Vec<String>,
     /// Cursor capture the player had when the console opened.
@@ -147,7 +149,7 @@ pub fn console_closed(
     state: Option<Res<ConsoleState>>,
     menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) -> bool {
-    state.is_none_or(|state| !state.open && !state.closing)
+    state.is_none_or(|state| !state.open && !state.closing && !state.capture_suppressed)
         && menu.is_none_or(|menu| !menu.blocks_gameplay())
 }
 
@@ -170,6 +172,11 @@ impl AppConsoleExt for App {
 
 pub struct ConsolePlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ConsoleSystems {
+    Ui,
+}
+
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConsoleRegistry>()
@@ -186,7 +193,7 @@ impl Plugin for ConsolePlugin {
                     .after(InputSystems)
                     .in_set(ConsoleInputSet),
             )
-            .add_systems(Update, refresh_console_ui);
+            .add_systems(Update, refresh_console_ui.in_set(ConsoleSystems::Ui));
     }
 }
 
@@ -366,11 +373,11 @@ pub fn insert_text(buffer: &mut String, text: &str) {
     buffer.extend(text.chars().filter(|c| !c.is_control()).take(room));
 }
 
-/// Run one entered line: echo it, find the command, show its output or error.
-pub fn execute_line(world: &mut World, line: &str) {
+/// Run one entered line: echo it, show its output or error, and return the complete result.
+pub fn execute_line(world: &mut World, line: &str) -> String {
     let line = line.trim();
     let Some((name, args)) = parse_line(line) else {
-        return;
+        return String::new();
     };
     push_output(world, &format!("> {line}"));
     let (handler, names) = {
@@ -390,6 +397,7 @@ pub fn execute_line(world: &mut World, line: &str) {
     if !output.is_empty() {
         push_output(world, &output);
     }
+    output
 }
 
 fn push_output(world: &mut World, text: &str) {
@@ -417,9 +425,13 @@ fn console_input_system(
 ) {
     if state.closing {
         state.closing = false;
-        if let Some(restored) = state.restore_capture.take() {
-            *capture = restored;
-        }
+    }
+    // A report hides UI without yielding gameplay input. Preserve the user's pending backtick
+    // restoration until readback ends; Escape still leaves it released permanently.
+    if !state.capture_suppressed
+        && let Some(restored) = state.restore_capture.take()
+    {
+        *capture = restored;
     }
     if menu.is_some_and(|menu| menu.blocks_gameplay()) {
         events.clear();
@@ -432,7 +444,7 @@ fn console_input_system(
         } else {
             state.open = true;
             state.buffer.clear();
-            state.previous_capture = *capture;
+            state.previous_capture = state.restore_capture.take().unwrap_or(*capture);
             state.was_paused = time.is_paused();
             *capture = CursorCapture::Released;
             // Virtual time already advanced this frame in `First`; the pause bites from the next.
@@ -559,7 +571,7 @@ fn refresh_console_ui(
         return;
     }
     for mut node in &mut root {
-        node.display = if state.open {
+        node.display = if state.open && !state.capture_suppressed {
             Display::Flex
         } else {
             Display::None
@@ -796,6 +808,45 @@ mod tests {
             nearest("tcx", NAMES).as_deref().map(|n| &n[..2]),
             Some("tc")
         );
+    }
+
+    #[test]
+    fn command_results_are_complete_independent_of_scrollback() {
+        let mut app = console_app();
+        let output = (0..SCROLLBACK_CAP + 25)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expected = output.clone();
+        app.add_console_command(ConsoleCommand {
+            name: "ManyLines",
+            short: None,
+            usage: "ManyLines",
+            help: "test complete output",
+            handler: Box::new(move |_, _| Ok(output.clone())),
+        });
+        assert_eq!(execute_line(app.world_mut(), "ManyLines"), expected);
+        assert_eq!(
+            app.world().resource::<ConsoleState>().scrollback.len(),
+            SCROLLBACK_CAP
+        );
+        assert_eq!(execute_line(app.world_mut(), "ClearConsole"), "");
+        assert!(app.world().resource::<ConsoleState>().scrollback.is_empty());
+        assert_eq!(execute_line(app.world_mut(), "  "), "");
+        let help = execute_line(app.world_mut(), "Help");
+        assert!(help.lines().count() >= 3);
+        app.add_console_command(ConsoleCommand {
+            name: "Failure",
+            short: None,
+            usage: "Failure",
+            help: "test errors",
+            handler: Box::new(|_, _| Err("first\nsecond".into())),
+        });
+        assert_eq!(
+            execute_line(app.world_mut(), "Failure"),
+            "error: first\nsecond"
+        );
+        assert!(execute_line(app.world_mut(), "Unknown").contains("unknown command"));
     }
 
     #[test]
