@@ -1279,7 +1279,15 @@ impl AssetPipeline {
         if config.mo2.is_some() {
             stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
         }
-        convert_default_animations(staging)?;
+        if let Err(error) = convert_default_animations(staging) {
+            if config.fail_fast {
+                return Err(error);
+            }
+            warn!("default actor animations were not converted: {error:#}");
+            report.notices.push(format!(
+                "default actor animations were not converted: {error:#}"
+            ));
+        }
         for sex in ["male", "female"] {
             let relative = PathBuf::from("meshes/actors/character/animations")
                 .join(sex)
