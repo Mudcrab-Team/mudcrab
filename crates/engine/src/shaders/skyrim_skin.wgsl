@@ -268,7 +268,17 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
 #endif
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+#ifdef SKYRIM_HAIR_ALPHA_TO_COVERAGE
+    // A masked hair card under MSAA (`skin_material.rs`, "Hair card edges"): coverage instead of
+    // the alpha test. Full at the authored cutoff, where the prepass and shadows stop, and fading
+    // out over the pixel below it.
+    let hair_alpha = pbr_input.material.base_color.a;
+    pbr_input.material.base_color.a = saturate(
+        (hair_alpha - pbr_input.material.alpha_cutoff) / max(fwidth(hair_alpha), 0.0001) + 1.0
+    );
+#else
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+#endif
 
 #ifdef VERTEX_UVS_A
     if (skin.flags & FLAG_FACEGEN) != 0u {

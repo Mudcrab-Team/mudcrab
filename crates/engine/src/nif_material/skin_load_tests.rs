@@ -2,7 +2,7 @@
 //! binds: the skin material, its linear `_s` twin and the dependency holder.
 
 use super::*;
-use crate::skin_material::SkyrimSkinFlags;
+use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinKey};
 use bevy::{
     asset::{LoadState, RenderAssetUsages},
     image::{CompressedImageFormats, ImageAddressMode, ImageLoader, ImagePlugin, ImageSampler},
@@ -35,6 +35,7 @@ impl GltfExtensionHandler for StockStandardHandler {
                 base_color_texture: loaded.base_color_texture.clone(),
                 normal_map_texture: loaded.normal_map_texture.clone(),
                 specular_tint_texture: loaded.specular_tint_texture.clone(),
+                alpha_mode: loaded.alpha_mode,
                 reflectance: loaded.reflectance,
                 ..default()
             },
@@ -518,6 +519,17 @@ fn write_hair_gltf(
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
 }
 
+/// [`write_hair_gltf`] as an alpha-tested hair card: glTF `MASK` with `cutoff`.
+fn write_masked_hair_gltf(directory: &Path, cutoff: f32) {
+    write_hair_gltf(directory, 1 << 31, 1, Some(ALVOR_HAIR));
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["materials"][0]["alphaMode"] = serde_json::json!("MASK");
+    document["materials"][0]["alphaCutoff"] = serde_json::json!(cutoff);
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
 fn load_scene_world(app: &mut App) -> World {
     let scene: Handle<WorldAsset> = app
         .world()
@@ -628,4 +640,20 @@ fn hair_from_an_older_pack_keeps_the_plain_materials() {
     assert_eq!(standard.iter(&scene_world).count(), 1);
     let mut skins = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
     assert_eq!(skins.iter(&scene_world).count(), 0);
+}
+
+#[test]
+fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
+    let directory = tempfile::tempdir().unwrap();
+    write_masked_hair_gltf(directory.path(), 0.3);
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut query = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    let handle = query.single(&scene_world).unwrap().0.clone();
+    let materials = app.world().resource::<Assets<SkyrimSkinMaterial>>();
+    let material = materials.get(&handle).unwrap();
+    // The depth prepass and shadows alpha-test at this cutoff; only the colour pass under MSAA
+    // switches to coverage, which the hair key selects.
+    assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.3));
+    assert!(SkyrimSkinKey::from(&material.extension).hair);
 }
