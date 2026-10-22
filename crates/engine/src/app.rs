@@ -1374,6 +1374,7 @@ fn terrain_water_fixture_snapshot() -> TerrainSnapshot {
 
 fn setup_terrain_water_fixture(
     mut commands: Commands,
+    config: Res<EngineConfig>,
     reflection: Res<WaterReflectionTexture>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
@@ -1459,7 +1460,7 @@ fn setup_terrain_water_fixture(
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
         FogCamera,
-        Msaa::Off,
+        config.terrain_water_fixture_msaa,
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(MAIN_VIEW_LAYERS),
