@@ -620,7 +620,12 @@ fn publish_specular(
     used_extensions: &mut BTreeSet<String>,
 ) -> Result<()> {
     let enabled = material.shader_flags_1 & SLSF1_SPECULAR != 0;
-    let strength = if enabled {
+    // On a model-space-normal material the `_s` red channel is the gloss mask the specular term
+    // is multiplied by, and an unbound `_s` samples as zero in Direct3D 11: without one the
+    // material has no specular at all, whatever its strength.
+    let unmasked_model_space =
+        material.shader_flags_1 & SLSF1_MODEL_SPACE_NORMALS != 0 && specular.is_none();
+    let strength = if enabled && !unmasked_model_space {
         material.specular_strength.clamp(0.0, 1.0)
     } else {
         0.0
@@ -1465,7 +1470,9 @@ mod tests {
             let document = publish_specular_fixture(source);
             let material = &document["materials"][0];
             let specular = &material["extensions"]["KHR_materials_specular"];
-            assert!((specular["specularFactor"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+            // Model space has no `_s` here, so nothing masks it in and its specular is zero.
+            let expected = if model_space { 0.0 } else { 0.8 };
+            assert!((specular["specularFactor"].as_f64().unwrap() - expected).abs() < 1e-6);
             if model_space {
                 assert!(specular.get("specularTexture").is_none());
                 assert!(

@@ -365,6 +365,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "msn-vertex-normals",
     "facegen-tint-slot",
     "lighting-type-data",
+    "msn-specular-default",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
