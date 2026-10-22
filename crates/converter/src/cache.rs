@@ -364,6 +364,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "legacy-skin-export",
     "msn-vertex-normals",
     "facegen-tint-slot",
+    "lighting-type-data",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

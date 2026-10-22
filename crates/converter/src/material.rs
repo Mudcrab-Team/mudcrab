@@ -155,6 +155,10 @@ pub struct ValidatedNifMaterial {
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
     pub texture_clamp_mode: u8,
+    /// The tint colour of a `skin_tint` or `hair_tint` lighting shader, as the NIF stores it
+    /// (encoded RGB in 0..1). On FaceGen hair it is the NPC's hair colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint_color: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -680,10 +684,14 @@ fn publish_skyrim_extension(
     }
     let premultiplied_alpha = material.shader_flags_2 & SLSF2_PREMULTIPLIED_ALPHA != 0;
     let screen_door_alpha_fade = material.shader_flags_1 & SLSF1_SCREENDOOR_ALPHA_FADE != 0;
-    if slots.is_empty() && !premultiplied_alpha && !screen_door_alpha_fade {
+    if slots.is_empty()
+        && !premultiplied_alpha
+        && !screen_door_alpha_fade
+        && material.tint_color.is_none()
+    {
         return Ok(());
     }
-    output["extensions"]["OPEN_SKYRIM_material"] = serde_json::json!({
+    let mut extension = serde_json::json!({
         "shaderFamily": material.shader_family,
         "lightingShaderType": material.lighting_shader_type,
         "shaderFlags1": material.shader_flags_1,
@@ -692,6 +700,10 @@ fn publish_skyrim_extension(
         "screenDoorAlphaFade": screen_door_alpha_fade,
         "textureSlots": slots
     });
+    if let Some(tint) = material.tint_color {
+        extension["tintColor"] = serde_json::json!(tint);
+    }
+    output["extensions"]["OPEN_SKYRIM_material"] = extension;
     used_extensions.insert("OPEN_SKYRIM_material".to_owned());
     Ok(())
 }
@@ -917,7 +929,26 @@ fn build_lighting_material(
             project_wormhole_nif::nif_enum::TexClampMode::WrapSWrapT => 3,
         },
         textures: textures.map(|(_, slots)| slots).unwrap_or_default(),
+        tint_color: lighting_tint_color(shader_type, property),
     })
+}
+
+/// The tint colour a `skin_tint` or `hair_tint` shader carries in its type-specific fields.
+fn lighting_tint_color(
+    shader_type: LightingShaderType,
+    property: &BSLightingShaderProperty,
+) -> Option<[f32; 3]> {
+    if !matches!(
+        shader_type,
+        LightingShaderType::SkinTint | LightingShaderType::HairTint
+    ) {
+        return None;
+    }
+    let colour = property.type_data.tint_color()?.0.to_array();
+    colour
+        .iter()
+        .all(|channel| channel.is_finite())
+        .then_some(colour)
 }
 
 fn build_effect_material(
@@ -986,6 +1017,7 @@ fn build_effect_material(
         uv_offset: property.uv_offset.0.to_array(),
         uv_scale: property.uv_scale.0.to_array(),
         texture_clamp_mode: property.texture_clamp_mode & 3,
+        tint_color: None,
         textures,
     };
     validate_material(source, shape_block, shape_name, &material)?;
@@ -1305,6 +1337,7 @@ mod tests {
             uv_offset: [0.0; 2],
             uv_scale: [1.0; 2],
             texture_clamp_mode: 3,
+            tint_color: None,
             textures: Vec::new(),
         }
     }
@@ -1881,6 +1914,73 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .ends_with("facetint/skyrim.esm/00013475.opensky-srgb.ktx2")
+        );
+    }
+
+    /// A `BSLightingShaderProperty` block of `shader_type` with `tail` as its type-specific
+    /// fields, laid out as Skyrim SE stores it.
+    fn lighting_property(shader_type: u32, tail: &[f32]) -> BSLightingShaderProperty {
+        use nom_derive::Parse;
+        let mut words = vec![shader_type, u32::MAX, 0, u32::MAX, 0x8244_030b, 0x0000_8021];
+        words.extend([0.0f32, 0.0, 1.0, 1.0].map(f32::to_bits));
+        words.push(7);
+        words.extend([0.0f32, 0.0, 0.0, 1.0].map(f32::to_bits));
+        words.push(3);
+        words.extend([1.0f32, 0.0, 70.0, 1.0, 1.0, 1.0, 1.8, 0.3, 2.0].map(f32::to_bits));
+        words.extend(tail.iter().map(|value| value.to_bits()));
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (rest, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(rest.is_empty());
+        property
+    }
+
+    #[test]
+    fn only_skin_and_hair_tint_shaders_carry_a_tint_colour() {
+        let alvor = [0.439_215_7, 0.462_745_1, 0.345_098_05];
+        for (shader_type, tail, expected) in [
+            (6, &alvor[..], Some(alvor)),
+            (5, &[0.8, 0.6, 0.5][..], Some([0.8, 0.6, 0.5])),
+            (6, &[f32::NAN, 0.5, 0.5][..], None),
+            (1, &[0.5][..], None),
+            (16, &[1.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0][..], None),
+            (4, &[][..], None),
+            (0, &[][..], None),
+        ] {
+            let property = lighting_property(shader_type, tail);
+            let shader = LightingShaderType::try_from(shader_type).unwrap();
+            assert_eq!(
+                lighting_tint_color(shader, &property),
+                expected,
+                "type {shader_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn tint_colour_is_published_in_the_skyrim_extension() {
+        let alvor = [0.439_215_7, 0.462_745_1, 0.345_098_05];
+        let mut hair = fixture(NifAlphaMode::Cutout, false, false, false);
+        hair.lighting_shader_type = Some(LightingShaderType::HairTint);
+        hair.tint_color = Some(alvor);
+        let mut plain = fixture(NifAlphaMode::Cutout, false, false, false);
+        plain.lighting_shader_type = Some(LightingShaderType::HairTint);
+        let mut document = gltf(2);
+        publish_gltf_materials(
+            &mut document,
+            &[shape(10, hair), shape(11, plain)],
+            &[10, 11],
+            Path::new("meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.glb"),
+        )
+        .unwrap();
+        let extension = &document["materials"][0]["extensions"]["OPEN_SKYRIM_material"];
+        assert_eq!(extension["lightingShaderType"], "hair_tint");
+        assert_eq!(extension["tintColor"], serde_json::json!(alvor));
+        assert_eq!(extension["textureSlots"], serde_json::json!([]));
+        assert!(
+            document["materials"][1]["extensions"]
+                .get("OPEN_SKYRIM_material")
+                .is_none(),
+            "a material with no tint, slots or alpha flags publishes no extension"
         );
     }
 
