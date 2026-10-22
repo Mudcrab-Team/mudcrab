@@ -1,7 +1,7 @@
 use crate::esm::{
     emittance,
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
-    load_order::LoadOrder,
+    load_order::{LoadOrder, StableId},
     records::{RawRecord, achr::SubrecordXESP},
 };
 use crate::{
@@ -960,14 +960,12 @@ fn export_records(
         }
     }
     drop(records_insert);
-    if runtime_views {
-        insert_actor_models(&tx, master)?;
-    }
-    // Derived snapshots like the grass tables: only a full load-order export owns them, so the
-    // movement annotator's subset export leaves them alone, and diagnostic archives defer them.
-    // The emittance pass holds every reference and the records their XEMI names, and may run on
-    // a database older than `emittance_id`.
+    // Derived snapshots like the actor model catalog and the grass tables: only a full load-order
+    // export owns them, so the movement annotator's subset export leaves them alone, and
+    // diagnostic archives defer them. The emittance pass holds every reference and the records
+    // their XEMI names, and may run on a database older than `emittance_id`.
     if runtime_views && order.is_some() {
+        insert_actor_models(&tx, master)?;
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
         insert_emittance_sources(&tx, master)?;
         // Read back from the canonical `records` and `references` rows just written, so the
@@ -977,17 +975,27 @@ fn export_records(
     tx.commit()
 }
 
-/// Publishes the actor model catalog from the merged records in the same transaction.
+/// Publishes the actor model catalog for a complete load-order export in the same transaction.
 ///
-/// The resolver needs the whole record map, so it runs once after the record loop. Each
-/// `NPC_`'s own row and parts are replaced, which keeps a subset export's unrelated rows
-/// and a complete snapshot's freshly created tables consistent with `master`.
+/// The resolver needs the whole record map, so it runs once after the record loop and only when
+/// `formid_map` carries complete ownership. Each `NPC_`'s own row and parts are replaced, which
+/// keeps the freshly created tables consistent with `master`.
 fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -> Result<()> {
-    let plugin_names: HashMap<u32, String> = tx
-        .prepare("SELECT form_id, plugin_name FROM formid_map WHERE record_type='NPC_'")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let plugin_ids: HashMap<u32, StableId> = tx
+        .prepare(
+            "SELECT form_id, plugin_name, internal_id FROM formid_map WHERE record_type='NPC_'",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                StableId {
+                    plugin: row.get(1)?,
+                    local_id: row.get(2)?,
+                },
+            ))
+        })?
         .collect::<Result<_>>()?;
-    let catalog = crate::actor_models::resolve_actor_models(master, &plugin_names);
+    let catalog = crate::actor_models::resolve_actor_models(master, &plugin_ids);
 
     let mut delete_model = tx.prepare_cached("DELETE FROM actor_models WHERE id=?1")?;
     let mut delete_parts = tx.prepare_cached("DELETE FROM actor_model_parts WHERE npc_id=?1")?;

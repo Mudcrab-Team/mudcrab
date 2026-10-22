@@ -4,7 +4,10 @@
 //! Skyrim install and are opt-in.
 
 use converter::actor_models::{ActorModelCatalog, UnresolvedReason, resolve_actor_models};
-use converter::esm::{EsmParser, load_order::LoadOrder};
+use converter::esm::{
+    EsmParser,
+    load_order::{LoadOrder, StableId},
+};
 use dummy_content::inhouse_items as items;
 use rusqlite::Connection;
 use std::{
@@ -35,22 +38,43 @@ fn write_plugin(directory: &Path, name: &str, records: &[Vec<u8>]) -> PathBuf {
     path
 }
 
-/// Merges the plugin and resolves its catalog, mapping each `NPC_` to its plugin.
+/// Writes a plugin whose `TES4` header declares `masters`, so its own records use the next index.
+fn write_master_plugin(
+    directory: &Path,
+    name: &str,
+    masters: &[&str],
+    records: &[Vec<u8>],
+) -> PathBuf {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+    for master in masters {
+        fields.push((b"MAST", items::text(master)));
+        fields.push((b"DATA", vec![0xa5; 8]));
+    }
+    let mut bytes = items::record(b"TES4", 0, &fields);
+    for record in records {
+        bytes.extend(record);
+    }
+    let path = directory.join(name);
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+/// Merges the plugin and resolves its catalog.
 fn resolve(path: &Path) -> ActorModelCatalog {
     let paths = [path.to_path_buf()];
-    let records = EsmParser::merge_plugins(&paths).unwrap();
-    let order = LoadOrder::read(&paths).unwrap();
-    let plugin_names: HashMap<u32, String> = records
+    resolve_plugins(&paths)
+}
+
+/// Merges the plugins and resolves their catalog, mapping each `NPC_` to its stable identity.
+fn resolve_plugins(paths: &[PathBuf]) -> ActorModelCatalog {
+    let records = EsmParser::merge_plugins(paths).unwrap();
+    let order = LoadOrder::read(paths).unwrap();
+    let plugin_ids: HashMap<u32, StableId> = records
         .iter()
         .filter(|(_, record)| &record.record_type == b"NPC_")
-        .filter_map(|(id, _)| {
-            order
-                .identity(*id)
-                .ok()
-                .map(|identity| (*id, identity.plugin))
-        })
+        .filter_map(|(id, _)| order.identity(*id).ok().map(|identity| (*id, identity)))
         .collect();
-    resolve_actor_models(&records, &plugin_names)
+    resolve_actor_models(&records, &plugin_ids)
 }
 
 /// Converts the plugin into a fresh database and returns the open connection.
@@ -272,6 +296,44 @@ fn facegen_path_wins_over_default_head() {
         Some("meshes/actors/character/character assets/malehead.nif")
     );
     assert_eq!(default.head_source, Some("default"));
+}
+
+#[test]
+fn facegen_path_uses_the_plugin_local_form_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let skyrim = write_plugin(
+        directory.path(),
+        "Skyrim.esm",
+        &[
+            items::race(0x200, "NordRace", Some(0x300), true),
+            items::skin_armor(0x300, &[0x400]),
+            items::armature(
+                0x400,
+                items::DEFAULT_RACE_FORM_ID,
+                items::BIPED_BODY,
+                Some(MALE_BODY),
+                None,
+            ),
+        ],
+    );
+    let patch = write_master_plugin(
+        directory.path(),
+        "Patch.esp",
+        &["Skyrim.esm"],
+        &[items::npc(0x0100_0D62, 0x200, false)],
+    );
+
+    let catalog = resolve_plugins(&[skyrim, patch]);
+    let row = catalog
+        .models
+        .iter()
+        .find(|row| row.id == 0x0100_0D62)
+        .expect("the NPC_ under its load-order FormID");
+    assert_eq!(
+        row.head_model.as_deref(),
+        Some("meshes/actors/character/facegendata/facegeom/patch.esp/00000d62.nif")
+    );
+    assert_eq!(row.head_source, Some("facegen"));
 }
 
 #[test]

@@ -1447,9 +1447,11 @@ every `ARMO/MODL` armature in list order -> each `ARMA`:
 
 **Head.** The `RACE/DATA` `facegen_head` flag (bit 1 of the flags word at offset 32) selects the
 FaceGen geometry `meshes/actors/character/facegendata/facegeom/<plugin>/<formid>.nif`, lowercased,
-with `<plugin>` from `formid_map.plugin_name` and `<formid>` the eight-digit lower-case hex FormID
-(`head_source = 'facegen'`). Otherwise, when the resolved body is humanoid (a part path contains
-`malebody` or `femalebody`), the race/sex default head is used (`head_source = 'default'`):
+with `<plugin>` from `formid_map.plugin_name` and `<formid>` the eight-digit lower-case hex
+plugin-local FormID (`formid_map.internal_id`, without the load-order slot prefix), so the
+runtime mod index never appears in the file name (`head_source = 'facegen'`). Otherwise, when the
+resolved body is humanoid (a part path contains `malebody` or `femalebody`), the race/sex default
+head is used (`head_source = 'default'`):
 `meshes/actors/character/character assets/` plus `malehead.nif`/`femalehead.nif`, with the
 `maleheadargonian.nif`/`maleheadkhajiit.nif` variants when the race EditorID names Argonian or
 Khajiit. A creature body never gets a humanoid default head.
@@ -1472,9 +1474,10 @@ resolve without a head, and `unresolved` otherwise. A base with no `RNAM` is sti
 `race_id = 0` and `resolution = 'unresolved'`, so it is recorded rather than dropped.
 
 **Ownership.** A complete load-order export drops and rebuilds both tables in the record
-transaction; the movement-annotation subset export replaces only the rows for the `NPC_` bases it
-received, and a diagnostic archive (which defers every runtime view) leaves both tables empty.
-`NPC_` bases are never written into `statics`.
+transaction. A subset export, such as movement annotation, leaves them alone: a partial record map
+cannot resolve an `NPC_` whose race or skin it did not receive, so it must not overwrite a complete
+row with an unresolved one. A diagnostic archive (which defers every runtime view) leaves both
+tables empty. `NPC_` bases are never written into `statics`.
 
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and the engine probes for them. No mandatory join is added to

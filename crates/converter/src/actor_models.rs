@@ -6,7 +6,7 @@
 //! are absent. Nothing here reads raw `records.data`; the caller hands the merged
 //! record map in and gets rows back.
 
-use crate::esm::{extractors::SubrecordView, records::RawRecord};
+use crate::esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord};
 use std::collections::{BTreeSet, HashMap};
 
 /// `DefaultRace`, the armature race every humanoid body is shared through.
@@ -141,13 +141,14 @@ pub struct ActorModelCatalog {
 
 /// Resolves every `NPC_` base in `records` into a body/head catalog.
 ///
-/// `plugin_names` maps an `NPC_` FormID to its owning plugin filename
-/// (`formid_map.plugin_name`), which the FaceGen path needs. A base with no
-/// entry still resolves a body, but its head falls back to the default NIF.
+/// `plugin_ids` maps an `NPC_` FormID to its owning plugin filename and
+/// plugin-local FormID (`formid_map.plugin_name`/`formid_map.internal_id`),
+/// which the FaceGen path needs. A base with no entry still resolves a body,
+/// but its head falls back to the default NIF.
 #[must_use]
 pub fn resolve_actor_models(
     records: &HashMap<u32, RawRecord>,
-    plugin_names: &HashMap<u32, String>,
+    plugin_ids: &HashMap<u32, StableId>,
 ) -> ActorModelCatalog {
     let mut catalog = ActorModelCatalog::default();
     let mut npc_ids: Vec<u32> = records
@@ -201,13 +202,7 @@ pub fn resolve_actor_models(
         let race_view = SubrecordView::new(&race.subrecords);
 
         let mut parts = resolve_body(records, &race_view, race_id, female, id, &mut catalog);
-        let head = resolve_head(
-            &race_view,
-            female,
-            plugin_names.get(&id).map(String::as_str),
-            id,
-            &parts,
-        );
+        let head = resolve_head(&race_view, female, plugin_ids.get(&id), &parts);
         if head.is_none() {
             catalog.diagnostics.push(ActorModelDiagnostic {
                 npc_id: id,
@@ -359,15 +354,16 @@ fn classify_slot(bod: Option<&[u8]>) -> Option<ActorModelSlot> {
 fn resolve_head(
     race_view: &SubrecordView<'_>,
     female: bool,
-    plugin: Option<&str>,
-    npc_id: u32,
+    identity: Option<&StableId>,
     parts: &[ActorModelPartRow],
 ) -> Option<(String, &'static str)> {
     if race_uses_facegen(race_view)
-        && let Some(plugin) = plugin
+        && let Some(identity) = identity
     {
+        let plugin = identity.plugin.to_lowercase();
+        let local_id = identity.local_id;
         return Some((
-            format!("{FACEGEN_DIR}{}/{npc_id:08x}.nif", plugin.to_lowercase()),
+            format!("{FACEGEN_DIR}{plugin}/{local_id:08x}.nif"),
             "facegen",
         ));
     }
