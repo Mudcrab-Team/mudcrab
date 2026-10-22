@@ -1217,17 +1217,15 @@ fn open_nif_resilient(
     diagnostics.scene_node_count = blocks
         .iter()
         .filter(|block| {
-            matches!(
-                block,
-                NifBlock::NiNode(_)
-                    | NifBlock::BSFadeNode(_)
-                    | NifBlock::BSMultiBoundNode(_)
-                    | NifBlock::BSTriShape(_)
-                    | NifBlock::BSDynamicTriShape(_)
-                    | NifBlock::BSSubIndexTriShape(_)
-                    | NifBlock::BSLODTriShape(_)
-                    | NifBlock::NiTriShape(_)
-            )
+            block.as_node().is_ok()
+                || matches!(
+                    block,
+                    NifBlock::BSTriShape(_)
+                        | NifBlock::BSDynamicTriShape(_)
+                        | NifBlock::BSSubIndexTriShape(_)
+                        | NifBlock::BSLODTriShape(_)
+                        | NifBlock::NiTriShape(_)
+                )
         })
         .count();
     diagnostics.max_scene_depth = nif_scene_depth(&blocks);
@@ -1300,9 +1298,8 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> usize {
         if visiting.contains(&index) {
             return 0;
         }
-        let children = match blocks.get(index) {
-            Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => &node.children,
-            Some(NifBlock::BSMultiBoundNode(block)) => &block.node.children,
+        let children = match blocks.get(index).map(NifBlock::as_node) {
+            Some(Ok(node)) => &node.children,
             _ => return usize::from(index < blocks.len()),
         };
         visiting.push(index);

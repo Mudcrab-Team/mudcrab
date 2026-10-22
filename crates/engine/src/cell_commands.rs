@@ -211,6 +211,7 @@ fn teleport_to_cell(
     };
     teleports.write(TeleportPlayer {
         position: cell_centre_feet((grid_x, grid_y), origin, ground + LANDING_CLEARANCE),
+        sampled_ground_y: Some(ground),
         yaw,
     });
     Ok(())

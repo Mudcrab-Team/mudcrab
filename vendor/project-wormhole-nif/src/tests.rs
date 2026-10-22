@@ -130,31 +130,61 @@ pub fn test_all_in_archive() {
 
 mod multi_bound {
     use project_wormhole_ba2::dev::MaxRef;
-    use project_wormhole_shared::glam::{Mat3, Vec3};
+    use project_wormhole_shared::glam::{self, Mat3, Vec3};
 
     use crate::dev::*;
 
     /// The compact `NiAVObject` Skyrim writes on scene nodes and shapes.
     fn av_object_bytes(name: u32) -> Vec<u8> {
+        av_object_bytes_with_transform(
+            name,
+            [0.0; 3],
+            1.0,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        )
+    }
+
+    fn av_object_bytes_with_transform(
+        name: u32,
+        translation: [f32; 3],
+        scale: f32,
+        rotation: [f32; 9],
+    ) -> Vec<u8> {
         let mut bytes = Vec::new();
         push_u32(&mut bytes, name);
         push_u32(&mut bytes, u32::MAX); // extra data
         push_u32(&mut bytes, u32::MAX); // controller
         push_u32(&mut bytes, 0); // flags
-        for value in [0.0f32, 0.0, 0.0] {
+        for value in translation {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        for value in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        for value in rotation {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&scale.to_le_bytes());
         push_u32(&mut bytes, u32::MAX); // collision object
         bytes
     }
 
     /// An `NiNode` with one child and an empty effect list.
     fn node_bytes(name: u32, child: u32) -> Vec<u8> {
-        let mut bytes = av_object_bytes(name);
+        node_bytes_with_transform(
+            name,
+            child,
+            [0.0; 3],
+            1.0,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        )
+    }
+
+    fn node_bytes_with_transform(
+        name: u32,
+        child: u32,
+        translation: [f32; 3],
+        scale: f32,
+        rotation: [f32; 9],
+    ) -> Vec<u8> {
+        let mut bytes = av_object_bytes_with_transform(name, translation, scale, rotation);
         push_u32(&mut bytes, 1); // children
         push_u32(&mut bytes, child);
         push_u32(&mut bytes, 0); // effects
@@ -455,5 +485,196 @@ mod multi_bound {
             .unwrap();
         assert_eq!(root_node.children, vec![1]);
         assert!(root_node.mesh.is_none());
+    }
+
+    fn ordered_node_bytes(name: u32, child: u32) -> Vec<u8> {
+        ordered_node_bytes_with_transform(
+            name,
+            child,
+            [0.0; 3],
+            1.0,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        )
+    }
+
+    fn ordered_node_bytes_with_transform(
+        name: u32,
+        child: u32,
+        translation: [f32; 3],
+        scale: f32,
+        rotation: [f32; 9],
+    ) -> Vec<u8> {
+        let mut bytes = node_bytes_with_transform(name, child, translation, scale, rotation);
+        for value in [1.0f32, 2.0, 3.0, 4.0] {
+            bytes.extend_from_slice(&value.to_le_bytes()); // alpha sort bound
+        }
+        bytes.push(1); // static bound
+        bytes
+    }
+
+    fn billboard_node_bytes(name: u32, child: u32) -> Vec<u8> {
+        let mut bytes = node_bytes(name, child);
+        bytes.extend_from_slice(&3u16.to_le_bytes()); // billboard mode
+        bytes
+    }
+
+    fn value_node_bytes(name: u32, child: u32) -> Vec<u8> {
+        let mut bytes = node_bytes(name, child);
+        bytes.extend_from_slice(&(-7i32).to_le_bytes()); // value
+        bytes.push(2); // value node flags
+        bytes
+    }
+
+    #[test]
+    fn parses_ordered_billboard_and_value_nodes_with_their_trailing_fields() {
+        let bytes = ordered_node_bytes(1, 2);
+        let (rest, block) = NifBlock::parse(&bytes, "BSOrderedNode".to_string()).unwrap();
+        assert!(rest.is_empty());
+        let NifBlock::BSOrderedNode(ordered) = &block else {
+            panic!("expected BSOrderedNode, got {block:?}");
+        };
+        assert_eq!(ordered.alpha_sort_bound, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(ordered.static_bound, 1);
+        assert_eq!(block.as_node().unwrap().children, vec![2]);
+        for end in node_bytes(1, 2).len()..bytes.len() {
+            assert!(NifBlock::parse(&bytes[..end], "BSOrderedNode".to_string()).is_err());
+        }
+
+        let bytes = billboard_node_bytes(1, 2);
+        let (rest, block) = NifBlock::parse(&bytes, "NiBillboardNode".to_string()).unwrap();
+        assert!(rest.is_empty());
+        let NifBlock::NiBillboardNode(billboard) = &block else {
+            panic!("expected NiBillboardNode, got {block:?}");
+        };
+        assert_eq!(billboard.billboard_mode, 3);
+        assert_eq!(block.as_node().unwrap().children, vec![2]);
+        for end in node_bytes(1, 2).len()..bytes.len() {
+            assert!(NifBlock::parse(&bytes[..end], "NiBillboardNode".to_string()).is_err());
+        }
+
+        let bytes = value_node_bytes(1, 2);
+        let (rest, block) = NifBlock::parse(&bytes, "BSValueNode".to_string()).unwrap();
+        assert!(rest.is_empty());
+        let NifBlock::BSValueNode(value) = &block else {
+            panic!("expected BSValueNode, got {block:?}");
+        };
+        assert_eq!(value.value, -7);
+        assert_eq!(value.value_node_flags, 2);
+        assert_eq!(block.as_node().unwrap().children, vec![2]);
+        for end in node_bytes(1, 2).len()..bytes.len() {
+            assert!(NifBlock::parse(&bytes[..end], "BSValueNode".to_string()).is_err());
+        }
+    }
+
+    #[test]
+    fn shapes_under_ordered_billboard_and_value_nodes_keep_their_parents() {
+        // root -> ordered -> billboard -> value -> shape, as in the forge's fire and glow.
+        let quarter_turn = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let nif = nif_file(
+            vec![
+                parse_block(
+                    &node_bytes_with_transform(0, 1, [10.0, 20.0, 30.0], 2.0, quarter_turn),
+                    "NiNode",
+                ),
+                parse_block(
+                    &ordered_node_bytes_with_transform(
+                        1,
+                        2,
+                        [1.0, 0.0, 0.0],
+                        1.0,
+                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    ),
+                    "BSOrderedNode",
+                ),
+                {
+                    let mut bytes = node_bytes_with_transform(
+                        2,
+                        3,
+                        [0.0, 3.0, 0.0],
+                        1.0,
+                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    );
+                    bytes.extend_from_slice(&3u16.to_le_bytes());
+                    parse_block(&bytes, "NiBillboardNode")
+                },
+                {
+                    let mut bytes = node_bytes_with_transform(
+                        3,
+                        4,
+                        [0.0, 0.0, 4.0],
+                        1.0,
+                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    );
+                    bytes.extend_from_slice(&(-7i32).to_le_bytes());
+                    bytes.push(2);
+                    parse_block(&bytes, "BSValueNode")
+                },
+                parse_block(&shape_bytes(0), "BSTriShape"),
+            ],
+            &["root", "ordered", "billboard", "value"],
+        );
+        let model = nif_to_static_model(&nif).unwrap();
+        let children = |block: u32| {
+            model
+                .static_nodes
+                .iter()
+                .find(|node| node.block_index == block)
+                .unwrap_or_else(|| panic!("block {block} is not in the static scene"))
+                .children
+                .clone()
+        };
+        assert_eq!(children(0), vec![1]);
+        assert_eq!(children(1), vec![2]);
+        assert_eq!(children(2), vec![3]);
+        assert_eq!(children(3), vec![4]);
+
+        let (gltf, _) = model.to_gltf("ordered-node-regression".to_string());
+        let node_index = |name: &str| {
+            gltf.nodes
+                .iter()
+                .position(|node| node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{name} missing from glTF export"))
+        };
+        let root_index = node_index("root");
+        let ordered_index = node_index("ordered");
+        let billboard_index = node_index("billboard");
+        let value_index = node_index("value");
+        let shape_index = gltf.nodes[value_index].children.as_ref().unwrap()[0].value();
+        assert_eq!(
+            gltf.nodes[root_index].children.as_ref().unwrap()[0].value(),
+            ordered_index
+        );
+        assert_eq!(
+            gltf.nodes[ordered_index].children.as_ref().unwrap()[0].value(),
+            billboard_index
+        );
+        assert_eq!(
+            gltf.nodes[billboard_index].children.as_ref().unwrap()[0].value(),
+            value_index
+        );
+        let local = |index: usize| {
+            let node = &gltf.nodes[index];
+            glam::Mat4::from_scale_rotation_translation(
+                node.scale
+                    .as_ref()
+                    .map(|scale| glam::Vec3::from_array(*scale))
+                    .unwrap_or(glam::Vec3::ONE),
+                node.rotation
+                    .as_ref()
+                    .map(|rotation| glam::Quat::from_array(rotation.0))
+                    .unwrap_or(glam::Quat::IDENTITY),
+                node.translation
+                    .as_ref()
+                    .map(|translation| glam::Vec3::from_array(*translation))
+                    .unwrap_or(glam::Vec3::ZERO),
+            )
+        };
+        let inherited = local(root_index)
+            * local(ordered_index)
+            * local(billboard_index)
+            * local(value_index)
+            * local(shape_index);
+        let placement = inherited.transform_point3(glam::Vec3::ZERO);
+        assert!((placement - glam::Vec3::new(4.0, 22.0, 38.0)).length() < 1.0e-4);
     }
 }

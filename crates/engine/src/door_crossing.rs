@@ -25,6 +25,7 @@
 
 use crate::{
     doors::LoadDoor,
+    nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial},
     physics::{
         CursorCapture, MovementTuning, PlayerBody, TeleportPlayer, body_and_camera_for_feet,
     },
@@ -398,6 +399,7 @@ fn switch_space(world: &mut World, landing: Landing) {
     }
     world.write_message(TeleportPlayer {
         position: landing.position,
+        sampled_ground_y: None,
         yaw: landing.yaw,
     });
 }
@@ -417,6 +419,7 @@ fn place_again(commands: &mut Commands, landing: &Landing) {
         };
         world.write_message(TeleportPlayer {
             position,
+            sampled_ground_y: None,
             yaw: landing.yaw,
         });
     });
@@ -436,6 +439,8 @@ struct LandingAssets<'w, 's> {
             Option<&'static MeshMaterial3d<StandardMaterial>>,
             Option<&'static MeshMaterial3d<TerrainMaterial>>,
             Option<&'static MeshMaterial3d<WaterMaterial>>,
+            Option<&'static MeshMaterial3d<EffectPaletteMaterial>>,
+            Option<&'static EffectPaletteDepthSource>,
         ),
     >,
     meshes: Option<Res<'w, Assets<Mesh>>>,
@@ -443,6 +448,7 @@ struct LandingAssets<'w, 's> {
     standard: Option<Res<'w, Assets<StandardMaterial>>>,
     terrain: Option<Res<'w, Assets<TerrainMaterial>>>,
     water: Option<Res<'w, Assets<WaterMaterial>>>,
+    palette: Option<Res<'w, Assets<EffectPaletteMaterial>>>,
 }
 
 /// What the readiness check found under a landing root.
@@ -529,13 +535,16 @@ impl LandingAssets<'_, '_> {
     }
 
     /// Inspects every mesh, material and texture under `root`. Covered: `Mesh3d`,
-    /// `MeshMaterial3d<StandardMaterial>` with all its texture dependencies, and the terrain and
-    /// water materials with their base-material textures. The terrain and water extensions' own
-    /// layer and reflection images are private to `render.rs` and are not checked.
+    /// `MeshMaterial3d<StandardMaterial>` and the effect palette material (directly or as the
+    /// source of its depth wrapper) with all their texture dependencies, and the terrain and water materials with their base-material textures. The
+    /// terrain and water extensions' own layer and reflection images are private to `render.rs`
+    /// and are not checked.
     fn inspect_under(&self, root: Entity) -> LandingReport {
         let mut report = LandingReport::default();
         for entity in std::iter::once(root).chain(self.children.iter_descendants(root)) {
-            let Ok((mesh, standard, terrain, water)) = self.parts.get(entity) else {
+            let Ok((mesh, standard, terrain, water, palette, palette_depth)) =
+                self.parts.get(entity)
+            else {
                 continue;
             };
             if let Some(Mesh3d(handle)) = mesh {
@@ -570,6 +579,24 @@ impl LandingAssets<'_, '_> {
                     handle,
                     &self.water,
                     |this, m, report| this.check_dependencies(&m.base, report),
+                    &mut report,
+                );
+            }
+            // A palette surface under a depth override draws through a wrapper; its palette
+            // material is the source the wrapper was cloned from.
+            let palette = palette
+                .map(|material| &material.0)
+                .or_else(|| palette_depth.map(|source| &source.0));
+            if let Some(handle) = palette {
+                self.check_material(
+                    handle,
+                    &self.palette,
+                    // `ExtendedMaterial` reports no dependencies itself: its fields carry
+                    // no `#[dependency]`, so each half is visited on its own.
+                    |this, m, report| {
+                        this.check_dependencies(&m.base, report);
+                        this.check_dependencies(&m.extension, report);
+                    },
                     &mut report,
                 );
             }
@@ -900,6 +927,7 @@ mod tests {
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
+            .init_asset::<EffectPaletteMaterial>()
             .insert_resource(RenderAssetBytesPerFrame {
                 max_bytes: crate::config::EngineConfig::default().max_upload_bytes_per_frame(),
             });
@@ -1316,6 +1344,82 @@ mod tests {
         assert_eq!(budget(&app), configured_budget(), "the fade-in started");
         app.update();
         assert!(alpha(&mut app) < 1.0, "the fade shows");
+    }
+
+    #[test]
+    fn the_fade_in_waits_for_an_effect_palette_materials_source_texture_and_palette() {
+        fade_in_waits_for_effect_palette_images(false);
+    }
+
+    #[test]
+    fn the_fade_in_waits_for_a_depth_wrapped_effect_palette_through_its_source() {
+        fade_in_waits_for_effect_palette_images(true);
+    }
+
+    /// `depth_wrapped`: the surface carries only the wrapper's source, as a palette surface
+    /// under an authored depth override does; the wrapper itself is not inspected.
+    fn fade_in_waits_for_effect_palette_images(depth_wrapped: bool) {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let source = app.world().resource::<Assets<Image>>().reserve_handle();
+        let palette = app.world().resource::<Assets<Image>>().reserve_handle();
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<EffectPaletteMaterial>>()
+            .add(EffectPaletteMaterial {
+                base: StandardMaterial {
+                    base_color_texture: Some(source.clone()),
+                    ..default()
+                },
+                extension: crate::nif_material::EffectPalette::new(
+                    palette.clone(),
+                    true,
+                    true,
+                    1.0,
+                ),
+            });
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let root = app.world_mut().spawn_empty().id();
+        let part = app.world_mut().spawn((Mesh3d(mesh), ChildOf(root))).id();
+        if depth_wrapped {
+            app.world_mut()
+                .entity_mut(part)
+                .insert(EffectPaletteDepthSource(material));
+        } else {
+            app.world_mut()
+                .entity_mut(part)
+                .insert(MeshMaterial3d(material));
+        }
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        for (image, waiting) in [(source, "the palette"), (palette, "")] {
+            for _ in 0..20 {
+                app.update();
+            }
+            assert!(alpha(&mut app) >= 0.99, "an image is still loading");
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .insert(image.id(), Image::default())
+                .unwrap();
+            if !waiting.is_empty() {
+                for _ in 0..20 {
+                    app.update();
+                }
+                assert!(alpha(&mut app) >= 0.99, "{waiting} is still loading");
+            }
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(budget(&app), configured_budget(), "the fade-in started");
     }
 
     #[test]

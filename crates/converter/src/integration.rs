@@ -90,11 +90,26 @@ pub fn finalize_world_database_with_sources(
     let files = converted_file_index(staging)?;
     let static_models = {
         let mut statement = connection.prepare(
-            "SELECT id,model_path FROM statics WHERE model_path IS NOT NULL AND model_path <> '' ORDER BY id",
+            "SELECT s.id,s.model_path,r.record_type,p.name
+             FROM statics s
+             LEFT JOIN records r ON r.form_id=s.id
+             LEFT JOIN (
+                 SELECT priority,
+                        CASE WHEN COUNT(*)=1 THEN MIN(name) ELSE NULL END AS name
+                 FROM plugins
+                 GROUP BY priority
+             ) p ON p.priority=r.load_order
+             WHERE s.model_path IS NOT NULL AND s.model_path <> ''
+             ORDER BY s.id",
         )?;
         statement
             .query_map([], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
     };
@@ -102,10 +117,38 @@ pub fn finalize_world_database_with_sources(
     // this pass, so both successful bounds and errors can be shared by key.
     let mut model_bounds = HashMap::new();
     let transaction = connection.transaction()?;
-    for (form_id, model_path) in static_models {
-        let key = converted_key(&model_path, "meshes", "glb")?;
+    for (form_id, model_path, record_type, plugin) in static_models {
+        let key = match converted_key(&model_path, "meshes", "glb") {
+            Ok(key) => key,
+            Err(error) => {
+                recover_invalid_static_model(
+                    &transaction,
+                    &mut report,
+                    form_id,
+                    &model_path,
+                    record_type.as_deref(),
+                    plugin.as_deref(),
+                    error,
+                )?;
+                continue;
+            }
+        };
         let Some(path) = files.get(&key) else {
-            let source_key = converted_key(&model_path, "meshes", "nif")?;
+            let source_key = match converted_key(&model_path, "meshes", "nif") {
+                Ok(key) => key,
+                Err(error) => {
+                    recover_invalid_static_model(
+                        &transaction,
+                        &mut report,
+                        form_id,
+                        &model_path,
+                        record_type.as_deref(),
+                        plugin.as_deref(),
+                        error,
+                    )?;
+                    continue;
+                }
+            };
             if sources.contains_key(&source_key) {
                 report.missing_model_count += 1;
                 issue(
@@ -138,6 +181,10 @@ pub fn finalize_world_database_with_sources(
         }
     }
     transaction.commit()?;
+    report.statics_with_models = count(
+        &connection,
+        "SELECT count(*) FROM statics WHERE model_path IS NOT NULL AND model_path <> ''",
+    )?;
     // Room membership by model bounds needs the bounds just written.
     crate::esm::rooms::add_overlap_rows(&mut connection)?;
     report.room_graph = crate::esm::rooms::RoomGraphReport::read(&connection)?;
@@ -330,6 +377,31 @@ fn issue(report: &mut IntegrationReport, message: String) {
     if report.issues.len() < MAX_REPORTED_ISSUES {
         report.issues.push(message);
     }
+}
+
+fn recover_invalid_static_model(
+    transaction: &rusqlite::Transaction<'_>,
+    report: &mut IntegrationReport,
+    form_id: u32,
+    model_path: &str,
+    record_type: Option<&str>,
+    plugin: Option<&str>,
+    error: impl std::fmt::Display,
+) -> Result<()> {
+    transaction.execute("UPDATE statics SET model_path=NULL WHERE id=?1", [form_id])?;
+    let owner = match (plugin.filter(|name| !name.is_empty()), record_type) {
+        (Some(plugin), Some(record_type)) => {
+            format!("plugin {plugin} {record_type} {form_id:08X}")
+        }
+        (Some(plugin), None) => format!("plugin {plugin} record {form_id:08X}"),
+        (None, Some(record_type)) => format!("{record_type} {form_id:08X}"),
+        (None, None) => format!("record {form_id:08X}"),
+    };
+    issue(
+        report,
+        format!("recovered invalid static model projection for {owner}: {model_path:?}: {error}"),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -529,6 +601,211 @@ mod tests {
             rows,
             [(1, 1.0, 12.0, 1), (2, 1.0, 12.0, 1), (3, 20.0, 43.0, 1)]
         );
+    }
+
+    #[test]
+    fn recovers_unsafe_static_paths_without_dropping_valid_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO plugins(id,name,priority,checksum) VALUES(1,'Synthetic.esp',0,?1)",
+                [vec![0u8]],
+            )
+            .unwrap();
+        let rows = [
+            (1u32, "STAT", "architecture/wall.nif"),
+            (2, "TACT", "../bad.nif"),
+            (3, "ADDN", "/meshes/bad.nif"),
+            (4, "APPA", r"..\bad.nif"),
+            (5, "ARTO", r"C:\Meshes\bad.nif"),
+            (6, "STAT", "architecture/wall.nif"),
+        ];
+        for (id, record_type, model_path) in rows {
+            connection
+                .execute(
+                    "INSERT INTO statics(id,model_path,flags) VALUES(?1,?2,0)",
+                    params![id, model_path],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO records(form_id,record_type,load_order,data) VALUES(?1,?2,0,?3)",
+                    params![id, record_type, vec![id as u8, 0xA5]],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        write_file(
+            directory.path(),
+            "Meshes/Architecture/Wall.GLB",
+            &bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]),
+        );
+        empty_cache(directory.path());
+
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(report.bounds_updated, 2);
+        assert_eq!(report.statics_total, 6);
+        assert_eq!(report.statics_with_models, 2);
+        assert_eq!(report.issues.len(), 4);
+        for (record_type, form_id, source_path) in [
+            ("TACT", 2, "../bad.nif"),
+            ("ADDN", 3, "/meshes/bad.nif"),
+            ("APPA", 4, r"..\bad.nif"),
+            ("ARTO", 5, r"C:\Meshes\bad.nif"),
+        ] {
+            let diagnostic = report
+                .issues
+                .iter()
+                .find(|issue| issue.contains(&format!("{record_type} {form_id:08X}")))
+                .unwrap();
+            assert!(diagnostic.contains("plugin Synthetic.esp"));
+            assert!(diagnostic.contains(&format!("{source_path:?}")));
+        }
+
+        let connection = Connection::open(database).unwrap();
+        let projections: Vec<(u32, Option<String>)> = connection
+            .prepare("SELECT id,model_path FROM statics ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            projections,
+            [
+                (1, Some("architecture/wall.nif".into())),
+                (2, None),
+                (3, None),
+                (4, None),
+                (5, None),
+                (6, Some("architecture/wall.nif".into())),
+            ]
+        );
+        let archived: Vec<(u32, Vec<u8>)> = connection
+            .prepare("SELECT form_id,data FROM records ORDER BY form_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            archived,
+            rows.iter()
+                .map(|(id, _, _)| (*id, vec![*id as u8, 0xA5]))
+                .collect::<Vec<_>>()
+        );
+        let published: IntegrationReport = serde_json::from_slice(
+            &fs::read(directory.path().join("integration-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(published.passed);
+        assert_eq!(published.issues, report.issues);
+    }
+
+    #[test]
+    fn duplicate_plugin_priorities_do_not_duplicate_static_integration_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO plugins(id,name,priority,checksum)
+                     VALUES(1,'First.esm',0,X''),(2,'Second.esm',0,X'');
+                 INSERT INTO statics(id,model_path,flags) VALUES
+                     (1,'architecture/wall.nif',0),
+                     (2,'../unsafe.nif',0),
+                     (3,'architecture/unavailable.nif',0),
+                     (4,'../without-plugin.nif',0);
+                 INSERT INTO records(form_id,record_type,load_order,data) VALUES
+                     (1,'STAT',0,X'01'),
+                     (2,'TACT',0,X'02'),
+                     (3,'ADDN',0,X'03'),
+                     (4,'APPA',7,X'04');",
+            )
+            .unwrap();
+        drop(connection);
+        write_file(
+            directory.path(),
+            "Meshes/Architecture/Wall.GLB",
+            &bounded_glb([-2.0, -3.0, -4.0], [5.0, 6.0, 7.0], [3.0, 4.0, 5.0]),
+        );
+        empty_cache(directory.path());
+
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+
+        assert!(report.passed, "{:?}", report.issues);
+        assert_eq!(report.statics_total, 4);
+        assert_eq!(report.bounds_updated, 1);
+        assert_eq!(report.missing_model_count, 0);
+        assert_eq!(report.unavailable_model_source_count, 1);
+        assert_eq!(report.statics_with_models, 2);
+        assert_eq!(report.issues.len(), 2);
+        let ambiguous_priority_diagnostic = report
+            .issues
+            .iter()
+            .find(|issue| issue.contains("TACT 00000002"))
+            .unwrap();
+        assert!(ambiguous_priority_diagnostic.contains("../unsafe.nif"));
+        assert!(!ambiguous_priority_diagnostic.contains("First.esm"));
+        assert!(!ambiguous_priority_diagnostic.contains("Second.esm"));
+        assert_eq!(
+            report
+                .issues
+                .iter()
+                .filter(|issue| issue.contains("TACT 00000002"))
+                .count(),
+            1
+        );
+        let absent_metadata_diagnostic = report
+            .issues
+            .iter()
+            .find(|issue| issue.contains("APPA 00000004"))
+            .unwrap();
+        assert!(absent_metadata_diagnostic.contains("../without-plugin.nif"));
+        assert!(!absent_metadata_diagnostic.contains("plugin "));
+
+        let connection = Connection::open(database).unwrap();
+        let projections: Vec<(u32, Option<String>)> = connection
+            .prepare("SELECT id,model_path FROM statics ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            projections,
+            [
+                (1, Some("architecture/wall.nif".into())),
+                (2, None),
+                (3, Some("architecture/unavailable.nif".into())),
+                (4, None),
+            ]
+        );
+        let archived: Vec<(u32, Vec<u8>)> = connection
+            .prepare("SELECT form_id,data FROM records ORDER BY form_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            archived,
+            [(1, vec![1]), (2, vec![2]), (3, vec![3]), (4, vec![4])]
+        );
+        let published: IntegrationReport = serde_json::from_slice(
+            &fs::read(directory.path().join("integration-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(published.passed);
+        assert_eq!(published.bounds_updated, 1);
+        assert_eq!(published.unavailable_model_source_count, 1);
+        assert_eq!(published.issues, report.issues);
     }
 
     #[test]

@@ -70,7 +70,7 @@ def make_package(package):
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 27,
+            "converter_schema": 28,
             "world_database_schema": 9,
             "build_identity": identity,
             "chunks": 1,
@@ -78,7 +78,7 @@ def make_package(package):
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 27, "complete": True},
+        {"schema_version": 28, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",

@@ -1,4 +1,5 @@
 use crate::{
+    color_pipeline::{SceneGradeSource, SkyrimCinematicPostPlugin},
     config::{EngineConfig, MAX_IO_THREADS},
     console::{ConsolePlugin, console_closed},
     metrics::AcceptanceMetricsPlugin,
@@ -10,12 +11,14 @@ use crate::{
         WaterReflectionTexture, terrain_layer_sampler,
     },
     renderer_init::RendererInitPlugin,
-    shots::{ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
+    route::{RouteGround, RoutePlan, RouteRunner, drive_route},
+    shots::{ShotOutputImage, ShotsFile, ShotsPlugin, ShotsRun, default_output_dir},
     sky::{FogCamera, SkyCamera, SkyPlugin},
     streaming::{
         AssetFailure, RenderOrigin, StreamingMetrics, StreamingPlugin, StreamingWorld,
         build_terrain_quadrant_mesh, streaming_center, validate_standard_material,
     },
+    tone_mapping::SceneToneMapSource,
     world::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
@@ -32,6 +35,7 @@ use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap},
     log::{Level, LogPlugin},
+    math::DVec3,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
     render::occlusion_culling::OcclusionCulling,
@@ -56,14 +60,67 @@ use std::{
 struct InitialCameraGroundHeight(f32);
 
 #[derive(Resource)]
+struct InitialWorldCameraPose {
+    shot: crate::shots::Shot,
+    aspect: f32,
+    resolution: bevy::window::WindowResolution,
+}
+
+fn prepare_start_camera(config: &mut EngineConfig) -> Result<Option<InitialWorldCameraPose>> {
+    let Some(path) = &config.start_shot else {
+        return Ok(None);
+    };
+    color_eyre::eyre::ensure!(
+        config.shots.is_none()
+            && config.matched_route.is_none()
+            && !config.benchmark_only
+            && config.benchmark_frames.is_none()
+            && config.benchmark_duration_secs.is_none()
+            && config.benchmark_jump.is_none()
+            && config.auto_fly_speed == 0.0
+            && config.route.is_none()
+            && config.acceptance_screenshot.is_none()
+            && config.streaming_benchmark_route_speed.is_none()
+            && !config.material_fixture
+            && !config.terrain_water_fixture
+            && !config.transform_bounds_fixture
+            && !config.renderer_fixture
+            && !config.streaming_fixture
+            && !config.physics_fixture,
+        "--start-shot requires a live world run without another automated camera mode"
+    );
+    let file = ShotsFile::load(path)?;
+    color_eyre::eyre::ensure!(
+        file.shots.len() == 1 && file.shots[0].is_exterior(),
+        "--start-shot requires exactly one exterior camera pose"
+    );
+    let (worldspace, grid) = file.start().expect("validated exterior camera pose");
+    config.start_grid = grid;
+    if let Some(worldspace) = worldspace {
+        config.worldspace_id = worldspace;
+    }
+    Ok(Some(InitialWorldCameraPose {
+        shot: file.shots[0].clone(),
+        aspect: file.aspect(),
+        resolution: file.window_resolution(),
+    }))
+}
+
+#[derive(Resource)]
 struct AssetDirectoryReadLock {
     _guard: shared::asset_lock::AssetLock,
 }
 
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
+    let mut preferences = config
+        .interactive_world_physics()
+        .then(|| crate::settings::prepare_settings(&mut config));
+    config.image_space_selection()?;
+    let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
+    let route = prepare_route(&mut config)?;
     configure_io_task_pool(config.io_threads)?;
     let interactive_world_physics = config.interactive_world_physics();
     let streaming_fixture_dir = if config.streaming_fixture {
@@ -95,6 +152,17 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         None
     };
+    if reads_asset_tree {
+        crate::streaming::requests::validate_pack_identity(&config).wrap_err_with(|| {
+            format!(
+                "cannot read the converted pack manifest under {}",
+                config.assets_dir.display()
+            )
+        })?;
+    }
+    // The terrain heights along a route are read here, before the window opens, so that following
+    // the ground costs nothing while the run is measured.
+    let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
         Some((
@@ -102,6 +170,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             AssetCatalog::open(&database_path)?,
             CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
             InitialCameraGroundHeight(0.0),
+            None,
         ))
     } else if config.benchmark_only
         || config.material_fixture
@@ -116,29 +185,88 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         let database_path = config.assets_dir.join("skyrim_world.db");
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
+        let spawn_ground_height = if interactive_world_physics {
+            initial_walk_ground_height(
+                &config,
+                &database_path,
+                &cache,
+                start_camera.as_ref().map(|pose| &pose.shot),
+            )?
+        } else {
+            None
+        };
+        if let Some(plan) = &route {
+            route_ground = Some(RouteGround::load(
+                plan,
+                config.worldspace_id,
+                &database_path,
+                &cache,
+            )?);
+        }
         Some((
             WorldDatabase::open(&database_path)?,
             AssetCatalog::open(&database_path)?,
             cache,
             InitialCameraGroundHeight(ground_height),
+            spawn_ground_height,
         ))
     };
+    // Authored lighting, weather, climate and image space, when the database has them (#269).
+    // Read only; nothing renders from it yet.
+    let environment = runtime_data.as_ref().map(|_| {
+        crate::world::environment::EnvironmentCatalog::open(
+            &config.assets_dir.join("skyrim_world.db"),
+        )
+        .unwrap_or_else(|error| {
+            // LogPlugin is installed later, so report this startup failure directly.
+            eprintln!(
+                "warning: environment: cannot open the world database ({error}); using an empty catalog"
+            );
+            Default::default()
+        })
+    });
+    // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
+    // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
+    let terrain_merge = runtime_data
+        .is_some()
+        .then(|| crate::terrain_merge::TerrainMerge::open(&config.assets_dir));
+    let grade_source =
+        SceneGradeSource::load(&config, runtime_data.is_some() && !config.streaming_fixture)?;
+    let mut tone_map_source = SceneToneMapSource::load(&config, &grade_source)?;
+    if let Some((settings, _)) = preferences.as_mut() {
+        tone_map_source.bevy_tonemapping = crate::settings::TONE_MAPS[settings.tone_map];
+        if let Some(mode) = crate::color_pipeline::SceneGradeMode::from_index(settings.color_grade)
+        {
+            let resolved = tone_map_source
+                .resolve_with_overrides(
+                    &grade_source,
+                    mode,
+                    config.visual_preset,
+                    settings.grade_overrides(),
+                )
+                .map_err(color_eyre::eyre::Error::msg)?;
+            settings.show_resolved_grade(resolved.grade, resolved.post.pivot);
+        }
+    }
+    let sky_palette = grade_source.sky_palette(config.visual_preset);
     let movement_tuning = (interactive_world_physics
         && runtime_data.is_some()
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
-    let benchmark_active =
-        config.benchmark_frames.is_some() || config.benchmark_duration_secs.is_some();
+    let benchmark_active = config.benchmark_frames.is_some()
+        || config.benchmark_duration_secs.is_some()
+        || config.streaming_benchmark_route_speed.is_some();
     configure_benchmark_priority(benchmark_active)?;
     let window = (!config.headless || shots_active || config.hidden_window).then(|| Window {
         title: config.window_title(),
         visible: !config.hidden_window,
-        // A shots file's frame is the size its reference screenshots were taken at, so the window,
-        // and every PNG taken of it, is exactly that many pixels.
+        // Start the window at the reference size; shots use an independent exact-size image target.
         resolution: match &shots {
             Some(run) => run.file.window_resolution(),
-            None => (1600, 900).into(),
+            None => start_camera
+                .as_ref()
+                .map_or_else(|| (1600, 900).into(), |pose| pose.resolution.clone()),
         },
         // Visible timing and shots runs open in the middle of the primary screen.
         position: if benchmark_active || shots_active {
@@ -146,7 +274,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         } else {
             WindowPosition::Automatic
         },
-        present_mode: if benchmark_active {
+        present_mode: if benchmark_active && !config.benchmark_vsync {
             PresentMode::AutoNoVsync
         } else {
             PresentMode::AutoVsync
@@ -155,6 +283,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    if let Some((settings, file)) = preferences {
+        app.insert_resource(settings).insert_resource(file);
+    }
+    if let Some(pose) = start_camera {
+        app.insert_resource(pose);
+    }
+    if config.stdin_console {
+        app.add_plugins(crate::live_console::StdinConsolePlugin);
+    }
     if let Some(tuning) = movement_tuning {
         app.insert_resource(tuning);
     }
@@ -170,7 +307,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
-    app.insert_resource(config)
+    // The run fingerprint is measurement data: an ordinary play session neither builds one nor
+    // pays for the startup system that reads it.
+    let records_measurements = crate::fingerprint::records_measurements(&config);
+    app.insert_resource(config.color_grade)
+        .insert_resource(config.visual_preset)
+        .insert_resource(sky_palette)
+        .insert_resource(grade_source)
+        .insert_resource(tone_map_source)
+        .insert_resource(config)
         .insert_resource(origin)
         .insert_resource(render_asset_budget)
         .init_resource::<StreamingMetrics>()
@@ -187,6 +332,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 })
                 .set(LogPlugin {
                     level: Level::INFO,
+                    custom_layer: crate::bug_report::logging::report_log_layer,
                     ..default()
                 }),
         )
@@ -198,7 +344,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             },
             AcceptanceMetricsPlugin,
             ProfilingPlugin,
-            RenderDiagnosticsPlugin,
         ))
         .add_plugins((
             VercidiumRendererPlugin,
@@ -207,21 +352,67 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::mesh_preparation_retry::MeshPreparationRetryPlugin,
             crate::mesh_residency_audit::MeshResidencyAuditPlugin,
             SkyPlugin,
+            SkyrimCinematicPostPlugin,
             ConsolePlugin,
+            crate::bug_report::BugReportPlugin,
+            crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
         ))
+        // The render→main "prepared and drawable" bridge. Registered for every
+        // run: it is what publishes the render world's own answer to "is this surface drawn?" into
+        // the main world, and it changes nothing else about the frame.
+        .add_plugins(crate::swap_bridge::SwapBridgePlugin)
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
-        .add_systems(PostUpdate, keep_windows_hidden);
+        .add_systems(PostUpdate, keep_windows_hidden)
+        .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
+            terrain_merge.as_ref(),
+        ));
+    if interactive_world_physics {
+        app.add_plugins(crate::settings_ui::SettingsPlugin);
+    }
     add_camera_and_capture_systems(&mut app);
-    if let Some((database, catalog, cache, ground_height)) = runtime_data {
+    if let Some(terrain_merge) = terrain_merge {
+        app.insert_resource(terrain_merge);
+    }
+    if records_measurements {
+        app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
+    }
+    if app
+        .world()
+        .resource::<EngineConfig>()
+        .streaming_benchmark_route_speed
+        .is_some()
+    {
+        app.init_resource::<StreamingBenchmarkRoute>()
+            .add_systems(PreUpdate, drive_streaming_benchmark_route);
+    }
+    if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
+        if let Some(environment) = environment {
+            app.insert_resource(environment);
+        }
         app.insert_resource(database)
             .insert_resource(catalog)
             .insert_resource(cache)
             .insert_resource(ground_height)
+            .insert_resource(crate::physics::WalkSpawnGroundHeight(spawn_ground_height))
             .add_plugins(StreamingPlugin);
+        if let (Some(plan), Some(ground)) = (route, route_ground) {
+            info!(
+                route = %plan.source,
+                waypoints = plan.waypoints.len(),
+                length = plan.length(),
+                speed = plan.speed,
+                ground_cells = ground.cell_count(),
+                "following a route"
+            );
+            app.insert_resource(RouteRunner::new(plan, ground))
+                // Before `Update`, so the streaming planner of the same frame sees the camera
+                // where the route put it.
+                .add_systems(PreUpdate, drive_route);
+        }
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
@@ -259,6 +450,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         app.add_systems(Startup, setup_world);
         app.add_systems(Startup, setup_synthetic_benchmark);
+    }
+    if !app.world().resource::<EngineConfig>().no_render_diagnostics {
+        app.add_plugins(RenderDiagnosticsPlugin);
+    }
+    if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
+        app.add_plugins(crate::capture_frame::CaptureFramePlugin);
     }
     if let Some(run) = shots {
         info!(
@@ -366,6 +563,7 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
         || config.benchmark_duration_secs.is_some()
         || config.acceptance_screenshot.is_some()
         || config.auto_fly_speed > 0.0
+        || config.route.is_some()
         || config.material_fixture
         || config.terrain_water_fixture
         || config.transform_bounds_fixture
@@ -375,7 +573,7 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
     color_eyre::eyre::ensure!(
         !other_mode,
         "{mode} renders the converted world on its own: it cannot be combined with a benchmark, \
-         an acceptance screenshot, --auto-fly-speed or a fixture"
+         an acceptance screenshot, --auto-fly-speed, --route or a fixture"
     );
     if config.headless {
         // The logger is not installed yet, so a `warn!` here would never be seen.
@@ -399,7 +597,41 @@ fn prepare_shots(config: &mut EngineConfig) -> Result<Option<ShotsRun>> {
         .unwrap_or_else(|| default_output_dir(&path));
     let mut run = ShotsRun::new(file, output_dir, config.worldspace_id);
     run.route_checkpoints = checkpoints;
+    run.settle_timeout_seconds = config.shots_settle_timeout;
     Ok(Some(run))
+}
+
+/// Reads the `--route` file, if one was given, and starts the run where the route starts: the
+/// file's worldspace, and the grid square of its first waypoint. A route needs the converted world to
+/// walk in, and owns the camera, so it cannot be combined with another mode that does.
+fn prepare_route(config: &mut EngineConfig) -> Result<Option<RoutePlan>> {
+    let Some(path) = config.route.clone() else {
+        return Ok(None);
+    };
+    let other_mode = config.benchmark_only
+        || config.acceptance_screenshot.is_some()
+        || config.auto_fly_speed > 0.0
+        || config.material_fixture
+        || config.terrain_water_fixture
+        || config.transform_bounds_fixture
+        || config.renderer_fixture
+        || config.streaming_fixture
+        || config.physics_fixture;
+    color_eyre::eyre::ensure!(
+        !other_mode,
+        "--route walks the converted world: it cannot be combined with --benchmark-only, \
+         an acceptance screenshot, --auto-fly-speed or a fixture"
+    );
+    if !config.is_benchmark_run() {
+        // The logger is not installed yet, so a `warn!` here would never be seen.
+        eprintln!(
+            "warning: --route without --benchmark-frames or --benchmark-duration moves the camera but writes no report"
+        );
+    }
+    let plan = RoutePlan::load(&path)?;
+    config.worldspace_id = plan.worldspace;
+    config.start_grid = plan.start_grid();
+    Ok(Some(plan))
 }
 
 fn validate_fixture_selection(config: &EngineConfig) -> Result<()> {
@@ -562,7 +794,7 @@ impl StreamingFixtureDirectory {
             r#"CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);
             CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);
             CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
-            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
+            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
             CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);
             CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);
@@ -758,12 +990,14 @@ fn cross_streaming_fixture_interior(
         if state.frames < STREAMING_FIXTURE_INTERIOR_FRAME {
             return;
         }
-        streaming.request_cell(
+        if !streaming.request_cell(
             &database,
             CellKey::Interior(STREAMING_FIXTURE_INTERIOR_CELL_ID),
             &mut metrics,
             &mut profiler,
-        );
+        ) {
+            return;
+        }
         state.interior.requested_frame = Some(state.frames);
         state.interior_center = center;
         profiler.event("streaming-fixture", "interior_requested", None);
@@ -1926,16 +2160,18 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 /// no shadow is drawn, which is the same 10 cm Bevy's default works at. The overlap between
 /// cascades is left at the builder's default; only the distances are fitted to this world.
 ///
-/// [`maximum_distance`] is not a conversion but a property of the drawn world:
+/// [`maximum_distance`] starts as a property of the drawn world:
 /// `streaming::plan_cells` requests `config.stream_radius` cells around the camera's cell and keeps
 /// them until they leave `config.unload_radius`, which the command line sets one ring wider, so
 /// cells - and the geometry they carry - keep drawing out to the unload ring rather than to the
 /// requested radius. The camera stands somewhere inside its own cell, so that grid is at most
 /// `unload_radius + 1` cells from it to the edge and [sqrt(2)] times that to the far corner, and
 /// the range is the distance from the camera to that corner, the camera being [`camera_offset`]
-/// above the point it looks at. It stops there: nothing is drawn past the corner, so a wider range
-/// would only spend the same shadow map on coarser cascades. Terrain standing above the ground
-/// plane at the corner is further from the camera than the corner and is not accounted for.
+/// above the point it looks at. `[Display] fShadowDistance` may cap that range to match Skyrim's
+/// configured exterior shadow draw distance. Without that INI key it stops at the drawn grid:
+/// nothing is drawn past the corner, so a wider range would only spend the same shadow map on
+/// coarser cascades. Terrain standing above the ground plane at the corner is further from the
+/// camera than the corner and is not accounted for.
 /// [SUN_SHADOW_MAX_GRID_CELLS] caps the fit for radii the command line accepts but nothing could
 /// stream. At the default `unload_radius` of 3 the last bound is about 23,200 units, a third of a
 /// kilometre.
@@ -1954,7 +2190,7 @@ const SUN_SHADOW_MAX_GRID_CELLS: i32 = 256;
 ///
 /// [sqrt(2)]: std::f32::consts::SQRT_2
 /// [`maximum_distance`]: CascadeShadowConfigBuilder::maximum_distance
-fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
+pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
     // Cells draw out to `unload_radius`, one ring past the requested `stream_radius`, and the
     // `+ 1` is the camera's own cell: the grid is `unload_radius` cells around that cell rather
     // than around the camera, which may stand at the far edge of its own. The radius is clamped
@@ -1965,14 +2201,36 @@ fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
     let unload_cells = config.unload_radius.saturating_add(1);
     let cells = unload_cells.clamp(1, SUN_SHADOW_MAX_GRID_CELLS);
     let corner = crate::world::components::CELL_SIZE * cells as f32 * std::f32::consts::SQRT_2;
+    let grid_distance = corner.hypot(camera_offset(config).y);
+    let maximum_distance = config
+        .sun_shadow_distance_limit
+        .map_or(grid_distance, |limit| grid_distance.min(limit));
     CascadeShadowConfigBuilder {
         minimum_distance: 0.1 * CREATION_UNITS_PER_METRE,
-        maximum_distance: corner.hypot(camera_offset(config).y),
-        first_cascade_far_bound: 10.0 * CREATION_UNITS_PER_METRE,
+        maximum_distance,
+        first_cascade_far_bound: (10.0 * CREATION_UNITS_PER_METRE).min(maximum_distance * 0.5),
         num_cascades: SUN_SHADOW_CASCADES,
         ..default()
     }
     .into()
+}
+
+/// Rotation for a sun at the configured Creation bearing and elevation. Directional lights emit
+/// along local -Z, so that vector points from the sun toward the ground, opposite its position.
+fn sun_rotation(config: &EngineConfig) -> Quat {
+    let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
+        return Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0);
+    };
+    let azimuth = azimuth_degrees.to_radians();
+    let elevation = elevation_degrees.to_radians();
+    let (sin_azimuth, cos_azimuth) = azimuth.sin_cos();
+    let (sin_elevation, cos_elevation) = elevation.sin_cos();
+    let sun_direction = Vec3::new(
+        sin_azimuth * cos_elevation,
+        sin_elevation,
+        -cos_azimuth * cos_elevation,
+    );
+    Quat::from_rotation_arc(Vec3::NEG_Z, -sun_direction)
 }
 
 /// Where `setup_world` stands the camera relative to the point it looks at, the centre of the cell
@@ -1980,7 +2238,9 @@ fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig {
 /// walk-around view from behind and above it. [`sun_shadow_cascades`] measures its range from the
 /// camera, so the offsets live here rather than in two places.
 fn camera_offset(config: &EngineConfig) -> Vec3 {
-    if config.acceptance_screenshot.is_some() {
+    if config.streaming_benchmark_route_speed.is_some() {
+        Vec3::new(0.0, 6000.0, 0.0)
+    } else if config.acceptance_screenshot.is_some() {
         config
             .screenshot_camera_offset
             .map(Vec3::from)
@@ -1992,9 +2252,11 @@ fn camera_offset(config: &EngineConfig) -> Vec3 {
 
 fn setup_world(
     mut commands: Commands,
+    shot_output: Option<Res<ShotOutputImage>>,
     config: Res<EngineConfig>,
     ground_height: Option<Res<InitialCameraGroundHeight>>,
     tuning: Option<Res<MovementTuning>>,
+    start_camera: Option<Res<InitialWorldCameraPose>>,
 ) {
     let ground_height = ground_height.as_deref().map_or(0.0, |height| height.0);
     let target = Vec3::new(CELL_SIZE_HALF, ground_height, -CELL_SIZE_HALF);
@@ -2006,18 +2268,33 @@ fn setup_world(
     };
     let camera_position = target + camera_offset;
     let far = crate::world::components::CELL_SIZE * (config.stream_radius.max(1) + 2) as f32 * 2.0;
-    let camera_transform = if config.interactive_world_physics() {
+    let mut camera_transform = if config.interactive_world_physics() {
         Transform::from_translation(camera_position)
             .looking_at(camera_position + Vec3::NEG_Z, Vec3::Y)
+    } else if config.streaming_benchmark_route_speed.is_some() {
+        Transform::from_translation(camera_position)
+            .looking_at(target + Vec3::new(0.0, 0.0, -8000.0), Vec3::Y)
     } else {
         Transform::from_translation(camera_position).looking_at(target, Vec3::Y)
     };
-    commands.spawn((
+    let mut perspective = PerspectiveProjection { far, ..default() };
+    if let Some(pose) = start_camera {
+        camera_transform.translation = crate::shots::shot_camera_translation(
+            pose.shot.position,
+            IVec2::new(config.start_grid.0, config.start_grid.1),
+        );
+        camera_transform.rotation =
+            crate::shots::shot_camera_rotation(pose.shot.yaw, pose.shot.pitch);
+        perspective.fov =
+            crate::shots::vertical_fov_degrees(pose.shot.hfov, pose.aspect).to_radians();
+    }
+    let mut camera = commands.spawn((
         Camera3d::default(),
         crate::color_pipeline::SceneColorPipeline::default(),
-        Projection::Perspective(PerspectiveProjection { far, ..default() }),
+        Projection::Perspective(perspective),
         camera_transform,
         StreamingCamera,
+        IsDefaultUiCamera,
         // This camera draws the streamed world, so the weather's distance fog covers it.
         FogCamera,
         // The sky draws a dome around this camera and clears it to the weather's fog colour.
@@ -2027,6 +2304,12 @@ fn setup_world(
         OcclusionCulling,
         RenderLayers::from_layers(MAIN_VIEW_LAYERS),
     ));
+    if let Some(output) = shot_output {
+        camera.insert((
+            bevy::camera::RenderTarget::Image(output.0.clone().into()),
+            bevy::camera::ShadowLodOrigin,
+        ));
+    }
     // The sun's shadows. `shadow_maps_enabled` was never the missing piece - the cascades were:
     // without a configuration of its own the sun gets Bevy's, which reaches 150 metres of a world
     // whose unit is 1.43 cm, and a shadow map spent on that patch is a world lit flat
@@ -2034,18 +2317,23 @@ fn setup_world(
     commands.insert_resource(DirectionalLightShadowMap {
         size: SUN_SHADOW_MAP_SIZE,
     });
+    // The sun and ambient colours are the clear weather's own (`WTHR` 0x81A, day). Their levels are
+    // the configured input ratio in `crate::lights::AMBIENT_ILLUMINANCE` (a simplified heuristic,
+    // not a rendered-parity calibration).
+    let weather_lighting = crate::sky::WeatherLighting::default();
     commands.spawn((
         DirectionalLight {
-            illuminance: 12_000.0,
+            color: weather_lighting.sunlight,
+            illuminance: crate::lights::SUN_ILLUMINANCE,
             shadow_maps_enabled: true,
             ..default()
         },
         sun_shadow_cascades(&config),
         RenderLayers::from_layers(LIGHT_LAYERS),
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)),
+        Transform::from_rotation(sun_rotation(&config)),
     ));
     commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.48, 0.55, 0.7),
+        color: weather_lighting.mean_ambient(),
         // The one definition of the ambient this world path applies: the converted lights are
         // scaled against it (`crate::lights`).
         brightness: crate::lights::AMBIENT_ILLUMINANCE,
@@ -2073,6 +2361,57 @@ fn initial_camera_ground_height(
         cache,
     )?
     .unwrap_or(0.0))
+}
+
+/// Sample finite local terrain below the actual startup camera pose, if available.
+fn initial_walk_ground_height(
+    config: &EngineConfig,
+    database_path: &std::path::Path,
+    cache: &CellCache,
+    shot: Option<&crate::shots::Shot>,
+) -> Result<Option<f32>> {
+    let sample_position = shot.map_or_else(
+        || {
+            Vec2::new(
+                (config.start_grid.0 as f32 + 0.5) * crate::world::components::CELL_SIZE,
+                (config.start_grid.1 as f32 + 0.5) * crate::world::components::CELL_SIZE,
+            )
+        },
+        |shot| Vec2::new(shot.position[0], shot.position[1]),
+    );
+    if !sample_position.is_finite()
+        || (sample_position.x / crate::world::components::CELL_SIZE).floor() as i32
+            != config.start_grid.0
+        || (sample_position.y / crate::world::components::CELL_SIZE).floor() as i32
+            != config.start_grid.1
+    {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .wrap_err_with(|| format!("failed to open {}", database_path.display()))?;
+    let cell_id = connection
+        .query_row(
+            crate::world::database::EXTERIOR_CELL_ID_SQL,
+            params![
+                config.worldspace_id,
+                config.start_grid.0,
+                config.start_grid.1
+            ],
+            |row| row.get::<_, u32>(0),
+        )
+        .optional()?;
+    let Some(terrain) = cell_id.and_then(|cell_id| cache.terrain(cell_id)) else {
+        return Ok(None);
+    };
+    if usize::from(terrain.width) != 33
+        || usize::from(terrain.height) != 33
+        || terrain.heights.iter().any(|height| !height.is_finite())
+    {
+        return Ok(None);
+    }
+    let height =
+        RouteGround::from_cells([(config.start_grid, terrain.heights)]).height_at(sample_position);
+    Ok(height.filter(|height| height.is_finite()))
 }
 
 /// The terrain height at the middle of one exterior cell, or `None` when the cell has no terrain
@@ -2139,6 +2478,188 @@ fn jump_camera_position(grid: (i32, i32), origin: IVec2, y: f32) -> Vec3 {
 const CELL_SIZE_HALF: f32 = crate::world::components::CELL_SIZE * 0.5;
 const AUTO_FLIGHT_HALF_SPAN: f32 = crate::world::components::CELL_SIZE * 4.0;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StreamingBenchmarkPhase {
+    #[default]
+    Waiting,
+    Moving,
+    Tail,
+    Finished,
+}
+
+/// An opt-in real-clock camera workload. CPU settlement plus a fixed quiet
+/// interval does not certify GPU preparation or collision safety.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct StreamingBenchmarkRoute {
+    pub phase: StreamingBenchmarkPhase,
+    pub cpu_settled_real_seconds: Option<f64>,
+    pub movement_started_real_seconds: Option<f64>,
+    pub movement_finished_real_seconds: Option<f64>,
+    pub tail_finished_real_seconds: Option<f64>,
+    pub latest_real_seconds: f64,
+    pub route_distance_units: f64,
+    pub start_world_position: Option<[f64; 3]>,
+}
+
+impl StreamingBenchmarkRoute {
+    fn advance(&mut self, now: f64, cpu_ready: bool, config: &EngineConfig) {
+        self.latest_real_seconds = now;
+        let speed = config.streaming_benchmark_route_speed.unwrap_or(0.0);
+        if self.phase == StreamingBenchmarkPhase::Waiting {
+            if !cpu_ready {
+                self.cpu_settled_real_seconds = None;
+                return;
+            }
+            let settled = *self.cpu_settled_real_seconds.get_or_insert(now);
+            if now - settled + f64::EPSILON < config.streaming_benchmark_settle_secs {
+                return;
+            }
+            self.movement_started_real_seconds = Some(now);
+            self.phase = if speed == 0.0 {
+                self.movement_finished_real_seconds = Some(now);
+                StreamingBenchmarkPhase::Tail
+            } else {
+                StreamingBenchmarkPhase::Moving
+            };
+        }
+        let Some(started) = self.movement_started_real_seconds else {
+            return;
+        };
+        let moving_seconds = if speed == 0.0 {
+            0.0
+        } else {
+            (now - started).clamp(0.0, config.streaming_benchmark_route_secs)
+        };
+        self.route_distance_units = speed * moving_seconds;
+        if self.phase == StreamingBenchmarkPhase::Moving
+            && now - started >= config.streaming_benchmark_route_secs
+        {
+            self.movement_finished_real_seconds =
+                Some(started + config.streaming_benchmark_route_secs);
+            self.phase = StreamingBenchmarkPhase::Tail;
+        }
+        if self.phase == StreamingBenchmarkPhase::Tail
+            && let Some(finished) = self.movement_finished_real_seconds
+            && now - finished >= config.streaming_benchmark_tail_secs
+        {
+            self.tail_finished_real_seconds = Some(finished + config.streaming_benchmark_tail_secs);
+            self.phase = StreamingBenchmarkPhase::Finished;
+        }
+    }
+
+    fn local_position(&self, origin: IVec2) -> Option<Vec3> {
+        let mut position = DVec3::from_array(self.start_world_position?);
+        position.z -= self.route_distance_units;
+        position.x -= f64::from(origin.x) * f64::from(crate::world::components::CELL_SIZE);
+        position.z += f64::from(origin.y) * f64::from(crate::world::components::CELL_SIZE);
+        Some(position.as_vec3())
+    }
+}
+
+fn streaming_benchmark_cpu_ready(
+    config: &EngineConfig,
+    metrics: &StreamingMetrics,
+    admission: &crate::streaming::admission::SceneAdmission,
+    renderer: &RendererMetrics,
+    raw_responses: usize,
+    deferred_responses: usize,
+) -> bool {
+    let expected_cells =
+        ((i64::from(config.stream_radius) * 2 + 1).max(0) as usize).saturating_pow(2);
+    metrics.resident_cells == expected_cells
+        && metrics.loading_cells == 0
+        && metrics.active_requests == 0
+        && metrics.requests_submitted == metrics.responses_received
+        && metrics.retiring_cells == 0
+        && metrics.pending_asset_instances == 0
+        && metrics.pending_surface_instances == 0
+        && metrics.arming_queue_depth == 0
+        && metrics.pending_lod_queries == 0
+        && metrics.pending_lod_chunks == 0
+        && admission.active_jobs() == 0
+        && admission.queued_jobs() == 0
+        && raw_responses == 0
+        && deferred_responses == 0
+        && config
+            .streaming_benchmark_expected_models
+            .is_none_or(|expected| metrics.assets_ready == expected)
+        && config
+            .streaming_benchmark_expected_lod_chunks
+            .is_none_or(|expected| metrics.resident_lod_chunks == expected)
+        && config
+            .streaming_benchmark_expected_terrain
+            .is_none_or(|expected| metrics.terrain_patches_validated == expected)
+        && config
+            .streaming_benchmark_expected_water
+            .is_none_or(|expected| metrics.water_surfaces_validated == expected)
+        && metrics.failed_cells == 0
+        && metrics.asset_load_failures == 0
+        && metrics.material_validation_failures == 0
+        && metrics.terrain_validation_failures == 0
+        && metrics.water_validation_failures == 0
+        && metrics.transform_bounds_validation_failures == 0
+        && metrics.diagnostic_fallbacks == 0
+        && metrics.streaming_invariant_failures == 0
+        && metrics.failed_lod_queries == 0
+        && metrics.unrecovered_lod_queries == 0
+        && metrics.failed_lod_chunks == 0
+        && metrics.unrecovered_lod_chunks == 0
+        && renderer.renderer_validation_failures == 0
+        && renderer.final_path_active()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drive_streaming_benchmark_route(
+    time: Res<Time<Real>>,
+    config: Res<EngineConfig>,
+    origin: Res<RenderOrigin>,
+    metrics: Res<StreamingMetrics>,
+    admission: Res<crate::streaming::admission::SceneAdmission>,
+    renderer: Res<RendererMetrics>,
+    database: Res<WorldDatabase>,
+    runtime: Option<Res<crate::streaming::runtime::StreamingRuntime>>,
+    mut route: ResMut<StreamingBenchmarkRoute>,
+    mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    let Ok(mut transform) = camera.single_mut() else {
+        return;
+    };
+    route.start_world_position.get_or_insert([
+        f64::from(transform.translation.x)
+            + f64::from(origin.0.x) * f64::from(crate::world::components::CELL_SIZE),
+        f64::from(transform.translation.y),
+        f64::from(transform.translation.z)
+            - f64::from(origin.0.y) * f64::from(crate::world::components::CELL_SIZE),
+    ]);
+    let ready = streaming_benchmark_cpu_ready(
+        &config,
+        &metrics,
+        &admission,
+        &renderer,
+        database.pending_cell_responses(),
+        runtime
+            .as_ref()
+            .map_or(0, |runtime| runtime.deferred_responses.len()),
+    );
+    let before = route.phase;
+    route.advance(time.elapsed_secs_f64(), ready, &config);
+    if let Some(position) = route.local_position(origin.0) {
+        transform.translation = position;
+    }
+    if route.phase != before {
+        let stage = match route.phase {
+            StreamingBenchmarkPhase::Waiting => "route_waiting",
+            StreamingBenchmarkPhase::Moving => "route_moving",
+            StreamingBenchmarkPhase::Tail => "route_tail",
+            StreamingBenchmarkPhase::Finished => "route_finished",
+        };
+        info!(phase = ?route.phase, distance = route.route_distance_units, "streaming benchmark route phase");
+        profiler.event("streaming-benchmark-route", stage, None);
+    }
+}
+
 #[derive(Default)]
 struct AutoFlightState {
     initialized: bool,
@@ -2193,9 +2714,12 @@ fn fly_camera(
 ) {
     // Interactive player paths own the camera; automated camera paths keep legacy controls. A
     // shots run poses the camera itself, and a key press must not move a pose.
+    // A route owns the camera as well, like the matched and streaming benchmark routes.
     if config.physics_fixture
         || config.interactive_world_physics()
         || config.shots.is_some()
+        || config.route.is_some()
+        || config.streaming_benchmark_route_speed.is_some()
         || config.matched_route.is_some()
     {
         return;
@@ -2264,7 +2788,7 @@ fn capture_acceptance_screenshot(
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
     renderer: Res<RendererMetrics>,
-    windows: Query<(), With<Window>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Some(path) = &config.acceptance_screenshot else {
         return;
@@ -2335,6 +2859,35 @@ struct ScreenshotCaptureState {
 
 #[cfg(test)]
 mod tests {
+    /// A `--route` file shares the camera with neither `--shots` nor `--matched-route`. The refusal
+    /// comes before the shots file is read, so the file names here need not exist.
+    #[test]
+    fn a_route_refuses_shots_and_matched_route_before_reading_either() {
+        for config in [
+            EngineConfig {
+                route: Some("travel.json".into()),
+                shots: Some("poses.json".into()),
+                ..EngineConfig::default()
+            },
+            EngineConfig {
+                route: Some("travel.json".into()),
+                matched_route: Some("route.json".into()),
+                ..EngineConfig::default()
+            },
+        ] {
+            let mut config = config;
+            let error = match super::prepare_shots(&mut config) {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("a route with a shots or matched route must be refused"),
+            };
+            assert!(
+                error.contains("renders the converted world on its own")
+                    && error.contains("--route"),
+                "{error}"
+            );
+        }
+    }
+
     use super::*;
     use crate::console::ConsoleState;
     use bevy::asset::{AssetApp, AssetPlugin};
@@ -2344,6 +2897,170 @@ mod tests {
     use bevy::window::{PrimaryWindow, Window};
     use bevy::world_serialization::WorldSerializationPlugin;
     use std::time::Duration;
+
+    #[test]
+    fn benchmark_route_requires_an_uninterrupted_cpu_settled_interval() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(370.0),
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute::default();
+        route.advance(1.0, false, &config);
+        route.advance(2.0, true, &config);
+        route.advance(6.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Waiting);
+        assert_eq!(route.cpu_settled_real_seconds, Some(2.0));
+        route.advance(6.5, false, &config);
+        assert_eq!(route.cpu_settled_real_seconds, None);
+        route.advance(8.0, true, &config);
+        route.advance(13.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Moving);
+        assert_eq!(route.cpu_settled_real_seconds, Some(8.0));
+        assert_eq!(route.movement_started_real_seconds, Some(13.0));
+        // New streaming demand during the route must not restart the wait.
+        route.advance(14.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Moving);
+        assert_eq!(route.route_distance_units, 370.0);
+    }
+
+    #[test]
+    fn benchmark_route_uses_absolute_real_time_across_large_deltas_and_rebases() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(3000.0),
+            streaming_benchmark_settle_secs: 0.0,
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute {
+            start_world_position: Some([22_528.0, 5976.0, 47_104.0]),
+            ..default()
+        };
+        route.advance(10.0, true, &config);
+        let mut partitioned = StreamingBenchmarkRoute {
+            start_world_position: route.start_world_position,
+            ..default()
+        };
+        partitioned.advance(10.0, true, &config);
+        for now in [10.1, 10.4, 10.7, 11.0] {
+            partitioned.advance(now, false, &config);
+        }
+        // A one-second real interval is not reduced to virtual time's 250 ms cap.
+        route.advance(11.0, false, &config);
+        assert_eq!(route.route_distance_units, 3000.0);
+        assert_eq!(route.route_distance_units, partitioned.route_distance_units);
+        let before = route.local_position(IVec2::new(5, -12)).unwrap();
+        let after = route.local_position(IVec2::new(5, -11)).unwrap();
+        assert_eq!(before.x, after.x);
+        assert_eq!(before.y, after.y);
+        assert_eq!(after.z - before.z, crate::world::components::CELL_SIZE);
+        let stable = |position: Vec3, origin: IVec2| {
+            f64::from(position.z)
+                - f64::from(origin.y) * f64::from(crate::world::components::CELL_SIZE)
+        };
+        assert_eq!(
+            stable(before, IVec2::new(5, -12)),
+            stable(after, IVec2::new(5, -11))
+        );
+        // A long stalled frame clamps at the planned endpoint and crosses both
+        // phase boundaries without extending the route or the tail.
+        route.advance(1000.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Finished);
+        assert_eq!(route.route_distance_units, 135_000.0);
+        assert_eq!(route.movement_finished_real_seconds, Some(55.0));
+        assert_eq!(route.tail_finished_real_seconds, Some(65.0));
+    }
+
+    #[test]
+    fn stationary_benchmark_route_enters_tail_without_movement() {
+        let config = EngineConfig {
+            streaming_benchmark_route_speed: Some(0.0),
+            streaming_benchmark_settle_secs: 0.0,
+            streaming_benchmark_tail_secs: 3.0,
+            ..default()
+        };
+        let mut route = StreamingBenchmarkRoute::default();
+        route.advance(4.0, true, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Tail);
+        assert_eq!(route.movement_started_real_seconds, Some(4.0));
+        assert_eq!(route.movement_finished_real_seconds, Some(4.0));
+        assert_eq!(route.route_distance_units, 0.0);
+        route.advance(6.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Tail);
+        route.advance(7.0, false, &config);
+        assert_eq!(route.phase, StreamingBenchmarkPhase::Finished);
+        assert_eq!(route.tail_finished_real_seconds, Some(7.0));
+        assert_eq!(route.route_distance_units, 0.0);
+    }
+
+    #[test]
+    fn benchmark_cpu_gate_checks_expected_counts_and_pending_database_payloads() {
+        let config = EngineConfig {
+            streaming_benchmark_expected_models: Some(7),
+            streaming_benchmark_expected_lod_chunks: Some(3),
+            streaming_benchmark_expected_terrain: Some(4),
+            streaming_benchmark_expected_water: Some(1),
+            ..default()
+        };
+        let metrics = StreamingMetrics {
+            resident_cells: 25,
+            requests_submitted: 25,
+            responses_received: 25,
+            assets_ready: 7,
+            resident_lod_chunks: 3,
+            terrain_patches_validated: 4,
+            water_surfaces_validated: 1,
+            ..default()
+        };
+        let admission = crate::streaming::admission::SceneAdmission::default();
+        let renderer = RendererMetrics {
+            gpu_preprocessing_active: true,
+            gpu_culling_active: true,
+            indirect_drawing_active: true,
+            occlusion_culling_views: 1,
+            hzb_views: 1,
+            indirect_phase_buffers: 1,
+            indirect_batch_sets: 1,
+            proof_frames: 1,
+            ..default()
+        };
+        let ready = |metrics: &StreamingMetrics, raw, deferred| {
+            streaming_benchmark_cpu_ready(&config, metrics, &admission, &renderer, raw, deferred)
+        };
+        assert!(ready(&metrics, 0, 0));
+        assert!(!ready(&metrics, 1, 0));
+        assert!(!ready(&metrics, 0, 1));
+        assert!(!ready(
+            &StreamingMetrics {
+                assets_ready: 6,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                pending_lod_queries: 1,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                pending_surface_instances: 1,
+                ..metrics.clone()
+            },
+            0,
+            0
+        ));
+        assert!(!ready(
+            &StreamingMetrics {
+                asset_load_failures: 1,
+                ..metrics
+            },
+            0,
+            0
+        ));
+    }
 
     #[test]
     fn automated_camera_conflicts_name_the_selected_drivers() {
@@ -2370,6 +3087,96 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("--matched-route"));
         assert!(message.contains("benchmark"));
+    }
+
+    #[test]
+    fn live_start_pose_rejects_modes_that_replace_its_world_location() {
+        let directory = tempfile::tempdir().unwrap();
+        let pose_file = directory.path().join("pose.json");
+        std::fs::write(
+            &pose_file,
+            r#"{"width":1920,"height":1080,"shots":[{"name":"inn","worldspace_id":60,"position":[21750,-44530,140],"yaw":90,"pitch":-3,"hfov":80}]}"#,
+        )
+        .unwrap();
+        let conflicting_modes = [
+            (
+                "camera route",
+                EngineConfig {
+                    route: Some("missing-route.json".into()),
+                    ..default()
+                },
+            ),
+            (
+                "acceptance screenshot",
+                EngineConfig {
+                    acceptance_screenshot: Some("acceptance.png".into()),
+                    ..default()
+                },
+            ),
+            (
+                "streaming route benchmark",
+                EngineConfig {
+                    streaming_benchmark_route_speed: Some(100.0),
+                    ..default()
+                },
+            ),
+            (
+                "benchmark jump",
+                EngineConfig {
+                    benchmark_jump: Some((12, -7)),
+                    ..default()
+                },
+            ),
+            (
+                "matched route",
+                EngineConfig {
+                    matched_route: Some("missing-route.json".into()),
+                    ..default()
+                },
+            ),
+        ];
+
+        for (mode, mut config) in conflicting_modes {
+            config.start_shot = Some(pose_file.clone());
+            config.worldspace_id = 60;
+            config.start_grid = (5, -11);
+            let original_worldspace = config.worldspace_id;
+            let original_grid = config.start_grid;
+
+            let Err(error) = prepare_start_camera(&mut config) else {
+                panic!("{mode} must be rejected before loading the camera pose");
+            };
+
+            assert!(
+                error.to_string().contains("another automated camera mode"),
+                "{mode} should fail at the mode guard, got: {error}"
+            );
+            assert_eq!(config.worldspace_id, original_worldspace, "{mode}");
+            assert_eq!(config.start_grid, original_grid, "{mode}");
+        }
+    }
+
+    #[test]
+    fn no_start_pose_leaves_existing_camera_modes_unchanged() {
+        let mut config = EngineConfig {
+            route: Some("route.json".into()),
+            acceptance_screenshot: Some("acceptance.png".into()),
+            streaming_benchmark_route_speed: Some(100.0),
+            benchmark_jump: Some((12, -7)),
+            ..default()
+        };
+
+        assert!(prepare_start_camera(&mut config).unwrap().is_none());
+        assert_eq!(
+            config.route.as_deref(),
+            Some(std::path::Path::new("route.json"))
+        );
+        assert_eq!(
+            config.acceptance_screenshot.as_deref(),
+            Some(std::path::Path::new("acceptance.png"))
+        );
+        assert_eq!(config.streaming_benchmark_route_speed, Some(100.0));
+        assert_eq!(config.benchmark_jump, Some((12, -7)));
     }
 
     /// A capture window remains hidden if an update system tries to show it.
@@ -3333,6 +4140,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_skyrim_ini_shadow_distance_caps_the_grid_range() {
+        let cap = EngineConfig {
+            sun_shadow_distance_limit: Some(8_000.0),
+            ..EngineConfig::default()
+        };
+        let cascades = sun_shadow_cascades(&cap);
+        assert!((cascades.bounds[3] - 8_000.0).abs() < 0.01);
+        assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let max_grid = EngineConfig {
+            sun_shadow_distance_limit: Some(23_200.0),
+            ..EngineConfig::default()
+        };
+        let cascades = sun_shadow_cascades(&max_grid);
+        assert!((cascades.bounds[3] - 23_200.0).abs() < 0.01);
+
+        let short_range = EngineConfig {
+            sun_shadow_distance_limit: Some(700.0),
+            ..EngineConfig::default()
+        };
+        let cascades = sun_shadow_cascades(&short_range);
+        assert!((cascades.bounds[3] - 700.0).abs() < 0.01);
+        assert!(cascades.bounds.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn sun_position_maps_clockwise_bearing_and_elevation_to_light_rays() {
+        for (azimuth, elevation, expected) in [
+            (0.0, 0.0, Vec3::Z),
+            (90.0, 0.0, Vec3::NEG_X),
+            (180.0, 0.0, Vec3::NEG_Z),
+            (270.0, 0.0, Vec3::X),
+            (0.0, 90.0, Vec3::NEG_Y),
+        ] {
+            let config = EngineConfig {
+                sun_position: Some((azimuth, elevation)),
+                ..EngineConfig::default()
+            };
+            let rays = sun_rotation(&config) * Vec3::NEG_Z;
+            assert!(
+                rays.distance(expected) < 1.0e-5,
+                "{azimuth},{elevation}: {rays:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_sun_position_preserves_the_existing_light_rotation() {
+        assert_eq!(
+            sun_rotation(&EngineConfig::default()),
+            Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)
+        );
+    }
+
     /// The range is the camera's own distance to the far corner of the drawn grid, not the corner's
     /// distance from the grid centre: the acceptance screenshot camera is 20,000 units above the
     /// grid it looks at, and its shadows have to reach as far down and out as it looks.
@@ -3516,6 +4378,65 @@ mod tests {
                 "the streaming camera must render layer {layer}"
             );
         }
+    }
+
+    #[test]
+    fn live_start_pose_seeds_streaming_and_camera_without_selecting_shots_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("pose.json");
+        std::fs::write(&file, r#"{"width":1920,"height":1080,"shots":[{"name":"inn","worldspace_id":60,"position":[21750,-44530,140],"yaw":90,"pitch":-3,"hfov":80}]}"#).unwrap();
+        let mut config = EngineConfig {
+            start_shot: Some(file),
+            ..default()
+        };
+        let pose = prepare_start_camera(&mut config).unwrap().unwrap();
+        assert_eq!(config.start_grid, (5, -11));
+        assert_eq!(config.worldspace_id, 60);
+        assert!(config.interactive_world_physics());
+        let mut app = App::new();
+        app.insert_resource(config)
+            .insert_resource(pose)
+            .add_systems(Startup, setup_world);
+        app.update();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<(&Transform, &Projection), With<StreamingCamera>>();
+        let (transform, projection) = cameras.single(app.world()).unwrap();
+        assert_eq!(
+            transform.translation,
+            crate::shots::shot_camera_translation([21750.0, -44530.0, 140.0], IVec2::new(5, -11))
+        );
+        assert_eq!(
+            transform.rotation,
+            crate::shots::shot_camera_rotation(90.0, -3.0)
+        );
+        let Projection::Perspective(projection) = projection else {
+            panic!("perspective camera")
+        };
+        assert_eq!(
+            projection.fov,
+            crate::shots::vertical_fov_degrees(80.0, 1920.0 / 1080.0).to_radians()
+        );
+        assert!(app.world().get_resource::<ShotsRun>().is_none());
+    }
+
+    #[test]
+    fn shots_camera_uses_capture_image_and_drives_shadow_lod() {
+        let mut app = App::new();
+        let output = Handle::<Image>::default();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(ShotOutputImage(output.clone()))
+            .add_systems(Startup, setup_world);
+        app.update();
+        let mut query = app.world_mut().query_filtered::<(
+            &bevy::camera::RenderTarget,
+            Has<bevy::camera::ShadowLodOrigin>,
+        ), With<StreamingCamera>>();
+        let (target, shadow_origin) = query.single(app.world()).unwrap();
+        assert!(
+            matches!(target, bevy::camera::RenderTarget::Image(image) if image.handle == output)
+        );
+        assert!(shadow_origin);
     }
 
     #[test]
@@ -3971,6 +4892,70 @@ mod tests {
 
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache).unwrap();
         assert_eq!(ground_height, 4.0);
+    }
+
+    #[test]
+    fn walk_spawn_ground_query_interpolates_at_authored_shot_xy() {
+        let database_directory = tempfile::tempdir().unwrap();
+        let database_path = database_directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+                 CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
+                 INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(42,7,0,0);
+                 INSERT INTO land(cell_id) VALUES(42);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache_path = cache_directory.path().join("cell_cache.rkyv");
+        let heights = (0..33)
+            .flat_map(|y| (0..33).map(move |x| (x + y) as f32))
+            .collect();
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+            version: shared::CELL_CACHE_VERSION,
+            cells: vec![shared::CachedLand {
+                cell_id: 42,
+                width: 33,
+                height: 33,
+                heights,
+                normals: vec![0; 33 * 33 * 3],
+                vertex_colors: vec![255; 33 * 33 * 3],
+                layers: vec![],
+                water_height: None,
+                water_type_form_id: None,
+            }],
+        })
+        .unwrap();
+        std::fs::write(&cache_path, bytes).unwrap();
+        let cache = CellCache::open(&cache_path).unwrap();
+        let config = EngineConfig {
+            worldspace_id: 7,
+            start_grid: (0, 0),
+            ..default()
+        };
+        let shot = crate::shots::Shot {
+            name: "elevated".to_owned(),
+            worldspace_id: Some(7),
+            interior_cell_id: None,
+            position: [
+                crate::world::components::CELL_SIZE * 0.25,
+                crate::world::components::CELL_SIZE * 0.75,
+                5_000.0,
+            ],
+            yaw: 123.0,
+            pitch: -17.0,
+            hfov: 60.0,
+            reference: None,
+            note: None,
+        };
+
+        assert_eq!(
+            initial_walk_ground_height(&config, &database_path, &cache, Some(&shot)).unwrap(),
+            Some(32.0)
+        );
     }
 
     #[test]

@@ -193,20 +193,19 @@ fn classify(motion_system: u8, quality_type: u8, mass: f32) -> BodyKind {
 }
 
 /// glTF node index the exporter gives a NIF block: the static scene writes one node per
-/// `NiNode`, `BSFadeNode` and geometry block, in block order. The converter re-checks this
-/// against the model it exported (`mesh.rs`).
+/// scene node (every block `NifBlock::as_node` accepts) and geometry block, in block order.
+/// The converter re-checks this against the model it exported (`mesh.rs`).
 pub(crate) fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     fn exported(block: &NifBlock) -> bool {
-        matches!(
-            block,
-            NifBlock::NiNode(_)
-                | NifBlock::BSFadeNode(_)
-                | NifBlock::BSTriShape(_)
-                | NifBlock::BSDynamicTriShape(_)
-                | NifBlock::BSSubIndexTriShape(_)
-                | NifBlock::BSLODTriShape(_)
-                | NifBlock::NiTriShape(_)
-        )
+        block.as_node().is_ok()
+            || matches!(
+                block,
+                NifBlock::BSTriShape(_)
+                    | NifBlock::BSDynamicTriShape(_)
+                    | NifBlock::BSSubIndexTriShape(_)
+                    | NifBlock::BSLODTriShape(_)
+                    | NifBlock::NiTriShape(_)
+            )
     }
     ensure!(
         nif.blocks.get(target).is_some_and(exported),
@@ -221,8 +220,8 @@ pub(crate) fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
 }
 
 fn node_name(nif: &NifFile, target: usize) -> String {
-    let name = match nif.blocks.get(target) {
-        Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => node.av.object.name,
+    let name = match nif.blocks.get(target).map(NifBlock::as_node) {
+        Some(Ok(node)) => node.av.object.name,
         _ => return String::new(),
     };
     nif.header
@@ -354,8 +353,8 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
     fn visit(nif: &NifFile, blocks: &[Block<'_>], index: usize, depth: usize) -> Result<Mat4> {
         ensure!(depth < 64, "NIF node hierarchy is too deep");
         let raw_av;
-        let av = match nif.blocks.get(index) {
-            Some(NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) => &node.av,
+        let av = match nif.blocks.get(index).map(NifBlock::as_node) {
+            Some(Ok(node)) => &node.av,
             _ => {
                 let block = blocks
                     .get(index)
@@ -383,7 +382,7 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
         };
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
-            if let NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) = block
+            if let Ok(node) = block.as_node()
                 && node.children.contains(&(index as u32))
             {
                 ensure!(
@@ -1094,7 +1093,207 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
     use crate::test_strategies::{config, corrupted};
+    use project_wormhole_esm::structs::strings::{SizedString32, StringN};
+    use project_wormhole_nif::{
+        nif_file::nif_to_static_model,
+        nif_header::{Endianess, NifFileVersion, NifHeader},
+    };
     use proptest::prelude::*;
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn scene_node_bytes(
+        name: u32,
+        children: &[u32],
+        translation: [f32; 3],
+        scale: f32,
+        rotation: [f32; 9],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, name);
+        push_u32(&mut bytes, u32::MAX); // extra data
+        push_u32(&mut bytes, u32::MAX); // controller
+        push_u32(&mut bytes, 0); // flags
+        for value in translation {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in rotation {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&scale.to_le_bytes());
+        push_u32(&mut bytes, u32::MAX); // collision object
+        push_u32(&mut bytes, children.len() as u32);
+        for child in children {
+            push_u32(&mut bytes, *child);
+        }
+        push_u32(&mut bytes, 0); // effects
+        bytes
+    }
+
+    fn special_node_bytes(node: Vec<u8>, kind: &str) -> Vec<u8> {
+        let mut bytes = node;
+        match kind {
+            "BSOrderedNode" => {
+                for value in [1.0f32, 2.0, 3.0, 4.0] {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                bytes.push(1);
+            }
+            "NiBillboardNode" => bytes.extend_from_slice(&3u16.to_le_bytes()),
+            "BSValueNode" => {
+                bytes.extend_from_slice(&(-7i32).to_le_bytes());
+                bytes.push(2);
+            }
+            _ => unreachable!("unexpected scene node kind {kind}"),
+        }
+        bytes
+    }
+
+    fn node_chain_fixture() -> NifFile {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let quarter_turn = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let blocks = [
+            (
+                "NiNode",
+                scene_node_bytes(0, &[1], [10.0, 20.0, 30.0], 2.0, quarter_turn),
+            ),
+            (
+                "BSOrderedNode",
+                special_node_bytes(
+                    scene_node_bytes(1, &[2], [1.0, 0.0, 0.0], 1.0, identity),
+                    "BSOrderedNode",
+                ),
+            ),
+            (
+                "NiBillboardNode",
+                special_node_bytes(
+                    scene_node_bytes(2, &[3], [0.0, 3.0, 0.0], 1.0, identity),
+                    "NiBillboardNode",
+                ),
+            ),
+            (
+                "BSValueNode",
+                special_node_bytes(
+                    scene_node_bytes(3, &[4], [0.0, 0.0, 4.0], 1.0, identity),
+                    "BSValueNode",
+                ),
+            ),
+            (
+                "NiNode",
+                scene_node_bytes(4, &[], [5.0, 0.0, 0.0], 1.0, identity),
+            ),
+        ]
+        .into_iter()
+        .map(|(kind, bytes)| {
+            NifBlock::parse(&bytes, kind.to_owned())
+                .unwrap_or_else(|error| panic!("{kind} did not parse: {error:?}"))
+                .1
+        })
+        .collect::<Vec<_>>();
+        let strings = ["root", "ordered", "billboard", "value", "target"]
+            .into_iter()
+            .map(|value| SizedString32(value.to_owned()))
+            .collect::<Vec<_>>();
+        NifFile {
+            header: NifHeader {
+                file_desc: StringN {
+                    value: String::new(),
+                },
+                nif_version: NifFileVersion(0x1402_0007),
+                endian_type: Endianess::Little,
+                user_version: 12,
+                block_count: blocks.len() as u32,
+                bethesda_version: 100,
+                author: None,
+                process_script: None,
+                export_script: None,
+                max_filepath: None,
+                block_types: Vec::new(),
+                block_type_index: vec![0; blocks.len()],
+                block_size_index: vec![0; blocks.len()],
+                string_count: strings.len() as u32,
+                string_max_size: 0,
+                strings,
+                groups: Vec::new(),
+            },
+            blocks,
+        }
+    }
+
+    fn gltf_local(node: &gltf::json::Node) -> Mat4 {
+        let translation = node
+            .translation
+            .as_ref()
+            .map(|translation| Vec3::from_array(*translation))
+            .unwrap_or(Vec3::ZERO);
+        let rotation = node
+            .rotation
+            .as_ref()
+            .map(|rotation| Quat::from_array(rotation.0))
+            .unwrap_or(Quat::IDENTITY);
+        let scale = node
+            .scale
+            .as_ref()
+            .map(|scale| Vec3::from_array(*scale))
+            .unwrap_or(Vec3::ONE);
+        Mat4::from_scale_rotation_translation(scale, rotation, translation)
+    }
+
+    fn gltf_world_transform(nodes: &[gltf::json::Node], target: usize) -> Mat4 {
+        let parent = nodes.iter().enumerate().find_map(|(index, node)| {
+            node.children
+                .as_ref()
+                .is_some_and(|children| children.iter().any(|child| child.value() == target))
+                .then_some(index)
+        });
+        parent.map_or_else(
+            || gltf_local(&nodes[target]),
+            |parent| gltf_world_transform(nodes, parent) * gltf_local(&nodes[target]),
+        )
+    }
+
+    #[test]
+    fn collision_target_tracks_special_node_scene_export_index_name_and_transform() {
+        let nif = node_chain_fixture();
+        let target = 4;
+        let predicted_index = gltf_node_index(&nif, target).unwrap() as usize;
+        assert_eq!(node_name(&nif, target), "target");
+
+        let model = nif_to_static_model(&nif).unwrap();
+        let (gltf, _) = model.to_gltf("collision-node-regression".to_owned());
+        let exported_index = gltf
+            .nodes
+            .iter()
+            .position(|node| node.name.as_deref() == Some("target"))
+            .unwrap();
+        assert_eq!(predicted_index, exported_index);
+        assert_eq!(gltf.nodes[exported_index].name.as_deref(), Some("target"));
+
+        let raw_blocks = nif
+            .blocks
+            .iter()
+            .map(|_| Block {
+                kind: "NiNode",
+                bytes: &[],
+            })
+            .collect::<Vec<_>>();
+        let collision_transform = target_transform(&nif, &raw_blocks, target).unwrap();
+        let export_transform = gltf_world_transform(&gltf.nodes, exported_index);
+        for (collision, exported) in collision_transform
+            .to_cols_array()
+            .into_iter()
+            .zip(export_transform.to_cols_array())
+        {
+            assert!((collision - exported).abs() < 1.0e-4);
+        }
+        assert!(
+            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(4.0, 32.0, 38.0))
+                .length()
+                < 1.0e-4
+        );
+    }
 
     #[test]
     fn classifies_bodies_by_motion_system_quality_and_mass() {

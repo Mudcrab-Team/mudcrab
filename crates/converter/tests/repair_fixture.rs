@@ -1,4 +1,7 @@
 //! Repair preview and apply against generated assets, with no installed game data.
+
+mod common;
+
 use converter::mesh::MeshConverter;
 use converter::{AssetPipeline, PipelineConfig, cache::ConversionManifest, repair::repair_failed};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -149,6 +152,97 @@ async fn repaired_archive_respects_per_kind_reuse_and_later_failure_drops_old_as
     assert!(output.join("scripts/generated.luau").is_file());
 }
 
+/// Repair must reject old BSA paths, while retaining current BSA and BA2 cache reuse.
+#[tokio::test]
+async fn repair_fails_closed_on_stale_bsa_reader_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir_all(data.join("textures")).unwrap();
+    dummy_content::layout::generate(
+        &data,
+        dummy_content::layout::DEFAULT_SEED,
+        dummy_content::layout::Formats::parse("esm").unwrap(),
+    )
+    .unwrap();
+    let dds = data.join("textures/repair.dds");
+    fs::write(&dds, b"invalid DDS before repair").unwrap();
+    let script = dummy_content::pex::minimal("ArchiveScript").unwrap();
+    fs::write(
+        data.join("Repair.bsa"),
+        dummy_content::bsa::v105(
+            &[dummy_content::Entry::new("scripts/archive.pex", &script)],
+            dummy_content::bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let archive_dds = dummy_content::dds::generate(
+        &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 4, 4),
+        &mut dummy_content::rng::Rng::new(0x5A17),
+    )
+    .unwrap();
+    fs::write(
+        data.join("Textures.ba2"),
+        dummy_content::ba2::general(
+            &[dummy_content::Entry::new(
+                "textures/archive.dds",
+                &archive_dds,
+            )],
+            dummy_content::ba2::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = root.path().join("pack");
+    let mut config = PipelineConfig::new(&data, &output);
+    config.no_lod = true;
+    config.texture_encoder = converter::config::TextureEncoder::Cpu;
+    config.lod_texture_encoder = converter::config::TextureEncoder::Cpu;
+    config.cpu_jobs = 2;
+    config.io_jobs = 1;
+    let initial = run_fixture(&config).await;
+    assert!(!initial.complete);
+    let manifest_path = output.join("conversion-manifest.json");
+    let current_bytes = fs::read(&manifest_path).unwrap();
+    let mut current: ConversionManifest = serde_json::from_slice(&current_bytes).unwrap();
+    let bsa_key = current
+        .archives
+        .keys()
+        .find(|key| key.ends_with(".bsa"))
+        .unwrap()
+        .clone();
+    let ba2_key = current
+        .archives
+        .keys()
+        .find(|key| key.ends_with(".ba2"))
+        .unwrap()
+        .clone();
+    assert_eq!(current.archives[&bsa_key].reader_version, 1);
+    assert_eq!(current.archives[&ba2_key].reader_version, 0);
+
+    current.archives.get_mut(&bsa_key).unwrap().reader_version = 0;
+    let stale_bytes = serde_json::to_vec_pretty(&current).unwrap();
+    fs::write(&manifest_path, &stale_bytes).unwrap();
+    let error = repair_failed(&config, true).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("run a normal conversion before repair"),
+        "{error:#}"
+    );
+    assert_eq!(fs::read(&manifest_path).unwrap(), stale_bytes);
+
+    // Restore current reader proof; ordinary targeted repair can reuse both archives.
+    fs::write(&manifest_path, current_bytes).unwrap();
+    fs::write(&dds, archive_dds).unwrap();
+    let repaired = repair_failed(&config, true).unwrap();
+    assert!(repaired.published);
+    assert!(repaired.failures.is_empty());
+    let repaired_manifest: ConversionManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(repaired_manifest.archives[&bsa_key].reader_version, 1);
+    assert_eq!(repaired_manifest.archives[&ba2_key].reader_version, 0);
+}
+
 #[tokio::test]
 async fn dds_only_actual_failure_repairs_retained_mesh_aliases() {
     let root = tempfile::tempdir().unwrap();
@@ -164,7 +258,7 @@ async fn dds_only_actual_failure_repairs_retained_mesh_aliases() {
     let good_dds = fs::read(&dds).unwrap();
     fs::write(&dds, b"invalid DDS for repair regression").unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(!run_fixture(&config).await.complete);
     let manifest_path = output.join("conversion-manifest.json");
     let manifest: ConversionManifest =
@@ -233,7 +327,7 @@ async fn dds_repair_refreshes_existing_aliases_and_isolates_retained_mesh_prunin
     )
     .unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(run_fixture(&config).await.complete);
     let alias = "textures/generated_color.opensky-srgb.opensky-wrap0.ktx2";
     let old_texture = fs::read(output.join(alias)).unwrap();
@@ -338,7 +432,7 @@ async fn preview_preserves_pack_and_apply_finalizes_repaired_mesh_bounds() {
     )
     .unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
@@ -497,7 +591,7 @@ fn repair_refuses_readers_before_journal_recovery() {
     fs::write(&journal, "invalid journal must not be read").unwrap();
     let reader = shared::asset_lock::AssetLock::acquire_shared(&output).unwrap();
     for apply in [false, true] {
-        let error = repair_failed(&PipelineConfig::new(&data, &output), apply).unwrap_err();
+        let error = repair_failed(&common::cpu_lod_config(&data, &output), apply).unwrap_err();
         assert!(
             error.to_string().contains("asset directory in use"),
             "{error}"
@@ -518,7 +612,7 @@ async fn conversion_and_repair_share_ownership_before_manifest_reads() {
     let data = root.path().join("Data");
     fs::create_dir(&data).unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let owner = converter::repair::OutputOwnership::acquire(&output).unwrap();
     fs::create_dir(&output).unwrap();
     let manifest = output.join("conversion-manifest.json");
@@ -550,7 +644,7 @@ async fn conversion_keeps_ownership_until_publication_finishes() {
     let data = root.path().join("Data");
     fs::create_dir(&data).unwrap();
     let output = root.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let run = tokio::spawn(AssetPipeline::run_async(config, tx));
     let mut saw_publication = false;

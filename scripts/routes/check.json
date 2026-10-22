@@ -1,0 +1,29 @@
+{
+  "name": "check",
+  "description": "The held-out CHECK route of the #184 baseline: the same kind of route as travel.json (about 23,900 units at running speed, about 60 seconds, 6 cell borders, exterior only, in Tamriel), but in a different place: the farmland around Rorikstead in the west, from the road south of the village north past it and on across the plains. NOBODY TUNES AGAINST THIS ROUTE. It exists to show that an improvement made against travel.json is not a result that only holds on that one walk: it is run, reported, and never used to choose a setting, a threshold or a budget. If a change makes this route worse while it makes travel better, that is a finding, not a number to adjust.",
+  "notes": [
+    "Start (-49179, -39276) is on the Rorikstead road south of the village, in grid -13,-10. The route passes the village (the Rorikstead buildings in the data are centred near (-53200, -30900)) at about (-52800, -31500) and ends on the plains north of it.",
+    "Chosen from the converted world database (terrain heights and per-cell water heights, read-only): open farmland and plains with no water along the whole route, and terrain that falls about 3,500 units over the walk, a different slope profile from travel.json.",
+    "Rule: waypoints of this file are never edited to make a number look better. Change them only if the converted data changes under them (a cell with no terrain, a new water level), and say so in the commit.",
+    "Eye height 120 units above the terrain, as in travel.json."
+  ],
+  "worldspace": "0x3c",
+  "speed": 400,
+  "eye_height": 120,
+  "loop": false,
+  "start": "world_ready",
+  "waypoints": [
+    [-49179, -39276],
+    [-50016, -37920],
+    [-49728, -36960],
+    [-49920, -34944],
+    [-52608, -31968],
+    [-52800, -31488],
+    [-52800, -30048],
+    [-52512, -28704],
+    [-52800, -27360],
+    [-53088, -26400],
+    [-53472, -26016],
+    [-53472, -16992]
+  ]
+}

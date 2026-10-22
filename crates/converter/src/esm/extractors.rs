@@ -165,6 +165,17 @@ impl<'a> SubrecordView<'a> {
         None
     }
 
+    /// Every subrecord with `target_tag`, in file order.
+    pub fn find_all<'t>(&self, target_tag: &'t [u8; 4]) -> impl Iterator<Item = &'a [u8]> + 't
+    where
+        'a: 't,
+    {
+        self.subs
+            .iter()
+            .filter(move |(tag, _)| tag.len() >= 4 && &tag[..4] == target_tag)
+            .map(|(_, data)| data.as_slice())
+    }
+
     pub fn get_obnd(&self) -> Option<SubrecordOBND> {
         self.find(b"OBND")
             .filter(|d| d.len() >= 12)

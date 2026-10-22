@@ -5,6 +5,8 @@ use color_eyre::{
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
+use super::bsa_name::{decode_name, file_hash, folder_hash};
+
 const HEADER_SIZE: usize = 36;
 const FILE_RECORD_SIZE: usize = 16;
 const ARCHIVE_COMPRESSED: u32 = 0x0004;
@@ -18,6 +20,7 @@ struct FileRecord {
     folder: String,
     size_flags: u32,
     offset: u32,
+    hash: u64,
 }
 
 #[derive(Debug)]
@@ -87,16 +90,16 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
         "BSA metadata exceeds archive size"
     );
 
-    let mut folder_file_counts = Vec::with_capacity(folder_count);
+    let mut folder_records = Vec::with_capacity(folder_count);
     for index in 0..folder_count {
         let base = folder_record_offset + index * folder_record_size;
-        folder_file_counts.push(u32_at(bytes, base + 8)? as usize);
+        folder_records.push((u64_at(bytes, base)?, u32_at(bytes, base + 8)? as usize));
     }
 
     let mut cursor = folder_table_end;
     let mut records = Vec::with_capacity(file_count);
     let mut folder_names_length = 0usize;
-    for count in folder_file_counts {
+    for (stored_folder_hash, count) in folder_records {
         let name_len = slice_at(bytes, cursor, 1, "folder name length")?[0] as usize;
         cursor = checked_end(cursor, 1, "folder name length")?;
         let folder_bytes = slice_at(bytes, cursor, name_len, "folder name")?;
@@ -104,9 +107,13 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
             folder_bytes.is_empty() || folder_bytes.last() == Some(&0),
             "BSA folder name is not null-terminated"
         );
-        let folder = String::from_utf8_lossy(folder_bytes)
-            .trim_end_matches('\0')
-            .to_string();
+        let folder_name = folder_bytes.strip_suffix(&[0]).unwrap_or(folder_bytes);
+        let folder = decode_name(folder_name);
+        ensure!(
+            folder_hash(folder_name) == stored_folder_hash,
+            "BSA folder hash mismatch for {folder:?}: stored {stored_folder_hash:#018x}, calculated {:#018x}",
+            folder_hash(folder_name)
+        );
         cursor = checked_end(cursor, name_len, "folder name")?;
         folder_names_length = folder_names_length
             .checked_add(name_len)
@@ -124,6 +131,7 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
                 folder: folder.clone(),
                 size_flags: u32_at(bytes, cursor + 8)?,
                 offset: u32_at(bytes, cursor + 12)?,
+                hash: u64_at(bytes, cursor)?,
             });
             cursor = checked_end(cursor, FILE_RECORD_SIZE, "file record")?;
         }
@@ -141,6 +149,7 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
     let filename_table_end = checked_end(cursor, total_file_name_length, "filename table")?;
     let filename_table = slice_at(bytes, cursor, total_file_name_length, "filename table")?;
     let mut names = Vec::with_capacity(file_count);
+    let mut raw_names = Vec::with_capacity(file_count);
     let mut name_cursor = 0usize;
     for _ in 0..file_count {
         let tail = filename_table
@@ -151,7 +160,8 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
             .position(|byte| *byte == 0)
             .ok_or_else(|| eyre!("unterminated BSA filename"))?;
         ensure!(end > 0, "BSA filename is empty");
-        names.push(String::from_utf8_lossy(&tail[..end]).to_string());
+        raw_names.push(&tail[..end]);
+        names.push(decode_name(&tail[..end]));
         name_cursor = checked_end(name_cursor, end + 1, "filename")?;
     }
     // Some distributed archives (e.g. MarketplaceTextures.bsa) pad the filename
@@ -171,13 +181,19 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
 
     records
         .into_iter()
-        .zip(names)
-        .map(|(record, file_name)| {
+        .zip(names.into_iter().zip(raw_names))
+        .map(|(record, (file_name, raw_name))| {
             let full_name = if record.folder.is_empty() {
                 file_name
             } else {
                 format!("{}/{}", record.folder, file_name)
             };
+            let calculated = file_hash(raw_name);
+            ensure!(
+                calculated == record.hash,
+                "BSA file hash mismatch for {full_name:?}: stored {:#018x}, calculated {calculated:#018x}",
+                record.hash
+            );
             let stored_size = (record.size_flags & FILE_SIZE_MASK) as usize;
             let start = record.offset as usize;
             ensure!(
@@ -267,6 +283,13 @@ fn u32_at(bytes: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(raw))
 }
 
+fn u64_at(bytes: &[u8], offset: usize) -> Result<u64> {
+    let raw: [u8; 8] = slice_at(bytes, offset, 8, "u64")?
+        .try_into()
+        .map_err(|_| eyre!("invalid u64 at offset {offset}"))?;
+    Ok(u64::from_le_bytes(raw))
+}
+
 fn checked_end(start: usize, length: usize, field: &str) -> Result<usize> {
     start
         .checked_add(length)
@@ -293,6 +316,110 @@ mod tests {
             dummy_content::bsa::Compression::None,
         )
         .unwrap()
+    }
+
+    /// A one-file v104 archive with raw name bytes and the given stored hashes,
+    /// so names outside ASCII and wrong hashes can be written.
+    fn raw_archive(folder: &[u8], file: &[u8], folder_hash: u64, file_hash: u64) -> Vec<u8> {
+        let folder_len = folder.len() + 1;
+        let names_start = HEADER_SIZE + 16 + 1 + folder_len + FILE_RECORD_SIZE;
+        let payload_start = names_start + file.len() + 1;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BSA\0");
+        for value in [104u32, HEADER_SIZE as u32, 0x3, 1, 1, folder_len as u32] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&(file.len() as u32 + 1).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&folder_hash.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.push(folder_len as u8);
+        bytes.extend_from_slice(folder);
+        bytes.push(0);
+        bytes.extend_from_slice(&file_hash.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload_start as u32).to_le_bytes());
+        bytes.extend_from_slice(file);
+        bytes.push(0);
+        bytes.extend_from_slice(b"PEX");
+        bytes
+    }
+
+    #[test]
+    fn decodes_accented_windows_1252_names() {
+        // "textures, backslash, caf, e-acute" and "cr\xe8me br\xfbl\xe9e.dds" as Windows-1252 bytes.
+        let folder = b"textures\x5ccaf\xe9";
+        let file = b"cr\xe8me br\xfbl\xe9e.dds";
+        let bytes = raw_archive(
+            folder,
+            file,
+            super::super::bsa_name::folder_hash(folder),
+            super::super::bsa_name::file_hash(file),
+        );
+        let entries = iter_raw_entries(&bytes).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].name,
+            "textures\u{5c}caf\u{e9}/cr\u{e8}me br\u{fb}l\u{e9}e.dds"
+        );
+        assert!(!entries[0].name.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn rejects_a_wrong_file_hash_naming_the_entry() {
+        let (folder, file) = (b"scripts".as_slice(), b"hello.pex".as_slice());
+        let good_folder = super::super::bsa_name::folder_hash(folder);
+        let good_file = super::super::bsa_name::file_hash(file);
+        assert!(iter_raw_entries(&raw_archive(folder, file, good_folder, good_file)).is_ok());
+
+        let error = iter_raw_entries(&raw_archive(folder, file, good_folder, good_file ^ 1))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("file hash mismatch"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("scripts/hello.pex"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_wrong_folder_hash_naming_the_folder() {
+        let (folder, file) = (b"scripts".as_slice(), b"hello.pex".as_slice());
+        let good_file = super::super::bsa_name::file_hash(file);
+        let bad_folder = super::super::bsa_name::folder_hash(folder) ^ (1 << 40);
+        let error = iter_raw_entries(&raw_archive(folder, file, bad_folder, good_file))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("folder hash mismatch"),
+            "unexpected error: {error}"
+        );
+        assert!(error.contains("scripts"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn fixture_writer_hashes_agree_with_the_reader() {
+        for compression in [
+            dummy_content::bsa::Compression::None,
+            dummy_content::bsa::Compression::Zlib,
+        ] {
+            let bytes = dummy_content::bsa::v104(
+                &[
+                    dummy_content::Entry::new("meshes/Actors/Dragon/Dragon.NIF", b"a"),
+                    dummy_content::Entry::new("textures/x/y.dds", b"b"),
+                    dummy_content::Entry::new("sound/fx/hit.wav", b"c"),
+                    dummy_content::Entry::new("a/ab.kf", b"d"),
+                    dummy_content::Entry::new("sound/fx/voice.adp", b"e"),
+                ],
+                compression,
+            )
+            .unwrap();
+            assert_eq!(iter_raw_entries(&bytes).unwrap().len(), 5);
+        }
     }
 
     #[test]

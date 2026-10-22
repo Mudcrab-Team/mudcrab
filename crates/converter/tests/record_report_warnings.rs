@@ -121,7 +121,45 @@ fn malformed_fixture(data: &Path) {
     plugin(data, "Broken.esm", 0x81, &[], &body);
 }
 
-/// The same safely framed bytes form a complete legacy source for reader-switch replay.
+/// A missing name bank and one valid null sentinel retain a clean neighbor.
+fn localized_loss_fixture(data: &Path) {
+    let localized = |id| {
+        record(
+            b"NPC_",
+            id,
+            0,
+            &[
+                field(b"EDID", b"LocalizedName\0"),
+                field(b"FULL", &17u32.to_le_bytes()),
+            ]
+            .concat(),
+        )
+    };
+    let null_key = record(
+        b"NPC_",
+        0x807,
+        0,
+        &[
+            field(b"EDID", b"NullLocalizedName\0"),
+            field(b"FULL", &0u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
+    plugin(
+        data,
+        "Lost.esm",
+        0x80,
+        &[],
+        &[
+            localized(0x806),
+            null_key,
+            keyword(0x801, b"HealthyNeighbor\0"),
+        ]
+        .concat(),
+    );
+}
+
+/// The replay source is complete; the test removes this loose bank only after publication.
 fn replay_fixture(data: &Path) {
     plugin(
         data,
@@ -129,6 +167,45 @@ fn replay_fixture(data: &Path) {
         0x81,
         &[],
         &[keyword(0x801, b"ReplayNeighbor\0"), typed_issues()].concat(),
+    );
+    let mut directory = Vec::new();
+    directory.extend(6515u32.to_le_bytes());
+    directory.extend(0u32.to_le_bytes());
+    let text = b"Replay localized name\0";
+    let bank = [
+        1u32.to_le_bytes().as_slice(),
+        &(text.len() as u32).to_le_bytes(),
+        &directory,
+        text,
+    ]
+    .concat();
+    let strings = data.join("Strings");
+    fs::create_dir_all(&strings).unwrap();
+    fs::write(strings.join("Replay_english.strings"), bank).unwrap();
+}
+
+/// Simulate metadata reread after the complete source pack's loose name bank disappears.
+fn remove_replay_strings_after_publication(data: &Path, source: &Path, original: &PipelineReport) {
+    assert!(original.complete, "{:?}", original.warnings);
+    assert!(original.warnings.is_empty(), "{:?}", original.warnings);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["complete"], true);
+    assert_eq!(manifest["record_data_complete"], true);
+    assert_eq!(
+        fields(source, 0x806, b"FULL"),
+        [b"Replay localized name\0".to_vec()]
+    );
+    let strings = data.join("Strings/Replay_english.strings");
+    assert!(
+        strings.is_file(),
+        "source resolution requires the loose bank"
+    );
+    fs::remove_file(&strings).unwrap();
+    assert!(
+        !strings.exists(),
+        "metadata reread must see the bank as unavailable"
     );
 }
 
@@ -384,7 +461,17 @@ async fn legacy_malformed_frames_warn_once_and_publish_neighbors() {
         "{message}"
     );
     assert!(message.contains("00000810"), "{message}");
-    incomplete(&report, &output, 1);
+    let localization = warning(
+        &report,
+        "broken.esm",
+        "legacy reader left 1 localized fields without text",
+    );
+    assert!(localization.contains("00000806"), "{localization}");
+    assert!(
+        localization.contains("FULL ID 6515: unreadable strings table"),
+        "{localization}"
+    );
+    incomplete(&report, &output, 2);
 }
 
 /// An unusable later candidate cannot replace the earlier winner or hide its counted warning.
@@ -434,7 +521,7 @@ async fn legacy_unusable_override_warns_and_preserves_earlier_winner() {
     incomplete(&report, &output, 1);
 }
 
-/// Decoder skips, native optional-link recovery and adapter lookup issues all reach the report.
+/// Decoder skips and missing banks warn while a faithfully cleared link remains a notice.
 #[tokio::test]
 async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     let directory = tempfile::tempdir().unwrap();
@@ -454,17 +541,58 @@ async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_records"], 2);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_fields"], 1);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["invalid_links"], 1);
-    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 1);
+    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 2);
     let decoder = warning(&report, "broken.esm", "in-house reader skipped");
     assert!(decoder.contains("2 records, 1 fields"), "{decoder}");
-    assert!(decoder.contains("cleared 1 invalid links"), "{decoder}");
+    assert!(!decoder.contains("links"), "{decoder}");
+    let link_notices: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("broken.esm: in-house reader cleared 1 links"))
+        .collect();
+    assert_eq!(link_notices.len(), 1, "{:?}", report.notices);
+    assert!(link_notices[0].contains("00003000"));
     let adapter = warning(&report, "broken.esm", "inhouse adapter reported");
     assert!(
-        adapter.contains("reported 1 local decode/lookup issues"),
+        adapter.contains("reported 2 local decode/lookup issues"),
         "{adapter}"
     );
     assert!(adapter.contains("missing localized ID 6515"), "{adapter}");
     incomplete(&report, &output, 2);
+}
+
+/// Missing required string banks reach report and manifest; ID zero stays a valid null sentinel.
+#[tokio::test]
+async fn missing_localized_text_marks_both_readers_incomplete_without_losing_neighbors() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    localized_loss_fixture(&data);
+    for (name, reader) in [
+        ("legacy-localized", RecordReader::Legacy),
+        ("inhouse-localized", RecordReader::Inhouse),
+    ] {
+        let output = directory.path().join(name);
+        let report = publish(&data, &output, reader).await;
+        assert_eq!(record_ids(&output), [0x801, 0x806, 0x807]);
+        let expected = match reader {
+            RecordReader::Legacy => "FULL ID 17: unreadable strings table",
+            RecordReader::Inhouse => "missing localized ID 17",
+        };
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| { line.contains("lost.esm") && line.contains(expected) }),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report.warnings.iter().all(|line| !line.contains("ID 0")),
+            "null localized IDs are not data loss: {:?}",
+            report.warnings
+        );
+        incomplete(&report, &output, 1);
+    }
 }
 
 /// Clean input remains complete under both readers without any new warning lines.
@@ -523,10 +651,20 @@ fn legacy_cli_report_json_marks_published_warning_pack_incomplete() {
         String::from_utf8_lossy(&run.stderr)
     );
     warning(&report, "broken.esm", "malformed record/frame");
-    incomplete(&report, &output, 1);
+    let localization = warning(
+        &report,
+        "broken.esm",
+        "legacy reader left 1 localized fields without text",
+    );
+    assert!(localization.contains("00000806"), "{localization}");
+    assert!(
+        localization.contains("FULL ID 6515: unreadable strings table"),
+        "{localization}"
+    );
+    incomplete(&report, &output, 2);
 }
 
-/// Reader-switch metadata replay reports issues in unchanged checksum-matched plugin bytes.
+/// Complete source assets survive while metadata reread sees the removed loose name bank.
 #[tokio::test]
 async fn metadata_rebuild_replays_reader_warnings_without_changing_source() {
     let directory = tempfile::tempdir().unwrap();
@@ -535,8 +673,7 @@ async fn metadata_rebuild_replays_reader_warnings_without_changing_source() {
     let output = directory.path().join("derived");
     replay_fixture(&data);
     let original = publish(&data, &source, RecordReader::Legacy).await;
-    assert!(original.complete, "{:?}", original.warnings);
-    assert!(original.warnings.is_empty());
+    remove_replay_strings_after_publication(&data, &source, &original);
     let plugin_before = fs::read(data.join("Replay.esm")).unwrap();
     let manifest_before = fs::read(source.join("conversion-manifest.json")).unwrap();
     let database_before = fs::read(source.join("skyrim_world.db")).unwrap();
@@ -552,11 +689,12 @@ async fn metadata_rebuild_replays_reader_warnings_without_changing_source() {
         database_before
     );
     warning(&report, "replay.esm", "in-house reader skipped");
-    warning(&report, "replay.esm", "inhouse adapter reported");
+    let adapter = warning(&report, "replay.esm", "inhouse adapter reported");
+    assert!(adapter.contains("missing localized ID 6515"), "{adapter}");
     incomplete(&report, &output, 2);
 }
 
-/// --reuse-assets uses the same matched replay warning contract and CLI failure status.
+/// --reuse-assets sees unavailable text after publishing a complete, localized source pack.
 #[tokio::test]
 async fn reuse_assets_cli_report_json_replays_reader_warnings() {
     let directory = tempfile::tempdir().unwrap();
@@ -566,8 +704,7 @@ async fn reuse_assets_cli_report_json_replays_reader_warnings() {
     let report_path = directory.path().join("report.json");
     replay_fixture(&data);
     let original = publish(&data, &source, RecordReader::Legacy).await;
-    assert!(original.complete, "{:?}", original.warnings);
-    assert!(original.warnings.is_empty());
+    remove_replay_strings_after_publication(&data, &source, &original);
     let run = Command::new(env!("CARGO_BIN_EXE_converter"))
         .arg(&data)
         .arg(&output)
@@ -590,7 +727,8 @@ async fn reuse_assets_cli_report_json_replays_reader_warnings() {
         String::from_utf8_lossy(&run.stderr)
     );
     warning(&report, "replay.esm", "in-house reader skipped");
-    warning(&report, "replay.esm", "inhouse adapter reported");
+    let adapter = warning(&report, "replay.esm", "inhouse adapter reported");
+    assert!(adapter.contains("missing localized ID 6515"), "{adapter}");
     incomplete(&report, &output, 2);
 }
 

@@ -1,7 +1,7 @@
 use crate::{
     archive::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
-        RawIngestionSession,
+        RawIngestionSession, prune_stale_reader_packs,
     },
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
@@ -36,7 +36,7 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, bail, ensure},
+    eyre::{WrapErr, bail, ensure, eyre},
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,18 @@ pub struct PipelineReport {
     pub database_runtime_records_built: u64,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
+    /// The merged terrain (#215) this run built, when `merged_terrain` is on: the land texture
+    /// arrays, one merged mesh per exterior cell, the chunk files, and every cell or texture
+    /// left out with its reason. `None` when the option is off or no world database was built.
+    #[serde(default)]
+    pub terrain: Option<crate::terrain_pipeline::TerrainReport>,
+    /// Wall time spent building merged terrain, excluding other conversion stages.
+    #[serde(default)]
+    pub terrain_elapsed_ms: u128,
+    /// Merged-terrain omissions. Like `lod_warnings`, these do not make the run incomplete: a
+    /// skipped land texture or cell falls back at runtime, and the full list is in `terrain`.
+    #[serde(default)]
+    pub terrain_warnings: Vec<String>,
     pub warnings: Vec<String>,
     /// Advisory messages, including successful reader compatibility remaps,
     /// that do not affect completeness.
@@ -162,6 +174,7 @@ pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
 #[derive(Clone, Default)]
 pub struct Cancellation {
     flag: Arc<AtomicBool>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl Cancellation {
@@ -171,10 +184,24 @@ impl Cancellation {
 
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Relaxed);
+        self.changed.notify_waiters();
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.flag.load(Ordering::Relaxed)
+    }
+
+    /// Resolves once `cancel` has run, including a cancel that raced the first check.
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -311,24 +338,26 @@ impl AssetPipeline {
                 .ok_or_else(|| color_eyre::eyre::eyre!("output has no parent"))?,
         )
         .wrap_err("failed to create asset output parent")?;
-        let output_lock = AssetLock::acquire_exclusive(&config.output_dir).map_err(|error| {
-            let message = if error.is_held() {
-                format!(
-                    "asset output {} is in use; close its engine or inspector before conversion",
-                    config.output_dir.display()
-                )
-            } else {
-                format!(
-                    "failed to lock asset output {} before conversion",
-                    config.output_dir.display()
-                )
-            };
-            color_eyre::Report::from(error).wrap_err(message)
-        })?;
+        let output_lock = Arc::new(AssetLock::acquire_exclusive(&config.output_dir).map_err(
+            |error| {
+                let message = if error.is_held() {
+                    format!(
+                        "asset output {} is in use; close its engine or inspector before conversion",
+                        config.output_dir.display()
+                    )
+                } else {
+                    format!(
+                        "failed to lock asset output {} before conversion",
+                        config.output_dir.display()
+                    )
+                };
+                color_eyre::Report::from(error).wrap_err(message)
+            },
+        )?);
         // Hold the runtime lock before repair-journal recovery can write the pack,
         // and the distinct repair lock before directory recovery or publication.
         // Both guards remain alive through cache cleanup; publication reuses output_lock.
-        let ownership = crate::repair::OutputOwnership::acquire(&config.output_dir)?;
+        let ownership = Arc::new(crate::repair::OutputOwnership::acquire(&config.output_dir)?);
         config.output_dir = ownership.output().to_path_buf();
         recover_interrupted_publication(&config.output_dir)?;
         let started = Instant::now();
@@ -361,12 +390,19 @@ impl AssetPipeline {
         // folder is everything the run has done so far, and the caller reports the command that
         // resumes from it. Only a successful publish removes it, once the runtime pack is out.
         let setup_elapsed_ms = started.elapsed().as_millis();
+        // The terrain worker keeps the runtime and repair leases until it has stopped, even if
+        // this caller is dropped first; publication below still reuses the same guards.
+        let lod_ownership = Arc::new(LodWorkerOwnership {
+            _runtime: vec![output_lock.clone()],
+            _repair: Some(ownership.clone()),
+        });
         let run_result = Self::run_into(
             &config,
             &staging,
             &previous_manifest,
             &progress_tx,
             &cancellation,
+            lod_ownership,
         )
         .await;
         let mut report = match run_result {
@@ -395,6 +431,9 @@ impl AssetPipeline {
         report.publication_phase_elapsed_ms =
             publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
                 .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.artifacts.push(PathBuf::from(
+            shared::streaming_costs::STREAMING_COST_FILE_NAME,
+        ));
         report.publication_elapsed_ms = publication_started.elapsed().as_millis();
         report
             .phase_elapsed_ms
@@ -460,6 +499,7 @@ impl AssetPipeline {
         previous: &ConversionManifest,
         progress_tx: &Sender<ProgressEvent>,
         cancellation: &Cancellation,
+        lod_ownership: Arc<LodWorkerOwnership>,
     ) -> Result<PipelineReport> {
         let mut report = PipelineReport::default();
         let initialization_started = Instant::now();
@@ -873,6 +913,8 @@ impl AssetPipeline {
         );
         interrupt(cancellation)?;
 
+        let mut merged_terrain_records = None;
+        let mut merged_terrain_offsets = std::collections::HashMap::new();
         if !plugins.is_empty() {
             send(
                 progress_tx,
@@ -908,7 +950,8 @@ impl AssetPipeline {
             );
             let database_cache_root = config.ingestion_cache_dir().join(".database-cache");
             let lookup_started = Instant::now();
-            let mut restored = if !config.invalidate_cache {
+            // Merged terrain reads the records of a fresh conversion, so it never restores a database.
+            let mut restored = if !config.invalidate_cache && !config.merged_terrain {
                 match &cache_identity {
                     Some(identity) => database_cache::restore(
                         &database_cache_root,
@@ -1037,7 +1080,19 @@ impl AssetPipeline {
                 );
                 let database_artifacts_started = Instant::now();
                 crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
-                drop(merged);
+                // Merged terrain (#215) keeps only the records its stage reads, and the LAND each
+                // cell keeps is checked before the texture, mesh and LOD stages run, so a bad load
+                // order fails in minutes. The positions are the ones the cell cache was ordered by.
+                if config.merged_terrain {
+                    merged_terrain_offsets = crate::terrain_pipeline::cell_cache_source_offsets(
+                        config.record_reader,
+                        &db_path,
+                    )?;
+                    crate::esm::cell_cache::merged_terrain_lands(&merged, &merged_terrain_offsets)?;
+                    merged_terrain_records = Some(crate::terrain_pipeline::terrain_records(merged));
+                } else {
+                    drop(merged);
+                }
                 report.phase_elapsed_ms.insert(
                     "database_artifacts_and_release".into(),
                     database_artifacts_started.elapsed().as_millis(),
@@ -1406,10 +1461,28 @@ impl AssetPipeline {
             progress_tx,
             cancellation,
             &mut report,
+            Some(lod_ownership),
         )
         .await?;
         report.lod_elapsed_ms = lod_started.elapsed().as_millis();
         interrupt(cancellation)?;
+        let terrain_started = Instant::now();
+        // Merged terrain (#215): the arrays, one mesh per exterior cell and the chunk files,
+        // once the world database and every converted texture are in staging. Off by default
+        // until the engine half that reads these outputs lands.
+        if config.merged_terrain {
+            crate::terrain_pipeline::run_merged_terrain_stage(
+                staging,
+                merged_terrain_records.take(),
+                std::mem::take(&mut merged_terrain_offsets),
+                &plugins,
+                &crate::terrain_pipeline::TerrainOptions::from_config(config),
+                progress_tx,
+                &mut report,
+            )
+            .await?;
+        }
+        report.terrain_elapsed_ms = terrain_started.elapsed().as_millis();
         let integration_started = Instant::now();
         let integration_sources = source_paths
             .iter()
@@ -1581,6 +1654,12 @@ fn reusable_manifest(
                         == crate::cache::legacy_projection_v2_configuration_hash(
                             &settings, producer,
                         )?;
+                    if crate::esm::inhouse::is_english(&settings.language) {
+                        matched |= recorded
+                            == crate::cache::legacy_projection_v3_configuration_hash(
+                                &settings, producer,
+                            )?;
+                    }
                 }
             }
             matched
@@ -2656,6 +2735,38 @@ pub(crate) fn validate_artifact(
 ) -> Result<()> {
     let path = staging.join(relative);
     match path.extension().and_then(|extension| extension.to_str()) {
+        // Land texture arrays (#215) are not converted source textures: they are KTX2 texture
+        // arrays whose class (usage, block format, size) the land texture table records, and
+        // their transfer function (sRGB diffuse, linear normal) is a property of that class, not
+        // of any source texture semantics. The stage that built them checked every layer and
+        // level against the class; here the file's own shape is checked.
+        Some("ktx2") if relative.starts_with("terrain") => {
+            // A class can be many gigabytes and validation runs on every CPU job at once, so only
+            // the header and the first level's index entry are read, never the pixel data.
+            let mut file = fs::File::open(&path)?;
+            let file_len = file.metadata()?.len();
+            let mut prefix = [0u8; 104];
+            std::io::Read::read_exact(&mut file, &mut prefix)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error}", path.display()))?;
+            let header_bytes: [u8; ktx2::Header::LENGTH] = prefix[..ktx2::Header::LENGTH]
+                .try_into()
+                .expect("the prefix is longer than the header");
+            let header = ktx2::Header::from_bytes(&header_bytes)
+                .map_err(|error| eyre!("invalid KTX2 array {}: {error:?}", path.display()))?;
+            let level_offset = u64::from_le_bytes(prefix[80..88].try_into().expect("eight bytes"));
+            let level_length = u64::from_le_bytes(prefix[88..96].try_into().expect("eight bytes"));
+            ensure!(
+                header.layer_count >= 2
+                    && header.level_count > 0
+                    && header.format.is_some()
+                    && level_length > 0
+                    && level_offset
+                        .checked_add(level_length)
+                        .is_some_and(|end| end <= file_len),
+                "invalid KTX2 array {}",
+                path.display()
+            );
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -3102,6 +3213,13 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
     if lod_dir.exists() {
         fs::remove_dir_all(&lod_dir)?;
     }
+    // The merged terrain (#215) lives entirely under `terrain`: the arrays, the table and the
+    // chunk files. It is rebuilt from the current records, so a resume with the option off
+    // publishes an output without it rather than carrying a stale one.
+    let terrain_dir = staging.join("terrain");
+    if terrain_dir.exists() {
+        fs::remove_dir_all(&terrain_dir)?;
+    }
     Ok(())
 }
 
@@ -3317,6 +3435,9 @@ fn publish_runtime_pack(
     let published = (|| -> Result<()> {
         timings.measure("runtime_pack_linking", || {
             for artifact in &report.artifacts {
+                if artifact == Path::new(shared::streaming_costs::STREAMING_COST_FILE_NAME) {
+                    continue; // Always regenerate; never overwrite a linked prior catalog.
+                }
                 let source = staging.join(artifact);
                 if !source.is_file() {
                     continue;
@@ -3339,6 +3460,13 @@ fn publish_runtime_pack(
             );
             Ok(())
         })?;
+        // Analyze only the assembled runtime pack, after its final manifest is
+        // present. Staging can contain stale resume artifacts and build inputs.
+        // Generate before the directory swap so readers never see a mismatched
+        // catalog/manifest pair and failures preserve the previous published pack.
+        timings.measure("runtime_pack_costs", || {
+            write_streaming_cost_catalog(&pack_staging)
+        })?;
         publish_directory_locked_with_timings(&pack_staging, output, true, lock, &mut timings)
     })();
     if published.is_err() {
@@ -3346,6 +3474,21 @@ fn publish_runtime_pack(
     }
     published?;
     Ok(timings.elapsed_ms)
+}
+
+/// Writes the streaming cost sidecar for an assembled, immutable-until-published pack. Call only
+/// after the final `conversion-manifest.json` bytes are in place: the catalog fingerprint is that
+/// file's hash. A sidecar linked from another pack is unlinked first, never written through.
+pub(crate) fn write_streaming_cost_catalog(pack: &Path) -> Result<()> {
+    let destination = pack.join(shared::streaming_costs::STREAMING_COST_FILE_NAME);
+    match fs::remove_file(&destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let catalog = crate::streaming_costs::analyze_pack(pack)?;
+    fs::write(destination, serde_json::to_vec_pretty(&catalog)?)?;
+    Ok(())
 }
 
 /// Publishes ingestion blobs into the persistent cache, repairing corrupt copies.
@@ -3425,6 +3568,7 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
 /// compiled chunk's content hash, the configuration hash, and the converter
 /// schema (BUILD-01/02). It is written to `lod_build` and to the published
 /// manifest; the runtime refuses chunks whose manifest identity differs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn compile_lod_chunks(
     config: &PipelineConfig,
     staging: &Path,
@@ -3433,6 +3577,7 @@ pub(crate) async fn compile_lod_chunks(
     plugin_hashes: &[String],
     progress_tx: &Sender<ProgressEvent>,
     report: &mut PipelineReport,
+    ownership: Option<Arc<LodWorkerOwnership>>,
 ) -> Result<()> {
     compile_lod_chunks_with_cancel(
         config,
@@ -3443,12 +3588,113 @@ pub(crate) async fn compile_lod_chunks(
         progress_tx,
         &Cancellation::new(),
         report,
+        ownership,
     )
     .await
 }
 
+/// The blocking compiler retains its publication leases if its caller is dropped.
+pub(crate) struct LodWorkerOwnership {
+    pub(crate) _runtime: Vec<Arc<AssetLock>>,
+    pub(crate) _repair: Option<Arc<crate::repair::OutputOwnership>>,
+}
+
+struct CancelLodWorkerOnDrop(Option<Cancellation>);
+
+impl Drop for CancelLodWorkerOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancellation) = &self.0 {
+            cancellation.cancel();
+        }
+    }
+}
+
+async fn run_owned_lod_worker<T: Send + 'static>(
+    cancellation: Cancellation,
+    ownership: Option<Arc<LodWorkerOwnership>>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    let mut guard = CancelLodWorkerOnDrop(Some(cancellation));
+    let worker = spawn_blocking(move || {
+        let _ownership = ownership;
+        work()
+    });
+    let result = worker.await.wrap_err("terrain LOD worker failed");
+    guard.0 = None;
+    result
+}
+
+/// Runs terrain compilation on Tokio's blocking pool with owned inputs and report state, so a
+/// dropped caller cancels the worker without releasing its publication leases early.
 #[allow(clippy::too_many_arguments)]
 async fn compile_lod_chunks_with_cancel(
+    config: &PipelineConfig,
+    staging: &Path,
+    reuse_root: &Path,
+    plugins: &[PathBuf],
+    plugin_hashes: &[String],
+    progress_tx: &Sender<ProgressEvent>,
+    cancellation: &Cancellation,
+    report: &mut PipelineReport,
+    ownership: Option<Arc<LodWorkerOwnership>>,
+) -> Result<()> {
+    let config = config.clone();
+    let staging = staging.to_path_buf();
+    let reuse_root = reuse_root.to_path_buf();
+    let plugins = plugins.to_vec();
+    let plugin_hashes = plugin_hashes.to_vec();
+    let progress_tx = progress_tx.clone();
+    let worker_cancellation = cancellation.clone();
+    let mut worker_report = std::mem::take(report);
+    let runtime = tokio::runtime::Handle::current();
+    #[cfg(test)]
+    let fail_gpu_init = FAIL_LOD_GPU_INIT.with(std::cell::Cell::get);
+    #[cfg(test)]
+    let wait_ready = LOD_PROGRESS_WAIT_READY.with(|ready| ready.borrow_mut().take());
+    let (result, returned_report) =
+        run_owned_lod_worker(cancellation.clone(), ownership, move || {
+            #[cfg(test)]
+            let _gpu_override = LodGpuInitOverride::new(fail_gpu_init);
+            #[cfg(test)]
+            LOD_PROGRESS_WAIT_READY.with(|ready| *ready.borrow_mut() = wait_ready);
+            let result = runtime.block_on(async {
+                // Cancellation must also release a worker waiting for a full progress
+                // channel. Synchronous transactions poll the same flag between batches.
+                tokio::select! {
+                    biased;
+                    _ = worker_cancellation.cancelled() => Err(Interrupted::new().into()),
+                    result = compile_lod_chunks_inline(
+                        &config, &staging, &reuse_root, &plugins, &plugin_hashes,
+                        &progress_tx, &worker_cancellation, &mut worker_report,
+                    ) => result,
+                }
+            });
+            (result, worker_report)
+        })
+        .await?;
+    *report = returned_report;
+    result
+}
+
+#[cfg(test)]
+struct LodGpuInitOverride(bool);
+
+#[cfg(test)]
+impl LodGpuInitOverride {
+    fn new(value: bool) -> Self {
+        Self(FAIL_LOD_GPU_INIT.with(|flag| flag.replace(value)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for LodGpuInitOverride {
+    fn drop(&mut self) {
+        FAIL_LOD_GPU_INIT.with(|flag| flag.set(self.0));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compile_lod_chunks_inline(
     config: &PipelineConfig,
     staging: &Path,
     reuse_root: &Path,
@@ -3462,6 +3708,12 @@ async fn compile_lod_chunks_with_cancel(
         interrupt(cancellation)?;
         let message = "Terrain LOD compilation disabled by --no-lod";
         report.notices.push(message.to_owned());
+        #[cfg(test)]
+        LOD_PROGRESS_WAIT_READY.with(|ready| {
+            if let Some(ready) = ready.borrow_mut().take() {
+                let _ = ready.send(());
+            }
+        });
         let _ = progress_tx
             .send(ProgressEvent::notice(
                 ProgressStage::LodChunks,
@@ -3958,6 +4210,10 @@ async fn compile_lod_chunks_with_cancel(
 #[cfg(test)]
 thread_local! {
     static FAIL_LOD_GPU_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fired once compilation has passed its early cancellation check and is about to wait on
+    /// the progress channel, so a test can cancel a compile that is genuinely blocked there.
+    static LOD_PROGRESS_WAIT_READY: std::cell::RefCell<Option<tokio::sync::oneshot::Sender<()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn create_lod_gpu(quality: u32, batch_mb: u64) -> Result<GpuUastc> {
@@ -3980,8 +4236,12 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
     }
     let mut live = BTreeSet::new();
     let mut live_sources = BTreeSet::new();
+    let mut live_reader_sources = BTreeMap::new();
     for entry in manifest.archives.values() {
         live_sources.insert(entry.source_hash.clone());
+        if entry.reader_version > 0 {
+            live_reader_sources.insert(entry.source_hash.clone(), entry.reader_version);
+        }
         for file in &entry.files {
             live.insert(file.hash.clone());
         }
@@ -4018,6 +4278,7 @@ fn prune_stale_ingestion_blobs(cache_root: &Path, manifest: &ConversionManifest)
             }
         }
     }
+    prune_stale_reader_packs(cache_root, &live_reader_sources)?;
     Ok(())
 }
 
@@ -4767,11 +5028,134 @@ mod tests {
     }
 
     use super::*;
+    use crate::esm::cell_cache::write_cell_cache;
 
     fn cpu_lod_config(data: impl Into<PathBuf>, output: impl Into<PathBuf>) -> PipelineConfig {
         let mut config = PipelineConfig::new(data, output);
         config.lod_texture_encoder = TextureEncoder::Cpu;
         config
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lod_worker_leaves_current_thread_free_and_retains_leases_after_abort() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("modern");
+        let ownership = Arc::new(LodWorkerOwnership {
+            _runtime: vec![Arc::new(AssetLock::acquire_exclusive(&output).unwrap())],
+            _repair: Some(Arc::new(
+                crate::repair::OutputOwnership::acquire(&output).unwrap(),
+            )),
+        });
+        let cancellation = Cancellation::new();
+        let observed = cancellation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let worker_output = output.clone();
+        let task = tokio::spawn(run_owned_lod_worker(
+            cancellation,
+            Some(ownership),
+            move || {
+                started_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                if !observed.is_cancelled() {
+                    fs::create_dir_all(&worker_output).unwrap();
+                    fs::write(worker_output.join("unexpected-write"), b"bad").unwrap();
+                }
+                finished_tx.send(()).unwrap();
+            },
+        ));
+        // The worker waits synchronously. A current-thread runtime must still
+        // deliver this signal and run the abort rather than block in compilation.
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(AssetLock::acquire_shared(&output).is_err());
+        assert!(crate::repair::OutputOwnership::acquire(&output).is_err());
+        release_tx.send(()).unwrap();
+        finished_rx.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if AssetLock::acquire_exclusive(&output).is_ok()
+                    && crate::repair::OutputOwnership::acquire(&output).is_ok()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !output.exists(),
+            "aborted worker must observe cancellation before writing"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lod_worker_cancellation_releases_a_full_progress_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PipelineConfig {
+            no_lod: true,
+            ..cpu_lod_config(temp.path(), temp.path().join("out"))
+        };
+        // The receiver stays alive and undrained, so the next send can only complete by
+        // cancellation.
+        let (tx, _rx) = mpsc::channel(1);
+        tx.send(ProgressEvent::notice(
+            ProgressStage::LodChunks,
+            None,
+            "full",
+        ))
+        .await
+        .unwrap();
+        let probe = tx.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let cancellation = Cancellation::new();
+        let trigger = cancellation.clone();
+        let task = tokio::spawn(async move {
+            // Same-thread hand-off: the current-thread runtime runs this task and the compiler here.
+            LOD_PROGRESS_WAIT_READY.with(|ready| *ready.borrow_mut() = Some(ready_tx));
+            compile_lod_chunks_with_cancel(
+                &config,
+                temp.path(),
+                temp.path(),
+                &[],
+                &[],
+                &tx,
+                &cancellation,
+                &mut PipelineReport::default(),
+                None,
+            )
+            .await
+        });
+        // Cancel only once compilation has passed its early check and is waiting on the full channel.
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready_rx)
+            .await
+            .expect("compiler never reached the progress wait")
+            .unwrap();
+        assert!(
+            probe
+                .try_send(ProgressEvent::notice(
+                    ProgressStage::LodChunks,
+                    None,
+                    "probe"
+                ))
+                .is_err(),
+            "the progress channel must still be full while compilation waits"
+        );
+        trigger.cancel();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("cancellation did not release the blocked progress send")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.downcast_ref::<Interrupted>().is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4787,8 +5171,17 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let mut report = PipelineReport::default();
         FAIL_LOD_GPU_INIT.with(|fail| fail.set(true));
-        let result =
-            compile_lod_chunks(&config, &staging, &staging, &[], &[], &tx, &mut report).await;
+        let result = compile_lod_chunks(
+            &config,
+            &staging,
+            &staging,
+            &[],
+            &[],
+            &tx,
+            &mut report,
+            None,
+        )
+        .await;
         FAIL_LOD_GPU_INIT.with(|fail| fail.set(false));
         result.unwrap();
         assert_eq!(report.lod_chunks, 0);
@@ -5050,6 +5443,174 @@ mod tests {
     }
 
     #[test]
+    fn changed_default_bytes_change_persisted_lod_identity_and_only_defaulted_chunks() {
+        use crate::lod::{
+            albedo::TerrainTextures,
+            terrain::{TerrainCellInput, terrain_jobs},
+        };
+        use std::collections::HashMap;
+
+        struct Proof {
+            identity: String,
+            asset_identity: String,
+            manifest: crate::lod::reuse::LodManifest,
+            default_inputs: BTreeMap<String, String>,
+            grass_inputs: BTreeMap<String, String>,
+            default_outputs: BTreeMap<String, String>,
+            grass_outputs: BTreeMap<String, String>,
+            grass_source: String,
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path();
+        let default_path = vfs.join("textures/landscape/dirt02.dds");
+        let grass_path = vfs.join("textures/landscape/grass.dds");
+        fs::create_dir_all(default_path.parent().unwrap()).unwrap();
+        let grass_bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(19),
+        )
+        .unwrap();
+        fs::write(&grass_path, grass_bytes).unwrap();
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets (id INTEGER PRIMARY KEY, diffuse_path TEXT);
+                 CREATE TABLE landscape_textures (id INTEGER PRIMARY KEY, texture_set_id INTEGER);
+                 INSERT INTO texture_sets VALUES (1, 'textures/landscape/grass.dds');
+                 INSERT INTO landscape_textures VALUES (2, 1);",
+            )
+            .unwrap();
+        let defaulted = TerrainCellInput {
+            cell_id: 1,
+            grid_x: 0,
+            grid_y: 0,
+            heights: vec![0.0; 33 * 33],
+            vertex_colors: vec![255; 33 * 33 * 3],
+            layers: Vec::new(),
+        };
+        let grass = TerrainCellInput {
+            cell_id: 2,
+            grid_x: 64,
+            grid_y: 0,
+            heights: vec![0.0; 33 * 33],
+            vertex_colors: vec![255; 33 * 33 * 3],
+            layers: (0..4)
+                .map(|quadrant| shared::TerrainLayer {
+                    texture_form_id: 2,
+                    quadrant,
+                    layer: 0,
+                    is_base: true,
+                    weights: Vec::new(),
+                })
+                .collect(),
+        };
+        let cells = [defaulted, grass];
+        let cell_hashes: HashMap<_, _> = cells
+            .iter()
+            .map(|cell| (cell.cell_id, cell.fingerprint()))
+            .collect();
+        let origin = shared::lod::LodOrigin::new(0, 0);
+        let asset_identity = configuration_hash(&cpu_lod_config("/data", "/output")).unwrap();
+
+        // Exercise production chunk fingerprints and build identity with synthetic cells. The
+        // persistence assertions use the same DB row and manifest field as compilation, without
+        // running archive ingestion or the full AssetPipeline.
+        let build = |seed| {
+            let default_bytes = dummy_content::dds::generate(
+                &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+                &mut dummy_content::rng::Rng::new(seed),
+            )
+            .unwrap();
+            fs::write(&default_path, default_bytes).unwrap();
+            let textures = TerrainTextures::load(&connection, vfs, &cells).unwrap();
+            let mut chunk_inputs = BTreeMap::new();
+            let mut chunk_hashes = Vec::new();
+            let mut default_inputs = BTreeMap::new();
+            let mut grass_inputs = BTreeMap::new();
+            let mut default_outputs = BTreeMap::new();
+            let mut grass_outputs = BTreeMap::new();
+
+            for job in terrain_jobs(0x3c, origin, &cells) {
+                let path = shared::lod::chunk_payload_path(job.key);
+                let input_hash = job.fingerprint(origin, &cell_hashes, &textures).unwrap();
+                let output_hash =
+                    crate::cache::hash_bytes(&job.compile(origin, &textures).unwrap().glb);
+                chunk_inputs.insert(path.clone(), input_hash.clone());
+                chunk_hashes.push(format!("{path}:{output_hash}"));
+                if job.members.iter().any(|cell| cell.cell_id == 1) {
+                    default_inputs.insert(path.clone(), input_hash);
+                    default_outputs.insert(path, output_hash);
+                } else {
+                    grass_inputs.insert(path.clone(), input_hash);
+                    grass_outputs.insert(path, output_hash);
+                }
+            }
+            chunk_hashes.sort();
+            let terrain_sources = textures.source_hashes.clone();
+            let identity =
+                build_identity(&[], &chunk_hashes, &asset_identity, &[], &terrain_sources).unwrap();
+            let manifest = crate::lod::reuse::LodManifest {
+                build_identity: identity.clone(),
+                converter_schema: CONVERTER_SCHEMA_VERSION,
+                world_database_schema: shared::WORLD_DATABASE_SCHEMA_VERSION,
+                chunks: chunk_hashes.len() as u64,
+                land_texture_repeats_per_cell: shared::LAND_TEXTURE_REPEATS_PER_CELL,
+                terrain_sources,
+                compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
+                chunk_inputs,
+            };
+            Proof {
+                identity,
+                asset_identity: asset_identity.clone(),
+                manifest,
+                default_inputs,
+                grass_inputs,
+                default_outputs,
+                grass_outputs,
+                grass_source: textures.source_hashes["textures/landscape/grass.dds"].clone(),
+            }
+        };
+
+        let first = build(7);
+        let second = build(8);
+        assert_ne!(first.identity, second.identity);
+        assert_ne!(first.default_inputs, second.default_inputs);
+        assert_eq!(first.grass_inputs, second.grass_inputs);
+        assert_ne!(first.default_outputs, second.default_outputs);
+        assert_eq!(first.grass_outputs, second.grass_outputs);
+        assert_eq!(first.grass_source, second.grass_source);
+        assert_eq!(first.asset_identity, second.asset_identity);
+
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE lod_build (id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL);",
+            )
+            .unwrap();
+        for proof in [&first, &second] {
+            database
+                .execute(
+                    "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
+                    [&proof.identity],
+                )
+                .unwrap();
+            let stored: String = database
+                .query_row(
+                    "SELECT build_identity FROM lod_build WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&serde_json::to_vec(&proof.manifest).unwrap()).unwrap();
+            assert_eq!(stored, proof.identity);
+            assert_eq!(manifest["build_identity"], stored);
+        }
+    }
+
+    #[test]
     fn explicit_lod_origin_precedes_invalid_staged_sidecar() {
         let directory = tempfile::tempdir().unwrap();
         let vfs = directory.path().join("vfs");
@@ -5125,6 +5686,72 @@ mod tests {
         }
         .save(&root.join("conversion-manifest.json"))
         .unwrap();
+    }
+
+    #[test]
+    fn runtime_publication_generates_costs_for_only_published_assets() {
+        use shared::streaming_costs::{STREAMING_COST_FILE_NAME, StreamingCostCatalog};
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let output = directory.path().join("assets");
+        write_test_runtime_pack(&staging, "next");
+        // Malformed assets must retain explicit unknown estimates. A leftover
+        // resume artifact must not become part of the published catalog.
+        fs::write(staging.join("published.glb"), b"invalid GLB").unwrap();
+        fs::write(staging.join("stale.glb"), b"stale GLB").unwrap();
+        fs::write(staging.join(STREAMING_COST_FILE_NAME), b"old sidecar").unwrap();
+        let report = PipelineReport {
+            artifacts: vec![
+                "conversion-manifest.json".into(),
+                "scripts/papyrus_runtime.luau".into(),
+                "published.glb".into(),
+                STREAMING_COST_FILE_NAME.into(),
+            ],
+            ..Default::default()
+        };
+        let lock = AssetLock::acquire_exclusive(&output).unwrap();
+        publish_runtime_pack(&staging, &output, &report, &lock).unwrap();
+        let fingerprint = hash_file(&output.join("conversion-manifest.json")).unwrap();
+        let catalog =
+            StreamingCostCatalog::load(&output.join(STREAMING_COST_FILE_NAME), &fingerprint)
+                .unwrap();
+        assert!(catalog.scenes.contains_key("published.glb"));
+        assert!(!catalog.scenes.contains_key("stale.glb"));
+        assert!(
+            catalog
+                .resolve_scene("published.glb", 64 * 1024 * 1024)
+                .unwrap()
+                .used_unknown_fallback
+        );
+        assert_eq!(
+            fs::read(staging.join(STREAMING_COST_FILE_NAME)).unwrap(),
+            b"old sidecar"
+        );
+        assert!(
+            StreamingCostCatalog::load(&output.join(STREAMING_COST_FILE_NAME), "other-pack")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_publication_cost_failure_preserves_previous_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let output = directory.path().join("assets");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        fs::write(staging.join("conversion-manifest.json"), b"invalid JSON").unwrap();
+        let report = PipelineReport {
+            artifacts: vec!["conversion-manifest.json".into()],
+            ..Default::default()
+        };
+        let lock = AssetLock::acquire_exclusive(&output).unwrap();
+        assert!(publish_runtime_pack(&staging, &output, &report, &lock).is_err());
+        assert_eq!(published_manifest(&output).configuration_hash, "previous");
+        assert_eq!(
+            fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+            b"return {}"
+        );
     }
 
     #[test]
@@ -5563,6 +6190,7 @@ mod tests {
             &hashes,
             &tx,
             &mut report,
+            None,
         )
         .await
         .unwrap();
@@ -5614,6 +6242,7 @@ mod tests {
             &hashes,
             &tx,
             &mut mixed,
+            None,
         )
         .await
         .unwrap();
@@ -5719,6 +6348,7 @@ mod tests {
             &hashes,
             &tx,
             &mut report,
+            None,
         )
         .await
         .unwrap();
@@ -6778,6 +7408,11 @@ mod tests {
         let report = run_without_progress(config).await;
         assert!(report.complete);
         assert!(output.join("scripts/one.luau").is_file());
+        let costs = PathBuf::from(shared::streaming_costs::STREAMING_COST_FILE_NAME);
+        assert!(report.artifacts.contains(&costs));
+        let fingerprint = hash_file(&output.join("conversion-manifest.json")).unwrap();
+        shared::streaming_costs::StreamingCostCatalog::load(&output.join(costs), &fingerprint)
+            .unwrap();
     }
 
     #[tokio::test]
@@ -8628,6 +9263,7 @@ mod tests {
                     size: 4,
                     hash: live.clone(),
                 }],
+                reader_version: 0,
             },
         );
         prune_stale_ingestion_blobs(

@@ -5,6 +5,9 @@ pub mod collision;
 pub mod coordinates;
 pub mod lod;
 pub mod plugin_selection;
+pub mod records;
+pub mod streaming_costs;
+pub mod terrain_mesh;
 pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
@@ -14,7 +17,12 @@ pub const WORLD_DATABASE_SCHEMA_VERSION: u32 = 9;
 /// Latest producer required when a package advertises the combined LOD contract.
 /// 27: collision coverage (sphere shapes as zero-length capsules, multi-sphere and cylinder
 /// shapes) changes GLB collision extras.
-pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 27;
+/// 28: KTX2 texture containers store mip level data smallest-first. Uncompressed
+/// levels use exact `lcm(texel block bytes, 4)` alignment; supercompressed levels
+/// are contiguous (KTX 2.0 sections 3.7 and 3.9.7). Producer-27
+/// texture bytes keep the largest-first, 16-byte-padded layout and must be regenerated.
+/// GLB bytes are unchanged, so producer-27 meshes stay reusable.
+pub const LOD_CONVERTER_SCHEMA_VERSION: u32 = 28;
 pub const WORLD_DATABASE_LOD_SCHEMA_VERSION: u32 = 6;
 
 /// The oldest world database schema the runtime (the engine and `world-inspect`) still reads, and

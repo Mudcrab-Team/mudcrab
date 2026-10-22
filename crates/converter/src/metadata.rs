@@ -9,17 +9,18 @@ use crate::{
     archive::ArchiveExtractor,
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, ConversionManifest, configuration_hash, hash_bytes, hash_file,
-        retained_configuration_matches_for_reader,
+        CONVERTER_SCHEMA_VERSION, ConversionManifest, can_reuse_meshes_for_producer,
+        configuration_hash, hash_bytes, hash_file, retained_configuration_matches_for_reader,
     },
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
     pipeline::{
-        archive_load_order_priority, compile_lod_chunks, conversion_is_complete, discover,
-        installed_archive_owners, non_mo2_archive_is_active, overlay_loose_assets,
-        publish_new_directory, sort_archives_by_load_order, staging_path, validate_artifacts,
+        LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
+        conversion_is_complete, discover, installed_archive_owners, non_mo2_archive_is_active,
+        overlay_loose_assets, publish_new_directory, sort_archives_by_load_order, staging_path,
+        validate_artifacts, write_streaming_cost_catalog,
     },
     records::addons::RuntimeSchemas,
 };
@@ -31,7 +32,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use shared::asset_lock::AssetLock;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -92,8 +93,9 @@ impl AssetPipeline {
         let source = fs::canonicalize(source_assets)?;
         config.data_dir = fs::canonicalize(&config.data_dir)?;
         config.output_dir = new_output_path(&config.output_dir, &source, &config.data_dir)?;
-        let _source_lock = AssetLock::acquire_shared(&source)?;
-        let output_lock = AssetLock::acquire_exclusive(&config.output_dir)?;
+        // Both leases stay with the rebuild until publication; the terrain worker holds clones.
+        let source_lock = Arc::new(AssetLock::acquire_shared(&source)?);
+        let output_lock = Arc::new(AssetLock::acquire_exclusive(&config.output_dir)?);
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
         // incompatible assets during migration, which this explicit route verifies instead.
@@ -114,13 +116,18 @@ impl AssetPipeline {
             RuntimeSchemas::from_addon_bytes(&retained_schema_documents)
                 .map_err(color_eyre::eyre::Error::msg)?,
         )?;
+        // Metadata rebuild copies retained KTX2 bytes verbatim and then stamps the current
+        // schema. Only current-producer textures carry the current layout, so an earlier
+        // producer's texture bytes cannot be relabeled here; they need a normal conversion.
         ensure!(
-            (matches!(manifest.schema_version, 15 | 16 | 19..=24 | 26)
-                || manifest.schema_version == CONVERTER_SCHEMA_VERSION)
-                && manifest.complete
-                && manifest.failures.is_empty(),
-            "metadata rebuild requires complete converter schema 15, 16, 19 through 24, 26 or {} assets",
-            CONVERTER_SCHEMA_VERSION
+            manifest.schema_version == CONVERTER_SCHEMA_VERSION,
+            "metadata rebuild requires converter schema {CONVERTER_SCHEMA_VERSION} textures, but this source is schema {}; \
+             its KTX2 textures predate the current texture layout. Run normal conversion to regenerate them",
+            manifest.schema_version
+        );
+        ensure!(
+            manifest.complete && manifest.failures.is_empty(),
+            "metadata rebuild requires complete converter schema {CONVERTER_SCHEMA_VERSION} assets with no failures"
         );
         ensure!(
             manifest.retained_mesh_schema_version.is_some()
@@ -130,9 +137,11 @@ impl AssetPipeline {
         let mesh_schema = manifest
             .retained_mesh_schema_version
             .unwrap_or(manifest.schema_version);
+        // Only the explicit mesh pairs in `can_reuse_meshes_for_producer` survive a
+        // producer change, so producers 24 and 26 cannot reach the current schema here.
         ensure!(
-            (matches!(mesh_schema, 15 | 16 | 19..=24 | 26)
-                || mesh_schema == CONVERTER_SCHEMA_VERSION)
+            (mesh_schema == CONVERTER_SCHEMA_VERSION
+                || can_reuse_meshes_for_producer(mesh_schema, CONVERTER_SCHEMA_VERSION))
                 && mesh_schema <= manifest.schema_version,
             "unsupported retained mesh cache contract"
         );
@@ -178,6 +187,10 @@ impl AssetPipeline {
                 retained_schemas: &retained_schemas,
             },
             &progress_tx,
+            Arc::new(LodWorkerOwnership {
+                _runtime: vec![source_lock.clone(), output_lock.clone()],
+                _repair: None,
+            }),
         )
         .await;
         let mut report = match result {
@@ -187,6 +200,15 @@ impl AssetPipeline {
                 return Err(error);
             }
         };
+        // The rebuilt manifest is final here; the catalog must describe exactly those bytes.
+        // Like the normal route, a catalog failure fails the rebuild before publication.
+        if let Err(error) = write_streaming_cost_catalog(&staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        report.artifacts.push(PathBuf::from(
+            shared::streaming_costs::STREAMING_COST_FILE_NAME,
+        ));
         let publication_started = Instant::now();
         if let Err(error) = publish_new_directory(&staging, &config.output_dir, &output_lock) {
             let _ = fs::remove_dir_all(&staging);
@@ -301,7 +323,9 @@ fn settings_for_source_reader(
                     || identity
                         == &serde_json::json!({"mode": "legacy", "projection_version": 1})
                     || identity
-                        == &serde_json::json!({"mode": "legacy", "projection_version": 2}))
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 2})
+                    || identity
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 3}))
                 && schemas.identities().is_empty()),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
@@ -390,6 +414,7 @@ async fn rebuild_into(
     matched: &(Vec<PathBuf>, Vec<String>),
     metadata: SourceMetadata<'_>,
     progress: &Sender<ProgressEvent>,
+    ownership: Arc<LodWorkerOwnership>,
 ) -> Result<PipelineReport> {
     let SourceMetadata {
         manifest_bytes: source_manifest,
@@ -507,16 +532,14 @@ async fn rebuild_into(
     )
     .await;
     let database = staging.join("skyrim_world.db");
-    if config.record_reader == crate::config::RecordReader::Inhouse {
-        let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
-        for archive in &archives {
-            // Strings are metadata inputs; decode only the selected plugin tables.
-            if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
-                eprintln!(
-                    "warning: {}: unable to extract localized names: {error}",
-                    archive.display()
-                );
-            }
+    // Both readers resolve localized names; decode only the selected plugin tables.
+    let strings = crate::esm::inhouse::localized_string_paths(plugins, &config.language);
+    for archive in &archives {
+        if let Err(error) = ArchiveExtractor::extract_paths(archive, &vfs, &strings) {
+            eprintln!(
+                "warning: {}: unable to extract localized names: {error}",
+                archive.display()
+            );
         }
     }
     let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
@@ -553,7 +576,21 @@ async fn rebuild_into(
             .artifacts
             .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
-    drop(merged);
+    // Merged terrain (#215) keeps only the records its stage reads. The LAND each cell keeps is
+    // checked here, before the texture, mesh and LOD stages, so a bad load order fails in minutes;
+    // the positions are the ones the cell cache above was ordered by.
+    let source_offsets = if config.merged_terrain {
+        crate::terrain_pipeline::cell_cache_source_offsets(config.record_reader, &database)?
+    } else {
+        HashMap::new()
+    };
+    let merged_records = if config.merged_terrain {
+        crate::esm::cell_cache::merged_terrain_lands(&merged, &source_offsets)?;
+        Some(crate::terrain_pipeline::terrain_records(merged))
+    } else {
+        drop(merged);
+        None
+    };
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
@@ -603,9 +640,24 @@ async fn rebuild_into(
         plugin_hashes,
         progress,
         &mut report,
+        Some(ownership),
     )
     .await?;
     report.lod_elapsed_ms = lod_started.elapsed().as_millis();
+    // Merged terrain (#215) is rebuilt from the records like the database and the LOD chunks
+    // are, so a rebuild with the option on produces it instead of ignoring the option.
+    if config.merged_terrain {
+        crate::terrain_pipeline::run_merged_terrain_stage(
+            staging,
+            merged_records,
+            source_offsets,
+            plugins,
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+            progress,
+            &mut report,
+        )
+        .await?;
+    }
     let integration = finalize_world_database(staging)?
         .ok_or_else(|| color_eyre::eyre::eyre!("missing rebuilt world database"))?;
     ensure!(
@@ -618,11 +670,12 @@ async fn rebuild_into(
         .artifacts
         .push(PathBuf::from("integration-report.json"));
     // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately.
+    // the source manifest; validate copied model dependencies separately. The merged terrain
+    // payloads (#215) are generated here too and are validated the same way.
     let payloads = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod"))
+        .filter(|path| path.starts_with("lod") || path.starts_with("terrain"))
         .cloned()
         .collect::<Vec<_>>();
     validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
@@ -959,6 +1012,60 @@ mod metadata_schema_controls {
         assert!(rx.try_recv().is_err());
     }
 
+    /// The metadata route must ship a sidecar for its rebuilt manifest. A stale sidecar linked
+    /// from the source pack is unlinked, never written through, and the incomplete-reader note
+    /// still reaches the catalog.
+    #[test]
+    fn metadata_rebuild_catalog_describes_the_final_manifest_and_leaves_the_source_alone() {
+        use shared::streaming_costs::{STREAMING_COST_FILE_NAME, StreamingCostCatalog};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let staging = temp.path().join("staging");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(source.join(STREAMING_COST_FILE_NAME), b"source catalog").unwrap();
+        fs::hard_link(
+            source.join(STREAMING_COST_FILE_NAME),
+            staging.join(STREAMING_COST_FILE_NAME),
+        )
+        .unwrap();
+        let manifest = ConversionManifest {
+            complete: false,
+            ..Default::default()
+        };
+        manifest
+            .save(&staging.join("conversion-manifest.json"))
+            .unwrap();
+        let manifest_bytes = fs::read(staging.join("conversion-manifest.json")).unwrap();
+
+        write_streaming_cost_catalog(&staging).unwrap();
+
+        let catalog = StreamingCostCatalog::load(
+            &staging.join(STREAMING_COST_FILE_NAME),
+            &hash_bytes(&manifest_bytes),
+        )
+        .unwrap();
+        assert!(
+            catalog
+                .notes
+                .iter()
+                .any(|note| note.contains("manifest is incomplete")),
+            "incomplete rebuild must keep its unknown-resource note"
+        );
+        assert_eq!(
+            fs::read(source.join(STREAMING_COST_FILE_NAME)).unwrap(),
+            b"source catalog",
+            "the source pack's catalog must not change through a shared link"
+        );
+        assert!(
+            StreamingCostCatalog::load(
+                &source.join(STREAMING_COST_FILE_NAME),
+                &hash_bytes(&manifest_bytes),
+            )
+            .is_err()
+        );
+    }
+
     const ORIGINAL: &[u8] = br#"{"version":1,"name":"original_source","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"u32"}]}]}"#;
     const REQUESTED: &[u8] = br#"{"version":1,"name":"requested_output","records":[{"signature":"ZMEX","source":"synthetic metadata fixture","fields":[{"signature":"SCAL","name":"value","kind":"i32"}]}]}"#;
 
@@ -1100,6 +1207,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy"}),
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
+            serde_json::json!({"mode": "legacy", "projection_version": 3}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1112,7 +1220,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 4}),
+            serde_json::json!({"mode": "legacy", "projection_version": 5}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

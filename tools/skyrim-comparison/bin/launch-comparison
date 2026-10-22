@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+comparison_root=/home/taylor/Games/MudcrabComparison
+proton_tool=/nix/store/jxyi1qzwxv5lq34fdash7rhy4q4zwzn9-proton-ge-bin-GE-Proton11-5-steamcompattool
+if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then
+    echo 'Launch from a logged-in Fiji desktop session; no display is available.' >&2
+    exit 1
+fi
+if ! pgrep -x steam >/dev/null; then
+    echo 'Start Steam in the Fiji desktop session before launching Skyrim.' >&2
+    exit 1
+fi
+export XDG_CONFIG_HOME="$comparison_root/config"
+amethyst-mod-manager-cli deploy 'Skyrim Special Edition' mudcrab-comparison
+export STEAM_COMPAT_DATA_PATH="$comparison_root/compatdata"
+export STEAM_COMPAT_CLIENT_INSTALL_PATH=/home/taylor/.local/share/Steam
+export STEAM_COMPAT_INSTALL_PATH="$comparison_root/SkyrimSE"
+export SteamAppId=489830
+export SteamGameId=489830
+export PROTON_LOG=1
+export PROTON_LOG_DIR="$comparison_root/artifacts"
+cd "$comparison_root/SkyrimSE"
+exec steam-run "$proton_tool/proton" run "$comparison_root/SkyrimSE/skse64_loader.exe" "$@"

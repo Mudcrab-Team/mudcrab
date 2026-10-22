@@ -3,7 +3,10 @@ param(
     [string]$Assets,
     [string]$Worldspace = "0x3c",
     [int]$RuralGridX = 0, [int]$RuralGridY = 0,
-    [int]$DenseGridX = 0, [int]$DenseGridY = 0,
+    # Dense is Riverwood (3,-12, about 2,900 references within two cells). `dense-legacy` is the old
+    # dense place (18,-5, about 1,530), kept for one release; it runs only with -IncludeDenseLegacy.
+    [int]$DenseGridX = 3, [int]$DenseGridY = -12,
+    [int]$DenseLegacyGridX = 18, [int]$DenseLegacyGridY = -5,
     [int]$WaterGridX = 0, [int]$WaterGridY = 0,
     [int]$SyntheticSeconds = 120,
     [int]$WorldSeconds = 300,
@@ -18,6 +21,7 @@ param(
     [string]$OutputRoot,
     [switch]$UpdateBaseline,
     [switch]$RequireVisualSignoff,
+    [switch]$IncludeDenseLegacy,
     [switch]$Quick,
     [switch]$SkipQualityGates,
     [switch]$SkipRobustness,
@@ -116,6 +120,27 @@ function Get-RegressionComparison([string]$Metric, [double]$Old, [double]$New) {
         noise_floor = $noiseFloor
         status = $status
     }
+}
+
+# Where a scenario's camera ran, as the string a stored baseline records for it: `<worldspace>
+# <gridX>,<gridY>` for a world scenario, taken from the scenario's own engine arguments (the
+# benchmark flags added at launch say nothing about the place), and `synthetic` for a scenario started in no world place (the fixture scenes and the
+# synthetic benchmark).
+#
+# A scene's size is a property of the place's data, not of the scenario's name: `dense` moved from
+# 18,-5 to Riverwood (3,-12, about twice as dense), so an entry stored under the name `dense` can
+# describe a place this campaign did not measure.
+function Get-ScenarioPlace([string[]]$Arguments) {
+    $worldspace = $null; $gridX = $null; $gridY = $null
+    for ($index = 0; $index -lt ($Arguments.Count - 1); $index++) {
+        switch ($Arguments[$index]) {
+            "--worldspace" { $worldspace = $Arguments[$index + 1] }
+            "--grid-x" { $gridX = $Arguments[$index + 1] }
+            "--grid-y" { $gridY = $Arguments[$index + 1] }
+        }
+    }
+    if (-not $worldspace -or $null -eq $gridX -or $null -eq $gridY) { return "synthetic" }
+    return "$worldspace $gridX,$gridY"
 }
 
 function Invoke-RecordedCommand {
@@ -283,6 +308,9 @@ else {
                 $worldBase = @("--assets", $resolvedAssets, "--worldspace", $Worldspace)
                 $scenarios += [ordered]@{ name = "rural"; seconds = $WorldSeconds; arguments = $worldBase + @("--grid-x", "$RuralGridX", "--grid-y", "$RuralGridY") }
                 $scenarios += [ordered]@{ name = "dense"; seconds = $WorldSeconds; arguments = $worldBase + @("--grid-x", "$DenseGridX", "--grid-y", "$DenseGridY") }
+                if ($IncludeDenseLegacy) {
+                    $scenarios += [ordered]@{ name = "dense-legacy"; seconds = $WorldSeconds; arguments = $worldBase + @("--grid-x", "$DenseLegacyGridX", "--grid-y", "$DenseLegacyGridY") }
+                }
                 $scenarios += [ordered]@{ name = "water"; seconds = $WorldSeconds; arguments = $worldBase + @("--grid-x", "$WaterGridX", "--grid-y", "$WaterGridY") }
                 $scenarios += [ordered]@{ name = "stress"; seconds = $StressSeconds; arguments = $worldBase + @("--grid-x", "$RuralGridX", "--grid-y", "$RuralGridY", "--stream-radius", "3", "--auto-fly-speed", "5000") }
                 $scenarios += [ordered]@{ name = "stability"; seconds = $StabilitySeconds; arguments = $worldBase + @("--grid-x", "$DenseGridX", "--grid-y", "$DenseGridY", "--auto-fly-speed", "900") }
@@ -353,6 +381,10 @@ else {
                 }
                 if ($runs.Count -gt 0) {
                     $performance[$scenario.name] = [ordered]@{
+                        # Where these medians were measured, stored beside them in the baseline (see
+                        # Get-ScenarioPlace): the entry a baseline holds for this scenario's name only
+                        # describes this campaign's numbers when it was measured in the same place.
+                        place = Get-ScenarioPlace $scenario.arguments
                         average_fps = Get-Median @($runs.average_fps); frame_ms_p95 = Get-Median @($runs.frame_ms_p95)
                         frame_ms_p99 = Get-Median @($runs.frame_ms_p99); peak_process_memory_gib = Get-Median @($runs.peak_process_memory_gib)
                         process_memory_growth_gib = Get-Median @($runs.process_memory_growth_gib)
@@ -369,6 +401,7 @@ Write-JsonFile $functional (Join-Path $campaign "functional-results.json")
 Write-JsonFile $performance (Join-Path $directories.performance "medians.json")
 $expectedScenarios = @("materials", "terrain-water", "transform-bounds", "renderer", "streaming", "synthetic")
 if ($resolvedAssets) { $expectedScenarios += @("rural", "dense", "water", "stress", "stability") }
+if ($resolvedAssets -and $IncludeDenseLegacy) { $expectedScenarios += "dense-legacy" }
 foreach ($scenario in $expectedScenarios) {
     if (-not $performance.Contains($scenario)) {
         [void]$failures.Add("required scenario was omitted: $scenario")
@@ -420,6 +453,27 @@ foreach ($scenario in $performance.Keys) {
         [void]$warnings.Add("no baseline was available for scenario $scenario")
         continue
     }
+    # A stored entry measured in another place — or one written before places were recorded at all —
+    # does not describe this campaign's numbers, so the scenario is not scored against it: the
+    # comparison is skipped, with the reason in one warning line and in `comparison.json`, instead of
+    # failing the campaign on a fake regression (`dense` is Riverwood now, about twice as dense as the
+    # place its older entry measured).
+    $storedEntry = $baselineData[$scenario]
+    $storedPlace = $null
+    if ($storedEntry -is [System.Collections.IDictionary] -and $storedEntry.Contains("place")) { $storedPlace = $storedEntry.place }
+    $place = $performance[$scenario].place
+    $skipReason = if ($null -eq $storedPlace) {
+        'the stored baseline records no place for it (it was written before places were stored, and `dense` has since moved to Riverwood); rerun with -UpdateBaseline to store one'
+    } elseif ([string]$storedPlace -ne [string]$place) {
+        "stored place $storedPlace, run place $place"
+    } else {
+        $null
+    }
+    if ($skipReason) {
+        $comparisons += [ordered]@{ scenario = $scenario; skipped = $skipReason }
+        [void]$warnings.Add("not comparing $scenario with the baseline: $skipReason")
+        continue
+    }
     foreach ($metric in @("average_fps", "frame_ms_p95", "frame_ms_p99", "peak_process_memory_gib", "process_memory_growth_gib")) {
         $old = [double]$baselineData[$scenario][$metric]; $new = [double]$performance[$scenario][$metric]
         if ($old -le 0) { continue }
@@ -452,6 +506,10 @@ $visualTemplate = [ordered]@{
         [ordered]@{ scenario = "stress"; status = "pending"; notes = "no duplicate/orphaned cells or severe popping" },
         [ordered]@{ scenario = "stability"; status = "pending"; notes = "stable memory and lifecycle during the full-duration traversal" }
     )
+}
+if ($resolvedAssets -and $IncludeDenseLegacy) {
+    # Required by $expectedScenarios above, so the template must carry it or a reviewer cannot sign off.
+    $visualTemplate.checkpoints = @($visualTemplate.checkpoints) + [ordered]@{ scenario = "dense-legacy"; status = "pending"; notes = "the old dense place ($DenseLegacyGridX,$DenseLegacyGridY): dense references, materials, shadows" }
 }
 Write-JsonFile $visualTemplate (Join-Path $campaign "visual-review-template.json")
 $visualResult = [ordered]@{ supplied = $false; passed = $false; reviewer = $null; reviewed_at = $null; signature = $null; checkpoints = @() }

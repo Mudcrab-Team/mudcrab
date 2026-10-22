@@ -206,6 +206,16 @@ pub struct IngestionCacheEntry {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub recipe: String,
     pub files: Vec<IngestedFile>,
+    /// Version of the archive reader that produced `files`, for formats whose reader changed
+    /// what it stores (BSA names are decoded as Windows-1252 from version 1). Absent means 0,
+    /// the reader before any such change; an entry is reused only when it matches the current
+    /// reader, so a changed reader re-extracts the archive once instead of keeping old paths.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reader_version: u32,
+}
+
+pub(crate) fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 const INGESTION_JOURNAL_FILE: &str = ".ingestion-archives.jsonl";
@@ -320,21 +330,26 @@ pub struct ConversionManifest {
 /// Script ABI/settings, source and output proofs still have to match. Archive
 /// extraction uses its own source/blob integrity proof, independent of this gate.
 /// Schema 25 is excluded: two unmerged candidates both used it for different contracts.
+/// The producer-27 to producer-28 transition changes only texture container bytes,
+/// so producer-27 scripts remain valid.
 pub(crate) fn can_reuse_scripts_and_archives(schema: u32) -> bool {
-    matches!(schema, 12..=24 | 26)
+    matches!(schema, 12..=24 | 26 | 27)
 }
 
-/// Published producer-24 meshes retain the producer-26 byte contract. Producer 27
-/// changes the GLB collision data, so no earlier producer's meshes pass this gate
-/// at 27. This never authorizes texture reuse or bypasses source/configuration/
+/// Published producer-24 meshes retain the producer-26 byte contract, and producer-27
+/// meshes retain the producer-28 byte contract (only texture containers changed).
+/// Producer 27 changed the GLB collision data, so no producer before 27 passes this
+/// gate at 28 or later. This never authorizes texture reuse or bypasses source/configuration/
 /// output proof.
 pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
     can_reuse_meshes_for_producer(schema, CONVERTER_SCHEMA_VERSION)
 }
 
 /// Check the explicit producer pair so later contracts cannot inherit old mesh reuse.
+/// Each pair names a byte-identical GLB contract; `(24, 26)` must never be read as
+/// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent.
 pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
-    schema == current || matches!((schema, current), (24, 26))
+    schema == current || matches!((schema, current), (24, 26) | (27, 28))
 }
 
 /// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
@@ -381,7 +396,7 @@ impl ConversionManifest {
                 && mesh_schema <= manifest.schema_version
                 && (manifest.retained_mesh_schema_version.is_some() || !metadata_rebuild);
             // All old textures regenerate. GLBs of a producer `can_reuse_meshes`
-            // accepts (none for an earlier producer at 27) and scripts remain
+            // accepts (at 28: producers 27 only, never 24 or 26) and scripts remain
             // candidates for the usual per-asset verification.
             manifest.complete = false;
             manifest.entries.retain(|_, entry| {
@@ -539,6 +554,18 @@ pub(crate) fn legacy_projection_v1_configuration_hash(
         config,
         schema,
         Some(&serde_json::json!({"mode": "legacy", "projection_version": 1})),
+    )
+}
+
+/// Reproduce the exact version-3 legacy projection proof for retained assets.
+pub(crate) fn legacy_projection_v3_configuration_hash(
+    config: &crate::config::PipelineConfig,
+    schema: u32,
+) -> Result<String> {
+    configuration_hash_with_identity(
+        config,
+        schema,
+        Some(&serde_json::json!({"mode": "legacy", "projection_version": 3})),
     )
 }
 
@@ -962,6 +989,15 @@ pub(crate) fn retained_configuration_matches_for_reader(
     {
         return Ok(recorded == legacy_projection_v2_configuration_hash(config, schema)?);
     }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && identity == &serde_json::json!({"mode": "legacy", "projection_version": 3})
+    {
+        // Projection v3 resolved only English banks. Preserve old proofs under that contract.
+        if !crate::esm::inhouse::is_english(&config.language) {
+            return Ok(false);
+        }
+        return Ok(recorded == legacy_projection_v3_configuration_hash(config, schema)?);
+    }
     let current = crate::esm::inhouse::configured_reader_identity(config)?;
     if identity == &current {
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
@@ -1324,6 +1360,7 @@ mod tests {
                 size: 4,
                 hash: "cd".repeat(32),
             }],
+            reader_version: 0,
         };
         let mut journal = IngestionJournal::open(directory.path()).unwrap();
         journal.record("base.bsa", &entry).unwrap();

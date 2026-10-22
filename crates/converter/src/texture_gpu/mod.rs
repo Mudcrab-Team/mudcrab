@@ -794,7 +794,7 @@ impl GpuUastc {
     }
 
     #[cfg(test)]
-    fn new_software_for_test() -> Result<Self> {
+    pub(crate) fn new_software_for_test() -> Result<Self> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
         descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(descriptor);

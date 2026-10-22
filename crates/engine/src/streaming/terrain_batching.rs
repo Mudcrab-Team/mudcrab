@@ -1276,6 +1276,7 @@ mod tests {
                     Some(app.world().resource::<StreamingMetrics>()),
                     &crate::render::RendererMetrics::default(),
                     None,
+                    None,
                 )
                 .unwrap();
             let report: serde_json::Value = serde_json::from_slice(
@@ -2450,5 +2451,71 @@ mod tests {
                 .is_some()
         );
         assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 1);
+    }
+
+    #[test]
+    fn request_controls_keep_original_lod_sources_without_generated_batches() {
+        use super::super::{LodChunkRoot, batch_ready_lod_chunks};
+        use crate::streaming::StreamingCommitBudget;
+        use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin};
+        let mut app = test_app();
+        app.insert_resource(EngineConfig {
+            prioritize_streaming: true,
+            max_commit_micros_per_frame: 1_000_000,
+            ..default()
+        })
+        .init_resource::<StreamingCommitBudget>()
+        .init_resource::<LodStreaming>()
+        .init_resource::<ProfilingState>();
+        let fixture = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+        app.world_mut().entity_mut(fixture.root).insert((
+            LodChunkRoot {
+                key: ChunkKey::new(1, LodTier::Tier4, ChunkAnchor::new(0, 0)),
+                generation: 1,
+                origin: LodOrigin::new(0, 0),
+                retry_count: 0,
+            },
+            PendingLodTerrainBatching {
+                source: fixture.source.clone(),
+                patches: fixture.patches.clone(),
+            },
+            Visibility::Inherited,
+        ));
+        for &(patch, coverage) in &fixture.patches {
+            app.world_mut()
+                .entity_mut(patch)
+                .insert((coverage, TerrainSurfaceReady));
+        }
+        {
+            let mut budget = app.world_mut().resource_mut::<StreamingCommitBudget>();
+            budget.remaining = 1;
+            budget.frame_started = std::time::Instant::now();
+        }
+        app.world_mut()
+            .run_system_once(batch_ready_lod_chunks)
+            .unwrap();
+        assert!(
+            app.world().get::<LodTerrainBatches>(fixture.root).is_none(),
+            "request-controlled runs must not activate generated batches"
+        );
+        assert!(
+            !app.world()
+                .entity(fixture.root)
+                .contains::<PendingLodTerrainBatching>(),
+            "the pending conversion is dropped rather than retried under controls"
+        );
+        assert!(
+            fixture
+                .primitives
+                .iter()
+                .all(|&entity| app.world().get_entity(entity).is_ok()),
+            "original LOD source hierarchy stays alive under request controls"
+        );
+        assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 0);
+        assert!(
+            app.world()
+                .resource::<LodStreaming>()
+                .terrain_batch_controls_warned
+        );
     }
 }

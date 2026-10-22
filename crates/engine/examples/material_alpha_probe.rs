@@ -12,7 +12,10 @@ use bevy::{
     },
     window::{ExitCondition, WindowPlugin},
 };
-use engine::{color_pipeline::SceneColorPipeline, prepass_vertex_alpha::PrepassVertexAlphaPlugin};
+use engine::{
+    color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
+    prepass_vertex_alpha::PrepassVertexAlphaPlugin,
+};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -73,9 +76,9 @@ fn main() {
     if !legacy {
         app.add_plugins(PrepassVertexAlphaPlugin);
     }
-    app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
-        Duration::from_millis(16),
-    ));
+    app.add_plugins(SkyrimCinematicPostPlugin).add_plugins(
+        bevy::app::ScheduleRunnerPlugin::run_loop(Duration::from_millis(16)),
+    );
     let target = app
         .world_mut()
         .resource_mut::<Assets<Image>>()

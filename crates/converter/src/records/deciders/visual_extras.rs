@@ -40,7 +40,7 @@ pub fn select(
                 .map(|(_, payload)| *payload)
                 .ok_or("visual curve lacks preceding DNAM counts")?;
             if counts.len() != 244 {
-                return Err("visual curve DNAM counts are not244 bytes".into());
+                return Err("visual curve DNAM counts are not 244 bytes".into());
             }
             let count = u32::from_le_bytes(
                 counts[offset..offset + 4]
@@ -50,7 +50,7 @@ pub fn select(
             let count = usize::try_from(count).map_err(|_| "visual curve count overflows")?;
             if count > 1_000_000 || count.checked_mul(stride) != Some(bytes.len()) {
                 return Err(format!(
-                    "visual curve count/extent mismatch: {count} keys of{stride} bytes, payload{}",
+                    "visual curve count/extent mismatch: {count} keys of {stride} bytes, payload {}",
                     bytes.len()
                 ));
             }

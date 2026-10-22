@@ -15,6 +15,25 @@ fn producer_24_mesh_compatibility_does_not_follow_a_future_producer() {
     assert!(can_reuse_meshes_for_producer(27, 27));
 }
 
+/// Producer 28 changed only texture containers, so producer-27 GLBs remain valid at 28.
+/// Producers 24 and 26 never follow the pair transitively to the current schema.
+#[test]
+fn producer_27_mesh_compatibility_is_the_only_pair_into_producer_28() {
+    assert!(can_reuse_meshes_for_producer(27, 28));
+    assert!(can_reuse_meshes_for_producer(28, 28));
+    assert!(!can_reuse_meshes_for_producer(24, 28));
+    assert!(!can_reuse_meshes_for_producer(26, 28));
+    assert!(!can_reuse_meshes_for_producer(25, 28));
+    assert!(!can_reuse_meshes_for_producer(26, 27));
+}
+
+/// Scripts are independent of texture layout, so producer 27 scripts stay eligible at 28.
+#[test]
+fn producer_27_scripts_remain_reusable_under_producer_28() {
+    assert!(can_reuse_scripts_and_archives(27));
+    assert!(!can_reuse_scripts_and_archives(25));
+}
+
 /// Every asset kind ignores the full reader identity while metadata retains it.
 #[test]
 fn asset_settings_are_independent_of_reader_metadata() {
@@ -81,7 +100,7 @@ fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
     let identity = crate::esm::inhouse::reader_identity(RecordReader::Legacy);
     assert_eq!(
         identity,
-        serde_json::json!({"mode": "legacy", "projection_version": crate::esm::inhouse::LEGACY_PROJECTION_VERSION})
+        crate::esm::inhouse::reader_identity_in_language(RecordReader::Legacy, &legacy.language)
     );
     assert_ne!(configuration_hash(&legacy).unwrap(), historical);
     assert_eq!(
@@ -92,9 +111,11 @@ fn legacy_projection_identity_separates_current_and_historical_full_hashes() {
         legacy_projection_v2_configuration_hash(&legacy, 26).unwrap(),
         "52045b4ce9519e636d5948e24185871df559dfe1f40b1edbe6195b844d71d59f"
     );
+    // Current-producer pin: moves with CONVERTER_SCHEMA_VERSION (27 -> 28). Historical pins below
+    // name their producer explicitly and stay unchanged.
     assert_eq!(
-        configuration_hash(&legacy).unwrap(),
-        "ea9304455759dbc325ff58bd124686bf534d09925923914beea84ea66205c7da"
+        legacy_projection_v3_configuration_hash(&legacy, 26).unwrap(),
+        "4482b6966e40954faa2655b13e909ba75a107d58ebbf6478b977dcf45c92b912"
     );
     assert_eq!(
         configuration_hash_for_schema(&legacy, 15).unwrap(),
@@ -131,52 +152,58 @@ fn retained_legacy_hash_validation_does_not_upgrade_old_reader_provenance() {
     let current_identity = crate::esm::inhouse::reader_identity(RecordReader::Legacy);
     let v1_identity = serde_json::json!({"mode": "legacy", "projection_version": 1});
     let v2_identity = serde_json::json!({"mode": "legacy", "projection_version": 2});
-    let historical = configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION).unwrap();
+    let v3_identity = serde_json::json!({"mode": "legacy", "projection_version": 3});
+    // Compare every retained contract against the same producer used for verification.
+    let producer = CONVERTER_SCHEMA_VERSION;
+    let historical = configuration_hash_for_schema(&config, producer).unwrap();
     let current = configuration_hash(&config).unwrap();
-    let v1 = legacy_projection_v1_configuration_hash(&config, CONVERTER_SCHEMA_VERSION).unwrap();
-    let v2 = legacy_projection_v2_configuration_hash(&config, CONVERTER_SCHEMA_VERSION).unwrap();
+    let v1 = legacy_projection_v1_configuration_hash(&config, producer).unwrap();
+    let v2 = legacy_projection_v2_configuration_hash(&config, producer).unwrap();
+    let v3 = legacy_projection_v3_configuration_hash(&config, producer).unwrap();
     let contracts = [
         (&old_identity, historical.as_str()),
         (&v1_identity, v1.as_str()),
         (&v2_identity, v2.as_str()),
+        (&v3_identity, v3.as_str()),
         (&current_identity, current.as_str()),
     ];
     for (identity, matching) in contracts {
         assert!(
-            retained_configuration_matches_for_reader(
-                &config,
-                CONVERTER_SCHEMA_VERSION,
-                matching,
-                identity
-            )
-            .unwrap()
+            retained_configuration_matches_for_reader(&config, producer, matching, identity)
+                .unwrap(),
+            "rejected producer {producer} proof {matching} for identity {identity}"
         );
         for (other_identity, other_hash) in contracts {
             if identity != other_identity {
-                assert_ne!(matching, other_hash);
+                assert_ne!(
+                    matching, other_hash,
+                    "producer {producer} reused proof {other_hash} across identities {identity} and {other_identity}"
+                );
                 assert!(
                     !retained_configuration_matches_for_reader(
-                        &config,
-                        CONVERTER_SCHEMA_VERSION,
-                        other_hash,
-                        identity
+                        &config, producer, other_hash, identity
                     )
-                    .unwrap()
+                    .unwrap(),
+                    "accepted producer {producer} proof {other_hash} for identity {identity}, expected {other_identity}"
                 );
             }
         }
         let mut changed = config.clone();
         changed.script_abi_version += 1;
         assert!(
-            !retained_configuration_matches_for_reader(
-                &changed,
-                CONVERTER_SCHEMA_VERSION,
-                matching,
-                identity
-            )
-            .unwrap()
+            !retained_configuration_matches_for_reader(&changed, producer, matching, identity)
+                .unwrap(),
+            "accepted producer {producer} proof {matching} for identity {identity} after script ABI changed"
         );
     }
+    let french_v3 = serde_json::json!({"mode": "legacy", "projection_version": 3});
+    let mut french_config = config.clone();
+    french_config.language = "French".to_owned();
+    assert!(
+        !retained_configuration_matches_for_reader(&french_config, producer, &v3, &french_v3)
+            .unwrap(),
+        "accepted producer {producer} English v3 proof {v3} for French identity {french_v3}"
+    );
     assert!(
         retained_configuration_matches_for_reader(
             &config,
