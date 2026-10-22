@@ -26,7 +26,11 @@ use std::{
 };
 
 const GAITS: [&str; 3] = ["idle", "walkforward", "runforward"];
-const HEADS: [&str; 2] = ["00013475", "0010f5a1"];
+/// Alvor's and Sigrid's FaceGen heads, the pair `actor_preview` renders by default.
+const HEADS: [&str; 2] = ["00013475", "00013476"];
+/// Converted alongside `HEADS` because the engine's `retail_head_follows_the_animated_body_bone`
+/// loads this head from the same tree.
+const RETAIL_TEST_HEADS: [&str; 1] = ["0010f5a1"];
 
 fn env_dir(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
@@ -343,7 +347,7 @@ fn materialises_the_converted_actor_assets() {
         }
     }
 
-    for head in HEADS {
+    for head in HEADS.into_iter().chain(RETAIL_TEST_HEADS) {
         let head_nif = actor_root
             .join("character/facegendata/facegeom/skyrim.esm")
             .join(format!("{head}.nif"));

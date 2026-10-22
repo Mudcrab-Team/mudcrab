@@ -17,6 +17,13 @@
 //! is saved when the idle pose has settled. By default the real meshes are drawn with neutral
 //! preview materials, which keeps the silhouette readable when the tree carries no textures. Pass
 //! `--textures` to render the materials and KTX2 images the GLBs reference instead.
+//!
+//! `--dark-skin-check MAX_FRACTION` turns the render into a regression check: after the PNG is
+//! written, the actor's pixels (everything that differs from the background) are tested against a
+//! luminance floor (`--dark-floor`, default 0.10 on the encoded 0..1 scale), and the run exits
+//! non-zero when more than `MAX_FRACTION` of them fall below it. A model-space normal map decoded
+//! as a tangent-space one shows up as large near-black patches on the back and shoulders, which
+//! this catches without comparing against a reference image.
 
 use bevy::{
     animation::{
@@ -53,11 +60,22 @@ const SETTLE_FRAMES: u32 = 90;
 const CAMERA_FRAMES: u32 = 8;
 const TIME_LIMIT: Duration = Duration::from_secs(180);
 const MALE_HEAD: &str = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.glb";
-const FEMALE_HEAD: &str = "meshes/actors/character/facegendata/facegeom/skyrim.esm/0010f5a1.glb";
+const FEMALE_HEAD: &str = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013476.glb";
 const BACKGROUND: Color = Color::srgb(0.11, 0.13, 0.16);
 /// The head's own scene is discarded when even one of its joints has no body bone.
 const MIN_SKIN_FRACTION: f32 = 0.01;
 const MIN_LUMINANCE: f32 = 0.02;
+/// Per-channel distance from the background colour above which a pixel counts as the actor.
+const FOREGROUND_DISTANCE: u16 = 16;
+/// The dark-skin check uses a tighter actor mask: the blotches it looks for sit within
+/// `FOREGROUND_DISTANCE` of the dark background, while the cleared background itself is exact.
+const DARK_CHECK_DISTANCE: u16 = 4;
+/// Encoded luminance of the darkest blotches a tangent-decoded model-space map leaves on the
+/// back (about RGB 22,21,23), with headroom; lit skin sits well above it.
+const DEFAULT_DARK_FLOOR: f64 = 0.10;
+/// Height of the head framing box centre above the head bone. The camera sits and aims above the
+/// box centre, so a small lift keeps the face mid-frame with the crown and chin in view.
+const HEAD_FRAME_LIFT: f32 = 2.0;
 
 #[derive(Debug, Clone)]
 enum HeadChoice {
@@ -82,12 +100,38 @@ struct View {
     head: bool,
 }
 
+/// Fails the run when too many actor pixels are darker than `floor`.
+#[derive(Debug, Clone, Copy)]
+struct DarkSkinCheck {
+    max_fraction: f64,
+    floor: f64,
+}
+
+/// Everything the command line selects.
+struct Options {
+    demo: PathBuf,
+    output: PathBuf,
+    sex: ActorSex,
+    head: HeadChoice,
+    windowed: bool,
+    textures: bool,
+    view: View,
+    msaa: Msaa,
+    /// Linear RGB skin tone in 0..1, the scale of an `NPC_` record's `QNAM`. Nothing consumes it
+    /// until the skin material has a tint input; it is carried so the command line stays stable.
+    skin_tone: Option<[f32; 3]>,
+    dark_skin_check: Option<f64>,
+    dark_floor: f64,
+}
+
 #[derive(Resource)]
 struct Preview {
     output: PathBuf,
     view: View,
     windowed: bool,
     textures: bool,
+    msaa: Msaa,
+    dark_skin_check: Option<DarkSkinCheck>,
     target: Handle<Image>,
     body_scene: Handle<WorldAsset>,
     idle_gltf: Handle<Gltf>,
@@ -120,7 +164,22 @@ impl Preview {
 }
 
 fn main() {
-    let (demo, output, sex, head, windowed, textures, view) = parse_args();
+    let Options {
+        demo,
+        output,
+        sex,
+        head,
+        windowed,
+        textures,
+        view,
+        msaa,
+        skin_tone,
+        dark_skin_check,
+        dark_floor,
+    } = parse_args();
+    if let Some([red, green, blue]) = skin_tone {
+        println!("actor preview: skin tone {red:.3},{green:.3},{blue:.3} (not applied yet)");
+    }
     if let Err(error) = check_inputs(&demo) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
@@ -220,6 +279,11 @@ fn main() {
         body_material,
         head_material,
         textures,
+        msaa,
+        dark_skin_check: dark_skin_check.map(|max_fraction| DarkSkinCheck {
+            max_fraction,
+            floor: dark_floor,
+        }),
         phase: Phase::Loading,
         actor: None,
         body_root: None,
@@ -244,9 +308,45 @@ fn main() {
     }
 }
 
-fn parse_args() -> (PathBuf, PathBuf, ActorSex, HeadChoice, bool, bool, View) {
+fn usage_error(message: &str) -> ! {
+    eprintln!("actor preview: {message}");
+    std::process::exit(2);
+}
+
+fn parse_fraction(flag: &str, value: Option<String>) -> f64 {
+    match value.and_then(|value| value.parse::<f64>().ok()) {
+        Some(value) if (0.0..=1.0).contains(&value) => value,
+        _ => usage_error(&format!("{flag} needs a number between 0 and 1")),
+    }
+}
+
+fn parse_msaa(value: Option<String>) -> Msaa {
+    match value.as_deref() {
+        Some("1" | "off") => Msaa::Off,
+        Some("2") => Msaa::Sample2,
+        Some("4") => Msaa::Sample4,
+        Some("8") => Msaa::Sample8,
+        _ => usage_error("--msaa needs 1, 2, 4 or 8"),
+    }
+}
+
+fn parse_skin_tone(value: Option<String>) -> [f32; 3] {
+    let channels: Option<Vec<f32>> = value.as_deref().map(|value| {
+        value
+            .split(',')
+            .filter_map(|channel| channel.trim().parse::<f32>().ok())
+            .filter(|channel| (0.0..=1.0).contains(channel))
+            .collect()
+    });
+    match channels.as_deref() {
+        Some(&[red, green, blue]) => [red, green, blue],
+        _ => usage_error("--skin-tone needs R,G,B with each channel between 0 and 1"),
+    }
+}
+
+fn parse_args() -> Options {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|head]";
+    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE]";
     let Some(demo) = args.next() else {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -260,8 +360,16 @@ fn parse_args() -> (PathBuf, PathBuf, ActorSex, HeadChoice, bool, bool, View) {
     let mut windowed = false;
     let mut textures = false;
     let mut view = View::default();
+    let mut msaa = Msaa::Off;
+    let mut skin_tone = None;
+    let mut dark_skin_check = None;
+    let mut dark_floor = DEFAULT_DARK_FLOOR;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--msaa" => msaa = parse_msaa(args.next()),
+            "--skin-tone" => skin_tone = Some(parse_skin_tone(args.next())),
+            "--dark-skin-check" => dark_skin_check = Some(parse_fraction(&flag, args.next())),
+            "--dark-floor" => dark_floor = parse_fraction(&flag, args.next()),
             "--sex" => {
                 let Some(value) = args.next() else {
                     eprintln!("actor preview: --sex needs male or female");
@@ -315,15 +423,19 @@ fn parse_args() -> (PathBuf, PathBuf, ActorSex, HeadChoice, bool, bool, View) {
             }
         }
     }
-    (
-        PathBuf::from(demo),
-        PathBuf::from(output),
+    Options {
+        demo: PathBuf::from(demo),
+        output: PathBuf::from(output),
         sex,
         head,
         windowed,
         textures,
         view,
-    )
+        msaa,
+        skin_tone,
+        dark_skin_check,
+        dark_floor,
+    }
 }
 
 fn check_inputs(demo: &Path) -> Result<(), String> {
@@ -635,8 +747,7 @@ fn head_bounds(preview: &Preview, globals: &Query<&GlobalTransform>) -> (Vec3, V
     else {
         return body_bounds(preview, globals);
     };
-    // The head bone sits at the base of the skull, so the box is shifted upwards.
-    let center = head.translation() + Vec3::new(0.0, 6.0, 0.0);
+    let center = head.translation() + Vec3::new(0.0, HEAD_FRAME_LIFT, 0.0);
     let half = Vec3::new(9.0, 10.0, 9.0);
     (center - half, center + half)
 }
@@ -687,7 +798,7 @@ fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, V
         } else {
             RenderTarget::Image(preview.target.clone().into())
         },
-        Msaa::Off,
+        preview.msaa,
         Transform::from_translation(camera_position).looking_at(look_at, Vec3::Y),
     ));
 
@@ -736,13 +847,17 @@ fn write_output(
     let height = image.height();
     let mut luminance = 0.0f64;
     for pixel in image.pixels() {
-        let [red, green, blue] = pixel.0;
-        luminance += 0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue);
+        luminance += pixel_luminance(pixel.0);
     }
-    let mean_luminance = luminance / (f64::from(width) * f64::from(height) * 255.0);
+    let mean_luminance = luminance / (f64::from(width) * f64::from(height));
 
     let background = corner_color(&image);
+    let dark_floor = preview
+        .dark_skin_check
+        .map_or(DEFAULT_DARK_FLOOR, |check| check.floor);
     let mut foreground = 0u64;
+    let mut actor = 0u64;
+    let mut dark = 0u64;
     for pixel in image.pixels() {
         let distance = pixel
             .0
@@ -751,11 +866,22 @@ fn write_output(
             .map(|(channel, background)| u16::from(*channel).abs_diff(u16::from(background)))
             .max()
             .unwrap_or(0);
-        if distance > 16 {
+        if distance > FOREGROUND_DISTANCE {
             foreground += 1;
+        }
+        if distance > DARK_CHECK_DISTANCE {
+            actor += 1;
+            if pixel_luminance(pixel.0) < dark_floor {
+                dark += 1;
+            }
         }
     }
     let foreground_fraction = foreground as f64 / (f64::from(width) * f64::from(height));
+    let dark_fraction = if actor == 0 {
+        0.0
+    } else {
+        dark as f64 / actor as f64
+    };
 
     if let Some(parent) = preview.output.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -786,18 +912,35 @@ fn write_output(
         preview.head_nodes
     );
 
-    let passed = foreground_fraction >= f64::from(MIN_SKIN_FRACTION)
+    let mut passed = foreground_fraction >= f64::from(MIN_SKIN_FRACTION)
         && mean_luminance >= f64::from(MIN_LUMINANCE);
     if !passed {
         eprintln!(
             "actor preview: the frame looks empty (foreground {foreground_fraction:.3}, luminance {mean_luminance:.3})"
         );
     }
+    println!(
+        "actor preview: dark actor fraction {dark_fraction:.4} ({dark} of {actor} actor pixels below luminance {dark_floor:.3})"
+    );
+    if let Some(check) = preview.dark_skin_check
+        && dark_fraction > check.max_fraction
+    {
+        eprintln!(
+            "actor preview: dark skin check failed: {dark_fraction:.4} of the actor is below luminance {:.3}, limit {:.4}",
+            check.floor, check.max_fraction
+        );
+        passed = false;
+    }
     exit.write(if passed {
         AppExit::Success
     } else {
         AppExit::error()
     });
+}
+
+/// Rec. 709 luminance of an encoded 8-bit pixel, on a 0..1 scale.
+fn pixel_luminance([red, green, blue]: [u8; 3]) -> f64 {
+    (0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue)) / 255.0
 }
 
 fn corner_color(image: &image::RgbImage) -> [u8; 3] {
