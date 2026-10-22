@@ -298,6 +298,66 @@ pub fn composed_body_glb(body: &ComposedBody, output: &Path) -> Result<Vec<u8>> 
     rewrite_materials_and_texture_uris(glb, &body.material_contract, &body.shape_blocks, output)
 }
 
+/// Blends two compositions of the same parts at the NPC weight extremes, the way the game shapes
+/// an actor's body from its `NPC_` weight (`NAM7`, 0..100): every vertex is
+/// `thin + (heavy - thin) * weight / 100`, with the normals blended the same way and renormalised.
+///
+/// `thin` is built from the `*_0.nif` parts and `heavy` from the `*_1.nif` parts. The FaceGen head
+/// carries its neck already shaped for the NPC's weight, so a body left at either extreme opens a
+/// visible gap at the neck seam. Skinning, materials and texture sets come from `heavy`.
+pub fn blend_body_weight(
+    thin: &ComposedBody,
+    mut heavy: ComposedBody,
+    weight: f32,
+) -> Result<ComposedBody> {
+    ensure!(
+        (0.0..=100.0).contains(&weight),
+        "NPC weight {weight} is outside 0..100"
+    );
+    ensure!(
+        thin.model.skeletal_meshes.len() == heavy.model.skeletal_meshes.len(),
+        "the weight 0 body has {} skeletal meshes, the weight 100 body {}",
+        thin.model.skeletal_meshes.len(),
+        heavy.model.skeletal_meshes.len()
+    );
+    let factor = weight / 100.0;
+    for (index, (thin_mesh, heavy_mesh)) in thin
+        .model
+        .skeletal_meshes
+        .iter()
+        .zip(heavy.model.skeletal_meshes.iter_mut())
+        .enumerate()
+    {
+        let (Some(thin_mesh), Some(heavy_mesh)) = (&thin_mesh.mesh, &mut heavy_mesh.mesh) else {
+            return Err(eyre!("skeletal mesh {index} has no geometry"));
+        };
+        ensure!(
+            thin_mesh.positions.len() == heavy_mesh.positions.len()
+                && thin_mesh.triangles == heavy_mesh.triangles,
+            "skeletal mesh {index} differs in topology between the weight 0 and weight 100 parts"
+        );
+        for (heavy_position, thin_position) in
+            heavy_mesh.positions.iter_mut().zip(&thin_mesh.positions)
+        {
+            *heavy_position = thin_position.lerp(*heavy_position, factor);
+        }
+        if thin_mesh.normals.len() == heavy_mesh.normals.len() {
+            for (heavy_normal, thin_normal) in heavy_mesh.normals.iter_mut().zip(&thin_mesh.normals)
+            {
+                *heavy_normal = thin_normal
+                    .lerp(*heavy_normal, factor)
+                    .try_normalize()
+                    .unwrap_or(*heavy_normal);
+            }
+        }
+    }
+    heavy
+        .model
+        .validate()
+        .map_err(|error| eyre!("invalid weight-blended body model: {error}"))?;
+    Ok(heavy)
+}
+
 /// Writes a composed model as a GLB using the same exporter, material publication and atomic
 /// publish step as every other converted NIF. Returns whether the file changed.
 pub fn write_composed_body(body: &ComposedBody, output: &Path) -> Result<bool> {
