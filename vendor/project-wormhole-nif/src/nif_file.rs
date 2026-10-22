@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gltf::json::accessor::ComponentType;
 use gltf::json::accessor::GenericComponentType;
@@ -293,6 +293,21 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
             Some(skeleton) => {
                 // Get nodes from skeleton
                 let skel_nodes = skeleton.get_nodes();
+                // The first block with a node name owns that name, matching the order this
+                // loop keeps bones in. Children pointing at a later duplicate are dropped so
+                // the duplicate cannot stay attached to a second parent.
+                let mut winning_block = BTreeMap::new();
+                for (block, node) in skeleton.blocks.iter().enumerate() {
+                    let Ok(node) = node.as_node() else {
+                        continue;
+                    };
+                    let Ok(name) = skeleton.header.get_string(node.name() as usize) else {
+                        continue;
+                    };
+                    if let Ok(block) = u32::try_from(block) {
+                        winning_block.entry(name.to_string()).or_insert(block);
+                    }
+                }
 
                 // Loop through nodes and add them to the bone tree
                 let mut duplicate_names = BTreeSet::new();
@@ -329,7 +344,15 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                             }
                         };
                         match skeleton.header.get_string(child_node.name() as usize) {
-                            Ok(name) => Some(name.to_string()),
+                            Ok(name) if winning_block.get(name) == Some(index) => {
+                                Some(name.to_string())
+                            }
+                            Ok(name) => {
+                                warn!(
+                                    "skeleton node {node_name:?} references child block {index} ({name:?}), which repeats a node name; skipping the duplicate"
+                                );
+                                None
+                            }
                             Err(error) => {
                                 warn!(
                                     "skeleton node {node_name:?} child block {index} has an invalid name: {error}; skipping it"
