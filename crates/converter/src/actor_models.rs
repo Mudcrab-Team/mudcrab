@@ -90,7 +90,7 @@ impl UnresolvedReason {
 }
 
 /// One `actor_models` row: the body/head summary for a referenced `NPC_` base.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ActorModelRow {
     /// The `NPC_` FormID.
     pub id: u32,
@@ -106,6 +106,9 @@ pub struct ActorModelRow {
     pub head_source: Option<&'static str>,
     /// `body`, `body_head` or `unresolved`.
     pub resolution: &'static str,
+    /// `NPC_/QNAM`, the body skin tone as RGB in 0..1 on the encoded (not linearised) scale.
+    /// The game hands it to the body, hands and feet shaders as their tint colour.
+    pub skin_tone: Option<[f32; 3]>,
 }
 
 /// One `actor_model_parts` row: a biped slot's model path.
@@ -176,6 +179,7 @@ pub fn resolve_actor_models(
             head_model: None,
             head_source: None,
             resolution: "unresolved",
+            skin_tone: npc_skin_tone(&view),
         };
 
         let Some(race_id) = view.get_form_id(b"RNAM") else {
@@ -242,6 +246,22 @@ fn npc_sex(view: &SubrecordView<'_>) -> (bool, bool) {
         ),
         _ => (false, true),
     }
+}
+
+/// `NPC_/QNAM`: three little-endian `f32` (red, green, blue). A short or non-finite value is no
+/// tone at all, so the engine keeps the model's own tint rather than drawing a garbage colour.
+fn npc_skin_tone(view: &SubrecordView<'_>) -> Option<[f32; 3]> {
+    let data = view.find(b"QNAM").filter(|data| data.len() >= 12)?;
+    let channel = |offset: usize| {
+        f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ])
+    };
+    let tone = [channel(0), channel(4), channel(8)];
+    tone.iter().all(|value| value.is_finite()).then_some(tone)
 }
 
 /// Follows `RACE/WNAM` -> `ARMO/MODL` -> each `ARMA`, and fills the biped slots.
@@ -410,4 +430,45 @@ fn is_humanoid(parts: &[ActorModelPartRow]) -> bool {
         let path = part.model_path.to_lowercase();
         path.contains("malebody") || path.contains("femalebody")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn qnam(bytes: Vec<u8>) -> Option<[f32; 3]> {
+        let subrecords = vec![(b"QNAM".to_vec(), bytes)];
+        npc_skin_tone(&SubrecordView::new(&subrecords))
+    }
+
+    #[test]
+    fn qnam_decodes_three_little_endian_floats() {
+        // Alvor's (`00013475`) bytes from retail `Skyrim.esm`: 198/255, 176/255, 168/255.
+        let alvor = qnam(
+            [
+                0xc8, 0xc6, 0x46, 0x3f, 0xb1, 0xb0, 0x30, 0x3f, 0xa9, 0xa8, 0x28, 0x3f,
+            ]
+            .to_vec(),
+        )
+        .unwrap();
+        for (channel, encoded) in alvor.iter().zip([198.0_f32, 176.0, 168.0]) {
+            assert!((channel * 255.0 - encoded).abs() < 1e-3, "{alvor:?}");
+        }
+        let bytes: Vec<u8> = [0.25_f32, 0.5, 1.0]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(qnam(bytes), Some([0.25, 0.5, 1.0]));
+    }
+
+    #[test]
+    fn a_missing_short_or_non_finite_qnam_is_no_tone() {
+        assert_eq!(npc_skin_tone(&SubrecordView::new(&[])), None);
+        assert_eq!(qnam(vec![0; 11]), None);
+        let nan: Vec<u8> = [0.5_f32, f32::NAN, 0.5]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(qnam(nan), None);
+    }
 }
