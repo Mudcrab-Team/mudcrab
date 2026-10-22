@@ -2049,8 +2049,11 @@ impl ConversionBatch<'_> {
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
                                     let err = eyre!(
-                                        "NIF {} declares skin joints no skeleton covers at 50% or more (best coverage {best_coverage:.2})",
-                                        relative.display()
+                                        "{}",
+                                        crate::mesh::unresolved_skeleton_diagnostic(
+                                            format_args!("NIF {}", relative.display()),
+                                            best_coverage
+                                        )
                                     );
                                     let (err, fatal) = match remove_invalid_staged_output(&target) {
                                         Ok(()) => (err, false),

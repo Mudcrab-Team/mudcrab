@@ -86,8 +86,11 @@ impl MeshConverter {
             SkeletonResolution::SelfContained => None,
             SkeletonResolution::Unresolved { best_coverage } => {
                 return Err(color_eyre::eyre::eyre!(
-                    "skinned NIF {} has joints no skeleton covers at {MIN_SKELETON_COVERAGE:.1} or more (best coverage {best_coverage:.2})",
-                    nif_path.display()
+                    "{}",
+                    unresolved_skeleton_diagnostic(
+                        format_args!("skinned NIF {}", nif_path.display()),
+                        best_coverage
+                    )
                 ));
             }
         };
@@ -2186,6 +2189,18 @@ fn texture_uri(document: &serde_json::Value, texture_index: usize) -> Option<&st
 
 /// Below half coverage no single skeleton is credible enough to attach.
 const MIN_SKELETON_COVERAGE: f32 = 0.5;
+
+/// Diagnostic for a rig that only partial skeletons cover. [`SkeletonResolution::Unresolved`]
+/// is returned above [`MIN_SKELETON_COVERAGE`], so the best indexed match is always at or above
+/// that threshold and the failure is missing full coverage, not missing coverage.
+pub(crate) fn unresolved_skeleton_diagnostic(
+    subject: impl std::fmt::Display,
+    best_coverage: f32,
+) -> String {
+    format!(
+        "{subject} declares skin joints that no skeleton covers fully and no path candidate covers at {MIN_SKELETON_COVERAGE:.1} or more; the best indexed skeleton covers {best_coverage:.2}, which is too partial to trust"
+    )
+}
 
 /// Which skeleton a skinned mesh needs, or why it needs none.
 #[derive(Debug, Clone, PartialEq)]
