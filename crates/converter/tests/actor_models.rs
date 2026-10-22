@@ -517,6 +517,187 @@ fn an_older_actor_models_table_gains_the_skin_tone_columns() {
     assert_eq!(stored_skin_tone(&connection, 0x100), [None; 3]);
 }
 
+const FEMALE_HANDS: &str = "actors\\character\\character assets\\femalehands_1.nif";
+
+/// A `NordRace` whose skin holds an exact-race body and a `DefaultRace` hands armature, each with
+/// a male and a female skin texture set, and one NPC of each sex.
+fn nord_with_skin_texture_sets() -> Vec<Vec<u8>> {
+    vec![
+        items::npc(0x100, 0x200, false),
+        items::npc(0x101, 0x200, true),
+        items::race(0x200, "NordRace", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400, 0x401]),
+        items::armature_with_skins(
+            0x400,
+            0x200,
+            items::BIPED_BODY,
+            (Some(MALE_BODY), Some(FEMALE_BODY)),
+            (Some(0x500), Some(0x501)),
+        ),
+        items::armature_with_skins(
+            0x401,
+            items::DEFAULT_RACE_FORM_ID,
+            items::BIPED_HANDS,
+            (Some(MALE_HANDS), Some(FEMALE_HANDS)),
+            (Some(0x502), None),
+        ),
+    ]
+}
+
+#[test]
+fn parts_carry_the_armature_race_and_the_sex_skin_texture_set() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = write_plugin(
+        directory.path(),
+        "Skyrim.esm",
+        &nord_with_skin_texture_sets(),
+    );
+
+    let catalog = resolve(&path);
+    let parts: Vec<_> = catalog
+        .parts
+        .iter()
+        .map(|part| {
+            (
+                part.npc_id,
+                part.slot.as_str(),
+                part.armature_race_id,
+                part.skin_texture_set_id,
+            )
+        })
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            (0x100, "body", 0x200, Some(0x500)),
+            (0x100, "hands", items::DEFAULT_RACE_FORM_ID, Some(0x502)),
+            (0x101, "body", 0x200, Some(0x501)),
+            // NAM1 is absent: the female hands keep the NIF's own textures.
+            (0x101, "hands", items::DEFAULT_RACE_FORM_ID, None),
+        ]
+    );
+
+    let connection = export(directory.path(), &path);
+    let stored: Vec<(u32, String, u32, Option<u32>)> = connection
+        .prepare(
+            "SELECT npc_id, slot, armature_race_id, skin_texture_set_id FROM actor_model_parts \
+             ORDER BY npc_id, slot",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let expected: Vec<(u32, String, u32, Option<u32>)> = parts
+        .iter()
+        .map(|(npc, slot, race, set)| (*npc, (*slot).to_owned(), *race, *set))
+        .collect();
+    assert_eq!(stored, expected);
+}
+
+#[test]
+fn the_default_body_takes_the_default_race_armature_skin_texture_sets() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut records = nord_with_skin_texture_sets();
+    records.push(
+        dummy_content::esm::texture_set(
+            0x502,
+            [
+                Some("actors/character/male/malehands_1.dds"),
+                Some("actors/character/male/malehands_1_msn.dds"),
+                None,
+                Some("actors/character/male/malehands_1_sk.dds"),
+                None,
+                None,
+                None,
+                Some("actors/character/male/malehands_1_s.dds"),
+            ],
+        )
+        .unwrap(),
+    );
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let database = directory.path().join("skyrim_world.db");
+    drop(export(directory.path(), &path));
+
+    let male = converter::compose::default_skin_texture_sets(&database, "male").unwrap();
+    assert_eq!(
+        male.len(),
+        1,
+        "only the hands armature is DefaultRace's: {male:?}"
+    );
+    assert_eq!(male[0].kind, converter::compose::BodyPartKind::Hands);
+    assert_eq!(male[0].model_path, MALE_HANDS);
+    let slots: Vec<Option<&str>> = male[0]
+        .textures
+        .slots
+        .iter()
+        .map(Option::as_deref)
+        .collect();
+    // TX03 is NIF slot 2 and TX07 slot 7.
+    assert_eq!(
+        slots,
+        [
+            Some("actors/character/male/malehands_1.dds"),
+            Some("actors/character/male/malehands_1_msn.dds"),
+            Some("actors/character/male/malehands_1_sk.dds"),
+            None,
+            None,
+            None,
+            None,
+            Some("actors/character/male/malehands_1_s.dds"),
+        ]
+    );
+    assert!(
+        converter::compose::skin_texture_set_for(
+            &male,
+            converter::compose::BodyPartKind::Hands,
+            Path::new("/data/meshes/actors/character/character assets/MaleHands_1.nif"),
+        )
+        .is_some()
+    );
+    assert!(
+        converter::compose::skin_texture_set_for(
+            &male,
+            converter::compose::BodyPartKind::Hands,
+            Path::new("/data/meshes/actors/character/character assets/malehandsargonian_1.nif"),
+        )
+        .is_none()
+    );
+    assert!(
+        converter::compose::default_skin_texture_sets(&database, "female")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A database whose `actor_model_parts` predates the skin columns gains them when the tables are
+/// created again.
+#[test]
+fn an_older_actor_model_parts_table_gains_the_skin_columns() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE actor_model_parts (
+                 npc_id INTEGER NOT NULL, slot TEXT NOT NULL, model_path TEXT NOT NULL,
+                 PRIMARY KEY (npc_id, slot)
+             );
+             INSERT INTO actor_model_parts VALUES (0x100, 'hands', 'hands.nif');",
+        )
+        .unwrap();
+    converter::esm::exporter::create_tables(&connection).unwrap();
+    converter::esm::exporter::create_tables(&connection).unwrap();
+    let stored: (Option<u32>, Option<u32>) = connection
+        .query_row(
+            "SELECT armature_race_id, skin_texture_set_id FROM actor_model_parts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (None, None));
+}
+
 /// Retail bodies: the full resolved/unresolved breakdown, Alvor's row and the
 /// `statics` invariant. The 2,392 count is printed, not asserted.
 #[test]

@@ -223,6 +223,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              npc_id INTEGER NOT NULL,
              slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
              model_path TEXT NOT NULL,
+             armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+             skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
              PRIMARY KEY (npc_id, slot)
          );
          CREATE TABLE IF NOT EXISTS movement_types (
@@ -323,6 +325,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // later exports added, so a complete export can still insert into it.
     add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
+    add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
     )?
@@ -353,6 +356,13 @@ const ACTOR_SKIN_TONE_COLUMNS: &[(&str, &str)] = &[
     ("skin_tone_r", "REAL"),
     ("skin_tone_g", "REAL"),
     ("skin_tone_b", "REAL"),
+];
+
+/// The `actor_model_parts` columns added after the first catalog export: the armature's race
+/// and its skin texture set.
+const ACTOR_PART_SKIN_COLUMNS: &[(&str, &str)] = &[
+    ("armature_race_id", "INTEGER"),
+    ("skin_texture_set_id", "INTEGER"),
 ];
 
 /// The `lights` columns #269 added after the first light export.
@@ -1014,7 +1024,7 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
         "INSERT OR REPLACE INTO actor_models(id, race_id, sex, skin_armo_id, head_model, head_source, resolution, skin_tone_r, skin_tone_g, skin_tone_b) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     let mut insert_part = tx.prepare_cached(
-        "INSERT OR REPLACE INTO actor_model_parts(npc_id, slot, model_path) VALUES (?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO actor_model_parts(npc_id, slot, model_path, armature_race_id, skin_texture_set_id) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
     for row in &catalog.models {
         delete_model.execute([row.id])?;
@@ -1033,7 +1043,13 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
         ])?;
     }
     for part in &catalog.parts {
-        insert_part.execute(params![part.npc_id, part.slot.as_str(), part.model_path])?;
+        insert_part.execute(params![
+            part.npc_id,
+            part.slot.as_str(),
+            part.model_path,
+            part.armature_race_id,
+            part.skin_texture_set_id
+        ])?;
     }
     report_actor_model_diagnostics(&catalog.diagnostics);
     Ok(())

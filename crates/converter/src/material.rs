@@ -1062,6 +1062,28 @@ fn lighting_texture_slots(
     flags_1: u32,
     flags_2: u32,
 ) -> Result<Vec<NifTextureSlot>> {
+    let mut slots = Vec::new();
+    for (index, path) in set.textures.iter().enumerate() {
+        let Some(path) = path else { continue };
+        slots.push(lighting_texture_slot(
+            index,
+            path,
+            shader_type,
+            flags_1,
+            flags_2,
+        )?);
+    }
+    Ok(slots)
+}
+
+/// One `BSShaderTextureSet` slot of a lighting shader, classified by the shader type and flags.
+fn lighting_texture_slot(
+    index: usize,
+    path: &str,
+    shader_type: LightingShaderType,
+    flags_1: u32,
+    flags_2: u32,
+) -> Result<NifTextureSlot> {
     let environment = matches!(
         shader_type,
         LightingShaderType::EnvironmentMap
@@ -1078,33 +1100,85 @@ fn lighting_texture_slots(
     // Slot 6 is the multilayer-parallax inner layer, but a FaceGen head keeps its tint texture
     // there, which the `FACEGEN` lighting shader samples as `TexTintSampler`.
     let facegen = matches!(shader_type, LightingShaderType::FaceTint);
-    let mut slots = Vec::new();
-    for (index, path) in set.textures.iter().enumerate() {
-        let Some(path) = path else { continue };
-        let semantic = match index {
-            0 => NifTextureSemantic::Diffuse,
-            1 => NifTextureSemantic::Normal,
-            2 if glow => NifTextureSemantic::Glow,
-            2 => NifTextureSemantic::Unclassified,
-            3 if height => NifTextureSemantic::Height,
-            3 => NifTextureSemantic::Detail,
-            4 if environment => NifTextureSemantic::EnvironmentCube,
-            4 => NifTextureSemantic::Unclassified,
-            5 if environment => NifTextureSemantic::EnvironmentMask,
-            5 => NifTextureSemantic::Unclassified,
-            6 if facegen => NifTextureSemantic::FacegenTint,
-            6 => NifTextureSemantic::InnerLayer,
-            7 => NifTextureSemantic::Specular,
-            _ => NifTextureSemantic::Unclassified,
+    let semantic = match index {
+        0 => NifTextureSemantic::Diffuse,
+        1 => NifTextureSemantic::Normal,
+        2 if glow => NifTextureSemantic::Glow,
+        2 => NifTextureSemantic::Unclassified,
+        3 if height => NifTextureSemantic::Height,
+        3 => NifTextureSemantic::Detail,
+        4 if environment => NifTextureSemantic::EnvironmentCube,
+        4 => NifTextureSemantic::Unclassified,
+        5 if environment => NifTextureSemantic::EnvironmentMask,
+        5 => NifTextureSemantic::Unclassified,
+        6 if facegen => NifTextureSemantic::FacegenTint,
+        6 => NifTextureSemantic::InnerLayer,
+        7 => NifTextureSemantic::Specular,
+        _ => NifTextureSemantic::Unclassified,
+    };
+    texture_slot(
+        index,
+        semantic,
+        path,
+        index == 0 || (environment && matches!(index, 4 | 5)),
+    )
+}
+
+/// A `TXST` texture set laid out in `BSShaderTextureSet` slot order, as the game applies it to a
+/// NIF shape: `TX00` diffuse (0), `TX01` normal (1), `TX03` glow/skin (2), `TX04` height (3),
+/// `TX05` environment (4), `TX02` environment mask (5), `TX06` multilayer (6), `TX07` specular (7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NifSlotTextureSet {
+    /// The `TXST` FormID, for diagnostics.
+    pub form_id: u32,
+    /// The path for each NIF slot; `None` or empty leaves the shape's own slot in place.
+    pub slots: [Option<String>; 8],
+}
+
+/// Applies an armature's skin texture set over a `skin_tint` lighting material's own textures.
+///
+/// The game replaces the skin shapes' textures with the `ARMA` skin `TXST` (`NAM0` male, `NAM1`
+/// female), so a part NIF's texture set is only a default: retail `femalehands_1.nif` has no `_s`
+/// while its `SkinHandFemale_1` set has `FemaleHands_1_S.dds`. A slot the set leaves empty keeps
+/// the NIF's path. Returns whether the material is a `skin_tint` lighting material, the only kind
+/// the set applies to.
+pub fn apply_skin_texture_set(
+    material: &mut ValidatedNifMaterial,
+    set: &NifSlotTextureSet,
+) -> Result<bool> {
+    let (NifShaderFamily::Lighting, Some(shader_type @ LightingShaderType::SkinTint)) =
+        (material.shader_family, material.lighting_shader_type)
+    else {
+        return Ok(false);
+    };
+    for (index, path) in set.slots.iter().enumerate() {
+        let Some(path) = path.as_deref().filter(|path| !path.trim().is_empty()) else {
+            continue;
         };
-        slots.push(texture_slot(
+        let slot = lighting_texture_slot(
             index,
-            semantic,
             path,
-            index == 0 || (environment && matches!(index, 4 | 5)),
-        )?);
+            shader_type,
+            material.shader_flags_1,
+            material.shader_flags_2,
+        )
+        .map_err(|error| {
+            color_eyre::eyre::eyre!(
+                "texture set {:08X} slot {index} ({path}): {error:#}",
+                set.form_id
+            )
+        })?;
+        match material
+            .textures
+            .iter_mut()
+            .find(|existing| existing.slot == slot.slot)
+        {
+            Some(existing) => *existing = slot,
+            None => material.textures.push(slot),
+        }
     }
-    Ok(slots)
+    material.textures.sort_by_key(|slot| slot.slot);
+    Ok(true)
 }
 
 fn push_effect_texture(
@@ -1430,6 +1504,153 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    /// Retail `femalehands_1.nif`: a model-space `skin_tint` material with the Specular flag,
+    /// strength 1.0, and a texture set with diffuse, `_msn` and `_sk` but no `_s`.
+    fn female_hands_material() -> ValidatedNifMaterial {
+        let mut material = fixture(NifAlphaMode::Opaque, false, false, false);
+        material.lighting_shader_type = Some(LightingShaderType::SkinTint);
+        material.shader_flags_1 = SLSF1_SPECULAR | SLSF1_MODEL_SPACE_NORMALS;
+        material.glossiness = 80.0;
+        material.textures = vec![
+            NifTextureSlot {
+                slot: 0,
+                semantic: NifTextureSemantic::Diffuse,
+                path: "textures/actors/character/female/femalehands_1.dds".into(),
+                required: true,
+            },
+            NifTextureSlot {
+                slot: 1,
+                semantic: NifTextureSemantic::Normal,
+                path: "textures/actors/character/female/femalehands_1_msn.dds".into(),
+                required: false,
+            },
+            NifTextureSlot {
+                slot: 2,
+                semantic: NifTextureSemantic::Unclassified,
+                path: "textures/actors/character/female/femalehands_1_sk.dds".into(),
+                required: false,
+            },
+        ];
+        material
+    }
+
+    fn skin_hand_female_1() -> NifSlotTextureSet {
+        let mut set = NifSlotTextureSet {
+            form_id: 0x0003_EDE9,
+            ..NifSlotTextureSet::default()
+        };
+        set.slots[0] = Some("Actors\\Character\\Female\\FemaleHands_1.dds".into());
+        set.slots[1] = Some("Actors\\Character\\Female\\FemaleHands_1_msn.dds".into());
+        set.slots[2] = Some("Actors\\Character\\Female\\FemaleHands_1_sk.dds".into());
+        set.slots[7] = Some("Actors\\Character\\Female\\FemaleHands_1_S.dds".into());
+        set
+    }
+
+    #[test]
+    fn a_model_space_material_without_a_specular_map_publishes_zero_specular() {
+        let document = publish_specular_fixture(female_hands_material());
+        let specular = &document["materials"][0]["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularFactor"], 0.0);
+        assert!(specular.get("specularColorTexture").is_none());
+        assert!(specular.get("specularTexture").is_none());
+
+        // The tangent-space twin keeps its strength: there the normal map's alpha is the mask.
+        let mut tangent = female_hands_material();
+        tangent.shader_flags_1 = SLSF1_SPECULAR;
+        let document = publish_specular_fixture(tangent);
+        let specular = &document["materials"][0]["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularFactor"], 1.0);
+    }
+
+    #[test]
+    fn a_model_space_material_with_a_specular_map_keeps_its_strength() {
+        let mut material = female_hands_material();
+        material.textures.push(NifTextureSlot {
+            slot: 7,
+            semantic: NifTextureSemantic::Specular,
+            path: "textures/actors/character/female/femalehands_1_s.dds".into(),
+            required: false,
+        });
+        let document = publish_specular_fixture(material);
+        let specular = &document["materials"][0]["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularFactor"], 1.0);
+        let image = specular["specularColorTexture"]["index"].as_u64().unwrap() as usize;
+        let source = document["textures"][image]["source"].as_u64().unwrap() as usize;
+        let uri = document["images"][source]["uri"].as_str().unwrap();
+        assert!(uri.contains("femalehands_1_s"), "{uri}");
+    }
+
+    #[test]
+    fn the_armature_skin_texture_set_supplies_the_missing_specular_map() {
+        let mut material = female_hands_material();
+        assert!(apply_skin_texture_set(&mut material, &skin_hand_female_1()).unwrap());
+        let slots: Vec<_> = material
+            .textures
+            .iter()
+            .map(|slot| (slot.slot, slot.semantic, slot.path.as_str()))
+            .collect();
+        assert_eq!(
+            slots,
+            [
+                (
+                    0,
+                    NifTextureSemantic::Diffuse,
+                    "textures/actors/character/female/femalehands_1.dds"
+                ),
+                (
+                    1,
+                    NifTextureSemantic::Normal,
+                    "textures/actors/character/female/femalehands_1_msn.dds"
+                ),
+                (
+                    2,
+                    NifTextureSemantic::Unclassified,
+                    "textures/actors/character/female/femalehands_1_sk.dds"
+                ),
+                (
+                    7,
+                    NifTextureSemantic::Specular,
+                    "textures/actors/character/female/femalehands_1_s.dds"
+                ),
+            ]
+        );
+        let document = publish_specular_fixture(material);
+        let specular = &document["materials"][0]["extensions"]["KHR_materials_specular"];
+        assert_eq!(specular["specularFactor"], 1.0);
+        assert!(specular.get("specularColorTexture").is_some());
+    }
+
+    #[test]
+    fn a_skin_texture_set_replaces_set_slots_and_keeps_the_rest() {
+        let mut material = female_hands_material();
+        let mut set = NifSlotTextureSet::default();
+        set.slots[0] = Some("actors\\character\\female\\astridhands.dds".into());
+        set.slots[1] = Some(String::new());
+        assert!(apply_skin_texture_set(&mut material, &set).unwrap());
+        let paths: Vec<_> = material
+            .textures
+            .iter()
+            .map(|slot| (slot.slot, slot.path.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                (0, "textures/actors/character/female/astridhands.dds"),
+                (1, "textures/actors/character/female/femalehands_1_msn.dds"),
+                (2, "textures/actors/character/female/femalehands_1_sk.dds"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_skin_texture_set_leaves_other_shaders_alone() {
+        let mut material = female_hands_material();
+        material.lighting_shader_type = Some(LightingShaderType::Default);
+        let before = material.clone();
+        assert!(!apply_skin_texture_set(&mut material, &skin_hand_female_1()).unwrap());
+        assert_eq!(material, before);
     }
 
     #[test]

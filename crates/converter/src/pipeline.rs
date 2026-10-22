@@ -2532,6 +2532,7 @@ fn compose_default_bodies(
     let assets = staging.join("vfs/meshes/actors/character/character assets");
     let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
     let skeleton = winning(assets.join("skeleton.nif"));
+    let database = staging.join("skyrim_world.db");
     for sex in ["male", "female"] {
         let relative = compose::composed_body_path("default", sex);
         let output = staging.join(&relative);
@@ -2563,9 +2564,21 @@ fn compose_default_bodies(
             );
             continue;
         }
+        // The game draws the skin shapes with the armature's skin texture set, not the NIF's.
+        let skins = if database.is_file() {
+            compose::default_skin_texture_sets(&database, sex).wrap_err_with(|| {
+                format!("failed to read the default {sex} armature skin texture sets")
+            })?
+        } else {
+            Vec::new()
+        };
         let parts: Vec<_> = part_paths
             .iter()
-            .map(|(path, kind)| BodyPart { path, kind: *kind })
+            .map(|(path, kind)| BodyPart {
+                path,
+                kind: *kind,
+                skin_textures: compose::skin_texture_set_for(&skins, *kind, path),
+            })
             .collect();
         let model = match compose::compose_body(&parts, &skeleton) {
             Ok(model) => model,
@@ -2589,8 +2602,12 @@ fn compose_default_bodies(
         };
         compose::write_composed_body(&model, &output)?;
         info!(
-            "composed default {sex} actor body from {} parts to {}",
+            "composed default {sex} actor body from {} parts ({} with an armature skin texture set) to {}",
             parts.len(),
+            parts
+                .iter()
+                .filter(|part| part.skin_textures.is_some())
+                .count(),
             output.display()
         );
     }
@@ -6910,8 +6927,8 @@ mod tests {
     }
 
     use dummy_content::nif::{
-        BodyShape, BoxBody, LegacySkin, SkinInstanceKind, StaticShape, legacy_skinned_shape,
-        legacy_skinned_shapes, static_shape, static_shape_with_bodies,
+        BodyShape, BoxBody, LegacySkin, SkinInstanceKind, StaticShape, legacy_skin_tint_shape,
+        legacy_skinned_shape, legacy_skinned_shapes, static_shape, static_shape_with_bodies,
     };
 
     const ACTOR_BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
@@ -7247,6 +7264,131 @@ mod tests {
             first, second,
             "a second composition must not rewrite the bodies"
         );
+    }
+
+    /// The `KHR_materials_specular` of every material in `glb` whose name is `shape`.
+    fn glb_specular(glb: &Path, shape: &str) -> Vec<(f64, Option<String>)> {
+        let bytes = fs::read(glb).unwrap();
+        let json = crate::mesh::glb_json_from_bytes(&bytes).unwrap();
+        json["materials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|material| material["name"] == shape)
+            .map(|material| {
+                let specular = &material["extensions"]["KHR_materials_specular"];
+                let uri = specular["specularColorTexture"]["index"]
+                    .as_u64()
+                    .map(|texture| {
+                        let image = json["textures"][texture as usize]["source"]
+                            .as_u64()
+                            .unwrap();
+                        json["images"][image as usize]["uri"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned()
+                    });
+                (specular["specularFactor"].as_f64().unwrap(), uri)
+            })
+            .collect()
+    }
+
+    /// A world database holding one female Nord whose `DefaultRace` hands armature carries
+    /// `SkinHandFemale_1`, written with the catalog columns or, when `with_skin_columns` is
+    /// false, as a database from before them.
+    fn write_skin_catalog(staging: &Path, with_skin_columns: bool) {
+        let connection = rusqlite::Connection::open(staging.join("skyrim_world.db")).unwrap();
+        let skin_columns = if with_skin_columns {
+            ", armature_race_id INTEGER, skin_texture_set_id INTEGER"
+        } else {
+            ""
+        };
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE actor_models (id INTEGER PRIMARY KEY, race_id INTEGER NOT NULL, \
+                 sex TEXT NOT NULL, skin_armo_id INTEGER, head_model TEXT, head_source TEXT, \
+                 resolution TEXT NOT NULL);
+                 CREATE TABLE actor_model_parts (npc_id INTEGER NOT NULL, slot TEXT NOT NULL, \
+                 model_path TEXT NOT NULL{skin_columns}, PRIMARY KEY (npc_id, slot));
+                 CREATE TABLE texture_sets (id INTEGER PRIMARY KEY, editor_id TEXT, \
+                 diffuse_path TEXT, normal_path TEXT, glow_path TEXT, height_path TEXT, \
+                 environment_path TEXT, mask_path TEXT, specular_path TEXT, detail_path TEXT);
+                 INSERT INTO actor_models VALUES (256, 79686, 'female', 3428, NULL, NULL, 'body');
+                 INSERT INTO texture_sets VALUES (257001, 'SkinHandFemale_1', \
+                 'Actors\\Character\\Female\\FemaleHands_1.dds', \
+                 'Actors\\Character\\Female\\FemaleHands_1_msn.dds', \
+                 'Actors\\Character\\Female\\FemaleHands_1_sk.dds', NULL, NULL, NULL, \
+                 'Actors\\Character\\Female\\FemaleHands_1_S.dds', NULL);"
+            ))
+            .unwrap();
+        if with_skin_columns {
+            connection
+                .execute(
+                    "INSERT INTO actor_model_parts VALUES (256, 'hands', \
+                     'Actors\\Character\\Character Assets\\FemaleHands_1.nif', 25, 257001)",
+                    [],
+                )
+                .unwrap();
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO actor_model_parts VALUES (256, 'hands', \
+                     'Actors\\Character\\Character Assets\\FemaleHands_1.nif')",
+                    [],
+                )
+                .unwrap();
+        }
+    }
+
+    fn stage_skin_tint_hands(staging: &Path) {
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        for sex in ["male", "female"] {
+            let file_name = format!("{sex}hands_1.nif");
+            fs::write(
+                assets.join(&file_name),
+                legacy_skin_tint_shape(&actor_part_spec(&file_name)).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn compose_default_bodies_applies_the_default_armature_skin_texture_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        write_skin_catalog(staging, true);
+
+        compose_staged_bodies(staging, true);
+
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        let hands = glb_specular(&female, "femalehands_1.nif");
+        assert_eq!(hands.len(), 1, "{hands:?}");
+        let (factor, uri) = &hands[0];
+        assert_eq!(*factor, 1.0);
+        // The specular colour texture is the sRGB alias; the engine loads its linear twin.
+        assert!(
+            uri.as_deref().is_some_and(|uri| uri
+                .contains("/textures/actors/character/female/femalehands_1_s.opensky-srgb.")),
+            "{uri:?}"
+        );
+        // No male row: the male hands keep their NIF textures, and without `_s` no specular.
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert_eq!(glb_specular(&male, "malehands_1.nif"), [(0.0, None)]);
+    }
+
+    #[test]
+    fn compose_default_bodies_keeps_nif_textures_with_an_older_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        write_skin_catalog(staging, false);
+
+        compose_staged_bodies(staging, true);
+
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert_eq!(glb_specular(&female, "femalehands_1.nif"), [(0.0, None)]);
     }
 
     #[test]

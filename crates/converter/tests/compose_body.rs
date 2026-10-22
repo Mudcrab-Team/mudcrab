@@ -548,10 +548,12 @@ fn compose_merges_two_parts_into_one_shared_skeleton_model() {
     let body_part = BodyPart {
         path: &body_path,
         kind: BodyPartKind::Body,
+        skin_textures: None,
     };
     let hands_part = BodyPart {
         path: &hands_path,
         kind: BodyPartKind::Hands,
+        skin_textures: None,
     };
 
     let body_only = compose_body(std::slice::from_ref(&body_part), &skeleton_path).unwrap();
@@ -613,6 +615,7 @@ fn composed_body_publishes_texture_uris_relative_to_its_output() {
         &[BodyPart {
             path: &body_path,
             kind: BodyPartKind::Body,
+            skin_textures: None,
         }],
         &skeleton_path,
     )
@@ -664,10 +667,12 @@ fn compose_gives_model_space_parts_smooth_normals_and_keeps_authored_ones() {
             BodyPart {
                 path: &body_path,
                 kind: BodyPartKind::Body,
+                skin_textures: None,
             },
             BodyPart {
                 path: &hands_path,
                 kind: BodyPartKind::Hands,
+                skin_textures: None,
             },
         ],
         &skeleton_path,
@@ -712,10 +717,12 @@ fn compose_rejects_parts_with_different_bone_trees() {
             BodyPart {
                 path: &body_path,
                 kind: BodyPartKind::Body,
+                skin_textures: None,
             },
             BodyPart {
                 path: &hands_path,
                 kind: BodyPartKind::Hands,
+                skin_textures: None,
             },
         ],
         &skeleton_path,
@@ -751,6 +758,7 @@ fn compose_rejects_a_part_that_is_not_skinned() {
         &[BodyPart {
             path: &static_path,
             kind: BodyPartKind::Feet,
+            skin_textures: None,
         }],
         &skeleton_path,
     )
@@ -805,14 +813,17 @@ fn retail_composed_bodies_share_one_skeleton() {
             BodyPart {
                 path: &paths[0],
                 kind: BodyPartKind::Body,
+                skin_textures: None,
             },
             BodyPart {
                 path: &paths[1],
                 kind: BodyPartKind::Hands,
+                skin_textures: None,
             },
             BodyPart {
                 path: &paths[2],
                 kind: BodyPartKind::Feet,
+                skin_textures: None,
             },
         ];
         let model = compose_body(&parts, &skeleton_path).unwrap();
@@ -933,14 +944,17 @@ fn retail_composed_body_is_deterministic() {
         BodyPart {
             path: &paths[0],
             kind: BodyPartKind::Body,
+            skin_textures: None,
         },
         BodyPart {
             path: &paths[1],
             kind: BodyPartKind::Hands,
+            skin_textures: None,
         },
         BodyPart {
             path: &paths[2],
             kind: BodyPartKind::Feet,
+            skin_textures: None,
         },
     ];
     let directory = tempfile::tempdir().unwrap();

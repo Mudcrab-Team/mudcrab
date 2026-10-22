@@ -120,6 +120,11 @@ pub struct ActorModelPartRow {
     pub slot: ActorModelSlot,
     /// The `MOD2`/`MOD3` path, as the record wrote it.
     pub model_path: String,
+    /// The armature's own `RNAM`: the NPC's race for an exact match, else `DefaultRace`.
+    pub armature_race_id: u32,
+    /// The armature's skin texture set for the NPC's sex (`NAM0` male, `NAM1` female), which the
+    /// game applies over the part NIF's own textures.
+    pub skin_texture_set_id: Option<u32>,
 }
 
 /// One unresolved-or-notable base, with the reason it was recorded.
@@ -302,7 +307,7 @@ fn resolve_body(
     // Exact-race armatures take priority over `DefaultRace`, whatever order the
     // armor lists them in, so the shared humanoid body never shadows a race's own.
     let mut exact = Vec::new();
-    let mut default = Vec::new();
+    let mut default: Vec<(u32, u32)> = Vec::new();
     for armature_id in armatures {
         let Some(armature) = records
             .get(&armature_id)
@@ -311,15 +316,15 @@ fn resolve_body(
             continue;
         };
         match SubrecordView::new(&armature.subrecords).get_form_id(b"RNAM") {
-            Some(id) if id == race_id => exact.push(armature_id),
-            Some(DEFAULT_RACE_FORM_ID) => default.push(armature_id),
+            Some(id) if id == race_id => exact.push((armature_id, id)),
+            Some(DEFAULT_RACE_FORM_ID) => default.push((armature_id, DEFAULT_RACE_FORM_ID)),
             _ => {}
         }
     }
 
     let mut parts: Vec<ActorModelPartRow> = Vec::new();
     let mut seen_paths: BTreeSet<String> = BTreeSet::new();
-    for armature_id in exact.into_iter().chain(default) {
+    for (armature_id, armature_race_id) in exact.into_iter().chain(default) {
         let armature = &records[&armature_id];
         let view = SubrecordView::new(&armature.subrecords);
         let slot = match classify_slot(view.find(b"BOD2").or_else(|| view.find(b"BODT"))) {
@@ -347,10 +352,14 @@ fn resolve_body(
         if parts.iter().any(|part| part.slot == slot) || !seen_paths.insert(path.to_lowercase()) {
             continue;
         }
+        // No fallback to the other sex's set: an armature without one keeps the NIF's textures.
+        let skin_tag = if female { b"NAM1" } else { b"NAM0" };
         parts.push(ActorModelPartRow {
             npc_id,
             slot,
             model_path: path,
+            armature_race_id,
+            skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),
         });
     }
 

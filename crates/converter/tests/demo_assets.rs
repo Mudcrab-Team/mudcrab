@@ -3,7 +3,8 @@
 //! The engine's retail tests are `#[ignore]`d because they need a converted tree on disk. This
 //! test builds that tree from retail Skyrim data: both composed default bodies, the three gait
 //! clips per sex over the composed bone tree, the FaceGen heads, and the DDS textures those GLBs
-//! reference, converted to KTX2 from the retail `Data` folder.
+//! reference, converted to KTX2 from the retail `Data` folder. When that folder holds
+//! `Skyrim.esm`, its actor catalog supplies the bodies' armature skin texture sets.
 //!
 //! Inputs come from the environment and the test does nothing unless all four are set:
 //! `MUDCRAB_DEMO_ASSETS` (output tree), `MUDCRAB_ACTOR_NIF_DIR` (extracted `meshes/actors`),
@@ -14,7 +15,11 @@ use converter::{
     animation::{decode_clip_with_skeleton, write_clip_glb},
     archive::ArchiveExtractor,
     asset_path::{resolve_asset_uri, runtime_texture_source},
-    compose::{BodyPart, BodyPartKind, compose_body, write_composed_body},
+    compose::{
+        BodyPart, BodyPartKind, compose_body, default_skin_texture_sets, skin_texture_set_for,
+        write_composed_body,
+    },
+    esm::EsmParser,
     mesh::MeshConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic},
 };
@@ -265,7 +270,34 @@ fn materialises_the_converted_actor_assets() {
 
     assert!(skeleton_nif.is_file(), "missing {}", skeleton_nif.display());
 
+    // The armature skin texture sets come from the actor catalog, as in a full conversion.
+    let catalog_dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_dir.path().join("skyrim_world.db");
+    let esm = texture_root.join("Skyrim.esm");
+    let has_catalog = esm.is_file();
+    if has_catalog {
+        EsmParser::convert_plugins(std::slice::from_ref(&esm), &catalog)
+            .unwrap_or_else(|error| panic!("export {}: {error:#}", esm.display()));
+    } else {
+        println!(
+            "no {}: composed bodies keep the NIF textures",
+            esm.display()
+        );
+    }
+
     for sex in ["male", "female"] {
+        let skins = if has_catalog {
+            default_skin_texture_sets(&catalog, sex)
+                .unwrap_or_else(|error| panic!("read the {sex} skin texture sets: {error:#}"))
+        } else {
+            Vec::new()
+        };
+        for skin in &skins {
+            println!(
+                "skin sex={sex} slot={} texture_set={:08X} model={}",
+                skin.kind, skin.textures.form_id, skin.model_path
+            );
+        }
         let parts = [
             (
                 character_assets.join(format!("{sex}body_1.nif")),
@@ -284,7 +316,11 @@ fn materialises_the_converted_actor_assets() {
             .iter()
             .map(|(path, kind)| {
                 assert!(path.is_file(), "missing {}", path.display());
-                BodyPart { path, kind: *kind }
+                BodyPart {
+                    path,
+                    kind: *kind,
+                    skin_textures: skin_texture_set_for(&skins, *kind, path),
+                }
             })
             .collect();
         let model = compose_body(&body_parts, &skeleton_nif)
