@@ -3058,14 +3058,14 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
         } else if extension(source, &["pex"]) {
             (AssetKind::Script, "pex")
         } else if extension(source, &["hkx"]) {
-            if !crate::archive::is_animation_input(&relative) {
+            if !crate::archive::is_animation_input(relative) {
                 continue;
             }
             (AssetKind::Animation, "hkx")
         } else {
             (AssetKind::LodSettings, "lod")
         };
-        let canonical = canonical_asset_path(relative.to_string_lossy(), kind, extension)?;
+        let canonical = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
         if let Some(previous) = seen.insert(canonical.clone(), source.to_owned()) {
             bail!(
                 "loose assets contain normalized path collision for {canonical}: {} and {}",
