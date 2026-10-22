@@ -113,6 +113,10 @@ impl Packfile {
         ensure!(little_endian == 1, "big-endian packfiles are not supported");
 
         let num_sections = u32_at(file, 0x14)?;
+        ensure!(
+            num_sections == 3,
+            "packfile declares {num_sections} sections, expected 3"
+        );
         let contents_section = u32_at(file, 0x18)?;
         let contents_offset = u32_at(file, 0x1C)?;
         ensure!(
@@ -478,6 +482,13 @@ mod tests {
     fn rejects_truncated_sections() {
         let file = minimal_packfile();
         expect_error(&file[..HEADER_SIZE], "section header");
+    }
+
+    #[test]
+    fn rejects_a_section_count_that_cannot_be_allocated() {
+        let mut file = minimal_packfile();
+        write_u32(&mut file, 0x14, u32::MAX);
+        expect_error(&file, "declares 4294967295 sections, expected 3");
     }
 
     #[test]
