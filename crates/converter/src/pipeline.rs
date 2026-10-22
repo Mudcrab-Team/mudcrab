@@ -1262,7 +1262,13 @@ impl AssetPipeline {
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
         invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
-        compose_default_bodies(staging, &source_paths)?;
+        compose_default_bodies(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
         for sex in ["male", "female"] {
             let relative = compose::composed_body_path("default", sex);
             if staging.join(&relative).is_file() {
@@ -2489,7 +2495,13 @@ impl ConversionBatch<'_> {
 /// from the same file the mesh stage converted; the staged vfs copy is the fallback for
 /// physical Data and for sources without a loose winner. A load order missing any part
 /// leaves the body for that sex uncomposed rather than failing the conversion.
-fn compose_default_bodies(staging: &Path, sources: &BTreeMap<PathBuf, PathBuf>) -> Result<()> {
+fn compose_default_bodies(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
     const PARTS: [(&str, BodyPartKind); 3] = [
         ("body_1.nif", BodyPartKind::Body),
         ("hands_1.nif", BodyPartKind::Hands),
@@ -2522,9 +2534,29 @@ fn compose_default_bodies(staging: &Path, sources: &BTreeMap<PathBuf, PathBuf>) 
             .iter()
             .map(|(path, kind)| BodyPart { path, kind: *kind })
             .collect();
-        let model = compose::compose_body(&parts, &skeleton)
-            .wrap_err_with(|| format!("failed to compose default {sex} actor body"))?;
-        let output = staging.join(compose::composed_body_path("default", sex));
+        let relative = compose::composed_body_path("default", sex);
+        let output = staging.join(&relative);
+        let model = match compose::compose_body(&parts, &skeleton) {
+            Ok(model) => model,
+            Err(error) if !fail_fast => {
+                let _ = fs::remove_file(&output);
+                let message = format!(
+                    "{}: failed to compose default {sex} actor body: {error:#}",
+                    relative.display()
+                );
+                manifest.failures.insert(
+                    relative.to_string_lossy().replace('\\', "/"),
+                    message.clone(),
+                );
+                report.warnings.push(message);
+                warn!("skipping composed default {sex} actor body: {error:#}");
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to compose default {sex} actor body"));
+            }
+        };
         let name = model
             .name
             .clone()
@@ -6679,7 +6711,7 @@ mod tests {
 
     use dummy_content::nif::{
         BodyShape, BoxBody, LegacySkin, SkinInstanceKind, StaticShape, legacy_skinned_shape,
-        legacy_skinned_shapes, static_shape_with_bodies,
+        legacy_skinned_shapes, static_shape, static_shape_with_bodies,
     };
 
     const ACTOR_BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
@@ -6894,6 +6926,23 @@ mod tests {
             .collect()
     }
 
+    fn compose_staged_bodies(
+        staging: &Path,
+        fail_fast: bool,
+    ) -> (PipelineReport, ConversionManifest) {
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            fail_fast,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        (report, manifest)
+    }
+
     fn glb_skin_joints(path: &Path) -> Vec<Vec<usize>> {
         let bytes = fs::read(path).unwrap();
         let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
@@ -6924,7 +6973,7 @@ mod tests {
         let staging = directory.path();
         stage_default_actor_parts(staging);
 
-        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
+        compose_staged_bodies(staging, false);
 
         for sex in ["male", "female"] {
             let output = staging.join(crate::compose::composed_body_path("default", sex));
@@ -6963,7 +7012,9 @@ mod tests {
         sources.insert(assets.join("skeleton.nif"), mods.join("skeleton.nif"));
         sources.insert(staged_body, mods.join("malebody_1.nif"));
 
-        compose_default_bodies(staging, &sources).unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
 
         for sex in ["male", "female"] {
             let output = staging.join(crate::compose::composed_body_path("default", sex));
@@ -6987,9 +7038,9 @@ mod tests {
         let outputs = ["male", "female"]
             .map(|sex| staging.join(crate::compose::composed_body_path("default", sex)));
 
-        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
+        compose_staged_bodies(staging, false);
         let first = outputs.each_ref().map(|path| fs::read(path).unwrap());
-        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
+        compose_staged_bodies(staging, false);
         let second = outputs.each_ref().map(|path| fs::read(path).unwrap());
 
         assert_eq!(
@@ -7009,7 +7060,7 @@ mod tests {
         write_actor_part(&assets, "malehands_1.nif");
         write_actor_part(&assets, "malefeet_1.nif");
 
-        compose_default_bodies(staging, &staged_sources(staging)).unwrap();
+        compose_staged_bodies(staging, false);
 
         assert!(
             staging
@@ -7020,6 +7071,68 @@ mod tests {
             !staging
                 .join(crate::compose::composed_body_path("default", "female"))
                 .exists()
+        );
+    }
+
+    fn stage_a_failing_male_hands(staging: &Path) {
+        let assets = actor_assets(staging);
+        fs::write(
+            assets.join("malehands_1.nif"),
+            static_shape(&actor_skeleton_shape("StaticHands")).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn compose_default_bodies_records_a_failed_sex_as_a_skip() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        stage_a_failing_male_hands(staging);
+
+        let (report, manifest) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert!(!male.exists(), "a failed body must not leave stale output");
+        assert!(female.is_file(), "the other sex must still compose");
+        let key = "meshes/actors/character/composed/default/male/body.glb";
+        assert!(
+            manifest.failures.contains_key(key),
+            "failures: {:?}",
+            manifest.failures
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("failed to compose default male")),
+            "warnings: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_propagates_a_failure_when_fail_fast_is_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        stage_a_failing_male_hands(staging);
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        let error = compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            true,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("failed to compose default male"),
+            "unexpected error: {error:#}"
         );
     }
 
