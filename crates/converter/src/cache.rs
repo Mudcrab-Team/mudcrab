@@ -1358,7 +1358,7 @@ mod tests {
         let entry = IngestionCacheEntry {
             source_hash: "ab".repeat(32),
             selection: IngestionSelection::ConverterInputsV1,
-            recipe: "converter-inputs-v1".to_owned(),
+            recipe: IngestionSelection::ConverterInputsV1.recipe().to_owned(),
             files: vec![IngestedFile {
                 path: "lodsettings/tamriel.lod".to_owned(),
                 size: 4,
@@ -1495,12 +1495,20 @@ mod tests {
     #[test]
     fn both_prior_cache_contracts_limit_coverage_and_unknown_recipes_miss() {
         let pack_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
-            "source_hash": "source", "recipe": "converter-inputs-v1", "files": []
+            "source_hash": "source",
+            "recipe": IngestionSelection::ConverterInputsV1.recipe(),
+            "files": []
         }))
         .unwrap();
         assert!(pack_entry.covers(IngestionSelection::RuntimeEnglishV1));
         assert!(pack_entry.covers(IngestionSelection::ConverterInputsV1));
         assert!(!pack_entry.covers(IngestionSelection::All));
+        // The recipe changed when the animation inputs joined the selection, so a pack minted
+        // under the earlier converter-inputs recipe cannot prove the wider file set.
+        let mut narrower = pack_entry.clone();
+        narrower.recipe = "converter-inputs-v1".into();
+        assert!(!narrower.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!narrower.covers(IngestionSelection::RuntimeEnglishV1));
         let raw_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
             "source_hash": "source", "selection": "runtime_english_v1", "files": []
         }))

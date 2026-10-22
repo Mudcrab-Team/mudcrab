@@ -465,8 +465,8 @@ impl IngestionSelection {
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v1",
-            Self::ConverterInputsV1 => "converter-inputs-v1",
-            Self::RuntimeEnglishV1 => "runtime-english-v1",
+            Self::ConverterInputsV1 => "converter-inputs-v2",
+            Self::RuntimeEnglishV1 => "runtime-english-v2",
         }
     }
 
@@ -477,8 +477,8 @@ impl IngestionSelection {
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
-            "converter-inputs-v1" => Self::ConverterInputsV1,
-            "runtime-english-v1" => Self::RuntimeEnglishV1,
+            "converter-inputs-v2" => Self::ConverterInputsV1,
+            "runtime-english-v2" => Self::RuntimeEnglishV1,
             _ => return false,
         };
         proven.can_satisfy(self)
@@ -898,7 +898,29 @@ fn extract_selected_with_sync_reporting(
     }
 }
 
+/// Whether an archive path holds a Havok source the animation pass decodes: the character
+/// skeleton or one of the character animation clips. Behaviour graphs and unrelated clips are
+/// not converter inputs.
+pub(crate) fn is_animation_input(path: &Path) -> bool {
+    let lower = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let path = Path::new(&lower);
+    if path.extension().and_then(|extension| extension.to_str()) != Some("hkx") {
+        return false;
+    }
+    path == Path::new("meshes/actors/character/character assets/skeleton.hkx")
+        || path.starts_with("meshes/actors/character/animations")
+}
+
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
+    if selection == IngestionSelection::All {
+        return true;
+    }
+    if is_animation_input(path) {
+        return true;
+    }
     if selection == IngestionSelection::ConverterInputsV1 {
         return path
             .extension()
@@ -909,9 +931,6 @@ fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
                     "dds" | "nif" | "pex" | "lod" | "strings" | "ilstrings" | "dlstrings"
                 )
             });
-    }
-    if selection == IngestionSelection::All {
-        return true;
     }
     let lower = path
         .to_string_lossy()
@@ -1242,6 +1261,8 @@ pub(crate) fn safe_relative_path(name: &str) -> Result<PathBuf> {
             Some(AssetKind::Script)
         } else if extension.eq_ignore_ascii_case("lod") {
             Some(AssetKind::LodSettings)
+        } else if extension.eq_ignore_ascii_case("hkx") {
+            Some(AssetKind::Animation)
         } else {
             None
         }
@@ -2079,6 +2100,22 @@ mod tests {
                     dummy_content::Entry::new("strings/Test_english.ilstrings", b"info"),
                     dummy_content::Entry::new("strings/Test_english.dlstrings", b"dialogue"),
                     dummy_content::Entry::new("strings/Test_french.strings", b"francais"),
+                    dummy_content::Entry::new(
+                        "Meshes/Actors/Character/Character Assets/skeleton.hkx",
+                        b"skeleton",
+                    ),
+                    dummy_content::Entry::new(
+                        "Meshes/Actors/Character/Animations/Male/mt_idle.hkx",
+                        b"male idle",
+                    ),
+                    dummy_content::Entry::new(
+                        "Meshes/Actors/Character/Animations/Female/mt_idle.hkx",
+                        b"female idle",
+                    ),
+                    dummy_content::Entry::new(
+                        "Meshes/Actors/Character/Behaviors/0_master.hkx",
+                        b"behaviour",
+                    ),
                     dummy_content::Entry::new("sound/test.wav", b"sound"),
                     dummy_content::Entry::new("docs/readme.txt", b"readme"),
                 ],
@@ -2114,9 +2151,39 @@ mod tests {
             ("strings/subdir/test_english.strings", false),
             ("sound/test.wav", false),
             ("meshes/animation.hkx", false),
+            (
+                "Meshes/Actors/Character/Character Assets/skeleton.hkx",
+                true,
+            ),
+            ("meshes/actors/character/animations/male/mt_idle.hkx", true),
+            ("meshes/actors/character/behaviors/0_master.hkx", false),
         ] {
             assert_eq!(
                 selection_includes(IngestionSelection::RuntimeEnglishV1, Path::new(path)),
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn converter_inputs_include_every_string_bank_and_character_animation_input() {
+        for (path, expected) in [
+            ("strings/test_french.strings", true),
+            ("strings/subdir/test_english.strings", true),
+            (
+                "Meshes/Actors/Character/Character Assets/skeleton.hkx",
+                true,
+            ),
+            (
+                "meshes/actors/character/animations/female/mt_idle.hkx",
+                true,
+            ),
+            ("meshes/actors/character/behaviors/0_master.hkx", false),
+            ("meshes/animations/furniture/chair.hkx", false),
+        ] {
+            assert_eq!(
+                selection_includes(IngestionSelection::ConverterInputsV1, Path::new(path)),
                 expected,
                 "{path}"
             );
@@ -2140,7 +2207,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.cache_entry.selection, IngestionSelection::All);
-        assert_eq!(first.files.len(), 10);
+        assert_eq!(first.files.len(), 14);
         let subset_output = directory.path().join("subset/vfs");
         let subset_cache = directory.path().join("subset/cache");
         let subset = ArchiveExtractor::extract_cached_with_options(
@@ -2160,14 +2227,29 @@ mod tests {
         )
         .unwrap();
         assert!(subset.cache_hit);
-        assert_eq!(subset.files.len(), 7);
+        assert_eq!(subset.files.len(), 10);
         assert_eq!(
             subset.cache_entry.selection,
             IngestionSelection::RuntimeEnglishV1
         );
-        assert_eq!(count_files(&subset_cache), 7);
+        assert_eq!(count_files(&subset_cache), 10);
         assert!(!subset_output.join("sound/test.wav").exists());
         assert!(!subset_output.join("strings/Test_french.strings").exists());
+        assert!(
+            subset_output
+                .join("meshes/actors/character/character assets/skeleton.hkx")
+                .is_file()
+        );
+        assert!(
+            subset_output
+                .join("meshes/actors/character/animations/male/mt_idle.hkx")
+                .is_file()
+        );
+        assert!(
+            !subset_output
+                .join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
         let full_output = directory.path().join("full/vfs");
         let full = ArchiveExtractor::extract_cached(
             &archive,
@@ -2184,7 +2266,7 @@ mod tests {
             full.cache_hit,
             "a retained all-files pack independently proves broader coverage"
         );
-        assert_eq!(full.files.len(), 10);
+        assert_eq!(full.files.len(), 14);
         assert!(full_output.join("sound/test.wav").is_file());
     }
 
@@ -2366,6 +2448,14 @@ mod tests {
         assert_eq!(
             safe_relative_path(r"textures\authoring\data\textures\landscape\Rock.DDS").unwrap(),
             PathBuf::from("textures/landscape/rock.dds")
+        );
+        assert_eq!(
+            safe_relative_path(r"Meshes\Actors\Character\Character Assets\Skeleton.HKX").unwrap(),
+            PathBuf::from("meshes/actors/character/character assets/skeleton.hkx")
+        );
+        assert_eq!(
+            safe_relative_path(r"Meshes\Actors\Character\Animations\Male\MT_Idle.HKX").unwrap(),
+            PathBuf::from("meshes/actors/character/animations/male/mt_idle.hkx")
         );
     }
 

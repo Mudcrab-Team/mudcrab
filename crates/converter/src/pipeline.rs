@@ -1276,6 +1276,9 @@ impl AssetPipeline {
                 report.artifacts.push(relative);
             }
         }
+        if config.mo2.is_some() {
+            stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
+        }
         convert_default_animations(staging)?;
         for sex in ["male", "female"] {
             let relative = PathBuf::from("meshes/actors/character/animations")
@@ -3045,7 +3048,7 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
     let mut seen = BTreeMap::<String, PathBuf>::new();
     for source in files
         .iter()
-        .filter(|path| extension(path, &["dds", "nif", "pex", "lod"]))
+        .filter(|path| extension(path, &["dds", "nif", "pex", "lod", "hkx"]))
     {
         let relative = source.strip_prefix(data)?;
         let (kind, extension) = if extension(source, &["dds"]) {
@@ -3054,6 +3057,11 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
             (AssetKind::Mesh, "nif")
         } else if extension(source, &["pex"]) {
             (AssetKind::Script, "pex")
+        } else if extension(source, &["hkx"]) {
+            if !crate::archive::is_animation_input(&relative) {
+                continue;
+            }
+            (AssetKind::Animation, "hkx")
         } else {
             (AssetKind::LodSettings, "lod")
         };
@@ -3185,6 +3193,22 @@ fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Resu
             continue;
         };
         let destination = vfs.join(relative);
+        fs::create_dir_all(destination.parent().unwrap())?;
+        link_or_copy(source, &destination)?;
+    }
+    Ok(())
+}
+
+/// Links the winning MO2 animation inputs into the staged VFS, where the animation pass reads
+/// them beside the archive-extracted copies they override.
+fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
+    for (relative, source) in sources {
+        if crate::asset_path::is_authoring_resource(relative)
+            || !crate::archive::is_animation_input(Path::new(relative))
+        {
+            continue;
+        }
+        let destination = vfs.join(crate::archive::safe_relative_path(relative)?);
         fs::create_dir_all(destination.parent().unwrap())?;
         link_or_copy(source, &destination)?;
     }
@@ -7518,6 +7542,65 @@ mod tests {
     }
 
     #[test]
+    fn loose_character_animation_inputs_are_overlaid_and_other_hkx_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let skeleton = data.join("Meshes/Actors/Character/Character Assets/skeleton.hkx");
+        let behavior = data.join("Meshes/Actors/Character/Behaviors/0_master.hkx");
+        fs::create_dir_all(skeleton.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&skeleton, b"skeleton").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+
+        overlay_loose_assets(&data, &vfs, &discover(&data).unwrap()).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/character assets/skeleton.hkx")).unwrap(),
+            b"skeleton"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn mo2_animation_inputs_stage_the_winning_clips() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+        let clip = directory.path().join("mod/animations/male/mt_idle.hkx");
+        let behavior = directory.path().join("mod/behaviors/0_master.hkx");
+        fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&clip, b"clip").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let sources = BTreeMap::from([
+            (
+                "meshes/actors/character/animations/male/mt_idle.hkx".to_owned(),
+                clip,
+            ),
+            (
+                "meshes/actors/character/behaviors/0_master.hkx".to_owned(),
+                behavior,
+            ),
+        ]);
+
+        stage_mo2_animation_inputs(&vfs, &sources).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/animations/male/mt_idle.hkx")).unwrap(),
+            b"clip"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
+    }
+
+    #[test]
     fn loose_asset_override_does_not_write_through_a_linked_vfs_entry() {
         let directory = tempfile::tempdir().unwrap();
         let previous = directory.path().join("previous");
@@ -9814,7 +9897,7 @@ mod tests {
         fs::write(data.join("review.ba2"), &archive).unwrap();
         let recipe = PathBuf::from("batches")
             .join(hash_bytes(&archive))
-            .join("runtime-english-v1");
+            .join(IngestionSelection::RuntimeEnglishV1.recipe());
         let pack_directory = staging.join(".ingestion-cache").join(&recipe);
         fs::create_dir_all(&pack_directory).unwrap();
         let abandoned = [
@@ -9849,7 +9932,7 @@ mod tests {
         let root = directory.path().join("cache");
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::create_dir_all(root.join(&relative).parent().unwrap()).unwrap();
@@ -9872,7 +9955,7 @@ mod tests {
         assert!(!root.is_absolute());
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::write(staging.join(&relative), b"sealed batch").unwrap();
@@ -10054,8 +10137,12 @@ mod tests {
         fs::write(cache.join(format!("{dead}.2")), b"dead spill").unwrap();
         fs::write(cache.join("probe.tmp"), b"not a blob").unwrap();
         let packs = directory.path().join(".ingestion-cache/batches");
-        let live_packs = packs.join("00".repeat(32)).join("converter-inputs-v1");
-        let dead_packs = packs.join("ff".repeat(32)).join("converter-inputs-v1");
+        let live_packs = packs
+            .join("00".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
+        let dead_packs = packs
+            .join("ff".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
         fs::create_dir_all(&live_packs).unwrap();
         fs::create_dir_all(&dead_packs).unwrap();
         fs::write(live_packs.join(format!("{dead}.pack")), b"live pack").unwrap();
