@@ -159,7 +159,18 @@ fn read_knots(cursor: &mut Cursor<'_>) -> Result<(usize, Knots)> {
         "knot vector is not non-decreasing at {:#x}: {knots:?}",
         cursor.position
     );
-    Ok((count_minus_one + 1, Knots { degree, knots }))
+    let count = count_minus_one + 1;
+    ensure!(
+        count == 1 || count > degree,
+        "spline has {count} control points for degree {degree} at {:#x}",
+        cursor.position
+    );
+    ensure!(
+        count == 1 || (knots[degree] == 0 && knots[count] > 0),
+        "spline knot domain does not contain frame 0 at {:#x}: {knots:?}",
+        cursor.position
+    );
+    Ok((count, Knots { degree, knots }))
 }
 
 fn quantized(
@@ -332,6 +343,10 @@ pub fn read_block(
 fn find_span(degree: usize, u: f32, n: usize, knots: &[u8]) -> usize {
     if n <= 1 {
         return 0;
+    }
+    // Frame 0 belongs to the first span; searching below the domain would not terminate.
+    if u <= knots[degree] as f32 {
+        return degree;
     }
     if u >= knots[n] as f32 {
         return n - 1;
@@ -635,6 +650,33 @@ mod tests {
             Vec3Track::Spline { .. } => panic!("expected a static scale"),
         }
         assert_eq!(eval_quat(&tracks[0].rotation, 0.0), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn read_knots_rejects_too_few_control_points_for_the_degree() {
+        let data = [1, 0, 3, 0, 0, 0, 0, 0, 0];
+        let error = read_knots(&mut cursor(&data))
+            .expect_err("two control points cannot support degree three")
+            .to_string();
+        assert!(error.contains("2 control points"), "got {error:?}");
+    }
+
+    #[test]
+    fn read_knots_rejects_a_knot_domain_that_excludes_frame_zero() {
+        let data = [1, 0, 1, 5, 5, 6, 6];
+        let error = read_knots(&mut cursor(&data))
+            .expect_err("a domain starting above frame 0 is rejected")
+            .to_string();
+        assert!(error.contains("frame 0"), "got {error:?}");
+    }
+
+    #[test]
+    fn read_knots_rejects_an_empty_knot_domain() {
+        let data = [1, 0, 1, 0, 0, 0, 0];
+        let error = read_knots(&mut cursor(&data))
+            .expect_err("an empty knot domain is rejected")
+            .to_string();
+        assert!(error.contains("frame 0"), "got {error:?}");
     }
 
     #[test]
