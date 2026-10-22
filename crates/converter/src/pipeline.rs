@@ -1279,15 +1279,13 @@ impl AssetPipeline {
         if config.mo2.is_some() {
             stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
         }
-        if let Err(error) = convert_default_animations(staging) {
-            if config.fail_fast {
-                return Err(error);
-            }
-            warn!("default actor animations were not converted: {error:#}");
-            report.notices.push(format!(
-                "default actor animations were not converted: {error:#}"
-            ));
-        }
+        convert_default_animations(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
         for sex in ["male", "female"] {
             let relative = PathBuf::from("meshes/actors/character/animations")
                 .join(sex)
@@ -2603,16 +2601,24 @@ fn compose_default_bodies(
 ///
 /// Runs right after `compose_default_bodies` and before texture dependency
 /// collection, so each clip binds to the same body bone tree the composed body
-/// exports. A load order missing any input skips that sex rather than failing
-/// the conversion.
-fn convert_default_animations(staging: &Path) -> Result<()> {
+/// exports. A load order missing any input skips that sex. A present input that
+/// cannot be decoded follows the composed body's optional-output policy: the
+/// stale clip is removed and recorded unless `fail_fast` is set.
+fn convert_default_animations(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
     let animations = staging.join("vfs/meshes/actors/character/animations");
     let assets = staging.join("vfs/meshes/actors/character/character assets");
-    let skeleton_hkx = assets.join("skeleton.hkx");
-    let skeleton_nif = assets.join("skeleton.nif");
+    let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
     for sex in ["male", "female"] {
-        let clip_path = animations.join(sex).join("mt_idle.hkx");
-        let body_path = assets.join(format!("{sex}body_1.nif"));
+        let clip_path = winning(animations.join(sex).join("mt_idle.hkx"));
+        let skeleton_hkx = winning(assets.join("skeleton.hkx"));
+        let skeleton_nif = winning(assets.join("skeleton.nif"));
+        let body_path = winning(assets.join(format!("{sex}body_1.nif")));
         let missing = [
             ("clip", &clip_path),
             ("skeleton.hkx", &skeleton_hkx),
@@ -2629,43 +2635,62 @@ fn convert_default_animations(staging: &Path) -> Result<()> {
             continue;
         }
 
-        let body_model = crate::mesh::build_skinned_model(&body_path, &skeleton_nif)
-            .wrap_err_with(|| format!("failed to build the default {sex} actor body"))?;
-        let bones = body_model
-            .skeletal_meshes
-            .first()
-            .ok_or_else(|| eyre!("default {sex} actor body has no skeletal mesh"))?
-            .bones
-            .clone();
-        let clip_bytes = fs::read(&clip_path)
-            .wrap_err_with(|| format!("failed to read {}", clip_path.display()))?;
-        let skeleton_bytes = fs::read(&skeleton_hkx)
-            .wrap_err_with(|| format!("failed to read {}", skeleton_hkx.display()))?;
-        let mut clip = animation::decode_clip_with_skeleton(&clip_bytes, &skeleton_bytes)
-            .wrap_err_with(|| format!("failed to decode {}", clip_path.display()))?;
-
         let relative = PathBuf::from("meshes/actors/character/animations")
             .join(sex)
             .join("mt_idle.glb");
         let output = staging.join(&relative);
-        let candidate_dir = tempfile::tempdir()
-            .wrap_err("failed to create a temporary directory for the idle clip")?;
-        let candidate = candidate_dir.path().join("mt_idle.glb");
-        // The writer publishes unconditionally, so encode aside to compare bytes
-        // and leave an unchanged clip's file untouched.
-        let binding = animation::write_clip_glb(&mut clip, &bones, "mt_idle", &candidate)
-            .wrap_err_with(|| format!("failed to write {}", output.display()))?;
-        let bytes = fs::read(&candidate)?;
-        if !fs::read(&output).is_ok_and(|existing| existing == bytes) {
-            crate::mesh::write_glb_atomic(&output, &bytes)?;
+        let converted = (|| -> Result<()> {
+            let body_model = crate::mesh::build_skinned_model(&body_path, &skeleton_nif)
+                .wrap_err_with(|| format!("failed to build the default {sex} actor body"))?;
+            let bones = body_model
+                .skeletal_meshes
+                .first()
+                .ok_or_else(|| eyre!("default {sex} actor body has no skeletal mesh"))?
+                .bones
+                .clone();
+            let clip_bytes = fs::read(&clip_path)
+                .wrap_err_with(|| format!("failed to read {}", clip_path.display()))?;
+            let skeleton_bytes = fs::read(&skeleton_hkx)
+                .wrap_err_with(|| format!("failed to read {}", skeleton_hkx.display()))?;
+            let mut clip = animation::decode_clip_with_skeleton(&clip_bytes, &skeleton_bytes)
+                .wrap_err_with(|| format!("failed to decode {}", clip_path.display()))?;
+
+            let candidate_dir = tempfile::tempdir()
+                .wrap_err("failed to create a temporary directory for the idle clip")?;
+            let candidate = candidate_dir.path().join("mt_idle.glb");
+            // The writer publishes unconditionally, so encode aside to compare bytes
+            // and leave an unchanged clip's file untouched.
+            let binding = animation::write_clip_glb(&mut clip, &bones, "mt_idle", &candidate)
+                .wrap_err_with(|| format!("failed to write {}", output.display()))?;
+            let bytes = fs::read(&candidate)?;
+            if !fs::read(&output).is_ok_and(|existing| existing == bytes) {
+                crate::mesh::write_glb_atomic(&output, &bytes)?;
+            }
+            info!(
+                "default {sex} idle animation over {} body bones at {} ({} bound, {} skipped)",
+                bones.bones.len(),
+                output.display(),
+                binding.bound(),
+                binding.skipped.len()
+            );
+            Ok(())
+        })();
+        if let Err(error) = converted {
+            if fail_fast {
+                return Err(error);
+            }
+            let _ = fs::remove_file(&output);
+            let message = format!(
+                "{}: failed to convert the default {sex} idle animation: {error:#}",
+                relative.display()
+            );
+            manifest.failures.insert(
+                relative.to_string_lossy().replace('\\', "/"),
+                message.clone(),
+            );
+            report.warnings.push(message);
+            warn!("skipping default {sex} idle animation: {error:#}");
         }
-        info!(
-            "default {sex} idle animation over {} body bones at {} ({} bound, {} skipped)",
-            bones.bones.len(),
-            output.display(),
-            binding.bound(),
-            binding.skipped.len()
-        );
     }
     Ok(())
 }
@@ -7384,7 +7409,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
 
-        convert_default_animations(staging).unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
 
         assert!(!staging.join("meshes").exists());
     }
@@ -7451,7 +7479,10 @@ mod tests {
             .unwrap();
         }
 
-        convert_default_animations(staging).unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
 
         for sex in ["male", "female"] {
             let output = staging
