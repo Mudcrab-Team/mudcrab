@@ -30,7 +30,7 @@
 //! `--database PATH` (a converted `skyrim_world.db` with the actor catalog), it is read from the
 //! catalog row of `--npc FORMID`, by default Alvor (`00013475`) for `--sex male` and Sigrid
 //! (`00013476`) for `--sex female`, whose FaceGen heads the preview draws. With neither, the skin
-//! keeps the model's own tint.
+//! is untinted.
 //!
 //! `--debug-normals msn|vertex` renders the skin materials' normals as colour (`N * 0.5 + 0.5`,
 //! written so the PNG holds that value) instead of lighting them: `msn` the shading normal decoded
@@ -403,7 +403,7 @@ fn resolve_skin_tone(
     let catalog = ActorCatalog::open(database);
     let Some(model) = catalog.get(npc) else {
         println!(
-            "actor preview: NPC_ {npc:08X} has no actor catalog row in {}; the skin keeps the model's tint",
+            "actor preview: NPC_ {npc:08X} has no actor catalog row in {}; the skin stays untinted",
             database.display()
         );
         return None;
@@ -423,7 +423,7 @@ fn resolve_skin_tone(
         }
         None => {
             println!(
-                "actor preview: NPC_ {npc:08X} has no skin tone in {}; the skin keeps the model's tint",
+                "actor preview: NPC_ {npc:08X} has no skin tone in {}; the skin stays untinted",
                 database.display()
             );
             None

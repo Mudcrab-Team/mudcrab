@@ -456,20 +456,23 @@ fn a_skin_tint_part_is_marked_and_untinted_without_a_nif_colour() {
     assert_eq!(skin.extension.settings.tint_color, Vec4::ONE);
 }
 
+/// Retail body, hands and feet NIFs carry a white skin tint, which the game always replaces with
+/// the NPC's `QNAM`. Taken as a tone it would blend the skin toward white (`2b - b^2`), so without
+/// an actor tone the surface stays untinted whatever the NIF says.
 #[test]
-fn a_skin_tint_part_defaults_to_the_nif_tint_colour() {
-    let directory = tempfile::tempdir().unwrap();
-    write_skin_tint_gltf(directory.path(), Some([0.5, 0.4, 0.3]));
-    let (marked, skin) = load_skin_tint_surface(directory.path());
-    assert!(marked);
-    assert_ne!(
-        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
-        0
-    );
-    assert_eq!(
-        skin.extension.settings.tint_color,
-        Vec4::new(0.5, 0.4, 0.3, 1.0)
-    );
+fn a_skin_tint_part_ignores_the_nif_tint_colour() {
+    for colour in [[1.0, 1.0, 1.0], [0.5, 0.4, 0.3]] {
+        let directory = tempfile::tempdir().unwrap();
+        write_skin_tint_gltf(directory.path(), Some(colour));
+        let (marked, skin) = load_skin_tint_surface(directory.path());
+        assert!(marked, "the actor's skin tone still finds the surface");
+        assert_eq!(
+            skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+            0,
+            "{colour:?}"
+        );
+        assert_eq!(skin.extension.settings.tint_color, Vec4::ONE, "{colour:?}");
+    }
 }
 
 #[test]

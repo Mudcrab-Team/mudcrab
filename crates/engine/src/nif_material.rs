@@ -4,8 +4,7 @@ use crate::{
     skin_material::{
         FacegenMaps, SkinTintSurface, SkyrimSkinDepthMaterial, SkyrimSkinImages,
         SkyrimSkinMaterial, facegen_texture_indices, gltf_sampler, hair_material, is_skin_tint,
-        load_linear_twin, nif_hair_tint, nif_skin_tint, skin_material,
-        specular_color_texture_index,
+        load_linear_twin, nif_hair_tint, skin_material, specular_color_texture_index,
     },
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
@@ -304,14 +303,8 @@ impl NativeMaterialHandler {
                 facegen.as_ref(),
             ))
         });
-        let mut material = skin_material(
-            base,
-            model_space_normal,
-            specular,
-            facegen,
-            nif_skin_tint(source),
-            shader_flags_1,
-        );
+        let mut material =
+            skin_material(base, model_space_normal, specular, facegen, shader_flags_1);
         let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
             material.extension.images = Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
             Ok::<_, Infallible>(material)

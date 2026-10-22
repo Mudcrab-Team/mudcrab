@@ -880,7 +880,6 @@ mod tests {
                 tint: facegen_tint.clone(),
                 detail: facegen_detail.clone(),
             }),
-            None,
             0,
         ));
         let mut scene_world = World::new();

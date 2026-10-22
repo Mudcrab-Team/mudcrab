@@ -12,8 +12,8 @@
 //! read the scene asset and the native base material (`NifNativeMaterialSource`), which keep the
 //! model's own material, and a derived material reuses that material's images.
 //!
-//! An actor without a tone keeps the model's material: the NIF's own tint when the converter
-//! published one, else no tint at all.
+//! An actor without a tone keeps the model's material, which is untinted: the NIF's own skin tint
+//! is a placeholder (white on retail bodies, hands and feet) that the game always replaces.
 use crate::skin_material::{SkinTintSurface, SkyrimSkinMaterial};
 use bevy::{app::SceneSpawnerSystems, prelude::*};
 use std::collections::HashMap;

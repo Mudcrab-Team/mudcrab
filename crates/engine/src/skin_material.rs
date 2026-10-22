@@ -28,9 +28,9 @@
 //! same way a FaceGen head blends its tint map ([`SkyrimSkinFlags::SKIN_TINT`], CS's
 //! `FACEGEN_RGB_TINT`). The colour is per NPC (`NPC_/QNAM`), while the labelled material is shared
 //! by every instance of a GLB, and the body GLB by every actor of a sex. So the loader only marks
-//! the surface ([`SkinTintSurface`]) and, when the converter published the NIF's own tint, sets
-//! it as the default; [`crate::actor_skin_tone`] gives each actor's surfaces a derived material
-//! carrying that actor's tone. A surface with neither keeps the flag clear and renders as before.
+//! the surface ([`SkinTintSurface`]); [`crate::actor_skin_tone`] gives each actor's surfaces a
+//! derived material carrying that actor's tone. The NIF's own skin tint is never used: it is a
+//! placeholder the game replaces, so a surface without an actor tone keeps the flag clear.
 //!
 //! # Hair tint
 //!
@@ -263,7 +263,6 @@ pub fn skin_material(
     model_space_normal: Handle<Image>,
     specular: Option<Handle<Image>>,
     facegen: Option<FacegenMaps>,
-    skin_tint: Option<Vec3>,
     shader_flags_1: u32,
 ) -> SkyrimSkinMaterial {
     base.normal_map_texture = None;
@@ -280,10 +279,10 @@ pub fn skin_material(
     }
     let (facegen_tint, facegen_detail) =
         facegen.map_or((None, None), |maps| (Some(maps.tint), Some(maps.detail)));
-    let mut settings = SkyrimSkinSettings { flags, ..default() };
-    if let Some(tone) = skin_tint {
-        settings.set_skin_tint(tone);
-    }
+    // No tint here: the NIF's own skin tint is not a tone. Retail body, hands and feet NIFs
+    // carry white, and the game always replaces it with the NPC's `QNAM` at runtime, so a
+    // surface only takes a tint from its actor (`crate::actor_skin_tone`).
+    let settings = SkyrimSkinSettings { flags, ..default() };
     SkyrimSkinMaterial {
         base,
         extension: SkyrimSkinExtension {
@@ -458,14 +457,6 @@ fn lighting_shader_type(material: &gltf::Material<'_>) -> Option<String> {
     Some(extension.get("lightingShaderType")?.as_str()?.to_owned())
 }
 
-/// The NIF's own skin tint colour for a `skin_tint` material, when the converter published one
-/// (`OPEN_SKYRIM_material.tintColor`, encoded RGB in 0..1). It is the fallback for a surface whose
-/// actor has no `NPC_` skin tone. Packs whose converter does not read the NIF's shader tail carry
-/// none, and the surface stays untinted.
-pub(crate) fn nif_skin_tint(material: &gltf::Material<'_>) -> Option<Vec3> {
-    nif_tint_color(material, "skin_tint")
-}
-
 /// The NIF's hair tint colour for a `hair_tint` material (`OPEN_SKYRIM_material.tintColor`,
 /// encoded RGB). Packs whose converter does not read the NIF's shader tail carry none, and the
 /// surface keeps the plain material.
@@ -570,7 +561,6 @@ mod tests {
                 normal.clone(),
                 specular.clone(),
                 None,
-                None,
                 flags_1,
             );
             assert!(material.base.normal_map_texture.is_none());
@@ -598,14 +588,7 @@ mod tests {
             tint: images.add(Image::default()),
             detail: images.add(Image::default()),
         };
-        let material = skin_material(
-            base.clone(),
-            normal.clone(),
-            None,
-            Some(maps.clone()),
-            None,
-            0,
-        );
+        let material = skin_material(base.clone(), normal.clone(), None, Some(maps.clone()), 0);
         assert_eq!(
             material.extension.settings.flags,
             SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::FACEGEN
@@ -614,7 +597,8 @@ mod tests {
         assert_eq!(material.extension.facegen_detail, Some(maps.detail));
 
         let tone = Vec3::new(0.78, 0.69, 0.66);
-        let material = skin_material(base, normal, None, None, Some(tone), 0);
+        let mut material = skin_material(base, normal, None, None, 0);
+        material.extension.settings.set_skin_tint(tone);
         assert_eq!(
             material.extension.settings.flags,
             SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SKIN_TINT
@@ -623,30 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn the_nif_skin_tint_is_read_from_skin_tint_materials_only() {
-        for (shader, colour, expected) in [
-            (
-                "skin_tint",
-                serde_json::json!([0.5, 0.25, 1.0]),
-                Some(Vec3::new(0.5, 0.25, 1.0)),
-            ),
-            ("skin_tint", serde_json::json!([0.5, 0.25]), None),
-            ("skin_tint", serde_json::json!("white"), None),
-            ("hair_tint", serde_json::json!([0.5, 0.25, 1.0]), None),
-        ] {
-            let document = material_with_skyrim_extension(serde_json::json!({
-                "lightingShaderType": shader,
-                "tintColor": colour
-            }));
-            let material = document.materials().next().unwrap();
-            assert_eq!(nif_skin_tint(&material), expected, "{shader} {colour}");
-        }
+    fn skin_tint_materials_are_recognised_and_their_nif_tint_is_not_hair() {
         let document = material_with_skyrim_extension(serde_json::json!({
-            "lightingShaderType": "skin_tint"
+            "lightingShaderType": "skin_tint",
+            "tintColor": [1.0, 1.0, 1.0]
         }));
         let material = document.materials().next().unwrap();
         assert!(is_skin_tint(&material));
-        assert_eq!(nif_skin_tint(&material), None);
+        assert_eq!(nif_hair_tint(&material), None);
         let document = material_with_skyrim_extension(serde_json::json!({
             "lightingShaderType": "face_tint"
         }));
