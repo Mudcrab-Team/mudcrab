@@ -24,7 +24,7 @@ use bevy::{
 use engine::{
     color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
     nif_depth::{NifDepthMaterial, NifDepthState},
-    nif_material::NifMaterialPlugin,
+    nif_material::{EffectPaletteMaterialPlugin, NifMaterialPlugin},
     prepass_vertex_alpha::PrepassVertexAlphaPlugin,
 };
 use std::{
@@ -177,6 +177,7 @@ fn main() {
             .disable::<bevy::audio::AudioPlugin>(),
     )
     .add_plugins((
+        EffectPaletteMaterialPlugin,
         NifMaterialPlugin,
         PrepassVertexAlphaPlugin,
         MaterialPlugin::<IdMaterial>::default(),

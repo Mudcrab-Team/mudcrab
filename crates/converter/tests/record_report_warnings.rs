@@ -121,7 +121,7 @@ fn malformed_fixture(data: &Path) {
     plugin(data, "Broken.esm", 0x81, &[], &body);
 }
 
-/// Localized names with one missing key and one valid null sentinel retain a clean neighbor.
+/// A missing name bank and one valid null sentinel retain a clean neighbor.
 fn localized_loss_fixture(data: &Path) {
     let localized = |id| {
         record(
@@ -468,7 +468,7 @@ async fn legacy_malformed_frames_warn_once_and_publish_neighbors() {
     );
     assert!(localization.contains("00000806"), "{localization}");
     assert!(
-        localization.contains("missing localized ID 6515"),
+        localization.contains("FULL ID 6515: unreadable strings table"),
         "{localization}"
     );
     incomplete(&report, &output, 2);
@@ -521,7 +521,7 @@ async fn legacy_unusable_override_warns_and_preserves_earlier_winner() {
     incomplete(&report, &output, 1);
 }
 
-/// Decoder skips, native optional-link recovery and adapter lookup issues all reach the report.
+/// Decoder skips and missing banks warn while a faithfully cleared link remains a notice.
 #[tokio::test]
 async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     let directory = tempfile::tempdir().unwrap();
@@ -541,20 +541,27 @@ async fn inhouse_decoder_and_adapter_summaries_reach_report() {
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_records"], 2);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["skipped_fields"], 1);
     assert_eq!(diagnostics["decoder"]["broken.esm"]["invalid_links"], 1);
-    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 1);
+    assert_eq!(diagnostics["adapter"]["broken.esm"][0], 2);
     let decoder = warning(&report, "broken.esm", "in-house reader skipped");
     assert!(decoder.contains("2 records, 1 fields"), "{decoder}");
-    assert!(decoder.contains("cleared 1 invalid links"), "{decoder}");
+    assert!(!decoder.contains("links"), "{decoder}");
+    let link_notices: Vec<_> = report
+        .notices
+        .iter()
+        .filter(|notice| notice.contains("broken.esm: in-house reader cleared 1 links"))
+        .collect();
+    assert_eq!(link_notices.len(), 1, "{:?}", report.notices);
+    assert!(link_notices[0].contains("00003000"));
     let adapter = warning(&report, "broken.esm", "inhouse adapter reported");
     assert!(
-        adapter.contains("reported 1 local decode/lookup issues"),
+        adapter.contains("reported 2 local decode/lookup issues"),
         "{adapter}"
     );
     assert!(adapter.contains("missing localized ID 6515"), "{adapter}");
     incomplete(&report, &output, 2);
 }
 
-/// Missing legacy string keys reach report and manifest; ID zero stays a valid null sentinel.
+/// Missing required string banks reach report and manifest; ID zero stays a valid null sentinel.
 #[tokio::test]
 async fn missing_localized_text_marks_both_readers_incomplete_without_losing_neighbors() {
     let directory = tempfile::tempdir().unwrap();
@@ -567,10 +574,15 @@ async fn missing_localized_text_marks_both_readers_incomplete_without_losing_nei
         let output = directory.path().join(name);
         let report = publish(&data, &output, reader).await;
         assert_eq!(record_ids(&output), [0x801, 0x806, 0x807]);
+        let expected = match reader {
+            RecordReader::Legacy => "FULL ID 17: unreadable strings table",
+            RecordReader::Inhouse => "missing localized ID 17",
+        };
         assert!(
-            report.warnings.iter().any(|line| {
-                line.contains("lost.esm") && line.contains("missing localized ID 17")
-            }),
+            report
+                .warnings
+                .iter()
+                .any(|line| { line.contains("lost.esm") && line.contains(expected) }),
             "{:?}",
             report.warnings
         );
@@ -646,7 +658,7 @@ fn legacy_cli_report_json_marks_published_warning_pack_incomplete() {
     );
     assert!(localization.contains("00000806"), "{localization}");
     assert!(
-        localization.contains("missing localized ID 6515"),
+        localization.contains("FULL ID 6515: unreadable strings table"),
         "{localization}"
     );
     incomplete(&report, &output, 2);

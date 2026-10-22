@@ -1,3 +1,4 @@
+use crate::nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial};
 use crate::physics::{DebugTankard, PlayerBody, PlayerControlsSystems};
 use crate::{
     config::EngineConfig,
@@ -1732,7 +1733,7 @@ fn spawn_cell(
             {
                 entity.insert(door);
             }
-            if let Some(path) = reference.model_path.and_then(converted_model_path) {
+            if let Some(path) = spawned_model_path(reference.model_path, reference.base_is_marker) {
                 model_loads += 1;
                 let sequence = *model_sequence;
                 *model_sequence = model_sequence.saturating_add(1);
@@ -2490,7 +2491,32 @@ type ReadinessExtras<'world, 'state> = (
     Query<'world, 'state, &'static Transform, With<StreamingCamera>>,
     ResMut<'world, crate::pacing::PacingTracker>,
     Query<'world, 'state, (), With<crate::physics::DynamicClutter>>,
+    EffectPalettePrimitives<'world, 'state>,
 );
+
+/// Converted effect surfaces drawn through their palette (`crate::nif_material`): these carry an
+/// [`EffectPaletteMaterial`] in place of a `StandardMaterial`, either directly or, under an
+/// authored depth override, as the source of the material that wraps it.
+type EffectPalettePrimitives<'world, 'state> = (
+    Query<'world, 'state, EffectPaletteSurface>,
+    Option<Res<'world, Assets<EffectPaletteMaterial>>>,
+);
+
+type EffectPaletteSurface = AnyOf<(
+    &'static MeshMaterial3d<EffectPaletteMaterial>,
+    &'static EffectPaletteDepthSource,
+)>;
+
+fn effect_palette_handle<'a>(
+    (material, depth_source): (
+        Option<&'a MeshMaterial3d<EffectPaletteMaterial>>,
+        Option<&'a EffectPaletteDepthSource>,
+    ),
+) -> Option<&'a Handle<EffectPaletteMaterial>> {
+    material
+        .map(|material| &material.0)
+        .or_else(|| depth_source.map(|source| &source.0))
+}
 
 type PendingAssetQuery<'world, 'state> = Query<
     'world,
@@ -2741,7 +2767,7 @@ fn track_asset_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
     mut static_cache: ResMut<StaticCollisionCache>,
-    (mut meshes, mut materials, camera, mut pacing, clutter): ReadinessExtras,
+    (mut meshes, mut materials, camera, mut pacing, clutter, palettes): ReadinessExtras,
     (mut metrics, mut runtime): (
         ResMut<StreamingMetrics>,
         Option<ResMut<runtime::StreamingRuntime>>,
@@ -2867,6 +2893,7 @@ fn track_asset_readiness(
                 &primitives,
                 &meshes,
                 &materials,
+                (&palettes.0, palettes.1.as_deref()),
                 &images,
             );
             let summary = match validation {
@@ -3767,6 +3794,10 @@ fn validate_spawned_asset(
     primitives: &RenderPrimitiveQuery,
     meshes: &Assets<Mesh>,
     materials: &Assets<StandardMaterial>,
+    (palettes, palette_materials): (
+        &Query<EffectPaletteSurface>,
+        Option<&Assets<EffectPaletteMaterial>>,
+    ),
     images: &Assets<Image>,
 ) -> Result<AssetValidationSummary, String> {
     let mut summary = AssetValidationSummary::default();
@@ -3782,6 +3813,23 @@ fn validate_spawned_asset(
             ));
         }
         summary.meshes += 1;
+        if let Some(palette_handle) = palettes
+            .get(descendant)
+            .ok()
+            .and_then(effect_palette_handle)
+        {
+            let material = palette_materials
+                .and_then(|materials| materials.get(palette_handle))
+                .ok_or_else(|| {
+                    format!(
+                        "effect palette material {:?} is absent after scene readiness",
+                        palette_handle.id()
+                    )
+                })?;
+            summary.images += validate_effect_palette_material(material, images)?;
+            summary.materials += 1;
+            continue;
+        }
         let Some(material_handle) = material_handle
             .map(|handle| &handle.0)
             .or_else(|| native_source.map(|source| &source.0))
@@ -3864,26 +3912,44 @@ pub(crate) fn validate_standard_material(
         let Some(handle) = handle else {
             continue;
         };
-        let image = images
-            .get(handle)
-            .ok_or_else(|| format!("{slot} image {:?} is not loaded", handle.id()))?;
-        let descriptor = &image.texture_descriptor;
-        if descriptor.size.width == 0
-            || descriptor.size.height == 0
-            || descriptor.mip_level_count == 0
-        {
-            return Err(format!("{slot} image has invalid dimensions or mip levels"));
-        }
-        if descriptor.format.is_srgb() != expects_srgb {
-            return Err(format!(
-                "{slot} image color space mismatch: {:?}",
-                descriptor.format
-            ));
-        }
-        validate_image_sampler(slot, &image.sampler)?;
+        validate_material_image(slot, handle, expects_srgb, images)?;
         validated += 1;
     }
     Ok(validated)
+}
+
+/// Validates the standard half of an effect palette material, then its palette. The palette must
+/// be sampled through an sRGB view: the palette shader takes its colour as decoded on sampling.
+pub(crate) fn validate_effect_palette_material(
+    material: &EffectPaletteMaterial,
+    images: &Assets<Image>,
+) -> Result<usize, String> {
+    let validated = validate_standard_material(&material.base, images)?;
+    validate_material_image("palette", material.extension.palette(), true, images)?;
+    Ok(validated + 1)
+}
+
+fn validate_material_image(
+    slot: &str,
+    handle: &Handle<Image>,
+    expects_srgb: bool,
+    images: &Assets<Image>,
+) -> Result<(), String> {
+    let image = images
+        .get(handle)
+        .ok_or_else(|| format!("{slot} image {:?} is not loaded", handle.id()))?;
+    let descriptor = &image.texture_descriptor;
+    if descriptor.size.width == 0 || descriptor.size.height == 0 || descriptor.mip_level_count == 0
+    {
+        return Err(format!("{slot} image has invalid dimensions or mip levels"));
+    }
+    if descriptor.format.is_srgb() != expects_srgb {
+        return Err(format!(
+            "{slot} image color space mismatch: {:?}",
+            descriptor.format
+        ));
+    }
+    validate_image_sampler(slot, &image.sampler)
 }
 
 fn validate_image_sampler(slot: &str, sampler: &ImageSampler) -> Result<(), String> {
@@ -4015,18 +4081,28 @@ pub(crate) fn creation_rotation_to_bevy(rotation: [f32; 3]) -> Quat {
     ))
 }
 
+/// The converted model a reference draws, or `None` when it draws nothing. A base record flagged
+/// `Is Marker` is editor-only and never drawn, whatever its model.
+fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Option<String> {
+    model_path
+        .filter(|_| !base_is_marker)
+        .and_then(converted_model_path)
+}
+
 fn converted_model_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
+    // The filename is no marker signal: forges and the Civil War map flags carry
+    // "marker" and must draw. Editor markers are excluded by the base record's
+    // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
+    // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let filename = normalized.rsplit('/').next().unwrap_or_default();
     if normalized.starts_with("meshes/sky/")
         || normalized.starts_with("sky/")
         || normalized.starts_with("meshes/markers/")
         || normalized.starts_with("markers/")
         || normalized.starts_with("meshes/effects/")
         || normalized.starts_with("effects/")
-        || filename.contains("marker")
     {
         return None;
     }
@@ -5555,16 +5631,40 @@ mod tests {
             converted_model_path("meshes/Sky/CloudShape01.nif".into()),
             None
         );
-        assert_eq!(converted_model_path("meshes/Marker_Map.nif".into()), None);
+        assert_eq!(
+            converted_model_path("meshes/Markers/MapMarker.nif".into()),
+            None
+        );
         assert_eq!(
             converted_model_path("Markers/CivilWarMarkers/CWAttSpawn02.nif".into()),
             None
         );
         assert_eq!(converted_model_path("Effects/FXRapids.nif".into()), None);
+    }
+
+    #[test]
+    fn keeps_visible_models_whose_filename_contains_marker() {
         assert_eq!(
-            converted_model_path("meshes/Furniture/SitLedgeMarker.nif".into()),
+            converted_model_path(r"meshes\Clutter\CivilWar\CWMapMarkers01.nif".into()).as_deref(),
+            Some("meshes/clutter/civilwar/cwmapmarkers01.glb")
+        );
+        assert_eq!(
+            converted_model_path("meshes/Furniture/BlacksmithForgeMarker.nif".into()).as_deref(),
+            Some("meshes/furniture/blacksmithforgemarker.glb")
+        );
+    }
+
+    #[test]
+    fn a_marker_base_record_spawns_no_model() {
+        assert_eq!(
+            spawned_model_path(Some("Marker_Map.nif".into()), true),
             None
         );
+        assert_eq!(
+            spawned_model_path(Some("Marker_Map.nif".into()), false).as_deref(),
+            Some("meshes/marker_map.glb")
+        );
+        assert_eq!(spawned_model_path(None, false), None);
     }
 
     #[test]
@@ -6600,6 +6700,47 @@ mod tests {
     }
 
     #[test]
+    fn effect_palette_material_needs_its_palette_loaded_through_an_srgb_view() {
+        let mut images = Assets::<Image>::default();
+        let mut image = |format| {
+            images.add(Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[255, 255, 255, 255],
+                format,
+                RenderAssetUsages::default(),
+            ))
+        };
+        let srgb = image(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
+        let linear = image(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        let material = |palette: Handle<Image>| EffectPaletteMaterial {
+            base: StandardMaterial {
+                base_color_texture: Some(srgb.clone()),
+                ..default()
+            },
+            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6),
+        };
+        assert_eq!(
+            validate_effect_palette_material(&material(srgb.clone()), &images),
+            Ok(2)
+        );
+        assert!(
+            validate_effect_palette_material(&material(linear), &images)
+                .unwrap_err()
+                .contains("palette image color space mismatch")
+        );
+        assert!(
+            validate_effect_palette_material(&material(Handle::default()), &images)
+                .unwrap_err()
+                .contains("palette image")
+        );
+    }
+
+    #[test]
     fn rejects_invalid_alpha_and_culling_semantics() {
         let images = Assets::<Image>::default();
         assert!(
@@ -7037,6 +7178,7 @@ mod tests {
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
                     base_record_type: None,
+                    base_is_marker: false,
                     model_path: Some("meshes\\furniture\\creatureexit\\wispambush.nif".to_owned()),
                     position: [0.0, 0.0, 0.0],
                     rotation: [0.0; 3],
@@ -8028,6 +8170,7 @@ mod tests {
             cell_id: 99,
             base_form_id: 0x200 + form_id,
             base_record_type: None,
+            base_is_marker: false,
             model_path: None,
             position: [100.0, 50.0, -200.0],
             rotation: [0.0; 3],
@@ -8120,6 +8263,8 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<TerrainMaterial>()
             .init_asset::<WaterMaterial>()
+            // A reference with a model path asks the asset server for its converted scene.
+            .init_asset::<WorldAsset>()
             .insert_resource(config)
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .init_resource::<ActiveSpace>()
@@ -8954,6 +9099,28 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    /// Two references to the same model, one whose base record carries `Is Marker`: only the
+    /// other loads a model, though both are still spawned as references.
+    #[test]
+    fn spawn_cell_loads_no_model_for_a_marker_base_record() {
+        let mut marker = lit_reference(0x120, None, None);
+        marker.model_path = Some("Architecture/Wall.nif".to_owned());
+        marker.base_is_marker = true;
+        let mut drawn = lit_reference(0x121, None, None);
+        drawn.model_path = Some("Furniture/BlacksmithForgeMarker.nif".to_owned());
+        let app = spawn_reference_cell_app(vec![marker, drawn], false);
+
+        let marker = app.world().entity(reference_entity(&app, 0x120));
+        assert!(marker.get::<MeshHandle>().is_none());
+        assert!(marker.get::<PendingModel>().is_none());
+        let drawn = app.world().entity(reference_entity(&app, 0x121));
+        assert_eq!(
+            drawn.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/furniture/blacksmithforgemarker.glb")
+        );
+        assert!(drawn.get::<PendingModel>().is_some());
     }
 
     /// One lit reference, one negative light, one flagged off by default and one plain reference:

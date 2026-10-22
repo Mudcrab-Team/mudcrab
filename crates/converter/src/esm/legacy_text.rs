@@ -68,11 +68,12 @@ pub(crate) fn resolve_localized_fields(
                 .ok()
                 .map(u32::from_le_bytes);
             let (table, table_error) = tables.entry((priority, bank)).or_insert_with(|| {
-                match plugin_paths
-                    .get(priority)
-                    .map(|plugin| read_plugin_strings(plugin, sources, bank))
-                {
-                    Some(Ok(table)) => (Some(table), None),
+                match plugin_paths.get(priority).map(|plugin| {
+                    read_plugin_strings(plugin, sources, bank)
+                        .map(|table| table.map(|table| table.values))
+                }) {
+                    Some(Ok(Some(table))) => (Some(table), None),
+                    Some(Ok(None)) => (None, Some(format!("missing {bank} string table"))),
                     Some(Err(error)) => (None, Some(error.to_string())),
                     None => (None, Some("plugin path unavailable".to_owned())),
                 }

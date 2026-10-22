@@ -303,7 +303,7 @@ not matched retail Skyrim or a performance benchmark.
 | Tangent-space normal maps | Linear RGB/alpha; native material applies DirectX Y convention once | Asymmetric mesh directions match geometric-normal references; NIF authored tangents still regenerated. Terrain owns a separate tangent frame and needs separate native-direction evidence. |
 | Model-space normals | No established compatibility path in this slice | Named L1 gap; generic tangent interpretation cannot count as acceptance. |
 | Environment-map / parallax / skin / hair / other NIF lighting variants | Raw source contract/extras plus generic approximation | [Compatibility inventory](../../lighting-l1-compatibility.md) names per-family gaps; retained metadata alone is not shader support. |
-| Effect shader surfaces | Generic approximation with explicit exclusions | Declared EditorMarker and Fire_Refraction excluded with reasons; no general effect, refraction, particle or animation parity claim. |
+| Effect shader surfaces | Generic approximation with explicit exclusions; palette effects drawn through their palette (#289) | Declared EditorMarker and Fire_Refraction excluded with reasons; no general effect, refraction, particle or animation parity claim. |
 | Water / sky | Custom Bevy shader paths | Output-domain test only; authored behavior and full-scene parity remain open. |
 
 ## Verification
@@ -369,6 +369,78 @@ Verification: `resolves_reference_emittance_from_regions_and_lights`,
 `returns_the_day_colour_of_a_reference_emittance_source`,
 `external_emittance_needs_bit_29_of_shader_flags_1`,
 `a_black_day_colour_darkens_only_the_external_emittance_surface` and the other `emittance` tests.
+
+## Effect palette (#289)
+
+A `BSEffectShaderProperty` with `Greyscale_To_PaletteColor` (flags 1, bit 4) or
+`Greyscale_To_PaletteAlpha` (bit 5) does not draw its source texture. The texture's grey level
+picks a colour, and its alpha an opacity, from the greyscale (palette) texture. Forge fires and
+coals, braziers and many magic effects use it. Drawn as an ordinary material, the blacksmith
+forge's coals (`furniture\blacksmithforgemarker.nif`, `BlacksmithForge01:2`, palette
+`gradhotcoals`) came out as a flat white disc.
+
+The converter already publishes the palette as the `greyscale` slot of `OPEN_SKYRIM_material` and
+keeps the flags, so no mesh is reconverted. At runtime `NifMaterialPlugin` gives each such effect
+an `EffectPaletteMaterial` (`StandardMaterial` extended by `shaders/effect_palette.wgsl`) in place
+of its standard material. The lookup follows the retail effect pixel shader as reconstructed by
+Community Shaders, revision `4d6ac751a05f2e0a10f8add4cc1ba5a0b80ea9e5`,
+[`Effect.hlsl`](https://github.com/doodlum/skyrim-community-shaders/blob/4d6ac751a05f2e0a10f8add4cc1ba5a0b80ea9e5/package/Shaders/Effect.hlsl):
+
+- colour = base colour scale × palette(texture.g, base colour.r × vertex.r).rgb;
+- alpha = palette(texture.a, base colour.a × vertex.a).a;
+- otherwise texture × base colour × vertex colour, as before. The result is unlit, like the game's
+  effect shader, and goes through the usual fog and output transform.
+
+Colour spaces: the game looks up the stored grey level, so the shader re-encodes the
+sRGB-decoded source sample. Bevy loads a texture with no standard glTF slot names through an sRGB
+view, so the palette colour is decoded once on sampling; spawn validation requires that view. The
+base colour scale is recovered from the published emission (`emissive / base colour`, see the
+emission publication above); a black base colour publishes none and falls back to 1.
+
+The depth prepass and shadow passes use `shaders/effect_palette_prepass.wgsl`, which tests the
+same alpha as the colour pass (`shaders/effect_palette_functions.wgsl` holds the shared lookup).
+With Bevy's standard prepass, an alpha-tested effect whose palette alpha disagrees with its
+source alpha would write depth and cast shadow where it draws nothing, or the reverse.
+
+`ExtendedMaterial` reports none of its fields' handles as asset dependencies. The handler
+therefore adds each palette image under a label of its own (`…/nif_palette_image`, an asset whose
+image is a `#[dependency]`), and the palette material depends on that label. A scene then counts
+as loaded only once its palettes have loaded; without this, spawn validation could run before a
+palette arrived and reject the model for good.
+
+A palette surface that also has an authored depth override (`crate::nif_depth`: decals, surfaces
+that test but do not write depth, and surfaces with depth testing off) draws through
+`EffectPaletteDepthMaterial`, the depth extension wrapped around the palette material
+(`…/nif_palette_depth`). The wrapper keeps the palette shaders and adds the authored depth state,
+the sorted colour pass, no prepass and the authored `Cast_Shadows` flag, exactly as
+`NifDepthMaterial` does for standard surfaces. The surface keeps its palette material as
+`EffectPaletteDepthSource`, which spawn validation and the door crossing's readiness check read.
+
+Not covered: effect lighting influence, falloff, soft depth, membrane shaders, `IgnoreTexAlpha`,
+nonstandard blend factors and every animation controller.
+
+`material_palette_probe --output <dir> [--interior] [--standard-material]`: converter-published
+synthetic effect contracts → glTF/KTX2 → production palette material → GPU swatches beside unlit
+references computed on the CPU (bilinear filtering of the decoded 4×4 palette), with a depth
+prepass as the engine's cameras have. Nine cases: mid grey, HDR scale with the row from base red
+only, clamped corner, colour and alpha blended, alpha only, a depth-tested decal drawn
+through the depth wrapper, and three alpha-tested cases over an unlit plane: a decal through the
+wrapper whose palette alpha must discard, opaque source alpha with transparent palette alpha (must
+leave the plane visible, not a prepass hole) and the reverse. A second glTF names a palette file that does not exist; its
+palette material's recursive load must fail rather than finish. The palette view must be
+`Rgba8UnormSrgb`; tolerance 2/255; references must be visible. `--standard-material` draws the
+stock material the engine used before and must fail with exit 1.
+
+Local Apple M4 Pro, Metal: both backgrounds match exactly (0/255). Negative controls fail:
+`--standard-material` at up to 112/255; the standard prepass in place of the palette prepass
+leaves a 104/255 hole in the discarded masked case; without the palette image label the missing
+palette's material reports itself loaded. In the full Riverwood pack, the forge's coals render as
+embers instead of the white disc. Unit regressions:
+`palette_lookup_reads_effect_flags_and_the_greyscale_slot`,
+`handler_hands_out_the_palette_by_gltf_texture_index`,
+`base_color_scale_is_recovered_from_the_published_emission`,
+`effect_palette_material_needs_its_palette_loaded_through_an_srgb_view`,
+`the_fade_in_waits_for_an_effect_palette_materials_source_texture_and_palette`.
 
 ## Local verification, 2026-10-02
 
