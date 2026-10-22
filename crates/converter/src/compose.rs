@@ -12,7 +12,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure, eyre},
 };
-use project_wormhole_nif::model::all::{BoneTree, Model};
+use project_wormhole_nif::model::all::{BoneTree, Model, MorphTarget, SkeletalMesh};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     fmt, fs,
@@ -321,21 +321,20 @@ pub fn blend_body_weight(
         heavy.model.skeletal_meshes.len()
     );
     let factor = weight / 100.0;
-    for (index, (thin_mesh, heavy_mesh)) in thin
-        .model
-        .skeletal_meshes
-        .iter()
-        .zip(heavy.model.skeletal_meshes.iter_mut())
-        .enumerate()
-    {
-        let (Some(thin_mesh), Some(heavy_mesh)) = (&thin_mesh.mesh, &mut heavy_mesh.mesh) else {
-            return Err(eyre!("skeletal mesh {index} has no geometry"));
-        };
-        ensure!(
-            thin_mesh.positions.len() == heavy_mesh.positions.len()
-                && thin_mesh.triangles == heavy_mesh.triangles,
-            "skeletal mesh {index} differs in topology between the weight 0 and weight 100 parts"
-        );
+    for index in 0..thin.model.skeletal_meshes.len() {
+        check_same_topology(
+            &thin.model.skeletal_meshes[index],
+            &heavy.model.skeletal_meshes[index],
+            index,
+        )?;
+        let thin_mesh = thin.model.skeletal_meshes[index]
+            .mesh
+            .as_ref()
+            .ok_or_else(|| eyre!("skeletal mesh {index} has no geometry"))?;
+        let heavy_mesh = heavy.model.skeletal_meshes[index]
+            .mesh
+            .as_mut()
+            .ok_or_else(|| eyre!("skeletal mesh {index} has no geometry"))?;
         for (heavy_position, thin_position) in
             heavy_mesh.positions.iter_mut().zip(&thin_mesh.positions)
         {
@@ -356,6 +355,92 @@ pub fn blend_body_weight(
         .validate()
         .map_err(|error| eyre!("invalid weight-blended body model: {error}"))?;
     Ok(heavy)
+}
+
+/// Verifies that two compositions of the same parts share per-vertex topology, the precondition
+/// for expressing one as a morph target of the other.
+fn check_same_topology(thin: &SkeletalMesh, heavy: &SkeletalMesh, index: usize) -> Result<()> {
+    let (Some(thin_mesh), Some(heavy_mesh)) = (&thin.mesh, &heavy.mesh) else {
+        return Err(eyre!("skeletal mesh {index} has no geometry"));
+    };
+    let name = thin
+        .name
+        .as_deref()
+        .or(heavy.name.as_deref())
+        .unwrap_or("skeletal mesh");
+    ensure!(
+        thin_mesh.positions.len() == heavy_mesh.positions.len(),
+        "topology mismatch: {name} vertices {} vs {}",
+        thin_mesh.positions.len(),
+        heavy_mesh.positions.len()
+    );
+    ensure!(
+        thin_mesh.triangles == heavy_mesh.triangles,
+        "topology mismatch: {name} triangles {} vs {}",
+        thin_mesh.triangles.len(),
+        heavy_mesh.triangles.len()
+    );
+    Ok(())
+}
+
+/// Adds the thin composition to `heavy` as a `thin` morph target on every skeletal mesh.
+///
+/// Skinning, materials and texture sets stay on `heavy`, as the game keeps them at weight 100.
+/// The target holds `thin - heavy` position and normal deltas, so morph weight 1 yields the thin
+/// body and 0 yields today's heavy body. Nothing is changed when any mesh fails the topology
+/// check.
+pub fn attach_thin_target(heavy: &mut ComposedBody, thin: &ComposedBody) -> Result<()> {
+    ensure!(
+        thin.model.skeletal_meshes.len() == heavy.model.skeletal_meshes.len(),
+        "topology mismatch: {} skeletal meshes vs {}",
+        thin.model.skeletal_meshes.len(),
+        heavy.model.skeletal_meshes.len()
+    );
+
+    let mut targets = Vec::with_capacity(thin.model.skeletal_meshes.len());
+    for index in 0..thin.model.skeletal_meshes.len() {
+        let thin_mesh = &thin.model.skeletal_meshes[index];
+        let heavy_mesh = &heavy.model.skeletal_meshes[index];
+        check_same_topology(thin_mesh, heavy_mesh, index)?;
+        let (Some(thin_geometry), Some(heavy_geometry)) = (&thin_mesh.mesh, &heavy_mesh.mesh)
+        else {
+            return Err(eyre!("skeletal mesh {index} has no geometry"));
+        };
+        ensure!(
+            thin_geometry.normals.len() == thin_geometry.positions.len()
+                && heavy_geometry.normals.len() == heavy_geometry.positions.len(),
+            "topology mismatch: {} has no per-vertex normals",
+            thin_mesh
+                .name
+                .as_deref()
+                .or(heavy_mesh.name.as_deref())
+                .unwrap_or("skeletal mesh")
+        );
+        targets.push(MorphTarget {
+            name: "thin".to_owned(),
+            positions: thin_geometry
+                .positions
+                .iter()
+                .zip(&heavy_geometry.positions)
+                .map(|(thin, heavy)| *thin - *heavy)
+                .collect(),
+            normals: thin_geometry
+                .normals
+                .iter()
+                .zip(&heavy_geometry.normals)
+                .map(|(thin, heavy)| *thin - *heavy)
+                .collect(),
+        });
+    }
+
+    for (mesh, target) in heavy.model.skeletal_meshes.iter_mut().zip(targets) {
+        mesh.morph_targets = vec![target];
+    }
+    heavy
+        .model
+        .validate()
+        .map_err(|error| eyre!("invalid body with a thin morph target: {error}"))?;
+    Ok(())
 }
 
 /// Writes a composed model as a GLB using the same exporter, material publication and atomic

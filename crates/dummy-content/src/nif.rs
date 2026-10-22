@@ -232,6 +232,18 @@ pub fn legacy_dynamic_skinned_shape_with_normals(
 /// Generates one legacy-skinned NIF with one `BSTriShape` per spec, all bound
 /// to the same two bones. Every shape uses the plain skin kind.
 pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
+    legacy_skinned_shapes_with_scale(specs, 1.0)
+}
+
+/// Like [`legacy_skinned_shapes`], with every vertex position multiplied by `scale`.
+///
+/// The topology is unchanged, so the result can stand in for a thin body part
+/// against the unit-scale one.
+pub fn legacy_skinned_shapes_scaled(specs: &[LegacySkin<'_>], scale: f32) -> Result<Vec<u8>> {
+    legacy_skinned_shapes_with_scale(specs, scale)
+}
+
+fn legacy_skinned_shapes_with_scale(specs: &[LegacySkin<'_>], scale: f32) -> Result<Vec<u8>> {
     ensure!(!specs.is_empty(), "a skinned NIF needs at least one shape");
     for spec in specs {
         validate_skin(spec)?;
@@ -261,7 +273,7 @@ pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
         let partition_block = shape_block + 3;
         let shader_block = shape_block + 4;
         let texture_block = shape_block + 5;
-        let vertices = skin_vertices(spec);
+        let vertices = skin_vertices_scaled(spec, scale);
         let triangles = fan_triangles(vertices.len());
         let positions = vertices
             .iter()
@@ -630,10 +642,14 @@ struct SkinVertex {
 }
 
 fn skin_vertices(spec: &LegacySkin<'_>) -> Vec<SkinVertex> {
+    skin_vertices_scaled(spec, 1.0)
+}
+
+fn skin_vertices_scaled(spec: &LegacySkin<'_>, scale: f32) -> Vec<SkinVertex> {
     let count = spec.weights.len();
     (0..count)
         .map(|index| {
-            let position = vertex_position(index, count);
+            let position = vertex_position(index, count).map(|value| value * scale);
             let palette_joints = if index == 0 {
                 spec.joint_override.unwrap_or([0, 1, 0, 0])
             } else {

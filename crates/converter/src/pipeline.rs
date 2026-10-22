@@ -2580,7 +2580,17 @@ fn compose_default_bodies(
                 skin_textures: compose::skin_texture_set_for(&skins, *kind, path),
             })
             .collect();
-        let model = match compose::compose_body(&parts, &skeleton) {
+        let thin_paths: Vec<(PathBuf, BodyPartKind)> = part_paths
+            .iter()
+            .map(|(path, kind)| {
+                let file_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().replace("_1.nif", "_0.nif"))
+                    .unwrap_or_default();
+                (winning(path.with_file_name(file_name)), *kind)
+            })
+            .collect();
+        let mut model = match compose::compose_body(&parts, &skeleton) {
             Ok(model) => model,
             Err(error) if !fail_fast => {
                 let message = format!(
@@ -2600,6 +2610,7 @@ fn compose_default_bodies(
                     .wrap_err_with(|| format!("failed to compose default {sex} actor body"));
             }
         };
+        attach_default_body_weight(&mut model, &thin_paths, &skeleton, &skins, sex, report);
         compose::write_composed_body(&model, &output)?;
         info!(
             "composed default {sex} actor body from {} parts ({} with an armature skin texture set) to {}",
@@ -2612,6 +2623,48 @@ fn compose_default_bodies(
         );
     }
     Ok(())
+}
+
+/// Adds the weight-0 body as a `thin` morph target, or records why it cannot and leaves the
+/// heavy body alone. A missing or differently shaped thin part never fails a conversion.
+fn attach_default_body_weight(
+    model: &mut compose::ComposedBody,
+    thin_paths: &[(PathBuf, BodyPartKind)],
+    skeleton: &Path,
+    skins: &[compose::DefaultSkinTextureSet],
+    sex: &str,
+    report: &mut PipelineReport,
+) {
+    let unavailable = |report: &mut PipelineReport, reason: String| {
+        let message = format!("actor_body_weight_unavailable: {sex} body: {reason}");
+        warn!("{message}");
+        report.warnings.push(message);
+    };
+
+    if let Some((missing, _)) = thin_paths.iter().find(|(path, _)| !path.is_file()) {
+        unavailable(report, format!("thin part missing: {}", missing.display()));
+        return;
+    }
+    let thin_parts: Vec<_> = thin_paths
+        .iter()
+        .map(|(path, kind)| BodyPart {
+            path,
+            kind: *kind,
+            skin_textures: compose::skin_texture_set_for(skins, *kind, path),
+        })
+        .collect();
+    let part_names = thin_paths
+        .iter()
+        .filter_map(|(path, _)| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match compose::compose_body(&thin_parts, skeleton)
+        .and_then(|thin| compose::attach_thin_target(model, &thin))
+    {
+        Ok(()) => {}
+        Err(error) => unavailable(report, format!("thin parts {part_names}: {error:#}")),
+    }
 }
 
 /// The gait clips every character ships, in emission order.
@@ -6928,7 +6981,8 @@ mod tests {
 
     use dummy_content::nif::{
         BodyShape, BoxBody, LegacySkin, SkinInstanceKind, StaticShape, legacy_skin_tint_shape,
-        legacy_skinned_shape, legacy_skinned_shapes, static_shape, static_shape_with_bodies,
+        legacy_skinned_shape, legacy_skinned_shapes, legacy_skinned_shapes_scaled, static_shape,
+        static_shape_with_bodies,
     };
 
     const ACTOR_BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
@@ -6984,6 +7038,16 @@ mod tests {
         fs::write(
             assets.join(file_name),
             legacy_skinned_shapes(&[first, second]).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_actor_body_part_scaled(assets: &Path, file_name: &str, scale: f32) {
+        let first = actor_part_spec("BodyShapeA");
+        let second = actor_part_spec("BodyShapeB");
+        fs::write(
+            assets.join(file_name),
+            legacy_skinned_shapes_scaled(&[first, second], scale).unwrap(),
         )
         .unwrap();
     }
@@ -7132,6 +7196,9 @@ mod tests {
             write_actor_body_part(&assets, &format!("{sex}body_1.nif"));
             write_actor_part(&assets, &format!("{sex}hands_1.nif"));
             write_actor_part(&assets, &format!("{sex}feet_1.nif"));
+            write_actor_body_part_scaled(&assets, &format!("{sex}body_0.nif"), 0.8);
+            write_actor_part(&assets, &format!("{sex}hands_0.nif"));
+            write_actor_part(&assets, &format!("{sex}feet_0.nif"));
         }
     }
 
@@ -7263,6 +7330,107 @@ mod tests {
         assert_eq!(
             first, second,
             "a second composition must not rewrite the bodies"
+        );
+    }
+
+    /// Every morph target in `glb`, as the mesh name and its POSITION deltas.
+    fn glb_thin_morphs(glb: &Path) -> Vec<(String, Vec<[f32; 3]>)> {
+        let bytes = fs::read(glb).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        let blob = gltf.blob.as_deref().unwrap();
+        let mut morphs = Vec::new();
+        for mesh in gltf.document.meshes() {
+            let name = mesh.name().unwrap_or_default().to_owned();
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|buffer| (buffer.index() == 0).then_some(blob));
+                for (positions, _, _) in reader.read_morph_targets() {
+                    morphs.push((name.clone(), positions.unwrap().collect()));
+                }
+            }
+        }
+        morphs
+    }
+
+    #[test]
+    fn compose_default_bodies_attaches_a_thin_morph_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+
+        compose_staged_bodies(staging, false);
+
+        for sex in ["male", "female"] {
+            let output = staging.join(crate::compose::composed_body_path("default", sex));
+            let bytes = fs::read(&output).unwrap();
+            let json = crate::mesh::glb_json_from_bytes(&bytes).unwrap();
+            for mesh in json["meshes"].as_array().unwrap() {
+                assert_eq!(mesh["weights"], serde_json::json!([0.0]), "{sex}: {mesh}");
+                assert_eq!(
+                    mesh["extras"]["targetNames"],
+                    serde_json::json!(["thin"]),
+                    "{sex}: {mesh}"
+                );
+            }
+
+            let morphs = glb_thin_morphs(&output);
+            assert_eq!(morphs.len(), 4, "{sex} must morph four shapes: {morphs:?}");
+            let body = morphs
+                .iter()
+                .find(|(name, _)| name.as_str() == "BodyShapeA")
+                .unwrap();
+            assert_eq!(body.1[0], [0.0, 0.0, 0.0]);
+            assert!((body.1[1][0] + 0.2).abs() < 1e-5, "{:?}", body.1);
+            assert!(body.1[1][1].abs() < 1e-5, "{:?}", body.1);
+        }
+    }
+
+    #[test]
+    fn compose_default_bodies_without_thin_parts_keeps_the_heavy_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        fs::remove_file(actor_assets(staging).join("malebody_0.nif")).unwrap();
+
+        let (report, _) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(glb_thin_morphs(&male).is_empty());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("actor_body_weight_unavailable")
+                    && warning.contains("thin part missing")),
+            "warnings: {:?}",
+            report.warnings
+        );
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert_eq!(glb_thin_morphs(&female).len(), 4);
+    }
+
+    #[test]
+    fn compose_default_bodies_with_mismatched_thin_parts_keeps_the_heavy_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        fs::write(
+            actor_assets(staging).join("malebody_0.nif"),
+            legacy_skinned_shape(&actor_part_spec("BodyShapeA")).unwrap(),
+        )
+        .unwrap();
+
+        let (report, _) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(glb_thin_morphs(&male).is_empty());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("actor_body_weight_unavailable")
+                    && warning.contains("topology mismatch")),
+            "warnings: {:?}",
+            report.warnings
         );
     }
 
