@@ -45,6 +45,7 @@ use bevy::{
 use engine::{
     actor_animation::{AnimationTarget, IDLE_ANIMATION, animation_targets, idle_clip_scene},
     actors::{ActorSex, composed_body_scene},
+    nif_material::NifMaterialPlugin,
 };
 use std::{
     collections::HashMap,
@@ -220,6 +221,9 @@ fn main() {
             plugins.disable::<bevy::winit::WinitPlugin>()
         }
     });
+    // The engine builds converted NIF materials through this glTF hook; without it the preview
+    // would render the stock glTF materials instead of what the game draws.
+    app.add_plugins(NifMaterialPlugin);
     if !windowed {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
             Duration::from_millis(16),

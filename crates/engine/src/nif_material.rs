@@ -271,6 +271,12 @@ fn has_normal_alpha_mask(material: &gltf::Material<'_>) -> bool {
     native_tag(material, "specularMask", "normal_alpha")
 }
 
+/// `_msn` maps hold model-space normals with swizzled channels. The stock `StandardMaterial` can
+/// only decode tangent-space maps, so binding one there shades garbage.
+fn has_model_space_normals(material: &gltf::Material<'_>) -> bool {
+    native_tag(material, "normalConvention", "model_space")
+}
+
 fn native_uv_transform(material: &gltf::Material<'_>) -> Option<bevy::math::Affine2> {
     let extras: serde_json::Value = serde_json::from_str(material.extras().as_ref()?.get()).ok()?;
     let transform = extras.pointer("/openSkyrim/uvTransform")?;
@@ -294,6 +300,7 @@ fn needs_native_material(material: &gltf::Material<'_>) -> bool {
     };
     has_normal_alpha_mask(material)
         || native_tag(material, "normalConvention", "directx")
+        || has_model_space_normals(material)
         || native_uv_transform(material).is_some()
         || native_depth_state(material, alpha_mode).is_some()
 }
@@ -332,6 +339,11 @@ fn native_material(
         // Skyrim normal Y follows increasing texture V. Bevy's generated
         // bitangent uses the opposite orientation. Keep source RGB/alpha intact.
         material.flip_normal_map_y = true;
+    }
+    if has_model_space_normals(source) {
+        // Interim: shade with the interpolated vertex normal until a material that decodes
+        // model-space maps exists. Everything else about the material stays as loaded.
+        material.normal_map_texture = None;
     }
     if let Some(transform) = native_uv_transform(source) {
         // NIF transforms every texture use, even with no diffuse texture from
@@ -853,17 +865,69 @@ mod tests {
                 ..default()
             };
             let native = native_material(&source, &loaded);
-            if convention == Some("directx") {
-                let native = native.expect("tagged tangent normals require native construction");
-                assert!(native.flip_normal_map_y);
-                assert_eq!(native.reflectance, loaded.reflectance);
-                assert_eq!(native.specular_texture, loaded.specular_texture);
-                assert_eq!(native.normal_map_texture, loaded.normal_map_texture);
-            } else {
-                assert!(native.is_none());
+            match convention {
+                Some("directx") => {
+                    let native =
+                        native.expect("tagged tangent normals require native construction");
+                    assert!(native.flip_normal_map_y);
+                    assert_eq!(native.reflectance, loaded.reflectance);
+                    assert_eq!(native.specular_texture, loaded.specular_texture);
+                    assert_eq!(native.normal_map_texture, loaded.normal_map_texture);
+                }
+                Some("model_space") => {
+                    let native = native.expect("model-space normals require native construction");
+                    assert!(native.normal_map_texture.is_none());
+                    assert!(!native.flip_normal_map_y);
+                    assert_eq!(native.reflectance, loaded.reflectance);
+                    assert_eq!(native.specular_texture, loaded.specular_texture);
+                }
+                _ => assert!(native.is_none()),
             }
+            assert!(loaded.normal_map_texture.is_some());
             assert!(!loaded.flip_normal_map_y);
         }
+    }
+
+    #[test]
+    fn model_space_normals_drop_only_the_normal_map() {
+        let document = gltf::Gltf::from_slice(
+            serde_json::to_string(&serde_json::json!({
+                "asset":{"version":"2.0"}, "materials":[{
+                    "alphaMode":"MASK", "alphaCutoff":0.25,
+                    "extras":{"openSkyrim":{
+                        "normalConvention":"model_space",
+                        "uvTransform":{"offset":[0.5,0.0],"scale":[2,1]}
+                    }}
+                }]
+            }))
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+        let source = document.materials().next().unwrap();
+        assert!(needs_native_material(&source));
+        let loaded = StandardMaterial {
+            base_color: Color::srgb(0.8, 0.6, 0.5),
+            base_color_texture: Some(Handle::default()),
+            normal_map_texture: Some(Handle::default()),
+            specular_texture: Some(Handle::default()),
+            alpha_mode: AlphaMode::Mask(0.25),
+            perceptual_roughness: 0.7,
+            reflectance: 0.3,
+            ..default()
+        };
+        let native = native_material(&source, &loaded).unwrap();
+        assert!(native.normal_map_texture.is_none());
+        assert_eq!(native.base_color, loaded.base_color);
+        assert_eq!(native.base_color_texture, loaded.base_color_texture);
+        assert_eq!(native.specular_texture, loaded.specular_texture);
+        assert_eq!(native.alpha_mode, loaded.alpha_mode);
+        assert_eq!(native.perceptual_roughness, loaded.perceptual_roughness);
+        assert_eq!(native.reflectance, loaded.reflectance);
+        assert_eq!(
+            native.uv_transform.transform_point2(Vec2::ZERO),
+            Vec2::new(0.5, 0.0)
+        );
     }
 
     #[test]
