@@ -36,6 +36,7 @@ pub mod schedule_timing;
 pub mod settings;
 pub mod settings_ui;
 pub mod shots;
+pub mod skin_material;
 pub mod sky;
 pub mod skyrim_ini;
 pub mod streaming;

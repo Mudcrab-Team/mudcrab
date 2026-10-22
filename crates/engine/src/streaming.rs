@@ -1,8 +1,9 @@
-use crate::nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial};
+use crate::nif_material::{
+    EffectPaletteDepthSource, EffectPaletteMaterial, NifNativeMaterialSource,
+};
 use crate::physics::{DebugTankard, PlayerBody, PlayerControlsSystems};
 use crate::{
     config::EngineConfig,
-    nif_depth::NifDepthMaterialSource,
     profiling::ProfilingState,
     render::{
         PLACED_OBJECT_RENDER_LAYERS, QUADRANT_WEIGHT_SAMPLES, TerrainExtension, TerrainMaterial,
@@ -2556,7 +2557,7 @@ type RenderPrimitiveQuery<'world, 'state> = Query<
         Option<&'static MeshMaterial3d<StandardMaterial>>,
         Option<&'static GltfMaterialName>,
         Option<&'static GltfExtras>,
-        Option<&'static NifDepthMaterialSource>,
+        Option<&'static NifNativeMaterialSource>,
     ),
 >;
 

@@ -1,22 +1,31 @@
 //! Native construction of converted NIF materials using Bevy's glTF extension hooks.
-use crate::nif_depth::{
-    NifDepthExtension, NifDepthMaterial, NifDepthMaterialSource, NifDepthState, depth_material,
+use crate::{
+    nif_depth::{NifDepthExtension, NifDepthMaterial, NifDepthState, depth_material},
+    skin_material::{
+        SkyrimSkinImages, SkyrimSkinMaterial, gltf_sampler, load_linear_twin, skin_material,
+        specular_color_texture_index,
+    },
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
 use bevy::{
     asset::{LoadContext, embedded_asset},
     gltf::{
-        GltfMaterial,
+        DefaultGltfImageSampler, GltfMaterial,
         extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
         gltf,
     },
+    image::ImageSamplerDescriptor,
     light::NotShadowCaster,
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
     render::render_resource::{AsBindGroup, ShaderType},
     shader::{ShaderRef, load_shader_library},
 };
-use std::{collections::HashMap, convert::Infallible};
+use std::{
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    sync::{Arc, Mutex},
+};
 
 /// Register after `DefaultPlugins`; applies converter-tagged native material semantics.
 pub struct NifMaterialPlugin;
@@ -33,15 +42,23 @@ impl Plugin for NifMaterialPlugin {
         if !app.is_plugin_added::<MaterialPlugin<NifDepthMaterial>>() {
             app.add_plugins(MaterialPlugin::<NifDepthMaterial>::default());
         }
+        crate::skin_material::build(app);
         app.register_type::<NifSourceMaterial>()
-            .register_type::<NifDepthMaterialSource>()
+            .register_type::<NifNativeMaterialSource>()
             .register_type::<EffectPaletteDepthSource>()
             .register_type::<ExternalEmittance>();
+        let default_sampler = app
+            .world()
+            .get_resource::<DefaultGltfImageSampler>()
+            .map(DefaultGltfImageSampler::get_internal);
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
             .write_blocking()
-            .push(Box::new(NativeMaterialHandler::default()));
+            .push(Box::new(NativeMaterialHandler {
+                default_sampler,
+                ..default()
+            }));
     }
 }
 
@@ -220,15 +237,56 @@ fn effect_palette_material(
 #[derive(Clone, Default)]
 struct NativeMaterialHandler {
     textures: Vec<Handle<Image>>,
+    /// The sampler `bevy_gltf` loaded each texture with, by glTF texture index.
+    samplers: HashMap<usize, ImageSamplerDescriptor>,
+    /// `bevy_gltf`'s default sampler, which its loader starts every texture's sampler from.
+    default_sampler: Option<Arc<Mutex<ImageSamplerDescriptor>>>,
     // Scene hooks use a child LoadContext, which cannot read the parent's material assets.
     // Bevy clones a handler per glTF load, so this cache also isolates concurrent loads.
     depth_states: HashMap<String, NifDepthState>,
+    /// Materials given a `"{label}/skin"` [`SkyrimSkinMaterial`].
+    skin_labels: HashSet<String>,
 }
 
 impl NativeMaterialHandler {
     fn palette(&self, material: &gltf::Material<'_>) -> Option<(PaletteLookup, Handle<Image>)> {
         let lookup = palette_lookup(material)?;
         Some((lookup, self.textures.get(lookup.texture)?.clone()))
+    }
+
+    /// Adds `"{label}/skin"`, a [`SkyrimSkinMaterial`] over `base`, and `"{label}/skin_images"`,
+    /// the holder its images load under. The `_s` mask is the linear twin of the sRGB texture the
+    /// converter published as the specular colour texture.
+    fn add_skin_material(
+        &mut self,
+        context: &mut LoadContext<'_>,
+        source: &gltf::Material<'_>,
+        label: &str,
+        base: StandardMaterial,
+        model_space_normal: Handle<Image>,
+        specular_srgb: Option<Handle<Image>>,
+    ) {
+        let sampler = specular_color_texture_index(source)
+            .and_then(|index| self.samplers.get(&index).cloned())
+            .unwrap_or_else(ImageSamplerDescriptor::linear);
+        let shader_flags_1 = native_depth_flags(source).map_or(0, |(flags_1, _)| flags_1);
+        let holder = format!("{label}/skin_images");
+        let mut specular = None;
+        let Ok(_) = context.labeled_asset_scope(holder.clone(), |scope| {
+            specular = specular_srgb
+                .as_ref()
+                .and_then(|srgb| load_linear_twin(scope, srgb, sampler));
+            Ok::<_, Infallible>(SkyrimSkinImages::new(
+                model_space_normal.clone(),
+                specular.clone(),
+            ))
+        });
+        let material = skin_material(base, model_space_normal, specular, shader_flags_1);
+        let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
+            scope.get_label_handle::<SkyrimSkinImages>(holder);
+            Ok::<_, Infallible>(material)
+        });
+        self.skin_labels.insert(label.to_owned());
     }
 }
 
@@ -237,6 +295,13 @@ impl NativeMaterialHandler {
 #[derive(Component, Clone, Reflect)]
 #[reflect(Component)]
 pub(crate) struct NifSourceMaterial(pub Handle<StandardMaterial>);
+
+/// The native base material behind an extended material that wraps a `StandardMaterial`
+/// ([`NifDepthMaterial`], [`SkyrimSkinMaterial`]), retained for scene validation and collision
+/// classification.
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
+pub(crate) struct NifNativeMaterialSource(pub Handle<StandardMaterial>);
 
 /// `SLSF1_External_Emittance` (`vendor/project-wormhole-nif/src/nif_flags.rs`, bit 29).
 const SLSF1_EXTERNAL_EMITTANCE: u64 = 1 << 29;
@@ -341,8 +406,9 @@ fn native_material(
         material.flip_normal_map_y = true;
     }
     if has_model_space_normals(source) {
-        // Interim: shade with the interpolated vertex normal until a material that decodes
-        // model-space maps exists. Everything else about the material stays as loaded.
+        // Bevy would decode the map as tangent-space. This is the base of the skin material
+        // (`crate::skin_material`), which decodes it; on its own (authored depth states) the
+        // surface shades with the interpolated vertex normal.
         material.normal_map_texture = None;
     }
     if let Some(transform) = native_uv_transform(source) {
@@ -364,6 +430,13 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             self.textures.resize(index + 1, Handle::default());
         }
         self.textures[index] = handle;
+        let default_sampler = self
+            .default_sampler
+            .as_ref()
+            .and_then(|sampler| sampler.lock().ok().map(|sampler| sampler.clone()))
+            .unwrap_or_else(ImageSamplerDescriptor::linear);
+        self.samplers
+            .insert(index, gltf_sampler(texture, &default_sampler));
     }
 
     fn on_material(
@@ -385,6 +458,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
         let material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        // `native_material` drops a model-space map from the base; the skin material takes it
+        // from the stock material instead.
+        let model_space_normal = standard.normal_map_texture.clone();
+        let specular_srgb = standard.specular_tint_texture.clone();
         match palette {
             Some((lookup, image)) => {
                 let holder = format!("{label}/nif_palette_image");
@@ -414,10 +491,24 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             }
             None => {
                 if let Some(state) = native_depth_state(source, material.alpha_mode) {
+                    // A model-space surface among these keeps the vertex-normal shading of
+                    // `native_material`: of the retail pack's model-space materials only two
+                    // load-screen heads carry a depth state.
                     self.depth_states.insert(label.to_owned(), state);
                     context.add_labeled_asset(
                         format!("{label}/nif-depth"),
                         depth_material(material.clone(), state),
+                    );
+                } else if has_model_space_normals(source)
+                    && let Some(model_space_normal) = model_space_normal
+                {
+                    self.add_skin_material(
+                        context,
+                        source,
+                        label,
+                        material.clone(),
+                        model_space_normal,
+                        specular_srgb,
                     );
                 }
                 context.add_labeled_asset(format!("{label}/nif"), material);
@@ -467,7 +558,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 let base = context.get_label_handle::<StandardMaterial>(format!("{label}/nif"));
                 entity.remove::<MeshMaterial3d<StandardMaterial>>();
                 entity.insert((
-                    NifDepthMaterialSource(base),
+                    NifNativeMaterialSource(base),
                     MeshMaterial3d(
                         context.get_label_handle::<NifDepthMaterial>(format!("{label}/nif-depth")),
                     ),
@@ -475,6 +566,15 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 if state.excludes_shadow() {
                     entity.insert(NotShadowCaster);
                 }
+            } else if self.skin_labels.contains(label) {
+                let base = context.get_label_handle::<StandardMaterial>(format!("{label}/nif"));
+                entity.remove::<MeshMaterial3d<StandardMaterial>>();
+                entity.insert((
+                    NifNativeMaterialSource(base),
+                    MeshMaterial3d(
+                        context.get_label_handle::<SkyrimSkinMaterial>(format!("{label}/skin")),
+                    ),
+                ));
             } else {
                 entity.insert(MeshMaterial3d(
                     context.get_label_handle::<StandardMaterial>(format!("{label}/nif")),
@@ -487,6 +587,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
 #[cfg(test)]
 #[path = "nif_material/palette_shader_check.rs"]
 mod palette_shader_check;
+
+#[cfg(test)]
+#[path = "nif_material/skin_load_tests.rs"]
+mod skin_load_tests;
 
 #[cfg(test)]
 mod tests {
@@ -803,7 +907,7 @@ mod tests {
         let mut world = World::new();
         world.spawn((
             NifSourceMaterial(source.clone()),
-            NifDepthMaterialSource(source.clone()),
+            NifNativeMaterialSource(source.clone()),
             MeshMaterial3d(material.clone()),
             NotShadowCaster,
         ));
@@ -814,7 +918,7 @@ mod tests {
             )
             .unwrap();
         let mut query = cloned.world.query::<(
-            &NifDepthMaterialSource,
+            &NifNativeMaterialSource,
             &MeshMaterial3d<NifDepthMaterial>,
             Option<&MeshMaterial3d<StandardMaterial>>,
             Option<&NotShadowCaster>,
