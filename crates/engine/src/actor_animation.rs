@@ -57,7 +57,7 @@ impl ActorIdleClip {
 
 /// A body scene instance that has been spawned below an actor and can be annotated.
 #[derive(Component, Debug, Clone, Copy)]
-struct ActorBodyReady;
+pub(crate) struct ActorBodyReady;
 
 /// One node of the body scene and the animation target id the clip addresses it by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

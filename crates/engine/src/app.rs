@@ -374,6 +374,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
         .add_plugins(crate::actor_animation::ActorAnimationPlugin)
+        .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
