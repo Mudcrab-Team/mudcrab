@@ -12,7 +12,7 @@ use super::{
     reservations::{MemoryLedger, ResourceReservation},
 };
 use crate::nif_depth::NifDepthMaterial;
-use crate::skin_material::SkyrimSkinMaterial;
+use crate::skin_material::{SkyrimSkinDepthMaterial, SkyrimSkinMaterial};
 use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
@@ -1086,6 +1086,7 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                 world.resource::<Assets<StandardMaterial>>(),
                 world.get_resource::<Assets<NifDepthMaterial>>(),
                 world.get_resource::<Assets<SkyrimSkinMaterial>>(),
+                world.get_resource::<Assets<SkyrimSkinDepthMaterial>>(),
             );
             for resource in &scene.resources {
                 // Shared textures can have several source scenes. Discovering
@@ -1109,6 +1110,7 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                 world.resource::<Assets<StandardMaterial>>(),
                 world.get_resource::<Assets<NifDepthMaterial>>(),
                 world.get_resource::<Assets<SkyrimSkinMaterial>>(),
+                world.get_resource::<Assets<SkyrimSkinDepthMaterial>>(),
             )
         {
             let demand = scene_demand(
@@ -1117,6 +1119,7 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
                 world.resource::<Assets<StandardMaterial>>(),
                 world.get_resource::<Assets<NifDepthMaterial>>(),
                 world.get_resource::<Assets<SkyrimSkinMaterial>>(),
+                world.get_resource::<Assets<SkyrimSkinDepthMaterial>>(),
             );
             // Every material dependency must have an exact loader identity
             // before catalog entries can be proved unused. Embedded images

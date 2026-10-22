@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT AND GPL-3.0-only
 //
-// Model-space normal (`_msn`) decode, world-normal transform, FaceGen base colour and skin RGB
-// tint of Skyrim's lighting shader.
+// Model-space normal (`_msn`) decode, world-normal transform, FaceGen base colour, skin RGB
+// tint and hair tint of Skyrim's lighting shader.
 //
 // Ported from Community Shaders (https://github.com/community-shaders/skyrim-community-shaders,
 // commit e5ae2d0082469f92ac08dda89d230dc2d9328ba0), package/Shaders/Lighting.hlsl:
@@ -15,7 +15,11 @@
 //     `DiffuseToWorking`) and 1623-1624 (gamma lighting);
 //   - lines 696-703, `GetFacegenRGBTintBaseColor` (the same overlay with the constant
 //     `TintColor`, the skin tone of body, hands and feet), and its call sites at lines 1494-1495
-//     (linear lighting) and 1625-1626 (gamma lighting).
+//     (linear lighting) and 1625-1626 (gamma lighting);
+//   - line 2709, PS `#if defined(HAIR)`: the hair vertex colour
+//     `SRGBToWorking(lerp(1, TintColor.xyz, input.Color.y))`, which line 2821 multiplies into the
+//     diffuse and ambient light (`color.xyz *= vertexColor`) before specular is added; and
+//     lines 270-274, VS: `vsout.Color = 1.0.xxxx` for a shape without vertex colours.
 // Lighting.hlsl's own header: original code MIT (Ilya Perapechka), modifications GPL-3.0 with
 // Community Shaders' exceptions.
 //
@@ -46,6 +50,15 @@
 //     are sampled without sRGB decoding, and Bevy's decoded base colour is re-encoded with the
 //     sRGB curve first. The result goes back through the sRGB curve, where CS's linear-lighting
 //     path uses `DiffuseToWorking` with its configurable diffuse gamma and curve.
+//   - The hair vertex colour is split in two: `get_hair_vertex_color` is the `lerp`, and its
+//     caller (`skyrim_skin.wgsl`) applies `SRGBToWorking` as the sRGB decode, where CS's linear
+//     lighting path can also convert to another working space. The caller multiplies the result
+//     into the base colour instead of the lit colour: Bevy's diffuse and ambient terms scale with
+//     the base colour and its dielectric specular does not, which is the same split line 2821
+//     makes. CS's own hair shading (`CS_HAIR_SHADING`, which sets the vertex colour to 1) is not
+//     ported. On hair the vertex colour's red and blue channels are not colour, so the caller
+//     drops them from Bevy's base colour and keeps alpha, as `alpha *= input.Color.w` (line 2998)
+//     does.
 //   - Only the functions the Mudcrab skin material calls are ported. Lighting itself is Bevy's
 //     PBR model, not Skyrim's.
 //
@@ -148,4 +161,12 @@ fn get_facegen_rgb_tint_base_color(raw_base_color: vec3<f32>, tint: vec3<f32>) -
     tint_color = tint_color - tint_color * raw_base_color;
     return vec3<f32>(1.01171875, 0.99609375, 1.01171875)
         * (raw_base_color * raw_base_color + tint_color);
+}
+
+// Lighting.hlsl, PS, `#if defined(HAIR)`:
+//     float3 vertexColor = ColorManagement::SRGBToWorking(lerp(1, TintColor.xyz, input.Color.y));
+// The vertex colour's green channel masks the hair tint; the result is still encoded, and the
+// caller decodes it (`SRGBToWorking`).
+fn get_hair_vertex_color(tint_color: vec3<f32>, vertex_color_y: f32) -> vec3<f32> {
+    return mix(vec3<f32>(1.0), tint_color, vertex_color_y);
 }

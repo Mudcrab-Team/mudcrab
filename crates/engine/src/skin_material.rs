@@ -32,9 +32,19 @@
 //! it as the default; [`crate::actor_skin_tone`] gives each actor's surfaces a derived material
 //! carrying that actor's tone. A surface with neither keeps the flag clear and renders as before.
 //!
-//! The hair tint will extend this material the same way, with a bit of its own in
-//! [`SkyrimSkinFlags`] (bits 5-15 are free) reading `tint_color`.
+//! # Hair tint
+//!
+//! FaceGen hair, brows and beards (`hair_tint`) multiply their diffuse by the NIF's hair tint,
+//! masked by the vertex colour's green channel ([`SkyrimSkinFlags::HAIR_TINT`], CS's `HAIR`).
+//! The colour is already per NPC: the FaceGen NIF carries twice the NPC's `HCLF` hair colour. Hair
+//! is tangent-space, so [`hair_material`] keeps the base material whole, normal map included,
+//! and only sets the tint; the model-space branch stays off. It shares this material rather than
+//! adding one because it is the same lighting shader with another define, and the vertex stage
+//! already matches the depth prepass. Most retail brows and hairlines are authored decals and
+//! carry a depth state; they draw as a [`SkyrimSkinDepthMaterial`], the depth extension over the
+//! hair material, as effect palettes do under theirs.
 
+use crate::nif_depth::NifDepthExtension;
 use bevy::{
     asset::{AssetPath, LoadContext},
     gltf::gltf,
@@ -49,6 +59,10 @@ use bevy::{
 };
 
 pub type SkyrimSkinMaterial = ExtendedMaterial<StandardMaterial, SkyrimSkinExtension>;
+
+/// A [`SkyrimSkinMaterial`] under an authored NIF depth state (`crate::nif_depth`): the depth
+/// extension keeps the skin material's shaders and bindings and adds the depth state.
+pub type SkyrimSkinDepthMaterial = ExtendedMaterial<SkyrimSkinMaterial, NifDepthExtension>;
 
 /// Where `embedded_asset!` places the material's shader.
 const SHADER: &str = "embedded://engine/shaders/skyrim_skin.wgsl";
@@ -74,6 +88,10 @@ impl SkyrimSkinFlags {
     /// The base colour is blended with the constant `tint_color` (`GetFacegenRGBTintBaseColor`):
     /// the skin tone of a `skin_tint` body, hands or feet.
     pub const SKIN_TINT: u32 = 1 << 4;
+    /// The base colour is multiplied by `tint_color`, masked by the vertex colour's green
+    /// channel; the vertex colour's red and blue are not applied: the hair tint of a `hair_tint`
+    /// surface.
+    pub const HAIR_TINT: u32 = 1 << 5;
     /// Debug: output the shading normal as colour (`N * 0.5 + 0.5`) instead of lighting.
     pub const DEBUG_WORLD_NORMAL: u32 = 1 << 16;
     /// Debug: output the interpolated vertex normal as colour, for comparison.
@@ -86,8 +104,9 @@ impl SkyrimSkinFlags {
 pub struct SkyrimSkinSettings {
     /// [`SkyrimSkinFlags`].
     pub flags: u32,
-    /// The [`SkyrimSkinFlags::SKIN_TINT`] colour, RGB in 0..1 on the encoded (gamma) scale the
-    /// game stores it in, as `NPC_/QNAM` does; alpha unused. White when no tint is set.
+    /// The [`SkyrimSkinFlags::SKIN_TINT`] or [`SkyrimSkinFlags::HAIR_TINT`] colour, RGB on the
+    /// encoded (gamma) scale the game stores it in, as `NPC_/QNAM` and the NIF do; alpha unused.
+    /// White when no tint is set.
     pub tint_color: Vec4,
     /// Reserved for detail-map parameters; the FaceGen blend uses none.
     pub detail: Vec4,
@@ -98,6 +117,12 @@ impl SkyrimSkinSettings {
     pub fn set_skin_tint(&mut self, tone: Vec3) {
         self.flags |= SkyrimSkinFlags::SKIN_TINT;
         self.tint_color = tone.extend(1.0);
+    }
+
+    /// Turns the hair tint on with `tint` (encoded RGB).
+    pub fn set_hair_tint(&mut self, tint: Vec3) {
+        self.flags |= SkyrimSkinFlags::HAIR_TINT;
+        self.tint_color = tint.extend(1.0);
     }
 }
 
@@ -272,6 +297,20 @@ pub fn skin_material(
     }
 }
 
+/// Builds the hair material: `base` unchanged (its tangent-space normal map included) with the
+/// hair tint set. The model-space branch stays off, so the extension binds no images.
+pub fn hair_material(base: StandardMaterial, tint: Vec3) -> SkyrimSkinMaterial {
+    let mut settings = SkyrimSkinSettings::default();
+    settings.set_hair_tint(tint);
+    SkyrimSkinMaterial {
+        base,
+        extension: SkyrimSkinExtension {
+            settings,
+            ..default()
+        },
+    }
+}
+
 /// Registers the skin material, its image holder and its shaders. Called by
 /// [`crate::nif_material::NifMaterialPlugin`].
 pub(crate) fn build(app: &mut App) {
@@ -285,6 +324,9 @@ pub(crate) fn build(app: &mut App) {
     }
     if !app.is_plugin_added::<MaterialPlugin<SkyrimSkinMaterial>>() {
         app.add_plugins(MaterialPlugin::<SkyrimSkinMaterial>::default());
+    }
+    if !app.is_plugin_added::<MaterialPlugin<SkyrimSkinDepthMaterial>>() {
+        app.add_plugins(MaterialPlugin::<SkyrimSkinDepthMaterial>::default());
     }
 }
 
@@ -421,7 +463,18 @@ fn lighting_shader_type(material: &gltf::Material<'_>) -> Option<String> {
 /// actor has no `NPC_` skin tone. Packs whose converter does not read the NIF's shader tail carry
 /// none, and the surface stays untinted.
 pub(crate) fn nif_skin_tint(material: &gltf::Material<'_>) -> Option<Vec3> {
-    if !is_skin_tint(material) {
+    nif_tint_color(material, "skin_tint")
+}
+
+/// The NIF's hair tint colour for a `hair_tint` material (`OPEN_SKYRIM_material.tintColor`,
+/// encoded RGB). Packs whose converter does not read the NIF's shader tail carry none, and the
+/// surface keeps the plain material.
+pub(crate) fn nif_hair_tint(material: &gltf::Material<'_>) -> Option<Vec3> {
+    nif_tint_color(material, "hair_tint")
+}
+
+fn nif_tint_color(material: &gltf::Material<'_>, shader: &str) -> Option<Vec3> {
+    if lighting_shader_type(material).as_deref() != Some(shader) {
         return None;
     }
     let colour = material
@@ -646,6 +699,48 @@ mod tests {
     }
 
     #[test]
+    fn the_nif_hair_tint_is_read_from_hair_tint_materials_only() {
+        for (shader, expected) in [
+            ("hair_tint", Some(Vec3::new(0.5, 0.25, 1.0))),
+            ("skin_tint", None),
+            ("default", None),
+        ] {
+            let document = material_with_skyrim_extension(serde_json::json!({
+                "lightingShaderType": shader,
+                "tintColor": [0.5, 0.25, 1.0]
+            }));
+            let material = document.materials().next().unwrap();
+            assert_eq!(nif_hair_tint(&material), expected, "{shader}");
+        }
+        let document = material_with_skyrim_extension(serde_json::json!({
+            "lightingShaderType": "hair_tint"
+        }));
+        assert_eq!(nif_hair_tint(&document.materials().next().unwrap()), None);
+    }
+
+    #[test]
+    fn hair_material_keeps_the_whole_base_and_sets_only_the_tint() {
+        let base = StandardMaterial {
+            base_color_texture: Some(Handle::default()),
+            normal_map_texture: Some(Handle::default()),
+            specular_tint_texture: Some(Handle::default()),
+            flip_normal_map_y: true,
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        let tint = Vec3::new(0.44, 0.46, 0.35);
+        let hair = hair_material(base.clone(), tint);
+        assert_eq!(hair.base.normal_map_texture, base.normal_map_texture);
+        assert_eq!(hair.base.specular_tint_texture, base.specular_tint_texture);
+        assert_eq!(hair.base.flip_normal_map_y, base.flip_normal_map_y);
+        assert_eq!(hair.base.alpha_mode, base.alpha_mode);
+        assert_eq!(hair.extension.settings.flags, SkyrimSkinFlags::HAIR_TINT);
+        assert_eq!(hair.extension.settings.tint_color, tint.extend(1.0));
+        assert!(hair.extension.model_space_normal.is_none());
+        assert!(hair.extension.specular.is_none());
+    }
+
+    #[test]
     fn debug_views_replace_only_the_debug_bits() {
         let mut settings = SkyrimSkinSettings {
             flags: SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SPECULAR_MAP,
@@ -684,6 +779,7 @@ mod tests {
             ("FLAG_SPECULAR", SkyrimSkinFlags::SPECULAR),
             ("FLAG_FACEGEN", SkyrimSkinFlags::FACEGEN),
             ("FLAG_SKIN_TINT", SkyrimSkinFlags::SKIN_TINT),
+            ("FLAG_HAIR_TINT", SkyrimSkinFlags::HAIR_TINT),
             (
                 "FLAG_DEBUG_WORLD_NORMAL",
                 SkyrimSkinFlags::DEBUG_WORLD_NORMAL,

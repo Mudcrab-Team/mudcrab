@@ -2,9 +2,10 @@
 use crate::{
     nif_depth::{NifDepthExtension, NifDepthMaterial, NifDepthState, depth_material},
     skin_material::{
-        FacegenMaps, SkinTintSurface, SkyrimSkinImages, SkyrimSkinMaterial,
-        facegen_texture_indices, gltf_sampler, is_skin_tint, load_linear_twin, nif_skin_tint,
-        skin_material, specular_color_texture_index,
+        FacegenMaps, SkinTintSurface, SkyrimSkinDepthMaterial, SkyrimSkinImages,
+        SkyrimSkinMaterial, facegen_texture_indices, gltf_sampler, hair_material, is_skin_tint,
+        load_linear_twin, nif_hair_tint, nif_skin_tint, skin_material,
+        specular_color_texture_index,
     },
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
@@ -246,7 +247,8 @@ struct NativeMaterialHandler {
     // Scene hooks use a child LoadContext, which cannot read the parent's material assets.
     // Bevy clones a handler per glTF load, so this cache also isolates concurrent loads.
     depth_states: HashMap<String, NifDepthState>,
-    /// Materials given a `"{label}/skin"` [`SkyrimSkinMaterial`].
+    /// Materials given a `"{label}/skin"` [`SkyrimSkinMaterial`], or with a depth state a
+    /// `"{label}/skin-depth"` [`SkyrimSkinDepthMaterial`].
     skin_labels: HashSet<String>,
 }
 
@@ -394,6 +396,7 @@ fn needs_native_material(material: &gltf::Material<'_>) -> bool {
     has_normal_alpha_mask(material)
         || native_tag(material, "normalConvention", "directx")
         || has_model_space_normals(material)
+        || nif_hair_tint(material).is_some()
         || native_uv_transform(material).is_some()
         || native_depth_state(material, alpha_mode).is_some()
 }
@@ -518,14 +521,30 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                 });
             }
             None => {
+                let hair_tint = nif_hair_tint(source).filter(|_| !has_model_space_normals(source));
                 if let Some(state) = native_depth_state(source, material.alpha_mode) {
-                    // A model-space surface among these keeps the vertex-normal shading of
-                    // `native_material`: of the retail pack's model-space materials only two
-                    // load-screen heads carry a depth state.
                     self.depth_states.insert(label.to_owned(), state);
+                    if let Some(tint) = hair_tint {
+                        // Retail brows and hairlines are authored decals.
+                        self.skin_labels.insert(label.to_owned());
+                        context.add_labeled_asset(
+                            format!("{label}/skin-depth"),
+                            depth_material(hair_material(material.clone(), tint), state),
+                        );
+                    } else {
+                        // A model-space surface among these keeps the vertex-normal shading of
+                        // `native_material`: of the retail pack's model-space materials only two
+                        // load-screen heads carry a depth state.
+                        context.add_labeled_asset(
+                            format!("{label}/nif-depth"),
+                            depth_material(material.clone(), state),
+                        );
+                    }
+                } else if let Some(tint) = hair_tint {
+                    self.skin_labels.insert(label.to_owned());
                     context.add_labeled_asset(
-                        format!("{label}/nif-depth"),
-                        depth_material(material.clone(), state),
+                        format!("{label}/skin"),
+                        hair_material(material.clone(), tint),
                     );
                 } else if has_model_space_normals(source)
                     && let Some(model_space_normal) = model_space_normal
@@ -585,12 +604,18 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             } else if let Some(state) = self.depth_states.get(label).copied() {
                 let base = context.get_label_handle::<StandardMaterial>(format!("{label}/nif"));
                 entity.remove::<MeshMaterial3d<StandardMaterial>>();
-                entity.insert((
-                    NifNativeMaterialSource(base),
-                    MeshMaterial3d(
+                entity.insert(NifNativeMaterialSource(base));
+                if self.skin_labels.contains(label) {
+                    entity.insert(MeshMaterial3d(
+                        context.get_label_handle::<SkyrimSkinDepthMaterial>(format!(
+                            "{label}/skin-depth"
+                        )),
+                    ));
+                } else {
+                    entity.insert(MeshMaterial3d(
                         context.get_label_handle::<NifDepthMaterial>(format!("{label}/nif-depth")),
-                    ),
-                ));
+                    ));
+                }
                 if state.excludes_shadow() {
                     entity.insert(NotShadowCaster);
                 }
