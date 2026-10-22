@@ -2,36 +2,181 @@
 //!
 //! The engine's retail tests are `#[ignore]`d because they need a converted tree on disk. This
 //! test builds that tree from retail Skyrim data: both composed default bodies, the three gait
-//! clips per sex over the composed bone tree, and the FaceGen heads.
+//! clips per sex over the composed bone tree, the FaceGen heads, and the DDS textures those GLBs
+//! reference, converted to KTX2 from the retail `Data` folder.
+//!
+//! Inputs come from the environment and the test does nothing unless all four are set:
+//! `MUDCRAB_DEMO_ASSETS` (output tree), `MUDCRAB_ACTOR_NIF_DIR` (extracted `meshes/actors`),
+//! `MUDCRAB_ANIMATION_DIR` (extracted `meshes/actors/character`) and `MUDCRAB_TEXTURE_DIR` (the
+//! retail `Data` folder holding the texture archives).
 
 use converter::{
     animation::{decode_clip_with_skeleton, write_clip_glb},
+    archive::ArchiveExtractor,
+    asset_path::{resolve_asset_uri, runtime_texture_source},
     compose::{BodyPart, BodyPartKind, compose_body, write_composed_body},
     mesh::MeshConverter,
+    texture::{TextureConverter, TextureEncoding, TextureSemantic},
 };
 use serde_json::Value;
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
-const DEFAULT_ACTOR_NIF_DIR: &str =
-    "/Users/dev/Documents/fun/rust/skyrust/scratch/assets/bsa-meshes/meshes/actors";
-const DEFAULT_ANIMATION_DIR: &str = "/Users/dev/Documents/fun/rust/skyrust/scratch/assets/animations-extract/meshes/actors/character";
-
 const GAITS: [&str; 3] = ["idle", "walkforward", "runforward"];
 const HEADS: [&str; 2] = ["00013475", "0010f5a1"];
 
-fn actor_nif_dir() -> PathBuf {
-    std::env::var_os("MUDCRAB_ACTOR_NIF_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ACTOR_NIF_DIR))
+fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
 }
 
-fn animation_dir() -> PathBuf {
-    std::env::var_os("MUDCRAB_ANIMATION_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ANIMATION_DIR))
+struct TextureRequest {
+    aliases: BTreeSet<String>,
+    semantics: BTreeSet<TextureSemantic>,
+}
+
+fn relative_key(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or_else(|_| panic!("{} is outside {}", path.display(), root.display()))
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn texture_requests(output: &Path, glbs: &[PathBuf]) -> BTreeMap<String, TextureRequest> {
+    let mut requests: BTreeMap<String, TextureRequest> = BTreeMap::new();
+    for glb in glbs {
+        let dependencies = MeshConverter::glb_texture_dependencies(glb)
+            .unwrap_or_else(|error| panic!("read textures of {}: {error:#}", glb.display()));
+        for dependency in dependencies {
+            let runtime_path =
+                resolve_asset_uri(output, glb, &dependency.uri).unwrap_or_else(|error| {
+                    panic!(
+                        "resolve {} from {}: {error:#}",
+                        dependency.uri,
+                        glb.display()
+                    )
+                });
+            let runtime_key = relative_key(output, &runtime_path);
+            let canonical = runtime_texture_source(&runtime_key)
+                .unwrap_or_else(|| panic!("{runtime_key} is not a KTX2 texture alias"));
+            let request = requests.entry(canonical).or_insert_with(|| TextureRequest {
+                aliases: BTreeSet::new(),
+                semantics: BTreeSet::new(),
+            });
+            request.aliases.insert(runtime_key);
+            request.semantics.insert(dependency.semantic);
+        }
+    }
+    requests
+}
+
+fn link_or_copy(from: &Path, to: &Path) {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::hard_link(from, to)
+        .or_else(|_| fs::copy(from, to).map(|_| ()))
+        .unwrap_or_else(|error| panic!("write {}: {error}", to.display()));
+}
+
+/// Orders the retail archives so texture banks are read first; the rest are only needed if a
+/// texture lives outside them.
+fn archive_paths(root: &Path) -> Vec<PathBuf> {
+    let mut archives: Vec<PathBuf> = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("read {}: {error}", root.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            matches!(
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("bsa" | "ba2")
+            )
+        })
+        .collect();
+    archives.sort_by_key(|path| {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        (!name.contains("texture"), name)
+    });
+    archives
+}
+
+fn stage_textures(source: &Path, staging: &Path, needed: &mut BTreeSet<PathBuf>) {
+    let archives = archive_paths(source);
+    if archives.is_empty() {
+        for relative in needed.iter() {
+            let from = source.join(relative);
+            if from.is_file() {
+                link_or_copy(&from, &staging.join(relative));
+            }
+        }
+        needed.retain(|relative| !staging.join(relative).is_file());
+        return;
+    }
+    for archive in archives {
+        if needed.is_empty() {
+            break;
+        }
+        let found = ArchiveExtractor::extract_paths(&archive, staging, needed)
+            .unwrap_or_else(|error| panic!("extract from {}: {error:#}", archive.display()));
+        for file in found {
+            needed.remove(&file.path);
+        }
+    }
+}
+
+fn materialise_textures(source: &Path, output: &Path, glbs: &[PathBuf]) {
+    let requests = texture_requests(output, glbs);
+    assert!(
+        !requests.is_empty(),
+        "no written GLB references a texture; the demo would stay untextured"
+    );
+    let staging = output.join(".texture-source");
+    let mut needed: BTreeSet<PathBuf> = requests
+        .keys()
+        .map(|canonical| PathBuf::from(canonical).with_extension("dds"))
+        .collect();
+    stage_textures(source, &staging, &mut needed);
+    assert!(
+        needed.is_empty(),
+        "textures missing from {}: {needed:?}",
+        source.display()
+    );
+
+    let mut converted = 0usize;
+    let mut aliases = 0usize;
+    for (canonical, request) in &requests {
+        let source_dds = staging.join(PathBuf::from(canonical).with_extension("dds"));
+        let ktx2 = output.join(canonical);
+        let encoding = TextureEncoding::from_semantics(&request.semantics)
+            .unwrap_or_else(|error| panic!("choose encoding for {canonical}: {error:#}"));
+        TextureConverter::convert_dds_to_ktx2(&source_dds, &ktx2, encoding)
+            .unwrap_or_else(|error| panic!("convert {canonical}: {error:#}"));
+        assert_written(&ktx2);
+        converted += 1;
+        for alias in &request.aliases {
+            let alias_path = output.join(alias);
+            if alias_path == ktx2 {
+                continue;
+            }
+            link_or_copy(&ktx2, &alias_path);
+            assert_written(&alias_path);
+            aliases += 1;
+        }
+    }
+    fs::remove_dir_all(&staging).ok();
+    println!(
+        "textures: {converted} converted, {aliases} aliases, source {}",
+        source.display()
+    );
 }
 
 fn glb_path(output: &Path, relative: &str) -> PathBuf {
@@ -49,6 +194,7 @@ struct GlbSummary {
     skins: usize,
     skinned_meshes: usize,
     channels: usize,
+    base_color_materials: usize,
 }
 
 fn read_glb_summary(path: &Path) -> GlbSummary {
@@ -76,27 +222,42 @@ fn read_glb_summary(path: &Path) -> GlbSummary {
         .and_then(|animations| animations.first())
         .and_then(|animation| animation["channels"].as_array())
         .map_or(0, Vec::len);
+    let base_color_materials = json["materials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|material| {
+            material["pbrMetallicRoughness"]
+                .get("baseColorTexture")
+                .is_some()
+        })
+        .count();
     GlbSummary {
         nodes,
         skins,
         skinned_meshes,
         channels,
+        base_color_materials,
     }
 }
 
 #[test]
 #[ignore = "materialises the converted actor assets the engine retail tests load"]
 fn materialises_the_converted_actor_assets() {
-    let Some(output) = std::env::var_os("MUDCRAB_DEMO_ASSETS").map(PathBuf::from) else {
+    let (Some(output), Some(actor_root), Some(animation_root), Some(texture_root)) = (
+        env_dir("MUDCRAB_DEMO_ASSETS"),
+        env_dir("MUDCRAB_ACTOR_NIF_DIR"),
+        env_dir("MUDCRAB_ANIMATION_DIR"),
+        env_dir("MUDCRAB_TEXTURE_DIR"),
+    ) else {
         return;
     };
-    let actor_root = actor_nif_dir();
-    let animation_root = animation_dir();
     let character_assets = actor_root.join("character/character assets");
     let skeleton_nif = character_assets.join("skeleton.nif");
     let skeleton_hkx = animation_root.join("character assets/skeleton.hkx");
     let skeleton_bytes = fs::read(&skeleton_hkx)
         .unwrap_or_else(|error| panic!("read {}: {error}", skeleton_hkx.display()));
+    let mut written_glbs = Vec::new();
 
     assert!(skeleton_nif.is_file(), "missing {}", skeleton_nif.display());
 
@@ -137,13 +298,19 @@ fn materialises_the_converted_actor_assets() {
         write_composed_body(&model, &body_path)
             .unwrap_or_else(|error| panic!("write {body_relative}: {error:#}"));
         assert_written(&body_path);
+        written_glbs.push(body_path.clone());
         let body = read_glb_summary(&body_path);
+        assert!(
+            body.base_color_materials > 0,
+            "{sex} composed body must publish a baseColorTexture"
+        );
         println!(
-            "body sex={sex} nodes={} skins={} skinned_meshes={} bones={}",
+            "body sex={sex} nodes={} skins={} skinned_meshes={} bones={} base_color_materials={}",
             body.nodes,
             body.skins,
             body.skinned_meshes,
-            bones.bones.len()
+            bones.bones.len(),
+            body.base_color_materials
         );
 
         for gait in GAITS {
@@ -187,6 +354,7 @@ fn materialises_the_converted_actor_assets() {
         MeshConverter::convert_nif_to_glb(&head_nif, &head_path)
             .unwrap_or_else(|error| panic!("convert {}: {error:#}", head_nif.display()));
         assert_written(&head_path);
+        written_glbs.push(head_path.clone());
         let summary = read_glb_summary(&head_path);
         assert!(
             summary.skins > 0 && summary.skinned_meshes > 0,
@@ -198,5 +366,6 @@ fn materialises_the_converted_actor_assets() {
         );
     }
 
+    materialise_textures(&texture_root, &output, &written_glbs);
     println!("converted actor tree written to {}", output.display());
 }

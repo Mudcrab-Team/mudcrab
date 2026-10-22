@@ -689,7 +689,14 @@ impl ArchiveExtractor {
         extract_selected_reporting(archive_path, output_root, is_lod_setting, None, None)
     }
 
-    pub(crate) fn extract_paths(
+    /// Extracts only the archive entries named in `paths`, writing them under `output_root`
+    /// with their archive-relative layout preserved.
+    ///
+    /// Paths are matched against the same normalized form the extractor writes: lowercase,
+    /// forward slashes, no leading separator (`textures/actors/character/male/malebody_1.dds`).
+    /// Entries that are not present are simply absent from the result, so a caller can walk a
+    /// set of archives and remove whatever each one supplied.
+    pub fn extract_paths(
         archive_path: &Path,
         output_root: &Path,
         paths: &BTreeSet<PathBuf>,
