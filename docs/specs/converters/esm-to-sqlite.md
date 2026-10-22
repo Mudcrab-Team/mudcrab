@@ -1,6 +1,6 @@
-# ESM to libSQL (Turso Engine) + rkyv Transformation Specification
+# ESM to SQLite + rkyv Transformation Specification
 
-This document details the technical specification for parsing Skyrim Master (`.esm`) and Plugin (`.esp` / `.esl`) binary databases into an indexed **libSQL database (`skyrim_world.db`)** (Turso's open-source SQLite fork) paired with a **zero-copy `rkyv` hot storage cache**.
+This document describes how Skyrim master (`.esm`) and plugin (`.esp` / `.esl`) records are projected into the indexed SQLite database (`skyrim_world.db`) and the zero-copy `rkyv` terrain cache.
 
 The default in-house frontend uses MudCrab's authored record schema and generic
 Rust decoder. `--record-reader legacy` selects the hand-written reader, and
@@ -31,13 +31,12 @@ contracts preserve source information beyond the nullable runtime projections.
 
 - **Input:** Skyrim master records (`Skyrim.esm`, `Update.esm`, `Dawnguard.esm`, `.esp` mod files).
 - **Output:**
-  1. `skyrim_world.db` (libSQL / Turso database with R-Tree spatial indexing & async local-first sync).
-  2. `cell_cache.rkyv` (Zero-copy binary memory-mapped blobs for instant terrain heightmaps and dense cell references).
+  1. `skyrim_world.db` (SQLite database with R-Tree spatial indexing).
+  2. `cell_cache.rkyv` (Zero-copy binary memory-mapped terrain and cell data).
 - **Goal:**
-  1. Provide sub-millisecond 3D spatial queries for placed game objects (`REFR`) based on player camera coordinates.
-  2. Maintain `O(1)` primary key resolution for 32-bit `FormID` records.
+  1. Use spatial and cell indexes to select placed-reference rows by worldspace and cell coordinates.
+  2. Index records by 32-bit `FormID` for lookup.
   3. Support priority-weighted plugin load orders (`plugins.txt` overrides).
-  4. Enable optional **Embedded Replication / Cloud Sync** via Turso for cross-device save games and multiplayer world sync!
 
 ---
 
@@ -59,11 +58,11 @@ Skyrim `.esm` files consist of 24-byte record headers (`TES4`, `CELL`, `LAND`, `
 │                            SQLite 3 Database Schema                         │
 │                                                                             │
 │   ┌──────────────────────────┐         ┌─────────────────────────────────┐  │
-│   │   table: records         │         │   virtual table: refr_spatial   │  │
+│   │   table: records         │         │ virtual table: exterior_spatial │  │
 │   │   - form_id (PRIMARY KEY)│         │   using rtree(id, minX, maxX,   │  │
 │   │   - record_type (4CHAR)  │         │               minY, maxY,       │  │
 │   │   - load_order (INTEGER) │         │               minZ, maxZ)       │  │
-│   │   - data_blob (BLOB)     │         └─────────────────────────────────┘  │
+│   │   - data (BLOB)          │         └─────────────────────────────────┘  │
 │   └──────────────────────────┘                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -72,40 +71,50 @@ Skyrim `.esm` files consist of 24-byte record headers (`TES4`, `CELL`, `LAND`, `
 
 ## 3. Database Schema DDL (`skyrim_world.db`)
 
+The authoritative, complete DDL is in [`db-schema.md`](db-schema.md); the two core tables are
+repeated here as implemented in `crates/converter/src/esm/exporter.rs`.
+
 ### A. Primary Record Table
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    form_id INTEGER PRIMARY KEY,
-    record_type TEXT NOT NULL,         -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMOR', etc.
-    editor_id TEXT,                    -- e.g. 'WhiterunPlaza'
-    load_order INTEGER NOT NULL,       -- Priority weight from plugins.txt (0 = Skyrim.esm, 1 = Update.esm, etc.)
-    payload BLOB NOT NULL              -- Serialized record parameters
+    form_id INTEGER PRIMARY KEY,       -- winning record, load-order numbering
+    record_type TEXT NOT NULL,         -- 'CELL', 'REFR', 'NPC_', 'WEAP', 'ARMO', etc.
+    cell_id INTEGER,                   -- parent CELL of a placed reference or LAND
+    worldspace_id INTEGER,             -- parent WRLD of an exterior CELL or reference
+    load_order INTEGER NOT NULL,       -- plugins.id of the winning plugin (0 = Skyrim.esm, ...)
+    data BLOB NOT NULL                 -- rkyv ArchivedRecordData (the subrecord payloads)
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_type ON records(record_type);
-CREATE INDEX IF NOT EXISTS idx_records_editor_id ON records(editor_id);
 ```
+
+There is no `editor_id` column; a record's Editor ID is its `EDID` subrecord in `data`.
 
 ### B. World Cell & Cell References Table
 
 ```sql
 CREATE TABLE IF NOT EXISTS cells (
-    cell_id INTEGER PRIMARY KEY,        -- CELL FormID
+    id INTEGER PRIMARY KEY,             -- CELL FormID
+    worldspace_id INTEGER,              -- Parent WorldSpace FormID; NULL for an interior
     grid_x INTEGER,                     -- Exterior cell Grid X (NULL if interior)
     grid_y INTEGER,                     -- Exterior cell Grid Y (NULL if interior)
-    worldspace_id INTEGER,              -- Parent WorldSpace FormID (e.g. 0x0000003C for Tamriel)
-    is_interior BOOLEAN NOT NULL DEFAULT 0,
-    name TEXT
+    interior_name TEXT,                 -- The cell's EDID, not its display name
+    flags INTEGER NOT NULL,             -- record header flags
+    data BLOB,                          -- rkyv ArchivedRecordData
+    full_name TEXT                      -- Resolved FULL display name
 );
 ```
+
+Placed references have their own `references` table (positions, rotations, base object); see
+`db-schema.md` §5.
 
 ### C. Hybrid Spatial Indexing Architecture (Exterior vs. Interior)
 
 Exterior references use a spatial index with a worldspace filter; interior references use direct cell lookup:
 
 1. **Exterior Worldspace R-Tree (`exterior_spatial`):** The exporter inserts each reference's global X/Y/Z position as a point (equal minimum and maximum bounds). SQLite stores these bounds as single-precision values; the exporter applies no coordinate magnitude limit. `cell_id` and `worldspace_id` are auxiliary fields rather than spatial dimensions. Separate reference columns retain cell-local X/Y offsets.
-2. **Interior Cell Direct Lookup (`cell_id` Hash Index):** Interior dungeons and houses do not use R-Trees. All interior `REFR` objects are indexed directly by `cell_id` for $O(1)$ fast lookup when entering interior doors.
+2. **Interior Cell Index (`idx_references_cell`):** Interior cells do not use the R-Tree. The exporter creates an ordinary SQLite index on `references(cell_id)`, which the engine uses to select reference rows for an interior cell. This is an illustrative query shape; it does not fetch complete objects or establish a lookup-time guarantee.
 
 ```sql
 -- R-Tree virtual table for Exterior 3D bounding box spatial queries
@@ -118,30 +127,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS exterior_spatial USING rtree(
     +worldspace_id -- Parent WorldSpace FormID (e.g. 0x0000003C for Tamriel)
 );
 
--- Index for Interior Cell O(1) object loading
-CREATE INDEX IF NOT EXISTS idx_records_cell_id ON records(cell_id) WHERE cell_id IS NOT NULL;
+-- Ordinary SQLite index used by interior reference lookup
+CREATE INDEX IF NOT EXISTS idx_references_cell ON "references"(cell_id);
 ```
 
-#### Executing a Sub-Millisecond Exterior Camera Query:
+#### Exterior reference query shape:
 
 ```sql
--- Fetch static 3D objects near player camera in Tamriel (WorldSpace 0x0000003C)
-SELECT r.* FROM records r
-JOIN exterior_spatial s ON r.form_id = s.id
-WHERE s.worldspace_id = 0x0000003C
-  AND s.minX >= -1024.0 AND s.maxX <= 1024.0
-  AND s.minY >= -1024.0 AND s.maxY <= 1024.0
-ORDER BY r.load_order DESC;
+-- Select reference rows in one 4096-unit exterior grid cell.
+-- Bind the worldspace ID and grid-derived lower/upper X and Y bounds.
+SELECT r.id, r.cell_id, r.base_form_id, r.pos_x, r.pos_y, r.pos_z
+FROM exterior_spatial x
+JOIN "references" r ON r.id = x.id
+WHERE x.worldspace_id = ?1
+  AND x.minX >= ?2 AND x.minX < ?3
+  AND x.minY >= ?4 AND x.minY < ?5;
 ```
 
-#### Executing an Instant Interior Cell Query:
+The engine uses half-open bounds `[grid * 4096, (grid + 1) * 4096)` for each axis and filters by
+worldspace. The R-Tree stores point bounds (`minX = maxX`, and likewise for Y and Z), so the engine
+tests the point's minimum coordinates. Its full projection selects explicit reference columns and
+joins the base model plus optional door, emittance and enable-state data; the query above only
+illustrates spatial candidate selection. Cell-local X/Y offsets remain in `references.local_x` and
+`references.local_y`.
+
+#### Interior reference query shape:
 
 ```sql
--- Fetch all 3D objects inside Whiterun Breezehome (CELL 0x00013629)
-SELECT * FROM records
-WHERE cell_id = 0x00013629
-ORDER BY load_order DESC;
+-- Select reference rows for one interior CELL FormID.
+SELECT r.id, r.cell_id, r.base_form_id, r.pos_x, r.pos_y, r.pos_z
+FROM "references" r
+WHERE r.cell_id = ?1;
 ```
+
+The engine may join the same base-model and optional reference data described above. This example
+selects reference rows; it does not represent full object loading or promise a lookup latency.
 
 ---
 
@@ -151,70 +171,73 @@ For raw terrain heightmaps (`LAND` records) and ultra-dense exterior grid geomet
 
 ### Rust Struct Definition:
 
-```rust
-use rkyv::{Archive, Serialize, Deserialize};
+The implemented record is `shared::CachedLand` (`crates/shared/src/lib.rs`), inside a versioned
+`shared::CellCache` (`CELL_CACHE_VERSION` 3):
 
-#[derive(Archive, Serialize, Deserialize, Debug)]
-#[rkyv(archived = ArchivedLandData)]
-pub struct LandData {
-    pub cell_x: i32,
-    pub cell_y: i32,
-    pub heightmap: [f32; 1089],  // 33x33 heightmap grid
-    pub normals: [[f8; 3]; 1089], // Compressed vertex normals
-    pub texture_layers: Vec<u16>,
+```rust
+#[derive(Debug, Clone, Archive, Serialize, Deserialize, PartialEq)]
+#[rkyv(bytecheck())]
+pub struct CachedLand {
+    pub cell_id: u32,
+    pub width: u16,
+    pub height: u16,
+    /// Row-major, absolute Creation Engine height units.
+    pub heights: Vec<f32>,
+    /// Packed signed XYZ normals, three bytes per vertex.
+    pub normals: Vec<i8>,
+    /// Packed RGB colors, three bytes per vertex.
+    pub vertex_colors: Vec<u8>,
+    pub layers: Vec<TerrainLayer>,
+    pub water_height: Option<f32>,
+    pub water_type_form_id: Option<u32>,
 }
 ```
 
 ### Reading Zero-Copy at Runtime:
 
+The runtime's `CellCache::open` in `crates/engine/src/world/cache.rs` maps the file,
+validates the archive, checks `CELL_CACHE_VERSION`, and builds its cell index, returning errors
+on failure. This helper illustrates the archive-validation step and returns its result;
+version checking remains a separate step before using the cache.
+
 ```rust
 use rkyv::access;
-use memmap2::MmapOptions;
+use shared::ArchivedCellCache;
 
-pub fn load_cell_heightmap<'a>(mmap: &'a memmap2::Mmap, offset: usize) -> &'a ArchivedLandData {
-    // 0 nanoseconds parsing CPU time!
-    // Directly casts bytes from virtual memory straight into Rust reference
-    unsafe { access::<ArchivedLandData, rkyv::rancor::Error>(&mmap[offset..]).unwrap() }
+pub fn load_cell_cache<'a>(
+    mmap: &'a memmap2::Mmap,
+) -> Result<&'a ArchivedCellCache, rkyv::rancor::Error> {
+    // Validated access: the archive is checked before it is read in place.
+    access::<ArchivedCellCache, rkyv::rancor::Error>(&mmap[..])
 }
 ```
 
 ---
 
-## 5. Rust Implementation (`rusqlite` + `nom` + `rkyv` Crates)
+## 5. Implemented Export Path
 
-```rust
-use rusqlite::{Connection, params};
-use memmap2::Mmap;
+The record-reader entry points in `crates/converter/src/esm/mod.rs` and `esm/inhouse.rs` prepare
+the database schema and pass winning records to the exporter. The transaction in
+`crates/converter/src/esm/exporter.rs` writes the canonical `records` archive and its runtime
+projections together.
 
-pub struct EsmToSqliteConverter {
-    db: Connection,
-}
+For placed references, `insert_reference_with_canonical_data` writes a `references` row with
+the owning cell, worldspace, base object, position, rotation, scale, flags and canonical data.
+Exterior rows also retain cell-local X/Y offsets. It then removes any previous spatial entry
+for that reference, including when a subset update moves it into an interior. For an exterior
+reference, it inserts the global position as equal minimum and maximum bounds, with cell and
+worldspace auxiliary values:
 
-impl EsmToSqliteConverter {
-    pub fn new(db_path: &str) -> Result<Self, rusqlite::Error> {
-        let db = Connection::open(db_path)?;
-        // Enable WAL mode for high-concurrency multi-threaded reads
-        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
-        Ok(Self { db })
-    }
+```sql
+DELETE FROM exterior_spatial WHERE id = ?1;
 
-    pub fn insert_refr_object(&mut self, form_id: u32, x: f32, y: f32, z: f32, load_order: u32, payload: &[u8]) -> Result<(), rusqlite::Error> {
-        let tx = self.db.transaction()?;
-
-        // 1. Insert record into primary table
-        tx.execute(
-            "INSERT OR REPLACE INTO records (form_id, record_type, load_order, payload) VALUES (?1, 'REFR', ?2, ?3)",
-            params![form_id, load_order, payload],
-        )?;
-
-        // 2. Insert 3D bounding box into Spatial R-Tree Index
-        let bbox = 64.0; // bounding radius around object
-        tx.execute(
-            "INSERT OR REPLACE INTO refr_spatial (id, minX, maxX, minY, maxY, minZ, maxZ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![form_id, x - bbox, x + bbox, y - bbox, y + bbox, z - bbox, z + bbox],
-        )?;
-
-        tx.commit()
-    }
-}
+-- Executed only for an exterior reference.
+-- Bind: reference ID, global X, global Y, global Z, cell ID, worldspace ID.
+INSERT OR REPLACE INTO exterior_spatial
+    (id, minX, maxX, minY, maxY, minZ, maxZ, cell_id, worldspace_id)
+VALUES (?1, ?2, ?2, ?3, ?3, ?4, ?4, ?5, ?6);
 ```
+
+Interior references remain in `references` and use its cell index. The exporter writes the
+canonical record and runtime reference rows in addition to these spatial statements; the
+R-Tree entries supply candidates for the queries in section 3.

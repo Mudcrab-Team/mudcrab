@@ -9,7 +9,8 @@ struct WaterSettings {
     wave_scale_speed_strength: vec4<f32>,
     flow_direction: vec4<f32>,
     // x = Fresnel Amount (Schlick F0), y = Reflectivity Amount (WATR DNAM, per-water; falls back
-    // to Skyrim's DefaultWater 0.10 / 0.8 when a water has no decoded colours). z/w unused.
+    // to Skyrim's DefaultWater 0.10 / 0.8 when a water has no decoded colours).
+    // z = interactive reflection multiplier, w unused.
     fresnel_reflectivity: vec4<f32>,
     // rgb = the water's Reflection Color (linear): what it reflects where the reflection image has
     // no coverage (alpha 0). Vanilla fades the reflection to this colour as reflectivity drops.
@@ -56,7 +57,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // it is blended in after lighting rather than lit a second time as albedo, which washed the
     // water out to white.
     out.color = apply_pbr_lighting(pbr_input);
-    let reflected = fresnel * water.fresnel_reflectivity.y;
+    let reflected = fresnel * water.fresnel_reflectivity.y * water.fresnel_reflectivity.z;
     out.color = vec4<f32>(mix(out.color.rgb, reflection_color.rgb, reflected), max(out.color.a, fresnel));
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

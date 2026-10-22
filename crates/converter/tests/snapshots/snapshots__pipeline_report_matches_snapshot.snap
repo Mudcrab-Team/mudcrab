@@ -49,18 +49,18 @@ expression: report
       "checkpoint_sync_calls": 1,
       "checkpoint_sync_worker_seconds": "[seconds]",
       "extraction_seconds": "[seconds]",
-      "payload_bytes_written": 21316,
+      "payload_bytes_written": 24208,
       "payload_reuses": 0,
-      "payload_writes": 5,
+      "payload_writes": 6,
       "physical_copy_bytes_written": 0,
       "physical_copy_writes": 0,
-      "selected_bytes": 21316,
-      "selected_files": 5,
+      "selected_bytes": 24208,
+      "selected_files": 6,
       "source_hash_seconds": "[seconds]",
       "sync_calls": 0,
       "sync_seconds": "[seconds]",
       "sync_worker_seconds": "[seconds]",
-      "unique_payloads": 5
+      "unique_payloads": 6
     }
   },
   "artifacts": [
@@ -83,24 +83,26 @@ expression: report
     "scripts/papyrus_runtime.luau",
     "scripts/second.luau",
     "skyrim_world.db",
+    "streaming-costs.json",
     "textures/generated_color.ktx2",
     "textures/generated_color.opensky-srgb.opensky-wrap0.ktx2",
     "textures/generated_color_x8.ktx2",
     "textures/generated_cube.ktx2",
     "textures/generated_normal.ktx2",
     "textures/generated_normal.opensky-wrap0.ktx2",
-    "textures/generated_volume.ktx2"
+    "textures/generated_volume.ktx2",
+    "textures/landscape/dirt02.ktx2"
   ],
   "cache_hits": 0,
   "complete": true,
-  "converted": 16,
+  "converted": 18,
   "database_cache_files": 0,
   "database_cache_hit": false,
   "database_cache_key": "[database_cache_key]",
   "database_runtime_records_built": 34,
   "elapsed_ms": "[elapsed_ms]",
   "inputs_by_kind": {
-    "dds": 5,
+    "dds": 6,
     "nif": 1,
     "pex": 2
   },
@@ -185,9 +187,13 @@ expression: report
     "destination_policy_validation": "[elapsed_ms]",
     "ownership_recovery": "[elapsed_ms]",
     "pack_swap": "[elapsed_ms]",
+    "runtime_pack_costs": "[elapsed_ms]",
     "runtime_pack_linking": "[elapsed_ms]",
     "runtime_pack_preparation": "[elapsed_ms]"
   },
   "skipped": 0,
+  "terrain": null,
+  "terrain_elapsed_ms": 0,
+  "terrain_warnings": [],
   "warnings": []
 }

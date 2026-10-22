@@ -62,6 +62,23 @@ async fn publish(data: &Path, output: &Path) -> converter::PipelineReport {
     report
 }
 
+async fn publish_with_reader(
+    data: &Path,
+    output: &Path,
+    reader: RecordReader,
+) -> converter::PipelineReport {
+    let mut config = PipelineConfig::new(data, output);
+    config.record_reader = reader;
+    config.lod_texture_encoder = converter::TextureEncoder::Cpu;
+    config.no_lod = true;
+    config.cpu_jobs = 2;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    report
+}
+
 /// Read the published canonical record rather than accepting source-only preservation.
 fn canonical_fields(output: &Path, form_id: u32) -> Vec<([u8; 4], Vec<u8>)> {
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -99,6 +116,114 @@ async fn canonical_publication_keeps_unknown_fields_once_in_native_order() {
     append(&data.join("Skyrim.esm"), &record(b"KYWD", 0x1800, &fields));
     publish(&data, &output).await;
     assert_eq!(canonical_fields(&output, 0x1800), fields);
+}
+
+/// Unsafe, unreferenced base models clear only their runtime projection; valid neighbors still
+/// complete conversion and publish for both record readers.
+#[tokio::test]
+async fn unsafe_static_models_recover_through_finalization_and_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    generate(&data);
+    let signatures = [*b"TACT", *b"ADDN", *b"APPA", *b"ARTO"];
+    let mut records = Vec::new();
+    let mut expected = Vec::new();
+    for (index, signature) in signatures.into_iter().enumerate() {
+        let valid_before_id = 0x1800 + index as u32 * 3;
+        let invalid_id = valid_before_id + 1;
+        let valid_after_id = valid_before_id + 2;
+        let valid_model = [layout::GENERATED_MODEL_PATH.as_bytes(), &[0]].concat();
+        let invalid_model = b"../bad.nif\0".to_vec();
+        records.extend(record(
+            &signature,
+            valid_before_id,
+            &[
+                (*b"EDID", format!("Valid{index}\0").into_bytes()),
+                (*b"MODL", valid_model.clone()),
+            ],
+        ));
+        records.extend(record(
+            &signature,
+            invalid_id,
+            &[
+                (*b"EDID", format!("Unsafe{index}\0").into_bytes()),
+                (*b"MODL", invalid_model.clone()),
+            ],
+        ));
+        records.extend(record(
+            &signature,
+            valid_after_id,
+            &[
+                (*b"EDID", format!("ValidAfter{index}\0").into_bytes()),
+                (*b"MODL", valid_model),
+            ],
+        ));
+        expected.push((valid_before_id, invalid_id, valid_after_id, invalid_model));
+    }
+    append(&data.join("Skyrim.esm"), &records);
+
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let output = temp.path().join(format!("pack-{reader:?}"));
+        let report = publish_with_reader(&data, &output, reader).await;
+        let integration = report.integration.as_ref().unwrap();
+        assert!(integration.passed, "{reader:?}: {integration:?}");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with("asset integration failed:"))
+        );
+        assert!(integration.bounds_updated >= 8);
+        assert!(integration.statics_with_models >= 8);
+        let recovered_ids = expected
+            .iter()
+            .map(|(_, invalid_id, _, _)| format!("{invalid_id:08X}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            integration
+                .issues
+                .iter()
+                .filter(|issue| recovered_ids.iter().any(|id| issue.contains(id)))
+                .count(),
+            4
+        );
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        for (valid_before_id, invalid_id, valid_after_id, invalid_model) in &expected {
+            for valid_id in [*valid_before_id, *valid_after_id] {
+                let valid_path: Option<String> = database
+                    .query_row(
+                        "SELECT model_path FROM statics WHERE id=?1",
+                        [valid_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(valid_path.as_deref(), Some(layout::GENERATED_MODEL_PATH));
+            }
+            let unsafe_path: Option<String> = database
+                .query_row(
+                    "SELECT model_path FROM statics WHERE id=?1",
+                    [invalid_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(unsafe_path, None);
+            let archived = canonical_fields(&output, *invalid_id);
+            assert!(archived.contains(&(*b"MODL", invalid_model.clone())));
+            assert!(integration.issues.iter().any(|issue| {
+                issue.contains("plugin Skyrim.esm")
+                    && issue.contains(&format!("{invalid_id:08X}"))
+                    && issue.contains("../bad.nif")
+            }));
+        }
+        let published_integration: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(published_integration["passed"], true);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["complete"], report.complete);
+    }
 }
 
 /// Selected union banks survive real publication, while one malformed leaf stays local.

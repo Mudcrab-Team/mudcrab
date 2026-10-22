@@ -543,6 +543,7 @@ mod tests {
                 None,
                 &crate::render::RendererMetrics::default(),
                 None,
+                None,
             )
             .unwrap();
         let report: serde_json::Value = serde_json::from_slice(
