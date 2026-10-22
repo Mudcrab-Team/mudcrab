@@ -1755,7 +1755,7 @@ fn spawn_cell(
                 if let Some(head) = &plan.head {
                     entity.insert(head.clone());
                 }
-                if actor_catalog.composed_body_scene(plan.actor.sex).is_some() {
+                if plan.uses_composed_body() {
                     entity.insert((
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
                         crate::actor_drive::ActorDrive::default(),
@@ -9274,6 +9274,52 @@ mod tests {
             Some("meshes/actors/character/character assets/malebody_1.glb")
         );
         assert!(entity.get::<Actor>().is_some());
+    }
+
+    /// A race with its own body keeps that body and receives no shared human gait, even when the
+    /// default composed body exists.
+    #[test]
+    fn a_custom_race_actor_keeps_its_body_and_gets_no_shared_gait() {
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id, race_id, sex, resolution)
+                 VALUES (0x2000, 0x1000, 'male', 'body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id, slot, model_path)
+                 VALUES (0x2000, 'body',
+                         'Meshes\\Actors\\CustomRace\\Character Assets\\CustomBody.NIF')",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let mut reference = lit_reference(0x2000, None, None);
+        reference.base_form_id = 0x2000;
+        reference.base_record_type = Some("NPC_".to_owned());
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x2000));
+        assert_eq!(
+            entity.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/actors/customrace/character assets/custombody.glb"),
+            "the custom race draws its own body"
+        );
+        assert!(
+            entity.get::<crate::actor_animation::ActorClips>().is_none(),
+            "the shared gait clips only fit the shared humanoid body"
+        );
+        assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
     }
 
     /// An unresolved catalog row is skipped entirely: no actor, no placeholder and no static mesh,

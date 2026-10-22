@@ -36,6 +36,34 @@ impl ActorModel {
     pub fn part(&self, slot: ActorSlot) -> Option<&ActorPart> {
         self.parts.iter().find(|part| part.slot == slot)
     }
+
+    /// Whether this row's parts are the shared humanoid set the default composed body is built
+    /// from. A row with no body slot, or a race whose own armature points elsewhere, is not
+    /// compatible: substituting the default body would replace its authored model.
+    fn uses_shared_humanoid_body(&self) -> bool {
+        self.part(ActorSlot::Body).is_some()
+            && self.parts.iter().all(|part| {
+                normalized_part_path(&part.model_path) == shared_humanoid_part(self.sex, part.slot)
+            })
+    }
+}
+
+/// The source NIF the converter composes into the shared humanoid body for `sex` and `slot`.
+fn shared_humanoid_part(sex: ActorSex, slot: ActorSlot) -> String {
+    format!(
+        "meshes/actors/character/character assets/{}{}_1.nif",
+        sex.as_str(),
+        match slot {
+            ActorSlot::Body => "body",
+            ActorSlot::Hands => "hands",
+            ActorSlot::Feet => "feet",
+        }
+    )
+}
+
+/// A catalog path normalized the way converted assets are looked up.
+fn normalized_part_path(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
 }
 
 /// Everything the spawn path needs for one actor: the components and the scene it draws.
@@ -46,6 +74,14 @@ pub struct ActorSpawnPlan {
     pub head: Option<ActorHead>,
     /// The composed body when it exists, otherwise the catalog's `body` part, converted.
     pub scene_path: String,
+}
+
+impl ActorSpawnPlan {
+    /// Whether [`Self::scene_path`] is the shared composed humanoid body rather than a catalog
+    /// body part. Only such an actor can be driven by the shared gait clips.
+    pub fn uses_composed_body(&self) -> bool {
+        self.scene_path == composed_body_scene(self.actor.sex)
+    }
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -203,9 +239,10 @@ impl ActorCatalog {
 
     /// Turns a catalog row into the components and scene path a placed reference spawns.
     ///
-    /// The composed body wins when its file exists; otherwise the catalog's `body` part is
-    /// converted. A row the catalog recorded as unresolved, or one with no resolvable body at all,
-    /// yields one typed diagnostic and no plan.
+    /// The composed body wins when its file exists and the row's parts are the shared humanoid
+    /// set; otherwise the catalog's `body` part is converted. A row the catalog recorded as
+    /// unresolved, or one with no resolvable body at all, yields one typed diagnostic and no
+    /// plan.
     pub fn spawn_plan(&self, model: &ActorModel) -> Result<ActorSpawnPlan, ActorSpawnDiagnostic> {
         if !model.resolution.is_resolved() {
             return Err(ActorSpawnDiagnostic {
@@ -213,8 +250,10 @@ impl ActorCatalog {
                 reason: ActorSpawnSkip::Unresolved,
             });
         }
-        let scene_path = self
-            .composed_body_scene(model.sex)
+        let scene_path = model
+            .uses_shared_humanoid_body()
+            .then(|| self.composed_body_scene(model.sex))
+            .flatten()
             .map(str::to_owned)
             .or_else(|| {
                 model.part(ActorSlot::Body).and_then(|part| {
@@ -475,6 +514,69 @@ mod tests {
             plan.head.as_ref().map(|head| head.source),
             Some(ActorHeadSource::Facegen)
         );
+    }
+
+    #[test]
+    fn a_custom_race_body_keeps_its_own_path_when_the_composed_body_exists() {
+        let connection = connection();
+        insert_actor(&connection, 0x2000, 0x1000, "male", "body", None, None);
+        insert_part(
+            &connection,
+            0x2000,
+            "body",
+            r"Meshes\Actors\CustomRace\Character Assets\CustomBody.NIF",
+        );
+        insert_part(
+            &connection,
+            0x2000,
+            "hands",
+            r"Meshes\Actors\CustomRace\Character Assets\CustomHands.NIF",
+        );
+        insert_part(
+            &connection,
+            0x2000,
+            "feet",
+            r"Meshes\Actors\CustomRace\Character Assets\CustomFeet.NIF",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let model = catalog.get(0x2000).unwrap();
+        let plan = catalog.spawn_plan(model).unwrap();
+        assert_eq!(
+            plan.scene_path, "meshes/actors/customrace/character assets/custombody.glb",
+            "a race with its own armature keeps its authored body"
+        );
+        assert!(!plan.uses_composed_body());
+    }
+
+    #[test]
+    fn a_row_without_a_body_slot_does_not_borrow_the_composed_body() {
+        let connection = connection();
+        insert_actor(&connection, 0x13476, 79686, "male", "body", None, None);
+        insert_part(
+            &connection,
+            0x13476,
+            "hands",
+            r"Meshes\Actors\Character\Character Assets\MaleHands_1.nif",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let model = catalog.get(0x13476).unwrap();
+        let diagnostic = catalog.spawn_plan(model).unwrap_err();
+        assert_eq!(diagnostic.reason, ActorSpawnSkip::NoBody);
+        assert_eq!(diagnostic.base_form_id, 0x13476);
     }
 
     #[test]
