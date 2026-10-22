@@ -11,7 +11,7 @@ use color_eyre::{
 };
 use project_wormhole_nif::model::all::{BoneTree, Model};
 use std::{
-    fmt,
+    fmt, fs,
     ops::Deref,
     path::{Path, PathBuf},
 };
@@ -148,9 +148,9 @@ pub fn compose_body(parts: &[BodyPart<'_>], skeleton_path: &Path) -> Result<Comp
     })
 }
 
-/// Writes a composed model as a GLB using the same exporter, material publication and atomic
-/// publish step as every other converted NIF.
-pub fn write_composed_body(body: &ComposedBody, output: &Path) -> Result<()> {
+/// Renders a composed model as a GLB whose published materials and runtime texture URIs
+/// address the KTX2 tree relative to `output`.
+pub fn composed_body_glb(body: &ComposedBody, output: &Path) -> Result<Vec<u8>> {
     let name = body
         .model
         .name
@@ -160,13 +160,18 @@ pub fn write_composed_body(body: &ComposedBody, output: &Path) -> Result<()> {
         .model
         .to_glb(name)
         .map_err(|error| eyre!("composed body GLB export failed: {error}"))?;
-    let glb = rewrite_materials_and_texture_uris(
-        glb,
-        &body.material_contract,
-        &body.shape_blocks,
-        output,
-    )?;
-    write_glb_atomic(output, &glb)
+    rewrite_materials_and_texture_uris(glb, &body.material_contract, &body.shape_blocks, output)
+}
+
+/// Writes a composed model as a GLB using the same exporter, material publication and atomic
+/// publish step as every other converted NIF. Returns whether the file changed.
+pub fn write_composed_body(body: &ComposedBody, output: &Path) -> Result<bool> {
+    let bytes = composed_body_glb(body, output)?;
+    if fs::read(output).is_ok_and(|existing| existing == bytes) {
+        return Ok(false);
+    }
+    write_glb_atomic(output, &bytes)?;
+    Ok(true)
 }
 
 /// VFS-relative output path for a composed actor body. The shared humanoid set

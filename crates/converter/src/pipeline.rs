@@ -2557,16 +2557,7 @@ fn compose_default_bodies(
                     .wrap_err_with(|| format!("failed to compose default {sex} actor body"));
             }
         };
-        let name = model
-            .name
-            .clone()
-            .unwrap_or_else(|| "composed_body".to_owned());
-        let bytes = model
-            .to_glb(name)
-            .map_err(|error| eyre!("composed body GLB export failed: {error}"))?;
-        if !fs::read(&output).is_ok_and(|existing| existing == bytes) {
-            compose::write_composed_body(&model, &output)?;
-        }
+        compose::write_composed_body(&model, &output)?;
         info!(
             "composed default {sex} actor body from {} parts to {}",
             parts.len(),

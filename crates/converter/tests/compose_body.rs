@@ -506,11 +506,57 @@ fn compose_merges_two_parts_into_one_shared_skeleton_model() {
 
     let glb_path = directory.path().join("body.glb");
     write_composed_body(&model, &glb_path).unwrap();
+    assert!(
+        !write_composed_body(&model, &glb_path).unwrap(),
+        "rewriting unchanged composed bytes must report no change"
+    );
     let glb = read_glb(&glb_path);
     let bone_names: BTreeSet<String> = bones.bones.keys().cloned().collect();
     assert_bone_nodes_once(&glb, &bone_names);
     assert_skinned_glb(&glb, model.skeletal_meshes.len());
     assert_published_materials(&glb, model.skeletal_meshes.len());
+}
+
+#[test]
+fn composed_body_publishes_texture_uris_relative_to_its_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let skeleton_path = write_node_skeleton(directory.path(), "SkeletonRoot", &["Bone0", "Bone1"]);
+    let body_path = write_part(directory.path(), "body.nif", &legacy_spec("BodyShape"));
+    let model = compose_body(
+        &[BodyPart {
+            path: &body_path,
+            kind: BodyPartKind::Body,
+        }],
+        &skeleton_path,
+    )
+    .unwrap();
+    let output = directory.path().join(composed_body_path("default", "male"));
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+    assert!(write_composed_body(&model, &output).unwrap());
+
+    let glb = read_glb(&output);
+    assert_published_materials(&glb, model.skeletal_meshes.len());
+    let images = glb.json["images"]
+        .as_array()
+        .unwrap_or_else(|| panic!("composed GLB has no published images"));
+    assert!(!images.is_empty());
+    for image in images {
+        let uri = image["uri"].as_str().unwrap();
+        assert!(
+            uri.ends_with(".ktx2"),
+            "image URI must name a published KTX2 file: {uri}"
+        );
+        assert_eq!(
+            uri.matches("../").count(),
+            6,
+            "image URI must climb from composed/default/male to the asset root: {uri}"
+        );
+        assert!(
+            uri.contains("textures/generated_color") || uri.contains("textures/generated_normal"),
+            "image URI must target the published texture tree: {uri}"
+        );
+    }
 }
 
 #[test]
