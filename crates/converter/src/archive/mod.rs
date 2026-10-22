@@ -2296,10 +2296,14 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(outcome.files.len(), 7);
+            assert_eq!(outcome.files.len(), 10);
             assert_eq!(
                 outcome.timings.sync_calls,
-                if mode == IngestionSync::PerFile { 7 } else { 0 }
+                if mode == IngestionSync::PerFile {
+                    10
+                } else {
+                    0
+                }
             );
             if mode != IngestionSync::Archive {
                 assert_eq!(outcome.timings.sync_seconds, 0.0);
@@ -2346,9 +2350,9 @@ mod tests {
         )
         .unwrap();
         assert!(resumed.cache_hit);
-        assert_eq!(resumed.files.len(), 7);
-        assert_eq!(count_files(&output), 7);
-        assert_eq!(resumed.timings.payload_writes, 4);
+        assert_eq!(resumed.files.len(), 10);
+        assert_eq!(count_files(&output), 10);
+        assert_eq!(resumed.timings.payload_writes, 7);
         assert_eq!(resumed.timings.payload_reuses, 3);
         assert_eq!(resumed.timings.sync_calls, 0);
     }
