@@ -2,8 +2,9 @@
 use crate::{
     nif_depth::{NifDepthExtension, NifDepthMaterial, NifDepthState, depth_material},
     skin_material::{
-        FacegenMaps, SkyrimSkinImages, SkyrimSkinMaterial, facegen_texture_indices, gltf_sampler,
-        load_linear_twin, skin_material, specular_color_texture_index,
+        FacegenMaps, SkinTintSurface, SkyrimSkinImages, SkyrimSkinMaterial,
+        facegen_texture_indices, gltf_sampler, is_skin_tint, load_linear_twin, nif_skin_tint,
+        skin_material, specular_color_texture_index,
     },
 };
 use ::gltf::material::AlphaMode as GltfAlphaMode;
@@ -46,7 +47,8 @@ impl Plugin for NifMaterialPlugin {
         app.register_type::<NifSourceMaterial>()
             .register_type::<NifNativeMaterialSource>()
             .register_type::<EffectPaletteDepthSource>()
-            .register_type::<ExternalEmittance>();
+            .register_type::<ExternalEmittance>()
+            .register_type::<SkinTintSurface>();
         let default_sampler = app
             .world()
             .get_resource::<DefaultGltfImageSampler>()
@@ -300,8 +302,14 @@ impl NativeMaterialHandler {
                 facegen.as_ref(),
             ))
         });
-        let mut material =
-            skin_material(base, model_space_normal, specular, facegen, shader_flags_1);
+        let mut material = skin_material(
+            base,
+            model_space_normal,
+            specular,
+            facegen,
+            nif_skin_tint(source),
+            shader_flags_1,
+        );
         let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
             material.extension.images = Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
             Ok::<_, Infallible>(material)
@@ -595,6 +603,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         context.get_label_handle::<SkyrimSkinMaterial>(format!("{label}/skin")),
                     ),
                 ));
+                if is_skin_tint(material) {
+                    entity.insert(SkinTintSurface);
+                }
             } else {
                 entity.insert(MeshMaterial3d(
                     context.get_label_handle::<StandardMaterial>(format!("{label}/nif")),

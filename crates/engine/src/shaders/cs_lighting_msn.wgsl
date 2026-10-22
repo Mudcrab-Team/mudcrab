@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT AND GPL-3.0-only
 //
-// Model-space normal (`_msn`) decode, world-normal transform and FaceGen base colour of Skyrim's
-// lighting shader.
+// Model-space normal (`_msn`) decode, world-normal transform, FaceGen base colour and skin RGB
+// tint of Skyrim's lighting shader.
 //
 // Ported from Community Shaders (https://github.com/community-shaders/skyrim-community-shaders,
 // commit e5ae2d0082469f92ac08dda89d230dc2d9328ba0), package/Shaders/Lighting.hlsl:
@@ -12,7 +12,10 @@
 //   - lines 2001-2003, PS: `material.Glossiness = HasSpecular() ? glossiness : 0`;
 //   - lines 684-694, `GetFacegenBaseColor` (FaceGen tint overlay and detail map), and its call
 //     sites at lines 1492-1497 (linear lighting: applied to the raw diffuse sample, then
-//     `DiffuseToWorking`) and 1623-1624 (gamma lighting).
+//     `DiffuseToWorking`) and 1623-1624 (gamma lighting);
+//   - lines 696-703, `GetFacegenRGBTintBaseColor` (the same overlay with the constant
+//     `TintColor`, the skin tone of body, hands and feet), and its call sites at lines 1494-1495
+//     (linear lighting) and 1625-1626 (gamma lighting).
 // Lighting.hlsl's own header: original code MIT (Ilya Perapechka), modifications GPL-3.0 with
 // Community Shaders' exceptions.
 //
@@ -35,7 +38,10 @@
 //   - Non-skinned model-space shapes go through the mesh's world-from-local as well. Vanilla
 //     lights them in model space instead, which is the same result.
 //   - `GetFacegenBaseColor` takes its two textures and samplers as parameters instead of the
-//     global `TexDetailSampler` / `TexTintSampler` registers; the math is unchanged. Its caller
+//     global `TexDetailSampler` / `TexTintSampler` registers; the math is unchanged.
+//     `GetFacegenRGBTintBaseColor` takes `TintColor` as a parameter instead of reading the
+//     `PerMaterial` constant buffer, and drops its unused `uv`; the math is unchanged. Its caller
+//     handles the colour space the same way as for `GetFacegenBaseColor`. Its caller
 //     (`skyrim_skin.wgsl`) feeds it gamma-encoded values, as CS does: the tint and detail maps
 //     are sampled without sRGB decoding, and Bevy's decoded base colour is re-encoded with the
 //     sRGB curve first. The result goes back through the sRGB curve, where CS's linear-lighting
@@ -126,4 +132,20 @@ fn get_facegen_base_color(
     tint_color = tint_color * raw_base_color * vec3<f32>(2.0);
     tint_color = tint_color - tint_color * raw_base_color;
     return (raw_base_color * raw_base_color + tint_color) * detail_color;
+}
+
+// Lighting.hlsl, `#if defined(FACEGEN_RGB_TINT)`:
+//     float3 GetFacegenRGBTintBaseColor(float3 rawBaseColor, float2 uv)
+//     {
+//         float3 tintColor = TintColor.xyz * rawBaseColor * 2.0.xxx;
+//         tintColor = tintColor - tintColor * rawBaseColor;
+//         return float3(1.01171875, 0.99609375, 1.01171875) * (rawBaseColor * rawBaseColor + tintColor);
+//     }
+// The FaceGen overlay with a constant tint: `base^2 + 2 * tint * base * (1 - base)`, unchanged at
+// tint 0.5 up to the small per-channel factor.
+fn get_facegen_rgb_tint_base_color(raw_base_color: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
+    var tint_color = tint * raw_base_color * vec3<f32>(2.0);
+    tint_color = tint_color - tint_color * raw_base_color;
+    return vec3<f32>(1.01171875, 0.99609375, 1.01171875)
+        * (raw_base_color * raw_base_color + tint_color);
 }

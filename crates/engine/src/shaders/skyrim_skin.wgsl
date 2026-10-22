@@ -7,9 +7,9 @@
 // the stock `VertexOutput` does not carry.
 //
 // The fragment stage is `bevy_pbr/render/pbr.wgsl` with the normal and the specular mask taken
-// from the model-space maps (`mudcrab::cs_lighting_msn`) and, on FaceGen heads, the base colour
-// run through Skyrim's FaceGen tint and detail maps. Everything else is the stock
-// `StandardMaterial` path.
+// from the model-space maps (`mudcrab::cs_lighting_msn`), on FaceGen heads the base colour run
+// through Skyrim's FaceGen tint and detail maps, and on tinted skin (body, hands, feet) the base
+// colour blended with the actor's skin tone. Everything else is the stock `StandardMaterial` path.
 
 #import bevy_pbr::{
     mesh_bindings::mesh,
@@ -28,6 +28,7 @@
 #import mudcrab::cs_lighting_msn::{
     decode_model_space_normal,
     get_facegen_base_color,
+    get_facegen_rgb_tint_base_color,
     material_glossiness,
     model_space_glossiness,
     model_space_world_normal,
@@ -46,12 +47,13 @@ const FLAG_MODEL_SPACE_NORMALS: u32 = 1u;
 const FLAG_SPECULAR_MAP: u32 = 2u;
 const FLAG_SPECULAR: u32 = 4u;
 const FLAG_FACEGEN: u32 = 8u;
+const FLAG_SKIN_TINT: u32 = 16u;
 const FLAG_DEBUG_WORLD_NORMAL: u32 = 65536u;
 const FLAG_DEBUG_VERTEX_NORMAL: u32 = 131072u;
 
 struct SkyrimSkinSettings {
     flags: u32,
-    // Reserved for the skin and hair tints; unused by this shader.
+    // The skin tint (`FLAG_SKIN_TINT`), encoded RGB in 0..1; alpha unused.
     tint_color: vec4<f32>,
     detail: vec4<f32>,
 }
@@ -277,6 +279,17 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         );
         pbr_input.material.base_color = vec4<f32>(
             srgb_decode(facegen),
+            pbr_input.material.base_color.a,
+        );
+    }
+
+    if (skin.flags & FLAG_SKIN_TINT) != 0u {
+        // As for FaceGen above: the game blends on encoded values, and the tint colour is stored
+        // encoded (`NPC_/QNAM`), so the base colour is re-encoded around the blend.
+        let raw_base_color = srgb_encode(pbr_input.material.base_color.rgb);
+        let tinted = get_facegen_rgb_tint_base_color(raw_base_color, skin.tint_color.rgb);
+        pbr_input.material.base_color = vec4<f32>(
+            srgb_decode(tinted),
             pbr_input.material.base_color.a,
         );
     }

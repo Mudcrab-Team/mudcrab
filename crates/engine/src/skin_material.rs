@@ -22,11 +22,18 @@
 //! texture without sRGB decoding, so they bind as the linear twins of the sRGB textures the
 //! converter publishes, and the shader re-encodes the base colour before the blend.
 //!
-//! The per-actor skin tone and the hair tint extend this material rather than adding new ones.
-//! Each gets a bit in [`SkyrimSkinFlags`] (bits 4-15 are free for them) and reads `tint_color` /
-//! `detail` from the uniform. A bit that is not set leaves the shader's output unchanged. The per-actor skin tone has to be per-instance
-//! data: the labelled material is shared by every instance of a GLB, so the actor spawn clones it
-//! and edits the clone's uniform.
+//! # Skin tone
+//!
+//! A `skin_tint` surface (body, hands, feet) blends its diffuse with a constant tint colour the
+//! same way a FaceGen head blends its tint map ([`SkyrimSkinFlags::SKIN_TINT`], CS's
+//! `FACEGEN_RGB_TINT`). The colour is per NPC (`NPC_/QNAM`), while the labelled material is shared
+//! by every instance of a GLB, and the body GLB by every actor of a sex. So the loader only marks
+//! the surface ([`SkinTintSurface`]) and, when the converter published the NIF's own tint, sets
+//! it as the default; [`crate::actor_skin_tone`] gives each actor's surfaces a derived material
+//! carrying that actor's tone. A surface with neither keeps the flag clear and renders as before.
+//!
+//! The hair tint will extend this material the same way, with a bit of its own in
+//! [`SkyrimSkinFlags`] (bits 5-15 are free) reading `tint_color`.
 
 use bevy::{
     asset::{AssetPath, LoadContext},
@@ -64,6 +71,9 @@ impl SkyrimSkinFlags {
     /// Bindings 105 and 107 hold a FaceGen head's tint and detail maps; the shader blends them
     /// into the base colour (`GetFacegenBaseColor`).
     pub const FACEGEN: u32 = 1 << 3;
+    /// The base colour is blended with the constant `tint_color` (`GetFacegenRGBTintBaseColor`):
+    /// the skin tone of a `skin_tint` body, hands or feet.
+    pub const SKIN_TINT: u32 = 1 << 4;
     /// Debug: output the shading normal as colour (`N * 0.5 + 0.5`) instead of lighting.
     pub const DEBUG_WORLD_NORMAL: u32 = 1 << 16;
     /// Debug: output the interpolated vertex normal as colour, for comparison.
@@ -76,10 +86,19 @@ impl SkyrimSkinFlags {
 pub struct SkyrimSkinSettings {
     /// [`SkyrimSkinFlags`].
     pub flags: u32,
-    /// Linear RGB tint, alpha unused. Reserved for the skin and hair tints; white until then.
+    /// The [`SkyrimSkinFlags::SKIN_TINT`] colour, RGB in 0..1 on the encoded (gamma) scale the
+    /// game stores it in, as `NPC_/QNAM` does; alpha unused. White when no tint is set.
     pub tint_color: Vec4,
     /// Reserved for detail-map parameters; the FaceGen blend uses none.
     pub detail: Vec4,
+}
+
+impl SkyrimSkinSettings {
+    /// Turns the skin tint on with `tone` (encoded RGB, 0..1).
+    pub fn set_skin_tint(&mut self, tone: Vec3) {
+        self.flags |= SkyrimSkinFlags::SKIN_TINT;
+        self.tint_color = tone.extend(1.0);
+    }
 }
 
 impl Default for SkyrimSkinSettings {
@@ -117,6 +136,13 @@ pub struct SkyrimSkinExtension {
     #[reflect(ignore)]
     pub(crate) images: Option<Handle<SkyrimSkinImages>>,
 }
+
+/// Marks a primitive whose NIF shader is `skin_tint` and which draws with a
+/// [`SkyrimSkinMaterial`]: the surfaces an actor's skin tone applies to. Reflected so the marker
+/// is cloned with the scene into every world instance.
+#[derive(Component, Clone, Copy, Default, Reflect)]
+#[reflect(Component, Default)]
+pub struct SkinTintSurface;
 
 /// A FaceGen head's tint (texture-set slot 6) and detail (slot 3) maps, both loaded linear.
 #[derive(Clone, Debug, PartialEq)]
@@ -212,6 +238,7 @@ pub fn skin_material(
     model_space_normal: Handle<Image>,
     specular: Option<Handle<Image>>,
     facegen: Option<FacegenMaps>,
+    skin_tint: Option<Vec3>,
     shader_flags_1: u32,
 ) -> SkyrimSkinMaterial {
     base.normal_map_texture = None;
@@ -228,10 +255,14 @@ pub fn skin_material(
     }
     let (facegen_tint, facegen_detail) =
         facegen.map_or((None, None), |maps| (Some(maps.tint), Some(maps.detail)));
+    let mut settings = SkyrimSkinSettings { flags, ..default() };
+    if let Some(tone) = skin_tint {
+        settings.set_skin_tint(tone);
+    }
     SkyrimSkinMaterial {
         base,
         extension: SkyrimSkinExtension {
-            settings: SkyrimSkinSettings { flags, ..default() },
+            settings,
             model_space_normal: Some(model_space_normal),
             specular,
             facegen_tint,
@@ -375,6 +406,38 @@ pub(crate) fn facegen_texture_indices(material: &gltf::Material<'_>) -> Option<(
     Some((texture("facegen_tint")?, texture("detail")?))
 }
 
+/// Whether the material's NIF shader is `skin_tint` (`OPEN_SKYRIM_material.lightingShaderType`).
+pub(crate) fn is_skin_tint(material: &gltf::Material<'_>) -> bool {
+    lighting_shader_type(material).as_deref() == Some("skin_tint")
+}
+
+fn lighting_shader_type(material: &gltf::Material<'_>) -> Option<String> {
+    let extension = material.extensions()?.get("OPEN_SKYRIM_material")?;
+    Some(extension.get("lightingShaderType")?.as_str()?.to_owned())
+}
+
+/// The NIF's own skin tint colour for a `skin_tint` material, when the converter published one
+/// (`OPEN_SKYRIM_material.tintColor`, encoded RGB in 0..1). It is the fallback for a surface whose
+/// actor has no `NPC_` skin tone. Packs whose converter does not read the NIF's shader tail carry
+/// none, and the surface stays untinted.
+pub(crate) fn nif_skin_tint(material: &gltf::Material<'_>) -> Option<Vec3> {
+    if !is_skin_tint(material) {
+        return None;
+    }
+    let colour = material
+        .extensions()?
+        .get("OPEN_SKYRIM_material")?
+        .get("tintColor")?
+        .as_array()?;
+    let channels: Vec<f32> = colour
+        .iter()
+        .take(3)
+        .map(|value| value.as_f64().map(|value| value as f32))
+        .collect::<Option<_>>()?;
+    let tone = Vec3::from_slice(channels.get(..3)?);
+    tone.is_finite().then_some(tone)
+}
+
 /// The glTF texture index of the material's `KHR_materials_specular.specularColorTexture`, which
 /// is where the converter publishes a model-space material's `_s` map.
 pub(crate) fn specular_color_texture_index(material: &gltf::Material<'_>) -> Option<usize> {
@@ -454,6 +517,7 @@ mod tests {
                 normal.clone(),
                 specular.clone(),
                 None,
+                None,
                 flags_1,
             );
             assert!(material.base.normal_map_texture.is_none());
@@ -481,13 +545,59 @@ mod tests {
             tint: images.add(Image::default()),
             detail: images.add(Image::default()),
         };
-        let material = skin_material(base, normal, None, Some(maps.clone()), 0);
+        let material = skin_material(
+            base.clone(),
+            normal.clone(),
+            None,
+            Some(maps.clone()),
+            None,
+            0,
+        );
         assert_eq!(
             material.extension.settings.flags,
             SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::FACEGEN
         );
         assert_eq!(material.extension.facegen_tint, Some(maps.tint));
         assert_eq!(material.extension.facegen_detail, Some(maps.detail));
+
+        let tone = Vec3::new(0.78, 0.69, 0.66);
+        let material = skin_material(base, normal, None, None, Some(tone), 0);
+        assert_eq!(
+            material.extension.settings.flags,
+            SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SKIN_TINT
+        );
+        assert_eq!(material.extension.settings.tint_color, tone.extend(1.0));
+    }
+
+    #[test]
+    fn the_nif_skin_tint_is_read_from_skin_tint_materials_only() {
+        for (shader, colour, expected) in [
+            (
+                "skin_tint",
+                serde_json::json!([0.5, 0.25, 1.0]),
+                Some(Vec3::new(0.5, 0.25, 1.0)),
+            ),
+            ("skin_tint", serde_json::json!([0.5, 0.25]), None),
+            ("skin_tint", serde_json::json!("white"), None),
+            ("hair_tint", serde_json::json!([0.5, 0.25, 1.0]), None),
+        ] {
+            let document = material_with_skyrim_extension(serde_json::json!({
+                "lightingShaderType": shader,
+                "tintColor": colour
+            }));
+            let material = document.materials().next().unwrap();
+            assert_eq!(nif_skin_tint(&material), expected, "{shader} {colour}");
+        }
+        let document = material_with_skyrim_extension(serde_json::json!({
+            "lightingShaderType": "skin_tint"
+        }));
+        let material = document.materials().next().unwrap();
+        assert!(is_skin_tint(&material));
+        assert_eq!(nif_skin_tint(&material), None);
+        let document = material_with_skyrim_extension(serde_json::json!({
+            "lightingShaderType": "face_tint"
+        }));
+        assert!(!is_skin_tint(&document.materials().next().unwrap()));
     }
 
     fn material_with_skyrim_extension(extension: serde_json::Value) -> gltf::Gltf {
@@ -573,6 +683,7 @@ mod tests {
             ("FLAG_SPECULAR_MAP", SkyrimSkinFlags::SPECULAR_MAP),
             ("FLAG_SPECULAR", SkyrimSkinFlags::SPECULAR),
             ("FLAG_FACEGEN", SkyrimSkinFlags::FACEGEN),
+            ("FLAG_SKIN_TINT", SkyrimSkinFlags::SKIN_TINT),
             (
                 "FLAG_DEBUG_WORLD_NORMAL",
                 SkyrimSkinFlags::DEBUG_WORLD_NORMAL,

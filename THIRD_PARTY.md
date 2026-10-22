@@ -23,7 +23,7 @@ the MIT notice below in its header.
 
 | Mudcrab file | Derived from (Community Shaders path) | License |
 |---|---|---|
-| `crates/engine/src/shaders/cs_lighting_msn.wgsl` | `package/Shaders/Lighting.hlsl` (model-space normal decode, world normal, `_s` glossiness, `GetFacegenBaseColor`) | MIT AND GPL-3.0-only |
+| `crates/engine/src/shaders/cs_lighting_msn.wgsl` | `package/Shaders/Lighting.hlsl` (model-space normal decode, world normal, `_s` glossiness, `GetFacegenBaseColor`, `GetFacegenRGBTintBaseColor`) | MIT AND GPL-3.0-only |
 
 The MIT notice for the original shader code (Community Shaders,
 `package/SKSE/Plugins/CommunityShaders/Licenses/LICENSE-Perapechka-MIT.txt`):

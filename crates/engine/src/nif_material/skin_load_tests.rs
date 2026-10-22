@@ -389,3 +389,97 @@ fn a_face_tint_head_from_an_older_pack_keeps_the_plain_skin_material() {
     assert!(skin.extension.facegen_tint.is_none());
     assert!(skin.extension.facegen_detail.is_none());
 }
+
+/// [`write_model_space_gltf`] as a `skin_tint` body part, with `tint_color` published as the NIF's
+/// own skin tint when given.
+fn write_skin_tint_gltf(directory: &Path, tint_color: Option<[f32; 3]>) {
+    write_model_space_gltf(directory, (1 << 31) | (1 << 12) | 1);
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["extensionsUsed"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("OPEN_SKYRIM_material"));
+    let mut extension = serde_json::json!({
+        "shaderFamily": "lighting",
+        "lightingShaderType": "skin_tint",
+    });
+    if let Some(colour) = tint_color {
+        extension["tintColor"] = serde_json::json!(colour);
+    }
+    document["materials"][0]["extensions"]["OPEN_SKYRIM_material"] = extension;
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
+/// Whether the scene's one skin primitive carries [`SkinTintSurface`], and its material.
+fn load_skin_tint_surface(directory: &Path) -> (bool, SkyrimSkinMaterial) {
+    let mut app = loader_app(directory);
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+    wait_for_dependencies(&mut app, &scene);
+    let mut scene_world = app
+        .world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .remove(&scene)
+        .unwrap()
+        .world;
+    let mut query = scene_world.query::<(
+        &MeshMaterial3d<SkyrimSkinMaterial>,
+        Has<crate::skin_material::SkinTintSurface>,
+    )>();
+    let (handle, marked) = query.single(&scene_world).unwrap();
+    let material = app
+        .world()
+        .resource::<Assets<SkyrimSkinMaterial>>()
+        .get(&handle.0)
+        .unwrap()
+        .clone();
+    (marked, material)
+}
+
+#[test]
+fn a_skin_tint_part_is_marked_and_untinted_without_a_nif_colour() {
+    let directory = tempfile::tempdir().unwrap();
+    write_skin_tint_gltf(directory.path(), None);
+    let (marked, skin) = load_skin_tint_surface(directory.path());
+    assert!(
+        marked,
+        "the actor's skin tone finds the surface by its marker"
+    );
+    assert_eq!(
+        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0
+    );
+    assert_eq!(skin.extension.settings.tint_color, Vec4::ONE);
+}
+
+#[test]
+fn a_skin_tint_part_defaults_to_the_nif_tint_colour() {
+    let directory = tempfile::tempdir().unwrap();
+    write_skin_tint_gltf(directory.path(), Some([0.5, 0.4, 0.3]));
+    let (marked, skin) = load_skin_tint_surface(directory.path());
+    assert!(marked);
+    assert_ne!(
+        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0
+    );
+    assert_eq!(
+        skin.extension.settings.tint_color,
+        Vec4::new(0.5, 0.4, 0.3, 1.0)
+    );
+}
+
+#[test]
+fn a_plain_model_space_material_is_not_a_skin_tint_surface() {
+    let directory = tempfile::tempdir().unwrap();
+    write_model_space_gltf(directory.path(), (1 << 31) | (1 << 12) | 1);
+    let (marked, skin) = load_skin_tint_surface(directory.path());
+    assert!(!marked);
+    assert_eq!(
+        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0
+    );
+}
