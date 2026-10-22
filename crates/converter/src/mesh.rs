@@ -846,7 +846,7 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
 /// with its neighbouring counter pieces without it.
 pub(crate) const NIF_ROOT_BLOCK: u32 = 0;
 
-fn clear_root_transform(model: &mut project_wormhole_nif::model::all::Model) {
+pub(crate) fn clear_root_transform(model: &mut project_wormhole_nif::model::all::Model) {
     for node in &mut model.static_nodes {
         if node.block_index == NIF_ROOT_BLOCK {
             node.translation = project_wormhole_shared::glam::Vec3::ZERO;

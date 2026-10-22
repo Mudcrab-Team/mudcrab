@@ -1261,7 +1261,10 @@ mod tests {
         let predicted_index = gltf_node_index(&nif, target).unwrap() as usize;
         assert_eq!(node_name(&nif, target), "target");
 
-        let model = nif_to_static_model(&nif).unwrap();
+        // The converter drops the root block's own transform before publishing; the vendor
+        // parser keeps it, so apply the same rule here before comparing the two.
+        let mut model = nif_to_static_model(&nif).unwrap();
+        crate::mesh::clear_root_transform(&mut model);
         let (gltf, _) = model.to_gltf("collision-node-regression".to_owned());
         let exported_index = gltf
             .nodes
@@ -1289,8 +1292,7 @@ mod tests {
             assert!((collision - exported).abs() < 1.0e-4);
         }
         assert!(
-            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(4.0, 32.0, 38.0))
-                .length()
+            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(6.0, 3.0, 4.0)).length()
                 < 1.0e-4
         );
     }
