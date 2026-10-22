@@ -3065,7 +3065,7 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
         } else {
             (AssetKind::LodSettings, "lod")
         };
-        let canonical = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
+        let canonical = canonical_asset_path(relative.to_string_lossy(), kind, extension)?;
         if let Some(previous) = seen.insert(canonical.clone(), source.to_owned()) {
             bail!(
                 "loose assets contain normalized path collision for {canonical}: {} and {}",
