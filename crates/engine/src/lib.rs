@@ -1,4 +1,5 @@
 pub mod actor_animation;
+pub mod actor_body_weight;
 pub mod actor_drive;
 pub mod actor_head;
 pub mod actor_skin_tone;

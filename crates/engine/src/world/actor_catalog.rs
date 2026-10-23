@@ -33,6 +33,8 @@ pub struct ActorModel {
     pub parts: Vec<ActorPart>,
     /// `NPC_/QNAM` (`skin_tone_r/g/b`), absent from databases converted before those columns.
     pub skin_tone: Option<ActorSkinTone>,
+    /// `NPC_/NAM7` (`weight`), the 0..100 body weight; absent from older databases.
+    pub weight: Option<f32>,
 }
 
 impl ActorModel {
@@ -76,6 +78,8 @@ pub struct ActorSpawnPlan {
     pub parts: ActorParts,
     pub head: Option<ActorHead>,
     pub skin_tone: Option<ActorSkinTone>,
+    /// `NPC_/NAM7`, 0..100; `None` when the catalog has no weight and the body stays heavy.
+    pub weight: Option<f32>,
     /// The composed body when it exists, otherwise the catalog's `body` part, converted.
     pub scene_path: String,
 }
@@ -125,15 +129,31 @@ impl ActorCatalog {
 
     fn read(connection: &Connection, assets_root: Option<PathBuf>) -> Self {
         let mut models = HashMap::new();
-        // The skin tone columns arrived after the table, without a schema bump: a database
-        // converted before them is read without tones.
-        let toned = "SELECT id, race_id, sex, skin_armo_id, head_model, head_source, resolution, \
-                     skin_tone_r, skin_tone_g, skin_tone_b FROM actor_models";
-        let untoned = "SELECT id, race_id, sex, skin_armo_id, head_model, head_source, resolution, \
-                       NULL, NULL, NULL FROM actor_models";
+        // The skin tone and weight columns arrived after the table, without a schema bump: a
+        // database converted before them is read without those values.
+        let has_weight = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('actor_models') WHERE name='weight')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+        let weight_column = if has_weight {
+            "weight"
+        } else {
+            "NULL AS weight"
+        };
+        let toned = format!(
+            "SELECT id, race_id, sex, skin_armo_id, head_model, head_source, resolution, \
+             skin_tone_r, skin_tone_g, skin_tone_b, {weight_column} FROM actor_models"
+        );
+        let untoned = format!(
+            "SELECT id, race_id, sex, skin_armo_id, head_model, head_source, resolution, \
+             NULL, NULL, NULL, {weight_column} FROM actor_models"
+        );
         match connection
-            .prepare(toned)
-            .or_else(|_| connection.prepare(untoned))
+            .prepare(&toned)
+            .or_else(|_| connection.prepare(&untoned))
         {
             Ok(mut statement) => match statement.query_map([], |row| {
                 let base_form_id: u32 = row.get(0)?;
@@ -153,6 +173,10 @@ impl ActorCatalog {
                     }
                     _ => None,
                 };
+                let weight = row
+                    .get::<_, Option<f64>>(10)?
+                    .map(|weight| weight as f32)
+                    .filter(|weight| weight.is_finite() && (0.0..=100.0).contains(weight));
                 let (Some(sex), Some(resolution)) =
                     (ActorSex::parse(&sex), ActorResolution::parse(&resolution))
                 else {
@@ -171,6 +195,7 @@ impl ActorCatalog {
                     resolution,
                     parts: Vec::new(),
                     skin_tone,
+                    weight,
                 }))
             }) {
                 Ok(rows) => {
@@ -301,6 +326,7 @@ impl ActorCatalog {
             parts: ActorParts::new(model.parts.iter().cloned()),
             head,
             skin_tone: model.skin_tone,
+            weight: model.weight,
             scene_path,
         })
     }
@@ -323,7 +349,8 @@ mod tests {
             resolution TEXT NOT NULL,
             skin_tone_r REAL,
             skin_tone_g REAL,
-            skin_tone_b REAL
+            skin_tone_b REAL,
+            weight REAL
         );
         CREATE TABLE IF NOT EXISTS actor_model_parts (
             npc_id INTEGER NOT NULL,
@@ -465,6 +492,60 @@ mod tests {
         let untoned = catalog.get(0x13476).unwrap();
         assert_eq!(untoned.skin_tone, None);
         assert_eq!(catalog.spawn_plan(untoned).unwrap().skin_tone, None);
+    }
+
+    #[test]
+    fn the_body_weight_reaches_the_spawn_plan() {
+        let connection = connection();
+        alvor(&connection);
+        insert_actor(&connection, 0x13476, 79686, "female", "body", None, None);
+        insert_part(&connection, 0x13476, "body", "FemaleBody_1.NIF");
+        connection
+            .execute("UPDATE actor_models SET weight=20.0 WHERE id=0x13475", [])
+            .unwrap();
+        let catalog = ActorCatalog::from_connection(&connection);
+
+        let weighted = catalog.get(0x13475).unwrap();
+        assert_eq!(weighted.weight, Some(20.0));
+        assert_eq!(catalog.spawn_plan(weighted).unwrap().weight, Some(20.0));
+
+        let unweighted = catalog.get(0x13476).unwrap();
+        assert_eq!(unweighted.weight, None);
+        assert_eq!(catalog.spawn_plan(unweighted).unwrap().weight, None);
+    }
+
+    /// A database with the skin tone columns but not the weight keeps its tones.
+    #[test]
+    fn a_table_without_the_weight_column_keeps_its_skin_tone() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE actor_models (
+                     id INTEGER PRIMARY KEY, race_id INTEGER NOT NULL, sex TEXT NOT NULL,
+                     skin_armo_id INTEGER, head_model TEXT, head_source TEXT,
+                     resolution TEXT NOT NULL, skin_tone_r REAL, skin_tone_g REAL,
+                     skin_tone_b REAL
+                 );
+                 CREATE TABLE actor_model_parts (
+                     npc_id INTEGER NOT NULL, slot TEXT NOT NULL, model_path TEXT NOT NULL,
+                     PRIMARY KEY (npc_id, slot)
+                 );",
+            )
+            .unwrap();
+        alvor(&connection);
+        connection
+            .execute(
+                "UPDATE actor_models SET skin_tone_r=0.75, skin_tone_g=0.5, skin_tone_b=0.25",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection(&connection);
+        let model = catalog.get(0x13475).expect("the row still reads");
+        assert_eq!(
+            model.skin_tone,
+            Some(ActorSkinTone(Vec3::new(0.75, 0.5, 0.25)))
+        );
+        assert_eq!(model.weight, None);
     }
 
     /// A database converted before the skin tone columns still reads, without tones.
