@@ -15,7 +15,8 @@ expression: snapshot
       "skin_armo_id": null,
       "skin_tone_b": null,
       "skin_tone_g": null,
-      "skin_tone_r": null
+      "skin_tone_r": null,
+      "weight": null
     }
   ],
   "cells": [

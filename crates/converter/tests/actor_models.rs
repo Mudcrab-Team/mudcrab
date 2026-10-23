@@ -496,10 +496,89 @@ fn qnam_skin_tone_is_published_and_absent_qnam_stays_null() {
     assert_eq!(stored_skin_tone(&connection, 0x101), [None; 3]);
 }
 
-/// A database whose `actor_models` predates the skin tone gains the columns when the tables are
-/// created again, so a subset export into it can still insert its rows.
+/// The `actor_models.weight` of `id`.
+fn stored_weight(connection: &Connection, id: u32) -> Option<f64> {
+    connection
+        .query_row("SELECT weight FROM actor_models WHERE id=?1", [id], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
 #[test]
-fn an_older_actor_models_table_gains_the_skin_tone_columns() {
+fn nam7_body_weight_is_published_and_an_absent_nam7_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut records = vec![
+        items::npc_with_weight(0x100, 0x200, false, 20.0),
+        items::npc(0x101, 0x200, false),
+        items::npc_with_weight(0x102, 0x200, false, 100.0),
+    ];
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let light = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(light.weight, Some(20.0));
+    let plain = catalog.models.iter().find(|row| row.id == 0x101).unwrap();
+    assert_eq!(plain.weight, None);
+    let heavy = catalog.models.iter().find(|row| row.id == 0x102).unwrap();
+    assert_eq!(heavy.weight, Some(100.0));
+
+    let connection = export(directory.path(), &path);
+    assert_eq!(stored_weight(&connection, 0x100), Some(20.0));
+    assert_eq!(stored_weight(&connection, 0x101), None);
+    assert_eq!(stored_weight(&connection, 0x102), Some(100.0));
+}
+
+#[test]
+fn an_out_of_range_or_non_finite_nam7_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let weights = [100.5_f32, -0.5, f32::NAN, f32::INFINITY];
+    let mut records: Vec<Vec<u8>> = weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| items::npc_with_weight(0x100 + index as u32, 0x200, false, *weight))
+        .collect();
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let connection = export(directory.path(), &path);
+    for (index, weight) in weights.iter().enumerate() {
+        let id = 0x100 + index as u32;
+        let row = catalog.models.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.weight, None, "{weight}");
+        assert_eq!(stored_weight(&connection, id), None, "{weight}");
+    }
+}
+
+#[test]
+fn a_templated_npc_keeps_its_own_nam7_and_never_inherits_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut records = vec![
+        // The template itself is light, but a templated base reads only its own NAM7.
+        items::npc_with_weight(0x900, 0x200, false, 80.0),
+        items::npc_with_template(0x100, 0x200, false, 0x900, Some(20.0)),
+        items::npc_with_template(0x101, 0x200, false, 0x900, None),
+    ];
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let own = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(own.weight, Some(20.0));
+    let no_nam7 = catalog.models.iter().find(|row| row.id == 0x101).unwrap();
+    assert_eq!(no_nam7.weight, None);
+
+    let connection = export(directory.path(), &path);
+    assert_eq!(stored_weight(&connection, 0x100), Some(20.0));
+    assert_eq!(stored_weight(&connection, 0x101), None);
+}
+
+/// A database whose `actor_models` predates the skin tone and weight columns gains them when the
+/// tables are created again, so a subset export into it can still insert its rows.
+#[test]
+fn an_older_actor_models_table_gains_the_skin_tone_and_weight_columns() {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
@@ -515,6 +594,7 @@ fn an_older_actor_models_table_gains_the_skin_tone_columns() {
     converter::esm::exporter::create_tables(&connection).unwrap();
     converter::esm::exporter::create_tables(&connection).unwrap();
     assert_eq!(stored_skin_tone(&connection, 0x100), [None; 3]);
+    assert_eq!(stored_weight(&connection, 0x100), None);
 }
 
 const FEMALE_HANDS: &str = "actors\\character\\character assets\\femalehands_1.nif";

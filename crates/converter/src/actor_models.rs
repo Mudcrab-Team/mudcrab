@@ -109,6 +109,8 @@ pub struct ActorModelRow {
     /// `NPC_/QNAM`, the body skin tone as RGB in 0..1 on the encoded (not linearised) scale.
     /// The game hands it to the body, hands and feet shaders as their tint colour.
     pub skin_tone: Option<[f32; 3]>,
+    /// `NPC_/NAM7`, the body weight in 0..100. Absent or out of range is no weight.
+    pub weight: Option<f32>,
 }
 
 /// One `actor_model_parts` row: a biped slot's model path.
@@ -185,6 +187,7 @@ pub fn resolve_actor_models(
             head_source: None,
             resolution: "unresolved",
             skin_tone: npc_skin_tone(&view),
+            weight: npc_weight(&view),
         };
 
         let Some(race_id) = view.get_form_id(b"RNAM") else {
@@ -267,6 +270,14 @@ fn npc_skin_tone(view: &SubrecordView<'_>) -> Option<[f32; 3]> {
     };
     let tone = [channel(0), channel(4), channel(8)];
     tone.iter().all(|value| value.is_finite()).then_some(tone)
+}
+
+/// `NPC_/NAM7`: the body weight as one little-endian `f32` in 0..=100. A short, non-finite or
+/// out-of-range value is no weight, so the engine keeps the heavy body.
+fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
+    let data = view.find(b"NAM7").filter(|data| data.len() >= 4)?;
+    let weight = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    (weight.is_finite() && (0.0..=100.0).contains(&weight)).then_some(weight)
 }
 
 /// Follows `RACE/WNAM` -> `ARMO/MODL` -> each `ARMA`, and fills the biped slots.
