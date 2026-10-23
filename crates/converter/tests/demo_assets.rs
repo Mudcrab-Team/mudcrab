@@ -13,17 +13,14 @@
 //!
 //! `MUDCRAB_DEMO_EXTRA_HEADS` optionally names more `Skyrim.esm` FaceGen heads to convert into the
 //! same tree, as comma-separated FormIDs (`00013bbf,0001bdb1`), for previewing other NPCs.
-//! `MUDCRAB_DEMO_BODY_WEIGHTS` optionally lists NPC weights (`20,35,50`): each writes
-//! `composed/default/<sex>/body_wNNN.glb`, the body blended between the `_0` and `_1` parts the
-//! way the game shapes an NPC of that weight, so it meets that NPC's FaceGen neck.
 
 use converter::{
     animation::{decode_clip_with_skeleton, write_clip_glb},
     archive::ArchiveExtractor,
     asset_path::{resolve_asset_uri, runtime_texture_source},
     compose::{
-        BodyPart, BodyPartKind, blend_body_weight, compose_body, default_skin_texture_sets,
-        skin_texture_set_for, write_composed_body,
+        BodyPart, BodyPartKind, compose_body, default_skin_texture_sets, skin_texture_set_for,
+        write_composed_body,
     },
     esm::EsmParser,
     mesh::MeshConverter,
@@ -61,28 +58,6 @@ fn extra_heads() -> Vec<String> {
             form
         })
         .collect()
-}
-
-/// The NPC weights listed in `MUDCRAB_DEMO_BODY_WEIGHTS`, as whole numbers in 0..=100.
-fn body_weights() -> Vec<u32> {
-    let Some(value) = std::env::var_os("MUDCRAB_DEMO_BODY_WEIGHTS") else {
-        return Vec::new();
-    };
-    let mut weights: Vec<u32> = value
-        .to_string_lossy()
-        .split(',')
-        .map(str::trim)
-        .filter(|weight| !weight.is_empty())
-        .map(|weight| match weight.parse::<u32>() {
-            Ok(weight) if weight <= 100 => weight,
-            _ => panic!(
-                "MUDCRAB_DEMO_BODY_WEIGHTS entry `{weight}` is not a whole number in 0..=100"
-            ),
-        })
-        .collect();
-    weights.sort_unstable();
-    weights.dedup();
-    weights
 }
 
 fn env_dir(name: &str) -> Option<PathBuf> {
@@ -373,49 +348,6 @@ fn materialises_the_converted_actor_assets() {
             .collect();
         let model = compose_body(&body_parts, &skeleton_nif)
             .unwrap_or_else(|error| panic!("compose the {sex} body: {error:#}"));
-        let weights = body_weights();
-        let thin = (!weights.is_empty()).then(|| {
-            let thin_parts: Vec<(PathBuf, BodyPartKind)> = parts
-                .iter()
-                .map(|(path, kind)| {
-                    let name = path
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .replace("_1.", "_0.");
-                    (path.with_file_name(name), *kind)
-                })
-                .collect();
-            let thin_body_parts: Vec<BodyPart<'_>> = thin_parts
-                .iter()
-                .map(|(path, kind)| {
-                    assert!(path.is_file(), "missing {}", path.display());
-                    BodyPart {
-                        path,
-                        kind: *kind,
-                        skin_textures: None,
-                    }
-                })
-                .collect();
-            compose_body(&thin_body_parts, &skeleton_nif)
-                .unwrap_or_else(|error| panic!("compose the weight 0 {sex} body: {error:#}"))
-        });
-        if let Some(thin) = &thin {
-            for weight in &weights {
-                let heavy = compose_body(&body_parts, &skeleton_nif)
-                    .unwrap_or_else(|error| panic!("compose the {sex} body: {error:#}"));
-                let blended = blend_body_weight(thin, heavy, *weight as f32)
-                    .unwrap_or_else(|error| panic!("blend the {sex} body to {weight}: {error:#}"));
-                let relative =
-                    format!("meshes/actors/character/composed/default/{sex}/body_w{weight:03}.glb");
-                let path = glb_path(&output, &relative);
-                write_composed_body(&blended, &path)
-                    .unwrap_or_else(|error| panic!("write {relative}: {error:#}"));
-                assert_written(&path);
-                written_glbs.push(path);
-                println!("body sex={sex} weight={weight} written to {relative}");
-            }
-        }
         let bones = model
             .skeletal_meshes
             .first()

@@ -32,6 +32,10 @@
 //! (`00013476`) for `--sex female`, whose FaceGen heads the preview draws. With neither, the skin
 //! is untinted.
 //!
+//! The body takes the same NPC's weight (`NPC_/NAM7`) through the `thin` morph target
+//! (`engine::actor_body_weight`). `--weight 0..100` sets it directly; otherwise it comes from the
+//! same catalog row. With neither, the body stays heavy.
+//!
 //! `--debug-normals msn|vertex` renders the skin materials' normals as colour (`N * 0.5 + 0.5`,
 //! written so the PNG holds that value) instead of lighting them: `msn` the shading normal decoded
 //! from the model-space map, `vertex` the interpolated vertex normal. Red is world +X, green +Y
@@ -39,8 +43,7 @@
 //! blue and the back (seen at yaw 180) is blue.
 //!
 //! `--body PATH` loads another composed body GLB (relative to the converted tree) in place of the
-//! default one for `--sex`, such as a `body_wNNN.glb` blended to an NPC's weight so the body's neck
-//! meets that NPC's FaceGen head.
+//! default one for `--sex`.
 //!
 //! `--focus` frames the whole `body`, the `upper` body (head and chest) or the `head`.
 //!
@@ -73,6 +76,7 @@ use bevy::{
 };
 use engine::{
     actor_animation::{AnimationTarget, IDLE_ANIMATION, animation_targets, idle_clip_scene},
+    actor_body_weight::{ActorBodyWeight, ActorBodyWeightPlugin},
     actor_skin_tone::{ActorSkinTone, ActorSkinTonePlugin},
     actors::{ActorSex, composed_body_scene},
     nif_material::NifMaterialPlugin,
@@ -217,6 +221,8 @@ struct Options {
     msaa: Msaa,
     /// Skin tone in 0..1 on the encoded scale of an `NPC_` record's `QNAM`.
     skin_tone: Option<[f32; 3]>,
+    /// `NPC_/NAM7` body weight in 0..100; the morph value is `1 - weight / 100`.
+    weight: Option<f32>,
     /// A world database whose actor catalog supplies the tone when `skin_tone` is not given.
     database: Option<PathBuf>,
     npc: Option<u32>,
@@ -236,6 +242,7 @@ struct Preview {
     dark_skin_check: Option<DarkSkinCheck>,
     debug_normals: SkinDebugView,
     skin_tone: Option<ActorSkinTone>,
+    body_weight: Option<f32>,
     target: Handle<Image>,
     body_scene: Handle<WorldAsset>,
     idle_gltf: Handle<Gltf>,
@@ -281,6 +288,7 @@ fn main() {
         view,
         msaa,
         skin_tone,
+        weight,
         database,
         npc,
         dark_skin_check,
@@ -293,6 +301,7 @@ fn main() {
         ActorSex::Female => FEMALE_NPC,
     });
     let skin_tone = resolve_skin_tone(skin_tone, database.as_deref(), npc);
+    let body_weight = resolve_body_weight(weight, database.as_deref(), npc);
     if let Err(error) = check_inputs(&demo, sex) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
@@ -335,7 +344,11 @@ fn main() {
     });
     // The engine builds converted NIF materials through this glTF hook; without it the preview
     // would render the stock glTF materials instead of what the game draws.
-    app.add_plugins((NifMaterialPlugin, ActorSkinTonePlugin));
+    app.add_plugins((
+        NifMaterialPlugin,
+        ActorSkinTonePlugin,
+        ActorBodyWeightPlugin,
+    ));
     if !windowed {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
             Duration::from_millis(16),
@@ -407,6 +420,7 @@ fn main() {
         }),
         debug_normals,
         skin_tone,
+        body_weight,
         phase: Phase::Loading,
         actor: None,
         body_root: None,
@@ -466,6 +480,51 @@ fn parse_skin_tone(value: Option<String>) -> [f32; 3] {
     match channels.as_deref() {
         Some(&[red, green, blue]) => [red, green, blue],
         _ => usage_error("--skin-tone needs R,G,B with each channel between 0 and 1"),
+    }
+}
+
+fn parse_body_weight(value: Option<String>) -> f32 {
+    match value.as_deref().map(str::trim).map(str::parse::<f32>) {
+        Some(Ok(weight)) if (0.0..=100.0).contains(&weight) => weight,
+        _ => usage_error("--weight needs a number between 0 and 100"),
+    }
+}
+
+/// The morph value for the preview's `thin` body target: `--weight` when given, else the catalog
+/// row of `npc` in `database`, else none (the heavy body).
+fn resolve_body_weight(explicit: Option<f32>, database: Option<&Path>, npc: u32) -> Option<f32> {
+    if let Some(weight) = explicit {
+        let morph = 1.0 - weight / 100.0;
+        println!("actor preview: body weight {weight:.0} (morph thin {morph:.3}) from --weight");
+        return Some(morph);
+    }
+    let database = database?;
+    if !database.is_file() {
+        usage_error(&format!("--database {} is not a file", database.display()));
+    }
+    let catalog = ActorCatalog::open(database);
+    let Some(model) = catalog.get(npc) else {
+        println!(
+            "actor preview: NPC_ {npc:08X} has no actor catalog row in {}; the body stays heavy",
+            database.display()
+        );
+        return None;
+    };
+    match model.weight {
+        Some(weight) => {
+            let morph = 1.0 - weight / 100.0;
+            println!(
+                "actor preview: body weight {weight:.0} (morph thin {morph:.3}) from NPC_ {npc:08X} NAM7"
+            );
+            Some(morph)
+        }
+        None => {
+            println!(
+                "actor preview: NPC_ {npc:08X} has no body weight in {}; the body stays heavy",
+                database.display()
+            );
+            None
+        }
     }
 }
 
@@ -531,7 +590,7 @@ fn parse_form_id(value: Option<String>) -> u32 {
 
 fn parse_args() -> Options {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--body PATH] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|upper|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--database WORLD_DB] [--npc FORMID] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex] [--frames N [--fps FPS] [--orbit DEG] [--focus-end body|upper|head]]";
+    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--body PATH] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|upper|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--weight 0..100] [--database WORLD_DB] [--npc FORMID] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex] [--frames N [--fps FPS] [--orbit DEG] [--focus-end body|upper|head]]";
     let Some(demo) = args.next() else {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -548,6 +607,7 @@ fn parse_args() -> Options {
     let mut view = View::default();
     let mut msaa = Msaa::Off;
     let mut skin_tone = None;
+    let mut weight = None;
     let mut database = None;
     let mut npc = None;
     let mut dark_skin_check = None;
@@ -591,6 +651,7 @@ fn parse_args() -> Options {
             }
             "--msaa" => msaa = parse_msaa(args.next()),
             "--skin-tone" => skin_tone = Some(parse_skin_tone(args.next())),
+            "--weight" => weight = Some(parse_body_weight(args.next())),
             "--database" => {
                 database = Some(PathBuf::from(
                     args.next()
@@ -678,6 +739,7 @@ fn parse_args() -> Options {
         view,
         msaa,
         skin_tone,
+        weight,
         database,
         npc,
         dark_skin_check,
@@ -747,6 +809,9 @@ fn drive(
                 ));
                 if let Some(tone) = preview.skin_tone {
                     actor.insert(tone);
+                }
+                if let Some(weight) = preview.body_weight {
+                    actor.insert(ActorBodyWeight(weight));
                 }
                 let actor = actor.id();
                 preview.actor = Some(actor);
