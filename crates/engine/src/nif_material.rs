@@ -300,9 +300,10 @@ impl NativeMaterialHandler {
                 facegen.as_ref(),
             ))
         });
-        let material = skin_material(base, model_space_normal, specular, facegen, shader_flags_1);
+        let mut material =
+            skin_material(base, model_space_normal, specular, facegen, shader_flags_1);
         let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
-            scope.get_label_handle::<SkyrimSkinImages>(holder);
+            material.extension.images = Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
             Ok::<_, Infallible>(material)
         });
         self.skin_labels.insert(label.to_owned());

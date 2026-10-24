@@ -112,6 +112,10 @@ pub struct SkyrimSkinExtension {
     #[sampler(108)]
     #[dependency]
     pub facegen_detail: Option<Handle<Image>>,
+    /// The [`SkyrimSkinImages`] holder this material depends on. Nothing else holds it, and a
+    /// labeled asset without a strong handle can be freed before its dependency reports loaded.
+    #[reflect(ignore)]
+    pub(crate) images: Option<Handle<SkyrimSkinImages>>,
 }
 
 /// A FaceGen head's tint (texture-set slot 6) and detail (slot 3) maps, both loaded linear.
@@ -232,6 +236,7 @@ pub fn skin_material(
             specular,
             facegen_tint,
             facegen_detail,
+            images: None,
         },
     }
 }

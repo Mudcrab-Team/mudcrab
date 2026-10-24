@@ -163,7 +163,7 @@ fn loader_app(directory: &Path) -> App {
 }
 
 fn wait_for_dependencies<A: Asset>(app: &mut App, handle: &Handle<A>) {
-    // Generous so a loaded CI runner cannot fail a healthy load; a real hang still fails.
+    // A healthy load takes milliseconds; the margin only keeps a slow runner from failing it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         app.update();
@@ -216,6 +216,16 @@ fn model_space_material_loads_as_a_skin_material_with_a_linear_gloss_mask() {
         .resource::<Assets<SkyrimSkinMaterial>>()
         .get(&skin.0)
         .unwrap();
+    let images = skin
+        .extension
+        .images
+        .as_ref()
+        .expect("the skin material holds its images");
+    assert!(
+        world
+            .resource::<Assets<SkyrimSkinImages>>()
+            .contains(images)
+    );
     let materials = world.resource::<Assets<StandardMaterial>>();
     let stock = materials.get(&source.0).unwrap();
     let base = materials.get(&base.0).unwrap();
