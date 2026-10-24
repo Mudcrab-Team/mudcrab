@@ -696,6 +696,7 @@ fn spawn_merged_cell(
     mut spawned: Local<bool>,
     asset_server: Res<AssetServer>,
     catalog: Res<AssetCatalog>,
+    actor_catalog: Res<ActorCatalog>,
     reflection: Res<WaterReflectionTexture>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
@@ -720,6 +721,7 @@ fn spawn_merged_cell(
         &mut commands,
         &asset_server,
         &catalog,
+        &actor_catalog,
         &reflection,
         &mut meshes,
         &mut terrain_materials,
@@ -756,6 +758,7 @@ fn a_merged_cell_spawns_one_terrain_entity_with_one_collider() {
         .init_asset::<TerrainMaterial>()
         .init_asset::<WaterMaterial>()
         .init_resource::<AssetCatalog>()
+        .init_resource::<ActorCatalog>()
         .init_resource::<StreamingMetrics>()
         .init_resource::<lod::LodStreaming>()
         .init_resource::<ProfilingState>()

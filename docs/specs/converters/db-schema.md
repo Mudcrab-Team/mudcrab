@@ -1415,7 +1415,10 @@ CREATE TABLE IF NOT EXISTS actor_models (
     skin_armo_id INTEGER,            -- RACE/WNAM
     head_model TEXT,                 -- FaceGen or default head NIF path
     head_source TEXT,                -- 'facegen' | 'default'
-    resolution TEXT NOT NULL         -- 'body', 'body_head', 'unresolved'
+    resolution TEXT NOT NULL,        -- 'body', 'body_head', 'unresolved'
+    skin_tone_r REAL,                -- NPC_/QNAM, 0..1, encoded scale
+    skin_tone_g REAL,
+    skin_tone_b REAL
 );
 CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
@@ -1424,6 +1427,14 @@ CREATE TABLE IF NOT EXISTS actor_model_parts (
     PRIMARY KEY (npc_id, slot)
 );
 ```
+
+**Skin tone.** `NPC_/QNAM` is three little-endian `f32` (red, green, blue), stored as written:
+0..1 on the encoded scale (retail values are whole steps of 1/255; Alvor `00013475` is
+198,176,168). The game passes it to the `skin_tint` shaders of the body, hands and feet as their
+tint colour. A base without `QNAM`, or with a short or non-finite one, stores `NULL` in all three.
+The columns arrived after the first catalog export without a schema bump: `create_tables` adds
+them to an older reused `actor_models`, and the engine probes for them, so a database without them
+still loads and its actors keep the model's own tint.
 
 **Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
 `missing_acbs` diagnostic.

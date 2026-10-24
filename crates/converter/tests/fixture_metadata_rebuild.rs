@@ -254,7 +254,8 @@ async fn metadata_rebuild_rejects_changed_native_producer_settings() {
             legacy_config.record_reader = converter::config::RecordReader::Legacy;
             manifest.configuration_hash =
                 converter::cache::configuration_hash(&legacy_config).unwrap();
-            manifest.retained_mesh_schema_version = Some(27);
+            manifest.retained_mesh_schema_version =
+                Some(converter::cache::CONVERTER_SCHEMA_VERSION);
             manifest.asset_configuration_hashes.clear();
             manifest.retained_asset_configuration_hash = Some(changed);
             fs::write(

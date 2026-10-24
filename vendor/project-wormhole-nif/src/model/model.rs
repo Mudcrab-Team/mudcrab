@@ -421,7 +421,11 @@ impl Model {
                         return Err(format!("bone {name} references missing child bone {child}"));
                     };
                     children.push(child_index);
-                    parented.insert(child.as_str());
+                    if !parented.insert(child.as_str()) {
+                        return Err(format!(
+                            "bone {name} references child {child}, which already has another parent"
+                        ));
+                    }
                 }
 
                 if !children.is_empty() {
