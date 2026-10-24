@@ -1,3 +1,7 @@
+pub mod actor_animation;
+pub mod actor_drive;
+pub mod actor_head;
+pub mod actors;
 pub mod app;
 pub mod bug_report;
 mod capture_frame;
@@ -32,6 +36,7 @@ pub mod schedule_timing;
 pub mod settings;
 pub mod settings_ui;
 pub mod shots;
+pub mod skin_material;
 pub mod sky;
 pub mod skyrim_ini;
 pub mod streaming;

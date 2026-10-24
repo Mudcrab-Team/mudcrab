@@ -157,11 +157,6 @@ pub fn depth_material<B: Material>(
     }
 }
 
-/// The native base material retained for scene validation and collision classification.
-#[derive(Component, Clone, Reflect)]
-#[reflect(Component)]
-pub(crate) struct NifDepthMaterialSource(pub Handle<StandardMaterial>);
-
 #[cfg(test)]
 mod tests {
     use super::*;

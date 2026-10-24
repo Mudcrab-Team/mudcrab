@@ -4,8 +4,9 @@
 //! successful drawing, collision readiness, or physical GPU memory reclamation.
 
 use crate::{
-    nif_depth::{NifDepthMaterial, NifDepthMaterialSource},
-    nif_material::NifSourceMaterial,
+    nif_depth::NifDepthMaterial,
+    nif_material::{NifNativeMaterialSource, NifSourceMaterial},
+    skin_material::SkyrimSkinMaterial,
 };
 use bevy::{
     asset::{AssetId, UntypedAssetId, VisitAssetDependencies},
@@ -317,11 +318,13 @@ pub(crate) fn scene_dependencies_available(
     scene: &WorldAsset,
     materials: &Assets<StandardMaterial>,
     depth_materials: Option<&Assets<NifDepthMaterial>>,
+    skin_materials: Option<&Assets<SkyrimSkinMaterial>>,
 ) -> bool {
     scene.world.iter_entities().all(|entity| {
         let standard = entity.get::<MeshMaterial3d<StandardMaterial>>();
         let depth = entity.get::<MeshMaterial3d<NifDepthMaterial>>();
-        if standard.is_none() && depth.is_none() {
+        let skin = entity.get::<MeshMaterial3d<SkyrimSkinMaterial>>();
+        if standard.is_none() && depth.is_none() && skin.is_none() {
             // A mesh with an unrecognised binding is not an empty dependency
             // list. Its material and images need a typed observer before we
             // can release preparation or prove disposal.
@@ -331,11 +334,14 @@ pub(crate) fn scene_dependencies_available(
             && depth.is_none_or(|material| {
                 depth_materials.is_some_and(|assets| assets.contains(material.0.id()))
             })
+            && skin.is_none_or(|material| {
+                skin_materials.is_some_and(|assets| assets.contains(material.0.id()))
+            })
             && entity
                 .get::<NifSourceMaterial>()
                 .is_none_or(|source| materials.contains(source.0.id()))
             && entity
-                .get::<NifDepthMaterialSource>()
+                .get::<NifNativeMaterialSource>()
                 .is_none_or(|source| materials.contains(source.0.id()))
     })
 }
@@ -346,6 +352,7 @@ pub(crate) fn scene_demand(
     scene: &WorldAsset,
     materials: &Assets<StandardMaterial>,
     depth_materials: Option<&Assets<NifDepthMaterial>>,
+    skin_materials: Option<&Assets<SkyrimSkinMaterial>>,
 ) -> PreparationDemand {
     let mut demand = PreparationDemand {
         key,
@@ -355,6 +362,7 @@ pub(crate) fn scene_demand(
     };
     let mut standard = Vec::new();
     let mut depth = Vec::new();
+    let mut skin = Vec::new();
     for entity in scene.world.iter_entities() {
         if let Some(mesh) = entity.get::<Mesh3d>() {
             demand.meshes.push(mesh.0.id());
@@ -365,18 +373,22 @@ pub(crate) fn scene_demand(
         if let Some(material) = entity.get::<MeshMaterial3d<NifDepthMaterial>>() {
             depth.push(material.0.id());
         }
+        if let Some(material) = entity.get::<MeshMaterial3d<SkyrimSkinMaterial>>() {
+            skin.push(material.0.id());
+        }
         // Source and native base materials stay retained by the scene even when no
         // mesh binds them. Duplicate IDs collapse below, so a shared base is one claim.
         if let Some(source) = entity.get::<NifSourceMaterial>() {
             standard.push(source.0.id());
         }
-        if let Some(source) = entity.get::<NifDepthMaterialSource>() {
+        if let Some(source) = entity.get::<NifNativeMaterialSource>() {
             standard.push(source.0.id());
         }
     }
     normalize(&mut demand.meshes);
     normalize(&mut standard);
     normalize(&mut depth);
+    normalize(&mut skin);
     for id in &standard {
         demand.materials.push((*id).into());
         if let Some(material) = materials.get(*id) {
@@ -388,6 +400,18 @@ pub(crate) fn scene_demand(
             demand.materials.push((*id).into());
             if let Some(material) = depth_materials.get(*id) {
                 visit_material_images(material, &mut demand.images);
+            }
+        }
+    }
+    // `ExtendedMaterial` visits none of its handles, so the skin extension's own images (the
+    // `_msn`, the linear `_s` and FaceGen maps, which the base does not hold) are visited
+    // directly.
+    if let Some(skin_materials) = skin_materials {
+        for id in &skin {
+            demand.materials.push((*id).into());
+            if let Some(material) = skin_materials.get(*id) {
+                visit_material_images(&material.base, &mut demand.images);
+                visit_material_images(&material.extension, &mut demand.images);
             }
         }
     }
@@ -720,15 +744,17 @@ mod tests {
             scene_world.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
         }
         let scene = WorldAsset::new(scene_world);
-        assert!(scene_dependencies_available(&scene, &materials, None));
-        let demand = scene_demand(key(), &scene, &materials, None);
+        assert!(scene_dependencies_available(&scene, &materials, None, None));
+        let demand = scene_demand(key(), &scene, &materials, None, None);
         assert_eq!(demand.meshes, vec![mesh.id()]);
         assert_eq!(demand.materials, vec![material.id().untyped()]);
         assert_eq!(demand.images.len(), 2);
         assert!(demand.images.contains(&color.id()));
         assert!(demand.images.contains(&normal.id()));
         materials.remove(material.id());
-        assert!(!scene_dependencies_available(&scene, &materials, None));
+        assert!(!scene_dependencies_available(
+            &scene, &materials, None, None
+        ));
     }
 
     #[test]
@@ -761,7 +787,7 @@ mod tests {
             Mesh3d(mesh.clone()),
             MeshMaterial3d(depth.clone()),
             NifSourceMaterial(source.clone()),
-            NifDepthMaterialSource(base.clone()),
+            NifNativeMaterialSource(base.clone()),
         ));
         let scene = WorldAsset::new(scene_world);
 
@@ -769,16 +795,20 @@ mod tests {
         assert!(!scene_dependencies_available(
             &scene,
             &materials,
-            Some(&Assets::<NifDepthMaterial>::default())
+            Some(&Assets::<NifDepthMaterial>::default()),
+            None
         ));
-        assert!(!scene_dependencies_available(&scene, &materials, None));
+        assert!(!scene_dependencies_available(
+            &scene, &materials, None, None
+        ));
         assert!(scene_dependencies_available(
             &scene,
             &materials,
-            Some(&depth_materials)
+            Some(&depth_materials),
+            None
         ));
 
-        let demand = scene_demand(key(), &scene, &materials, Some(&depth_materials));
+        let demand = scene_demand(key(), &scene, &materials, Some(&depth_materials), None);
         assert_eq!(demand.meshes, vec![mesh.id()]);
         let mut expected_materials = vec![
             base.id().untyped(),
@@ -788,6 +818,75 @@ mod tests {
         expected_materials.sort_unstable();
         assert_eq!(demand.materials, expected_materials);
         let mut expected_images = vec![shared.id(), source_only.id()];
+        expected_images.sort_unstable();
+        assert_eq!(demand.images, expected_images);
+    }
+
+    #[test]
+    fn skin_material_scene_waits_for_the_skin_asset_and_claims_its_own_images() {
+        let mut meshes = Assets::<Mesh>::default();
+        let mut images = Assets::<Image>::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+        let mut skin_materials = Assets::<SkyrimSkinMaterial>::default();
+        let mesh = meshes.add(Cuboid::default());
+        let color = images.add(Image::default());
+        let model_space_normal = images.add(Image::default());
+        let specular = images.add(Image::default());
+        let facegen_tint = images.add(Image::default());
+        let facegen_detail = images.add(Image::default());
+        let base = materials.add(StandardMaterial {
+            base_color_texture: Some(color.clone()),
+            ..default()
+        });
+        let skin = skin_materials.add(crate::skin_material::skin_material(
+            StandardMaterial {
+                base_color_texture: Some(color.clone()),
+                ..default()
+            },
+            model_space_normal.clone(),
+            Some(specular.clone()),
+            Some(crate::skin_material::FacegenMaps {
+                tint: facegen_tint.clone(),
+                detail: facegen_detail.clone(),
+            }),
+            0,
+        ));
+        let mut scene_world = World::new();
+        scene_world.spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(skin.clone()),
+            NifSourceMaterial(base.clone()),
+            NifNativeMaterialSource(base.clone()),
+        ));
+        let scene = WorldAsset::new(scene_world);
+
+        assert!(!scene_dependencies_available(
+            &scene, &materials, None, None
+        ));
+        assert!(!scene_dependencies_available(
+            &scene,
+            &materials,
+            None,
+            Some(&Assets::<SkyrimSkinMaterial>::default())
+        ));
+        assert!(scene_dependencies_available(
+            &scene,
+            &materials,
+            None,
+            Some(&skin_materials)
+        ));
+
+        let demand = scene_demand(key(), &scene, &materials, None, Some(&skin_materials));
+        let mut expected_materials = vec![base.id().untyped(), skin.id().untyped()];
+        expected_materials.sort_unstable();
+        assert_eq!(demand.materials, expected_materials);
+        let mut expected_images = vec![
+            color.id(),
+            model_space_normal.id(),
+            specular.id(),
+            facegen_tint.id(),
+            facegen_detail.id(),
+        ];
         expected_images.sort_unstable();
         assert_eq!(demand.images, expected_images);
     }
