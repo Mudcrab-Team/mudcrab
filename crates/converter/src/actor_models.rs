@@ -312,8 +312,16 @@ fn resolve_body(
                 continue;
             }
         };
-        let tag = if female { b"MOD3" } else { b"MOD2" };
-        let Some(path) = view.get_string(tag).filter(|path| !path.is_empty()) else {
+        // An ARMA without a female model uses MOD2 for both sexes (UESP ARMA format).
+        let male = || view.get_string(b"MOD2").filter(|path| !path.is_empty());
+        let path = if female {
+            view.get_string(b"MOD3")
+                .filter(|path| !path.is_empty())
+                .or_else(male)
+        } else {
+            male()
+        };
+        let Some(path) = path else {
             continue;
         };
         if parts.iter().any(|part| part.slot == slot) || !seen_paths.insert(path.to_lowercase()) {

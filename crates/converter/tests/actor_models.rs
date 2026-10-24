@@ -210,6 +210,41 @@ fn female_acbs_bit_selects_mod3() {
 }
 
 #[test]
+fn female_without_mod3_falls_back_to_mod2() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        items::npc(0x100, 0x200, true),
+        items::race(0x200, "NordRace", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400]),
+        items::armature(
+            0x400,
+            items::DEFAULT_RACE_FORM_ID,
+            items::BIPED_BODY,
+            Some(MALE_BODY),
+            None,
+        ),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let parts: Vec<_> = catalog
+        .parts
+        .iter()
+        .filter(|part| part.npc_id == 0x100)
+        .collect();
+    assert_eq!(parts.len(), 1, "{parts:?}");
+    assert_eq!(parts[0].model_path, MALE_BODY);
+    assert!(
+        !catalog
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.npc_id == 0x100),
+        "{:?}",
+        catalog.diagnostics
+    );
+}
+
+#[test]
 fn missing_race_is_recorded_not_dropped() {
     let directory = tempfile::tempdir().unwrap();
     let records = vec![
