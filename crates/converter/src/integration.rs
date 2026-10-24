@@ -2,6 +2,7 @@
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
+    esm::projection_omissions::ProjectionOmissions,
     mesh::glb_bounds_from_bytes,
 };
 use color_eyre::{
@@ -39,6 +40,10 @@ pub struct IntegrationReport {
     /// Interior room graph counters (db-schema.md section 15); all zero without room data.
     #[serde(default)]
     pub room_graph: crate::esm::rooms::RoomGraphReport,
+    /// Plugin rows the light and emittance projections left out (db-schema.md section 18);
+    /// empty when nothing was left out or the database predates the tables.
+    #[serde(default, skip_serializing_if = "ProjectionOmissions::is_empty")]
+    pub projection_omissions: ProjectionOmissions,
     pub missing_texture_count: u64,
     pub unavailable_texture_source_count: u64,
     pub issues: Vec<String>,
@@ -188,6 +193,7 @@ pub fn finalize_world_database_with_sources(
     // Room membership by model bounds needs the bounds just written.
     crate::esm::rooms::add_overlap_rows(&mut connection)?;
     report.room_graph = crate::esm::rooms::RoomGraphReport::read(&connection)?;
+    report.projection_omissions = ProjectionOmissions::read(&connection)?;
 
     let diffuse_paths = {
         let mut statement = connection.prepare(
@@ -1132,6 +1138,58 @@ mod tests {
 
     /// A reused older database whose `statics` has no bounds columns finalises, and the overlap
     /// pass leaves it alone even when it holds rooms.
+    /// The omissions a full export stores reach the report and `integration-report.json`, which
+    /// is what a metadata rebuild or a reused database republishes (#297).
+    #[test]
+    fn reports_the_projection_omissions_the_export_stored() {
+        use crate::esm::{load_order::LoadOrder, records::RawRecord};
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("skyrim_world.db");
+        let connection = Connection::open(&database).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        let order = LoadOrder::from_metadata(
+            vec!["Lights.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: Vec::new(),
+                flags: 0,
+            }],
+        )
+        .unwrap();
+        // Twelve bytes of DATA, short of the twenty the `lights` row needs.
+        let light = RawRecord {
+            form_id: 0x802,
+            record_type: *b"LIGH",
+            flags: 0,
+            subrecords: vec![(b"DATA".to_vec(), vec![0; 12])],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        let master = HashMap::from([(light.form_id, light)]);
+        crate::esm::exporter::export_to_db_with_load_order(&connection, &master, &order).unwrap();
+        drop(connection);
+        empty_cache(directory.path());
+
+        let report = finalize_world_database(directory.path()).unwrap().unwrap();
+        assert!(report.passed, "omissions do not fail asset integration");
+        let short = &report.projection_omissions.categories["light_short_data"];
+        assert_eq!(short.count, 1);
+        assert_eq!(short.samples[0].form_id, 0x802);
+        assert!(report.projection_omissions.has_data_loss());
+        let published: serde_json::Value = serde_json::from_slice(
+            &fs::read(directory.path().join("integration-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            published["projection_omissions"]["light_short_data"]["count"],
+            1
+        );
+        assert_eq!(
+            published["projection_omissions"]["light_short_data"]["severity"],
+            "data_loss"
+        );
+    }
+
     #[test]
     fn finalises_a_legacy_database_without_bounds_columns() {
         let directory = tempfile::tempdir().unwrap();

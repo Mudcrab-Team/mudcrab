@@ -260,6 +260,77 @@ async fn historical_manifest_without_reader_proof_stays_incomplete() {
     assert_neighbors(&config.output_dir);
 }
 
+/// A plugin whose records all read, but whose `LIGH` has no `DATA` and so gets no `lights` row.
+fn plugin_with_lost_light() -> Vec<u8> {
+    let header = field(
+        b"HEDR",
+        &[
+            1.7f32.to_le_bytes(),
+            3u32.to_le_bytes(),
+            0x900u32.to_le_bytes(),
+        ]
+        .concat(),
+    );
+    let mut bytes = record(b"TES4", 0, 1, &header);
+    bytes.extend(record(
+        b"KYWD",
+        0x801,
+        0,
+        &field(b"EDID", b"BeforeLostLight\0"),
+    ));
+    bytes.extend(record(
+        b"LIGH",
+        0x804,
+        0,
+        &field(b"EDID", b"LightWithoutData\0"),
+    ));
+    bytes.extend(record(
+        b"KYWD",
+        0x803,
+        0,
+        &field(b"EDID", b"AfterLostLight\0"),
+    ));
+    bytes
+}
+
+/// A lost light row withdraws the persisted record proof, and asset repair never certifies the
+/// pack, even when its manifest predates projection omissions and still claims complete records.
+#[tokio::test]
+async fn lost_light_row_survives_successful_asset_repair() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture(directory.path(), false, None);
+    fs::write(config.data_dir.join("repair.esm"), plugin_with_lost_light()).unwrap();
+    let report = publish(&config).await;
+    assert!(!report.complete);
+    assert_eq!(report.skipped, 1);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("light_missing_data: 1 record")),
+        "{report:?}"
+    );
+    let path = config.output_dir.join("conversion-manifest.json");
+    assert_eq!(json(&path)["record_data_complete"], false);
+    fs::write(config.data_dir.join("textures/repair.dds"), texture_bytes()).unwrap();
+
+    // A pack written before projection omissions were reported claims complete records.
+    let mut historical = json(&path);
+    historical["record_data_complete"] = Value::Bool(true);
+    fs::write(&path, serde_json::to_vec_pretty(&historical).unwrap()).unwrap();
+
+    let repaired = repair_failed(&config, true).unwrap();
+    assert!(repaired.published);
+    assert!(repaired.failures.is_empty());
+    assert_eq!(
+        json(&path)["complete"],
+        false,
+        "repairing a DDS must not certify a lost light row"
+    );
+    let report = json(&repaired.directory.join("repair-report.json"));
+    assert_eq!(report["record_data_complete"], false);
+}
+
 /// Run native CLI repair with its actual default and capture both result streams.
 fn repair_cli(config: &PipelineConfig) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_converter"));

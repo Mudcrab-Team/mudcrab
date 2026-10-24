@@ -641,6 +641,11 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             !apply || integration.passed,
             "repaired pack failed asset integration"
         );
+        // Asset repair cannot restore a lost light row, so it never certifies a pack that has one,
+        // including a pack whose manifest predates projection omissions.
+        if integration.projection_omissions.has_data_loss() {
+            report.record_data_complete = false;
+        }
         changed.insert("skyrim_world.db".into());
         changed.insert("integration-report.json".into());
         for entry in manifest
