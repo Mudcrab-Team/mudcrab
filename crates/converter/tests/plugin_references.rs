@@ -1,4 +1,6 @@
 //! Synthetic plugins only: no game data or copied assets.
+mod common;
+
 use converter::esm::{EsmParser, extractors::SubrecordView, load_order::LoadOrder};
 use std::{
     fs,
@@ -97,6 +99,10 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         (b"NPC_", b"SNAM", 8),
         (b"RACE", b"WKMV", 4),
         (b"RACE", b"RNMV", 4),
+        // The actor body chain: skin armor, each armature entry, and an armature's race.
+        (b"RACE", b"WNAM", 4),
+        (b"ARMO", b"MODL", 4),
+        (b"ARMA", b"RNAM", 4),
     ];
     for (light, expected_prefix) in [(false, 0x0500_0000u32), (true, 0xFE00_2000)] {
         let dir = tempfile::tempdir().unwrap();
@@ -1239,7 +1245,7 @@ async fn legacy_pipeline_publishes_and_rebuilds_reference_and_cell_links() {
 async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
     reader: Option<converter::config::RecordReader>,
 ) {
-    use converter::{AssetPipeline, PipelineConfig};
+    use converter::AssetPipeline;
     use rusqlite::Connection;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
@@ -1421,12 +1427,12 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     if let Some(reader) = reader {
         config.record_reader = reader;
     }
-    let mut expected_texture_rebuilds = 0;
+    let mut expected_asset_rebuilds = 0;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1449,7 +1455,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 .unwrap();
         assert!(!published.complete, "manifest must retain reader warnings");
         if pass == 1 {
-            assert_eq!(report.converted, expected_texture_rebuilds);
+            assert_eq!(report.converted, expected_asset_rebuilds);
             assert!(report.cache_hits > 0);
         }
         let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -1542,16 +1548,17 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 rusqlite::params![old, 0x0300_0800u32],
             )
             .unwrap();
-            // Producer 24 has compatible meshes/scripts, but its world projection
-            // contains padding in enable-parent flags. Rebuild the world while
-            // reusing proved meshes/scripts and regenerating all old textures.
+            // Producer 24's world projection contains padding in enable-parent
+            // flags. Rebuild the world while reusing proved scripts; the old
+            // textures and, since producer 27 changed the GLB collision data,
+            // the old meshes all regenerate.
             let manifest_path = output.join("conversion-manifest.json");
             let mut manifest: converter::cache::ConversionManifest =
                 serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-            expected_texture_rebuilds = manifest
+            expected_asset_rebuilds = manifest
                 .entries
                 .values()
-                .filter(|entry| entry.output.ends_with(".ktx2"))
+                .filter(|entry| entry.output.ends_with(".ktx2") || entry.output.ends_with(".glb"))
                 .count() as u64;
             manifest.schema_version = 24;
             manifest.asset_configuration_hashes.clear();

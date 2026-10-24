@@ -126,7 +126,7 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
 
 ## ⚖️ License & Legal
 
-By contributing to Mudcrab, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
+By contributing to Mudcrab, you agree that your contributions will be licensed under the **GNU General Public License v3 or later** (`GPL-3.0-or-later`).
 
 ### Legal Disclaimer
 Mudcrab is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.

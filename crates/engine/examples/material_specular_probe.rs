@@ -21,7 +21,10 @@ use converter::{
     texture::{TextureConverter, TextureEncoding},
 };
 use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
-use engine::{color_pipeline::SceneColorPipeline, nif_material::NifMaterialPlugin};
+use engine::{
+    color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin},
+    nif_material::{EffectPaletteMaterialPlugin, NifMaterialPlugin},
+};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -107,8 +110,8 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                 shader_block: index as u32,
                 texture_set_block: None,
                 alpha_property_block: None,
-                shader_flags_1: u32::from(*enabled),
-                shader_flags_2: 0,
+                shader_flags_1: engine::nif_depth::DEPTH_TEST | u32::from(*enabled),
+                shader_flags_2: engine::nif_depth::DEPTH_WRITE,
                 base_color: [0.0, 0.0, 0.0, 1.0],
                 alpha: 1.0,
                 alpha_mode: NifAlphaMode::Opaque,
@@ -268,7 +271,8 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>(),
     )
-    .add_plugins(NifMaterialPlugin)
+    .add_plugins((EffectPaletteMaterialPlugin, NifMaterialPlugin))
+    .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));

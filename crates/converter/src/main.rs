@@ -2,9 +2,11 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail},
 };
+use converter::archive::IngestionSync;
 use converter::config::RecordReader;
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage, TextureEncoder,
+    config::TerrainDefaultTexture,
     pipeline::{Cancellation, Interrupted, PipelineFailure},
     progress::{ProgressRenderer, format_bytes, format_elapsed},
 };
@@ -32,7 +34,10 @@ struct Cli {
     report_json: Option<PathBuf>,
     cpu_jobs: Option<usize>,
     io_jobs: Option<usize>,
+    ingestion_sync: IngestionSync,
+    extract_all_archive_files: bool,
     texture_encoder: TextureEncoder,
+    lod_texture_encoder: TextureEncoder,
     record_reader: RecordReader,
     schema_addons: Vec<PathBuf>,
     texture_fallback_quality: Option<u8>,
@@ -42,7 +47,13 @@ struct Cli {
     invalidate_cache: bool,
     verify_cache: bool,
     no_lod: bool,
+    merged_terrain: bool,
+    terrain_default_texture: TerrainDefaultTexture,
+    terrain_ini: Option<PathBuf>,
+    terrain_allow_downscale: bool,
     verbose: bool,
+    /// Overrides the default string-table language.
+    language: Option<String>,
 }
 
 impl Cli {
@@ -60,7 +71,17 @@ impl Cli {
         config.invalidate_cache = self.invalidate_cache;
         config.verify_cache = self.verify_cache;
         config.no_lod = self.no_lod;
+        config.merged_terrain = self.merged_terrain;
+        config.terrain_default_texture = self.terrain_default_texture;
+        config.terrain_ini = self.terrain_ini.clone();
+        config.terrain_allow_downscale = self.terrain_allow_downscale;
+        config.ingestion_sync = self.ingestion_sync;
+        config.extract_all_archive_files = self.extract_all_archive_files;
         config.texture_encoder = self.texture_encoder;
+        config.lod_texture_encoder = self.lod_texture_encoder;
+        if let Some(language) = &self.language {
+            config.language = language.clone();
+        }
         if let Some(value) = self.texture_fallback_quality {
             config.texture_fallback_quality = value;
         }
@@ -88,6 +109,7 @@ struct CheckCli {
 
 #[derive(Debug)]
 enum Command {
+    // Boxed: a conversion's options are an order of magnitude larger than a check's.
     Convert(Box<Cli>),
     Check(CheckCli),
     Repair(Box<Cli>, bool),
@@ -196,9 +218,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let command = parse_command(args)?;
-    if let Command::Convert(cli) | Command::Repair(cli, _) = &command
-        && let Some(selection) = &cli.mo2
-    {
+    let mo2 = match &command {
+        Command::Convert(cli) => cli.mo2.as_ref(),
+        Command::Repair(cli, _) => cli.mo2.as_ref(),
+        Command::Check(_) => None,
+    };
+    if let Some(selection) = mo2 {
         eprintln!(
             "MO2 profile: {:?} (instance: {})",
             selection.profile,
@@ -206,7 +231,7 @@ async fn main() -> Result<()> {
         );
     }
     let cli = match command {
-        Command::Convert(cli) => cli,
+        Command::Convert(cli) => *cli,
         Command::Check(check) => std::process::exit(run_check(&check)),
         Command::Repair(cli, apply) => {
             let config = cli.pipeline_config();
@@ -533,6 +558,16 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
             " --texture-encoder gpu --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
         ));
     }
+    if let TextureEncoder::Gpu { quality, batch_mb } = cli.lod_texture_encoder {
+        command.push_str(" --lod-encoder gpu");
+        if !matches!(cli.texture_encoder, TextureEncoder::Gpu { .. }) {
+            command.push_str(&format!(
+                " --gpu-quality {quality} --gpu-batch-mb {batch_mb}"
+            ));
+        }
+    } else {
+        command.push_str(" --lod-encoder cpu");
+    }
     for (flag, path) in [
         ("--plugins-file", &cli.plugins_file),
         ("--skyrim-ccc-file", &cli.skyrim_ccc_file),
@@ -541,6 +576,14 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
         if let Some(path) = path {
             command.push_str(&format!(" {flag} \"{}\"", path.display()));
         }
+    }
+    if cli.extract_all_archive_files {
+        command.push_str(" --extract-all-archive-files");
+    }
+    match cli.ingestion_sync {
+        IngestionSync::PerFile => command.push_str(" --ingestion-sync per-file"),
+        IngestionSync::Archive => command.push_str(" --ingestion-sync archive"),
+        IngestionSync::None => command.push_str(" --ingestion-sync none"),
     }
     if cli.no_lod {
         command.push_str(" --no-lod");
@@ -551,6 +594,26 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     });
     for path in &cli.schema_addons {
         command.push_str(&format!(" --schema-addon \"{}\"", path.display()));
+    }
+    // A resumed run must build the same generated outputs: the terrain stage is rebuilt from
+    // the records on every run, so dropping the option would publish without it, and an option
+    // the stage reads must not be switched silently.
+    if cli.merged_terrain {
+        command.push_str(" --merged-terrain");
+        command.push_str(match cli.terrain_default_texture {
+            TerrainDefaultTexture::White => " --terrain-default-texture white",
+            TerrainDefaultTexture::SkyrimIni => " --terrain-default-texture skyrim-ini",
+        });
+        if let Some(ini) = &cli.terrain_ini {
+            command.push_str(&format!(" --terrain-ini \"{}\"", ini.display()));
+        }
+        if cli.terrain_allow_downscale {
+            command.push_str(" --terrain-allow-downscale");
+        }
+    }
+    // The database is rebuilt on resume; it must read the same string tables.
+    if let Some(language) = &cli.language {
+        command.push_str(&format!(" --language {language}"));
     }
     command
 }
@@ -730,12 +793,27 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
+        let gpu_tuning = args
+            .iter()
+            .any(|argument| argument == "--gpu-quality" || argument == "--gpu-batch-mb");
         let cli = parse_cli(
             args.into_iter()
                 .skip(1)
                 .filter(|argument| argument != "--apply")
                 .collect(),
         )?;
+        // Repair encodes textures only; terrain LOD defaults to GPU but never runs here.
+        if gpu_tuning && !matches!(cli.texture_encoder, TextureEncoder::Gpu { .. }) {
+            bail!(
+                "repair-failed applies --gpu-quality and --gpu-batch-mb only with --texture-encoder gpu"
+            );
+        }
+        // Repair skips the merged-terrain stage, so accepting the option would publish without it.
+        if cli.merged_terrain {
+            bail!(
+                "repair-failed does not build merged terrain; drop --merged-terrain and its options"
+            );
+        }
         if cli.resume_staging.is_some()
             || cli.plugins_file.is_some()
             || cli.skyrim_ccc_file.is_some()
@@ -791,7 +869,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut skyrim_ini_file = None;
     let mut cpu_jobs = None;
     let mut io_jobs = None;
+    let mut ingestion_sync = IngestionSync::Archive;
+    let mut extract_all_archive_files = false;
     let mut use_gpu = false;
+    let mut use_lod_gpu = true;
     let mut record_reader = RecordReader::default();
     let mut schema_addons = Vec::new();
     let mut gpu_quality = None;
@@ -803,7 +884,14 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let mut invalidate_cache = false;
     let mut verify_cache = true;
     let mut no_lod = false;
+    let mut merged_terrain = false;
+    let mut terrain_default_texture = TerrainDefaultTexture::default();
+    let mut terrain_ini = None;
+    let mut terrain_allow_downscale = false;
+    // The first merged-terrain option named, which needs --merged-terrain to mean anything.
+    let mut terrain_option: Option<&'static str> = None;
     let mut verbose = false;
+    let mut language = None;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -855,6 +943,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                     _ => bail!("--texture-encoder must be cpu or gpu"),
                 };
             }
+            Some("--lod-encoder") => {
+                use_lod_gpu = match next_value(&mut args, "--lod-encoder")?.to_str() {
+                    Some("cpu") => false,
+                    Some("gpu") => true,
+                    _ => bail!("--lod-encoder must be cpu or gpu"),
+                };
+            }
             Some("--record-reader") => {
                 record_reader = match next_value(&mut args, "--record-reader")?.to_str() {
                     Some("legacy") => RecordReader::Legacy,
@@ -897,6 +992,40 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--invalidate-cache") => invalidate_cache = true,
             Some("--no-verify-cache") => verify_cache = false,
             Some("--no-lod") => no_lod = true,
+            Some("--merged-terrain") => merged_terrain = true,
+            Some("--terrain-default-texture") => {
+                terrain_option.get_or_insert("--terrain-default-texture");
+                let value = next_value(&mut args, "--terrain-default-texture")?;
+                terrain_default_texture = match value.to_str() {
+                    Some("white") => TerrainDefaultTexture::White,
+                    Some("skyrim-ini") => TerrainDefaultTexture::SkyrimIni,
+                    _ => bail!("--terrain-default-texture must be white or skyrim-ini"),
+                };
+            }
+            Some("--terrain-ini") => {
+                terrain_option.get_or_insert("--terrain-ini");
+                terrain_ini = Some(next_path_value(&mut args, "--terrain-ini")?)
+            }
+            Some("--terrain-allow-downscale") => {
+                terrain_option.get_or_insert("--terrain-allow-downscale");
+                terrain_allow_downscale = true
+            }
+            Some("--ingestion-sync") => {
+                ingestion_sync = match next_value(&mut args, "--ingestion-sync")?.to_str() {
+                    Some("per-file") => IngestionSync::PerFile,
+                    Some("archive") => IngestionSync::Archive,
+                    Some("none") => IngestionSync::None,
+                    _ => bail!("--ingestion-sync must be per-file, archive, or none"),
+                };
+            }
+            Some("--extract-all-archive-files") => extract_all_archive_files = true,
+            Some("--language") => {
+                let value = next_value(&mut args, "--language")?;
+                language =
+                    Some(value.into_string().map_err(|_| {
+                        color_eyre::eyre::eyre!("--language value is not valid UTF-8")
+                    })?);
+            }
             Some("--verbose") => verbose = true,
             Some("--help" | "-h") => bail!(usage()),
             Some(flag) if flag.starts_with('-') => bail!("unknown option {flag}\n{}", usage()),
@@ -905,6 +1034,26 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     }
     if positional.is_empty() || positional.len() > 2 {
         bail!(usage());
+    }
+    if let Some(option) = terrain_option
+        && !merged_terrain
+    {
+        bail!("{option} requires --merged-terrain");
+    }
+    if terrain_ini.is_some() && terrain_default_texture != TerrainDefaultTexture::SkyrimIni {
+        bail!("--terrain-ini requires --terrain-default-texture skyrim-ini");
+    }
+    let gpu_encoder = TextureEncoder::Gpu {
+        quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
+        batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
+    };
+    if !use_gpu && !use_lod_gpu && (gpu_quality.is_some() || gpu_batch_mb.is_some()) {
+        bail!(
+            "--gpu-quality and --gpu-batch-mb require --texture-encoder gpu or --lod-encoder gpu"
+        );
+    }
+    if ingestion_sync == IngestionSync::None && !verify_cache {
+        bail!("--ingestion-sync none requires verified cache reuse; omit --no-verify-cache");
     }
     if reuse_assets.is_some() && mo2_instance.is_some() {
         bail!(
@@ -921,14 +1070,13 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         bail!("--mo2-instance cannot be combined with --plugins-file");
     }
     let texture_encoder = if use_gpu {
-        TextureEncoder::Gpu {
-            quality: gpu_quality.unwrap_or(converter::texture_gpu::DEFAULT_QUALITY),
-            batch_mb: gpu_batch_mb.unwrap_or(converter::texture_gpu::DEFAULT_BATCH_MB),
-        }
+        gpu_encoder
     } else {
-        if gpu_quality.is_some() || gpu_batch_mb.is_some() {
-            bail!("--gpu-quality and --gpu-batch-mb require --texture-encoder gpu");
-        }
+        TextureEncoder::Cpu
+    };
+    let lod_texture_encoder = if use_lod_gpu {
+        gpu_encoder
+    } else {
         TextureEncoder::Cpu
     };
     let mo2 = match mo2_instance {
@@ -967,7 +1115,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         report_json,
         cpu_jobs,
         io_jobs,
+        ingestion_sync,
+        extract_all_archive_files,
         texture_encoder,
+        lod_texture_encoder,
         record_reader,
         schema_addons,
         texture_fallback_quality,
@@ -977,7 +1128,12 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         invalidate_cache,
         verify_cache,
         no_lod,
+        merged_terrain,
+        terrain_default_texture,
+        terrain_ini,
+        terrain_allow_downscale,
         verbose,
+        language,
     })
 }
 
@@ -1033,14 +1189,17 @@ fn parse_u64(value: OsString, option: &str) -> Result<u64> {
 /// The help text printed for `--help` and after a usage error.
 fn usage() -> &'static str {
     "usage: converter <Skyrim Data> [output directory] [--cpu-jobs N] [--io-jobs N] [--fail-fast]
-                 [--texture-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
+                 [--texture-encoder cpu|gpu] [--lod-encoder cpu|gpu] [--gpu-quality N] [--gpu-batch-mb N]
                  [--texture-fallback-quality 1..255] [--texture-uastc-level 0..4]
                  [--texture-zstd-level 0..22]
                  [--invalidate-cache] [--no-verify-cache] [--resume-staging DIR]
                  [--report-json FILE] [--verbose] [--reuse-assets DIR] [--no-lod]
-                 [--record-reader legacy|inhouse]
+                 [--record-reader legacy|inhouse] [--language NAME]
+                 [--ingestion-sync per-file|archive|none] [--extract-all-archive-files]
                  [--schema-addon JSON]
                  [--mo2-instance DIR] [--mo2-profile NAME]
+                 [--merged-terrain] [--terrain-default-texture white|skyrim-ini]
+                 [--terrain-ini FILE] [--terrain-allow-downscale]
                  [--plugins-file FILE] [--skyrim-ccc-file FILE] [--skyrim-ini-file FILE]
        converter check <output directory> [--full]
        converter repair-failed <Skyrim Data> <output directory> [--mo2-instance DIR]
@@ -1062,12 +1221,13 @@ Use the original conversion's reader/schema identity and encoding settings. --te
 
 Converts a Skyrim Data directory into runtime assets.
 The in-house record reader is the default; --record-reader legacy selects the hand-written reader.
-Reader recovery preserves usable neighboring records and reports bounded data-loss warnings.
-Warnings mark the report and manifest incomplete and make conversion exit 1 even when the
-usable output was published. --report-json and the launcher show these warnings; metadata
-rebuild with --reuse-assets follows the same completeness rule.
-Successful master-index and supplier-self compatibility remaps are report notices and do
-not affect completeness.
+Reader recovery preserves usable neighboring records and reports bounded warnings and notices.
+Data-loss warnings mark the report and manifest incomplete and make conversion exit 1 even
+when usable output was published. --report-json and the launcher show both severities;
+metadata rebuild with --reuse-assets follows the same completeness rule.
+Successful compatibility remaps, in-house links cleared to absent or disallowed targets,
+and missing localized IDs in readable string tables are notices and preserve completeness.
+Missing or unreadable string tables and skipped records or fields remain warnings.
 --mo2-instance overlays enabled MO2 mods and overwrite over physical Data, using the profile's
 active plugins and loadorder.txt. --mo2-profile defaults to ModOrganizer.ini's selected_profile,
 or the first sorted profile if that selection is absent or stale.
@@ -1094,8 +1254,27 @@ when neither selection is supplied.
 extend fields. The full batch is checked before conversion starts. Schema add-ons
 cannot be combined with --record-reader legacy.
 
+Archive ingestion extracts the formats used by conversion and English string banks.
+--extract-all-archive-files retains every archive entry for compatibility and comparisons.
+--ingestion-sync defaults to archive: sealed packs provide batch durability. per-file also
+flushes each unique derived payload; none skips extraction flushes for regenerable bytes
+and requires verified reuse. Runtime package publication keeps its durability contract.
+
 --no-lod skips terrain LOD compilation in conversion and metadata rebuilds. Full-detail
 terrain and ordinary assets remain available. Omit it on a later run to build LOD.
+
+--merged-terrain builds the merged terrain of #215 after the world database and the land
+textures: the land texture arrays, one merged mesh per exterior cell and the terrain chunk
+files. It is off by default because the engine does not read those outputs yet.
+--terrain-default-texture picks what a cell quadrant with no BTXT blends: the generated
+white texture (default), or the game's own [Landscape] default.
+--terrain-ini names the Skyrim.ini that default is read from; without it the built-in
+textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
+not name. A default that cannot be converted leaves the white texture, and the report says so.
+--terrain-allow-downscale downscales a land texture larger than the largest array size class
+into it instead of stopping the merged-terrain build; the report lists every one downscaled.
+--language selects the string tables that localized plugins' names are read from,
+Strings/<plugin>_<language>.STRINGS, as Skyrim's sLanguage does. Default: english.
 
 While it runs, one status line is redrawn on the terminal, four times a second at most:
 
@@ -1245,7 +1424,8 @@ mod tests {
         .unwrap();
         let resume = resume_command("converter", &cli, Path::new("out.staging-1-2"));
         assert!(resume.contains("--mo2-instance"));
-        assert!(resume.ends_with("--mo2-profile \"Zed\" --record-reader inhouse"));
+        assert!(resume.contains("--mo2-profile \"Zed\""));
+        assert!(resume.ends_with(" --record-reader inhouse"));
         assert!(parse_cli(args(&["Data", "--mo2-profile", "Zed"])).is_err());
         assert!(
             parse_cli(args(&[
@@ -1766,7 +1946,10 @@ mod tests {
             report_json: None,
             cpu_jobs: None,
             io_jobs: None,
+            ingestion_sync: IngestionSync::PerFile,
+            extract_all_archive_files: false,
             texture_encoder: TextureEncoder::Cpu,
+            lod_texture_encoder: TextureEncoder::Cpu,
             record_reader: RecordReader::Legacy,
             schema_addons: Vec::new(),
             texture_fallback_quality: None,
@@ -1776,17 +1959,22 @@ mod tests {
             invalidate_cache: false,
             verify_cache: true,
             no_lod: false,
+            merged_terrain: false,
+            terrain_default_texture: TerrainDefaultTexture::White,
+            terrain_ini: None,
+            terrain_allow_downscale: false,
             verbose: false,
+            language: None,
         };
         let staging = Path::new("C:/Modding/SkyrimConverted.staging-1-2");
         assert_eq!(
             resume_command("converter.exe", &cli, staging),
-            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
+            "converter.exe \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file --record-reader legacy"
         );
         // A renamed binary is named as it is, quoted when its name has a space.
         assert_eq!(
             resume_command("mudcrab converter", &cli, staging),
-            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --record-reader legacy"
+            "\"mudcrab converter\" \"C:/Games/Skyrim/Data\" \"C:/Modding/SkyrimConverted\" --resume-staging \"C:/Modding/SkyrimConverted.staging-1-2\" --lod-encoder cpu --ingestion-sync per-file --record-reader legacy"
         );
         // The test binary itself stands in for the running converter.
         assert!(!program_name().is_empty());
@@ -1806,6 +1994,68 @@ mod tests {
         assert!(
             resume_command("converter", &inhouse, staging).ends_with(" --record-reader inhouse")
         );
+        // Merged terrain is off unless asked for, and a resume keeps it on with its default
+        // texture selection.
+        let terrain = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        assert!(terrain.merged_terrain);
+        assert_eq!(
+            terrain.terrain_default_texture,
+            TerrainDefaultTexture::White
+        );
+        let terrain = parse_cli(vec![
+            "Data".into(),
+            "--merged-terrain".into(),
+            "--terrain-default-texture".into(),
+            "skyrim-ini".into(),
+        ])
+        .unwrap();
+        assert!(terrain.merged_terrain);
+        assert_eq!(
+            terrain.terrain_default_texture,
+            TerrainDefaultTexture::SkyrimIni
+        );
+        assert!(
+            resume_command("converter", &terrain, staging)
+                .ends_with(" --merged-terrain --terrain-default-texture skyrim-ini")
+        );
+        // The default texture is named even when it is the default, and the ini and the
+        // downscale allowance travel with the resume: none of them may switch silently.
+        let white = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        assert!(
+            resume_command("converter", &white, staging)
+                .ends_with(" --merged-terrain --terrain-default-texture white")
+        );
+        let terrain = parse_cli(vec![
+            "Data".into(),
+            "--merged-terrain".into(),
+            "--terrain-default-texture".into(),
+            "skyrim-ini".into(),
+            "--terrain-ini".into(),
+            "C:/Games/Skyrim/Skyrim.ini".into(),
+            "--terrain-allow-downscale".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            terrain.terrain_ini,
+            Some(PathBuf::from("C:/Games/Skyrim/Skyrim.ini"))
+        );
+        assert!(terrain.terrain_allow_downscale);
+        assert!(resume_command("converter", &terrain, staging).ends_with(
+            " --merged-terrain --terrain-default-texture skyrim-ini --terrain-ini \
+                 \"C:/Games/Skyrim/Skyrim.ini\" --terrain-allow-downscale"
+        ));
+        assert!(
+            parse_cli(vec!["Data".into(), "--terrain-ini".into()]).is_err(),
+            "--terrain-ini needs a path"
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--terrain-default-texture".into(),
+                "dirt".into()
+            ])
+            .is_err()
+        );
         assert!(
             parse_cli(vec![
                 "Data".into(),
@@ -1815,6 +2065,10 @@ mod tests {
             .is_err()
         );
         assert!(parse_cli(vec!["Data".into(), "--record-reader".into()]).is_err());
+        let german = parse_cli(vec!["Data".into(), "--language".into(), "german".into()]).unwrap();
+        assert_eq!(german.language.as_deref(), Some("german"));
+        assert_eq!(german.pipeline_config().language, "german");
+        assert!(resume_command("converter", &german, staging).ends_with(" --language german"));
         // A GPU run resumes on the GPU.
         let gpu = Cli {
             texture_encoder: TextureEncoder::Gpu {
@@ -1824,8 +2078,136 @@ mod tests {
             ..cli
         };
         assert!(resume_command("converter.exe", &gpu, staging).ends_with(
-            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --record-reader legacy"
+            " --texture-encoder gpu --gpu-quality 2 --gpu-batch-mb 256 --lod-encoder cpu --ingestion-sync per-file --record-reader legacy"
         ));
+    }
+
+    /// Merged-terrain options mean nothing without --merged-terrain, an ini needs the skyrim-ini
+    /// default, --terrain-ini takes a path and never another option, and repair refuses the option.
+    #[test]
+    fn merged_terrain_options_need_the_option_and_their_own_values() {
+        for dependent in [
+            vec!["--terrain-default-texture", "skyrim-ini"],
+            vec!["--terrain-default-texture", "white"],
+            vec!["--terrain-allow-downscale"],
+            vec!["--terrain-ini", "Skyrim.ini"],
+        ] {
+            let mut values = vec!["Data"];
+            values.extend(dependent.iter().copied());
+            let error = parse_cli(args(&values)).unwrap_err().to_string();
+            assert!(
+                error.contains("requires --merged-terrain"),
+                "{values:?}: {error}"
+            );
+        }
+        // Explicit white with an ini is refused: the ini is only read by skyrim-ini.
+        let error = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "white",
+            "--terrain-ini",
+            "Skyrim.ini",
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("requires --terrain-default-texture skyrim-ini"),
+            "{error}"
+        );
+        let ini_without_default = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-ini",
+            "S.ini",
+        ]));
+        assert!(ini_without_default.is_err(), "the default is white");
+
+        // The ini value is a path: the next option is not taken as one.
+        let error = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "skyrim-ini",
+            "--terrain-ini",
+            "--merged-terrain",
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("requires a path value"), "{error}");
+
+        let ok = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "skyrim-ini",
+            "--terrain-ini",
+            "C:/Games/Skyrim.ini",
+        ]))
+        .unwrap();
+        assert_eq!(ok.terrain_ini, Some(PathBuf::from("C:/Games/Skyrim.ini")));
+
+        // Repair applies no merged terrain, so it refuses the option with its settings.
+        let error = parse_command(args(&["repair-failed", "Data", "out", "--merged-terrain"]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("repair-failed does not build merged terrain"),
+            "{error}"
+        );
+        assert!(
+            parse_command(args(&[
+                "repair-failed",
+                "Data",
+                "out",
+                "--terrain-allow-downscale"
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_and_preserves_ingestion_options_on_resume() {
+        let staging = Path::new("assets.staging");
+        let defaults = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(defaults.ingestion_sync, IngestionSync::Archive);
+        assert!(!defaults.extract_all_archive_files);
+        for (value, policy) in [
+            ("per-file", IngestionSync::PerFile),
+            ("archive", IngestionSync::Archive),
+            ("none", IngestionSync::None),
+        ] {
+            let cli = parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                value.into(),
+                "--extract-all-archive-files".into(),
+            ])
+            .unwrap();
+            assert_eq!(cli.ingestion_sync, policy);
+            assert!(cli.extract_all_archive_files);
+            let command = resume_command("converter", &cli, staging);
+            assert!(command.contains(" --extract-all-archive-files"));
+            assert!(command.contains(&format!(" --ingestion-sync {value}")));
+        }
+        assert!(parse_cli(vec!["Data".into(), "--ingestion-sync".into()]).is_err());
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "invalid".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_cli(vec![
+                "Data".into(),
+                "--ingestion-sync".into(),
+                "none".into(),
+                "--no-verify-cache".into()
+            ])
+            .is_err()
+        );
     }
 
     /// Integration failures count as failures without skipped inputs and point to the
@@ -1969,6 +2351,81 @@ mod tests {
         );
     }
 
+    /// LOD defaults to GPU independently of ordinary textures, and explicit CPU survives resume.
+    #[test]
+    fn defaults_to_gpu_lod_and_preserves_explicit_cpu_on_resume() {
+        let cli = parse_cli(vec!["Data".into()]).unwrap();
+        assert_eq!(cli.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            cli.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: converter::texture_gpu::DEFAULT_QUALITY,
+                batch_mb: converter::texture_gpu::DEFAULT_BATCH_MB,
+            }
+        );
+        let tuned = parse_cli(
+            ["Data", "--gpu-quality", "3", "--gpu-batch-mb", "128"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(tuned.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            tuned.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 128
+            }
+        );
+        let cpu = parse_cli(
+            ["Data", "output", "--lod-encoder", "cpu"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(cpu.lod_texture_encoder, TextureEncoder::Cpu);
+        assert!(
+            resume_command("converter", &cpu, Path::new("staging"))
+                .ends_with(" --lod-encoder cpu --ingestion-sync archive --record-reader inhouse")
+        );
+        let resumed = parse_cli(
+            [
+                "Data",
+                "output",
+                "--resume-staging",
+                "staging",
+                "--lod-encoder",
+                "cpu",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(resumed.lod_texture_encoder, cpu.lod_texture_encoder);
+        for option in ["--gpu-quality", "--gpu-batch-mb"] {
+            assert!(
+                parse_cli(
+                    [
+                        "Data",
+                        "--texture-encoder",
+                        "cpu",
+                        "--lod-encoder",
+                        "cpu",
+                        option,
+                        "2"
+                    ]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                )
+                .is_err()
+            );
+        }
+    }
+
     /// The GPU encoder flags reach the parsed configuration.
     #[test]
     fn parses_gpu_texture_options() {
@@ -1996,13 +2453,33 @@ mod tests {
         );
         // GPU settings without the GPU encoder are a mistake, not a no-op.
         let error = parse_cli(
-            ["Data", "--gpu-quality", "3"]
+            ["Data", "--lod-encoder", "cpu", "--gpu-quality", "3"]
                 .into_iter()
                 .map(OsString::from)
                 .collect(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("--texture-encoder gpu"));
+        let lod = parse_cli(
+            ["Data", "--lod-encoder", "gpu", "--gpu-quality", "3"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(lod.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(
+            lod.lod_texture_encoder,
+            TextureEncoder::Gpu {
+                quality: 3,
+                batch_mb: 256
+            }
+        );
+        assert!(
+            resume_command("converter", &lod, Path::new("staging")).ends_with(
+                " --lod-encoder gpu --gpu-quality 3 --gpu-batch-mb 256 --ingestion-sync archive --record-reader inhouse"
+            )
+        );
     }
 
     #[test]

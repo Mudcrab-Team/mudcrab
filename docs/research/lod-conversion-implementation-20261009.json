@@ -1,0 +1,1475 @@
+{
+  "schema": 1,
+  "generated_at_utc": "2026-10-09T20:50:10.096145+00:00",
+  "host": {
+    "cpu": "Apple M1 Pro",
+    "cpu_cores": 10,
+    "memory_gib": 32,
+    "os": "macOS 26.6.2",
+    "target": "aarch64-apple-darwin"
+  },
+  "provenance": {
+    "captured_at_utc": "2026-10-09T19:05:53.734672+00:00",
+    "head": "62752696026bf720f0804d34f7ec65419ceed0aa",
+    "branch": "t3/lod-conversion-performance",
+    "source_sha256": {
+      "Cargo.lock": "fb79f561067319e0cdd00a86443067823997aba0e18e69e75223774134ab5385",
+      "crates/converter/Cargo.toml": "db8e4e029f164dbf8a619d81abb6ed3f7c400ca8f0ce09cd5eb0f5a350f2054d",
+      "crates/converter/src/archive/ba2.rs": "dfdf459cee8db26c2c71371e70b0bfd31acc45f3a5feb5f63246d15477d91401",
+      "crates/converter/src/archive/batched.rs": "86f541c7bddcf6de50b047efa757cb0402c79df8479960997e77231316280f42",
+      "crates/converter/src/archive/mod.rs": "88ff4742d05abe58bfef4bd8094392f90833138db183b1d93fd64667e4f09be7",
+      "crates/converter/src/asset_path.rs": "73ade931f0579609c492410285a7d035febbeb69fde6027d15cca7b2a62b0a15",
+      "crates/converter/src/cache.rs": "8bb6f207426e9a79971d74a53963907950d9daff993e8bc7db40426c55fa24df",
+      "crates/converter/src/config.rs": "e3e534266c60852d65d55d4039db29d3c3d3ccbe22f09adca3657d66d594084c",
+      "crates/converter/src/lod/albedo.rs": "1048b5acd9d3143edbc3507e43914c69a9a43c8d12ff72e9fdc474f8782a0f36",
+      "crates/converter/src/lod/terrain.rs": "3fcff82cbeb22e82a746903590e5c4d53875b95da2210222f091c6f4f252ee48",
+      "crates/converter/src/main.rs": "7526d3b1ff1b0083b20da86d7c5a73af4e9e4bc3bcce6fca1402b622d667cd97",
+      "crates/converter/src/pipeline.rs": "9d55790f1c9567a333ae47ef3011bda6211a145e9607ba6697561ca5adbdf2cf",
+      "crates/converter/src/texture_gpu/mod.rs": "fc849c9b6c48e1ab9247c61271335a267e698a4402d35f31e6addc8cb723aace",
+      "crates/converter/tests/fixture_lod_pipeline.rs": "abea4a7f3c807d332c731791ee95d9bfd09e8013a8b088726d5a0ac122dc8e0b",
+      "crates/converter/tests/snapshots/snapshots__conversion_manifest_matches_snapshot.snap": "6c98e0bd21c2687fdef8777bb0b0aa9f5645671f4c0093ace8815bf9d59eadf6",
+      "crates/converter/tests/snapshots/snapshots__pipeline_report_matches_snapshot.snap": "a9ced1933653b057516492d167e7b92c6b34495753971a9ede05c1cb912f8aa7"
+    },
+    "binary": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+    "binary_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+    "checks": [
+      "build-checks-recovery-final.json",
+      "frozen-final-checks.json",
+      "hardware-checks.json"
+    ],
+    "protected_manifest_sha256": "ff5743feff7b2db3dc77fa2cac8b5741191e7e7c3e2069daddbde5f362ee7d09"
+  },
+  "adopted_pull_request": {
+    "url": "https://github.com/Mudcrab-Team/mudcrab/pull/167",
+    "head": "9ef353c1ef24959e21ec231532c14fbe4791c030"
+  },
+  "implementation": [
+    "Bounded CPU decoding and I/O writers; converter input selection",
+    "Verified immutable archive packs, resume journal and corruption recovery",
+    "Opt-in GPU LOD encoding of CPU-authored three-mip atlases",
+    "Parallel chunk preparation and GLB assembly; serialized publication",
+    "Separate encoder/quality proofs; GPU fallback retries and committed counts",
+    "Apple ARM hardware SHA with unchanged digests and cache recipes"
+  ],
+  "correctness": {
+    "standard_tests_passed": 581,
+    "standard_tests_failed": 0,
+    "final_frozen_library_tests_passed": 422,
+    "explicit_metal_checks_passed": 3,
+    "slot_cancellation_check_repeated_on_frozen_source": true,
+    "helper_regressions_passed": 3,
+    "release_build_and_clippy_passed": true,
+    "all_six_conversion_gates_passed": true,
+    "source_manifest_preserved": true,
+    "windows_execution_and_power_loss_tests_performed": false
+  },
+  "matched_quick_profile_measurements": [
+    {
+      "label": "atlas-land4-q2-1",
+      "accepted": true,
+      "cpu_compile_seconds": 24.088702418999993,
+      "gpu_compile_seconds": 2.6880838799999998,
+      "compile_speedup": 8.961291200109423,
+      "encoding_speedup": 12.956085350835318,
+      "timings": {
+        "cpu_encode": 23.190238623999996,
+        "cpu_finish_glb": 0.02037346,
+        "gpu_encode_and_readback": 1.789910918,
+        "gpu_finish_glb": 0.017399626,
+        "gpu_init": 0.034041542,
+        "gpu_prepare_uploads": 0.002683001,
+        "load_and_hash": 5.643239459,
+        "mips": 0.07016321,
+        "prepare_geometry_and_bake": 0.807927125,
+        "quality_and_validation": 0.509995126,
+        "total_wall": 37.49179975
+      },
+      "lowest_finite_gpu_psnr_db": 44.417821371318304,
+      "max_finite_cpu_minus_gpu_psnr_db": 1.0255486435999401,
+      "lossless_gpu_mips": 0,
+      "alpha_changes": 0,
+      "padding_changes": 0,
+      "gpu_mips_accepted": true
+    },
+    {
+      "label": "atlas-land4-q2-2",
+      "accepted": true,
+      "cpu_compile_seconds": 24.193255956999998,
+      "gpu_compile_seconds": 2.64053746,
+      "compile_speedup": 9.162246824174954,
+      "encoding_speedup": 13.187919888854678,
+      "timings": {
+        "cpu_encode": 23.321903831999997,
+        "cpu_finish_glb": 0.019435542,
+        "gpu_encode_and_readback": 1.768429292,
+        "gpu_finish_glb": 0.018037835,
+        "gpu_init": 0.032962875,
+        "gpu_prepare_uploads": 0.0021537500000000003,
+        "load_and_hash": 5.438592042,
+        "mips": 0.070173124,
+        "prepare_geometry_and_bake": 0.7817434590000001,
+        "quality_and_validation": 0.528602543,
+        "total_wall": 37.413491125
+      },
+      "lowest_finite_gpu_psnr_db": 44.417821371318304,
+      "max_finite_cpu_minus_gpu_psnr_db": 1.0255486435999401,
+      "lossless_gpu_mips": 0,
+      "alpha_changes": 0,
+      "padding_changes": 0,
+      "gpu_mips_accepted": true
+    },
+    {
+      "label": "atlas-land8-q2",
+      "accepted": true,
+      "cpu_compile_seconds": 13.290899542,
+      "gpu_compile_seconds": 2.2551005419999997,
+      "compile_speedup": 5.893705976502755,
+      "encoding_speedup": 7.462472538368455,
+      "timings": {
+        "cpu_encode": 12.740844166,
+        "cpu_finish_glb": 0.020045375,
+        "gpu_encode_and_readback": 1.707322084,
+        "gpu_finish_glb": 0.015600583,
+        "gpu_init": 0.032325667,
+        "gpu_prepare_uploads": 0.002167874,
+        "load_and_hash": 5.481094167,
+        "mips": 0.070951334,
+        "prepare_geometry_and_bake": 0.459058667,
+        "quality_and_validation": 0.30032933300000003,
+        "total_wall": 26.166544084
+      },
+      "lowest_finite_gpu_psnr_db": 44.417821371318304,
+      "max_finite_cpu_minus_gpu_psnr_db": 1.0255486435999401,
+      "lossless_gpu_mips": 0,
+      "alpha_changes": 0,
+      "padding_changes": 0,
+      "gpu_mips_accepted": true
+    },
+    {
+      "label": "atlas-ocean4-q2",
+      "accepted": true,
+      "cpu_compile_seconds": 0.244526499,
+      "gpu_compile_seconds": 0.28412754300000004,
+      "compile_speedup": 0.8606222980642182,
+      "encoding_speedup": 0.5579870961935651,
+      "timings": {
+        "cpu_encode": 0.049501082,
+        "cpu_finish_glb": 0.019624126,
+        "gpu_encode_and_readback": 0.08871366800000001,
+        "gpu_finish_glb": 0.017004293,
+        "gpu_init": 0.033273542,
+        "gpu_prepare_uploads": 0.003008291,
+        "load_and_hash": 5.310785625,
+        "mips": 0.038943792000000005,
+        "prepare_geometry_and_bake": 0.136457499,
+        "quality_and_validation": 0.437348542,
+        "total_wall": 11.313498584
+      },
+      "lowest_finite_gpu_psnr_db": null,
+      "max_finite_cpu_minus_gpu_psnr_db": null,
+      "lossless_gpu_mips": 63,
+      "alpha_changes": 0,
+      "padding_changes": 0,
+      "gpu_mips_accepted": true
+    },
+    {
+      "label": "extraction-paired1",
+      "checkpoint_markers": false,
+      "cold_speedup": 13.543029730463026,
+      "cpu_jobs": 4,
+      "inventories_equal": true,
+      "io_jobs": 4,
+      "limitations": [
+        "First 2048 real entries rewritten into an uncompressed disposable fixture",
+        "Preparation excluded from per-run wall times",
+        "Use external /usr/bin/time -l for CPU and physical I/O",
+        "Derived corruption deliberately modifies a shared blob in disposable test caches only"
+      ],
+      "restored_file_hashes_verified": true,
+      "sample_decoded_bytes": 2326291,
+      "sample_entries": 2048,
+      "sample_fixture_sha256": "56c51845bf309de3e06a6de4e6616438fe33115f15e1087d397e1e72bc0a8a5c",
+      "sealed_packs": 8,
+      "selection": "all-v1",
+      "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+      "source_sha256": "30957adeb1a109c8b8079a5791c2a24c1fdd1d01957e9338480f4d8e03d9d23f",
+      "wall_seconds": {
+        "corrupted_blob_restore": 1.354096,
+        "durable_batches_cold": 0.730189166,
+        "durable_batches_warm": 1.308536667,
+        "legacy_per_file_sync": 9.888973584
+      }
+    },
+    {
+      "label": "extraction-paired2",
+      "checkpoint_markers": false,
+      "cold_speedup": 14.439536397176168,
+      "cpu_jobs": 4,
+      "inventories_equal": true,
+      "io_jobs": 4,
+      "limitations": [
+        "First 2048 real entries rewritten into an uncompressed disposable fixture",
+        "Preparation excluded from per-run wall times",
+        "Use external /usr/bin/time -l for CPU and physical I/O",
+        "Derived corruption deliberately modifies a shared blob in disposable test caches only"
+      ],
+      "restored_file_hashes_verified": true,
+      "sample_decoded_bytes": 2326291,
+      "sample_entries": 2048,
+      "sample_fixture_sha256": "56c51845bf309de3e06a6de4e6616438fe33115f15e1087d397e1e72bc0a8a5c",
+      "sealed_packs": 8,
+      "selection": "all-v1",
+      "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+      "source_sha256": "30957adeb1a109c8b8079a5791c2a24c1fdd1d01957e9338480f4d8e03d9d23f",
+      "wall_seconds": {
+        "corrupted_blob_restore": 1.380123792,
+        "durable_batches_cold": 0.733109167,
+        "durable_batches_warm": 1.397758375,
+        "legacy_per_file_sync": 10.5857565
+      }
+    }
+  ],
+  "hardware_sha_probe": {
+    "software": {
+      "asm_feature": false,
+      "arch": "aarch64",
+      "os": "macos",
+      "runtime_sha2": true,
+      "runtime_sha3": true,
+      "buffer_bytes": 67108864,
+      "pattern": "index_mod_256",
+      "sha256_digest": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6",
+      "small_known_answer_checks": 273,
+      "buffer_known_answer_checks": 1,
+      "benchmark_seconds": 3.067912375,
+      "modes": [
+        {
+          "mode": "one_shot",
+          "rounds": 8,
+          "bytes": 536870912,
+          "seconds": 1.536605458,
+          "mib_per_second": 333.202
+        },
+        {
+          "mode": "stream_64k",
+          "rounds": 8,
+          "bytes": 536870912,
+          "seconds": 1.531296,
+          "mib_per_second": 334.357
+        }
+      ]
+    },
+    "apple_arm_asm": {
+      "asm_feature": true,
+      "arch": "aarch64",
+      "os": "macos",
+      "runtime_sha2": true,
+      "runtime_sha3": true,
+      "buffer_bytes": 67108864,
+      "pattern": "index_mod_256",
+      "sha256_digest": "281e519df3077b557c6b03f5da83c4e8d397219259615dd7c3308f89cae8f2a6",
+      "small_known_answer_checks": 273,
+      "buffer_known_answer_checks": 1,
+      "benchmark_seconds": 0.514900041,
+      "modes": [
+        {
+          "mode": "one_shot",
+          "rounds": 8,
+          "bytes": 536870912,
+          "seconds": 0.268645791,
+          "mib_per_second": 1905.855
+        },
+        {
+          "mode": "stream_64k",
+          "rounds": 8,
+          "bytes": 536870912,
+          "seconds": 0.246245042,
+          "mib_per_second": 2079.23
+        }
+      ]
+    },
+    "scope": "One isolated release observation per variant, software first; timed single-core work hashes 1 GiB per variant."
+  },
+  "check_commands": {
+    "standard_build_lint": [
+      {
+        "label": "tests-recovery-final",
+        "command": [
+          "test",
+          "--offline",
+          "--profile",
+          "quick",
+          "-p",
+          "converter",
+          "--",
+          "--test-threads=4"
+        ],
+        "started_at_utc": "2026-10-09T18:55:44.039273+00:00",
+        "wall_seconds": 255.127602584,
+        "exit_code": 0
+      },
+      {
+        "label": "clippy-recovery-final",
+        "command": [
+          "clippy",
+          "--offline",
+          "--profile",
+          "quick",
+          "-p",
+          "converter",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings",
+          "-A",
+          "linker-messages"
+        ],
+        "started_at_utc": "2026-10-09T18:59:59.168015+00:00",
+        "wall_seconds": 7.9468308330000355,
+        "exit_code": 0
+      },
+      {
+        "label": "build-release-recovery-final",
+        "command": [
+          "build",
+          "--offline",
+          "--release",
+          "-p",
+          "converter",
+          "--bin",
+          "converter"
+        ],
+        "started_at_utc": "2026-10-09T19:00:07.115224+00:00",
+        "wall_seconds": 158.33106454200004,
+        "exit_code": 0
+      }
+    ],
+    "frozen_final": [
+      {
+        "label": "library-frozen-final",
+        "command": [
+          "test",
+          "--offline",
+          "--profile",
+          "quick",
+          "-p",
+          "converter",
+          "--lib",
+          "--",
+          "--test-threads=4"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 86.476405833,
+        "finished_at_utc": "2026-10-09T19:04:57.695723+00:00"
+      },
+      {
+        "label": "hardware-slots-cancel-final",
+        "command": [
+          "test",
+          "--offline",
+          "--profile",
+          "quick",
+          "-p",
+          "converter",
+          "--lib",
+          "texture_gpu::tests::prepared_gpu_batches_serialize_and_return_all_slots",
+          "--",
+          "--ignored",
+          "--exact",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "wall_seconds": 0.502902000000006,
+        "finished_at_utc": "2026-10-09T19:04:58.199734+00:00"
+      }
+    ],
+    "metal": [
+      {
+        "test": "lod::albedo::tests::gpu_atlas_quality_preserves_mips_gutters_padding_and_reusable_slots",
+        "binary": "target/conversion-perf-build/quick/deps/converter-872c88a646fa73da",
+        "exit_code": 0,
+        "wall_seconds": 0.098153167,
+        "timing_use": "correctness only; release build can overlap",
+        "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/hardware-gpu_atlas_quality_preserves_mips_gutters_padding_and_reusable_slots.log"
+      },
+      {
+        "test": "texture_gpu::tests::prepared_gpu_batches_serialize_and_return_all_slots",
+        "binary": "target/conversion-perf-build/quick/deps/converter-872c88a646fa73da",
+        "exit_code": 0,
+        "wall_seconds": 0.048879958,
+        "timing_use": "correctness only; release build can overlap",
+        "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/hardware-prepared_gpu_batches_serialize_and_return_all_slots.log"
+      },
+      {
+        "test": "gpu_atlases_have_separate_reuse_proof_and_preserve_the_terrain_contract",
+        "binary": "target/conversion-perf-build/quick/deps/fixture_lod_pipeline-923beb0716d86feb",
+        "exit_code": 0,
+        "wall_seconds": 1.8885312079999999,
+        "timing_use": "correctness only; release build can overlap",
+        "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/hardware-gpu_atlases_have_separate_reuse_proof_and_preserve_the_terrain_contract.log"
+      }
+    ]
+  },
+  "release_legs": [
+    {
+      "label": "meta-cpu-cold",
+      "converter_sha256": "b63c64481a5d4af4fdc98c686a6f88e2615f0871e668280c27cd407ba5e4b6c8",
+      "timing": {
+        "utc_span_seconds": 1102.406912,
+        "monotonic_seconds": 1102.429523625,
+        "utc_minus_monotonic_seconds": -0.022611625000081403,
+        "clock_or_suspend_discontinuity": false,
+        "cause": null
+      },
+      "converter_reported_seconds": 1099.857,
+      "cpu": {
+        "child_user_seconds": 3051.666311,
+        "child_system_seconds": 54.562746,
+        "average_cpu_cores": 2.817621435596284
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 80212,
+        "skipped": 0,
+        "pruned_texture_references": 527,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 0,
+        "lod_gpu_chunks": 0,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 937950,
+        "publication_elapsed_ms": 3,
+        "elapsed_ms": 1099857
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 937.95,
+          "publication": 0.003
+        },
+        "stage_event_spans": [
+          {
+            "stage": "validating",
+            "first_seconds": 1.2714996250000001,
+            "last_seconds": 1.2714996250000001,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 94.9873625,
+            "last_seconds": 94.9873625,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "database",
+            "first_seconds": 96.667672875,
+            "last_seconds": 96.667672875,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 123.415040875,
+            "last_seconds": 1059.431748916,
+            "event_span_seconds": 936.016708041
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 1099.843534083,
+            "last_seconds": 1099.843534083,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "recovered_audit",
+        "audit": "validation/meta-cpu-cold-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": null,
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 39,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 1
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T18:09:01.310986+00:00",
+          "available": true,
+          "available_bytes": 590581092352,
+          "free_bytes": 590581092352
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T18:27:23.730220+00:00",
+          "available": true,
+          "available_bytes": 556199714816,
+          "free_bytes": 556199714816
+        },
+        "minimum_sampled_available_bytes": 555353120768
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84993,
+          "logical_bytes": 28641663133,
+          "unique_inode_logical_bytes": 28641663133,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": false
+        }
+      },
+      "audit_sha256": "65e77f0354feb50d247f08d7623625ba61bfb82b33c37479a25086685c1e09a6",
+      "run_receipt_sha256": "b088e0a137fb04cadfc98a02721e704119e71e86cc210334d26c8939a1c581a2",
+      "competition": {
+        "primary_pid": 29376,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 221,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 154,
+        "peak_named_competing_processes": 11,
+        "peak_summed_competing_os_percent_cpu": 625.5999999999999,
+        "largest_utc_sample_gap_seconds": 5.026559
+      },
+      "observed_named_process_counts": {
+        "cargo": 13,
+        "rustc": 153,
+        "converter": 3,
+        "engine": 4
+      },
+      "audit_recovery": {
+        "passed": true,
+        "wall_seconds": null,
+        "original_failed_evidence_unchanged": null,
+        "original_failed_status_sha256": "4842e61038a6e58ea2fca653da14e63a7a5111185d49694e76782d05ec7bb023",
+        "original_failed_log_sha256": "c52598403ea222806631ab7a46b7abdcd01ddd0080f404a2504c4a2ffab87688",
+        "reason": null
+      }
+    },
+    {
+      "label": "meta-cpu-warm",
+      "converter_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+      "timing": {
+        "utc_span_seconds": 251.07578,
+        "monotonic_seconds": 251.07592441699998,
+        "utc_minus_monotonic_seconds": -0.00014441699997291835,
+        "clock_or_suspend_discontinuity": false,
+        "cause": null
+      },
+      "converter_reported_seconds": 247.316,
+      "cpu": {
+        "child_user_seconds": 81.982618,
+        "child_system_seconds": 46.605068,
+        "average_cpu_cores": 0.5121466197867498
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 80212,
+        "skipped": 0,
+        "pruned_texture_references": 527,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 4673,
+        "lod_gpu_chunks": 0,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 55530,
+        "publication_elapsed_ms": 0,
+        "elapsed_ms": 247316
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 55.53,
+          "publication": 0.0
+        },
+        "stage_event_spans": [
+          {
+            "stage": "validating",
+            "first_seconds": 1.406408083,
+            "last_seconds": 1.406408083,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 89.967841583,
+            "last_seconds": 89.967841583,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "database",
+            "first_seconds": 92.302517083,
+            "last_seconds": 92.302517083,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 145.961154083,
+            "last_seconds": 200.170179708,
+            "event_span_seconds": 54.20902562500001
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 247.066631958,
+            "last_seconds": 247.066631958,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "recovered_audit",
+        "audit": "validation/meta-cpu-warm-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": {
+          "mode": "exact",
+          "passed": true,
+          "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/validation/meta-cpu-cold-evidence/lod-audit.json"
+        },
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 39,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 1
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T19:06:02.989561+00:00",
+          "available": true,
+          "available_bytes": 534834556928,
+          "free_bytes": 534834556928
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T19:10:14.109017+00:00",
+          "available": true,
+          "available_bytes": 519775076352,
+          "free_bytes": 519775076352
+        },
+        "minimum_sampled_available_bytes": 519679361024
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84993,
+          "logical_bytes": 28602709877,
+          "unique_inode_logical_bytes": 28602709877,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": false
+        }
+      },
+      "audit_sha256": "3bb4ece1b69c8ad0e82ad856ab40d97b36e8b89ab3bce302de331becf96d9b93",
+      "run_receipt_sha256": "fd9eace14e7e7ee13a1673f8ff93a8cb1ce0cacfed7202eef8a4cd2b6172c8bd",
+      "competition": {
+        "primary_pid": 47938,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 51,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 51,
+        "peak_named_competing_processes": 26,
+        "peak_summed_competing_os_percent_cpu": 613.2,
+        "largest_utc_sample_gap_seconds": 5.124709
+      },
+      "observed_named_process_counts": {
+        "cargo": 17,
+        "rustc": 148
+      },
+      "audit_recovery": {
+        "passed": true,
+        "wall_seconds": 63.095499499999995,
+        "original_failed_evidence_unchanged": true,
+        "original_failed_status_sha256": "d5ae41b69cc9cb04085ab968b3eeea85be2805f152e1b1e5d6d393f1f382101a",
+        "original_failed_log_sha256": "ed2fcb8de72907fb5ace747b7168b70e446054a86d3be90139e326d3f8783d0a",
+        "reason": "Normalize audit source_cells to JSON lists; exact comparison and all existing validation gates remain enabled."
+      }
+    },
+    {
+      "label": "meta-gpu-cold",
+      "converter_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+      "timing": {
+        "utc_span_seconds": 422.735941,
+        "monotonic_seconds": 422.734904125,
+        "utc_minus_monotonic_seconds": 0.0010368750000111504,
+        "clock_or_suspend_discontinuity": false,
+        "cause": null
+      },
+      "converter_reported_seconds": 421.665,
+      "cpu": {
+        "child_user_seconds": 294.90527499999996,
+        "child_system_seconds": 46.435258000000005,
+        "average_cpu_cores": 0.8074576517558335
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 80212,
+        "skipped": 0,
+        "pruned_texture_references": 527,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 0,
+        "lod_gpu_chunks": 4673,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 262620,
+        "publication_elapsed_ms": 0,
+        "elapsed_ms": 421665
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 262.62,
+          "publication": 0.0
+        },
+        "stage_event_spans": [
+          {
+            "stage": "validating",
+            "first_seconds": 0.710376375,
+            "last_seconds": 0.710376375,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 62.682893042,
+            "last_seconds": 62.682893042,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "database",
+            "first_seconds": 64.793051583,
+            "last_seconds": 64.793051583,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 139.807233083,
+            "last_seconds": 401.3717705,
+            "event_span_seconds": 261.564537417
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 421.656024833,
+            "last_seconds": 421.656024833,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "planned_audit",
+        "audit": "validation/meta-gpu-cold-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": {
+          "mode": "encoder-transition",
+          "passed": true,
+          "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/validation/meta-cpu-cold-evidence/lod-audit.json"
+        },
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 39,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 1
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T19:19:08.898356+00:00",
+          "available": true,
+          "available_bytes": 509277925376,
+          "free_bytes": 509277925376
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T19:26:11.665180+00:00",
+          "available": true,
+          "available_bytes": 494710312960,
+          "free_bytes": 494710312960
+        },
+        "minimum_sampled_available_bytes": 494710312960
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84993,
+          "logical_bytes": 28602861429,
+          "unique_inode_logical_bytes": 28602861429,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": false
+        }
+      },
+      "audit_sha256": "f8d138f2014c15d653140c40bb698d2fed59c2d1ddf10fb1fda7a0122ad8bf21",
+      "run_receipt_sha256": "7c98777c80a222918de37b2ecb3d1c97a7d006c74e35c2f66a8d55b09fe8530f",
+      "competition": {
+        "primary_pid": 74279,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 85,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 85,
+        "peak_named_competing_processes": 21,
+        "peak_summed_competing_os_percent_cpu": 878.6,
+        "largest_utc_sample_gap_seconds": 5.268299
+      },
+      "observed_named_process_counts": {
+        "cargo": 9,
+        "converter": 5,
+        "rustc": 61,
+        "engine": 1
+      }
+    },
+    {
+      "label": "meta-gpu-warm",
+      "converter_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+      "timing": {
+        "utc_span_seconds": 1863.951173,
+        "monotonic_seconds": 318.943627834,
+        "utc_minus_monotonic_seconds": 1545.007545166,
+        "clock_or_suspend_discontinuity": true,
+        "cause": "unknown"
+      },
+      "converter_reported_seconds": 317.539,
+      "cpu": {
+        "child_user_seconds": 91.102198,
+        "child_system_seconds": 45.053661,
+        "average_cpu_cores": 0.4268963136986226
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 80212,
+        "skipped": 0,
+        "pruned_texture_references": 527,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 4673,
+        "lod_gpu_chunks": 0,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 113164,
+        "publication_elapsed_ms": 0,
+        "elapsed_ms": 317539
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 113.164,
+          "publication": 0.0
+        },
+        "stage_event_spans": [
+          {
+            "stage": "validating",
+            "first_seconds": 0.490072583,
+            "last_seconds": 0.490072583,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 61.971127958,
+            "last_seconds": 61.971127958,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "database",
+            "first_seconds": 65.64957925,
+            "last_seconds": 65.64957925,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 154.762741125,
+            "last_seconds": 266.349987583,
+            "event_span_seconds": 111.58724645799998
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 317.525149417,
+            "last_seconds": 317.525149417,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "planned_audit",
+        "audit": "validation/meta-gpu-warm-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": {
+          "mode": "exact",
+          "passed": true,
+          "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/validation/meta-gpu-cold-evidence/lod-audit.json"
+        },
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 39,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 1
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T19:27:28.944189+00:00",
+          "available": true,
+          "available_bytes": 494226169856,
+          "free_bytes": 494226169856
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T19:58:32.923089+00:00",
+          "available": true,
+          "available_bytes": 480677904384,
+          "free_bytes": 480677904384
+        },
+        "minimum_sampled_available_bytes": 480677904384
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84993,
+          "logical_bytes": 28602644341,
+          "unique_inode_logical_bytes": 28602644341,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": false
+        }
+      },
+      "audit_sha256": "dd728a1bf3432ae2e33836d6d33ba8dd358fdc2c6105168755c07cbe9afcf585",
+      "run_receipt_sha256": "9ae057da2942e4cb3e0bcade179ec279cccce48b5c0cf806e2e95234295742e4",
+      "competition": {
+        "primary_pid": 88398,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 67,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 67,
+        "peak_named_competing_processes": 12,
+        "peak_summed_competing_os_percent_cpu": 894.8000000000001,
+        "largest_utc_sample_gap_seconds": 676.66136
+      },
+      "observed_named_process_counts": {
+        "cargo": 5,
+        "converter": 2,
+        "rustc": 40,
+        "engine": 1
+      }
+    },
+    {
+      "label": "full-gpu-fresh",
+      "converter_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+      "timing": {
+        "utc_span_seconds": 904.239451,
+        "monotonic_seconds": 904.234412917,
+        "utc_minus_monotonic_seconds": 0.005038083000044935,
+        "clock_or_suspend_discontinuity": false,
+        "cause": null
+      },
+      "converter_reported_seconds": 903.166,
+      "cpu": {
+        "child_user_seconds": 633.4895170000001,
+        "child_system_seconds": 271.73354,
+        "average_cpu_cores": 1.0010933493227834
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 154654,
+        "cache_hits": 0,
+        "skipped": 0,
+        "pruned_texture_references": 525,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 0,
+        "lod_gpu_chunks": 4673,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 224365,
+        "publication_elapsed_ms": 55321,
+        "elapsed_ms": 903166
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 224.365,
+          "publication": 55.321
+        },
+        "stage_event_spans": [
+          {
+            "stage": "discovering",
+            "first_seconds": 0.001825375,
+            "last_seconds": 0.001825375,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 0.304054917,
+            "last_seconds": 157.543532959,
+            "event_span_seconds": 157.239478042
+          },
+          {
+            "stage": "database",
+            "first_seconds": 157.548745084,
+            "last_seconds": 157.548745084,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "meshes",
+            "first_seconds": 221.921159709,
+            "last_seconds": 346.085942709,
+            "event_span_seconds": 124.164783
+          },
+          {
+            "stage": "textures",
+            "first_seconds": 367.146428334,
+            "last_seconds": 514.255193709,
+            "event_span_seconds": 147.10876537499996
+          },
+          {
+            "stage": "scripts",
+            "first_seconds": 515.689208584,
+            "last_seconds": 522.952486292,
+            "event_span_seconds": 7.263277708000032
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 523.045697292,
+            "last_seconds": 746.800877209,
+            "event_span_seconds": 223.75517991699996
+          },
+          {
+            "stage": "validating",
+            "first_seconds": 758.317406167,
+            "last_seconds": 768.281177834,
+            "event_span_seconds": 9.96377166700006
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 768.392389167,
+            "last_seconds": 768.392389167,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "complete",
+            "first_seconds": 903.1718785,
+            "last_seconds": 903.1718785,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "planned_audit",
+        "audit": "validation/full-gpu-fresh-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": {
+          "mode": "exact",
+          "passed": true,
+          "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/validation/meta-gpu-cold-evidence/lod-audit.json"
+        },
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 38,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 0
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T20:00:17.211749+00:00",
+          "available": true,
+          "available_bytes": 479738568704,
+          "free_bytes": 479738568704
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T20:15:21.475348+00:00",
+          "available": true,
+          "available_bytes": 392190980096,
+          "free_bytes": 392190980096
+        },
+        "minimum_sampled_available_bytes": 392151896064
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84890,
+          "logical_bytes": 28415712976,
+          "unique_inode_logical_bytes": 24207331281,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": true,
+          "files": 64778,
+          "logical_bytes": 49330823224,
+          "unique_inode_logical_bytes": 49330823224,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        }
+      },
+      "audit_sha256": "55da45c2ecd208fe2cde42f57bd94f36027b514ad526ba936372fe35c28710be",
+      "run_receipt_sha256": "086c44b1b9df5387039e89efc72cd6c085cb0f4b7407111ad611570af37765f0",
+      "competition": {
+        "primary_pid": 1731,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 181,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 181,
+        "peak_named_competing_processes": 16,
+        "peak_summed_competing_os_percent_cpu": 892.8999999999999,
+        "largest_utc_sample_gap_seconds": 5.08834
+      },
+      "observed_named_process_counts": {
+        "cargo": 16,
+        "converter": 2,
+        "rustc": 168,
+        "engine": 11
+      }
+    },
+    {
+      "label": "full-gpu-warm",
+      "converter_sha256": "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429",
+      "timing": {
+        "utc_span_seconds": 1785.970242,
+        "monotonic_seconds": 819.4876934580001,
+        "utc_minus_monotonic_seconds": 966.482548542,
+        "clock_or_suspend_discontinuity": true,
+        "cause": "unknown"
+      },
+      "converter_reported_seconds": 817.968,
+      "cpu": {
+        "child_user_seconds": 222.845202,
+        "child_system_seconds": 348.44071599999995,
+        "average_cpu_cores": 0.697125682985353
+      },
+      "conversion_scalars": {
+        "complete": true,
+        "converted": 0,
+        "cache_hits": 154654,
+        "skipped": 0,
+        "pruned_texture_references": 525,
+        "lod_chunks": 4673,
+        "lod_cache_hits": 4673,
+        "lod_gpu_chunks": 0,
+        "lod_cpu_fallback_chunks": 0,
+        "lod_elapsed_ms": 36508,
+        "publication_elapsed_ms": 197916,
+        "elapsed_ms": 817968
+      },
+      "failure_count": 0,
+      "stages": {
+        "reported_phase_seconds": {
+          "lod": 36.508,
+          "publication": 197.916
+        },
+        "stage_event_spans": [
+          {
+            "stage": "discovering",
+            "first_seconds": 0.003319667,
+            "last_seconds": 0.003319667,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "extracting",
+            "first_seconds": 0.418794417,
+            "last_seconds": 316.9806695,
+            "event_span_seconds": 316.56187508299996
+          },
+          {
+            "stage": "database",
+            "first_seconds": 316.985045834,
+            "last_seconds": 316.985045834,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "meshes",
+            "first_seconds": 396.237477584,
+            "last_seconds": 410.025138667,
+            "event_span_seconds": 13.787661083000046
+          },
+          {
+            "stage": "textures",
+            "first_seconds": 420.587601834,
+            "last_seconds": 439.525966667,
+            "event_span_seconds": 18.93836483299998
+          },
+          {
+            "stage": "scripts",
+            "first_seconds": 459.800974667,
+            "last_seconds": 463.926855209,
+            "event_span_seconds": 4.125880542000004
+          },
+          {
+            "stage": "lod_chunks",
+            "first_seconds": 464.179260625,
+            "last_seconds": 500.117872167,
+            "event_span_seconds": 35.93861154199999
+          },
+          {
+            "stage": "validating",
+            "first_seconds": 516.374472042,
+            "last_seconds": 524.888368125,
+            "event_span_seconds": 8.513896083000077
+          },
+          {
+            "stage": "publishing",
+            "first_seconds": 525.013880167,
+            "last_seconds": 525.013880167,
+            "event_span_seconds": 0.0
+          },
+          {
+            "stage": "complete",
+            "first_seconds": 817.970771667,
+            "last_seconds": 817.970771667,
+            "event_span_seconds": 0.0
+          }
+        ],
+        "method": "Stage spans cover first-to-last progress events, can overlap, and can omit gaps. CPU and I/O measurements cover the whole command and are not apportioned to stages."
+      },
+      "accepted_audit": {
+        "passed": true,
+        "source": "planned_audit",
+        "audit": "validation/full-gpu-warm-evidence/lod-audit.json",
+        "chunks": 4673,
+        "chunks_with_proof": 4673,
+        "comparison": {
+          "mode": "exact",
+          "passed": true,
+          "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/validation/full-gpu-fresh-evidence/lod-audit.json"
+        },
+        "compiled_land_worldspaces": 14,
+        "accepted_warning_count": 38,
+        "accepted_missing_origin_worldspaces": 38,
+        "accepted_missing_origin_land_cells": 1105,
+        "accepted_omitted_archives": 0
+      },
+      "current_accepted_gates": {
+        "conversion": true,
+        "ordinary_full_check": true,
+        "lod_audit": true
+      },
+      "disk_space": {
+        "before": {
+          "timestamp_utc": "2026-10-09T20:16:31.122143+00:00",
+          "available": true,
+          "available_bytes": 390841630720,
+          "free_bytes": 390841630720
+        },
+        "after": {
+          "timestamp_utc": "2026-10-09T20:46:17.116725+00:00",
+          "available": true,
+          "available_bytes": 347204046848,
+          "free_bytes": 347204046848
+        },
+        "minimum_sampled_available_bytes": 336746831872
+      },
+      "final_sizes": {
+        "output": {
+          "exists": true,
+          "files": 84890,
+          "logical_bytes": 28415745772,
+          "unique_inode_logical_bytes": 24207364077,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        },
+        "cache": {
+          "exists": true,
+          "files": 64780,
+          "logical_bytes": 49331522552,
+          "unique_inode_logical_bytes": 49330823224,
+          "method": "One post-run tree walk; hard links counted once in unique_inode_logical_bytes. APFS clones can share extents, so logical sizes do not measure physical space use."
+        }
+      },
+      "audit_sha256": "03997a874bdff8f08b7e7da6a8e34601bab6a5efa1a0e4d007be9308a42f2fba",
+      "run_receipt_sha256": "337e26e295d8e5d95d1485ac9ea5681dcd8c02089e7e97f027bf666e7bfd8fe1",
+      "competition": {
+        "primary_pid": 27357,
+        "primary_inference": "Most frequent PID whose comm exactly matches this leg's recorded converter path",
+        "samples": 164,
+        "unavailable_samples": 0,
+        "samples_with_named_competing_processes": 99,
+        "peak_named_competing_processes": 12,
+        "peak_summed_competing_os_percent_cpu": 897.3,
+        "largest_utc_sample_gap_seconds": 927.870504
+      },
+      "observed_named_process_counts": {
+        "cargo": 6,
+        "rustc": 47,
+        "converter": 1,
+        "engine": 1
+      }
+    }
+  ],
+  "historical_status_chain": [
+    {
+      "path": "validation/validation-status.json",
+      "sha256": "4842e61038a6e58ea2fca653da14e63a7a5111185d49694e76782d05ec7bb023",
+      "passed": false,
+      "finished_at_utc": "2026-10-09T18:27:52.844900+00:00"
+    },
+    {
+      "path": "validation/validation-resumed-status.json",
+      "sha256": "d5ae41b69cc9cb04085ab968b3eeea85be2805f152e1b1e5d6d393f1f382101a",
+      "passed": false,
+      "finished_at_utc": "2026-10-09T19:12:18.695809+00:00"
+    },
+    {
+      "path": "validation/validation-resumed2-status.json",
+      "sha256": "7796500b8307b0ba59817b4bf83d8a030635d911fdb37d76d61730d58eaefd9b",
+      "passed": true,
+      "finished_at_utc": "2026-10-09T20:47:10.379406+00:00"
+    }
+  ],
+  "recorded_binary_versions": {
+    "b63c64481a5d4af4fdc98c686a6f88e2615f0871e668280c27cd407ba5e4b6c8": [
+      "meta-cpu-cold"
+    ],
+    "7c0307e08aa667c60697a953cd1de68d214234a079f7fcce070bc2e9d9033429": [
+      "meta-cpu-warm",
+      "meta-gpu-cold",
+      "meta-gpu-warm",
+      "full-gpu-fresh",
+      "full-gpu-warm"
+    ]
+  },
+  "remaining_bottlenecks": [
+    {
+      "phase": "LOD publication",
+      "evidence": "publication-bottlenecks.json",
+      "costs": [
+        "Repeated GLB hashes",
+        "Unused embedded-texture digest",
+        "Serialized publication between batches",
+        "Per-chunk R-tree scans for deletion and ID allocation"
+      ]
+    },
+    {
+      "phase": "Warm metadata export",
+      "evidence": "warm-validation-bottlenecks.json",
+      "costs": [
+        "SQLite integrity traversal of the newly rebuilt staging database"
+      ]
+    },
+    {
+      "phase": "Post-publication ingestion cache",
+      "evidence": "post-publication-bottlenecks.json",
+      "costs": [
+        "Serial derived-file hard-link creation"
+      ]
+    },
+    {
+      "phase": "Warm archive restoration",
+      "evidence": "warm-ingestion-bottlenecks.json"
+    }
+  ],
+  "limitations": [
+    "Durations labelled monotonic use the observer/runner performance clock; UTC spans are reported separately. A gap over two seconds flags clock or suspend discontinuity with unknown cause, not experienced elapsed wall-clock duration.",
+    "Process counters include the converter and time/caffeinate wrappers; independent resource monitors are excluded. Whole-command CPU counters are not exact per-stage counters.",
+    "Process inventory is limited to named converter/build/engine executables. Captured competing CPU increases are lower bounds; OS percent-CPU uses an unknown averaging window. UTC sampling gaps prevent reconstructing omitted activity.",
+    "GPU counters are global driver observations with an unknown averaging window, not per-process GPU usage or evidence of saturation.",
+    "Iostat is global and includes other processes; no queue, latency or device-utilization metric establishes storage saturation. Averages describe observed rows without weighting a UTC clock discontinuity.",
+    "Disk free space includes unrelated volume writes. Logical output sizes and unique-inode bytes do not measure APFS physical space use.",
+    "CPU cold used the earlier binary before native SHA acceleration; subsequent metadata legs use the newer binary. These loaded-host release durations do not isolate a causal GPU speedup.",
+    "Acceptance audits run after the measured converter command. Failed original helper evidence remains intact; recovered audit outcomes are recorded separately.",
+    "Named inventory records observed executables, including compiled tests, dormant processes and short commands. It does not mean every inventoried process was actively competing throughout a leg; per-PID captured CPU increases distinguish sampled activity.",
+    "Matched extraction uses 2048 real entries rewritten into an uncompressed fixture; no selection benefit is measured.",
+    "Matched atlas timings exclude loading, fingerprints, device initialization, quality checks and publication.",
+    "Matched quick-profile kernels predate hardware SHA and final failure-cleanup patches; successful compression recipes are unchanged.",
+    "Release runs overlap unrelated work. CPU cold predates hardware SHA. No isolated end-to-end GPU speedup is established.",
+    "Global GPU and disk counters are not per-process saturation measurements.",
+    "converted and cache_hits combine archive extraction entries and ordinary asset items; they are not unique runtime-file counts.",
+    "Stack sample fractions describe local thread-wall observations, not additive whole-conversion phase shares.",
+    "The source reference lacks authored origins in 38 worlds with 1105 LAND cells; all 14 LAND worlds with origins compile.",
+    "Metadata extraction omits one unchanged archive without a matching source-package plugin; full extraction omits no archives.",
+    "Windows file flushes are implemented; directory durability is a documented platform limitation.",
+    "Archive source inodes must remain immutable while mapped; custom shared cache roots lack a cross-output writer lock."
+  ],
+  "evidence": {
+    "frozen-source-provenance.json": {
+      "path": "target/lod-profile/frozen-source-provenance.json",
+      "sha256": "1319f86f7d63a154ddebf5df2a5e3d2ae42755c4295b0913a282c4b2d3dbb23c"
+    },
+    "build-checks-recovery-final.json": {
+      "path": "target/lod-profile/build-checks-recovery-final.json",
+      "sha256": "b1bb0e79c77be2534418a69128122628fd5bc41790a3c02457e1a51ac4514f80"
+    },
+    "frozen-final-checks.json": {
+      "path": "target/lod-profile/frozen-final-checks.json",
+      "sha256": "38d398892ffd3287bd508ed14672db4c335e693fde49f307a407f024e2d9040b"
+    },
+    "hardware-checks.json": {
+      "path": "target/lod-profile/hardware-checks.json",
+      "sha256": "7c52f37538303b1c013c159f874094cc4491ff4bc3915587673c1b28a209a872"
+    },
+    "gpu-review.json": {
+      "path": "target/lod-profile/gpu-review.json",
+      "sha256": "2129693686ff8a43d5179f6ded673fa360221fa629627f2a34ca701bfcb81d37"
+    },
+    "matched-status.json": {
+      "path": "target/lod-profile/matched-status.json",
+      "sha256": "1732f01b502be7091286c345cf9f739cdd3f271ecb65fd9ebad2d31b6ace39bd"
+    },
+    "matched-summary.json": {
+      "path": "target/lod-profile/matched-summary.json",
+      "sha256": "afa9c8b539a83958e462d855628425fce5e9bf36736d592fe1cfd71bf7b26ac0"
+    },
+    "matched-resource-summary.json": {
+      "path": "target/lod-profile/matched-resource-summary.json",
+      "sha256": "f82efd4a59166f874dd0e4ffbe198da8d77ef98991a599156dceb36714cbb8c2"
+    },
+    "release-matrix-summary.json": {
+      "path": "target/lod-profile/release-matrix-summary.json",
+      "sha256": "502f88ab7d3a6e257b60b806421cb0a8ac7204bf49938fc26fa537da8bb48c7e"
+    },
+    "publication-bottlenecks.json": {
+      "path": "target/lod-profile/publication-bottlenecks.json",
+      "sha256": "813cd305d6c5b417d604f6de6602c5abfd2461da69df5e6d416abcec1113bc0f"
+    },
+    "warm-validation-bottlenecks.json": {
+      "path": "target/lod-profile/warm-validation-bottlenecks.json",
+      "sha256": "0d28d798d27ead4a6cefea84382886eb9d780b2dfbddbbff05a09291957caaff"
+    },
+    "gpu-cold-stack-review.json": {
+      "path": "target/lod-profile/gpu-cold-stack-review.json",
+      "sha256": "8c67aefdc5ac4326a3bbb346fac4a5497f924cc7dd4a9eec18d7f2d68e889a36"
+    },
+    "post-publication-bottlenecks.json": {
+      "path": "target/lod-profile/post-publication-bottlenecks.json",
+      "sha256": "2127626eb4b235e9a3d4ce023b7f06aa4ff3fd2353726bccdb23dbae89422bde"
+    },
+    "warm-ingestion-bottlenecks.json": {
+      "path": "target/lod-profile/warm-ingestion-bottlenecks.json",
+      "sha256": "2fcf243332ca96a50b4013458e00ac8290c4f7e11bf32ca28b08f0b2b0cce4e2"
+    },
+    "sha256-probe/provenance.json": {
+      "path": "target/lod-profile/sha256-probe/provenance.json",
+      "sha256": "2a61b61b9ddd907c724d294d11550db2ac11287baaa7afd044713c14915b7123"
+    },
+    "sha256-probe/result-soft.json": {
+      "path": "target/lod-profile/sha256-probe/result-soft.json",
+      "sha256": "a3dfbd2b86214413f8b568abdfccf6658fac015f2a9d63e2001962b6bb452ce2"
+    },
+    "sha256-probe/result-asm.json": {
+      "path": "target/lod-profile/sha256-probe/result-asm.json",
+      "sha256": "460c5ee4a97dacf949fa4f720d6cb40578be51cddddd9d76f320a5987b03856c"
+    }
+  }
+}

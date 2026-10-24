@@ -1,10 +1,11 @@
+use super::enable_state::{EnableStateError, EnableStateResolver, InitialEnableInputs};
 use bevy::prelude::Resource;
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -33,10 +34,16 @@ pub enum CellKey {
 #[derive(Debug, Clone)]
 pub struct ReferenceRow {
     pub form_id: u32,
+    /// New-game enable-state snapshot, including parent chains. All rows remain available;
+    /// this bootstrap value does not represent subsequent script/quest/save state.
+    pub initially_enabled: bool,
     pub cell_id: u32,
     pub base_form_id: u32,
     /// Authoritative base record type; `statics` also contains movable clutter.
     pub base_record_type: Option<String>,
+    /// Whether the base record carries the `Is Marker` header flag: an editor-only object, such as
+    /// a map or furniture marker, that the game never draws.
+    pub base_is_marker: bool,
     pub model_path: Option<String>,
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -51,6 +58,32 @@ pub struct ReferenceRow {
     /// The reference's own light radius (`XRDS`), which wins over [`LightRow::radius`]. `None` when
     /// the reference carries no override, and in a database converted before the column existed.
     pub light_radius_override: Option<f32>,
+    /// The 8-bit sRGB colour the reference's `XEMI` light or region lends its model's
+    /// `External_Emittance` surfaces by day, the engine's one time of day (see `sky.rs`). `None`
+    /// when the reference names no source the converter could resolve, and in a database
+    /// converted before the `emittance` table existed.
+    pub emittance: Option<[u8; 3]>,
+    /// The reference's `door_links` row, when the database has the table and the reference is a
+    /// load door. `None` for every other reference, and for every reference in a database
+    /// converted before door links were exported.
+    pub door: Option<DoorLinkRow>,
+}
+
+/// A `door_links` row as the world database stores it: where a load door leads, from the door's
+/// `XTEL` subrecord.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoorLinkRow {
+    /// The destination door reference (`XTEL` bytes 0..4, after plugin FormID remapping).
+    pub destination_ref_id: u32,
+    /// The destination reference's cell, `None` when the converter could not resolve it.
+    pub destination_cell_id: Option<u32>,
+    /// The destination reference's worldspace; `None` means the destination is an interior.
+    pub destination_worldspace_id: Option<u32>,
+    /// Arrival position in Creation units (`XTEL` bytes 4..16). Not the destination door's own
+    /// position.
+    pub arrival_position: [f32; 3],
+    /// Arrival rotation in Creation-engine radians (`XTEL` bytes 16..28).
+    pub arrival_rotation: [f32; 3],
 }
 
 /// A `lights` row as the converted database stores it
@@ -339,6 +372,26 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
 }
 
 impl WorldDatabase {
+    #[cfg(test)]
+    pub(crate) fn channel_fixture(
+        capacity: usize,
+    ) -> (Self, Receiver<DatabaseRequest>, Sender<DatabaseResponse>) {
+        let (requests, request_rx) = bounded(capacity);
+        let (response_tx, responses) = unbounded();
+        let (_lod_tx, lod_responses) = unbounded();
+        (
+            Self {
+                requests,
+                responses,
+                lod_responses,
+                worker: None,
+                worker_stopped: Arc::new(AtomicBool::new(true)),
+            },
+            request_rx,
+            response_tx,
+        )
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         validate(path)?;
         let path = path.to_owned();
@@ -370,8 +423,18 @@ impl WorldDatabase {
             .wrap_err("world database worker stopped")
     }
 
+    /// Ordinary streaming intake must never wait for the worker on the main thread.
+    pub(crate) fn try_request(&self, request: DatabaseRequest) -> Result<()> {
+        enqueue_request(&self.requests, request)
+    }
+
     pub fn try_response(&self) -> Option<DatabaseResponse> {
         self.responses.try_recv().ok()
+    }
+
+    /// Includes returned payloads that the main world has not polled yet.
+    pub(crate) fn pending_cell_responses(&self) -> usize {
+        self.responses.len()
     }
 
     /// Queue a world-space LOD chunk range query on the existing database worker.
@@ -395,6 +458,10 @@ fn enqueue_lod_query(
         query,
         queued_at: Instant::now(),
     };
+    enqueue_request(requests, request)
+}
+
+fn enqueue_request(requests: &Sender<DatabaseRequest>, request: DatabaseRequest) -> Result<()> {
     match requests.try_send(request) {
         Ok(()) => Ok(()),
         Err(TrySendError::Full(_)) => Err(color_eyre::eyre::eyre!(
@@ -408,8 +475,8 @@ fn enqueue_lod_query(
 
 impl Drop for WorldDatabase {
     fn drop(&mut self) {
-        let _ = self.requests.send(DatabaseRequest::Shutdown);
         if let Some(worker) = self.worker.take() {
+            let _ = self.requests.send(DatabaseRequest::Shutdown);
             let _ = worker.join();
         }
         debug_assert!(self.worker_stopped.load(Ordering::Acquire));
@@ -432,7 +499,7 @@ fn worker(
     // the reference query is built once for the connection. If the database cannot be opened or
     // probed, every request is still answered, with that error, so the cells fail visibly instead
     // of waiting forever.
-    let setup = Connection::open_with_flags(
+    let mut setup = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -452,7 +519,7 @@ fn worker(
             } => {
                 let queue_wait_micros = elapsed_micros(queued_at);
                 let started = Instant::now();
-                let result = match &setup {
+                let result = match &mut setup {
                     Ok((connection, query)) => load_cell(connection, query, generation, key)
                         .map_err(|error| format!("{error:#}")),
                     Err(error) => Err(error.clone()),
@@ -752,6 +819,16 @@ const REFERENCE_COLUMNS: &str = "r.id,r.cell_id,r.base_form_id,s.model_path,r.po
 
 const REFERENCE_JOIN: &str = " LEFT JOIN statics s ON s.id=r.base_form_id";
 
+/// The `door_links` row of the reference, in the order [`map_reference`] reads them.
+const DOOR_COLUMNS: &str = "d.destination_ref_id,d.destination_cell_id,d.destination_worldspace_id,\
+     d.pos_x,d.pos_y,d.pos_z,d.rot_x,d.rot_y,d.rot_z";
+
+/// Stand-in for [`DOOR_COLUMNS`] in a database without the `door_links` table: every reference
+/// reads as a non-door, with the column order unchanged.
+const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL";
+
+const DOOR_JOIN: &str = " LEFT JOIN door_links d ON d.ref_id=r.id";
+
 /// The `lights` row of the reference's base record, in the order [`map_reference`] reads them.
 const LIGHT_COLUMNS: &str = "l.radius,l.color_r,l.color_g,l.color_b,l.flags";
 
@@ -764,9 +841,29 @@ const ABSENT_LIGHT_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL";
 const RADIUS_OVERRIDE_COLUMN: &str = "r.radius_override";
 const ABSENT_RADIUS_OVERRIDE_COLUMN: &str = "NULL";
 
+// PR #128 owns door decoding at 25..=33 and emittance at 34..=36. Enable state follows that
+// reserved suffix so combining the optional door/emittance projections with enable state cannot
+// reinterpret either feature.
+const REFERENCE_ENABLE_START: usize = 37;
+
 /// The `lights` row of the reference's base record: one `LIGH` record can be placed many times,
 /// each reference lighting the space at its own radius.
 const LIGHT_JOIN: &str = " LEFT JOIN lights l ON l.id=r.base_form_id";
+
+/// The day colour of the reference's `XEMI` source (`docs/specs/converters/db-schema.md`). The
+/// `emittance` table and `references.emittance_id` are optional: an older database has neither.
+const EMITTANCE_COLUMNS: &str = "e.day_r,e.day_g,e.day_b";
+const ABSENT_EMITTANCE_COLUMNS: &str = "NULL,NULL,NULL";
+const EMITTANCE_JOIN: &str = " LEFT JOIN emittance e ON e.id=r.emittance_id";
+
+/// The base record's header flags, which [`map_reference`] reads for [`MARKER_RECORD_FLAG`].
+/// `NULL` for a reference whose base has no `statics` row.
+const STATIC_FLAGS_COLUMN: &str = "s.flags";
+/// Appended after the three enable-state columns so it never shifts their positions.
+const STATIC_FLAGS_INDEX: usize = REFERENCE_ENABLE_START + 3;
+
+/// The record header flag Skyrim sets on editor-only base records (`0x00800000`, "Is Marker").
+const MARKER_RECORD_FLAG: u32 = 0x0080_0000;
 
 fn has_records(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
@@ -784,6 +881,47 @@ fn has_lights(connection: &Connection) -> Result<bool> {
     Ok(count > 0)
 }
 
+/// Every `door_links` column [`DOOR_COLUMNS`] and [`DOOR_JOIN`] read.
+const DOOR_LINK_COLUMN_NAMES: [&str; 10] = [
+    "ref_id",
+    "destination_ref_id",
+    "destination_cell_id",
+    "destination_worldspace_id",
+    "pos_x",
+    "pos_y",
+    "pos_z",
+    "rot_x",
+    "rot_y",
+    "rot_z",
+];
+
+/// Whether the database carries a `door_links` table with every column the reference query reads.
+/// It is optional: a database converted before doors were exported still loads, and no reference
+/// in it is a load door. A table of another shape is treated the same way (and logged) rather than
+/// failing every cell's query, like [`has_radius_override`] checks its column.
+fn has_door_links(connection: &Connection) -> Result<bool> {
+    let mut statement =
+        connection.prepare_cached("SELECT name FROM pragma_table_info('door_links')")?;
+    let columns: BTreeSet<String> = statement
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if columns.is_empty() {
+        return Ok(false);
+    }
+    let missing: Vec<&str> = DOOR_LINK_COLUMN_NAMES
+        .into_iter()
+        .filter(|name| !columns.contains(*name))
+        .collect();
+    if !missing.is_empty() {
+        bevy::log::warn!(
+            ?missing,
+            "world database door_links table lacks columns; no reference is a load door"
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// Whether `"references"` carries the `XRDS` light radius override. It arrived with the `lights`
 /// table, but the two are detected separately: the override is a reference column, and a database
 /// with the table and without the column must still load.
@@ -796,12 +934,27 @@ fn has_radius_override(connection: &Connection) -> Result<bool> {
     Ok(count > 0)
 }
 
-/// The reference query's column list and joins for one database: the `lights` table and the
-/// `radius_override` column are joined when the database has them and read as `NULL` when it does
-/// not, so [`map_reference`]'s column indices are the same either way.
+/// Whether the database carries both `references.emittance_id` and the `emittance` table it names.
+fn has_emittance(connection: &Connection) -> Result<bool> {
+    let count: i64 = connection
+        .prepare_cached(
+            "SELECT (SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='emittance_id')
+                  * (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='emittance')",
+        )?
+        .query_row([], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
+/// The reference query's column list and joins for one database: optional `records`, `lights`,
+/// `door_links`, and `emittance` data read as `NULL` when absent, keeping [`map_reference`]'s
+/// column indices stable across database versions. Enable-state metadata is optional for legacy
+/// packages; the resolver survives cell unloads on this worker.
 struct ReferenceQuery {
     columns: String,
     joins: String,
+    parent_sql: String,
+    enable_states: EnableStateResolver,
+    enable_errors: HashSet<EnableStateError>,
 }
 
 impl ReferenceQuery {
@@ -819,6 +972,19 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
+        let has_door_links = has_door_links(connection)?;
+        let door_columns = if has_door_links {
+            DOOR_COLUMNS
+        } else {
+            bevy::log::info!("world database has no door_links table; no reference is a load door");
+            ABSENT_DOOR_COLUMNS
+        };
+        let has_emittance = has_emittance(connection)?;
+        let emittance_columns = if has_emittance {
+            EMITTANCE_COLUMNS
+        } else {
+            ABSENT_EMITTANCE_COLUMNS
+        };
         let mut joins = String::from(REFERENCE_JOIN);
         if has_records {
             joins.push_str(" LEFT JOIN records b ON b.form_id=r.base_form_id");
@@ -826,18 +992,51 @@ impl ReferenceQuery {
         if has_lights {
             joins.push_str(LIGHT_JOIN);
         }
+        if has_door_links {
+            joins.push_str(DOOR_JOIN);
+        }
+        if has_emittance {
+            joins.push_str(EMITTANCE_JOIN);
+        }
+        let enable_column_count: usize = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('references') \
+             WHERE name IN ('header_flags','enable_parent_id','enable_parent_flags')",
+            [],
+            |row| row.get(0),
+        )?;
+        let enable_columns = match enable_column_count {
+            0 => {
+                bevy::log::warn!(
+                    "world database has no reference enable-state metadata; references default to enabled; reconvert assets to filter initially disabled references"
+                );
+                "0,NULL,0"
+            }
+            3 => "header_flags,enable_parent_id,enable_parent_flags",
+            _ => color_eyre::eyre::bail!(
+                "incomplete reference enable-state columns: expected header_flags, enable_parent_id and enable_parent_flags"
+            ),
+        };
+        let reference_enable_columns = match enable_column_count {
+            0 => "0,NULL,0",
+            _ => "r.header_flags,r.enable_parent_id,r.enable_parent_flags",
+        };
         Ok(Self {
             columns: format!(
-                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column}"
+                "{REFERENCE_COLUMNS},{record_column},{light_columns},{override_column},\
+                 {door_columns},{emittance_columns},{reference_enable_columns},\
+                 {STATIC_FLAGS_COLUMN}"
             ),
             joins,
+            parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
+            enable_states: EnableStateResolver::default(),
+            enable_errors: HashSet::new(),
         })
     }
 }
 
 fn load_cell(
     connection: &Connection,
-    query: &ReferenceQuery,
+    query: &mut ReferenceQuery,
     generation: u64,
     key: CellKey,
 ) -> Result<CellPayload> {
@@ -853,8 +1052,9 @@ fn load_cell(
         )?,
         CellKey::Interior(cell_id) => cell_id,
     };
-    let ReferenceQuery { columns, joins } = query;
-    let references = match key {
+    let columns = &query.columns;
+    let joins = &query.joins;
+    let rows = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
@@ -882,6 +1082,31 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
     };
+    let mut references = Vec::with_capacity(rows.len());
+    for (mut reference, inputs) in rows {
+        let state = query
+            .enable_states
+            .resolve(reference.form_id, inputs, |parent| {
+                connection
+                    .prepare_cached(&query.parent_sql)?
+                    .query_row([parent], |row| map_enable_inputs(row, 0))
+                    .optional()
+            })
+            .wrap_err_with(|| format!("enable state of reference {:08X}", reference.form_id))?;
+        reference.initially_enabled = match state {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                if query.enable_errors.insert(error) {
+                    bevy::log::warn!(
+                        "reference {:08X}: {error}; unresolved references will not spawn",
+                        reference.form_id
+                    );
+                }
+                false
+            }
+        };
+        references.push(reference);
+    }
     Ok(CellPayload {
         generation,
         key,
@@ -890,7 +1115,30 @@ fn load_cell(
     })
 }
 
-fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
+fn map_enable_inputs(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+) -> rusqlite::Result<InitialEnableInputs> {
+    let parent_id: Option<u32> = row.get(start + 1)?;
+    let parent_flags: Option<u32> = row.get(start + 2)?;
+    if parent_id.is_some_and(|id| id != 0) && parent_flags.is_none() {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            start + 2,
+            rusqlite::types::Type::Null,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "enable parent has no XESP flags",
+            )),
+        ));
+    }
+    Ok(InitialEnableInputs {
+        header_flags: row.get(start)?,
+        parent_id,
+        parent_flags: parent_flags.unwrap_or(0),
+    })
+}
+
+fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, InitialEnableInputs)> {
     let base_record_type: Option<String> = row.get(18)?;
     let radius: Option<f32> = row.get(19)?;
     let light = match radius {
@@ -901,21 +1149,61 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReferenceRow> {
         }),
         None => None,
     };
-    Ok(ReferenceRow {
-        form_id: row.get(0)?,
-        cell_id: row.get(1)?,
-        base_form_id: row.get(2)?,
-        base_record_type,
-        model_path: row.get(3)?,
-        position: [row.get(4)?, row.get(5)?, row.get(6)?],
-        rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
-        scale: row.get(10)?,
-        bounds_min: [row.get(11)?, row.get(12)?, row.get(13)?],
-        bounds_max: [row.get(14)?, row.get(15)?, row.get(16)?],
-        bounds_valid: row.get(17)?,
-        light,
-        light_radius_override: row.get(24)?,
-    })
+    let destination_ref_id: Option<u32> = row.get(25)?;
+    let door = match destination_ref_id {
+        Some(destination_ref_id) => {
+            // A row whose arrival point is NULL (a link the converter could not finish) is no
+            // link; it must not fail the cell.
+            let mut arrival = [None::<f32>; 6];
+            for (slot, column) in arrival.iter_mut().zip(28..34) {
+                *slot = row.get(column)?;
+            }
+            if arrival.iter().all(Option::is_some) {
+                let value = |index: usize| arrival[index].unwrap_or_default();
+                Some(DoorLinkRow {
+                    destination_ref_id,
+                    destination_cell_id: row.get(26)?,
+                    destination_worldspace_id: row.get(27)?,
+                    arrival_position: [value(0), value(1), value(2)],
+                    arrival_rotation: [value(3), value(4), value(5)],
+                })
+            } else {
+                bevy::log::debug!(
+                    reference = format_args!("{:08X}", row.get::<_, u32>(0)?),
+                    "door_links row has a NULL arrival position or rotation; the reference is no load door"
+                );
+                None
+            }
+        }
+        None => None,
+    };
+    let emittance = match row.get::<_, Option<u8>>(34)? {
+        Some(red) => Some([red, row.get(35)?, row.get(36)?]),
+        None => None,
+    };
+    let base_flags: Option<u32> = row.get(STATIC_FLAGS_INDEX)?;
+    Ok((
+        ReferenceRow {
+            form_id: row.get(0)?,
+            initially_enabled: true,
+            cell_id: row.get(1)?,
+            base_form_id: row.get(2)?,
+            base_record_type,
+            base_is_marker: base_flags.is_some_and(|flags| flags & MARKER_RECORD_FLAG != 0),
+            model_path: row.get(3)?,
+            position: [row.get(4)?, row.get(5)?, row.get(6)?],
+            rotation: [row.get(7)?, row.get(8)?, row.get(9)?],
+            scale: row.get(10)?,
+            bounds_min: [row.get(11)?, row.get(12)?, row.get(13)?],
+            bounds_max: [row.get(14)?, row.get(15)?, row.get(16)?],
+            bounds_valid: row.get(17)?,
+            light,
+            light_radius_override: row.get(24)?,
+            door,
+            emittance,
+        },
+        map_enable_inputs(row, REFERENCE_ENABLE_START)?,
+    ))
 }
 
 #[cfg(test)]
@@ -944,7 +1232,7 @@ mod tests {
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &ReferenceQuery::for_connection(connection)?,
+            &mut ReferenceQuery::for_connection(connection)?,
             generation,
             key,
         )
@@ -957,17 +1245,232 @@ mod tests {
                 INSERT INTO schema_info VALUES(6);
                 CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
                 CREATE TABLE land(cell_id INTEGER PRIMARY KEY);
-                CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL);
+                CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE "references"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
                 CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);
                 INSERT INTO cells VALUES(10,60,2,-3);
-                INSERT INTO statics VALUES(20,'architecture/wall.nif',-1,-2,-3,1,2,3,1);
+                INSERT INTO statics VALUES(20,'architecture/wall.nif',-1,-2,-3,1,2,3,1,0);
                 INSERT INTO "references" VALUES(30,10,20,8200,-12200,50,0,0,0,1);
                 INSERT INTO exterior_spatial VALUES(30,8200,8200,-12200,-12200,50,50,10,60);
                 INSERT INTO "references" VALUES(31,99,20,8250,-12150,55,0,0,0,1);
                 INSERT INTO exterior_spatial VALUES(31,8250,8250,-12150,-12150,55,55,99,60);"#,
             )
             .unwrap();
+    }
+
+    fn enable_columns(connection: &Connection) {
+        connection
+            .execute_batch(
+                "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE \"references\" ADD COLUMN enable_parent_id INTEGER;
+             ALTER TABLE \"references\" ADD COLUMN enable_parent_flags INTEGER;",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn enable_metadata_does_not_decode_reserved_door_slots() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch(
+                "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
+            )
+            .unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                for index in 34..37 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // Model #128's nine-column projection with distinct destination and
+        // arrival values, without implementing or depending on its door tables.
+        // Bounds COALESCE expressions contain commas, so replace the exact
+        // suffix instead of treating the SQL text as a CSV list.
+        query.columns = query.columns.replace(
+            &format!(",{ABSENT_DOOR_COLUMNS},{ABSENT_EMITTANCE_COLUMNS},r.header_flags"),
+            ",123,456,NULL,1.25,2.5,3.75,0.1,0.2,0.3,NULL,NULL,NULL,r.header_flags",
+        );
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            query.columns, query.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                assert_eq!(row.get::<_, u32>(25)?, 123);
+                assert_eq!(row.get::<_, u32>(26)?, 456);
+                assert_eq!(row.get::<_, Option<u32>>(27)?, None);
+                assert_eq!(row.get::<_, f32>(28)?, 1.25);
+                let (_, inputs) = map_reference(row)?;
+                assert_eq!(inputs.header_flags, 2048);
+                assert_eq!(inputs.parent_id, Some(20));
+                assert_eq!(inputs.parent_flags, 1);
+                Ok(())
+            })
+            .unwrap();
+        for key in [
+            CellKey::Interior(10),
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        ] {
+            let payload = super::load_cell(&connection, &mut query, 1, key).unwrap();
+            let child = payload
+                .references
+                .iter()
+                .find(|row| row.form_id == 30)
+                .unwrap();
+            assert!(!child.initially_enabled);
+        }
+    }
+
+    #[test]
+    fn initial_enable_state_uses_parents_outside_the_loaded_cell_without_models() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags) VALUES(100,500,9999,2048);
+             INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags,enable_parent_id,enable_parent_flags)
+                 VALUES(200,600,9998,0,100,1);
+             UPDATE \"references\" SET header_flags=2048,enable_parent_id=200,enable_parent_flags=952044802 WHERE id=30;
+             UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
+        ).unwrap();
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        for _ in 0..2 {
+            let interior =
+                super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
+            assert_eq!(interior.references.len(), 1);
+            assert!(!interior.references[0].initially_enabled);
+            let exterior = super::load_cell(
+                &connection,
+                &mut query,
+                2,
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 2,
+                    grid_y: -3,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                exterior.references.len(),
+                2,
+                "hidden rows remain in the payload"
+            );
+            assert!(
+                exterior
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == 30)
+                    .unwrap()
+                    .initially_enabled
+            );
+            assert!(
+                !exterior
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == 31)
+                    .unwrap()
+                    .initially_enabled
+            );
+        }
+        assert!(query.enable_errors.is_empty());
+    }
+
+    #[test]
+    fn missing_and_cyclic_enable_parents_remain_hidden_and_are_diagnosed_once() {
+        for parent in [99, 31] {
+            let connection = Connection::open_in_memory().unwrap();
+            fixture(&connection);
+            enable_columns(&connection);
+            connection.execute(
+                "UPDATE \"references\" SET enable_parent_id=?1,enable_parent_flags=1 WHERE id=30",
+                [parent],
+            ).unwrap();
+            connection.execute_batch(
+                "UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
+            ).unwrap();
+            let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+            for _ in 0..2 {
+                let payload = super::load_cell(
+                    &connection,
+                    &mut query,
+                    1,
+                    CellKey::Exterior {
+                        worldspace_id: 60,
+                        grid_x: 2,
+                        grid_y: -3,
+                    },
+                )
+                .unwrap();
+                assert_eq!(payload.references.len(), 2);
+                assert!(payload.references.iter().all(|row| !row.initially_enabled));
+                assert_eq!(query.enable_errors.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_reference_columns_default_enabled_but_partial_columns_fail() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert!(payload.references.iter().all(|row| row.initially_enabled));
+        connection
+            .execute_batch(
+                "ALTER TABLE \"references\" ADD COLUMN header_flags INTEGER NOT NULL DEFAULT 0;",
+            )
+            .unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("incomplete reference enable-state columns")
+        );
+    }
+
+    #[test]
+    fn corrupt_parent_flags_fail_the_cell_instead_of_inventing_enabled_state() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection.execute_batch(
+            "INSERT INTO \"references\"(id,cell_id,base_form_id,header_flags) VALUES(100,500,9999,-1);
+             UPDATE \"references\" SET enable_parent_id=100,enable_parent_flags=1 WHERE id=31;"
+        ).unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("enable state of reference 0000001F")
+        );
+    }
+
+    #[test]
+    fn nonzero_enable_parent_requires_flags_in_the_database() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        connection
+            .execute_batch("UPDATE \"references\" SET enable_parent_id=30 WHERE id=31;")
+            .unwrap();
+        let error = load_cell(&connection, 1, CellKey::Interior(99)).unwrap_err();
+        assert!(format!("{error:#}").contains("enable parent has no XESP flags"));
     }
 
     fn lod_fixture(connection: &Connection) {
@@ -1169,12 +1672,16 @@ mod tests {
         }
         Connection::open(&database)
             .unwrap()
-            .execute("UPDATE schema_info SET version=7", [])
+            .execute(
+                "UPDATE schema_info SET version=?1",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION],
+            )
             .unwrap();
         std::fs::write(
             directory.path().join("lod-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "build_identity": identity, "converter_schema": 24, "world_database_schema": 7,
+                "build_identity": identity, "converter_schema": 24,
+                "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
                 "chunks": 1, "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
             }))
             .unwrap(),
@@ -1205,6 +1712,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("queue is full"), "{error}");
+    }
+
+    #[test]
+    fn full_database_queue_rejects_cell_intake_without_blocking() {
+        let (database, requests, _responses) = WorldDatabase::channel_fixture(1);
+        let request = || DatabaseRequest::Load {
+            generation: 1,
+            key: CellKey::Interior(1),
+            queued_at: Instant::now(),
+        };
+        database.try_request(request()).unwrap();
+        let error = database.try_request(request()).unwrap_err().to_string();
+        assert!(error.contains("queue is full"), "{error}");
+        assert_eq!(requests.len(), 1);
     }
 
     #[test]
@@ -1465,7 +1986,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT NOT NULL);
                  INSERT INTO records VALUES(20,'STAT');
-                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1);
+                 INSERT INTO statics VALUES(22,'clutter/barrel.nif',-1,-1,-1,1,1,1,1,0);
                  INSERT INTO records VALUES(22,'MISC');
                  INSERT INTO \"references\" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
                  INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);",
@@ -1485,6 +2006,48 @@ mod tests {
         let movable = payload.references.iter().find(|r| r.form_id == 40).unwrap();
         assert_eq!(fixed.base_record_type.as_deref(), Some("STAT"));
         assert_eq!(movable.base_record_type.as_deref(), Some("MISC"));
+    }
+
+    #[test]
+    fn base_is_marker_reads_the_records_marker_flag_not_its_model_name() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let exterior = CellKey::Exterior {
+            worldspace_id: 60,
+            grid_x: 2,
+            grid_y: -3,
+        };
+        // The map marker carries the flag; the Civil War map flag has "marker" in its filename
+        // but no flag. A marker flag on a model without "marker" in its path is still authoritative.
+        connection
+            .execute_batch(
+                "INSERT INTO statics VALUES(23,'marker_map.nif',-1,-1,-1,1,1,1,1,8388608);
+                 INSERT INTO statics VALUES(24,'clutter/civilwar/cwmapmarkers01.nif',-1,-1,-1,1,1,1,1,0);
+                 INSERT INTO \"references\" VALUES(41,10,23,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(41,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO \"references\" VALUES(42,10,24,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(42,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO statics VALUES(25,'architecture/wall.nif',-1,-1,-1,1,1,1,1,8388608);
+                 INSERT INTO \"references\" VALUES(43,10,25,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(43,8250,8250,-12150,-12150,55,55,10,60);
+                 INSERT INTO \"references\" VALUES(44,10,999,8250,-12150,55,0,0,0,1);
+                 INSERT INTO exterior_spatial VALUES(44,8250,8250,-12150,-12150,55,55,10,60);",
+            )
+            .unwrap();
+        let payload = load_cell(&connection, 1, exterior).unwrap();
+        let marker = |form_id| {
+            payload
+                .references
+                .iter()
+                .find(|r| r.form_id == form_id)
+                .unwrap()
+                .base_is_marker
+        };
+        assert!(marker(41));
+        assert!(!marker(42));
+        assert!(!marker(30));
+        assert!(marker(43));
+        assert!(!marker(44));
     }
 
     #[test]
@@ -1908,6 +2471,72 @@ mod tests {
         assert_eq!(lit.light_radius_override, None);
     }
 
+    /// Reference 30 names a region the converter resolved; reference 40 names one it could not.
+    fn emittance_fixture(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"INSERT INTO statics(id,model_path,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(22,'clutter/barrel.nif',-2,-3,-4,2,3,4,1);
+                INSERT INTO "references" VALUES(40,10,22,8250,-12150,55,0,0,0,1);
+                INSERT INTO exterior_spatial VALUES(40,8250,8250,-12150,-12150,55,55,10,60);
+                ALTER TABLE "references" ADD COLUMN emittance_id INTEGER;
+                UPDATE "references" SET emittance_id=535419 WHERE id=30;
+                UPDATE "references" SET emittance_id=535420 WHERE id=40;
+                CREATE TABLE emittance(id INTEGER PRIMARY KEY,source_type TEXT NOT NULL,weather_id INTEGER,
+                    sunrise_r INTEGER NOT NULL,sunrise_g INTEGER NOT NULL,sunrise_b INTEGER NOT NULL,
+                    day_r INTEGER NOT NULL,day_g INTEGER NOT NULL,day_b INTEGER NOT NULL,
+                    sunset_r INTEGER NOT NULL,sunset_g INTEGER NOT NULL,sunset_b INTEGER NOT NULL,
+                    night_r INTEGER NOT NULL,night_g INTEGER NOT NULL,night_b INTEGER NOT NULL);
+                INSERT INTO emittance VALUES(535419,'REGN',535418,124,70,16,12,34,56,243,118,54,242,176,55);"#,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn returns_the_day_colour_of_a_reference_emittance_source() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        emittance_fixture(&connection);
+        assert!(has_emittance(&connection).unwrap());
+
+        let payload = load_cell(
+            &connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap();
+        let emittance = |form_id: u32| {
+            payload
+                .references
+                .iter()
+                .find(|reference| reference.form_id == form_id)
+                .expect("the reference is in the cell")
+                .emittance
+        };
+        assert_eq!(emittance(30), Some([12, 34, 56]), "the day column only");
+        assert_eq!(
+            emittance(40),
+            None,
+            "a source without an emittance row lends nothing"
+        );
+    }
+
+    /// The column alone, without the table it names, does not make the query join it.
+    #[test]
+    fn needs_both_the_emittance_column_and_table() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(r#"ALTER TABLE "references" ADD COLUMN emittance_id INTEGER;"#)
+            .unwrap();
+        assert!(!has_emittance(&connection).unwrap());
+        let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert_eq!(payload.references[0].emittance, None);
+    }
+
     #[test]
     fn loads_a_database_whose_references_are_all_unlit() {
         let connection = Connection::open_in_memory().unwrap();
@@ -1929,10 +2558,183 @@ mod tests {
         assert!(payload.references.iter().all(
             |reference| reference.light.is_none() && reference.light_radius_override.is_none()
         ));
+        assert!(!has_emittance(&connection).unwrap());
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.emittance.is_none()),
+            "a database without the emittance table lends no emittance"
+        );
         assert_eq!(
             payload.references[0].model_path.as_deref(),
             Some("architecture/wall.nif"),
             "the plain query still joins the base object"
+        );
+    }
+
+    /// A `door_links` table and its rows: reference 30 (exterior cell 10) leads into interior cell
+    /// 500, reference 31 leads out to worldspace 60 and reference 32 is a link whose destination
+    /// the converter could not resolve.
+    fn add_door_links(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"CREATE TABLE door_links(ref_id INTEGER PRIMARY KEY,destination_ref_id INTEGER NOT NULL,
+                    pos_x REAL NOT NULL,pos_y REAL NOT NULL,pos_z REAL NOT NULL,
+                    rot_x REAL NOT NULL,rot_y REAL NOT NULL,rot_z REAL NOT NULL,
+                    destination_cell_id INTEGER,destination_worldspace_id INTEGER);
+                INSERT INTO "references" VALUES(32,10,20,8260,-12100,50,0,0,0,1);
+                INSERT INTO exterior_spatial VALUES(32,8260,8260,-12100,-12100,50,50,10,60);
+                INSERT INTO door_links VALUES(30,700,10.5,-20.25,30,0,0,1.5,500,NULL);
+                INSERT INTO door_links VALUES(31,701,8200,-12200,50,0,0,3.0,10,60);
+                INSERT INTO door_links VALUES(32,702,1,2,3,0,0,0,NULL,NULL);"#,
+            )
+            .unwrap();
+    }
+
+    fn exterior_payload(connection: &Connection) -> CellPayload {
+        load_cell(
+            connection,
+            1,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 2,
+                grid_y: -3,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn door_links_and_emittance_load_independently_and_together() {
+        for doors in [false, true] {
+            for emittance in [false, true] {
+                let connection = Connection::open_in_memory().unwrap();
+                fixture(&connection);
+                if doors {
+                    add_door_links(&connection);
+                }
+                if emittance {
+                    emittance_fixture(&connection);
+                }
+                let payload = exterior_payload(&connection);
+                let reference = payload
+                    .references
+                    .iter()
+                    .find(|reference| reference.form_id == 30)
+                    .unwrap();
+                assert_eq!(
+                    reference.door,
+                    doors.then_some(DoorLinkRow {
+                        destination_ref_id: 700,
+                        destination_cell_id: Some(500),
+                        destination_worldspace_id: None,
+                        arrival_position: [10.5, -20.25, 30.0],
+                        arrival_rotation: [0.0, 0.0, 1.5],
+                    }),
+                    "doors={doors}, emittance={emittance}"
+                );
+                assert_eq!(
+                    reference.emittance,
+                    emittance.then_some([12, 34, 56]),
+                    "doors={doors}, emittance={emittance}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_door_links_row_rides_on_the_reference_row() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+
+        assert!(has_door_links(&connection).unwrap());
+        let payload = exterior_payload(&connection);
+        let door = |form_id: u32| {
+            payload
+                .references
+                .iter()
+                .find(|reference| reference.form_id == form_id)
+                .unwrap()
+                .door
+                .clone()
+        };
+        assert_eq!(
+            door(30),
+            Some(DoorLinkRow {
+                destination_ref_id: 700,
+                destination_cell_id: Some(500),
+                destination_worldspace_id: None,
+                arrival_position: [10.5, -20.25, 30.0],
+                arrival_rotation: [0.0, 0.0, 1.5],
+            })
+        );
+        assert_eq!(door(31).unwrap().destination_worldspace_id, Some(60));
+        assert_eq!(door(32).unwrap().destination_cell_id, None);
+        assert_eq!(payload.references.len(), 3);
+    }
+
+    #[test]
+    fn a_door_links_row_with_null_arrival_columns_is_no_link_and_does_not_fail_the_cell() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(
+                r#"CREATE TABLE door_links(ref_id INTEGER PRIMARY KEY,destination_ref_id INTEGER NOT NULL,
+                    pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,
+                    destination_cell_id INTEGER,destination_worldspace_id INTEGER);
+                INSERT INTO door_links VALUES(30,700,NULL,NULL,NULL,NULL,NULL,NULL,500,NULL);
+                INSERT INTO door_links VALUES(31,701,8200,-12200,50,0,0,NULL,10,60);"#,
+            )
+            .unwrap();
+
+        let payload = exterior_payload(&connection);
+        assert_eq!(payload.references.len(), 2);
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
+        );
+    }
+
+    #[test]
+    fn a_door_links_table_of_another_shape_is_ignored_and_does_not_fail_the_cell() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(
+                r#"CREATE TABLE door_links(ref_id INTEGER PRIMARY KEY,destination_ref_id INTEGER NOT NULL,
+                    pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL);
+                INSERT INTO door_links VALUES(30,700,1,2,3,0,0,0);"#,
+            )
+            .unwrap();
+
+        assert!(!has_door_links(&connection).unwrap());
+        let payload = exterior_payload(&connection);
+        assert_eq!(payload.references.len(), 2);
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
+        );
+    }
+
+    #[test]
+    fn a_database_without_door_links_yields_no_links() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+
+        assert!(!has_door_links(&connection).unwrap());
+        let payload = exterior_payload(&connection);
+        assert_eq!(payload.references.len(), 2);
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
         );
     }
 }

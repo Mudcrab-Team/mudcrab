@@ -62,10 +62,20 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '\.(ps1|py)$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/lod-experiment/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_enable_observations" '^(scripts/reference-enable-observations\.py|scripts/tests/test_reference_enable_observations\.py|\.github/workflows/run_tests\.yml)$'
+          check_pattern "check_schema_validation" '^(tools/schema_validation/|\.github/workflows/run_tests\.yml$)'
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_lod_experiment: ${{ steps.filter.outputs.check_lod_experiment }}
+      check_native_profiling: ${{ steps.filter.outputs.check_native_profiling }}
+      check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
+      check_enable_observations: ${{ steps.filter.outputs.check_enable_observations }}
+      check_schema_validation: ${{ steps.filter.outputs.check_schema_validation }}
 
   format:
     needs: [orchestrate]
@@ -101,6 +111,9 @@ jobs:
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
+      - name: Test Riverwood LOD capture gates
+        run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -113,6 +126,99 @@ jobs:
             fi
           done < <(git ls-files '*.ps1')
           exit "$failed"
+
+      - name: Verify LOD acceptance summary checks
+        run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
+
+      - name: Verify terrain LOD helper commands
+        run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v
+
+      - name: Build and verify pinned object LOD experiment
+        if: needs.orchestrate.outputs.check_lod_experiment == 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.3 https://github.com/zeux/meshoptimizer.git "$RUNNER_TEMP/meshoptimizer"
+          python3 scripts/lod-experiment/build.py --meshoptimizer "$RUNNER_TEMP/meshoptimizer" --output "$RUNNER_TEMP/lod-builder"
+          LOD_EXPERIMENT_BUILDER="$RUNNER_TEMP/lod-builder" python3 -m unittest discover -s scripts/lod-experiment/tests -p 'test_*.py' -v
+
+  native_profiling:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_native_profiling == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test native trace analyzers and camera fixtures
+        run: python3 -m unittest discover -s scripts/tests -p test_native_metal_profiling.py -v
+
+  z_fighting_audit:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_z_fighting_audit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test static depth-risk audit
+        run: python3 -m unittest discover -s scripts/tests -p test_audit_z_fighting.py -v
+
+  enable_observations:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_enable_observations == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test reference observation input preservation
+        run: python3 -m unittest discover -s scripts/tests -p test_reference_enable_observations.py -v
+
+  schema_validation:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_schema_validation == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: macos-latest
+            python: '3.11'
+          - os: windows-latest
+            python: '3.13'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Test standalone schema evidence tools
+        run: python -B -m unittest discover -s tools/schema_validation -p 'test_*.py' -v
 
   clippy:
     needs: [orchestrate]
@@ -197,7 +303,7 @@ jobs:
           NEXTEST_NO_TESTS: warn
 
       - name: Test GPU texture encoder on software Vulkan
-        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips)'
+        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots)'
         env:
           WGPU_BACKEND: vulkan
 
@@ -254,6 +360,10 @@ jobs:
       - orchestrate
       - format
       - scripts
+      - native_profiling
+      - z_fighting_audit
+      - enable_observations
+      - schema_validation
       - clippy
       - test
       - security
@@ -277,6 +387,10 @@ jobs:
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
+          check_result "native_profiling" "$RESULT_NATIVE_PROFILING"
+          check_result "z_fighting_audit" "$RESULT_Z_FIGHTING_AUDIT"
+          check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
+          check_result "schema_validation" "$RESULT_SCHEMA_VALIDATION"
           check_result "clippy" "$RESULT_CLIPPY"
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
@@ -287,6 +401,10 @@ jobs:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
+          RESULT_NATIVE_PROFILING: ${{ needs.native_profiling.result }}
+          RESULT_Z_FIGHTING_AUDIT: ${{ needs.z_fighting_audit.result }}
+          RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}
+          RESULT_SCHEMA_VALIDATION: ${{ needs.schema_validation.result }}
           RESULT_CLIPPY: ${{ needs.clippy.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}

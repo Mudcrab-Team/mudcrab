@@ -189,10 +189,10 @@ fn legacy_pack(data: &Path, output: &Path, schema: u32) -> ConversionManifest {
     legacy
 }
 
-/// Producer 24 rebuilds every texture and world output, retaining verified GLBs/Luau.
-/// Producer 23 remains a negative control for the earlier changed mesh contract.
+/// Producers 23 and 24 rebuild every texture, GLB and world output, retaining verified Luau.
+/// Producer 27 changed the GLB collision data, so producer-24 GLBs no longer count as compatible.
 #[tokio::test]
-async fn texture_semantic_migration_preserves_only_known_compatible_published_meshes() {
+async fn texture_semantic_migration_rebuilds_meshes_and_textures_of_earlier_producers() {
     for schema in [24, 23] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
@@ -215,10 +215,7 @@ async fn texture_semantic_migration_preserves_only_known_compatible_published_me
         let mut config = PipelineConfig::new(&data, &output);
         config.no_lod = true;
         let report = run_pipeline(config.clone()).await;
-        assert_eq!(
-            report.converted,
-            (textures + if schema == 24 { 0 } else { meshes }) as u64
-        );
+        assert_eq!(report.converted, (textures + meshes) as u64);
         assert_eq!(
             fs::read(output.join("textures/txst_slot_05.ktx2")).unwrap(),
             expected_cube
@@ -264,22 +261,52 @@ async fn texture_semantic_migration_still_requires_matching_configuration() {
     let output = directory.path().join("modern");
     convert_texture_set_semantics(&data, &output).await;
     let legacy = legacy_pack(&data, &output, 24);
-    let archive_files: u64 = legacy
-        .archives
-        .values()
-        .map(|entry| entry.files.len() as u64)
-        .sum();
     let mut changed = PipelineConfig::new(&data, &output);
     changed.no_lod = true;
     changed.texture_zstd_level = 0;
+    assert_ne!(
+        legacy.configuration_hash,
+        configuration_hash_for_schema(&changed, 24).unwrap()
+    );
+    let expected_configuration = configuration_hash(&changed).unwrap();
+    let raw_entries = legacy
+        .archives
+        .values()
+        .map(|archive| archive.files.len() as u64)
+        .sum::<u64>();
     let report = run_pipeline(changed).await;
-    assert_eq!(report.cache_hits, archive_files);
+    assert_eq!(report.cache_hits, raw_entries);
     assert_eq!(report.converted, legacy.entries.len() as u64);
+    let current = manifest(&output);
+    assert_eq!(current.configuration_hash, expected_configuration);
+    assert_eq!(
+        current.entries.keys().collect::<Vec<_>>(),
+        legacy.entries.keys().collect::<Vec<_>>()
+    );
+    for entry in current.entries.values() {
+        if entry.output.ends_with(".ktx2") {
+            let bytes = fs::read(output.join(&entry.output)).unwrap();
+            assert_eq!(
+                inspect_runtime_ktx2(&bytes).unwrap().supercompression,
+                "None"
+            );
+        }
+    }
+    for (slot, encoding) in [
+        (2, TextureEncoding::DataLinear),
+        (5, TextureEncoding::ColorSrgb),
+    ] {
+        let bytes = fs::read(output.join(&current.entries[SLOT_PATHS[slot]].output)).unwrap();
+        assert_eq!(inspect_runtime_ktx2(&bytes).unwrap().encoding, encoding);
+    }
 }
 
-/// Metadata retains honest producer-24 texture provenance until normal conversion.
+/// Metadata retains honest producer-24 mesh and texture provenance until normal conversion.
+/// Metadata publication may not relabel producer-24 textures as current: their KTX2 level layout
+/// predates producer 28. The rejected rebuild publishes nothing, and normal conversion regenerates
+/// the same current textures that a fresh conversion produces.
 #[tokio::test]
-async fn texture_semantic_migration_preserves_original_metadata_asset_provenance() {
+async fn texture_semantic_migration_rejects_metadata_relabel_of_producer_24_textures() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let source = directory.path().join("source");
@@ -287,60 +314,25 @@ async fn texture_semantic_migration_preserves_original_metadata_asset_provenance
     convert_texture_set_semantics(&data, &source).await;
     let expected_cube = fs::read(source.join("textures/txst_slot_05.ktx2")).unwrap();
     let expected_mask = fs::read(source.join("textures/txst_slot_02.ktx2")).unwrap();
-    let legacy = legacy_pack(&data, &source, 24);
+    legacy_pack(&data, &source, 24);
     let mut config = PipelineConfig::new(&data, &output);
     config.no_lod = true;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = AssetPipeline::rebuild_metadata_async(config.clone(), &source, tx)
+    let error = AssetPipeline::rebuild_metadata_async(config.clone(), &source, tx)
         .await
-        .unwrap();
+        .unwrap_err()
+        .to_string();
     drain.await.unwrap();
-    assert!(report.complete);
-    assert_eq!(report.converted, 0);
-    let retained = manifest(&output);
-    assert_eq!(retained.schema_version, CONVERTER_SCHEMA_VERSION);
-    assert_eq!(retained.retained_mesh_schema_version, Some(24));
-    assert_eq!(
-        retained.retained_asset_configuration_hash,
-        Some(legacy.configuration_hash)
-    );
-    for path in [
-        "textures/txst_slot_05.ktx2",
-        "textures/txst_slot_02.ktx2",
-        "meshes/generated.glb",
-    ] {
-        assert_eq!(
-            fs::read(output.join(path)).unwrap(),
-            fs::read(source.join(path)).unwrap()
-        );
-    }
-    let eligible = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
     assert!(
-        eligible
-            .entries
-            .values()
-            .any(|entry| entry.output.ends_with(".glb"))
+        error.contains("predate the current texture layout"),
+        "{error}"
     );
-    assert!(
-        eligible
-            .entries
-            .values()
-            .all(|entry| !entry.output.ends_with(".ktx2"))
-    );
+    assert!(!output.exists());
     let normal = run_pipeline(config).await;
+    assert!(normal.converted > 0);
     let current = manifest(&output);
-    let textures = retained
-        .entries
-        .values()
-        .filter(|entry| entry.output.ends_with(".ktx2"))
-        .count();
-    let ingested = current
-        .archives
-        .values()
-        .map(|archive| archive.files.len())
-        .sum::<usize>();
-    assert_eq!(normal.converted, (textures + ingested) as u64);
+    assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
     assert_eq!(current.retained_mesh_schema_version, None);
     assert_eq!(
         fs::read(output.join("textures/txst_slot_05.ktx2")).unwrap(),

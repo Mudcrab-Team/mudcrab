@@ -1,6 +1,6 @@
 //! Targeted repair of a published pack, including asset-aware database finalization.
 use crate::{
-    archive::{ArchiveExtractor, safe_relative_path},
+    archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
     asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
     cache::{
         CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, configuration_hash, hash_file,
@@ -23,13 +23,15 @@ use crate::{
 };
 use color_eyre::{
     Result,
-    eyre::{WrapErr, ensure},
+    eyre::{WrapErr, bail, ensure},
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
@@ -330,6 +332,22 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         let Some(entry) = manifest.archives.get(archive_key) else {
             continue;
         };
+        let mut magic = [0u8; 4];
+        fs::File::open(&archive)
+            .wrap_err_with(|| format!("cannot read archive header {}", archive.display()))?
+            .read_exact(&mut magic)
+            .wrap_err_with(|| format!("cannot read archive header {}", archive.display()))?;
+        let current_reader_version = archive_reader_version(&magic);
+        if entry.reader_version != current_reader_version {
+            fs::remove_dir_all(&directory)
+                .wrap_err("cannot discard repair staging for a stale archive reader entry")?;
+            bail!(
+                "archive {} was ingested with reader version {} but current archive requires {}; run a normal conversion before repair",
+                archive.display(),
+                entry.reader_version,
+                current_reader_version
+            );
+        }
         for file in &entry.files {
             if kind(&file.path).is_none() {
                 continue;
@@ -373,12 +391,16 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             );
         }
     }
-    // Resolver values carry logical identity so shared content-addressed blobs
-    // cannot select the wrong archive provenance when verifying a dependency.
+    // Keys stay logical so the resolver returns a source identity, not a
+    // content-addressed blob two archives may share; values are readable paths
+    // so the skeleton index can parse them.
     let mesh_sources = sources
-        .keys()
-        .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+        .iter()
+        .map(|(key, source)| (PathBuf::from(key), source.path.clone()))
         .collect();
+    // Parsing every skeleton is costly, so it happens at most once per run and
+    // only if a mesh needs repair.
+    let skeletons = OnceCell::new();
     for extension in ["nif", "dds", "pex"] {
         let count = sources
             .keys()
@@ -439,6 +461,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &key,
             &sources,
             &mesh_sources,
+            &skeletons,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -542,6 +565,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
             &key,
             &sources,
             &mesh_sources,
+            &skeletons,
             &mut verified_archives,
             &semantics,
             &mut manifest,
@@ -724,6 +748,7 @@ fn attempt(
     key: &str,
     sources: &BTreeMap<String, Source>,
     mesh_sources: &BTreeMap<PathBuf, PathBuf>,
+    skeletons: &OnceCell<crate::mesh::SkeletonIndex>,
     verified: &mut BTreeSet<PathBuf>,
     semantics: &BTreeMap<String, BTreeSet<crate::texture::TextureSemantic>>,
     manifest: &mut ConversionManifest,
@@ -740,21 +765,46 @@ fn attempt(
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
         if ext == "nif" {
-            let skeleton_key = crate::mesh::resolve_skeleton(Path::new(key), mesh_sources);
-            let skeleton = if let Some(dependency) = &skeleton_key {
-                let dependency_key = dependency
-                    .to_str()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("invalid skeleton key"))?;
-                let dependency_source = &sources[dependency_key];
-                source_hash.push(':');
-                source_hash.push_str(&verified_source_hash(
-                    dependency_source,
-                    dependency_key,
-                    verified,
-                )?);
-                Some(dependency_source.path.as_path())
-            } else {
-                None
+            let skeletons =
+                skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
+            let skeleton_key =
+                crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
+            let skeleton = match skeleton_key {
+                crate::mesh::SkeletonResolution::Skeleton(path) => {
+                    // The resolver returns the normalized key, while archive
+                    // keys keep their original case.
+                    let (dependency_key, dependency_source) = sources
+                        .get_key_value(path.to_string_lossy().as_ref())
+                        .or_else(|| {
+                            sources.iter().find(|(candidate, _)| {
+                                crate::mesh::normalize_path_key(Path::new(candidate.as_str()))
+                                    == crate::mesh::normalize_path_key(&path)
+                            })
+                        })
+                        .ok_or_else(|| {
+                            color_eyre::eyre::eyre!(
+                                "resolved skeleton {} has no winning source",
+                                path.display()
+                            )
+                        })?;
+                    source_hash.push(':');
+                    source_hash.push_str(&verified_source_hash(
+                        dependency_source,
+                        dependency_key,
+                        verified,
+                    )?);
+                    Some(dependency_source.path.as_path())
+                }
+                crate::mesh::SkeletonResolution::SelfContained => None,
+                crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "{}",
+                        crate::mesh::unresolved_skeleton_diagnostic(
+                            format_args!("NIF {key}"),
+                            best_coverage
+                        )
+                    ));
+                }
             };
             MeshConverter::convert_nif_to_glb_with_skeleton(&source.path, &target, skeleton)?;
             MeshConverter::glb_texture_dependencies(&target)?;
@@ -1268,7 +1318,9 @@ mod tests {
         let archive = root.path().join("source.bsa");
         fs::write(&archive, "archive provenance fixture").unwrap();
         let key = "meshes/actors/character/armor/body.nif";
-        let skeleton_key = "meshes/actors/character/character assets/skeleton.nif";
+        // Archive keys keep their authored case; the resolver answers with a
+        // normalized key, so the lookup must not depend on matching spelling.
+        let skeleton_key = "meshes/actors/character/Character Assets/skeleton.nif";
         let skeleton = Source {
             path: blob.clone(),
             archive: Some((archive.clone(), hash_file(&archive).unwrap())),
@@ -1302,8 +1354,8 @@ mod tests {
             let staged = root.path().join(if loose { "loose" } else { "archived" });
             fs::create_dir(&staged).unwrap();
             let mesh_sources = sources
-                .keys()
-                .map(|key| (PathBuf::from(key), PathBuf::from(key)))
+                .iter()
+                .map(|(key, source)| (PathBuf::from(key), source.path.clone()))
                 .collect();
             let mut manifest = ConversionManifest::default();
             let mut report = RepairReport {
@@ -1323,6 +1375,7 @@ mod tests {
                 key,
                 &sources,
                 &mesh_sources,
+                &OnceCell::new(),
                 &mut BTreeSet::new(),
                 &BTreeMap::new(),
                 &mut manifest,

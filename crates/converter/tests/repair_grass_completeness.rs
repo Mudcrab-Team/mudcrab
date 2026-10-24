@@ -594,9 +594,9 @@ async fn missing_preserved_terrain_aborts_repair_without_changing_published_pack
     grass_cache(&config.output_dir);
 }
 
-/// A pre-grass producer's complete retained assets do not certify newly omitted grass data.
+/// Current-layout retained assets without prior grass do not certify newly omitted grass data.
 #[tokio::test]
-async fn historical_metadata_rebuild_retains_grass_loss_completeness() {
+async fn metadata_rebuild_without_prior_grass_retains_loss_completeness() {
     let directory = tempfile::tempdir().unwrap();
     let source_config = fixture(directory.path(), RecordReader::Legacy, true);
     let texture = dds::generate(
@@ -612,25 +612,17 @@ async fn historical_metadata_rebuild_retains_grass_loss_completeness() {
     assert!(initial.warnings[0].contains("incomplete or invalid grass rules"));
     assert_cache(&source_config.output_dir, true);
 
-    // Reconstruct the explicit historical producer contract: schema 24 predates
-    // this grass artifact and could certify these healthy assets without baking
-    // the semantically invalid grass rule. The raw plugin bytes stay unchanged.
+    // Main's current producer can certify these assets without a grass artifact.
+    // Keep its texture layout and exact reader/asset identities: older texture
+    // producers now require normal conversion before metadata-only rebuilding.
+    // Missing prior record proof still cannot certify the invalid grass rule.
     let manifest_path = source_config.output_dir.join("conversion-manifest.json");
     let mut historical = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
     assert!(historical.failures.is_empty());
-    historical.schema_version = 24;
-    historical.configuration_hash =
-        converter::cache::configuration_hash_for_schema(&source_config, 24).unwrap();
-    historical.asset_configuration_hashes.clear();
     historical.complete = true;
     historical.record_data_complete = None;
     historical.save(&manifest_path).unwrap();
     fs::remove_file(source_config.output_dir.join("grass_cache.rkyv")).unwrap();
-    fs::write(
-        source_config.output_dir.join("record-reader.json"),
-        br#"{"mode":"legacy"}"#,
-    )
-    .unwrap();
 
     let source_manifest_before = fs::read(&manifest_path).unwrap();
     let source_database_before =

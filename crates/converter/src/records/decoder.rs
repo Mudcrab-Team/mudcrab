@@ -293,6 +293,38 @@ pub(crate) fn prepared() -> &'static PreparedSchemas {
     PREPARED.get_or_init(|| prepare_schema(super::schema()))
 }
 
+/// The string bank of `signature` when the embedded schema types every occurrence of it in
+/// `record_type` as a localized string, so the subrecord needs no context to resolve. The legacy
+/// reader resolves exactly these subrecords to match the in-house reader's text.
+pub(crate) fn localized_field_bank(
+    record_type: &[u8; 4],
+    signature: &[u8],
+) -> Option<&'static str> {
+    let record = prepared().get(record_type)?;
+    let mut bank = None;
+    for entry in record.entries.iter().filter(|entry| {
+        entry
+            .field
+            .signature
+            .as_deref()
+            .is_some_and(|tag| tag.as_bytes() == signature)
+    }) {
+        if entry.field.kind != "lstring" {
+            return None;
+        }
+        let this = match entry.field.string_table.as_deref() {
+            Some("dlstrings") => "dlstrings",
+            Some("ilstrings") => "ilstrings",
+            _ => "strings",
+        };
+        if bank.is_some_and(|bank| bank != this) {
+            return None;
+        }
+        bank = Some(this);
+    }
+    bank
+}
+
 /// Resolve a matched role's text bank from the same runtime schema as decoding.
 pub(crate) fn string_table_with_prepared(
     prepared: &PreparedSchemas,
@@ -1370,7 +1402,7 @@ fn value_inner(
     }
     if field.definition.is_some() {
         return value(
-            &schema.resolve(field)?,
+            schema.resolve_borrowed(field)?.as_ref(),
             bytes,
             schema,
             context,

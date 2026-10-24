@@ -108,8 +108,8 @@ impl Fixture {
         path
     }
 
-    /// Run the actual full asset publication path, with LOD disabled for this fixture.
-    async fn publish(&self, extra: &[&str]) -> PathBuf {
+    /// Publish with LOD disabled and an explicit expectation for record loss.
+    async fn publish(&self, extra: &[&str], reader_loss: bool) -> PathBuf {
         let output = self.directory.path().join("pack");
         let mut config = PipelineConfig::new(&self.data, &output);
         config.plugins_file = Some(self.list(extra));
@@ -120,7 +120,11 @@ impl Fixture {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         drain.await.unwrap();
-        common::assert_reader_warning_publication(&report, &output);
+        if reader_loss {
+            common::assert_reader_warning_publication(&report, &output);
+        } else {
+            common::assert_reader_notice_publication(&report, &output);
+        }
         for name in ["cell_cache.rkyv", "cell_cache_preserved.rkyv"] {
             assert!(report.artifacts.contains(&PathBuf::from(name)));
         }
@@ -408,11 +412,11 @@ fn assert_source_and_canonical(output: &Path, fields: &[(Vec<u8>, Vec<u8>)]) {
     }
 }
 
-/// Archive preservation retains over-capacity layers without certifying missing texture links.
+/// Faithfully cleared texture links permit complete publication and exact metadata replay.
 #[tokio::test]
-async fn over_capacity_layers_publish_but_reader_loss_blocks_metadata_rebuild() {
+async fn over_capacity_layers_publish_and_rebuild_with_link_notices() {
     let fixture = Fixture::new();
-    let output = fixture.publish(&[]).await;
+    let output = fixture.publish(&[], false).await;
     assert_published_layers(&output);
     assert_source_and_canonical(&output, &fixture.fields);
     let expected_payload = frame_fields(&fixture.fields);
@@ -457,18 +461,17 @@ async fn over_capacity_layers_publish_but_reader_loss_blocks_metadata_rebuild() 
         .collect();
     let result = AssetPipeline::rebuild_metadata_async(config, &output, tx).await;
     drain.await.unwrap();
-    let error = result.unwrap_err();
-    assert!(
-        error.to_string().contains("requires complete converter"),
-        "{error:#}"
-    );
-    assert!(!rebuilt.exists(), "rejected rebuild must not publish");
+    let report = result.unwrap();
+    common::assert_reader_notice_publication(&report, &rebuilt);
+    assert_published_layers(&rebuilt);
+    assert_source_and_canonical(&rebuilt, &fixture.fields);
     for (name, bytes) in cache_bytes {
         assert_eq!(
             fs::read(output.join(name)).unwrap(),
             bytes,
-            "rejected rebuild must preserve source {name}"
+            "metadata rebuild must preserve source {name}"
         );
+        assert_eq!(fs::read(rebuilt.join(name)).unwrap(), bytes);
     }
     assert_published_layers(&output);
     assert_source_and_canonical(&output, &fixture.fields);
@@ -510,7 +513,7 @@ async fn malformed_over_capacity_overrides_keep_prior_layers_and_valid_neighbors
         );
     }
     let output = fixture
-        .publish(&["BadWeights.esp", "BadQuadrant.esp", "Torn.esp"])
+        .publish(&["BadWeights.esp", "BadQuadrant.esp", "Torn.esp"], true)
         .await;
     assert_published_layers(&output);
     assert_source_and_canonical(&output, &fixture.fields);

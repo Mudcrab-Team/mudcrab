@@ -55,8 +55,49 @@ impl Model {
         Ok(())
     }
 
-    pub fn to_gltf(&self, name: String) -> (gltf::json::Root, Vec<u8>) {
+    /// The rig all skeletal meshes of this model are weighted against.
+    ///
+    /// The exporter writes one bone tree shared by every skin, so meshes that
+    /// carry different trees cannot be represented and are rejected instead of
+    /// silently dropping one of them.
+    fn shared_bone_tree(&self) -> Result<Option<&super::all::BoneTree>, String> {
+        let Some(first) = self.skeletal_meshes.first() else {
+            return Ok(None);
+        };
+
+        for (index, mesh) in self.skeletal_meshes.iter().enumerate().skip(1) {
+            if mesh.bones != first.bones {
+                return Err(format!(
+                    "skeletal mesh {} ({}) has a bone tree that differs from skeletal mesh 0 ({})",
+                    index,
+                    mesh.name.as_deref().unwrap_or("<unnamed>"),
+                    first.name.as_deref().unwrap_or("<unnamed>"),
+                ));
+            }
+        }
+
+        Ok(Some(&first.bones))
+    }
+
+    pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
         use gltf::json::*;
+
+        let mut unresolved = Vec::new();
+        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
+            for joint in &smesh.skin {
+                if !smesh.bones.bones.contains_key(joint.as_str()) {
+                    unresolved.push(format!("{joint}:{index}"));
+                }
+            }
+        }
+        if !unresolved.is_empty() {
+            unresolved.sort();
+            unresolved.dedup();
+            return Err(format!(
+                "skin joints could not be resolved against the bone tree: {}",
+                unresolved.join(", ")
+            ));
+        }
 
         let mut root = gltf::json::Root::default();
 
@@ -317,8 +358,11 @@ impl Model {
             );
         }
 
-        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
-            for (name, bone) in &smesh.bones.bones {
+        let shared_bones = self.shared_bone_tree()?;
+        let mut bone_nodes: BTreeMap<String, Index<Node>> = BTreeMap::new();
+
+        if let Some(bones) = shared_bones {
+            for (name, bone) in &bones.bones {
                 let t = bone.transform.get_translation();
                 let r = bone.transform.get_rotation();
                 let s = bone.transform.get_scale();
@@ -343,6 +387,7 @@ impl Model {
                     None
                 };
 
+                let node_index = Index::new(root.nodes.len() as u32);
                 root.nodes.push(Node {
                     camera: None,
                     children: None,
@@ -350,65 +395,61 @@ impl Model {
                     extras: Extras::default(),
                     matrix: None,
                     mesh: None,
-                    name: Some(format!("{}:{}", name, index)),
+                    name: Some(name.clone()),
                     rotation,
                     scale,
                     translation,
                     skin: None,
                     weights: None,
                 });
+                bone_nodes.insert(name.clone(), node_index);
             }
 
-            for (name, bone) in &smesh.bones.bones {
-                for bone_child in bone.children.iter() {
-                    let parent_target = format!("{}:{}", name, index);
+            let mut parented: HashSet<&str> = HashSet::new();
+            for (name, bone) in &bones.bones {
+                let Some(&parent) = bone_nodes.get(name.as_str()) else {
+                    return Err(format!(
+                        "bone {name} is missing from the exported node tree"
+                    ));
+                };
 
-                    debug!("Parent: {} Child: {}", parent_target, bone_child);
-                    if let Some(parent) = root.nodes.iter().position(|x| {
-                        x.name
-                            .as_ref()
-                            .is_some_and(|s| s.to_string() == format!("{}:{}", name, index))
-                    }) {
-                        let child = root
-                            .nodes
-                            .iter()
-                            .position(|x| {
-                                x.name.as_ref().is_some_and(|s| {
-                                    s.to_string() == format!("{}:{}", bone_child, index)
-                                })
-                            })
-                            .unwrap();
-
-                        if root.nodes[parent].children.is_none() {
-                            root.nodes[parent].children = Some(Vec::new());
-                        }
-
-                        root.nodes[parent]
-                            .children
-                            .as_mut()
-                            .unwrap()
-                            .push(Index::new(child as u32));
-                    } else {
-                        panic!("Bone {} not found", name);
+                let mut children = Vec::new();
+                let mut sorted_children: Vec<&String> = bone.children.iter().collect();
+                sorted_children.sort();
+                for child in sorted_children {
+                    let Some(&child_index) = bone_nodes.get(child.as_str()) else {
+                        return Err(format!("bone {name} references missing child bone {child}"));
+                    };
+                    children.push(child_index);
+                    if !parented.insert(child.as_str()) {
+                        return Err(format!(
+                            "bone {name} references child {child}, which already has another parent"
+                        ));
                     }
                 }
+
+                if !children.is_empty() {
+                    root.nodes[parent.value()].children = Some(children);
+                }
             }
 
+            for name in bones.bones.keys() {
+                if !parented.contains(name.as_str()) {
+                    root.scenes[0].nodes.push(bone_nodes[name]);
+                }
+            }
+        }
+
+        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
             let mut joints = Vec::new();
 
-            //debug!("Skin: {:?}", smesh.skin);
-
             for joint in &smesh.skin {
-                if let Some(bone) = root.nodes.iter().position(|x| {
-                    x.name
-                        .as_ref()
-                        .is_some_and(|s| s.to_string() == format!("{}:{}", joint, index))
-                }) {
-                    joints.push(Index::new(bone as u32));
-                    //warn!("Joint {}:{} found", joint, index);
-                } else {
-                    panic!("Joint {}:{} not found", joint, index);
-                }
+                let Some(&node) = bone_nodes.get(joint.as_str()) else {
+                    return Err(format!(
+                        "skin joint {joint} of skeletal mesh {index} is missing from the exported node tree"
+                    ));
+                };
+                joints.push(node);
             }
 
             let inverse_bind_matrices = Some(Index::new(root.accessors.len() as u32));
@@ -809,6 +850,9 @@ impl Model {
             }
         }
 
+        let mut textures: Vec<&String> = textures.into_iter().collect();
+        textures.sort();
+
         for texture in textures {
             root.textures.push(Texture {
                 name: None,
@@ -951,11 +995,11 @@ impl Model {
 
         root.buffers[0].byte_length = USize64(bin_data.len() as u64);
 
-        (root, bin_data)
+        Ok((root, bin_data))
     }
 
-    pub fn to_glb(&self, name: String) -> Vec<u8> {
-        let (mut root, bin_data) = self.to_gltf(name);
+    pub fn to_glb(&self, name: String) -> Result<Vec<u8>, String> {
+        let (mut root, bin_data) = self.to_gltf(name)?;
 
         root.buffers[0].uri = None;
 
@@ -985,7 +1029,7 @@ impl Model {
         glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
         glb.extend_from_slice(b"BIN\0");
         glb.extend_from_slice(&bin);
-        glb
+        Ok(glb)
     }
 }
 
@@ -1105,6 +1149,140 @@ mod static_scene_tests {
         )
         .unwrap_err();
         assert!(error.contains("multiple parents"));
+    }
+}
+
+#[cfg(test)]
+mod shared_skeleton_tests {
+    use super::*;
+    use crate::dev::*;
+    use crate::model::all::{BoneData, BoneTransform, BoneTree, SkeletalMesh, StaticMesh};
+    use std::collections::BTreeSet;
+
+    fn bone(children: &[&str]) -> BoneData {
+        BoneData {
+            transform: BoneTransform::default(),
+            children: children.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    fn bone_tree() -> BoneTree {
+        let mut bones = BoneTree::new();
+        bones.add_bone("Root", bone(&["Bone0", "Bone1"])).unwrap();
+        bones.add_bone("Bone0", bone(&["Bone2"])).unwrap();
+        bones.add_bone("Bone1", bone(&[])).unwrap();
+        bones.add_bone("Bone2", bone(&[])).unwrap();
+        bones
+    }
+
+    fn mesh(name: &str, bones: BoneTree, skin: &[&str]) -> SkeletalMesh {
+        SkeletalMesh {
+            name: Some(name.to_owned()),
+            source_block: None,
+            mesh: Some(StaticMesh {
+                name: Some(name.to_owned()),
+                positions: vec![glam::Vec3::ZERO, glam::Vec3::X],
+                normals: Vec::new(),
+                uvs: Vec::new(),
+                triangles: Vec::new(),
+                colors: Vec::new(),
+            }),
+            weights: vec![glam::Vec4::new(1.0, 0.0, 0.0, 0.0); 2],
+            joints: vec![glam::u8::U8Vec4::ZERO; 2],
+            bones,
+            skin: skin.iter().map(|joint| (*joint).to_owned()).collect(),
+            inverse_bind_matrices: vec![BSMatrix4(glam::Mat4::IDENTITY); skin.len()],
+        }
+    }
+
+    fn model(meshes: Vec<SkeletalMesh>) -> Model {
+        let material_indices = vec![0; meshes.len()];
+        Model {
+            name: Some("shared".to_owned()),
+            static_meshes: Vec::new(),
+            static_nodes: Vec::new(),
+            skeletal_meshes: meshes,
+            materials: Vec::new(),
+            material_indices,
+            scene_root_rotation: None,
+        }
+    }
+
+    #[test]
+    fn shared_bone_tree_is_emitted_once_and_reachable_from_the_scene() {
+        let (root, _) = model(vec![
+            mesh("body", bone_tree(), &["Root", "Bone0", "Bone2"]),
+            mesh("hands", bone_tree(), &["Root", "Bone1"]),
+        ])
+        .to_gltf("shared".to_owned())
+        .unwrap();
+
+        assert_eq!(
+            root.nodes.len(),
+            6,
+            "four bones plus one node per skinned mesh"
+        );
+
+        let mut bone_nodes = BTreeMap::new();
+        for (index, node) in root.nodes.iter().enumerate() {
+            if let Some(name) = &node.name {
+                if ["Root", "Bone0", "Bone1", "Bone2"].contains(&name.as_str()) {
+                    bone_nodes.insert(name.clone(), index);
+                }
+            }
+        }
+        for name in ["Root", "Bone0", "Bone1", "Bone2"] {
+            assert_eq!(
+                root.nodes
+                    .iter()
+                    .filter(|node| node.name.as_deref() == Some(name))
+                    .count(),
+                1,
+                "bone {name} must be exported exactly once with its plain name"
+            );
+        }
+        assert_eq!(bone_nodes.len(), 4, "one node per distinct bone name");
+
+        let mut reachable = BTreeSet::new();
+        let mut stack: Vec<usize> = root.scenes[0]
+            .nodes
+            .iter()
+            .map(|node| node.value())
+            .collect();
+        while let Some(index) = stack.pop() {
+            if reachable.insert(index) {
+                if let Some(children) = &root.nodes[index].children {
+                    stack.extend(children.iter().map(|node| node.value()));
+                }
+            }
+        }
+        assert_eq!(
+            reachable.len(),
+            root.nodes.len(),
+            "every node, bones included, must be reachable from the scene"
+        );
+
+        assert_eq!(root.skins[0].joints[0], root.skins[1].joints[0]);
+        assert_eq!(root.skins[0].joints[0].value(), bone_nodes["Root"]);
+        assert_eq!(root.skins[0].joints[1].value(), bone_nodes["Bone0"]);
+        assert_eq!(root.skins[0].joints[2].value(), bone_nodes["Bone2"]);
+        assert_eq!(root.skins[1].joints[1].value(), bone_nodes["Bone1"]);
+    }
+
+    #[test]
+    fn meshes_with_different_bone_trees_are_rejected() {
+        let mut other = BoneTree::new();
+        other.add_bone("Root", bone(&[])).unwrap();
+
+        let error = model(vec![
+            mesh("body", bone_tree(), &["Root"]),
+            mesh("hands", other, &["Root"]),
+        ])
+        .to_gltf("shared".to_owned())
+        .unwrap_err();
+
+        assert!(error.contains("skeletal mesh 1"), "{error}");
+        assert!(error.contains("hands"), "{error}");
     }
 }
 

@@ -1,0 +1,30 @@
+{
+  "name": "Riverwood determined overlook",
+  "timestamp": "20261012_170001",
+  "position": [
+    26000,
+    -50000,
+    6000
+  ],
+  "rotation": [
+    0.6108652381980153,
+    5.759586531581287
+  ],
+  "fov": 75,
+  "viewRoll": 0,
+  "pcPosition": [
+    0,
+    0,
+    0
+  ],
+  "pcRotation": [
+    0,
+    0,
+    0
+  ],
+  "pcCell": [
+    0,
+    0,
+    0
+  ]
+}

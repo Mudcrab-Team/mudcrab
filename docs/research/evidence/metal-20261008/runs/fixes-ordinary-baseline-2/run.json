@@ -1,0 +1,637 @@
+{
+  "label": "fixes-ordinary-baseline-2",
+  "started_utc": "2026-10-09T02:02:56.908109+00:00",
+  "engine_command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--run-label",
+    "fixes-ordinary-baseline-2",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/profile",
+    "--profile-scenario",
+    "interactive-riverwood",
+    "--profile-run-id",
+    "fixes-ordinary-baseline-2",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--profile-dirty-worktree"
+  ],
+  "command": [
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/tools/samply-aarch64-apple-darwin/samply",
+    "record",
+    "--save-only",
+    "--unstable-presymbolicate",
+    "--rate",
+    "1000",
+    "--profile-name",
+    "fixes-ordinary-baseline-2",
+    "--output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/cpu-profile.json.gz",
+    "--",
+    "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine",
+    "--assets",
+    "/Users/taylor/Projects/mudcrab/modern_assets",
+    "--worldspace",
+    "0x3c",
+    "--grid-x",
+    "5",
+    "--grid-y",
+    "-12",
+    "--stream-radius",
+    "2",
+    "--run-label",
+    "fixes-ordinary-baseline-2",
+    "--profile-output",
+    "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/profile",
+    "--profile-scenario",
+    "interactive-riverwood",
+    "--profile-run-id",
+    "fixes-ordinary-baseline-2",
+    "--profile-commit",
+    "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "--profile-dirty-worktree"
+  ],
+  "cwd": "/Users/taylor/Projects/mudcrab",
+  "duration_seconds": 90.0,
+  "sampling_hz": 1000,
+  "binary": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine",
+  "binary_sha256": "f958d582568d5c19a6e0515adf442a3ea18c6c89f9b332f7d5465850cdedac37",
+  "source": {
+    "commit": "f40ca1df770eab4ace83b335b6b38168bd83af60",
+    "dirty_worktree": true,
+    "snapshot_utc": "2026-10-09T02:02:56.907820+00:00",
+    "snapshot_matches_binary_not_proven": true
+  },
+  "encoder_timing": false,
+  "instrumentation_mode": "ordinary game; standard HUD and Samply",
+  "interactive_physics_enabled_by_config": true,
+  "initial_player_mode": "NOCLIP default",
+  "requested_present_mode": "AutoVsync ordinary default; verify native surface log",
+  "drawable_proof_warmup_note": "Default drawable proof excludes 65 frames (60 + 5); this is not a scene-loading cutoff.",
+  "offline_loading_cutoffs": {
+    "cpu": "analyze_cpu_profile.py uses logged render frame 1200 plus 2 seconds; verify the boundary exists",
+    "hud": "Suggested 30-second cutoff must be verified against loading completion and drawable proof"
+  },
+  "render_quality": "ordinary defaults; shadows, reflections and terrain LOD enabled",
+  "environment_removed_keys": [],
+  "environment": {
+    "MUDCRAB_PROFILE_ALWAYS_ON_TOP": "1",
+    "MTL_HUD_ENABLED": "1",
+    "MTL_HUD_LOG_ENABLED": "1",
+    "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+  },
+  "rss_samples": [
+    {
+      "utc": "2026-10-09T02:02:57.151980+00:00",
+      "elapsed_seconds": 0.00431075000000003,
+      "rss_kib": 144
+    },
+    {
+      "utc": "2026-10-09T02:02:58.230318+00:00",
+      "elapsed_seconds": 1.073490042,
+      "rss_kib": 979264
+    },
+    {
+      "utc": "2026-10-09T02:02:59.300143+00:00",
+      "elapsed_seconds": 2.144370167,
+      "rss_kib": 1725968
+    },
+    {
+      "utc": "2026-10-09T02:03:00.367463+00:00",
+      "elapsed_seconds": 3.210951208,
+      "rss_kib": 2018240
+    },
+    {
+      "utc": "2026-10-09T02:03:01.454907+00:00",
+      "elapsed_seconds": 4.297373833,
+      "rss_kib": 2185408
+    },
+    {
+      "utc": "2026-10-09T02:03:02.531240+00:00",
+      "elapsed_seconds": 5.377108042000001,
+      "rss_kib": 2482704
+    },
+    {
+      "utc": "2026-10-09T02:03:03.601657+00:00",
+      "elapsed_seconds": 6.449535125000001,
+      "rss_kib": 2502432
+    },
+    {
+      "utc": "2026-10-09T02:03:04.694873+00:00",
+      "elapsed_seconds": 7.541308875,
+      "rss_kib": 2505184
+    },
+    {
+      "utc": "2026-10-09T02:03:05.761468+00:00",
+      "elapsed_seconds": 8.604830458,
+      "rss_kib": 2513728
+    },
+    {
+      "utc": "2026-10-09T02:03:06.834467+00:00",
+      "elapsed_seconds": 9.681967541999999,
+      "rss_kib": 2514672
+    },
+    {
+      "utc": "2026-10-09T02:03:07.907048+00:00",
+      "elapsed_seconds": 10.755446916999999,
+      "rss_kib": 2517536
+    },
+    {
+      "utc": "2026-10-09T02:03:08.983188+00:00",
+      "elapsed_seconds": 11.832904458,
+      "rss_kib": 2524784
+    },
+    {
+      "utc": "2026-10-09T02:03:10.061922+00:00",
+      "elapsed_seconds": 12.909569333,
+      "rss_kib": 2522976
+    },
+    {
+      "utc": "2026-10-09T02:03:11.141826+00:00",
+      "elapsed_seconds": 13.989718583,
+      "rss_kib": 2524144
+    },
+    {
+      "utc": "2026-10-09T02:03:12.215909+00:00",
+      "elapsed_seconds": 15.065428875,
+      "rss_kib": 2525216
+    },
+    {
+      "utc": "2026-10-09T02:03:13.286676+00:00",
+      "elapsed_seconds": 16.135523958,
+      "rss_kib": 2524864
+    },
+    {
+      "utc": "2026-10-09T02:03:14.365615+00:00",
+      "elapsed_seconds": 17.212089125000002,
+      "rss_kib": 2525280
+    },
+    {
+      "utc": "2026-10-09T02:03:15.438015+00:00",
+      "elapsed_seconds": 18.287770083,
+      "rss_kib": 2527584
+    },
+    {
+      "utc": "2026-10-09T02:03:16.508742+00:00",
+      "elapsed_seconds": 19.356954292,
+      "rss_kib": 2525296
+    },
+    {
+      "utc": "2026-10-09T02:03:17.583644+00:00",
+      "elapsed_seconds": 20.430930333000003,
+      "rss_kib": 2524368
+    },
+    {
+      "utc": "2026-10-09T02:03:18.672569+00:00",
+      "elapsed_seconds": 21.514650792,
+      "rss_kib": 2523568
+    },
+    {
+      "utc": "2026-10-09T02:03:19.754533+00:00",
+      "elapsed_seconds": 22.599320542,
+      "rss_kib": 2523232
+    },
+    {
+      "utc": "2026-10-09T02:03:20.832764+00:00",
+      "elapsed_seconds": 23.677751875000002,
+      "rss_kib": 2524464
+    },
+    {
+      "utc": "2026-10-09T02:03:21.915016+00:00",
+      "elapsed_seconds": 24.751507875,
+      "rss_kib": 2523248
+    },
+    {
+      "utc": "2026-10-09T02:03:22.998210+00:00",
+      "elapsed_seconds": 25.846880667,
+      "rss_kib": 2523344
+    },
+    {
+      "utc": "2026-10-09T02:03:24.074010+00:00",
+      "elapsed_seconds": 26.922291583,
+      "rss_kib": 2524544
+    },
+    {
+      "utc": "2026-10-09T02:03:25.144850+00:00",
+      "elapsed_seconds": 27.993593875000002,
+      "rss_kib": 2524544
+    },
+    {
+      "utc": "2026-10-09T02:03:26.218770+00:00",
+      "elapsed_seconds": 29.066893083,
+      "rss_kib": 2522496
+    },
+    {
+      "utc": "2026-10-09T02:03:27.295917+00:00",
+      "elapsed_seconds": 30.144284667,
+      "rss_kib": 2522496
+    },
+    {
+      "utc": "2026-10-09T02:03:28.371237+00:00",
+      "elapsed_seconds": 31.219751917,
+      "rss_kib": 2524224
+    },
+    {
+      "utc": "2026-10-09T02:03:29.440444+00:00",
+      "elapsed_seconds": 32.287815167,
+      "rss_kib": 2523312
+    },
+    {
+      "utc": "2026-10-09T02:03:30.499749+00:00",
+      "elapsed_seconds": 33.349240832999996,
+      "rss_kib": 2525712
+    },
+    {
+      "utc": "2026-10-09T02:03:31.580880+00:00",
+      "elapsed_seconds": 34.429539958,
+      "rss_kib": 2525136
+    },
+    {
+      "utc": "2026-10-09T02:03:32.661924+00:00",
+      "elapsed_seconds": 35.50798125,
+      "rss_kib": 2524560
+    },
+    {
+      "utc": "2026-10-09T02:03:33.733820+00:00",
+      "elapsed_seconds": 36.582024792,
+      "rss_kib": 2524544
+    },
+    {
+      "utc": "2026-10-09T02:03:34.800434+00:00",
+      "elapsed_seconds": 37.649239666999996,
+      "rss_kib": 2522496
+    },
+    {
+      "utc": "2026-10-09T02:03:35.872115+00:00",
+      "elapsed_seconds": 38.72074625,
+      "rss_kib": 2523712
+    },
+    {
+      "utc": "2026-10-09T02:03:36.931760+00:00",
+      "elapsed_seconds": 39.781793707999995,
+      "rss_kib": 2525504
+    },
+    {
+      "utc": "2026-10-09T02:03:37.990376+00:00",
+      "elapsed_seconds": 40.839477957999996,
+      "rss_kib": 2525376
+    },
+    {
+      "utc": "2026-10-09T02:03:39.048122+00:00",
+      "elapsed_seconds": 41.897618042,
+      "rss_kib": 2525184
+    },
+    {
+      "utc": "2026-10-09T02:03:40.114855+00:00",
+      "elapsed_seconds": 42.96533125,
+      "rss_kib": 2525392
+    },
+    {
+      "utc": "2026-10-09T02:03:41.180928+00:00",
+      "elapsed_seconds": 44.030637125,
+      "rss_kib": 2524064
+    },
+    {
+      "utc": "2026-10-09T02:03:42.247404+00:00",
+      "elapsed_seconds": 45.096323625,
+      "rss_kib": 2525440
+    },
+    {
+      "utc": "2026-10-09T02:03:43.316901+00:00",
+      "elapsed_seconds": 46.166688582999996,
+      "rss_kib": 2526112
+    },
+    {
+      "utc": "2026-10-09T02:03:44.389309+00:00",
+      "elapsed_seconds": 47.239353125,
+      "rss_kib": 2525728
+    },
+    {
+      "utc": "2026-10-09T02:03:45.461719+00:00",
+      "elapsed_seconds": 48.311619416999996,
+      "rss_kib": 2524960
+    },
+    {
+      "utc": "2026-10-09T02:03:46.522236+00:00",
+      "elapsed_seconds": 49.371989667,
+      "rss_kib": 2523728
+    },
+    {
+      "utc": "2026-10-09T02:03:47.597924+00:00",
+      "elapsed_seconds": 50.447883999999995,
+      "rss_kib": 2523760
+    },
+    {
+      "utc": "2026-10-09T02:03:48.665684+00:00",
+      "elapsed_seconds": 51.515474792,
+      "rss_kib": 2525536
+    },
+    {
+      "utc": "2026-10-09T02:03:49.739710+00:00",
+      "elapsed_seconds": 52.587321333,
+      "rss_kib": 2524944
+    },
+    {
+      "utc": "2026-10-09T02:03:50.822001+00:00",
+      "elapsed_seconds": 53.670961917,
+      "rss_kib": 2525536
+    },
+    {
+      "utc": "2026-10-09T02:03:51.889252+00:00",
+      "elapsed_seconds": 54.736703917,
+      "rss_kib": 2524368
+    },
+    {
+      "utc": "2026-10-09T02:03:52.967567+00:00",
+      "elapsed_seconds": 55.815517582999995,
+      "rss_kib": 2522896
+    },
+    {
+      "utc": "2026-10-09T02:03:54.022742+00:00",
+      "elapsed_seconds": 56.873062125,
+      "rss_kib": 2525536
+    },
+    {
+      "utc": "2026-10-09T02:03:55.092168+00:00",
+      "elapsed_seconds": 57.940867,
+      "rss_kib": 2524384
+    },
+    {
+      "utc": "2026-10-09T02:03:56.149581+00:00",
+      "elapsed_seconds": 58.998535292,
+      "rss_kib": 2525664
+    },
+    {
+      "utc": "2026-10-09T02:03:57.221490+00:00",
+      "elapsed_seconds": 60.071524292,
+      "rss_kib": 2527024
+    },
+    {
+      "utc": "2026-10-09T02:03:58.277843+00:00",
+      "elapsed_seconds": 61.127395291999996,
+      "rss_kib": 2528336
+    },
+    {
+      "utc": "2026-10-09T02:03:59.356921+00:00",
+      "elapsed_seconds": 62.206727416999996,
+      "rss_kib": 2528912
+    },
+    {
+      "utc": "2026-10-09T02:04:00.424725+00:00",
+      "elapsed_seconds": 63.274790875,
+      "rss_kib": 2527840
+    },
+    {
+      "utc": "2026-10-09T02:04:01.489862+00:00",
+      "elapsed_seconds": 64.338769292,
+      "rss_kib": 2525888
+    },
+    {
+      "utc": "2026-10-09T02:04:02.574633+00:00",
+      "elapsed_seconds": 65.424490625,
+      "rss_kib": 2527936
+    },
+    {
+      "utc": "2026-10-09T02:04:03.632087+00:00",
+      "elapsed_seconds": 66.481893292,
+      "rss_kib": 2527936
+    },
+    {
+      "utc": "2026-10-09T02:04:04.694803+00:00",
+      "elapsed_seconds": 67.544857208,
+      "rss_kib": 2529104
+    },
+    {
+      "utc": "2026-10-09T02:04:05.779511+00:00",
+      "elapsed_seconds": 68.617392458,
+      "rss_kib": 2526704
+    },
+    {
+      "utc": "2026-10-09T02:04:06.860339+00:00",
+      "elapsed_seconds": 69.703475042,
+      "rss_kib": 2527936
+    },
+    {
+      "utc": "2026-10-09T02:04:07.928577+00:00",
+      "elapsed_seconds": 70.77783541699999,
+      "rss_kib": 2528144
+    },
+    {
+      "utc": "2026-10-09T02:04:08.996674+00:00",
+      "elapsed_seconds": 71.84566724999999,
+      "rss_kib": 2527040
+    },
+    {
+      "utc": "2026-10-09T02:04:10.057878+00:00",
+      "elapsed_seconds": 72.907080208,
+      "rss_kib": 2525888
+    },
+    {
+      "utc": "2026-10-09T02:04:11.117175+00:00",
+      "elapsed_seconds": 73.967295792,
+      "rss_kib": 2528912
+    },
+    {
+      "utc": "2026-10-09T02:04:12.191227+00:00",
+      "elapsed_seconds": 75.04079962499999,
+      "rss_kib": 2525888
+    },
+    {
+      "utc": "2026-10-09T02:04:13.249520+00:00",
+      "elapsed_seconds": 76.099163167,
+      "rss_kib": 2528832
+    },
+    {
+      "utc": "2026-10-09T02:04:14.316910+00:00",
+      "elapsed_seconds": 77.16465775,
+      "rss_kib": 2529024
+    },
+    {
+      "utc": "2026-10-09T02:04:15.394918+00:00",
+      "elapsed_seconds": 78.24481216699999,
+      "rss_kib": 2528640
+    },
+    {
+      "utc": "2026-10-09T02:04:16.470840+00:00",
+      "elapsed_seconds": 79.316378458,
+      "rss_kib": 2529024
+    },
+    {
+      "utc": "2026-10-09T02:04:17.541712+00:00",
+      "elapsed_seconds": 80.384861417,
+      "rss_kib": 2529024
+    },
+    {
+      "utc": "2026-10-09T02:04:18.600436+00:00",
+      "elapsed_seconds": 81.444475625,
+      "rss_kib": 2528048
+    },
+    {
+      "utc": "2026-10-09T02:04:19.666083+00:00",
+      "elapsed_seconds": 82.516110167,
+      "rss_kib": 2528048
+    },
+    {
+      "utc": "2026-10-09T02:04:20.732130+00:00",
+      "elapsed_seconds": 83.58072262499999,
+      "rss_kib": 2526000
+    },
+    {
+      "utc": "2026-10-09T02:04:21.799969+00:00",
+      "elapsed_seconds": 84.64848683299999,
+      "rss_kib": 2526000
+    },
+    {
+      "utc": "2026-10-09T02:04:22.876180+00:00",
+      "elapsed_seconds": 85.726437667,
+      "rss_kib": 2526000
+    },
+    {
+      "utc": "2026-10-09T02:04:23.952354+00:00",
+      "elapsed_seconds": 86.802388583,
+      "rss_kib": 2528448
+    },
+    {
+      "utc": "2026-10-09T02:04:25.018984+00:00",
+      "elapsed_seconds": 87.86788775,
+      "rss_kib": 2529216
+    },
+    {
+      "utc": "2026-10-09T02:04:26.092320+00:00",
+      "elapsed_seconds": 88.941891375,
+      "rss_kib": 2528832
+    }
+  ],
+  "engine_signals": [
+    {
+      "utc": "2026-10-09T02:04:27.238751+00:00",
+      "pid": 22970,
+      "signal": "SIGINT"
+    }
+  ],
+  "profiler_pid": 22968,
+  "profiler_started_utc": "2026-10-09T02:02:56.971158+00:00",
+  "engine_pid": 22970,
+  "engine_identity": {
+    "pid": 22970,
+    "parent_pid": 22968,
+    "started": "Thu Oct 8 21:02:56 2026",
+    "command": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine"
+  },
+  "capture_started_utc": "2026-10-09T02:02:57.106470+00:00",
+  "logger_pid": 22972,
+  "logger_command": [
+    "/usr/bin/log",
+    "stream",
+    "--style",
+    "ndjson",
+    "--level",
+    "debug",
+    "--predicate",
+    "processIdentifier == 22970 AND (composedMessage CONTAINS \"metal-HUD\" OR subsystem == \"com.apple.metal.hud\")"
+  ],
+  "logger_started_utc": "2026-10-09T02:02:57.110349+00:00",
+  "capture_ended_utc": "2026-10-09T02:04:27.119006+00:00",
+  "capture_elapsed_seconds": 90.012986333,
+  "engine_sigint_utc": "2026-10-09T02:04:27.238751+00:00",
+  "duration_stop_verified": true,
+  "profiler_exit_code": 1,
+  "logger_exit_code": -15,
+  "finished_utc": "2026-10-09T02:04:31.876603+00:00",
+  "hud_filter": {
+    "engine_rows": 350,
+    "other_pid_rows": 0,
+    "non_json_lines": 1,
+    "redacted_rows": 350,
+    "normalized_timing_rows": 0,
+    "invalid_timestamp_rows": 0
+  },
+  "applied_controls_log": [
+    "2026-10-09T02:02:57.637331Z  INFO engine::app: native profiling controls controls=NativeProfilingControls { physical_resolution: None, present_mode: None, no_shadows: false, no_reflections: false, no_render_diagnostics: false, always_on_top: true, freeze_camera: false }"
+  ],
+  "physical_window_log": [
+    "2026-10-09T02:02:57.873862Z  INFO engine::app: native profiling physical window width=3200 height=1800 scale_factor=2.0 present_mode=AutoVsync window_level=AlwaysOnTop focused=true always_on_top=true freeze_camera=false"
+  ],
+  "window_occlusion_log": [
+    "2026-10-09T02:02:57.873749Z  INFO engine::app: native profiling window occlusion window=72v0 occluded=false"
+  ],
+  "drawable_proof_log": [
+    "2026-10-09T02:03:04.594879Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=65 present_frames=300 missing_frames=0 measured_present_frames=235 measured_missing_frames=0",
+    "2026-10-09T02:03:10.645082Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=65 present_frames=600 missing_frames=0 measured_present_frames=535 measured_missing_frames=0",
+    "2026-10-09T02:03:16.744319Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=65 present_frames=900 missing_frames=0 measured_present_frames=835 measured_missing_frames=0",
+    "2026-10-09T02:03:22.895362Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0",
+    "2026-10-09T02:03:28.944932Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=65 present_frames=1500 missing_frames=0 measured_present_frames=1435 measured_missing_frames=0",
+    "2026-10-09T02:03:35.169128Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1800 warmup_plus_five=65 present_frames=1800 missing_frames=0 measured_present_frames=1735 measured_missing_frames=0",
+    "2026-10-09T02:03:41.268961Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2100 warmup_plus_five=65 present_frames=2100 missing_frames=0 measured_present_frames=2035 measured_missing_frames=0",
+    "2026-10-09T02:03:47.394348Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2400 warmup_plus_five=65 present_frames=2400 missing_frames=0 measured_present_frames=2335 measured_missing_frames=0",
+    "2026-10-09T02:03:53.569049Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2700 warmup_plus_five=65 present_frames=2700 missing_frames=0 measured_present_frames=2635 measured_missing_frames=0",
+    "2026-10-09T02:03:59.704653Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3000 warmup_plus_five=65 present_frames=3000 missing_frames=0 measured_present_frames=2935 measured_missing_frames=0",
+    "2026-10-09T02:04:05.867112Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3300 warmup_plus_five=65 present_frames=3300 missing_frames=0 measured_present_frames=3235 measured_missing_frames=0",
+    "2026-10-09T02:04:12.087291Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3600 warmup_plus_five=65 present_frames=3600 missing_frames=0 measured_present_frames=3535 measured_missing_frames=0",
+    "2026-10-09T02:04:18.428163Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3900 warmup_plus_five=65 present_frames=3900 missing_frames=0 measured_present_frames=3835 measured_missing_frames=0",
+    "2026-10-09T02:04:24.702650Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0",
+    "2026-10-09T02:04:27.383868Z  INFO engine::app: native profiling primary drawable proof final_summary=true render_frames=4325 warmup_plus_five=65 present_frames=4324 missing_frames=1 measured_present_frames=4259 measured_missing_frames=1"
+  ],
+  "native_surface_log": [
+    "2026-10-09T02:02:57.637331Z  INFO engine::app: native profiling controls controls=NativeProfilingControls { physical_resolution: None, present_mode: None, no_shadows: false, no_reflections: false, no_render_diagnostics: false, always_on_top: true, freeze_camera: false }",
+    "2026-10-09T02:02:57.873862Z  INFO engine::app: native profiling physical window width=3200 height=1800 scale_factor=2.0 present_mode=AutoVsync window_level=AlwaysOnTop focused=true always_on_top=true freeze_camera=false",
+    "2026-10-09T02:02:57.896576Z DEBUG wgpu_hal::metal::surface: build swapchain SurfaceConfiguration { maximum_frame_latency: 2, present_mode: Fifo, composite_alpha_mode: Opaque, format: Bgra8UnormSrgb, extent: (3200, 1800, 1), usage: TextureUses(COLOR_TARGET), view_formats: [] }"
+  ],
+  "stderr_hud_line_count": 175,
+  "engine_exit_code_log": [
+    "   0: \u001b[91mthe run failed (exit code 130)\u001b[0m"
+  ],
+  "engine_reported_exit_code": 130,
+  "drawable_proof": {
+    "final_summary": true,
+    "render_frames": 4325,
+    "warmup_plus_five": 65,
+    "present_frames": 4324,
+    "missing_frames": 1,
+    "measured_present_frames": 4259,
+    "measured_missing_frames": 1
+  },
+  "encoder_diagnostics_omission_verified": null,
+  "profile_written": true,
+  "profile_sha256": "b178ddcc03d81150648fa21bdb762a2edc80f75060e0a2360034e4ec0dd4b7af",
+  "profile_validation": {
+    "valid": true,
+    "engine_threads": 60,
+    "engine_samples": 680900
+  },
+  "requested_duration_completed": true,
+  "expected_interruption": true,
+  "expected_interruption_note": "Controller verified the owned engine and sent SIGINT after the requested duration. Engine exit 130 and Samply exit 1/130 can follow that request; actual exit codes are retained.",
+  "samply_capture_succeeded": true,
+  "engine_profile_bundle_written": false,
+  "peak_ps_rss_gib": 2.41204833984375,
+  "rss_measurement": "macOS ps rss in KiB at one-second intervals; includes loading; not Metal allocation",
+  "binary_unchanged": true,
+  "hud_analysis_command": {
+    "requires_steady_window_verification": true,
+    "cutoff_note": "30 seconds is a suggested loading exclusion, not proof the scene settled",
+    "command": [
+      "/Library/Developer/CommandLineTools/usr/bin/python3",
+      "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/realtime-interactive-1/analyze_hud.py",
+      "--log",
+      "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/engine.stderr.log",
+      "--output",
+      "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/hud-analysis",
+      "--capture-start-utc",
+      "2026-10-09T02:02:57.106470+00:00",
+      "--steady-start-utc",
+      "2026-10-09T02:03:27.106470+00:00",
+      "--steady-end-utc",
+      "2026-10-09T02:04:27.238751+00:00"
+    ]
+  }
+}

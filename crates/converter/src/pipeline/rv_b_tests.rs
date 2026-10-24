@@ -10,6 +10,8 @@ const SECOND_ARCHIVE_NAME: &str = "skyrim - secondreview.ba2";
 const ARCHIVE_PAYLOAD: &[u8] = b"review archive payload";
 const ROLE_TEXTURE_SOURCE: &str = "textures/review_role.dds";
 const ROLE_TEXTURE_OUTPUT: &str = "textures/review_role.ktx2";
+/// The last producer whose texture containers stored level data largest-first.
+const PRODUCER_27: u32 = 27;
 
 /// Keeps the generated input and published output alive throughout each regression.
 struct Fixture {
@@ -74,11 +76,13 @@ fn write_dds(data: &Path, relative: &str, format: dds::Format) {
 }
 
 /// Stores an opaque entry whose extraction counts are independent of asset conversion.
+/// The entry is an opaque `.lod` input: `ConverterInputs` selects it and the
+/// extractor copies it unparsed, so each archive still yields one converted file.
 fn write_archive(data: &Path, name: &str, payload: &[u8]) {
     fs::write(
         data.join(name),
         ba2::general(
-            &[Entry::new("docs/review.txt", payload)],
+            &[Entry::new("lodsettings/review.lod", payload)],
             ba2::Compression::None,
         )
         .unwrap(),
@@ -295,12 +299,17 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         "historical",
         "projection-1",
         "projection-2",
+        "projection-3",
+        "projection-3-nonenglish",
         "current",
         "unproven",
     ] {
         let fixture = Fixture::new(true);
         append_broken_stat_neighbors(&fixture.data);
-        let config = fixture.config(RecordReader::Legacy);
+        let mut config = fixture.config(RecordReader::Legacy);
+        if contract == "projection-3-nonenglish" {
+            config.language = "french".to_owned();
+        }
         publish(config.clone()).await;
         let expected = asset_bytes(&fixture.output);
         let mut original = manifest(&fixture.output);
@@ -320,6 +329,13 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
                 CONVERTER_SCHEMA_VERSION,
             )
             .unwrap(),
+            "projection-3" | "projection-3-nonenglish" => {
+                crate::cache::legacy_projection_v3_configuration_hash(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                )
+                .unwrap()
+            }
             "current" => configuration_hash(&config).unwrap(),
             _ => "unproven-settings".into(),
         };
@@ -330,6 +346,9 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
             "historical" => Some(serde_json::json!({"mode": "legacy"})),
             "projection-1" => Some(serde_json::json!({"mode": "legacy", "projection_version": 1})),
             "projection-2" => Some(serde_json::json!({"mode": "legacy", "projection_version": 2})),
+            "projection-3" | "projection-3-nonenglish" => {
+                Some(serde_json::json!({"mode": "legacy", "projection_version": 3}))
+            }
             _ => None,
         };
         if let Some(source_reader) = source_reader {
@@ -340,11 +359,9 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
             .unwrap();
         }
         let report = publish(config.clone()).await;
-        assert_eq!(report.converted, if contract == "unproven" { 5 } else { 0 });
-        assert_eq!(
-            report.cache_hits,
-            if contract == "unproven" { 1 } else { 6 }
-        );
+        let rejected = matches!(contract, "unproven" | "projection-3-nonenglish");
+        assert_eq!(report.converted, if rejected { 5 } else { 0 });
+        assert_eq!(report.cache_hits, if rejected { 1 } else { 6 });
         assert_asset_bytes(&fixture.output, &expected);
         let published = manifest(&fixture.output);
         assert_eq!(published.archives, archive_proof);
@@ -354,7 +371,10 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         );
         assert_eq!(
             json_artifact(&fixture.output, "record-reader.json"),
-            serde_json::json!({"mode": "legacy", "projection_version": crate::esm::inhouse::LEGACY_PROJECTION_VERSION})
+            crate::esm::inhouse::reader_identity_in_language(
+                RecordReader::Legacy,
+                &config.language
+            )
         );
         let database = Connection::open(fixture.output.join("skyrim_world.db")).unwrap();
         let neighbor: String = database
@@ -495,12 +515,21 @@ async fn corrupted_archive_blob_misses_while_unchanged_archive_survives_config_c
     config.texture_zstd_level = 0;
     assert!(config.verify_cache);
 
-    let rebuilt = publish(config).await;
+    let rebuilt = publish(config.clone()).await;
+    // Sealed packs are the authoritative archive copy. The damaged per-file blob
+    // fails hash verification and is never trusted, so the archive restores from
+    // its verified pack instead of being extracted again.
     assert_eq!(
-        rebuilt.converted, 1,
-        "hash verification must reject the corrupted blob"
+        rebuilt.converted, 0,
+        "a corrupted derived blob must not force an extraction"
     );
-    assert_eq!(rebuilt.cache_hits, 1, "the intact archive remains reusable");
+    assert_eq!(rebuilt.cache_hits, 2, "both archives remain reusable");
+    let entry = &manifest(&config.output_dir).archives[ARCHIVE_NAME].files[0];
+    assert_eq!(
+        hash_file(&archive_blob(&config, ARCHIVE_NAME)).unwrap(),
+        entry.hash,
+        "the damaged blob is repaired from the verified pack"
+    );
 }
 
 /// Explicit invalidation continues to force extraction even when the source is unchanged.
@@ -639,7 +668,7 @@ async fn repeated_metadata_migrations_preserve_recorded_asset_producer() {
 /// Mode-only and previous versioned proofs survive multiple retained publications unchanged.
 #[tokio::test]
 async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations() {
-    for projection_version in [None, Some(1), Some(2)] {
+    for projection_version in [None, Some(1), Some(2), Some(3)] {
         let fixture = Fixture::new(true);
         let legacy = fixture.config(RecordReader::Legacy);
         publish(legacy.clone()).await;
@@ -653,6 +682,11 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
             )
             .unwrap(),
             Some(2) => crate::cache::legacy_projection_v2_configuration_hash(
+                &legacy,
+                CONVERTER_SCHEMA_VERSION,
+            )
+            .unwrap(),
+            Some(3) => crate::cache::legacy_projection_v3_configuration_hash(
                 &legacy,
                 CONVERTER_SCHEMA_VERSION,
             )
@@ -707,7 +741,7 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
         );
         assert_eq!(
             json_artifact(&second_output, "record-reader.json"),
-            serde_json::json!({"mode": "legacy", "projection_version": crate::esm::inhouse::LEGACY_PROJECTION_VERSION})
+            crate::esm::inhouse::reader_identity(RecordReader::Legacy)
         );
         assert_ne!(
             manifest(&second_output).configuration_hash,
@@ -728,71 +762,78 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
 
 /// Explicit historical byte retention does not upgrade old meshes or textures into normal hits.
 #[tokio::test]
-async fn retained_historical_producer_does_not_gain_normal_asset_eligibility() {
+async fn pre_producer_28_metadata_sources_are_rejected_before_relabeling() {
     let fixture = Fixture::new(true);
     let legacy = fixture.config(RecordReader::Legacy);
     publish(legacy.clone()).await;
-    let mut original = manifest(&fixture.output);
-    original.schema_version = 16;
-    original.asset_configuration_hashes.clear();
-    original.configuration_hash = configuration_hash_for_schema(&legacy, 16).unwrap();
-    fs::write(
-        fixture.output.join("record-reader.json"),
-        br#"{"mode":"legacy"}"#,
-    )
-    .unwrap();
-    original
+    for schema in [16, PRODUCER_27] {
+        let mut original = manifest(&fixture.output);
+        original.schema_version = schema;
+        original.asset_configuration_hashes.clear();
+        original.configuration_hash = configuration_hash_for_schema(&legacy, schema).unwrap();
+        fs::write(
+            fixture.output.join("record-reader.json"),
+            br#"{"mode":"legacy"}"#,
+        )
+        .unwrap();
+        original
+            .save(&fixture.output.join("conversion-manifest.json"))
+            .unwrap();
+        let rejected_output = fixture.sibling_output(&format!("rejected-schema-{schema}"));
+        let mut config = fixture.config(RecordReader::Inhouse);
+        config.output_dir = rejected_output.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+        let error = AssetPipeline::rebuild_metadata_async(config, &fixture.output, sender)
+            .await
+            .unwrap_err()
+            .to_string();
+        drain.await.unwrap();
+        assert!(
+            error.contains("predate the current texture layout")
+                && error.contains("normal conversion"),
+            "schema {schema}: {error}"
+        );
+        assert!(
+            !rejected_output.exists(),
+            "schema {schema} published output"
+        );
+    }
+}
+
+/// A current pack whose GLBs came from producer 27 cannot prove the named mesh contracts, so a
+/// metadata rebuild rejects the retained meshes and requires the normal route to regenerate them.
+#[tokio::test]
+async fn producer_27_retained_meshes_are_rejected_by_metadata_rebuild() {
+    let fixture = Fixture::new(true);
+    let config = fixture.config(RecordReader::Legacy);
+    publish(config.clone()).await;
+    let mut source = manifest(&fixture.output);
+    source.retained_mesh_schema_version = Some(PRODUCER_27);
+    source.retained_asset_configuration_hash =
+        Some(crate::cache::current_configuration_hash_for_schema(&config, PRODUCER_27).unwrap());
+    source.asset_configuration_hashes.insert(
+        "nif".into(),
+        asset_configuration_hash_for_schema(&config, PRODUCER_27, "nif").unwrap(),
+    );
+    source
         .save(&fixture.output.join("conversion-manifest.json"))
         .unwrap();
-    let first_output = fixture.sibling_output("historical-inhouse");
-    let second_output = fixture.sibling_output("historical-legacy-again");
-    let mut first_config = fixture.config(RecordReader::Inhouse);
-    first_config.output_dir = first_output.clone();
-    publish_metadata(first_config, &fixture.output).await;
-    let mut second_config = legacy;
-    second_config.output_dir = second_output.clone();
-    publish_metadata(second_config.clone(), &first_output).await;
-    let retained = manifest(&second_output);
-    assert_eq!(retained.retained_mesh_schema_version, Some(16));
-    assert_eq!(
-        retained.retained_asset_configuration_hash,
-        Some(original.configuration_hash)
-    );
-    let eligible =
-        ConversionManifest::load(&second_output.join("conversion-manifest.json")).unwrap();
-    assert_eq!(
-        eligible.entries.len(),
-        2,
-        "only old scripts are normally eligible"
-    );
+    let rebuilt_output = fixture.sibling_output("producer-27-retained-meshes");
+    let mut rebuild_config = config.clone();
+    rebuild_config.output_dir = rebuilt_output.clone();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    let error = AssetPipeline::rebuild_metadata_async(rebuild_config, &fixture.output, sender)
+        .await
+        .unwrap_err()
+        .to_string();
+    drain.await.unwrap();
     assert!(
-        eligible
-            .entries
-            .values()
-            .all(|entry| entry.output.ends_with(".luau"))
+        error.contains("unsupported retained mesh cache contract"),
+        "{error}"
     );
-
-    let rebuilt = publish(second_config).await;
-    assert_eq!(
-        rebuilt.converted, 4,
-        "old mesh/textures and the uncopied archive must rebuild"
-    );
-    assert_eq!(
-        rebuilt.cache_hits, 2,
-        "only unchanged scripts reuse old producer bytes"
-    );
-    let current = manifest(&second_output);
-    assert_eq!(current.schema_version, CONVERTER_SCHEMA_VERSION);
-    assert_eq!(current.retained_mesh_schema_version, None);
-    assert_eq!(current.retained_asset_configuration_hash, None);
-    let mut warm_config = fixture.config(RecordReader::Legacy);
-    warm_config.output_dir = second_output;
-    let warm = publish(warm_config).await;
-    assert_eq!(warm.converted, 0);
-    assert_eq!(
-        warm.cache_hits, 6,
-        "the archive cleared by metadata publication is reusable after its one normal extraction"
-    );
+    assert!(!rebuilt_output.exists());
 }
 /// An unknown retained script producer cannot gain eligibility from current metadata.
 /// Expected baseline red: the two script outputs are reused instead of rebuilt.
@@ -822,7 +863,7 @@ async fn unknown_retained_script_producer_does_not_gain_current_metadata_eligibi
         "the test isolates original producer policy"
     );
 
-    // Producer 25 is outside the existing known script set12..24/current26 but
+    // Producer 25 is outside the existing known script set 12..24 and 26 (current 27) but
     // below the metadata stamp, so rejecting producer>metadata cannot hide a
     // mistaken decision based only on the metadata producer. Preserve any new
     // kind map; its script ABI proof deliberately still matches.

@@ -3,7 +3,12 @@ use color_eyre::{Result, eyre::WrapErr};
 use memmap2::Mmap;
 use rkyv::rancor::Error;
 use shared::{CELL_CACHE_VERSION, CachedLand, CellCache, LAND_SIDE, TerrainLayer, TerrainWeight};
-use std::{collections::HashMap, fs::File, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::File,
+    io::Write,
+    path::Path,
+};
 
 /// Check one decoded terrain record before the tolerant reader publishes it.
 /// Errors stay local to this record; the adapter counts and omits it.
@@ -91,6 +96,67 @@ pub(crate) fn land_winners_by_cell(
         }
     }
     winners
+}
+
+/// The LAND each exterior cell keeps, as [`land_winners_by_cell`] chooses it, with the checks the
+/// merged terrain stage makes on that choice. Every LAND a cell drops is named in a warning. Two
+/// LANDs of one cell from the winning load-order slot are an error when either has no native
+/// position to order it by: the game's choice between them is not established, so a silent
+/// FormID pick would be wrong output.
+pub(crate) fn merged_terrain_lands(
+    records: &HashMap<u32, RawRecord>,
+    source_offsets: &HashMap<u32, u64>,
+) -> Result<(BTreeMap<u32, u32>, Vec<String>)> {
+    let winners = land_winners_by_cell(records, source_offsets);
+    let mut lands_by_cell: BTreeMap<u32, Vec<&RawRecord>> = BTreeMap::new();
+    for record in records
+        .values()
+        .filter(|record| &record.record_type == b"LAND" && !record.is_deleted())
+    {
+        let cell_id = record.cell_form_id.unwrap_or(record.form_id);
+        lands_by_cell.entry(cell_id).or_default().push(record);
+    }
+    // The map's iteration order is not the record order: sort each cell's LANDs by FormID so the
+    // dropped-LAND warnings come out the same however the records were collected.
+    for lands in lands_by_cell.values_mut() {
+        lands.sort_unstable_by_key(|land| land.form_id);
+    }
+    let mut warnings = Vec::new();
+    for (&cell_id, lands) in &lands_by_cell {
+        if lands.len() < 2 {
+            continue;
+        }
+        let kept = winners[&cell_id];
+        let slot = records[&kept].load_order;
+        let mut tied: Vec<u32> = lands
+            .iter()
+            .filter(|land| land.load_order == slot)
+            .map(|land| land.form_id)
+            .collect();
+        tied.sort_unstable();
+        if tied.len() > 1
+            && tied
+                .iter()
+                .any(|form_id| !source_offsets.contains_key(form_id))
+        {
+            let ids = tied
+                .iter()
+                .map(|form_id| format!("{form_id:08X}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(color_eyre::eyre::eyre!(
+                "cell {cell_id:08X} has {} LAND records from load-order slot {slot} ({ids}) and the game's choice between them is not established",
+                tied.len()
+            ));
+        }
+        for dropped in lands.iter().filter(|land| land.form_id != kept) {
+            warnings.push(format!(
+                "cell {cell_id:08X}: LAND {kept:08X} from load-order slot {slot} wins; dropped LAND {:08X} from load-order slot {}",
+                dropped.form_id, dropped.load_order
+            ));
+        }
+    }
+    Ok((winners.into_iter().collect(), warnings))
 }
 
 /// Validate and serialize terrain using winning plugin priority and native record order.
@@ -354,7 +420,7 @@ fn normalize_water_height(height: f32) -> Option<f32> {
     (height.is_finite() && height.abs() < 1.0e7).then_some(height)
 }
 
-fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
     let count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
     if bytes.is_empty() {
         return vec![0.0; count];
@@ -380,7 +446,7 @@ fn decode_vhgt(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// Preserve valid authored VNML samples; reconstruct missing or zero vectors from terrain heights.
-fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
+pub(crate) fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
     let side = usize::from(LAND_SIDE);
     let count = side * side;
     if bytes.len() == count * 3
@@ -436,14 +502,14 @@ fn decode_normals(bytes: &[u8], heights: &[f32]) -> Vec<i8> {
 
 /// An earlier non-null ATXT assignment discarded because a later entry uses the same slot.
 #[derive(Debug, PartialEq, Eq)]
-struct DroppedLayer {
-    quadrant: u8,
-    layer: u16,
-    texture_form_id: u32,
+pub(crate) struct DroppedLayer {
+    pub(crate) quadrant: u8,
+    pub(crate) layer: u16,
+    pub(crate) texture_form_id: u32,
 }
 
 /// Validate every LAND payload and return retained layers plus discarded duplicate assignments.
-fn extract_texture_layers(
+pub(crate) fn extract_texture_layers(
     subrecords: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(Vec<TerrainLayer>, Vec<DroppedLayer>)> {
     let mut layers = Vec::new();
@@ -1316,6 +1382,283 @@ mod tests {
         );
     }
 
+    #[test]
+    fn land_winner_cache_and_database_use_plugin_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        // Deliberately invert FormID and plugin priority.
+        let mut earlier = record(
+            0x222222,
+            b"LAND",
+            None,
+            &[(b"VHGT", {
+                let mut bytes = 1.0f32.to_le_bytes().to_vec();
+                bytes.extend(vec![0; 33 * 33 + 3]);
+                bytes
+            })],
+        );
+        earlier.cell_form_id = Some(0x18df);
+        let mut later = earlier.clone();
+        later.form_id = 0x28df;
+        later.load_order = 2;
+        later.subrecords[0].1[..4].copy_from_slice(&9.0f32.to_le_bytes());
+        let mut proof = None;
+        for reverse in [false, true] {
+            for _ in 0..16 {
+                let mut records = HashMap::new();
+                let pair = if reverse {
+                    [&later, &earlier]
+                } else {
+                    [&earlier, &later]
+                };
+                for record in pair {
+                    records.insert(record.form_id, record.clone());
+                }
+                write_cell_cache(&records, &path).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                if let Some(expected) = &proof {
+                    assert_eq!(&bytes, expected);
+                } else {
+                    proof = Some(bytes);
+                }
+                let mmap = validate_cell_cache(&path).unwrap();
+                let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+                assert_eq!(f32::from(cache.cells[0].heights[0]), 72.0);
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                super::super::exporter::create_tables(&conn).unwrap();
+                super::super::exporter::export_to_db(&conn, &records).unwrap();
+                let heightmap: Vec<u8> = conn
+                    .query_row(
+                        "SELECT heightmap FROM land WHERE cell_id=?1",
+                        [0x18df],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(decode_vhgt(&heightmap)[0], 72.0);
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM records WHERE record_type='LAND'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                    2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn land_winner_priority_ties_preserve_unrelated_cells_and_raw_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        let mut heightmap = 1.0f32.to_le_bytes().to_vec();
+        heightmap.extend(vec![0; 33 * 33 + 3]);
+        let mut a = record(1, b"LAND", None, &[(b"VHGT", heightmap)]);
+        a.cell_form_id = Some(100);
+        let mut b = a.clone();
+        b.form_id = 2;
+        b.subrecords[0].1[..4].copy_from_slice(&2.0f32.to_le_bytes());
+        let mut unrelated = a.clone();
+        unrelated.form_id = 3;
+        unrelated.cell_form_id = Some(200);
+        unrelated.subrecords[0].1[..4].copy_from_slice(&9.0f32.to_le_bytes());
+        let mut proof = None;
+        for reverse in [false, true] {
+            for _ in 0..8 {
+                let mut inputs = vec![a.clone(), b.clone(), unrelated.clone()];
+                if reverse {
+                    inputs.reverse();
+                }
+                let records = inputs.into_iter().map(|r| (r.form_id, r)).collect();
+                assert_eq!(write_cell_cache(&records, &path).unwrap(), 2);
+                let bytes = std::fs::read(&path).unwrap();
+                if let Some(expected) = &proof {
+                    assert_eq!(&bytes, expected);
+                } else {
+                    proof = Some(bytes);
+                }
+                let mmap = validate_cell_cache(&path).unwrap();
+                let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+                assert_eq!(f32::from(cache.cells[0].heights[0]), 16.0);
+                assert_eq!(f32::from(cache.cells[1].heights[0]), 72.0);
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                super::super::exporter::create_tables(&conn).unwrap();
+                super::super::exporter::export_to_db(&conn, &records).unwrap();
+                for (cell, expected) in [(100, 16.0), (200, 72.0)] {
+                    let bytes: Vec<u8> = conn
+                        .query_row(
+                            "SELECT heightmap FROM land WHERE cell_id=?1",
+                            [cell],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(decode_vhgt(&bytes)[0], expected);
+                }
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM records WHERE record_type='LAND'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                    3
+                );
+            }
+        }
+    }
+
+    /// A cell with a LAND in each of two plugins keeps the later plugin's LAND, and the dropped
+    /// one is named: this is the vanilla Dawnguard case (Tamriel cells 0018DF, 0018FD).
+    #[test]
+    fn the_later_plugins_land_wins_and_the_dropped_one_is_reported() {
+        let skyrim = land(0x1000, 0x2000, 0, 0.0);
+        let dawnguard = land(0x1000, 0x2100, 1, 1.0);
+        let records = HashMap::from([(skyrim.form_id, skyrim), (dawnguard.form_id, dawnguard)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &HashMap::new()).unwrap();
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[&0x1000], 0x2100);
+        assert_eq!(warnings.len(), 1);
+        let warning = &warnings[0];
+        assert!(warning.contains("cell 00001000"), "{warning}");
+        assert!(
+            warning.contains("LAND 00002100 from load-order slot 1"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("dropped LAND 00002000 from load-order slot 0"),
+            "{warning}"
+        );
+
+        // The cell cache holds the later plugin's terrain, not the earlier one's.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        write_cell_cache(&records, &path).unwrap();
+        let mmap = validate_cell_cache(&path).unwrap();
+        let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+        assert_eq!(cache.cells.len(), 1);
+        assert!(
+            cache.cells[0].heights.iter().all(|height| *height == 8.0),
+            "the chosen LAND's VHGT offset of 1.0 decodes to heights of 8.0"
+        );
+    }
+
+    /// Swapping the two plugins' load-order slots swaps the choice and the cache with it: the
+    /// answer depends on the load order alone, not on the FormIDs.
+    #[test]
+    fn swapping_the_load_order_swaps_the_land_choice() {
+        let skyrim = land(0x1000, 0x2000, 1, 0.0);
+        let dawnguard = land(0x1000, 0x2100, 0, 1.0);
+        let records = HashMap::from([(skyrim.form_id, skyrim), (dawnguard.form_id, dawnguard)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &HashMap::new()).unwrap();
+        assert_eq!(chosen[&0x1000], 0x2000);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("LAND 00002000 from load-order slot 1")
+                && warnings[0].contains("dropped LAND 00002100 from load-order slot 0"),
+            "{}",
+            warnings[0]
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        write_cell_cache(&records, &path).unwrap();
+        let mmap = validate_cell_cache(&path).unwrap();
+        let cache = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).unwrap();
+        assert!(
+            cache.cells[0].heights.iter().all(|height| *height == 0.0),
+            "the swapped load order keeps the other LAND's flat terrain"
+        );
+    }
+
+    /// A deleted LAND is not a candidate: the remaining one wins with no warning, and a cell
+    /// whose only LAND is deleted holds no terrain at all.
+    #[test]
+    fn a_deleted_land_is_ignored() {
+        let mut deleted = land(0x1000, 0x2000, 1, 1.0);
+        deleted.flags = 0x0000_0020;
+        let kept = land(0x1000, 0x2100, 0, 0.0);
+        let records = HashMap::from([(deleted.form_id, deleted.clone()), (kept.form_id, kept)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &HashMap::new()).unwrap();
+        assert_eq!(chosen[&0x1000], 0x2100);
+        assert!(warnings.is_empty());
+
+        let records = HashMap::from([(deleted.form_id, deleted)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &HashMap::new()).unwrap();
+        assert!(chosen.is_empty());
+        assert!(warnings.is_empty());
+    }
+
+    /// Two distinct LANDs for one cell from the same load-order slot are an error when merged
+    /// terrain is built and the records carry no native positions: the game's order for that case
+    /// is not established, so nothing is picked, not even silently by FormID. With native
+    /// positions for both, the later physical record wins as it does in the cell cache.
+    #[test]
+    fn two_lands_from_one_load_order_slot_are_an_error_without_native_positions() {
+        let first = land(0x1000, 0x2000, 1, 0.0);
+        let second = land(0x1000, 0x2100, 1, 1.0);
+        let records = HashMap::from([(first.form_id, first), (second.form_id, second)]);
+        let error = merged_terrain_lands(&records, &HashMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cell 00001000"), "{error}");
+        assert!(error.contains("00002000"), "{error}");
+        assert!(error.contains("00002100"), "{error}");
+        assert!(error.contains("slot 1"), "{error}");
+
+        let positions = HashMap::from([(0x2000u32, 10u64), (0x2100u32, 20u64)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &positions).unwrap();
+        assert_eq!(chosen[&0x1000], 0x2100);
+        assert_eq!(warnings.len(), 1);
+
+        // The cell cache never refused the cell: it still writes the highest-ordered choice.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cell_cache.rkyv");
+        assert!(write_cell_cache(&records, &path).is_ok());
+    }
+
+    /// Three LANDs in one cell name every dropped LAND in FormID order, whatever order the records
+    /// were collected in, and the winner is the same. The warnings are compared as a whole, not
+    /// by containment, so a reordering would fail the test.
+    #[test]
+    fn dropped_lands_are_reported_in_formid_order_whatever_the_insertion_order() {
+        let first = land(0x1000, 0x2300, 0, 0.0);
+        let second = land(0x1000, 0x2100, 1, 1.0);
+        let third = land(0x1000, 0x2200, 2, 2.0);
+        let forward = HashMap::from([
+            (first.form_id, first.clone()),
+            (second.form_id, second.clone()),
+            (third.form_id, third.clone()),
+        ]);
+        let reverse = HashMap::from([
+            (third.form_id, third),
+            (second.form_id, second),
+            (first.form_id, first),
+        ]);
+        let (winners, warnings) = merged_terrain_lands(&forward, &HashMap::new()).unwrap();
+        let (reversed_winners, reversed_warnings) =
+            merged_terrain_lands(&reverse, &HashMap::new()).unwrap();
+        assert_eq!(winners, reversed_winners);
+        assert_eq!(winners[&0x1000], 0x2200, "the highest load-order slot wins");
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings, reversed_warnings);
+        assert!(
+            warnings[0].contains("dropped LAND 00002100")
+                && warnings[1].contains("dropped LAND 00002300"),
+            "{warnings:?}"
+        );
+    }
+
+    /// A cell with one LAND keeps it and says nothing: the rule changes only multi-LAND cells.
+    #[test]
+    fn a_cell_with_one_land_is_unchanged() {
+        let only = land(0x1000, 0x2000, 3, 0.5);
+        let records = HashMap::from([(only.form_id, only)]);
+        let (chosen, warnings) = merged_terrain_lands(&records, &HashMap::new()).unwrap();
+        assert_eq!(chosen[&0x1000], 0x2000);
+        assert!(warnings.is_empty());
+    }
+
     fn record(
         form_id: u32,
         record_type: &[u8; 4],
@@ -1334,6 +1677,18 @@ mod tests {
             worldspace_form_id: worldspace,
             load_order: 0,
         }
+    }
+
+    /// A LAND of one cell, from load-order slot `slot`, flat except for a VHGT offset that
+    /// discriminates which LAND a cache or mesh was built from.
+    fn land(cell_id: u32, form_id: u32, slot: u32, offset: f32) -> RawRecord {
+        let count = usize::from(LAND_SIDE) * usize::from(LAND_SIDE);
+        let mut vhgt = offset.to_le_bytes().to_vec();
+        vhgt.extend(vec![0; count]);
+        let mut land = record(form_id, b"LAND", None, &[(b"VHGT", vhgt)]);
+        land.cell_form_id = Some(cell_id);
+        land.load_order = slot;
+        land
     }
 
     fn floats(values: &[f32]) -> Vec<u8> {

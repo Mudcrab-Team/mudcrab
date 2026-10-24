@@ -1,4 +1,10 @@
-use crate::{skyrim_ini::SkyrimIni, world::components::CELL_SIZE};
+use crate::{
+    color_pipeline::{SCENE_GRADE_VALUES, SceneGradeMode, SceneVisualPreset},
+    skyrim_ini::SkyrimIni,
+    tone_mapping::SceneToneMapMode,
+    world::components::CELL_SIZE,
+    world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
+};
 use bevy::prelude::Resource;
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
@@ -66,11 +72,19 @@ impl TerrainLodDistances {
 
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
+    /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
+    pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
+    /// Explicit local report destination. `None` uses the per-user application-data directory.
+    pub bug_report_dir: Option<PathBuf>,
     pub worldspace_id: u32,
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
+    pub sun_shadow_distance_limit: Option<f32>,
+    /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
+    pub sun_position: Option<(f32, f32)>,
     pub terrain_lod: TerrainLodDistances,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
@@ -80,6 +94,24 @@ pub struct EngineConfig {
     /// Converted models a frame may hand to Bevy's scene spawner. `0` arms every model whose asset
     /// is loaded, which is the unbudgeted behaviour a single spawn batch used to have.
     pub max_model_spawns_per_frame: usize,
+    /// Camera and bounds based queue ordering. Off preserves fixed FIFO activation.
+    pub prioritize_streaming: bool,
+    /// Outstanding unique Scene(0) jobs, including recursive CPU dependencies.
+    /// Zero retains unlimited admission; this count does not bound memory bytes.
+    pub max_scene_loads: usize,
+    /// Opt-in startup, walking and recovery budgets. Also enables spatial priority.
+    pub adaptive_streaming: bool,
+    /// Downstream queue high watermark; zero disables it outside adaptive mode.
+    pub max_streaming_backlog: usize,
+    /// Estimated streaming allocation allowance. Zero disables memory admission
+    /// outside adaptive mode, which otherwise uses a finite automatic allowance.
+    pub streaming_memory_mib: usize,
+    /// Override for converter-generated streaming cost metadata.
+    pub streaming_costs: Option<PathBuf>,
+    /// Free system memory reserved for the rest of the process and other apps.
+    pub streaming_headroom_mib: usize,
+    /// Controller frame target. Benchmark acceptance keeps its separate thresholds.
+    pub streaming_frame_ms: f64,
     /// Threads in the asset IO pool. `0` sizes it to the machine: a quarter of the hardware
     /// threads, at least one and at most four. A nonzero count must be at most
     /// `MAX_IO_THREADS`; a larger one is refused like a malformed number.
@@ -90,10 +122,39 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Select the cinematic A/B experiment without changing scene lighting.
+    pub color_grade: SceneGradeMode,
+    /// Named sky, fog and grading look; Vivid preserves the approved configuration.
+    pub visual_preset: SceneVisualPreset,
+    /// Optional approved-look JSON override; authored records are retained separately.
+    pub grade_preset: Option<PathBuf>,
+    /// Display transform selection; native-curve experiments require explicit parameters.
+    pub tone_map: SceneToneMapMode,
+    pub tone_map_params: Option<PathBuf>,
+    pub image_space: Option<u32>,
+    pub image_space_weather: Option<u32>,
+    pub image_space_slot: Option<ImageSpaceSlot>,
+    /// Seed a live world camera from a validated one-pose shots file.
+    pub start_shot: Option<PathBuf>,
+    /// Accept developer console commands on this process's stdin.
+    pub stdin_console: bool,
+    /// Disable Bevy's GPU timing and pipeline-statistics query collection.
+    pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
     pub benchmark_frames: Option<u32>,
     pub benchmark_duration_secs: Option<f64>,
     pub benchmark_warmup_frames: u32,
+    /// Keep the interactive app's presentation mode for an opt-in benchmark.
+    pub benchmark_vsync: bool,
+    /// Dedicated post-settlement camera route; Some(0) measures its stationary tail.
+    pub streaming_benchmark_route_speed: Option<f64>,
+    pub streaming_benchmark_route_secs: f64,
+    pub streaming_benchmark_tail_secs: f64,
+    pub streaming_benchmark_settle_secs: f64,
+    pub streaming_benchmark_expected_models: Option<u64>,
+    pub streaming_benchmark_expected_lod_chunks: Option<usize>,
+    pub streaming_benchmark_expected_terrain: Option<u64>,
+    pub streaming_benchmark_expected_water: Option<u64>,
     /// `--benchmark-jump <grid-x>,<grid-y>`: once the world around the camera is first fully
     /// loaded, move the camera to the centre of that cell of the same worldspace and measure how
     /// long the world takes to become fully loaded again (`time_to_world_ready_after_jump_ms`).
@@ -112,6 +173,12 @@ pub struct EngineConfig {
     pub accept_p95_ms: f64,
     pub accept_max_memory_growth_gib: f64,
     pub auto_fly_speed: f32,
+    /// `--route <file>`: the camera follows a route file's waypoints at its speed (see
+    /// [`crate::route`]). It owns the camera, like `--auto-fly-speed`.
+    pub route: Option<PathBuf>,
+    /// `--frame-budget-ms <ms>`: the frame time the report counts frames over (see
+    /// [`crate::frame_budget`]). The default is 6.25, 160 frames per second.
+    pub frame_budget_ms: f64,
     pub allow_incomplete_assets: bool,
     pub synthetic_instances: usize,
     pub profile_output_dir: Option<PathBuf>,
@@ -126,9 +193,13 @@ pub struct EngineConfig {
     /// `--shots <file>`: render the camera poses in a shots file, one PNG each, and exit instead of
     /// running interactively. See [`crate::shots`].
     pub shots: Option<PathBuf>,
+    /// Exact, fixed-step profiling traversal. Mutually exclusive with other camera drivers.
+    pub matched_route: Option<PathBuf>,
     /// `--shots-out <dir>`: where the PNGs and `shots.log` go. `None` is
     /// [`crate::shots::default_output_dir`], a `<file stem>-shots/` folder beside the shots file.
     pub shots_out: Option<PathBuf>,
+    /// Maximum settling time per shot, in seconds.
+    pub shots_settle_timeout: f32,
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
@@ -145,12 +216,16 @@ impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
         Self {
+            settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
+            bug_report_dir: None,
             worldspace_id: 0x3c,
             start_grid: (0, 0),
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            sun_shadow_distance_limit: None,
+            sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
@@ -163,6 +238,14 @@ impl Default for EngineConfig {
             // still spreads a burst over frames; `0` arms the whole batch at once, the behaviour
             // before this budget existed (docs/roadmap/02-profiling.md, "Load speed defaults").
             max_model_spawns_per_frame: 32,
+            prioritize_streaming: false,
+            max_scene_loads: 0,
+            adaptive_streaming: false,
+            max_streaming_backlog: 0,
+            streaming_memory_mib: 0,
+            streaming_costs: None,
+            streaming_headroom_mib: 2_048,
+            streaming_frame_ms: 16.67,
             // A quarter of the hardware threads, chosen at startup (see `app::io_pool_threads`).
             io_threads: 0,
             // Three 2K BC7/UASTC textures with a full mip chain (~5.3 MiB each):
@@ -172,10 +255,30 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            color_grade: SceneGradeMode::SnapshotSrgb,
+            visual_preset: SceneVisualPreset::CoolGray,
+            grade_preset: None,
+            tone_map: SceneToneMapMode::Tony,
+            tone_map_params: None,
+            image_space: None,
+            image_space_weather: None,
+            image_space_slot: None,
+            start_shot: None,
+            stdin_console: false,
+            no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
             benchmark_duration_secs: None,
             benchmark_warmup_frames: 60,
+            benchmark_vsync: false,
+            streaming_benchmark_route_speed: None,
+            streaming_benchmark_route_secs: 45.0,
+            streaming_benchmark_tail_secs: 10.0,
+            streaming_benchmark_settle_secs: 5.0,
+            streaming_benchmark_expected_models: None,
+            streaming_benchmark_expected_lod_chunks: None,
+            streaming_benchmark_expected_terrain: None,
+            streaming_benchmark_expected_water: None,
             benchmark_jump: None,
             benchmark_output: PathBuf::from("benchmark-report.json"),
             benchmark_frame_times: None,
@@ -184,6 +287,8 @@ impl Default for EngineConfig {
             accept_p95_ms: 16.67,
             accept_max_memory_growth_gib: 0.5,
             auto_fly_speed: 0.0,
+            route: None,
+            frame_budget_ms: crate::frame_budget::DEFAULT_FRAME_BUDGET_MS,
             allow_incomplete_assets: false,
             synthetic_instances: 250_000,
             profile_output_dir: None,
@@ -196,7 +301,9 @@ impl Default for EngineConfig {
             acceptance_screenshot: None,
             screenshot_camera_offset: None,
             shots: None,
+            matched_route: None,
             shots_out: None,
+            shots_settle_timeout: crate::shots::SETTLE_TIMEOUT_SECONDS,
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
@@ -227,6 +334,9 @@ Assets and start position:
   --worldspace <id>                     worldspace form id, decimal or 0x-hex (default: 0x3c)
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
+  --start-shot <file>                  start the live camera at one exterior shot pose
+  --stdin-console                     accept developer console commands on stdin
+  --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
@@ -238,17 +348,37 @@ Streaming:
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
+  --prioritize-streaming               prioritize nearby collision and view-facing bounds
+  --max-scene-loads <count>             outstanding unique scene jobs; 0 is unlimited (default: 0)
+  --adaptive-streaming                 adapt startup/walking budgets; enables spatial priority
+  --max-streaming-backlog <count>      downstream queue limit; 0 disables it, adaptive uses 256
+  --streaming-memory-mib <mib>         estimated allowance; 0 disables it unless adaptive
+                                     adaptive: half detected RAM, at most 16 GiB (fallback: 8 GiB)
+  --streaming-costs <file>             override streaming cost metadata (default: asset pack metadata)
+  --streaming-headroom-mib <mib>       system memory kept free (default: 2048)
+  --streaming-frame-ms <ms>            controller frame target (default: 16.67)
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
+  --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
 
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
   --benchmark-frames <count>            stop after this many measured frames
-  --benchmark-duration <seconds>        stop after this many measured seconds
+  --benchmark-duration <seconds>        stop after this many measured seconds (a route run: real seconds since start)
   --benchmark-warmup-frames <count>     frames discarded before measuring (default: 60)
+  --benchmark-vsync                     use the interactive app's vsync during benchmarks
+  --streaming-benchmark-route-speed <units/s>  start a real-time route after CPU settlement; 0 is stationary
+  --streaming-benchmark-route-secs <seconds>   moving route duration (default: 45)
+  --streaming-benchmark-tail-secs <seconds>    stationary tail duration (default: 10)
+  --streaming-benchmark-settle-secs <seconds>  continuous CPU-settled wait before starting (default: 5)
+  --streaming-benchmark-expected-models <count>       optional initial validated model count
+  --streaming-benchmark-expected-lod-chunks <count>   optional initial resident LOD chunk count
+  --streaming-benchmark-expected-terrain <count>      optional initial validated terrain patch count
+  --streaming-benchmark-expected-water <count>        optional initial validated water surface count
   --benchmark-jump <x,y>                after the world first loads, jump to this grid cell and time the reload
   --benchmark-output <file>             benchmark report path (default: benchmark-report.json)
+  --frame-budget-ms <ms>                frame time the report counts frames over (default: 6.25, 160 fps)
   --benchmark-frame-times [<file>]      write every measured frame time to this CSV file
   --run-label [<text>]                  name the run in the window title
   --synthetic-instances <count>         instances in the synthetic benchmark (default: 250000)
@@ -257,7 +387,18 @@ Benchmark and profiling:
   --accept-max-memory-growth-gib <gib>  fail the run above this memory growth (default: 0.5)
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
+  --matched-route <file>                execute exact route steps with transition and settled checkpoints
+  --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear|record-srgb (default: snapshot-srgb)
+  --grade-preset <json>                approved-look JSON override (snapshot-srgb and Cool Gray sky)
+  --tone-map <tony|retail-curve>       display transform (default: tony); retail curve is experimental
+  --tone-map-params <json>             explicit curve/scales and fixed luminance samples; requires selected IMGS
+  --image-space <FormID>               load an authored IMGS record for record-srgb experiments
+  --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
+  --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
+  --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
+  --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
+  --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
   --profile-output <dir>                profile bundle directory (default: no bundle)
   --profile-gpu-inventory               expensive GPU inventory diagnostic; requires --profile-output
@@ -268,6 +409,7 @@ Benchmark and profiling:
   --profile-hardware <text>             hardware recorded in the profile (default: unspecified)
 
 Diagnostics:
+  --bug-report-dir <dir>                local bug-report directory (default: per-user application data)
   --diagnostic-asset-fallbacks          log every fallback asset substitution
   --material-fixture                    run the material fixture (no world database)
   --terrain-water-fixture               run the terrain-water fixture (no world database)
@@ -407,6 +549,73 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    pub fn streaming_controls_enabled(&self) -> bool {
+        self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
+    }
+
+    pub fn streaming_backlog_limit(&self) -> usize {
+        if self.max_streaming_backlog == 0 && self.adaptive_streaming {
+            256
+        } else {
+            self.max_streaming_backlog
+        }
+    }
+
+    /// A limit on estimated streaming allocations, not process RSS. Without an
+    /// explicit adaptive limit this returns the 8 GiB fallback; the runtime
+    /// selects half detected RAM within the 16 GiB and system-headroom limits.
+    /// Available system memory is checked separately before reservations.
+    pub fn memory_budget_bytes(&self) -> Option<u64> {
+        let mib = if self.streaming_memory_mib != 0 {
+            self.streaming_memory_mib
+        } else if self.adaptive_streaming {
+            8_192
+        } else {
+            return None;
+        };
+        Some(
+            mib.checked_mul(1024 * 1024)
+                .expect("streaming memory size must fit bytes") as u64,
+        )
+    }
+
+    pub fn streaming_headroom_bytes(&self) -> u64 {
+        self.streaming_headroom_mib
+            .checked_mul(1024 * 1024)
+            .expect("streaming headroom size must fit bytes") as u64
+    }
+
+    /// Select only explicitly authored data; this does not simulate effective weather.
+    pub fn image_space_selection(&self) -> color_eyre::Result<Option<ImageSpaceSelection>> {
+        use color_eyre::eyre::ensure;
+        ensure!(
+            self.image_space.is_none()
+                || (self.image_space_weather.is_none() && self.image_space_slot.is_none()),
+            "--image-space cannot be combined with --image-space-weather or --image-space-slot"
+        );
+        ensure!(
+            self.image_space_weather.is_some() == self.image_space_slot.is_some(),
+            "--image-space-weather and --image-space-slot must be supplied together"
+        );
+        let selection = self
+            .image_space
+            .map(ImageSpaceSelection::Direct)
+            .or_else(|| {
+                self.image_space_weather
+                    .zip(self.image_space_slot)
+                    .map(|(form_id, slot)| ImageSpaceSelection::Weather { form_id, slot })
+            });
+        ensure!(
+            self.color_grade != SceneGradeMode::RecordSrgb || selection.is_some(),
+            "record-srgb requires an explicit --image-space or --image-space-weather with --image-space-slot"
+        );
+        ensure!(
+            self.tone_map != SceneToneMapMode::RetailCurve || selection.is_some(),
+            "retail-curve requires an explicit --image-space or --image-space-weather with --image-space-slot"
+        );
+        Ok(selection)
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -427,7 +636,10 @@ impl EngineConfig {
             && self.benchmark_duration_secs.is_none()
             && self.acceptance_screenshot.is_none()
             && self.shots.is_none()
+            && self.matched_route.is_none()
             && self.auto_fly_speed <= 0.0
+            && self.route.is_none()
+            && self.streaming_benchmark_route_speed.is_none()
             && !self.material_fixture
             && !self.terrain_water_fixture
             && !self.transform_bounds_fixture
@@ -444,7 +656,9 @@ impl EngineConfig {
     /// The same test the report uses to decide whether to write itself (`metrics::collect_and_finish`),
     /// so anything that only makes sense for a benchmark can key off it.
     pub fn is_benchmark_run(&self) -> bool {
-        self.benchmark_frames.is_some() || self.benchmark_duration_secs.is_some()
+        self.benchmark_frames.is_some()
+            || self.benchmark_duration_secs.is_some()
+            || self.streaming_benchmark_route_speed.is_some()
     }
 
     /// Whether the pacing instrumentation should run at all. It is measurement only, and only a
@@ -455,10 +669,15 @@ impl EngineConfig {
         self.is_benchmark_run() || self.benchmark_jump.is_some()
     }
 
+    /// Whether the run moves the camera on its own: `--auto-fly-speed` or `--route`.
+    pub fn flies(&self) -> bool {
+        self.auto_fly_speed > 0.0 || self.route.is_some()
+    }
+
     /// Whether the readiness scan records how far behind the flying camera each model finishes
     /// loading. Only the pacing report reads it, so a plain `--auto-fly-speed` run records nothing.
     pub fn records_fly_lag(&self) -> bool {
-        self.auto_fly_speed > 0.0 && self.measures_pacing()
+        self.flies() && self.measures_pacing()
     }
 
     /// The window's title: what kind of automated run this is and its `--run-label`, so a run on
@@ -468,6 +687,8 @@ impl EngineConfig {
             Some("benchmark")
         } else if self.streaming_fixture {
             Some("streaming fixture")
+        } else if self.matched_route.is_some() {
+            Some("matched-route")
         } else if self.shots.is_some() {
             Some("shots")
         } else {
@@ -508,6 +729,11 @@ impl EngineConfig {
             }
         }
         ini.apply(&mut config);
+        config.settings_overrides.extend(
+            args.iter()
+                .filter(|argument| argument.starts_with("--"))
+                .cloned(),
+        );
         let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -528,6 +754,21 @@ impl EngineConfig {
                         "a directory holding converted assets",
                         args.next(),
                     )?;
+                }
+                "--bug-report-dir" => {
+                    let path = take_raw(
+                        "--bug-report-dir",
+                        "a nonempty local report directory path",
+                        args.next(),
+                    )?;
+                    if path.trim().is_empty() {
+                        return Err(ConfigError::invalid_value(
+                            "--bug-report-dir",
+                            Some(path),
+                            "a nonempty local report directory path",
+                        ));
+                    }
+                    config.bug_report_dir = Some(PathBuf::from(path));
                 }
                 "--worldspace" => {
                     let value = take_raw(
@@ -578,6 +819,54 @@ impl EngineConfig {
                     config.max_model_spawns_per_frame = take_value(
                         "--max-model-spawns-per-frame",
                         "a model count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--prioritize-streaming" => config.prioritize_streaming = true,
+                "--max-scene-loads" => {
+                    config.max_scene_loads = take_value(
+                        "--max-scene-loads",
+                        "a scene job count, 0 for unlimited",
+                        args.next(),
+                    )?;
+                }
+                "--adaptive-streaming" => {
+                    config.adaptive_streaming = true;
+                    config.prioritize_streaming = true;
+                }
+                "--max-streaming-backlog" => {
+                    config.max_streaming_backlog = take_value(
+                        "--max-streaming-backlog",
+                        "a downstream queue count, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-memory-mib" => {
+                    config.streaming_memory_mib = take_mib(
+                        "--streaming-memory-mib",
+                        "a MiB size that fits bytes, 0 to disable",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-costs" => {
+                    config.streaming_costs = Some(take_value(
+                        "--streaming-costs",
+                        "a file path for streaming cost metadata",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-headroom-mib" => {
+                    config.streaming_headroom_mib = take_mib(
+                        "--streaming-headroom-mib",
+                        "a MiB size that fits bytes, 0 to reserve no headroom",
+                        args.next(),
+                    )?;
+                }
+                "--streaming-frame-ms" => {
+                    config.streaming_frame_ms = take_number(
+                        "--streaming-frame-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
                         args.next(),
                     )?;
                 }
@@ -633,6 +922,67 @@ impl EngineConfig {
                 "--benchmark-warmup-frames" => {
                     config.benchmark_warmup_frames =
                         take_value("--benchmark-warmup-frames", "a frame count", args.next())?;
+                }
+                "--benchmark-vsync" => config.benchmark_vsync = true,
+                "--streaming-benchmark-route-speed" => {
+                    config.streaming_benchmark_route_speed = Some(take_number(
+                        "--streaming-benchmark-route-speed",
+                        "a finite speed in units per second, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-route-secs" => {
+                    config.streaming_benchmark_route_secs = take_number(
+                        "--streaming-benchmark-route-secs",
+                        "a positive finite number of seconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-tail-secs" => {
+                    config.streaming_benchmark_tail_secs = take_number(
+                        "--streaming-benchmark-tail-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-settle-secs" => {
+                    config.streaming_benchmark_settle_secs = take_number(
+                        "--streaming-benchmark-settle-secs",
+                        "a finite number of seconds, 0 or more",
+                        Bound::NonNegative,
+                        args.next(),
+                    )?;
+                }
+                "--streaming-benchmark-expected-models" => {
+                    config.streaming_benchmark_expected_models = Some(take_value(
+                        "--streaming-benchmark-expected-models",
+                        "a model count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-lod-chunks" => {
+                    config.streaming_benchmark_expected_lod_chunks = Some(take_value(
+                        "--streaming-benchmark-expected-lod-chunks",
+                        "a LOD chunk count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-terrain" => {
+                    config.streaming_benchmark_expected_terrain = Some(take_value(
+                        "--streaming-benchmark-expected-terrain",
+                        "a terrain patch count",
+                        args.next(),
+                    )?);
+                }
+                "--streaming-benchmark-expected-water" => {
+                    config.streaming_benchmark_expected_water = Some(take_value(
+                        "--streaming-benchmark-expected-water",
+                        "a water surface count",
+                        args.next(),
+                    )?);
                 }
                 // Unlike its neighbours, a bad jump only warns: the jump is an add-on to a
                 // benchmark run, which still measures and writes its report without it.
@@ -702,6 +1052,17 @@ impl EngineConfig {
                         args.next(),
                     )?;
                 }
+                "--route" => {
+                    config.route = Some(take_value("--route", "a route file path", args.next())?);
+                }
+                "--frame-budget-ms" => {
+                    config.frame_budget_ms = take_number(
+                        "--frame-budget-ms",
+                        "a positive number of milliseconds",
+                        Bound::Positive,
+                        args.next(),
+                    )?;
+                }
                 "--allow-incomplete-assets" => config.allow_incomplete_assets = true,
                 "--synthetic-instances" => {
                     config.synthetic_instances =
@@ -757,8 +1118,119 @@ impl EngineConfig {
                 // A path left out is an error, and must not swallow the next option: a `--shots`
                 // with no path is no mode at all, and continuing would silently launch an ordinary
                 // interactive run.
+                "--matched-route" => {
+                    config.matched_route = Some(take_value(
+                        "--matched-route",
+                        "a route fixture",
+                        args.next(),
+                    )?);
+                }
+                "--color-grade" => {
+                    let raw = take_raw("--color-grade", SCENE_GRADE_VALUES, args.next())?;
+                    config.color_grade = SceneGradeMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--color-grade", Some(raw), SCENE_GRADE_VALUES)
+                    })?;
+                }
+                "--grade-preset" => {
+                    config.grade_preset =
+                        Some(take_value("--grade-preset", "a JSON file", args.next())?);
+                }
+                "--tone-map" => {
+                    let raw = take_raw("--tone-map", "tony or retail-curve", args.next())?;
+                    config.tone_map = SceneToneMapMode::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value("--tone-map", Some(raw), "tony or retail-curve")
+                    })?;
+                }
+                "--tone-map-params" => {
+                    config.tone_map_params =
+                        Some(take_value("--tone-map-params", "a JSON file", args.next())?);
+                }
+                "--image-space" => {
+                    let raw =
+                        take_raw("--image-space", "a FormID, decimal or 0x-hex", args.next())?;
+                    config.image_space = Some(parse_u32(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--image-space",
+                            Some(raw),
+                            "a FormID, decimal or 0x-hex",
+                        )
+                    })?);
+                }
+                "--image-space-weather" => {
+                    let raw = take_raw(
+                        "--image-space-weather",
+                        "a FormID, decimal or 0x-hex",
+                        args.next(),
+                    )?;
+                    config.image_space_weather = Some(parse_u32(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--image-space-weather",
+                            Some(raw),
+                            "a FormID, decimal or 0x-hex",
+                        )
+                    })?);
+                }
+                "--image-space-slot" => {
+                    let raw = take_raw(
+                        "--image-space-slot",
+                        "sunrise, day, sunset or night",
+                        args.next(),
+                    )?;
+                    config.image_space_slot =
+                        Some(ImageSpaceSlot::parse(&raw).ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--image-space-slot",
+                                Some(raw),
+                                "sunrise, day, sunset or night",
+                            )
+                        })?);
+                }
+                "--visual-preset" => {
+                    let raw = take_raw("--visual-preset", "vivid or cool-gray", args.next())?;
+                    config.visual_preset = SceneVisualPreset::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--visual-preset",
+                            Some(raw),
+                            "vivid or cool-gray",
+                        )
+                    })?;
+                }
+                "--sun-position" => {
+                    let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
+                    config.sun_position = Some(parse_sun_position(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--sun-position",
+                            Some(raw),
+                            SUN_POSITION_EXPECTED,
+                        )
+                    })?);
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
+                }
+                "--start-shot" => {
+                    config.start_shot = Some(take_value(
+                        "--start-shot",
+                        "a one-pose shots file",
+                        args.next(),
+                    )?);
+                }
+                "--stdin-console" => config.stdin_console = true,
+                "--no-render-diagnostics" => config.no_render_diagnostics = true,
+                "--shots-settle-timeout" => {
+                    const EXPECTED: &str = "a positive number of seconds up to 600";
+                    let raw = take_raw("--shots-settle-timeout", EXPECTED, args.next())?;
+                    config.shots_settle_timeout = raw
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|value| value.is_finite() && *value > 0.0 && *value <= 600.0)
+                        .ok_or_else(|| {
+                            ConfigError::invalid_value(
+                                "--shots-settle-timeout",
+                                Some(raw),
+                                EXPECTED,
+                            )
+                        })?;
                 }
                 "--shots-out" => {
                     config.shots_out = Some(take_value(
@@ -777,6 +1249,48 @@ impl EngineConfig {
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
+        }
+        if config.streaming_benchmark_route_speed.is_some()
+            && (config.benchmark_only
+                || config.acceptance_screenshot.is_some()
+                || config.shots.is_some()
+                || config.matched_route.is_some()
+                || config.route.is_some()
+                || config.auto_fly_speed > 0.0
+                || config.material_fixture
+                || config.terrain_water_fixture
+                || config.transform_bounds_fixture
+                || config.renderer_fixture
+                || config.streaming_fixture
+                || config.physics_fixture)
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-speed",
+                config
+                    .streaming_benchmark_route_speed
+                    .map(|speed| speed.to_string()),
+                "a world camera route without screenshots, shots, a route file, synthetic mode or fixtures",
+            ));
+        }
+        // A route waits for CPU settlement with no other bound, so it needs the real-time deadline.
+        if config.streaming_benchmark_route_speed.is_some()
+            && config.benchmark_duration_secs.is_none()
+        {
+            return Err(ConfigError::MissingRequirement {
+                option: "--streaming-benchmark-route-speed",
+                requires: "--benchmark-duration",
+            });
+        }
+        if let Some(speed) = config.streaming_benchmark_route_speed
+            && (!(speed * config.streaming_benchmark_route_secs).is_finite()
+                || !(config.streaming_benchmark_route_secs + config.streaming_benchmark_tail_secs)
+                    .is_finite())
+        {
+            return Err(ConfigError::invalid_value(
+                "--streaming-benchmark-route-secs",
+                Some(config.streaming_benchmark_route_secs.to_string()),
+                "a duration whose route distance and total duration remain finite",
+            ));
         }
         // The inventory is written into the profile bundle; without one it would do nothing.
         if config.profile_gpu_inventory && config.profile_output_dir.is_none() {
@@ -818,12 +1332,18 @@ impl EngineConfig {
             Some(fixture)
         } else if self.auto_fly_speed > 0.0 {
             Some("--auto-fly-speed keeps driving the camera")
+        } else if self.route.is_some() {
+            Some("--route keeps driving the camera")
         } else if self.acceptance_screenshot.is_some() {
             Some("--acceptance-screenshot anchors streaming on the start cell")
         } else if self.streaming_fixture {
             Some("--streaming-fixture moves the camera every frame")
         } else if self.shots.is_some() {
             Some("--shots sets the camera pose for each shot")
+        } else if self.streaming_benchmark_route_speed.is_some() {
+            Some("--streaming-benchmark-route-speed owns the camera")
+        } else if self.matched_route.is_some() {
+            Some("--matched-route sets the camera pose for each route step")
         } else {
             None
         };
@@ -853,6 +1373,10 @@ pub const MAX_STREAM_RADIUS: i32 = (i32::MAX - 3) / 2;
 /// What `--stream-radius` takes, with [`MAX_STREAM_RADIUS`] spelled out; a test holds the two
 /// equal.
 const STREAM_RADIUS_EXPECTED: &str = "a cell count from 0 to 1073741822";
+
+/// What `--sun-position` takes: azimuth clockwise from north, then elevation above the horizon.
+const SUN_POSITION_EXPECTED: &str =
+    "two finite angles in degrees: azimuth,elevation (elevation 0 to 90)";
 
 /// Test shorthand for a command line that must ask for a run.
 #[cfg(test)]
@@ -891,6 +1415,20 @@ fn parse_grid(value: &str) -> Option<(i32, i32)> {
     let x: i32 = parts.next()?.trim().parse().ok()?;
     let y: i32 = parts.next()?.trim().parse().ok()?;
     parts.next().is_none().then_some((x, y))
+}
+
+fn parse_sun_position(value: &str) -> Option<(f32, f32)> {
+    let mut parts = value.split(',');
+    let azimuth: f32 = parts.next()?.trim().parse().ok()?;
+    let elevation: f32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some()
+        || !azimuth.is_finite()
+        || !elevation.is_finite()
+        || !(0.0..=90.0).contains(&elevation)
+    {
+        return None;
+    }
+    Some((azimuth.rem_euclid(360.0), elevation))
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -932,6 +1470,18 @@ fn take_value<T: std::str::FromStr>(
     value
         .parse::<T>()
         .map_err(|_| ConfigError::invalid_value(option, Some(value), expected))
+}
+
+fn take_mib(
+    option: &'static str,
+    expected: &'static str,
+    value: Option<String>,
+) -> Result<usize, ConfigError> {
+    let raw = take_raw(option, expected, value)?;
+    raw.parse::<usize>()
+        .ok()
+        .filter(|mib| mib.checked_mul(1024 * 1024).is_some())
+        .ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
 }
 
 /// The range a numeric option's value must fall in. Neither admits NaN or an infinity.
@@ -1066,36 +1616,132 @@ mod tests {
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
         "--short",               // git rev-parse
-        "--output",              // world-inspect, repeat-terrain-startup.py
-        "--radius",              // world-inspect
-        "--library-path",        // ld-linux
-        "--meshes",              // audit-collision.py
-        "--min-x",               // audit-collision.py
-        "--max-x",               // audit-collision.py
-        "--min-y",               // audit-collision.py
-        "--max-y",               // audit-collision.py
-        "--out",                 // audit-collision.py
-        "--expect-solid",        // audit-collision.py
-        "--expect-passable",     // audit-collision.py
-        "--original",            // audit_asset_sizes.py
-        "--json",                // audit_asset_sizes.py
+        "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
+        "--pairs-output", // correlate_drawables.py
+        "--radius", // world-inspect
+        "--library-path", // ld-linux
+        "--meshes", // audit-collision.py
+        "--min-x",  // audit-collision.py
+        "--max-x",  // audit-collision.py
+        "--min-y",  // audit-collision.py
+        "--max-y",  // audit-collision.py
+        "--out",    // audit-collision.py
+        "--expect-solid", // audit-collision.py
+        "--expect-passable", // audit-collision.py
+        "--original", // audit_asset_sizes.py
+        "--json",   // audit_asset_sizes.py
         "--candidate-inventory", // audit-riverwood-reuse.py
         "--reference-inventory", // audit-riverwood-reuse.py
-        "--manifest",            // audit-riverwood-reuse.py
-        "--locked",              // cargo run
-        "--manifest-path",       // cargo run
-        "--cpu-jobs",            // converter
-        "--io-jobs",             // converter
-        "--binary",              // git diff
-        "--porcelain",           // git status
-        "--engine",              // repeat-terrain-startup.py
-        "--repeats",             // repeat-terrain-startup.py
-        "--upload-budgets",      // repeat-terrain-startup.py
-        "--warmup",              // repeat-terrain-startup.py
-        "--duration",            // repeat-terrain-startup.py
-        "--timeout",             // repeat-terrain-startup.py
-        "--launch-prefix",       // repeat-terrain-startup.py
-        "--commit",              // repeat-terrain-startup.py
+        "--manifest", // audit-riverwood-reuse.py
+        "--include", // audit-z-fighting.py
+        "--materials-only", // audit-z-fighting.py
+        "--no-placements", // audit-z-fighting.py
+        "--plane-tolerance", // audit-z-fighting.py
+        "--min-overlap-area", // audit-z-fighting.py
+        "--max-triangles", // audit-z-fighting.py
+        "--max-comparisons", // audit-z-fighting.py
+        "--max-examples", // audit-z-fighting.py
+        "--progress", // audit-z-fighting.py
+        "--jobs",   // audit-z-fighting.py
+        "--locked", // cargo run
+        "--manifest-path", // cargo run
+        "--cpu-jobs", // converter
+        "--io-jobs", // converter
+        "--binary", // git diff
+        "--porcelain", // git status
+        "--engine", // repeat-terrain-startup.py
+        "--repeats", // repeat-terrain-startup.py
+        "--upload-budgets", // repeat-terrain-startup.py
+        "--warmup", // repeat-terrain-startup.py
+        "--duration", // repeat-terrain-startup.py
+        "--timeout", // repeat-terrain-startup.py
+        "--launch-prefix", // repeat-terrain-startup.py
+        "--commit", // repeat-terrain-startup.py
+        "--costs",  // compare-streaming-modes.py
+        "--thermal-probe", // compare-streaming-modes.py
+        "--ablation-repeats", // compare-streaming-modes.py
+        "--resume", // compare-streaming-modes.py
+        "--seed",   // streaming comparison scripts
+        "--smoke",  // compare-streaming-modes.py
+        "--experiment", // analyze-streaming-comparison.py
+        "--output-dir", // analyze-streaming-comparison.py
+        "--bootstrap-samples", // analyze-streaming-comparison.py
+        "--comparison", // analyze-streaming-comparison.py
+        "--output", // world inspection, profiling, startup runner
+        "--pairs-output", // correlate_drawables.py
+        "--native-preset", // prepare_skyrim_comparison.py
+        "--calibration", // prepare_skyrim_comparison.py
+        "--timeout", // run_skyrim_comparison.py
+        "--user",   // systemctl
+        "--property", // systemctl
+        "--value",  // systemctl
+        "--onlyvisible", // xdotool
+        "--name",   // xdotool
+        "--sync",   // xdotool
+        "--psm",    // tesseract
+        "--radius", // world-inspect
+        "--library-path", // ld-linux
+        "--meshes", // audit-collision.py
+        "--min-x",  // audit-collision.py
+        "--max-x",  // audit-collision.py
+        "--min-y",  // audit-collision.py
+        "--max-y",  // audit-collision.py
+        "--out",    // audit-collision.py
+        "--expect-solid", // audit-collision.py
+        "--expect-passable", // audit-collision.py
+        "--original", // audit_asset_sizes.py
+        "--json",   // audit_asset_sizes.py
+        "--candidate-inventory", // audit-riverwood-reuse.py
+        "--reference-inventory", // audit-riverwood-reuse.py
+        "--manifest", // audit-riverwood-reuse.py
+        "--include", // audit-z-fighting.py
+        "--materials-only", // audit-z-fighting.py
+        "--no-placements", // audit-z-fighting.py
+        "--plane-tolerance", // audit-z-fighting.py
+        "--min-overlap-area", // audit-z-fighting.py
+        "--max-triangles", // audit-z-fighting.py
+        "--max-comparisons", // audit-z-fighting.py
+        "--max-examples", // audit-z-fighting.py
+        "--progress", // audit-z-fighting.py
+        "--jobs",   // audit-z-fighting.py
+        "--locked", // cargo run
+        "--manifest-path", // cargo run
+        "--cpu-jobs", // converter
+        "--io-jobs", // converter
+        "--binary", // git diff
+        "--porcelain", // git status
+        "--engine", // repeat-terrain-startup.py
+        "--repeats", // repeat-terrain-startup.py
+        "--upload-budgets", // repeat-terrain-startup.py
+        "--warmup", // repeat-terrain-startup.py
+        "--duration", // repeat-terrain-startup.py
+        "--timeout", // repeat-terrain-startup.py
+        "--launch-prefix", // repeat-terrain-startup.py
+        "--commit", // repeat-terrain-startup.py
+        "--config", // capture_tonemap_tuning.py
+        "--validate-only", // capture_tonemap_tuning.py
+        "--clearmodifiers", // xdotool
+        "--delay",  // xdotool
+        "--console-open", // capture_skyrim_tonemap_state.py
+        "--event",  // inspect_skyrim_gpu_capture.py, sample_skyrim_tonemap_gpu.py
+        "--max-actions", // inspect_skyrim_gpu_capture.py
+        "--max-resource-mib", // inspect_skyrim_gpu_capture.py
+        "--max-resources", // inspect_skyrim_gpu_capture.py
+        "--max-total-mib", // inspect_skyrim_gpu_capture.py
+        "--previews", // inspect_skyrim_gpu_capture.py
+        "--tail",   // inspect_skyrim_gpu_capture.py
+        "--exe",    // inspect_skyrim_tonemap_memory.py
+        "--pid",    // inspect_skyrim_tonemap_memory.py
+        "--atol",   // replay_skyrim_tonemap.py
+        "--dot-mode", // replay_skyrim_tonemap.py
+        "--input",  // replay_skyrim_tonemap.py
+        "--mad-mode", // replay_skyrim_tonemap.py
+        "--rtol",   // replay_skyrim_tonemap.py
+        "--capture-sha256", // sample_skyrim_tonemap_gpu.py
+        "--output-id", // sample_skyrim_tonemap_gpu.py
+        "--pixel",  // sample_skyrim_tonemap_gpu.py
+        "--shader-id", // sample_skyrim_tonemap_gpu.py
+        "--source-shader", // sample_skyrim_tonemap_gpu.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -1169,6 +1815,294 @@ mod tests {
     }
 
     #[test]
+    fn demand_scheduling_is_opt_in_and_keeps_zero_unlimited() {
+        let defaults = EngineConfig::default();
+        assert!(!defaults.prioritize_streaming);
+        assert_eq!(defaults.max_scene_loads, 0);
+        let candidate = run_config(&["--prioritize-streaming", "--max-scene-loads", "32"]);
+        assert!(candidate.prioritize_streaming);
+        assert_eq!(candidate.max_scene_loads, 32);
+        assert_eq!(run_config(&["--max-scene-loads", "0"]).max_scene_loads, 0);
+        assert!(matches!(
+            parse_error(&["--max-scene-loads", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_controls_default_off_and_preserve_fixed_limits() {
+        let config = run_config(&[]);
+        assert!(!config.adaptive_streaming);
+        assert!(!config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 0);
+        assert_eq!(config.memory_budget_bytes(), None);
+        assert_eq!(config.streaming_headroom_bytes(), 2_048 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 16.67);
+        assert!(config.streaming_costs.is_none());
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+        assert_eq!(config.max_upload_bytes_per_frame(), Some(16 * 1024 * 1024));
+    }
+
+    #[test]
+    fn dedicated_streaming_benchmark_route_is_opt_in_and_accepts_stationary_speed() {
+        let defaults = run_config(&[]);
+        assert!(!defaults.benchmark_vsync);
+        assert!(defaults.streaming_benchmark_route_speed.is_none());
+        assert_eq!(defaults.streaming_benchmark_settle_secs, 5.0);
+        let config = run_config(&[
+            "--streaming-benchmark-route-speed",
+            "0",
+            "--streaming-benchmark-route-secs",
+            "45",
+            "--streaming-benchmark-tail-secs",
+            "10",
+            "--streaming-benchmark-settle-secs",
+            "5",
+            "--streaming-benchmark-expected-models",
+            "2029",
+            "--streaming-benchmark-expected-lod-chunks",
+            "176",
+            "--streaming-benchmark-expected-terrain",
+            "100",
+            "--streaming-benchmark-expected-water",
+            "25",
+            "--benchmark-vsync",
+            "--benchmark-duration",
+            "210",
+        ]);
+        assert_eq!(config.streaming_benchmark_route_speed, Some(0.0));
+        assert_eq!(config.streaming_benchmark_route_secs, 45.0);
+        assert_eq!(config.streaming_benchmark_tail_secs, 10.0);
+        assert_eq!(config.streaming_benchmark_expected_models, Some(2029));
+        assert_eq!(config.streaming_benchmark_expected_lod_chunks, Some(176));
+        assert_eq!(config.streaming_benchmark_expected_terrain, Some(100));
+        assert_eq!(config.streaming_benchmark_expected_water, Some(25));
+        assert!(config.benchmark_vsync);
+        assert!(!config.interactive_world_physics());
+        assert!(!config.streaming_controls_enabled());
+    }
+
+    #[test]
+    fn benchmark_route_requires_a_real_time_deadline() {
+        let error = parse_error(&["--streaming-benchmark-route-speed", "370"]);
+        assert!(matches!(
+            error,
+            ConfigError::MissingRequirement {
+                option: "--streaming-benchmark-route-speed",
+                requires: "--benchmark-duration",
+            }
+        ));
+        let config = run_config(&[
+            "--streaming-benchmark-route-speed",
+            "370",
+            "--benchmark-duration",
+            "210",
+        ]);
+        assert_eq!(config.benchmark_duration_secs, Some(210.0));
+    }
+
+    #[test]
+    fn benchmark_route_rejects_invalid_numbers_and_anchored_camera_modes() {
+        for option in [
+            "--streaming-benchmark-route-speed",
+            "--streaming-benchmark-tail-secs",
+            "--streaming-benchmark-settle-secs",
+        ] {
+            for value in ["-1", "NaN", "inf"] {
+                assert!(matches!(
+                    parse_error(&[option, value]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+        }
+        for value in ["0", "-1", "NaN", "inf"] {
+            assert!(matches!(
+                parse_error(&["--streaming-benchmark-route-secs", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        for args in [
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--acceptance-screenshot",
+                "out.png",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--shots",
+                "poses.json",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--benchmark-only",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "370",
+                "--physics-fixture",
+            ],
+            vec![
+                "--streaming-benchmark-route-speed",
+                "1e308",
+                "--streaming-benchmark-route-secs",
+                "1e308",
+            ],
+        ] {
+            let mut args = args;
+            args.extend(["--benchmark-duration", "60"]);
+            assert!(matches!(
+                parse_error(&args),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn adaptive_mode_enables_priority_and_finite_automatic_pipeline_limits() {
+        let config = run_config(&["--adaptive-streaming"]);
+        assert!(config.adaptive_streaming);
+        assert!(config.prioritize_streaming);
+        assert!(config.streaming_controls_enabled());
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        // Legacy fields keep their meaning; the runtime translates unlimited
+        // values into finite controller ceilings only for adaptive mode.
+        assert_eq!(config.max_scene_loads, 0);
+        assert_eq!(config.max_model_spawns_per_frame, 32);
+    }
+
+    #[test]
+    fn explicit_pipeline_limits_override_adaptive_fallbacks() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--max-streaming-backlog",
+            "48",
+            "--streaming-memory-mib",
+            "4096",
+            "--streaming-headroom-mib",
+            "1024",
+            "--streaming-frame-ms",
+            "33.33",
+            "--streaming-costs",
+            "metadata/custom-costs.json",
+        ]);
+        assert_eq!(config.streaming_backlog_limit(), 48);
+        assert_eq!(config.memory_budget_bytes(), Some(4_096 * 1024 * 1024));
+        assert_eq!(config.streaming_headroom_bytes(), 1_024 * 1024 * 1024);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(
+            config.streaming_costs,
+            Some(PathBuf::from("metadata/custom-costs.json"))
+        );
+    }
+
+    #[test]
+    fn backlog_and_memory_admission_can_be_enabled_without_adaptation() {
+        for args in [
+            vec!["--max-streaming-backlog", "64"],
+            vec!["--streaming-memory-mib", "1024"],
+        ] {
+            let config = run_config(&args);
+            assert!(config.streaming_controls_enabled());
+            assert!(!config.adaptive_streaming);
+            assert!(!config.prioritize_streaming);
+        }
+        for args in [
+            vec!["--max-streaming-backlog", "0"],
+            vec!["--streaming-memory-mib", "0"],
+            vec!["--streaming-costs", "costs.json"],
+            vec!["--streaming-frame-ms", "8.33"],
+            vec!["--streaming-headroom-mib", "0"],
+        ] {
+            assert!(!run_config(&args).streaming_controls_enabled());
+        }
+    }
+
+    #[test]
+    fn zero_pipeline_limits_select_automatic_limits_only_in_adaptive_mode() {
+        let config = run_config(&[
+            "--adaptive-streaming",
+            "--streaming-memory-mib",
+            "0",
+            "--max-streaming-backlog",
+            "0",
+            "--streaming-headroom-mib",
+            "0",
+        ]);
+        assert_eq!(config.memory_budget_bytes(), Some(8_192 * 1024 * 1024));
+        assert_eq!(config.streaming_backlog_limit(), 256);
+        assert_eq!(config.streaming_headroom_bytes(), 0);
+    }
+
+    #[test]
+    fn pipeline_mib_values_must_fit_bytes_and_negative_values_are_rejected() {
+        let overflow = (usize::MAX / (1024 * 1024) + 1).to_string();
+        let maximum = (usize::MAX / (1024 * 1024)).to_string();
+        for option in ["--streaming-memory-mib", "--streaming-headroom-mib"] {
+            for invalid in ["-1", "NaN", "inf", overflow.as_str()] {
+                assert!(matches!(
+                    parse_error(&[option, invalid]),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
+            let config = run_config(&[option, &maximum]);
+            if option == "--streaming-memory-mib" {
+                assert_eq!(
+                    config.memory_budget_bytes(),
+                    Some((usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64)
+                );
+            } else {
+                assert_eq!(
+                    config.streaming_headroom_bytes(),
+                    (usize::MAX / (1024 * 1024) * (1024 * 1024)) as u64
+                );
+            }
+        }
+        assert!(matches!(
+            parse_error(&["--max-streaming-backlog", "-1"]),
+            ConfigError::InvalidValue { .. }
+        ));
+    }
+
+    #[test]
+    fn pipeline_frame_target_is_positive_finite_and_independent_of_acceptance() {
+        for value in ["0", "-1", "NaN", "inf", "-inf", "1e999"] {
+            assert!(matches!(
+                parse_error(&["--streaming-frame-ms", value]),
+                ConfigError::InvalidValue { .. }
+            ));
+        }
+        let config = run_config(&["--streaming-frame-ms", "33.33"]);
+        assert_eq!(config.streaming_frame_ms, 33.33);
+        assert_eq!(config.accept_p95_ms, 16.67);
+        assert_eq!(config.accept_min_fps, 60.0);
+    }
+
+    #[test]
+    fn pipeline_options_require_values_without_swallowing_following_flags() {
+        for option in [
+            "--max-streaming-backlog",
+            "--streaming-memory-mib",
+            "--streaming-costs",
+            "--streaming-headroom-mib",
+            "--streaming-frame-ms",
+        ] {
+            assert!(matches!(
+                parse_error(&[option]),
+                ConfigError::InvalidValue { value: None, .. }
+            ));
+            assert!(matches!(
+                parse_error(&[option, "--headless"]),
+                ConfigError::InvalidValue { value: Some(value), .. } if value == "--headless"
+            ));
+        }
+    }
+
+    #[test]
     fn help_shows_the_model_spawn_default_the_engine_uses() {
         let line = HELP_TEXT
             .lines()
@@ -1179,6 +2113,151 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    #[test]
+    fn parses_live_start_camera_and_opt_in_stdin_console() {
+        let config = run_config(&[
+            "--start-shot",
+            "camera.json",
+            "--stdin-console",
+            "--no-render-diagnostics",
+        ]);
+        assert_eq!(config.start_shot, Some(PathBuf::from("camera.json")));
+        assert!(config.stdin_console);
+        assert!(config.no_render_diagnostics);
+        assert!(config.interactive_world_physics());
+        assert!(!EngineConfig::default().stdin_console);
+        assert!(!EngineConfig::default().no_render_diagnostics);
+        assert!(
+            parse_error(&["--start-shot"])
+                .to_string()
+                .contains("--start-shot")
+        );
+    }
+
+    #[test]
+    fn parses_visual_preset_without_changing_diagnostic_grade() {
+        assert_eq!(
+            EngineConfig::default().visual_preset,
+            SceneVisualPreset::CoolGray
+        );
+        for (value, expected) in [
+            ("vivid", SceneVisualPreset::Vivid),
+            ("COOL-GRAY", SceneVisualPreset::CoolGray),
+        ] {
+            let config = run_config(&["--visual-preset", value, "--color-grade", "saturation"]);
+            assert_eq!(config.visual_preset, expected);
+            assert_eq!(config.color_grade, SceneGradeMode::Saturation);
+        }
+        for args in [
+            &["--visual-preset"][..],
+            &["--visual-preset", "invalid"][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--visual-preset"));
+        }
+    }
+
+    #[test]
+    fn parses_explicit_image_space_sources_and_rejects_ambiguous_selections() {
+        let direct = run_config(&[
+            "--color-grade",
+            "record-srgb",
+            "--image-space",
+            "0x12F88",
+            "--grade-preset",
+            "look.json",
+        ]);
+        assert_eq!(
+            direct.image_space_selection().unwrap(),
+            Some(ImageSpaceSelection::Direct(0x12F88))
+        );
+        assert_eq!(direct.grade_preset, Some(PathBuf::from("look.json")));
+        let weather = run_config(&["--image-space-weather", "2074", "--image-space-slot", "DAY"]);
+        assert_eq!(
+            weather.image_space_selection().unwrap(),
+            Some(ImageSpaceSelection::Weather {
+                form_id: 0x81A,
+                slot: ImageSpaceSlot::Day
+            })
+        );
+        for args in [
+            &["--color-grade", "record-srgb"][..],
+            &[
+                "--image-space",
+                "100",
+                "--image-space-weather",
+                "2074",
+                "--image-space-slot",
+                "day",
+            ][..],
+            &["--image-space-weather", "2074"][..],
+            &["--image-space-slot", "day"][..],
+        ] {
+            assert!(run_config(args).image_space_selection().is_err());
+        }
+        for args in [
+            &["--image-space", "0xZZ"][..],
+            &["--image-space-slot", "noon"][..],
+            &["--grade-preset"][..],
+        ] {
+            assert!(EngineConfig::from_args(args.iter().map(|v| (*v).into())).is_err());
+        }
+    }
+
+    #[test]
+    fn tone_map_selection_is_explicit_and_keeps_the_approved_default() {
+        let default = EngineConfig::default();
+        assert_eq!(default.tone_map, SceneToneMapMode::Tony);
+        assert!(default.tone_map_params.is_none());
+        assert_eq!(default.color_grade, SceneGradeMode::SnapshotSrgb);
+        let experiment = run_config(&[
+            "--tone-map",
+            "retail-curve",
+            "--tone-map-params",
+            "curve.json",
+            "--image-space",
+            "0x12F87",
+        ]);
+        assert_eq!(experiment.tone_map, SceneToneMapMode::RetailCurve);
+        assert_eq!(
+            experiment.tone_map_params,
+            Some(PathBuf::from("curve.json"))
+        );
+        assert!(experiment.image_space_selection().unwrap().is_some());
+        assert!(
+            run_config(&["--tone-map", "retail-curve"])
+                .image_space_selection()
+                .is_err()
+        );
+        assert!(EngineConfig::from_args(["--tone-map".into(), "native".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_color_grade_and_rejects_unknown_modes() {
+        for (value, wanted) in [
+            ("off", SceneGradeMode::Off),
+            ("saturation", SceneGradeMode::Saturation),
+            ("FULL", SceneGradeMode::Full),
+            ("SNAPSHOT-SRGB", SceneGradeMode::SnapshotSrgb),
+            ("snapshot-linear", SceneGradeMode::SnapshotLinear),
+        ] {
+            assert_eq!(run_config(&["--color-grade", value]).color_grade, wanted);
+        }
+        assert_eq!(
+            EngineConfig::default().color_grade,
+            SceneGradeMode::SnapshotSrgb
+        );
+        assert!(
+            parse_error(&["--color-grade", "bad"])
+                .to_string()
+                .contains(SCENE_GRADE_VALUES)
+        );
+        assert!(
+            parse_error(&["--color-grade"])
+                .to_string()
+                .contains("--color-grade")
+        );
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
@@ -1380,6 +2459,74 @@ mod tests {
             .records_fly_lag(),
             "a benchmark that does not fly has no fly lag"
         );
+        let routed = EngineConfig {
+            route: Some("travel.json".into()),
+            benchmark_duration_secs: Some(60.0),
+            ..EngineConfig::default()
+        };
+        assert!(routed.flies());
+        assert!(routed.records_fly_lag(), "a route moves the camera too");
+    }
+
+    #[test]
+    fn parses_the_route_and_the_frame_budget() {
+        let config = EngineConfig::run_from_args(
+            [
+                "--route",
+                "scripts/routes/travel.json",
+                "--frame-budget-ms",
+                "8.33",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert_eq!(
+            config.route.as_deref(),
+            Some(std::path::Path::new("scripts/routes/travel.json"))
+        );
+        assert_eq!(config.frame_budget_ms, 8.33);
+        let defaults = EngineConfig::default();
+        assert_eq!(defaults.route, None);
+        assert_eq!(defaults.frame_budget_ms, 6.25);
+        for bad in [
+            ["--frame-budget-ms", "0"],
+            ["--frame-budget-ms", "-3"],
+            ["--frame-budget-ms", "fast"],
+            ["--frame-budget-ms", "--headless"],
+            ["--route", "--headless"],
+        ] {
+            assert!(
+                EngineConfig::from_args(bad.map(str::to_owned)).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+        assert!(EngineConfig::from_args(["--route".to_owned()]).is_err());
+    }
+
+    /// A route owns the camera as auto-fly does: it is never an interactive play session, and a
+    /// jump it would undo is dropped.
+    #[test]
+    fn a_route_owns_the_camera() {
+        assert!(EngineConfig::default().interactive_world_physics());
+        let routed = EngineConfig::run_from_args(
+            [
+                "--route",
+                "travel.json",
+                "--benchmark-jump",
+                "3,4",
+                "--benchmark-duration",
+                "30",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert!(!routed.interactive_world_physics());
+        assert_eq!(routed.benchmark_jump, None, "the route would overwrite it");
+        let without_report = EngineConfig {
+            route: Some("travel.json".into()),
+            ..EngineConfig::default()
+        };
+        assert!(!without_report.interactive_world_physics());
     }
 
     #[test]
@@ -1417,6 +2564,14 @@ mod tests {
         ]);
         assert_eq!(config.benchmark_jump, None);
         assert!(config.shots.is_some());
+        for list in [
+            ["--benchmark-jump", "3,4", "--matched-route", "route.json"],
+            ["--matched-route", "route.json", "--benchmark-jump", "3,4"],
+        ] {
+            let config = args(&list);
+            assert_eq!(config.benchmark_jump, None, "{list:?}");
+            assert_eq!(config.matched_route, Some(PathBuf::from("route.json")));
+        }
         // A synthetic benchmark loads no world, so no streaming system would issue the jump.
         let config = args(&[
             "--benchmark-only",
@@ -1470,6 +2625,25 @@ mod tests {
         let config = run_config(&["--screenshot-camera-offset", "-10, 2.5 ,0"]);
         assert_eq!(config.screenshot_camera_offset, Some((-10.0, 2.5, 0.0)));
         assert_eq!(EngineConfig::default().screenshot_camera_offset, None);
+    }
+
+    #[test]
+    fn parses_the_optional_sun_bearing_and_elevation() {
+        let config = run_config(&["--sun-position", "450,35"]);
+        assert_eq!(config.sun_position, Some((90.0, 35.0)));
+
+        for value in ["0", "north,35", "0,91", "0,-1", "0,35,2", "NaN,35"] {
+            assert!(
+                matches!(
+                    parse_error(&["--sun-position", value]),
+                    ConfigError::InvalidValue {
+                        option: "--sun-position",
+                        ..
+                    }
+                ),
+                "{value} was accepted"
+            );
+        }
     }
 
     #[test]
@@ -1545,6 +2719,58 @@ mod tests {
             "Mudcrab - shots: riverwood"
         );
         assert_eq!(args(&[]).window_title(), "Mudcrab");
+    }
+
+    /// A file route cannot share the camera with the streaming benchmark route. Refused while the
+    /// arguments are parsed, before any asset or device work starts.
+    #[test]
+    fn a_file_route_refuses_the_streaming_benchmark_route() {
+        let error = parse_error(&[
+            "--route",
+            "travel.json",
+            "--streaming-benchmark-route-speed",
+            "370",
+            "--benchmark-duration",
+            "30",
+        ]);
+        assert!(
+            matches!(
+                error,
+                ConfigError::InvalidValue {
+                    option: "--streaming-benchmark-route-speed",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn matched_route_is_a_separate_automated_camera_mode() {
+        let config = run_config(&["--matched-route", "route.json"]);
+        assert_eq!(config.matched_route, Some(PathBuf::from("route.json")));
+        assert!(!config.interactive_world_physics());
+        assert!(
+            run_config(&["--matched-route", "route.json", "--run-label", "test"])
+                .window_title()
+                .contains("matched-route")
+        );
+    }
+
+    #[test]
+    fn shots_settle_timeout_is_finite_positive_and_bounded() {
+        assert_eq!(run_config(&[]).shots_settle_timeout, 30.0);
+        assert_eq!(
+            run_config(&["--shots-settle-timeout", "120"]).shots_settle_timeout,
+            120.0
+        );
+        for value in ["0", "-1", "NaN", "inf", "601"] {
+            assert!(
+                parse_error(&["--shots-settle-timeout", value])
+                    .to_string()
+                    .contains("--shots-settle-timeout")
+            );
+        }
     }
 
     /// A shots path left out does not swallow the next option, and it is an error rather than a
@@ -1838,6 +3064,39 @@ mod tests {
     }
 
     #[test]
+    fn bug_report_directory_override_preserves_relative_absolute_and_spaced_paths() {
+        assert!(EngineConfig::default().bug_report_dir.is_none());
+        for path in ["reports", "/tmp/Mudcrab Reports", "-reports", r"C:\Reports"] {
+            assert_eq!(
+                run_config(&["--bug-report-dir", path]).bug_report_dir,
+                Some(PathBuf::from(path))
+            );
+        }
+        assert_eq!(
+            run_config(&["--bug-report-dir", "old", "--bug-report-dir", "new"]).bug_report_dir,
+            Some(PathBuf::from("new"))
+        );
+    }
+
+    #[test]
+    fn bug_report_directory_override_refuses_missing_empty_and_option_shaped_values() {
+        for args in [
+            &["--bug-report-dir"][..],
+            &["--bug-report-dir", ""],
+            &["--bug-report-dir", "  "],
+            &["--bug-report-dir", "--headless"],
+        ] {
+            assert!(matches!(
+                parse_error(args),
+                ConfigError::InvalidValue {
+                    option: "--bug-report-dir",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn a_missing_value_is_refused() {
         assert_eq!(
             parse_error(&["--grid-x"]).to_string(),
@@ -2092,6 +3351,8 @@ mod tests {
 
     /// Utility `.ps1`, `.sh` and `.py` files under `root`, subdirectories included,
     /// in a stable order. Hidden directories and script tests are excluded.
+    /// Converter-only profiling tools stay in the scan; their flags are checked
+    /// only on lines that invoke the engine (see `checked_script_engine_flags`).
     fn script_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut paths = Vec::new();
         let mut pending = vec![root.to_owned()];
@@ -2105,8 +3366,7 @@ mod tests {
                 // loop the walk; hidden folders (`.venv`) hold no project scripts.
                 if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                     let name = entry.file_name();
-                    // Tests inspect script text, including deliberately unsupported engine
-                    // options; they are not utility command lines.
+                    // Tests inspect deliberately unsupported engine options.
                     if !name.to_string_lossy().starts_with('.') && name != "tests" {
                         pending.push(path);
                     }
@@ -2122,13 +3382,88 @@ mod tests {
         paths
     }
 
+    fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
+        let options = parser_options();
+        let mut checked = 0;
+        // lod-performance tools parse converter options and lod-experiment
+        // tools parse their own offline options. Only their lines that name the
+        // engine are engine invocations; the rest is not checked.
+        let converter_tool = path.components().any(|part| {
+            matches!(
+                part.as_os_str().to_str(),
+                Some("lod-performance" | "lod-experiment")
+            )
+        });
+        let engine_lines: String;
+        let scanned = if converter_tool {
+            engine_lines = script
+                .lines()
+                .filter(|line| {
+                    line.split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word == "engine")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            engine_lines.as_str()
+        } else {
+            script
+        };
+        for flag in script_cli_options(scanned) {
+            // This database-only tool owns --verify. Keep it scoped to the tool:
+            // an engine launcher passing --verify must still fail the audit.
+            let observation_option = path.file_name().is_some_and(|name| {
+                name == "reference-enable-observations.py" && flag == "--verify"
+            });
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+                continue;
+            }
+            assert!(
+                options.contains(&flag),
+                "{} passes {flag}, which the parser refuses",
+                path.display()
+            );
+            checked += 1;
+        }
+        checked
+    }
+
+    #[test]
+    fn the_script_audit_scopes_observation_options_and_rejects_unknown_engine_flags() {
+        let observation = std::path::Path::new("reference-enable-observations.py");
+        assert_eq!(
+            checked_script_engine_flags(
+                "--output manifest.json --verify manifest.json",
+                observation
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("engine --headless", observation),
+            1
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", observation)
+            })
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(
+                    "engine --verify manifest.json",
+                    std::path::Path::new("launch.sh"),
+                )
+            })
+            .is_err()
+        );
+    }
+
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
     /// included, is read from disk, so a script added later cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
     /// when the repository's `scripts/` is not next to this crate.
     #[test]
     fn the_scripts_only_pass_options_the_parser_accepts() {
-        let options = parser_options();
         let Some(scripts) = scripts_directory() else {
             return;
         };
@@ -2136,21 +3471,46 @@ mod tests {
         for path in script_paths(&scripts) {
             let script = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-            for flag in option_tokens(&script) {
-                if NON_ENGINE_FLAGS.contains(&flag) {
-                    continue;
-                }
-                assert!(
-                    options.contains(&flag),
-                    "{} passes {flag}, which the parser refuses",
-                    path.display()
-                );
-                checked += 1;
-            }
+            checked += checked_script_engine_flags(&script, &path);
         }
         assert!(
             checked >= 20,
             "the script scan found {checked} engine flags; the scripts moved or changed shape"
+        );
+    }
+
+    fn script_cli_options(script: &str) -> Vec<&str> {
+        option_tokens(script)
+            .into_iter()
+            .filter(|flag| {
+                // HTML-producing utilities use CSS custom properties. Keep an
+                // identically named CLI argument visible to the parser check.
+                let offset = flag.as_ptr() as usize - script.as_ptr() as usize;
+                let prefix = &script[..offset];
+                !(prefix.trim_end().ends_with("var(")
+                    || prefix.ends_with(".setProperty('")
+                    || prefix.ends_with(".setProperty(\""))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn script_scan_ignores_css_references_but_keeps_identically_named_cli_arguments() {
+        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); args=['--foreground','--assets','pack'];";
+        assert_eq!(script_cli_options(script), ["--foreground", "--assets"]);
+    }
+
+    #[test]
+    fn checked_script_audit_ignores_css_but_rejects_the_same_unknown_cli_option() {
+        let path = std::path::Path::new("capture_tonemap_tuning.py");
+        let script = "color:var(--foreground); x.style.setProperty('--aspect','16/9'); engine --headless --assets pack";
+        assert_eq!(checked_script_engine_flags(script, path), 2);
+
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("color:var(--foreground); engine --foreground", path)
+            })
+            .is_err()
         );
     }
 
@@ -2237,14 +3597,83 @@ mod tests {
     }
 
     #[test]
-    fn script_v89_scan_excludes_tests_and_keeps_nested_utilities() {
+    fn script_v89_scan_excludes_other_tool_scopes_and_keeps_nested_utilities() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir(directory.path().join("tests")).unwrap();
+        std::fs::create_dir(directory.path().join("lod-performance")).unwrap();
         std::fs::create_dir(directory.path().join("utils")).unwrap();
         std::fs::write(directory.path().join("tests/check.py"), "--log-file").unwrap();
+        std::fs::write(
+            directory.path().join("lod-performance/audit.py"),
+            "--data-root --expected-chunks --lod-encoder",
+        )
+        .unwrap();
         let utility = directory.path().join("utils/capture.sh");
         std::fs::write(&utility, "--headless").unwrap();
-        assert_eq!(script_paths(directory.path()), vec![utility]);
+        assert_eq!(
+            script_paths(directory.path()),
+            vec![directory.path().join("lod-performance/audit.py"), utility]
+        );
+    }
+
+    #[test]
+    fn lod_performance_flags_are_checked_only_on_engine_lines() {
+        let tool = std::path::Path::new("scripts/lod-performance/run_conversion_observed.py");
+        assert_eq!(
+            checked_script_engine_flags("converter --data-root x --lod-encoder cpu", tool),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("engine --headless\nconverter --data-root x", tool),
+            1
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", tool)
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn lod_experiment_flags_are_checked_only_on_engine_lines() {
+        let tool = std::path::Path::new("scripts/lod-experiment/build.py");
+        assert_eq!(
+            checked_script_engine_flags(
+                "builder --meshoptimizer x --max-cluster-triangles 124 --output out",
+                tool
+            ),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("engine --headless\nbuilder --meshoptimizer x", tool),
+            1
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", tool)
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unregistered_lod_experiment_utilities_stay_in_the_scan() {
+        let directory = tempfile::tempdir().unwrap();
+        let experiment = directory.path().join("lod-experiment");
+        std::fs::create_dir(&experiment).unwrap();
+        let registered = experiment.join("build.py");
+        let utility = experiment.join("unregistered.py");
+        std::fs::write(&registered, "--meshoptimizer x").unwrap();
+        std::fs::write(&utility, "--meshoptimizer x").unwrap();
+        assert_eq!(
+            script_paths(directory.path()),
+            vec![registered.clone(), utility.clone()]
+        );
+        assert_eq!(
+            checked_script_engine_flags(&std::fs::read_to_string(&utility).unwrap(), &utility),
+            0
+        );
     }
 
     /// True when a script spells out a finite number.

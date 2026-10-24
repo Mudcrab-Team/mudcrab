@@ -41,12 +41,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p converter -- <Skyrim Data> <output> --fail-fast --report-json conversion-report.json
 ```
 
-Use `--invalidate-cache` to force fresh archive extraction and asset conversion. Cache integrity is verified by default; `--no-verify-cache` skips blob hashing when the faster size-only check is acceptable.
+Use `--invalidate-cache` to force fresh archive extraction and asset conversion. Cache integrity is verified by default. Archive bytes reused from sealed packs are always hashed, so `--no-verify-cache` does not skip that check and currently changes no archive reuse.
 
 ### 1.1 BSA / BA2 Archive Extractor
 
 - Extracted virtual filesystem (`vfs`) using async decompression threads.
-- Preserves directory layout (`meshes/`, `textures/`, `scripts/`, `sound/`).
+- Preserves directory layout for the entries it extracts.
+- The default converter selection (`ArchiveSelection::ConverterInputs`) extracts only converter inputs: `dds`, `nif`, `pex`, `lod`, `strings`, `ilstrings` and `dlstrings`. Other archive entries, including `sound/`, are skipped and do not appear in the VFS or the archive inventory.
+- `ArchiveSelection::All` extracts every entry and is the full-VFS mode.
 
 ### 1.2 Relational World & Spatial Database Transpiler (`ESM_TO_SQLITE`)
 

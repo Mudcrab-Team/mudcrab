@@ -1,7 +1,9 @@
 //! #104 phase (a): rigid-body dynamics extracted from NIFs into the GLB collision extras.
 
+mod common;
+
 use converter::mesh::MeshConverter;
-use dummy_content::nif::{BoxBody, StaticShape, static_shape_with_bodies};
+use dummy_content::nif::{BodyShape, BoxBody, StaticShape, static_shape_with_bodies};
 use shared::collision::{BodyKind, COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
 use std::{fs, path::Path};
 
@@ -26,6 +28,11 @@ fn crate_body() -> BoxBody<'static> {
         half_extents: [0.1, 0.2, 0.3],
         transform: None,
         collision_layer: 4,
+        collision_flags: 0,
+        collision_response: 1, // RESPONSE_SIMPLE_CONTACT
+        inner_collision_flags: 0,
+        inner_collision_response: 1,
+        shape: BodyShape::Box,
         motion_system: 4, // MO_SYS_BOX_INERTIA
         deactivator_type: 1,
         quality_type: 4, // MO_QUAL_MOVING
@@ -47,6 +54,11 @@ fn wall_body() -> BoxBody<'static> {
         half_extents: [1.0, 1.0, 1.0],
         transform: None,
         collision_layer: 1,
+        collision_flags: 0,
+        collision_response: 1,
+        inner_collision_flags: 0,
+        inner_collision_response: 1,
+        shape: BodyShape::Box,
         motion_system: 7, // MO_SYS_FIXED
         deactivator_type: 1,
         quality_type: 1, // MO_QUAL_FIXED
@@ -174,6 +186,139 @@ fn dynamic_and_fixed_box_bodies_round_trip_with_units() {
 }
 
 #[test]
+fn weapon_and_transparent_small_layers_are_physical_and_triggers_are_skipped() {
+    // SkyrimLayer (nif.xml): 0 UNIDENTIFIED, 5 WEAPON, 26 TRANSPARENT_SMALL,
+    // 28 TRANSPARENT_SMALL_ANIM all carry real collision geometry.
+    for layer in [0_u8, 5, 26, 28] {
+        let mut body = crate_body();
+        body.collision_layer = layer;
+        let (_, asset) = convert(&[body]);
+        assert_eq!(asset.bodies.len(), 1, "layer {layer}: {:?}", asset.skipped);
+        assert!(
+            asset.skipped.is_empty(),
+            "layer {layer}: {:?}",
+            asset.skipped
+        );
+        assert_eq!(asset.bodies[0].havok.collision_layer, layer);
+    }
+    // Layer 12 TRIGGER is a volume, not a physical body; it stays out with a reason.
+    let mut trigger = crate_body();
+    trigger.collision_layer = 12;
+    let (_, asset) = convert(&[trigger]);
+    assert!(asset.bodies.is_empty());
+    assert_eq!(asset.skipped.len(), 1, "{:?}", asset.skipped);
+    assert!(
+        asset.skipped[0].contains("trigger volume (layer 12) is not physical"),
+        "{:?}",
+        asset.skipped
+    );
+    // Layer 15 NONCOLLIDABLE (harvestable flora) is still dropped without a reason.
+    let mut flora = crate_body();
+    flora.collision_layer = 15;
+    let (_, asset) = convert(&[flora]);
+    assert!(asset.bodies.is_empty());
+    assert!(asset.skipped.is_empty(), "{:?}", asset.skipped);
+}
+
+#[test]
+fn sphere_and_cylinder_bodies_reach_the_glb_extras() {
+    let mut sphere = crate_body();
+    sphere.shape = BodyShape::Sphere { radius: 0.5 };
+    let mut cylinder = wall_body();
+    cylinder.shape = BodyShape::Cylinder {
+        a: [0.0, 0.0, 0.0],
+        b: [0.0, 0.0, 2.0],
+        radius: 0.25,
+    };
+    let (_, asset) = convert(&[sphere, cylinder]);
+    assert!(asset.skipped.is_empty(), "{:?}", asset.skipped);
+    assert_eq!(asset.bodies.len(), 2);
+    let sphere_shapes = &asset.bodies[0].shapes;
+    let cylinder_shapes = &asset.bodies[1].shapes;
+    assert_eq!((sphere_shapes.len(), cylinder_shapes.len()), (1, 1));
+    let CollisionShape::Capsule { a, b, radius } = &asset.shapes[sphere_shapes[0] as usize] else {
+        panic!("sphere body: {:?}", asset.shapes);
+    };
+    assert_eq!(a, b);
+    assert_eq!(*radius, 35.0);
+    let CollisionShape::Hull { points } = &asset.shapes[cylinder_shapes[0] as usize] else {
+        panic!("cylinder body: {:?}", asset.shapes);
+    };
+    assert_eq!(points.len(), 32);
+    // Creation z (up) is runtime y: the two rings sit at 0 and 140 units, 17.5 from the axis.
+    for (index, point) in points.iter().enumerate() {
+        let height = if index < 16 { 0.0 } else { 140.0 };
+        assert!((point[1] - height).abs() < 1.0e-3, "{point:?}");
+        let off_axis = (point[0] * point[0] + point[2] * point[2]).sqrt();
+        assert!((off_axis - 17.5).abs() < 1.0e-3, "{point:?}");
+    }
+    assert!(asset.bodies.iter().all(|body| body.convex));
+}
+
+#[test]
+fn a_multi_sphere_body_reaches_the_glb_with_one_capsule_per_sphere() {
+    let mut spheres = [([0.0_f32; 3], 0.0_f32); 8];
+    for (index, sphere) in spheres.iter_mut().enumerate() {
+        *sphere = ([index as f32 * 0.5, 0.0, 1.0], 0.25);
+    }
+    let mut body = crate_body();
+    body.shape = BodyShape::MultiSphere { count: 8, spheres };
+    let (_, asset) = convert(&[body]);
+    assert!(asset.skipped.is_empty(), "{:?}", asset.skipped);
+    let [body] = asset.bodies.as_slice() else {
+        panic!("{:?}", asset.bodies);
+    };
+    assert_eq!(body.shapes.len(), 8);
+    for (index, shape) in body.shapes.iter().enumerate() {
+        let CollisionShape::Capsule { a, b, radius } = &asset.shapes[*shape as usize] else {
+            panic!("{:?}", asset.shapes);
+        };
+        assert_eq!(a, b);
+        assert_eq!(*radius, 17.5);
+        // Creation (35 * index, 0, 70) in the runtime basis (x, z, -y).
+        assert!((a[0] - 35.0 * index as f32).abs() < 1.0e-3, "{a:?}");
+        assert!((a[1] - 70.0).abs() < 1.0e-3, "{a:?}");
+    }
+}
+
+#[test]
+fn bodies_flagged_no_collision_or_without_contact_response_are_skipped() {
+    // Each case sets one of the two copies a body stores; the other stays colliding.
+    for (inner, flags, response) in [
+        (false, 0x40, 1),
+        (false, 0, 2),
+        (false, 0, 3),
+        (true, 0x40, 1),
+        (true, 0, 2),
+        (true, 0, 3),
+    ] {
+        let mut body = crate_body();
+        if inner {
+            body.inner_collision_flags = flags;
+            body.inner_collision_response = response;
+        } else {
+            body.collision_flags = flags;
+            body.collision_response = response;
+        }
+        let (_, asset) = convert(&[body]);
+        assert!(
+            asset.bodies.is_empty(),
+            "inner {inner}: {flags:#x}/{response}"
+        );
+        assert!(
+            asset.shapes.is_empty(),
+            "inner {inner}: {flags:#x}/{response}"
+        );
+        assert_eq!(asset.skipped.len(), 1, "{:?}", asset.skipped);
+        assert!(
+            asset.skipped[0].contains("non-colliding body"),
+            "{:?}",
+            asset.skipped
+        );
+    }
+}
+
+#[test]
 fn rotated_rigid_body_t_rotates_the_tensor_and_moves_the_center_into_the_shape_frame() {
     let half = std::f32::consts::FRAC_1_SQRT_2;
     let mut body = crate_body();
@@ -255,9 +400,10 @@ fn unknown_body_fields_are_ignored() {
 
 /// Producer 23 predates body dynamics even though #118 retained its schema number.
 /// Matching source/configuration/output proof must not hide the changed mesh contract.
-/// Producer 24 and current have matching dynamics contracts and reuse proven GLBs.
+/// Producer 27 also changed the collision data, so producer-24 and producer-26 GLBs rebuild too;
+/// only a current-producer GLB with matching proof is reused.
 #[tokio::test]
-async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse() {
+async fn earlier_producer_cached_meshes_rebuild_and_only_current_meshes_reuse() {
     use converter::{
         cache::{ConversionManifest, configuration_hash_for_schema, hash_bytes},
         config::PipelineConfig,
@@ -273,7 +419,7 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse
         static_shape_with_bodies(&QUAD, &[crate_body()]).unwrap(),
     )
     .unwrap();
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     /// Runs the pipeline while draining progress events.
     async fn run(config: PipelineConfig) -> converter::pipeline::PipelineReport {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
@@ -324,16 +470,21 @@ async fn schema23_cached_mesh_rebuilds_body_dynamics_and_compatible_meshes_reuse
     );
     assert_eq!(read_glb(&mesh).1.bodies.len(), 1);
     assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
-    let mut compatible: ConversionManifest =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    compatible.schema_version = 24;
-    compatible.asset_configuration_hashes.clear();
-    compatible.configuration_hash = configuration_hash_for_schema(&config, 24).unwrap();
-    compatible.save(&manifest_path).unwrap();
-    let reused = run(config.clone()).await;
-    assert_eq!(reused.converted, 0);
-    assert_eq!(reused.cache_hits, 1);
-    assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
+    for producer in [24, 26] {
+        let mut earlier: ConversionManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        earlier.schema_version = producer;
+        earlier.asset_configuration_hashes.clear();
+        earlier.configuration_hash = configuration_hash_for_schema(&config, producer).unwrap();
+        earlier.save(&manifest_path).unwrap();
+        let rebuilt = run(config.clone()).await;
+        assert_eq!(
+            rebuilt.converted, 1,
+            "producer {producer} must rebuild even with verified GLB bytes"
+        );
+        assert_eq!(rebuilt.cache_hits, 0);
+        assert_eq!(fs::read(&mesh).unwrap(), current_bytes);
+    }
     let current = run(config).await;
     assert_eq!(current.converted, 0);
     assert_eq!(current.cache_hits, 1);

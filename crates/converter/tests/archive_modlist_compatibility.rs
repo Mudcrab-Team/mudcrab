@@ -98,7 +98,7 @@ async fn advisory_file_flags_preserve_v104_and_v105_decoded_assets() {
         (105, 0x4000_0000, sse_note.as_slice()),
     ] {
         let mesh_path = format!("meshes/archive{version}.nif");
-        let note_path = format!("docs/archive{version}.txt");
+        let note_path = format!("lodsettings/archive{version}.lod");
         let entries = [Entry::new(&mesh_path, &mesh), Entry::new(&note_path, note)];
         let mut archive = if version == 104 {
             bsa::v104(&entries, bsa::Compression::Zlib).unwrap()
@@ -123,7 +123,7 @@ async fn advisory_file_flags_preserve_v104_and_v105_decoded_assets() {
             &output,
             &config,
             &archive,
-            &format!("docs/archive{version}.txt"),
+            &format!("lodsettings/archive{version}.lod"),
             note,
         );
     }
@@ -140,7 +140,11 @@ async fn malformed_archive_keeps_valid_archive_and_native_plugin_neighbors() {
     let good = b"usable archive neighbor payload";
     fs::write(
         data.join("good.bsa"),
-        bsa::v105(&[Entry::new("docs/good.txt", good)], bsa::Compression::Lz4).unwrap(),
+        bsa::v105(
+            &[Entry::new("lodsettings/good.lod", good)],
+            bsa::Compression::Lz4,
+        )
+        .unwrap(),
     )
     .unwrap();
     let mut broken = bsa::v104(
@@ -152,7 +156,7 @@ async fn malformed_archive_keeps_valid_archive_and_native_plugin_neighbors() {
     broken.truncate(36);
     fs::write(data.join("broken.bsa"), broken).unwrap();
     let (report, config) = publish(&data, &output).await;
-    assert_retained(&output, &config, "good.bsa", "docs/good.txt", good);
+    assert_retained(&output, &config, "good.bsa", "lodsettings/good.lod", good);
     let manifest = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
     assert!(!manifest.archives.contains_key("broken.bsa"));
     assert!(

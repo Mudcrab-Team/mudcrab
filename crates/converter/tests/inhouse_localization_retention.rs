@@ -282,7 +282,7 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
-    assert_eq!(diagnostics["adapter"]["localizedfields.esp"][0], 5);
+    assert_eq!(diagnostics["adapter"]["localizedfields.esp"][0], 4);
     assert_eq!(
         diagnostics["adapter"]["localizedfields.esp"]
             .as_array()
@@ -296,6 +296,19 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
             .unwrap()
             .len()
             < 1024
+    );
+    assert!(
+        diagnostics["adapter"]["localizedfields.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("malformed strings entry for localized ID 42")
+    );
+    assert_eq!(diagnostics["adapter_notices"]["localizedfields.esp"][0], 3);
+    assert!(
+        diagnostics["adapter_notices"]["localizedfields.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("missing localized ID 17")
     );
 }
 
@@ -400,9 +413,9 @@ fn english_text_encoding_is_explicit_and_distinct_from_vmad() {
     );
 }
 
-/// Actual parser/pipeline publication retains winning IDs despite missing text and light slots.
+/// Readable banks retain winning IDs and bound missing-text notices across full and light slots.
 #[tokio::test]
-async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnings() {
+async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notices() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("Data");
     layout::prepare_directory(&data, false).unwrap();
@@ -510,13 +523,13 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
         &data,
         "WinnerFull.esp",
         "strings",
-        &strings(&[(100, "Winning full text")], Some(18), false),
+        &strings(&[(100, "Winning full text")], None, false),
     );
     write_strings(
         &data,
         "SecondLight.esl",
         "strings",
-        &strings(&[(100, "Distinct second-light text")], Some(17), false),
+        &strings(&[(100, "Distinct second-light text")], None, false),
     );
     let plugins = temp.path().join("plugins.txt");
     fs::write(&plugins, "*Skyrim.esm\n*EarlierFull.esm\n*Filler.esm\n*FirstLight.esl\n*WinnerFull.esp\n*SecondLight.esl\n").unwrap();
@@ -547,7 +560,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = AssetPipeline::run_async(config, tx).await.unwrap();
     drain.await.unwrap();
-    common::assert_reader_warning_publication(&report, &output);
+    common::assert_reader_notice_publication(&report, &output);
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (rid, raw, priority, key, text, status) in [
         (0x0100_3500, 0x0100_3500, 5, 17, None, "missing"),
@@ -621,8 +634,9 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
     for (plugin, count) in [("winnerfull.esp", 129), ("secondlight.esl", 1)] {
-        assert_eq!(diagnostics["adapter"][plugin][0], count);
-        let summary = diagnostics["adapter"][plugin].as_array().unwrap();
+        assert!(diagnostics["adapter"].get(plugin).is_none());
+        assert_eq!(diagnostics["adapter_notices"][plugin][0], count);
+        let summary = diagnostics["adapter_notices"][plugin].as_array().unwrap();
         assert_eq!(
             summary.len(),
             2,
@@ -630,6 +644,18 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_warnin
         );
         assert!(!summary[1].as_str().unwrap().is_empty());
         assert!(summary[1].as_str().unwrap().len() < 1024);
+        let notices: Vec<_> = report
+            .notices
+            .iter()
+            .filter(|notice| {
+                notice.contains(plugin)
+                    && notice.contains("localized IDs missing from readable string tables")
+            })
+            .collect();
+        assert_eq!(notices.len(), 1, "{:?}", report.notices);
+        assert!(notices[0].contains(&format!("{count} localized IDs")));
+        assert!(notices[0].contains("first:"));
+        assert!(notices[0].len() < 2304);
     }
 }
 
@@ -863,7 +889,14 @@ fn moved_localized_projection_complete_public_bundle_and_work_copy_remain_exact(
         serde_json::from_slice(&fs::read(normal.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
     assert_eq!(diagnostics, normal_diagnostics);
-    assert_eq!(diagnostics["adapter"]["movefixture.esp"][0], 1);
+    assert!(diagnostics["adapter"].get("movefixture.esp").is_none());
+    assert_eq!(diagnostics["adapter_notices"]["movefixture.esp"][0], 1);
+    assert!(
+        diagnostics["adapter_notices"]["movefixture.esp"][1]
+            .as_str()
+            .unwrap()
+            .contains("missing localized ID 17")
+    );
     assert!(!work.join("typed-records.jsonl").exists());
     assert!(!work.join("cell_cache.rkyv").exists());
 }
@@ -982,6 +1015,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "statics",
             "lights",
             "npcs",
+            "actor_models",
+            "actor_model_parts",
             "movement_types",
             "race_movement_links",
             "movement_game_settings",
@@ -998,6 +1033,23 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "room_links",
             "reference_rooms",
             "room_graph_stats",
+            "cell_environment",
+            "cell_regions",
+            "cell_lighting",
+            "worldspace_environment",
+            "lighting_templates",
+            "weathers",
+            "weather_colors",
+            "weather_directional_ambient",
+            "climates",
+            "climate_weathers",
+            "region_weathers",
+            "image_spaces",
+            "reference_linked_refs",
+            "reference_activate_parents",
+            "reference_details",
+            "door_links",
+            "emittance",
         ];
         for (name, rows) in &full_tables {
             if deferred.contains(&name.as_str()) {

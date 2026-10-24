@@ -55,6 +55,7 @@ pub enum NifBlock {
     BSWaterShaderProperty(BSWaterShaderProperty),
     BSWindModifier(BSWindModifier),
     BSXFlags(BSXFlags),
+    BsDismemberSkinInstance(BsDismemberSkinInstance),
     NiAlphaProperty(NiAlphaProperty),
     NiBillboardNode(NiBillboardNode),
     NiBinaryExtraData(NiBinaryExtraData),
@@ -109,6 +110,7 @@ pub enum NifBlock {
     NiPoint3Interpolator(NiPoint3Interpolator),
     NiPointLight(NiPointLight),
     NiPosData(NiPosData),
+    NiSkinData(NiSkinData),
     NiSkinInstance(NiSkinInstance),
     NiSkinPartition(NiSkinPartition),
     NiStringExtraData(NiStringExtraData),
@@ -194,6 +196,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::BSWaterShaderProperty(_) => write!(f, "BSWaterShaderProperty"),
             NifBlock::BSWindModifier(_) => write!(f, "BSWindModifier"),
             NifBlock::BSXFlags(_) => write!(f, "BSXFlags"),
+            NifBlock::BsDismemberSkinInstance(_) => write!(f, "BsDismemberSkinInstance"),
             NifBlock::NiAlphaProperty(_) => write!(f, "NiAlphaProperty"),
             NifBlock::NiBillboardNode(_) => write!(f, "NiBillboardNode"),
             NifBlock::NiBinaryExtraData(_) => write!(f, "NiBinaryExtraData"),
@@ -254,6 +257,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::NiPoint3Interpolator(_) => write!(f, "NiPoint3Interpolator"),
             NifBlock::NiPointLight(_) => write!(f, "NiPointLight"),
             NifBlock::NiPosData(_) => write!(f, "NiPosData"),
+            NifBlock::NiSkinData(_) => write!(f, "NiSkinData"),
             NifBlock::NiSkinInstance(_) => write!(f, "NiSkinInstance"),
             NifBlock::NiSkinPartition(_) => write!(f, "NiSkinPartition"),
             NifBlock::NiStringExtraData(_) => write!(f, "NiStringExtraData"),
@@ -367,6 +371,30 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundNode(result)))
             }
 
+            "BSOrderedNode" => {
+                let (i, result) = BSOrderedNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing BSOrderedNode", i.len());
+                }
+                Ok((i, NifBlock::BSOrderedNode(result)))
+            }
+
+            "NiBillboardNode" => {
+                let (i, result) = NiBillboardNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing NiBillboardNode", i.len());
+                }
+                Ok((i, NifBlock::NiBillboardNode(result)))
+            }
+
+            "BSValueNode" => {
+                let (i, result) = BSValueNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing BSValueNode", i.len());
+                }
+                Ok((i, NifBlock::BSValueNode(result)))
+            }
+
             "BSMultiBound" => {
                 let (i, result) = BSMultiBound::parse(i)?;
                 if !i.is_empty() {
@@ -391,9 +419,28 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundOBB(result)))
             }
 
-            "NiSkinInstance" | "BSDismemberSkinInstance" => {
+            "NiSkinInstance" => {
                 let (i, result) = NiSkinInstance::parse(i)?;
                 Ok((i, NifBlock::NiSkinInstance(result)))
+            }
+
+            "BSDismemberSkinInstance" => {
+                let (i, result) = BsDismemberSkinInstance::parse(i)?;
+                if i.len() > 0 {
+                    warn!(
+                        "{} bytes left over after parsing BSDismemberSkinInstance",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BsDismemberSkinInstance(result)))
+            }
+
+            "NiSkinData" => {
+                let (i, result) = NiSkinData::parse(i)?;
+                if i.len() > 0 {
+                    warn!("{} bytes left over after parsing NiSkinData", i.len());
+                }
+                Ok((i, NifBlock::NiSkinData(result)))
             }
 
             "NiSkinPartition" => {
@@ -595,6 +642,9 @@ impl NifBlock {
         match self {
             NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Ok(node),
             NifBlock::BSMultiBoundNode(block) => Ok(&block.node),
+            NifBlock::BSOrderedNode(block) => Ok(&block.node),
+            NifBlock::NiBillboardNode(block) => Ok(&block.node),
+            NifBlock::BSValueNode(block) => Ok(&block.node),
             _ => Err("Block is not a NiNode".to_string()),
         }
     }
@@ -883,9 +933,37 @@ pub struct BSMultiBoundOBB {
 pub struct BSNiAlphaPropertyTestRefController {
     // TODO
 }
-#[derive(Debug)]
+/// A node whose children draw in their listed order, used for layered effects such as fire.
+///
+/// It is an `NiNode` with two extra fields, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do.
+#[derive(Debug, Clone)]
 pub struct BSOrderedNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    /// Bounding sphere (centre and radius) used to sort the node against other transparencies.
+    pub alpha_sort_bound: [f32; 4],
+    /// Whether `alpha_sort_bound` stays fixed instead of following the node.
+    pub static_bound: u8,
+}
+
+impl Parse<&[u8]> for BSOrderedNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, x) = le_f32(i)?;
+        let (i, y) = le_f32(i)?;
+        let (i, z) = le_f32(i)?;
+        let (i, radius) = le_f32(i)?;
+        let (i, static_bound) = le_u8(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                alpha_sort_bound: [x, y, z, radius],
+                static_bound,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct BSPSysInheritVelocityModifier {
@@ -938,9 +1016,32 @@ pub struct BSTreeNode {
     // TODO
 }
 
-#[derive(Debug)]
+/// A node carrying an integer for the game's own use, such as an add-on attach point.
+///
+/// It is an `NiNode` with two extra fields, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do.
+#[derive(Debug, Clone)]
 pub struct BSValueNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    pub value: i32,
+    pub value_node_flags: u8,
+}
+
+impl Parse<&[u8]> for BSValueNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, value) = le_i32(i)?;
+        let (i, value_node_flags) = le_u8(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                value,
+                value_node_flags,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct BSWaterShaderProperty {
@@ -956,9 +1057,30 @@ pub struct BSXFlags {
     pub integer_data: u32,
 }
 
-#[derive(Debug)]
+/// A node the game turns to face the camera, used for glows and flame cards.
+///
+/// It is an `NiNode` with one extra field, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do. The facing itself is not converted:
+/// the children keep the node's authored orientation.
+#[derive(Debug, Clone)]
 pub struct NiBillboardNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    pub billboard_mode: u16,
+}
+
+impl Parse<&[u8]> for NiBillboardNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, billboard_mode) = le_u16(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                billboard_mode,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct NiBinaryExtraData {

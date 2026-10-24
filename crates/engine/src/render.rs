@@ -13,7 +13,10 @@ use bevy::{
     },
     core_pipeline::{mip_generation::experimental::depth::ViewDepthPyramid, prepass::DepthPrepass},
     image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
-    pbr::{ExtendedMaterial, MaterialExtension},
+    pbr::{
+        ExtendedMaterial, ExtractedDirectionalLight, LightEntity, MaterialExtension, ShadowView,
+        prepare_lights,
+    },
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
@@ -37,7 +40,7 @@ pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
 /// How far the procedural waves tilt the water's normal. Skyrim's water is close to flat at a
 /// distance; a stronger tilt striped lakes with bright and dark bands.
-const WAVE_STRENGTH: f32 = 0.05;
+pub(crate) const WAVE_STRENGTH: f32 = 0.05;
 
 /// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a Reflectivity Amount of 0.8
 /// (WATR `DNAM`). Used when a water has no decoded colours yet, e.g. a database converted before
@@ -138,7 +141,8 @@ impl Plugin for VercidiumRendererPlugin {
                 animate_water_materials,
                 update_water_reflection_camera,
                 sync_renderer_metrics,
-            ),
+            )
+                .after(crate::settings_ui::SettingsUiSet),
         );
 
         add_placed_object_layer_propagation(app);
@@ -146,10 +150,44 @@ impl Plugin for VercidiumRendererPlugin {
         let bridge = RendererProofBridge::default();
         app.insert_resource(bridge.clone());
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.insert_resource(bridge).add_systems(
-                Render,
-                sample_renderer_path.after(RenderSystems::PrepareResourcesCollectPhaseBuffers),
-            );
+            render_app
+                .insert_resource(bridge)
+                .add_systems(
+                    Render,
+                    sample_renderer_path.after(RenderSystems::PrepareResourcesCollectPhaseBuffers),
+                )
+                .add_systems(
+                    Render,
+                    give_shadow_views_their_light_layers
+                        .in_set(RenderSystems::CreateViews)
+                        .after(prepare_lights),
+                );
+        }
+    }
+}
+
+/// A shadow view Bevy created without render layers.
+type UnlayeredShadowView = (With<ShadowView>, Without<RenderLayers>);
+
+/// Gives each directional shadow cascade the render layers of the light that owns it.
+///
+/// Bevy 0.19 builds a cascade's shadow view without a `RenderLayers` component, and
+/// `queue_shadows` tests every caster's layers against that view's, defaulting to layer 0 when it
+/// has none. The CPU side (`check_dir_light_mesh_visibility`) does use the light's layers, so a
+/// caster on [`PLACED_OBJECT_LAYER`] is collected for the cascade and then dropped before it is
+/// queued: none of the placed objects - buildings, trees, rocks - would cast a shadow. Copying the
+/// light's layers onto its views makes the queue test agree with the collection test.
+fn give_shadow_views_their_light_layers(
+    mut commands: Commands,
+    views: Query<(Entity, &LightEntity), UnlayeredShadowView>,
+    lights: Query<&ExtractedDirectionalLight>,
+) {
+    for (view, owner) in &views {
+        let LightEntity::Directional { light_entity, .. } = owner else {
+            continue;
+        };
+        if let Ok(light) = lights.get(*light_entity) {
+            commands.entity(view).insert(light.render_layers.clone());
         }
     }
 }
@@ -261,26 +299,26 @@ fn sync_renderer_metrics(bridge: Res<RendererProofBridge>, mut metrics: ResMut<R
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct TerrainExtension {
     #[texture(100)]
-    #[sampler(101)]
     layer_0: Option<Handle<Image>>,
     #[texture(102)]
-    #[sampler(103)]
     layer_1: Option<Handle<Image>>,
     #[texture(104)]
-    #[sampler(105)]
     layer_2: Option<Handle<Image>>,
     #[texture(106)]
-    #[sampler(107)]
     layer_3: Option<Handle<Image>>,
     #[texture(108)]
-    #[sampler(109)]
     layer_4: Option<Handle<Image>>,
     #[texture(110)]
-    #[sampler(111)]
     layer_5: Option<Handle<Image>>,
+    // LAND images share one repeating sampler. Use the first available color layer so an
+    // untextured base does not select Bevy's clamping fallback sampler. AsBindGroup requires a
+    // texture on the sampler's field; binding 119 supplies it without another image allocation.
+    #[texture(119)]
+    #[sampler(101)]
+    sampler_source: Option<Handle<Image>>,
     #[uniform(112)]
     settings: TerrainSettings,
-    // Each layer's normal map, sampled through `layer_0_sampler`: every terrain layer image is
+    // Each layer's normal map, sampled through `sampler_source`: every terrain layer image is
     // loaded with the same repeating sampler (`terrain_layer_sampler`), so the six need no sampler
     // bindings of their own. Which layers have one is in `TerrainSettings::normal_layers_*`, since
     // Bevy's stand-in for a missing texture is white, which decodes to a steep tilt.
@@ -438,6 +476,27 @@ pub struct TerrainImages {
 }
 
 impl TerrainExtension {
+    /// The exact image resources retained by this quadrant's material.
+    pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
+        [
+            self.layer_0.as_ref(),
+            self.layer_1.as_ref(),
+            self.layer_2.as_ref(),
+            self.layer_3.as_ref(),
+            self.layer_4.as_ref(),
+            self.layer_5.as_ref(),
+            self.normal_0.as_ref(),
+            self.normal_1.as_ref(),
+            self.normal_2.as_ref(),
+            self.normal_3.as_ref(),
+            self.normal_4.as_ref(),
+            self.normal_5.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Handle::id)
+    }
+
     /// Builds the material without looking up zero texture IDs, retaining those layers' slots
     /// and weights. Nonzero texture IDs still require a converted diffuse image.
     pub fn from_quadrant(
@@ -496,6 +555,7 @@ impl TerrainExtension {
                 layer_3: textures[3].clone(),
                 layer_4: textures[4].clone(),
                 layer_5: textures[5].clone(),
+                sampler_source: textures.iter().flatten().next().cloned(),
                 settings,
                 normal_0: normals[0].clone(),
                 normal_1: normals[1].clone(),
@@ -529,6 +589,7 @@ impl TerrainExtension {
             layer_3: Some(textures[3].clone()),
             layer_4: Some(textures[4].clone()),
             layer_5: Some(textures[5].clone()),
+            sampler_source: Some(textures[0].clone()),
             settings: TerrainSettings::for_quadrant(quadrant, layers.len(), &overlay_weights),
             normal_0: None,
             normal_1: None,
@@ -578,6 +639,7 @@ impl Default for TerrainExtension {
             layer_3: None,
             layer_4: None,
             layer_5: None,
+            sampler_source: None,
             settings: TerrainSettings::vertex_weights_only(0.0),
             normal_0: None,
             normal_1: None,
@@ -627,7 +689,7 @@ impl Default for WaterExtension {
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
                     DEFAULT_WATER_REFLECTIVITY,
-                    0.0,
+                    1.0,
                     0.0,
                 ),
                 reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
@@ -639,6 +701,12 @@ impl Default for WaterExtension {
 }
 
 impl WaterExtension {
+    /// Per-cell dependencies. The shared reflection target belongs to the
+    /// renderer baseline and must not keep a retired water cell reserved.
+    pub(crate) fn image_ids(&self) -> impl Iterator<Item = bevy::asset::AssetId<Image>> + '_ {
+        self.flow_normal.iter().map(Handle::id)
+    }
+
     /// Builds a water material with Skyrim's DefaultWater fresnel and reflectivity. Callers that
     /// know a water's own factors (from [`crate::world::database::AssetCatalog::water_colors`])
     /// should use [`Self::with_reflection_and_factors`] instead.
@@ -664,7 +732,8 @@ impl WaterExtension {
             settings: WaterSettings {
                 wave_scale_speed_strength: Vec4::new(0.006, 0.15, WAVE_STRENGTH, 0.0),
                 flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
-                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 0.0, 0.0),
+                // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
+                fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
                 reflection_color: water_reflection_color(DEFAULT_WATER_REFLECTION_COLOR),
             },
         }
@@ -688,15 +757,38 @@ fn animate_water_materials(
     config: Option<Res<crate::config::EngineConfig>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
-    let elapsed = if config.is_some_and(|config| config.terrain_water_fixture) {
-        1.0
-    } else {
-        time.elapsed_secs()
-    };
+    let elapsed =
+        if config.is_some_and(|config| config.terrain_water_fixture || config.shots.is_some()) {
+            1.0
+        } else {
+            time.elapsed_secs()
+        };
     for (_, material) in materials.iter_mut() {
         material.extension.settings.wave_scale_speed_strength.w = elapsed;
+        if let Some(settings) = settings.as_deref() {
+            let water = &mut material.extension;
+            water.settings.wave_scale_speed_strength.x = settings.wave_scale;
+            water.settings.wave_scale_speed_strength.y = settings.wave_speed;
+            water.settings.wave_scale_speed_strength.z = if settings.water_waves {
+                settings.wave_strength
+            } else {
+                0.0
+            };
+            water.settings.flow_direction.w =
+                if settings.water_flow_normals && water.flow_normal.is_some() {
+                    1.0
+                } else {
+                    0.0
+                };
+            water.settings.fresnel_reflectivity.z = if settings.water_reflections {
+                settings.water_reflection_strength
+            } else {
+                0.0
+            };
+        }
     }
     profiler.record_elapsed("render/water_animation", started);
 }
@@ -705,7 +797,7 @@ fn animate_water_materials(
 pub struct WaterReflectionTexture(pub Handle<Image>);
 
 #[derive(Component)]
-struct WaterReflectionCamera;
+pub(crate) struct WaterReflectionCamera;
 
 /// Slack added to a water plane's bounds before the main camera frustum test, in world units (4096
 /// to a cell).
@@ -785,6 +877,7 @@ fn update_water_reflection_camera(
     water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
     mut reflection_camera: Query<WaterReflectionCameraParts, With<WaterReflectionCamera>>,
     mut profiler: ResMut<ProfilingState>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let started = std::time::Instant::now();
     let (
@@ -798,7 +891,9 @@ fn update_water_reflection_camera(
     // Keep both views in the same domain, including explicit diagnostic exposure changes.
     let ev100 = exposure.map_or(DEFAULT_SCENE_EV100, |value| value.ev100);
     if let Some(mut reflection_exposure) = reflection_exposure {
-        reflection_exposure.ev100 = ev100;
+        if reflection_exposure.ev100 != ev100 {
+            reflection_exposure.ev100 = ev100;
+        }
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
     }
@@ -822,12 +917,14 @@ fn update_water_reflection_camera(
         );
     }
     let Some(surface) = mirror_surface else {
-        camera.is_active = false;
+        if camera.is_active {
+            camera.is_active = false;
+        }
         return;
     };
     // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
     // reflects the camera as it stands then rather than the last frame water was on screen.
-    *reflection = reflected_camera_transform(main, surface.translation().y);
+    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
     // The reflection image is sampled with the main view's screen coordinates, so it has to be
     // rendered with the main camera's lens, and with everything below the water out of it.
     if let (Some(Projection::Perspective(main_lens)), Some(mut reflection_projection)) =
@@ -839,7 +936,11 @@ fn update_water_reflection_camera(
             surface.translation().y,
         ));
     }
-    camera.is_active = surface_in_view;
+    // The Graphics setting switches the reflection off without touching the mirror plane above.
+    let active = surface_in_view && settings.is_none_or(|settings| settings.water_reflections);
+    if camera.is_active != active {
+        camera.is_active = active;
+    }
     profiler.record_elapsed("render/water_reflection_camera", started);
 }
 
@@ -917,6 +1018,31 @@ fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
+        let mut images = Assets::<Image>::default();
+        let handles: [Handle<Image>; 12] = std::array::from_fn(|_| images.add(Image::default()));
+        let extension = TerrainExtension {
+            layer_0: Some(handles[0].clone()),
+            layer_1: Some(handles[1].clone()),
+            layer_2: Some(handles[2].clone()),
+            layer_3: Some(handles[3].clone()),
+            layer_4: Some(handles[4].clone()),
+            layer_5: Some(handles[5].clone()),
+            normal_0: Some(handles[6].clone()),
+            normal_1: Some(handles[7].clone()),
+            normal_2: Some(handles[8].clone()),
+            normal_3: Some(handles[9].clone()),
+            normal_4: Some(handles[10].clone()),
+            normal_5: Some(handles[11].clone()),
+            ..default()
+        };
+        assert_eq!(
+            extension.image_ids().collect::<Vec<_>>(),
+            handles.iter().map(Handle::id).collect::<Vec<_>>()
+        );
+    }
     use crate::world::components::{StreamingCamera, WaterSurface};
 
     const MAIN_CAMERA_FAR: f32 = 1000.0;
@@ -1090,6 +1216,63 @@ mod tests {
                 .ev100,
             9.7
         );
+    }
+
+    #[test]
+    fn stationary_reflection_does_not_mark_camera_state_changed() {
+        #[derive(Resource, Default)]
+        struct Changes {
+            transform: bool,
+            camera: bool,
+            exposure: bool,
+        }
+
+        type ReflectionChanges<'w> = (Ref<'w, Transform>, Ref<'w, Camera>, Ref<'w, Exposure>);
+
+        fn observe_changes(
+            reflection: Query<ReflectionChanges<'_>, With<WaterReflectionCamera>>,
+            mut changes: ResMut<Changes>,
+        ) {
+            let (transform, camera, exposure) = reflection.single().unwrap();
+            *changes = Changes {
+                transform: transform.is_changed(),
+                camera: camera.is_changed(),
+                exposure: exposure.is_changed(),
+            };
+        }
+
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness
+            .app
+            .init_resource::<Changes>()
+            .add_systems(Last, observe_changes);
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), Vec3::new(200.0, 0.0, 200.0));
+        assert!(harness.frame().active);
+        assert!(harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0));
+        let frame = harness.frame();
+        assert_eq!(frame.transform.translation.y, -80.0);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(changes.transform && !changes.camera && !changes.exposure);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .insert(Exposure { ev100: 7.0 });
+        harness.frame();
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && changes.exposure);
+
+        harness.aim(Transform::from_xyz(0.0, 160.0, 0.0).looking_to(Vec3::Z, Vec3::Y));
+        assert!(!harness.frame().active);
+        assert!(harness.app.world().resource::<Changes>().camera);
+        assert!(!harness.frame().active);
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
     }
 
     #[test]

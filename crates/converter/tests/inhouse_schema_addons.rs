@@ -62,6 +62,23 @@ async fn publish(data: &Path, output: &Path) -> converter::PipelineReport {
     report
 }
 
+async fn publish_with_reader(
+    data: &Path,
+    output: &Path,
+    reader: RecordReader,
+) -> converter::PipelineReport {
+    let mut config = PipelineConfig::new(data, output);
+    config.record_reader = reader;
+    config.lod_texture_encoder = converter::TextureEncoder::Cpu;
+    config.no_lod = true;
+    config.cpu_jobs = 2;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    report
+}
+
 /// Read the published canonical record rather than accepting source-only preservation.
 fn canonical_fields(output: &Path, form_id: u32) -> Vec<([u8; 4], Vec<u8>)> {
     let db = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -99,6 +116,114 @@ async fn canonical_publication_keeps_unknown_fields_once_in_native_order() {
     append(&data.join("Skyrim.esm"), &record(b"KYWD", 0x1800, &fields));
     publish(&data, &output).await;
     assert_eq!(canonical_fields(&output, 0x1800), fields);
+}
+
+/// Unsafe, unreferenced base models clear only their runtime projection; valid neighbors still
+/// complete conversion and publish for both record readers.
+#[tokio::test]
+async fn unsafe_static_models_recover_through_finalization_and_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    generate(&data);
+    let signatures = [*b"TACT", *b"ADDN", *b"APPA", *b"ARTO"];
+    let mut records = Vec::new();
+    let mut expected = Vec::new();
+    for (index, signature) in signatures.into_iter().enumerate() {
+        let valid_before_id = 0x1800 + index as u32 * 3;
+        let invalid_id = valid_before_id + 1;
+        let valid_after_id = valid_before_id + 2;
+        let valid_model = [layout::GENERATED_MODEL_PATH.as_bytes(), &[0]].concat();
+        let invalid_model = b"../bad.nif\0".to_vec();
+        records.extend(record(
+            &signature,
+            valid_before_id,
+            &[
+                (*b"EDID", format!("Valid{index}\0").into_bytes()),
+                (*b"MODL", valid_model.clone()),
+            ],
+        ));
+        records.extend(record(
+            &signature,
+            invalid_id,
+            &[
+                (*b"EDID", format!("Unsafe{index}\0").into_bytes()),
+                (*b"MODL", invalid_model.clone()),
+            ],
+        ));
+        records.extend(record(
+            &signature,
+            valid_after_id,
+            &[
+                (*b"EDID", format!("ValidAfter{index}\0").into_bytes()),
+                (*b"MODL", valid_model),
+            ],
+        ));
+        expected.push((valid_before_id, invalid_id, valid_after_id, invalid_model));
+    }
+    append(&data.join("Skyrim.esm"), &records);
+
+    for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+        let output = temp.path().join(format!("pack-{reader:?}"));
+        let report = publish_with_reader(&data, &output, reader).await;
+        let integration = report.integration.as_ref().unwrap();
+        assert!(integration.passed, "{reader:?}: {integration:?}");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with("asset integration failed:"))
+        );
+        assert!(integration.bounds_updated >= 8);
+        assert!(integration.statics_with_models >= 8);
+        let recovered_ids = expected
+            .iter()
+            .map(|(_, invalid_id, _, _)| format!("{invalid_id:08X}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            integration
+                .issues
+                .iter()
+                .filter(|issue| recovered_ids.iter().any(|id| issue.contains(id)))
+                .count(),
+            4
+        );
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        for (valid_before_id, invalid_id, valid_after_id, invalid_model) in &expected {
+            for valid_id in [*valid_before_id, *valid_after_id] {
+                let valid_path: Option<String> = database
+                    .query_row(
+                        "SELECT model_path FROM statics WHERE id=?1",
+                        [valid_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(valid_path.as_deref(), Some(layout::GENERATED_MODEL_PATH));
+            }
+            let unsafe_path: Option<String> = database
+                .query_row(
+                    "SELECT model_path FROM statics WHERE id=?1",
+                    [invalid_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(unsafe_path, None);
+            let archived = canonical_fields(&output, *invalid_id);
+            assert!(archived.contains(&(*b"MODL", invalid_model.clone())));
+            assert!(integration.issues.iter().any(|issue| {
+                issue.contains("plugin Skyrim.esm")
+                    && issue.contains(&format!("{invalid_id:08X}"))
+                    && issue.contains("../bad.nif")
+            }));
+        }
+        let published_integration: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("integration-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(published_integration["passed"], true);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["complete"], report.complete);
+    }
 }
 
 /// Selected union banks survive real publication, while one malformed leaf stays local.
@@ -1409,4 +1534,80 @@ async fn addon_preflight_freezes_publication_bytes_before_discovery_progress() {
         )
         .unwrap();
     assert_eq!(saved, (expected_hash, original_bytes));
+}
+
+/// A cached database is keyed by its schema add-ons: a base bundle never restores for an add-on
+/// configuration, an unchanged add-on bundle restores with its own typed records, editing the
+/// add-on rebuilds, and returning to the base reproduces the base database, never the add-on one.
+#[tokio::test]
+async fn database_cache_keys_and_restores_by_schema_addon_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    generate_mod(&data, false);
+    let addon = temp.path().join("schema.json");
+    fs::write(&addon, addon_bytes()).unwrap();
+    let output = temp.path().join("pack");
+    let original = custom_fields("CustomBefore", 0x1801u32.to_le_bytes().to_vec());
+    let mut remapped = original.clone();
+    remapped[2].1 = 0x0200_1801u32.to_le_bytes().to_vec();
+    let stamp = |output: &Path| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap()
+    };
+
+    let base_cold = run_config(mod_config(&data, &output, &[])).await.unwrap();
+    assert!(!base_cold.database_cache_hit);
+    let base_warm = run_config(mod_config(&data, &output, &[])).await.unwrap();
+    assert!(base_warm.database_cache_hit, "unchanged base restores");
+    assert_eq!(
+        base_warm.warnings, base_cold.warnings,
+        "restore repeats base findings once"
+    );
+    let base_stamp = stamp(&output);
+    assert!(base_stamp.get("schema_addons").is_none());
+    assert!(!history_record(&output, 0x0300_1820).supported);
+
+    let typed = run_config(mod_config(&data, &output, &[&addon]))
+        .await
+        .unwrap();
+    assert!(
+        !typed.database_cache_hit,
+        "add-on configuration must not restore the base bundle"
+    );
+    assert_ne!(stamp(&output)["schema_sha256"], base_stamp["schema_sha256"]);
+    let typed_stamp = stamp(&output);
+    assert!(stamp(&output)["schema_addons"].is_array());
+    assert_eq!(canonical_fields(&output, 0x0300_1820), remapped);
+    assert!(history_record(&output, 0x0300_1820).supported);
+
+    let typed_warm = run_config(mod_config(&data, &output, &[&addon]))
+        .await
+        .unwrap();
+    assert!(
+        typed_warm.database_cache_hit,
+        "unchanged add-on bundle restores"
+    );
+    assert_eq!(canonical_fields(&output, 0x0300_1820), remapped);
+    assert_eq!(stamp(&output), typed_stamp);
+    assert_eq!(typed_warm.warnings, typed.warnings);
+
+    fs::write(&addon, metadata_addon_bytes()).unwrap();
+    let edited = run_config(mod_config(&data, &output, &[&addon]))
+        .await
+        .unwrap();
+    assert!(!edited.database_cache_hit, "an edited add-on must rebuild");
+    assert_ne!(
+        stamp(&output),
+        typed_stamp,
+        "the stamp must describe the edited add-on"
+    );
+    fs::write(&addon, addon_bytes()).unwrap();
+
+    let back = run_config(mod_config(&data, &output, &[])).await.unwrap();
+    assert!(
+        !back.database_cache_hit,
+        "returning to base must not reuse the add-on bundle"
+    );
+    assert_eq!(stamp(&output), base_stamp);
+    assert_eq!(canonical_fields(&output, 0x0300_1820), original);
+    assert!(!history_record(&output, 0x0300_1820).supported);
 }

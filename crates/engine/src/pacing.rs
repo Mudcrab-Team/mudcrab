@@ -18,7 +18,7 @@ use crate::{
     app::benchmark_jump_position,
     config::EngineConfig,
     profiling::ProfilingState,
-    streaming::{RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
+    streaming::{ActiveSpace, RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
     world::{cache::CellCache, components::CELL_SIZE, components::StreamingCamera},
 };
 use bevy::prelude::*;
@@ -31,7 +31,7 @@ const MAX_READY_DISTANCES: usize = 200_000;
 /// What the world-ready predicate reads, taken from one frame's streaming state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WorldReadyInputs {
-    /// Cells in the stream window, `(2r + 1)^2`.
+    /// Cells wanted by the planner: one interior, or an exterior window `(2r + 1)^2`.
     pub window_cells: usize,
     /// Cells of that window resident at full detail.
     pub resident_window_cells: usize,
@@ -261,6 +261,12 @@ impl PacingTracker {
         false
     }
 
+    /// Whether the world has been ready (the predicate held on two consecutive frames) at least
+    /// once. A route run starts its walk on the frame after this turns true.
+    pub fn world_ready_reached(&self) -> bool {
+        self.first_ready.latched.is_some()
+    }
+
     /// Records a model that finished loading `distance` units (horizontally) from the camera.
     pub fn record_model_ready(&mut self, distance: f32) {
         self.ready_models_total = self.ready_models_total.saturating_add(1);
@@ -298,7 +304,7 @@ impl PacingTracker {
             jump_issued: self.jump.is_some(),
             time_to_world_ready_after_jump_ms: after_jump.map(|mark| mark.millis),
             frames_to_world_ready_after_jump: after_jump.map(|mark| mark.frames),
-            fly_lag: (config.auto_fly_speed > 0.0).then(|| {
+            fly_lag: config.flies().then(|| {
                 FlyLag::new(
                     &self.ready_distances,
                     self.ready_models_total,
@@ -422,6 +428,7 @@ fn window_delta_ms(real: &Time<Real>) -> f64 {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn track_world_ready(
     config: Res<EngineConfig>,
+    space: Option<Res<ActiveSpace>>,
     origin: Res<RenderOrigin>,
     streaming: Res<StreamingWorld>,
     metrics: Res<StreamingMetrics>,
@@ -438,8 +445,12 @@ pub(crate) fn track_world_ready(
     };
     let started = *tracker.started.get_or_insert_with(Instant::now);
     let center = window_center(&config, camera.translation, origin.0);
-    let (window_cells, resident, failed) =
-        streaming.window_residency(config.worldspace_id, center, config.stream_radius);
+    let (window_cells, resident, failed) = streaming.active_residency(
+        &space.as_deref().copied().unwrap_or_default(),
+        config.worldspace_id,
+        center,
+        config.stream_radius,
+    );
     let inputs = WorldReadyInputs::from_streaming(&metrics, window_cells, resident, failed);
     let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
     let ready = inputs.is_ready();
@@ -810,6 +821,54 @@ mod tests {
                 *frame_ms, 1000.0,
                 "the window keeps the real clock's frame times, not the virtual clock's 250 ms"
             );
+        }
+    }
+
+    #[test]
+    fn world_ready_tracks_the_active_interior_or_destination_worldspace() {
+        use crate::world::database::CellKey;
+        for interior in [Some(77), None] {
+            let (_cache_directory, cache) = empty_cell_cache();
+            let mut app = thousand_millisecond_frames();
+            let space = ActiveSpace {
+                worldspace_id: Some(42),
+                interior,
+            };
+            let mut streaming = StreamingWorld::default();
+            let key = interior.map_or(
+                CellKey::Exterior {
+                    worldspace_id: 42,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                CellKey::Interior,
+            );
+            if interior.is_some() {
+                let root = app.world_mut().spawn_empty().id();
+                streaming.set_resident_for_test(key, root);
+            } else {
+                streaming.set_failed_for_test(key);
+            }
+            app.insert_resource(EngineConfig {
+                stream_radius: 0,
+                ..default()
+            })
+            .insert_resource(space)
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(streaming)
+            .insert_resource(StreamingMetrics::default())
+            .insert_resource(cache)
+            .init_resource::<PacingTracker>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, track_world_ready);
+            app.world_mut()
+                .spawn((Transform::default(), StreamingCamera));
+            for _ in 0..3 {
+                app.update();
+            }
+            let tracker = app.world().resource::<PacingTracker>();
+            assert!(tracker.first_ready.latched.is_some(), "space={space:?}");
+            assert_eq!(tracker.window_failed_cells, usize::from(interior.is_none()));
         }
     }
 

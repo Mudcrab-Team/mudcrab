@@ -44,7 +44,7 @@ preserves WRLD RNAM payloads and TNAM strings and restores record-aware VMAD
 ownership compatibility. Version 2 added corrected faction links, strict native
 link ownership and local recovery to version 1's corrected TX06/TX07 and ARMO
 world-model projections. These metadata contracts are independent of asset
-producer 26. In-house adapter version 11 adds projection-aware winner admission
+producer 27. In-house adapter version 11 adds projection-aware winner admission
 to version 10's corrected schema layouts, GMST winner admission, union localization
 and filename namespaces. Required runtime projection checks resolve localized
 fields before admission, so an unusable later candidate preserves its usable
@@ -52,7 +52,7 @@ predecessor without crossing an admitted deletion.
 Version 12 keeps zero-FormID GMST settings distinct and prevents a rejected
 identity collision from blocking a later usable definition.
 In-house identity includes the
-authored schema SHA-256, adapter version and English localization choice, and
+authored schema SHA-256, adapter version, string-table language and encodings, and
 `inhouse-reader-diagnostics.json` records bounded decoder and adapter issues.
 The manifest's `configuration_hash` keeps the full reader identity for metadata
 provenance. Database, terrain cache and LOD artifacts are rebuilt on every
@@ -61,18 +61,25 @@ Converted assets use separate producer, settings and source proofs, described
 below; a full reader identity change alone does not discard those candidates or
 the archive extraction manifest.
 
-Localized fields in in-house mode use their declared English STRINGS, DLSTRINGS
-or ILSTRINGS bank from the effective archive VFS, with loose files taking
-precedence. Every validated occurrence remains in canonical records. Null or
+Localized fields in in-house mode use their declared STRINGS, DLSTRINGS or
+ILSTRINGS bank, `Strings/<plugin>_<language>.<bank>`, from the effective archive VFS,
+with loose files taking precedence. `--language` (`PipelineConfig.language`, default
+`english`) selects the language as Skyrim's `sLanguage` does; it must be letters,
+digits and underscores, since it is part of a file name. Resume commands keep it. Every validated occurrence remains in canonical records. Null or
 missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
-columns remain NULL. Missing nonzero keys produce counted warnings. Explicitly
-resolved empty text remains distinguishable from unresolved text. Other language
-selection is not implemented. A selected union or definition leaf's explicit
+columns remain NULL. Missing nonzero keys in readable tables produce counted
+notices; missing or unreadable tables and referenced malformed entries produce
+warnings. A null ID does not require its declared bank. Explicitly resolved
+empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.
 Ordinary plugin text and English string banks use Windows-1252, including bytes
-that happen to form valid UTF-8. VMAD strings use their independent UTF-8 format.
+that happen to form valid UTF-8. Banks in another language are read as UTF-8, as
+Skyrim SE's non-English banks are (Cyrillic, Polish), falling back to Windows-1252
+for text that is not valid UTF-8; the reader identity of a non-English pack records
+this as `string_table_encoding`, while an English pack's identity is unchanged.
+VMAD strings use their independent UTF-8 format.
 Text requiring normalization is encoded as UTF-8 after decoding; already exact
 ASCII codes retain their original width and termination. Original source bytes
 remain available in provenance. The reader identity records both encoding contracts.
@@ -85,7 +92,9 @@ contracts and are not upgraded to the current projection.
 Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
 with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
-metadata rebuilds. These explicit compatibility pairs do not authorize arbitrary
+metadata rebuilds. The string-table language changes database text only, so a pack
+read in one language is a valid source for a rebuild in another; its proof is
+checked in the language it recorded. These explicit compatibility pairs do not authorize arbitrary
 older in-house identities or automatically extend to future adapters.
 New full configuration hashes
 include the versioned legacy identity, while `configuration_hash_for_schema`
@@ -124,7 +133,8 @@ compatibility proof does not alter normal conversion or staging cache identities
 For record-only diagnostics, `inhouse-records <Data> <plugins.txt> <new directory>`
 writes the database, cell caches, reader identity and diagnostic report without
 running asset stages or publishing a runtime pack. The new directory also keeps
-selected English archive STRINGS inputs under `.strings-input` for comparison.
+selected English archive STRINGS inputs under `.strings-input` for comparison; it does
+not take `--language`.
 
 `--typed-signatures TAG1,TAG2` selects the authored typed envelopes to retain;
 `--database-work-dir <new directory>` builds SQLite on a separate local disk and
@@ -338,7 +348,8 @@ entries carrying a full configuration hash do not acquire a new proof implicitly
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer
-does not inherit that allowance. Older textures regenerate, and scripts require
+does not inherit that allowance, so producer 27 (which changes the GLB collision
+data) reuses only its own meshes. Older textures regenerate, and scripts require
 both a supported producer and matching ABI settings. A retained producer remains
 the producer of its original bytes after any number of metadata rebuilds.
 

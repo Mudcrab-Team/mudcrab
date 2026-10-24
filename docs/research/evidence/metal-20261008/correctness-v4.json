@@ -1,0 +1,13 @@
+{
+  "profile": "quick correctness only",
+  "workspace_test_targets": 48,
+  "passed": 1141,
+  "failed": 0,
+  "ignored": 18,
+  "clippy": "passed -D warnings",
+  "logs": [
+    "workspace-tests-v4-final.log",
+    "clippy-v4-final.log"
+  ],
+  "production_profile": "release thin LTO 1 codegen unit debug=1"
+}

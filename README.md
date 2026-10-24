@@ -1,184 +1,216 @@
-# Mudcrab
+<h1 align="center">
+  <img src="docs/assets/mudcrab-logo.svg" alt="Mudcrab" width="240">
+</h1>
 
-![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Mudcrab-Team/mudcrab?utm_source=oss&utm_medium=github&utm_campaign=Mudcrab-Team%2Fmudcrab&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
-[![Rust](https://img.shields.io/badge/Rust-2024_Edition-orange.svg)](https://www.rust-lang.org/)
-[![Engine](https://img.shields.io/badge/Engine-Bevy_0.19-blue.svg)](https://bevyengine.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
-[![CI Status](https://img.shields.io/badge/CI-passing-brightgreen.svg)](#-quick-start-development-setup)
-[![Platforms](https://img.shields.io/badge/Platforms-Windows_%7C_Linux_%7C_Android-purple.svg)](docs/specs/meta/platforms.md)
+<p align="center">
+  <strong>An open-source engine reimplementation for <em>The Elder Scrolls V: Skyrim Special Edition</em>, written in Rust on Bevy.</strong>
+</p>
 
-An open-source, high-performance game engine reimplementation compatible with **The Elder Scrolls V: Skyrim (Special Edition)** assets, built from the ground up in **Rust** using the **Bevy Engine**.
+<p align="center">
+  <a href="https://github.com/Mudcrab-Team/mudcrab/actions/workflows/run_tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/Mudcrab-Team/mudcrab/run_tests.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later"></a>
+  <a href="https://discord.gg/29GRf8QShH"><img src="https://img.shields.io/badge/Discord-Join_the_community-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+  <img src="https://img.shields.io/coderabbit/prs/github/Mudcrab-Team/mudcrab?utm_source=oss&utm_medium=github&utm_campaign=Mudcrab-Team%2Fmudcrab&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews" alt="CodeRabbit Pull Request Reviews">
+</p>
 
-Inspired by open-source engine reimplementations like OpenMW, **Mudcrab** modernizes legacy Bethesda game formats (`.esm`, `.bsa`, `.nif`, `.dds`, `.pex`) into GPU-native, stream-friendly formats (`glTF 2.0`, `KTX2 Basis`, `SQLite 3 / libSQL`, `Luau`) to deliver **60+ FPS high-performance gameplay without loading screens**.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#roadmap">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="https://discord.gg/29GRf8QShH">Discord</a>
+</p>
+
+Mudcrab is a new engine for Skyrim, built from the ground up with full 1:1 parity as the goal: the
+game should look, play and feel exactly like the Skyrim you know. Inspired by engine
+reimplementations like OpenMW, Mudcrab converts Skyrim's older file formats into modern ones, so
+the engine can use today's game development techniques.
+
+On top of that, Mudcrab adds optional enhancements built on Bevy's modern engine features. Install
+them like any other mod, or leave them out for the original experience. They are made for Mudcrab
+and don't work in the original game by default, but we encourage anyone who wants them there to
+find a way.
+
+Mudcrab supports mods that don't need SKSE. We'll explore broader SKSE support after release.
+
+**Status: early development.** The converter handles a full Skyrim SE install, and the engine
+streams the converted world for you to walk through. Skyrim is not playable as a game yet; see the
+[roadmap](#roadmap).
 
 > [!IMPORTANT]
-> **Legal Disclaimer:** Mudcrab is an independent open-source project and is **not** affiliated with, endorsed by, or connected to Bethesda Softworks LLC, ZeniMax Media Inc., or Microsoft Corporation. "The Elder Scrolls" and "Skyrim" are registered trademarks of Bethesda Softworks / ZeniMax Media. This repository distributes **no proprietary game assets**. A legally purchased copy of the original game is required to supply game data. See [LEGAL.md](LEGAL.md) for full legal notices.
+> Mudcrab ships no game assets. You need a legally owned copy of Skyrim Special Edition to supply
+> game data. Mudcrab is not affiliated with or endorsed by Bethesda Softworks, ZeniMax Media, or
+> Microsoft. See [LEGAL.md](LEGAL.md).
 
----
+## Features
 
-## ✨ Features & Architecture Highlights
+- **Convert once, play from modern formats.** Plugins become a SQLite world database, meshes become
+  glTF 2.0, textures become KTX2, and Papyrus scripts are transpiled to Luau. Reconversion reuses
+  unchanged assets.
+- **A streaming open world.** Cells load around the player from an R-tree spatial index. Load doors
+  fade through black while the destination loads.
+- **First-person movement with collision.** Walk the world on Rapier physics, with a noclip
+  fallback.
+- **Mod Organizer 2 profiles.** Convert an MO2 profile in place, overlaid on your Data folder.
+- **GPU texture encoding.** An optional wgpu compute encoder cut a full conversion from 28 to 9
+  minutes on its author's machine ([details](docs/guides/converter.md#gpu-texture-encoding)).
+- **Repairable conversions.** `repair-failed` re-converts only what failed, previews the result, and
+  publishes with a rollback journal.
+- **No game needed to contribute.** `dummy-content` generates a synthetic game to test the full
+  pipeline.
 
-- **🚀 Zero Loading Screens:** Interior and exterior city transitions load 100% seamlessly in real time using libSQL spatial R-Tree indexing and `rkyv` zero-copy memory mapping.
-- **⚡ High-FPS Vercidium Rendering:** Batched instanced indirect draw calls (`DrawMeshInstancedIndirect`) reduce 5,000+ individual draw calls to under 100 per frame.
-- **📜 Luau Scripting Engine (`mlua`):** Replaces single-threaded Papyrus with sandboxed, JIT-compiled Luau scripts. Includes async HTTP networking for live web APIs (e.g. real-world weather sync mods).
-- **📱 Cross-Platform (Desktop & Mobile):** Native support for Windows, Linux, macOS (Apple Silicon), and Android (ARM64 / POCO F5).
-- **🎨 Modern UI (Bevy 0.19 `bsn!`):** Transpiles obsolete Flash (`.gfx`) menus into hardware-accelerated declarative Bevy UI node trees.
-- **🎮 Integrated Mod Manager:** Built-in launcher with drag-and-drop archive installation and priority-weighted `.esp`/`.esl` plugin load orders.
-
----
-
-## 🏗️ Workspace Crate Architecture
-
-Mudcrab is organized into a modular Cargo workspace:
-
-```
-mudcrab/
-├── Cargo.toml                  # Workspace Root Manifest
-├── LEGAL.md                    # Legal & Trademark Disclaimers
-├── crates/
-│   ├── launcher/      # GUI Setup Wizard & Built-in Mod Manager
-│   ├── converter/     # Asset Converter Pipeline (.nif ➔ .glb, .dds ➔ KTX2, .esm ➔ libSQL)
-│   ├── shared/        # Versioned coordinate, database, and cell-cache contracts
-│   ├── engine/        # Bevy Game Engine Binary (Render, Physics, Luau, Audio)
-│   └── dummy-content/ # Synthetic mock asset generation for tests & CI
-```
-
-| Crate           | Responsibilities                                                                                                                |
-| :-------------- | :------------------------------------------------------------------------------------------------------------------------------ |
-| **`launcher`**  | First-run setup wizard, game path detection, built-in mod manager UI, triggers converter progress bar, and launches the engine. |
-| **`converter`** | Heavy offline asset converter (`mesh-tools`, `basis-universal`, `ddsfile`, `nom` binary parsers).                               |
-| **`shared`**    | Versioned contracts shared by conversion and runtime, including coordinates and the terrain cell cache.                      |
-| **`engine`**    | Lightweight, hyper-fast game binary (Bevy 0.19+, `wgpu`, `libsql`, `mlua` Luau JIT).                                            |
-| **`dummy-content`** | Procedural, synthetic asset fixtures for automated testing without proprietary game files.                                 |
-
----
-
-## 🗺️ Project Roadmap
-
-Mudcrab is being built systematically across 5 core phases. Explore the full roadmap specs in [`docs/roadmap/`](docs/roadmap/README.md).
-
-- [x] **[Phase 1: Asset Modernization Pipeline (`converter`)](docs/roadmap/01-asset-pipeline.md)** — Transpile legacy `.esm`, `.nif`, `.dds`, and `.pex` into `SQLite 3`, `glTF 2.0`, `KTX2`, and `Luau`.
-- [ ] **[Phase 2: Core Engine Runtime & Vercidium Renderer (`engine`)](docs/roadmap/02-core-engine.md)** — Runtime, integration, profiling, and acceptance infrastructure implemented; complete real-asset sign-off remains pending.
-- [ ] **[Phase 3: Luau Runtime, Declarative UI & Launcher (`launcher`)](docs/roadmap/03-luau-and-ui.md)** — Sandboxed Luau JIT with async web APIs, Flash-to-Bevy `bsn!` UI conversion, and setup wizard.
-- [ ] **[Phase 4: Gameplay Mechanics, Physics & Persistence](docs/roadmap/04-gameplay-and-physics.md)** — Rapier 3D physics, animation blending, combat state machine, and sub-second save state snapshots.
-- [ ] **[Phase 5: Hardware Ray-Tracing, Multiplatform & Networking](docs/roadmap/05-multiplatform-and-networking.md)** — WebGPU/Vulkan RTGI, DLSS/FSR3 frame gen, native co-op multiplayer, Android ARM64, and OpenXR VR.
-
----
-
-## 🚀 Quick Start (Development Setup)
+## Quick start
 
 ### Prerequisites
 
-- **Rust** (2024 Edition)
-- **CMake** & **Ninja** / **GCC** (for native libSQL / SQLite compilation)
+- **Rust** via [rustup](https://rustup.rs). [`rust-toolchain.toml`](rust-toolchain.toml) pins the
+  toolchain, and rustup installs it on the first build.
+- **A C and C++ compiler** for the bundled SQLite, Luau and Basis Universal sources: Visual Studio
+  Build Tools on Windows, Xcode Command Line Tools on macOS, GCC or Clang on Linux.
+- **Linux only:** Bevy's [system libraries](https://github.com/bevyengine/bevy/blob/main/docs/linux_dependencies.md).
+  With [devenv](https://devenv.sh), `devenv shell` provides them.
+- **A GPU** with Vulkan, DirectX 12 or Metal support.
+- **Disk space:** 20–30 GB for build output. See
+  [build and conversion requirements](docs/specs/meta/requirements.md) for times and sizes.
 
-### Building & Running
+### Play with your Skyrim install
 
-1. **Clone the repository:**
+1. Clone the repository and build the engine and launcher:
 
    ```bash
    git clone https://github.com/Mudcrab-Team/mudcrab.git
    cd mudcrab
+   cargo build --release --bin engine --bin launcher
    ```
 
-2. **Check workspace compilation:**
+2. Start the launcher:
 
    ```bash
-   cargo check --workspace
+   cargo run --release -p launcher
    ```
 
-3. **Run the Launcher App:**
-   ```bash
-   cargo run -p launcher
-   ```
+3. The launcher finds a Steam install of Skyrim SE. If it doesn't, drop your Skyrim `Data` folder
+   onto the window. Converted assets go to `modern_assets` unless you drop a different Output
+   folder.
+4. Press **Start** to convert. A first conversion takes a while; later runs reuse unchanged
+   assets.
+5. Press **PLAY MUDCRAB** when the conversion completes.
 
-Choose **Skyrim Data** to convert the physical Data folder, or **MO2 profile** to overlay a Mod Organizer 2 profile. Open **MO2 settings**, drop the instance folder containing `ModOrganizer.ini`, and select a detected profile from the dropdown (MO2's active profile is selected by default, falling back to the first detected profile). The Skyrim Data folder is still required as the base. Close settings before dropping the output folder. Source settings apply to Start and Resume and are selected per launcher session. MO2 sources are read in place; native SKSE plugins are not supported. Instances must declare a supported Skyrim `gameName`. Configured directories may resolve through junctions, but profile, enabled-mod, and asset reparse points are rejected.
+The launcher starts the engine binary built next to it, so build both with the same profile. To
+convert a Mod Organizer 2 profile instead, see
+[Convert a Mod Organizer 2 profile](docs/guides/converter.md#convert-a-mod-organizer-2-profile).
 
-### Repair a failed conversion without rebuilding the world
+### No Skyrim? Use synthetic data
 
-```bash
-cargo run -p converter --bin converter -- repair-failed "<Skyrim Data>" "<output directory>" --mo2-instance "<MO2 instance>" --mo2-profile "<profile>"
-```
-
-This reads the original manifest and stages failed inputs, assets from failed archives, and necessary texture and skeleton dependencies in a unique `<output>/.repair-<pid>-<timestamp>` directory. Loose MO2 files are read in place. Repair stages the pack for validation, linking unchanged assets where supported, re-finalizes `skyrim_world.db` to update mesh bounds, and re-runs integration; it does not rebuild the world from plugins. Allow disk space for repaired assets, rewritten metadata, and copies where hard links are unavailable. Omit the MO2 options for physical Data.
-
-The default is a preview: inspect `repair-report.json` and the staged `assets/` folder; the published pack is unchanged except when recovering an earlier interrupted publication. Repeat with `--apply` to validate existing artifact hashes and publish the repairs. Conversion and repair share exclusive output locking and cannot run while the engine holds its runtime read lock. Publication writes a rollback journal before replacing files and updates the manifest last; the next conversion or repair recovers an interrupted repair. Publication is recoverable, not atomic for readers that do not acquire the lock.
-
-The configuration must match the original conversion, and unresolved failures or failed integration prevent publication. Supply the original encoding settings when needed: `--texture-encoder`, `--texture-fallback-quality`, `--texture-uastc-level`, and `--texture-zstd-level` (and the corresponding GPU options). GPU repair uses the same GPU encoding worker as conversion, including configured quality and CPU fallback. Changes to MO2 window settings or disabled mod entries do not invalidate the whole conversion cache; winning asset and plugin changes are tracked separately.
-
-### Asset compatibility changes
-
-Compatibility changes also apply to physical Data-folder conversion: BodySlide/Outfit Studio resources under `CalienteTools` are excluded as authoring data, the manifest records `excluded_inputs`, and unsupported NIF versions are rejected explicitly. Particle-size parsing and dynamic-shape recovery restore geometry that was previously omitted.
-
-Dynamic head, hair, and eye meshes now produce geometry. The [PR #154 review](https://github.com/Mudcrab-Team/mudcrab/pull/154#issuecomment-5987129687) reports total GLB size increasing from 209 MB to 451 MB; these are reviewer-provided measurements, not a benchmark reproduced here. The script snapshot delta came from instruction dispatch chunking, not the Mudcrab header rename, which was already in `main`.
-
-### GPU texture encoding
-
-The converter copies textures whose DDS blocks a GPU can sample directly (DXT1–DXT5, BC1–BC7) into KTX2 unchanged. Everything else, mainly Skyrim's uncompressed terrain and LOD textures, is converted on the CPU by default: uncompressed 8-bit RGB(A) (24-bit, X8R8G8B8, A8R8G8B8, A8B8G8R8, DXGI BGRA/BGRX) is block-compressed to native BC7, and the remaining textures are encoded to UASTC (Basis Universal). With `--texture-encoder gpu` a wgpu compute shader encodes every texture it takes, uncompressed RGB(A) included, to UASTC instead, writing KTX2 with the same Zstandard supercompression, so the engine needs no changes:
+Generate a small synthetic game, convert it, and open it in the engine:
 
 ```bash
-cargo run --release -p converter -- "<Skyrim Data>" "<output directory>" --texture-encoder gpu
+cargo run -p dummy-content -- gen Data
+cargo run -p converter --bin converter -- Data modern_assets
+cargo run -p engine --bin engine -- --assets modern_assets --worldspace 1
 ```
 
-Measured by the encoder's author on a full Skyrim SE conversion (Ryzen 5 5600G, RTX 5090, NVMe), from scratch:
+The fixture contains no copyrighted content. Its worldspace is form id `1`; the engine's default is
+Skyrim's Tamriel, which the fixture does not contain.
 
-| | CPU encoder | GPU encoder |
-| --- | --- | --- |
-| Whole conversion | 28 min 08 s | 8 min 55 s |
-| Texture stage (10,236 encoded, 22,709 copied) | 20 min 37 s | 1 min 29 s |
+## Documentation
 
-The CPU timings were measured before the CPU path wrote native BC for uncompressed textures (as of #119); they describe UASTC encoding on the CPU.
+| Read this | For |
+| :-- | :-- |
+| [Converting game data](docs/guides/converter.md) | Converter command line, MO2 profiles, repairing a conversion, GPU texture encoding |
+| [Running the engine](docs/guides/engine.md) | Engine options, WALK and NOCLIP startup |
+| [Technical specifications](docs/specs/README.md) | Formats, converters, engine architecture, launcher |
+| [Roadmap](docs/roadmap/README.md) | Phase plans and acceptance criteria |
+| [Architecture decision records](docs/adr/README.md) | Why the code is the way it is |
+| [Build and conversion requirements](docs/specs/meta/requirements.md) | Build times, conversion times, disk space |
 
-On the author's 20 sample textures, quality was about 0.3–0.5 dB PSNR below the CPU encoder's UASTC level 2, both after BC7 transcoding (desktop) and as ASTC (mobile). The comparison tool is not part of this repository, so treat these figures as indicative.
+<details>
+<summary>All technical specifications</summary>
 
-- `--gpu-quality N` — endpoint refinement passes, 0–8 (default 2).
-- `--gpu-batch-mb N` — source megabytes packed into one GPU dispatch (default 256).
+- [`architecture.md`](docs/specs/engine/architecture.md): core engine architecture and phase milestones.
+- [`nif-to-gltf.md`](docs/specs/converters/nif-to-gltf.md): 3D mesh converter (`mesh-tools`).
+- [`dds-to-ktx2.md`](docs/specs/converters/dds-to-ktx2.md): texture compressor (`basis-universal` + `ddsfile`).
+- [`esm-to-sqlite.md`](docs/specs/converters/esm-to-sqlite.md): master database (SQLite + `rkyv`).
+- [`pex-to-lua.md`](docs/specs/converters/pex-to-lua.md): Papyrus bytecode to Luau transpilation (`mlua`).
+- [`mods-and-ui.md`](docs/specs/modding/mods-and-ui.md): integrated mod manager and Flash-to-Bevy UI strategy.
+- [`launcher.md`](docs/specs/modding/launcher.md): first-run setup wizard and launcher workflow.
+- [`vercidium-optimizations.md`](docs/specs/engine/vercidium-optimizations.md): GPU instancing and HZB culling.
+- [`platforms.md`](docs/specs/meta/platforms.md): target matrix for desktop, mobile ARM64 and WebGPU.
+- [`requirements.md`](docs/specs/meta/requirements.md): build and conversion requirements.
+- [`features.md`](docs/specs/modding/features.md): planned capabilities (no loading screens, AI dialogue, co-op).
+- [`bevy-examples.md`](docs/specs/engine/bevy-examples.md): official Bevy 0.19 patterns mapped to engine subsystems.
 
-Textures the GPU path cannot take (volume textures, formats it cannot decode) use the CPU encoder, as does the whole run when no hardware GPU is available. If the GPU fails mid-run (a driver error or a lost device), everything it had not finished is encoded on the CPU instead. Encoded textures are cached separately per encoder, so switching it reconverts only them; copied textures and meshes are reused.
+</details>
 
----
+## How it works
 
-## 📚 Technical Specifications (`docs/specs/`)
+```mermaid
+flowchart LR
+    data["Skyrim SE Data folder<br/>.esm · .bsa · .nif · .dds · .pex"] --> converter
+    mo2["MO2 profile<br/>(optional)"] --> converter
+    converter --> pack["Asset pack<br/>SQLite · glTF 2.0 · KTX2 · Luau"]
+    pack --> engine["engine<br/>(Bevy)"]
+    launcher -. runs .-> converter
+    launcher -. starts .-> engine
+```
 
-For detailed technical specifications, format breakdowns, and architectural guidelines, explore the [`docs/specs/`](docs/specs/README.md) directory:
+The converter does the heavy work offline, so the engine only reads formats a GPU and a database
+understand directly. The workspace is split into these crates:
 
-- **[`architecture.md`](docs/specs/engine/architecture.md)** — Core engine architecture overview & phase milestones.
-- **[`nif-to-gltf.md`](docs/specs/converters/nif-to-gltf.md)** — 3D mesh converter specification (`mesh-tools`).
-- **[`dds-to-ktx2.md`](docs/specs/converters/dds-to-ktx2.md)** — Texture compressor specification (`basis-universal` + `ddsfile`).
-- **[`esm-to-sqlite.md`](docs/specs/converters/esm-to-sqlite.md)** — Master database specification (`libSQL` + `rkyv`).
-- **[`pex-to-lua.md`](docs/specs/converters/pex-to-lua.md)** — Papyrus bytecode to Luau transpilation spec (`mlua`).
-- **[`mods-and-ui.md`](docs/specs/modding/mods-and-ui.md)** — Integrated Mod Manager & Flash-to-Bevy UI strategy.
-- **[`launcher.md`](docs/specs/modding/launcher.md)** — First-run setup wizard & launcher workflow.
-- **[`vercidium-optimizations.md`](docs/specs/engine/vercidium-optimizations.md)** — High-FPS GPU instancing & HZB culling.
-- **[`platforms.md`](docs/specs/meta/platforms.md)** — Target matrix for Desktop, Mobile ARM64, and WebGPU.
-- **[`requirements.md`](docs/specs/meta/requirements.md)** — Hardware system specs and optimization analysis.
-- **[`features.md`](docs/specs/modding/features.md)** — Unlocked capabilities (Zero-loading screens, AI dialogue, native co-op).
-- **[`bevy-examples.md`](docs/specs/engine/bevy-examples.md)** — Mapping official Bevy 0.19 patterns to engine subsystems.
+| Crate | Role |
+| :-- | :-- |
+| [`launcher`](crates/launcher) | Desktop app: finds Skyrim, runs conversions, starts the engine. |
+| [`converter`](crates/converter) | Offline asset pipeline: `.esm` to SQLite, `.nif` to glTF 2.0, `.dds` to KTX2, `.pex` to Luau. |
+| [`engine`](crates/engine) | Bevy game binary: streaming, rendering, physics. |
+| [`shared`](crates/shared) | Versioned data contracts shared by the converter and the engine. |
+| [`mo2`](crates/mo2) | Read-only Mod Organizer 2 instance and profile resolution. |
+| [`dummy-content`](crates/dummy-content) | Deterministic synthetic game data for tests and CI. |
 
----
+## Roadmap
 
-## 🤝 Contributing
+Mudcrab is built in five phases. The full plans are in [`docs/roadmap/`](docs/roadmap/README.md).
 
-We welcome community contributions! Whether you're fixing bugs in asset converters, enhancing Bevy rendering pipelines, or writing documentation, check out our guidelines before submitting a PR:
+- [x] **[Phase 1: Asset modernization pipeline](docs/roadmap/01-asset-pipeline.md).** Transpile
+  legacy `.esm`, `.nif`, `.dds` and `.pex` into SQLite, glTF 2.0, KTX2 and Luau.
+- [ ] **[Phase 2: Core engine runtime and Vercidium renderer](docs/roadmap/02-core-engine.md).**
+  Runtime, integration, profiling and acceptance infrastructure are implemented; real-asset
+  sign-off is pending.
+- [ ] **[Phase 3: Luau runtime, declarative UI and launcher](docs/roadmap/03-luau-and-ui.md).**
+  Sandboxed Luau with async web APIs, Flash-to-Bevy `bsn!` UI conversion, and the setup wizard.
+- [ ] **[Phase 4: Gameplay, physics and persistence](docs/roadmap/04-gameplay-and-physics.md).**
+  Rapier 3D physics, animation blending, combat, and save-state snapshots.
+- [ ] **[Phase 5: Ray tracing, multiplatform and networking](docs/roadmap/05-multiplatform-and-networking.md).**
+  Ray-traced global illumination, DLSS/FSR3 frame generation, co-op multiplayer, Android ARM64 and
+  OpenXR VR.
 
-- 📖 **[CONTRIBUTING.md](CONTRIBUTING.md)** — Guide on development workflow, code style (`cargo fmt`/`clippy`), and PR guidelines.
-- 📜 **[LEGAL.md](LEGAL.md)** — Intellectual property policy and compatibility guidelines.
-- 🐛 **[Issue Tracker](../../issues)** — Search existing issues or report a new bug using our template.
+## Contributing
 
----
+Contributions are welcome: converter fixes, rendering work, tests, and documentation. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, then run what CI runs before opening a pull
+request:
 
-## ⚖️ Legal Disclaimer & License
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nextest run --workspace --all-targets --no-fail-fast --no-tests=warn
+```
 
-### Licensing
+- Used an AI assistant? Follow the [AI policy](docs/AI_POLICY.md).
+- Found a bug? Search the [issue tracker](https://github.com/Mudcrab-Team/mudcrab/issues) or open
+  an issue.
+- Have a question? Ask on [Discord](https://discord.gg/29GRf8QShH).
+- Never commit game assets. See [LEGAL.md](LEGAL.md).
 
-Mudcrab is dual-licensed under either of the following licenses at your option:
+## License and legal
 
-- **MIT License** ([`LICENSE-MIT`](LICENSE-MIT))
-- **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
+Mudcrab is licensed under the [GNU General Public License v3.0 or later](LICENSE)
+(`GPL-3.0-or-later`).
 
-### Legal Notice & Trademark Disclaimer
+Mudcrab is an independent open-source game engine reimplementation. It does **not** contain or
+distribute any copyrighted game assets, artwork, 3D models, audio, or game data belonging to
+Bethesda Softworks LLC or ZeniMax Media Inc. You must supply your own legally owned copy of
+_The Elder Scrolls V: Skyrim_ to extract game data.
 
-Mudcrab is an independent open-source game engine reimplementation. It does **not** contain or distribute any copyrighted game assets, artwork, 3D models, audio, or game data belonging to Bethesda Softworks LLC or ZeniMax Media Inc. Users must supply their own legally owned copy of _The Elder Scrolls V: Skyrim_ to extract game data.
-
-All trademarks are the property of their respective owners and are used strictly under nominative fair use for compatibility description. Read the full statement in [LEGAL.md](LEGAL.md).
+"The Elder Scrolls" and "Skyrim" are registered trademarks of Bethesda Softworks / ZeniMax Media.
+All trademarks are the property of their respective owners and are used strictly under nominative
+fair use for compatibility description. Read the full statement in [LEGAL.md](LEGAL.md).

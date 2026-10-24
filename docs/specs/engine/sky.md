@@ -43,10 +43,11 @@ display transform. See [L1 color pipeline](color-pipeline.md) for domains, tests
 parity gaps. Existing encoded weather mixing and fog equations remain provisional pending retail
 comparison; the output correction does not validate those assumptions.
 
-- **Colours.** `SkyPalette` holds Sky-Upper, Sky-Lower, Horizon and Fog Far, plus a linear
-  brightness scale. The built-in palette is `SkyrimClear`'s day column (Upper 21,77,117;
-  Lower 60,135,183; Horizon 125,163,183; Fog Far 116,168,203, 8-bit sRGB). The table above is
-  `DOME_MASKS`. Both are plain constants so that weather records can replace them later.
+- **Colours.** `SkyPalette` holds Sky-Upper, Sky-Lower, Horizon, Fog Near and Fog Far, plus a
+  linear brightness scale. The built-in palette is `SkyrimClear`'s day column (Upper 21,77,117;
+  Lower 60,135,183; Horizon 125,163,183; Fog Near 35,98,124; Fog Far 116,168,203, 8-bit sRGB).
+  The table above is `DOME_MASKS`. Both are plain constants so that weather records can replace
+  them later.
 - **Gradient.** The CPU mixes each table row into a colour (in sRGB, as vanilla mixes the 8-bit
   values) and uploads the 16 rows. The fragment shader takes the elevation of the view ray,
   interpolates between rows, converts to linear and scales by the brightness.
@@ -70,18 +71,18 @@ comparison; the output correction does not validate those assumptions.
   Far colour lerp taken at that amount. `SkyrimClear`'s day column is `Near` 0, `Far` 80,000,
   `Power` 0.4, `Max` 0.85: a 0.4-power curve that reaches its full strength of 0.85 at 53,289 units
   and stays there. Its night column is the same curve over 40,000 units.
-- **The fit.** Bevy's distance fog is an exponential falloff, with neither a power of distance nor a
-  cap, so `VanillaFog` holds the four vanilla numbers and `FOG_DENSITY` is the least-squares fit of
-  `1 - exp(-density * d)` to vanilla's curve over 0 to 120,000 units: 6.2e-5, with an RMSE of 0.034.
-  The fit runs thin close in and thick far out - 0.10 against vanilla's 0.23 at 2,048 units, 0.54
-  against 0.53 at 16,384 units, 0.74 against 0.70 at the default camera's far plane. Vanilla stops
-  at `Max` and an exponential does not, so the cap rides on the fog colour's alpha: Bevy multiplies
-  the falloff by that alpha, which is `Max`, 0.85.
-- **Colour.** The fog colour is the same linear Fog Far colour the camera clears to, so fogged
-  terrain, the dome's transparent band and the clear colour meet at the horizon without a step. Fog
-  Near is not mixed in - Bevy's fog has no near-to-far colour lerp - and the sun's glow inside the
-  fog is left out until the sky has a sun, so the fog is one colour in every direction. The clear
-  colour itself stays opaque while the fog colour carries `Max`.
+- **The Bevy setup.** The engine no longer fits vanilla's `FNAM` power curve. It uses Bevy's
+  visibility-based atmospheric fog: `FogFalloff::from_visibility_colors` with
+  `FOG_VISIBILITY = 48_300` world units, Bevy's revised Koschmieder contrast threshold of 5%.
+  That distance is where a perfectly black object against the horizon sky has lost 95% of its
+  contrast. The extinction tint is Bevy's atmospheric fog example colour
+  `srgb(0.35, 0.50, 0.66)`, so distant light loses red fastest. Bevy's example inscattering
+  tint `srgb(0.80, 0.844, 1.0)` read too blue here, so the engine uses a desaturated
+  `srgb(0.84, 0.89, 0.90)` while keeping blue marginally fastest.
+- **Colour.** The fog colour itself is still the linear Fog Far colour the camera clears to, and
+  it is opaque, so at full strength fogged terrain, the dome's transparent band and the clear
+  colour meet at the horizon without a step. The sun's glow inside the fog uses Bevy's example
+  warm directional tint, `srgba(1.0, 0.95, 0.85, 0.5)` with exponent 30.
 - **Which cameras.** Every camera marked `FogCamera`: the streaming world camera and the material,
   terrain/water, transform-bounds and renderer fixture cameras. Bevy applies `DistanceFog` to
   `StandardMaterial` meshes by itself and to the terrain and water shaders through
@@ -90,17 +91,15 @@ comparison; the output correction does not validate those assumptions.
   is fogged once already.
 - **Interiors.** An interior cell has no weather, so `CameraSpace::Interior` takes the fog off
   every `FogCamera`, as it hides the dome.
-- **Range.** Vanilla is at 0.47 by the far edge of the streamed ring (three cells of 4,096 units)
-  and the fit follows it to within 0.02 there (0.45), so the haze that lands on the ring's outer
-  terrain is the haze vanilla draws at that distance rather than a thinner stand-in. The fog still
-  never saturates inside the ring - 0.74 at the default camera's far plane, against vanilla's
-  0.70 - so the outermost terrain is hazed rather than swallowed, and the dome's transparent band
-  keeps the horizon line itself soft.
+- **Range.** The visibility distance is longer than the default camera far plane, so terrain is
+  hazed rather than swallowed inside the streamed ring, and the dome's transparent band keeps
+  the horizon line itself soft. Tune `FOG_VISIBILITY` first; tune tints only after that.
 
 ## Not yet
 
 - Weather and climate records from the world database, time of day and weather transitions: the
-  fog density and colour are the built-in clear-day ones.
+  fog density and colour are the built-in clear-day ones. External emittance (#242) already stores
+  its sources' colours at sunrise, day, sunset and night, and the engine applies the day colour.
 - The cloud layers (including layer 28, the fog band that straddles the horizon), stars, sun and
   glare, moons and aurora.
 - A calibrated sky brightness against lit surfaces; the scale is 1.0 until it is measured on
