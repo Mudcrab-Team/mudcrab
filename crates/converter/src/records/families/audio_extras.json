@@ -1,6 +1,12 @@
 {
   "version": 1,
   "sources": {
+    "audio-flags-xedit-tes5": {
+      "title": "xEdit TES5 SNDR legacy FNAM flags format facts",
+      "revision": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas#L7503-L7541",
+      "use": "Manual format facts only: FNAM is a u32 flags word below form version 35, never localized text. Schemas carry no version gates, so a 4-byte FNAM decodes as flags at every version. No implementation copied."
+    },
     "audio-xedit-tes5": {
       "title": "xEdit SSE audio and miscellaneous record format facts",
       "revision": "xedit-4.1.5f",
@@ -93,8 +99,15 @@
         },
         {
           "signature": "FNAM",
-          "name": "subtitle",
-          "kind": "lstring"
+          "name": "legacy_flags",
+          "kind": "u32",
+          "source": "audio-flags-xedit-tes5:7512-7520",
+          "flags": {
+            "1": "unknown_0",
+            "2": "unknown_1",
+            "4": "unknown_2",
+            "16": "loop"
+          }
         },
         {
           "definition": "pending_conditions"
