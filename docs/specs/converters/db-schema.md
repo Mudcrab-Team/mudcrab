@@ -1401,11 +1401,11 @@ it through a `LEFT JOIN` on `references`, only when the table exists with every 
 
 ### 18. Actor Model Catalog (`actor_models`, `actor_model_parts`)
 
-Every referenced `NPC_` base gets one `actor_models` row describing its race, sex, skin armor,
-body/head resolution and head path, plus one `actor_model_parts` row per biped slot the race skin
-resolves. The catalog is resolved once, after the record loop, from the merged record map; the
-tables are projected from canonical records, not from either reader's raw `records.data`, so the
-legacy and in-house frontends publish identical rows.
+Every non-deleted `NPC_` base in the merged record map gets one `actor_models` row describing its
+race, sex, skin armor, body/head resolution and head path, plus one `actor_model_parts` row per
+biped slot the race skin resolves. The catalog is resolved once, after the record loop, from the
+merged record map; the tables are projected from canonical records, not from either reader's raw
+`records.data`, so the legacy and in-house frontends publish identical rows.
 
 ```sql
 CREATE TABLE IF NOT EXISTS actor_models (
@@ -1436,7 +1436,8 @@ every `ARMO/MODL` armature in list order -> each `ARMA`:
 3. Exact-race armatures are considered before `DefaultRace`, whatever order `ARMO/MODL` lists
    them in, so a race's own armature is never shadowed by the shared body. If neither matches, no
    part is written and `no_matching_arma` is recorded (the resolver never picks the first `ARMA`).
-4. `MOD2` is the male path and `MOD3` the female path.
+4. `MOD2` is the male path. Female NPCs use `MOD3`, falling back to `MOD2` when `MOD3` is absent
+   or empty.
 5. The slot is the armature's biped bit: bit 2 = body, bit 3 = hands, bit 7 = feet (slot number
    minus 30). The resolver reads `ARMA/BOD2` when present and falls back to `ARMA/BODT`, which is
    the field retail Skyrim's `ARMA` records actually carry (the same `u32` slot word at offset 0;
@@ -1455,6 +1456,11 @@ head is used (`head_source = 'default'`):
 `meshes/actors/character/character assets/` plus `malehead.nif`/`femalehead.nif`, with the
 `maleheadargonian.nif`/`maleheadkhajiit.nif` variants when the race EditorID names Argonian or
 Khajiit. A creature body never gets a humanoid default head.
+
+**Path bases.** `head_model` is archive-root-relative: it starts with `meshes/` and uses forward
+slashes. `actor_model_parts.model_path` preserves the authored `ARMA/MOD2` or `ARMA/MOD3`
+string, including its case and separators. Retail part paths are relative to `meshes/` and
+omit that prefix; consumers must normalize these authored paths before asset lookup.
 
 This slice computes the head *path string* only; it does not compose a head NIF and does not treat
 `HDPT/PNAM` as the head mesh. FaceGen presence is the race flag, not a per-NPC file probe: the ESM
@@ -1480,5 +1486,5 @@ row with an unresolved one. A diagnostic archive (which defers every runtime vie
 tables empty. `NPC_` bases are never written into `statics`.
 
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
-they only add tables, and the engine probes for them. No mandatory join is added to
-`REFERENCE_JOIN`; a database without them still opens and renders statics.
+they only add tables, and consumers must check that they exist before reading them. No mandatory
+join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.

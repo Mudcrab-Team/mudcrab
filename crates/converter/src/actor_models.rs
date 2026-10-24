@@ -1,10 +1,9 @@
 //! Actor model catalog: `NPC_` -> race skin -> armature -> biped parts, plus a head path.
 //!
 //! The exporter publishes this catalog to the world database (`actor_models`,
-//! `actor_model_parts`). The tables are additive and optional: the engine probes
-//! for them and keeps working from the legacy base-object model tables when they
-//! are absent. Nothing here reads raw `records.data`; the caller hands the merged
-//! record map in and gets rows back.
+//! `actor_model_parts`). The tables are additive and optional: consumers must
+//! check that they exist before reading them. Nothing here reads raw
+//! `records.data`; the caller hands the merged record map in and gets rows back.
 
 use crate::esm::{extractors::SubrecordView, load_order::StableId, records::RawRecord};
 use std::collections::{BTreeSet, HashMap};
@@ -89,7 +88,7 @@ impl UnresolvedReason {
     }
 }
 
-/// One `actor_models` row: the body/head summary for a referenced `NPC_` base.
+/// One `actor_models` row: the body/head summary for a non-deleted `NPC_` base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorModelRow {
     /// The `NPC_` FormID.
