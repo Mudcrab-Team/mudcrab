@@ -1117,6 +1117,30 @@ mod legacy_skin {
     }
 
     #[test]
+    fn keeps_a_shared_skeleton_child_block_under_its_first_parent_only() {
+        let skeleton = nif_file(
+            vec![
+                NifBlock::NiNode(node_with_children(0, vec![1, 2])),
+                NifBlock::NiNode(node_with_children(1, vec![3])),
+                NifBlock::NiNode(node_with_children(2, vec![3])),
+                NifBlock::NiNode(node(3)),
+            ],
+            &["BoneA", "ParentA", "ParentB", "Child"],
+        );
+        let mesh = one_bone_fixture([0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], Vec3::ZERO);
+
+        let model = nif_to_model(&mesh, Some(&skeleton)).unwrap();
+
+        let bones = &model.skeletal_meshes[0].bones.bones;
+        assert!(bones["ParentA"].children.contains("Child"));
+        assert!(
+            !bones["ParentB"].children.contains("Child"),
+            "a shared child block must not keep a second parent"
+        );
+        model.to_gltf("shared-child".to_owned()).unwrap();
+    }
+
+    #[test]
     fn rejects_a_partition_whose_merged_palette_overflowed() {
         let mut partition = partition(vec![0]);
         partition.weights = vec![vec![1.0, 0.0, 0.0, 0.0]];

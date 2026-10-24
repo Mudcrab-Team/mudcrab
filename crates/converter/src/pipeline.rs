@@ -2522,10 +2522,20 @@ fn compose_default_bodies(
         manifest.failures.remove(&key);
         // A body skipped or failed on this run must not survive from an earlier one: orphan
         // sweeps keep composed outputs, and the caller reports whatever is on disk.
-        match fs::remove_file(&output) {
+        // Successful attempts retain unchanged output so the writer can avoid republishing it.
+        let remove_output = || -> Result<()> {
+            match fs::remove_file(&output) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(error).wrap_err_with(|| format!("failed to remove {}", output.display()))
+                }
+                _ => Ok(()),
+            }
+        };
+        match fs::symlink_metadata(&output) {
+            Ok(metadata) if !metadata.file_type().is_file() => remove_output()?,
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 return Err(error)
-                    .wrap_err_with(|| format!("failed to remove {}", output.display()));
+                    .wrap_err_with(|| format!("failed to inspect {}", output.display()));
             }
             _ => {}
         }
@@ -2562,12 +2572,14 @@ fn compose_default_bodies(
                 "composed default {sex} actor body from {part_count} parts to {}",
                 output.display()
             ),
-            Ok(None) => {}
+            Ok(None) => remove_output()?,
             Err(error) if fail_fast => {
+                remove_output()?;
                 return Err(error)
                     .wrap_err_with(|| format!("failed to compose default {sex} actor body"));
             }
             Err(error) => {
+                remove_output()?;
                 let message = format!(
                     "{}: failed to compose default {sex} actor body: {error:#}",
                     relative.display()
@@ -7046,12 +7058,31 @@ mod tests {
 
         compose_staged_bodies(staging, false);
         let first = outputs.each_ref().map(|path| fs::read(path).unwrap());
+        let untouched_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567_890);
+        for output in &outputs {
+            fs::File::options()
+                .write(true)
+                .open(output)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(untouched_at))
+                .unwrap();
+        }
+        let modified = outputs
+            .each_ref()
+            .map(|path| fs::metadata(path).unwrap().modified().unwrap());
         compose_staged_bodies(staging, false);
         let second = outputs.each_ref().map(|path| fs::read(path).unwrap());
 
         assert_eq!(
             first, second,
             "a second composition must not rewrite the bodies"
+        );
+        assert_eq!(
+            modified,
+            outputs
+                .each_ref()
+                .map(|path| fs::metadata(path).unwrap().modified().unwrap()),
+            "unchanged bodies must keep their modification times"
         );
     }
 
@@ -7151,6 +7182,7 @@ mod tests {
         let staging = directory.path();
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
+        write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
         block_male_composed_output(staging);
         let key = "meshes/actors/character/composed/default/male/body.glb";
         let mut report = PipelineReport::default();
@@ -7215,6 +7247,7 @@ mod tests {
         let staging = directory.path();
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
+        write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
         block_male_composed_output(staging);
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();

@@ -311,6 +311,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
 
                 // Loop through nodes and add them to the bone tree
                 let mut duplicate_names = BTreeSet::new();
+                let mut claimed_children = BTreeSet::new();
                 for skel_node in skel_nodes {
                     // Get node name
                     let node_name = skeleton
@@ -363,16 +364,6 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     })
                     .collect::<Vec<String>>();
 
-                    // Create bone data
-                    let bone_data = BoneData {
-                        transform: BoneTransform::new(
-                            Some(skel_node.translation().0),
-                            Some(skel_node.rotation().0),
-                            Some(skel_node.scale().0),
-                        ),
-                        children: children_names.into_iter().collect(),
-                    };
-
                     // Add bone to bone tree. Retail skeletons repeat a few helper
                     // leaves no skin binds, so the first occurrence wins and the
                     // later copy is dropped whole (its children are duplicates
@@ -384,6 +375,31 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                         duplicate_names.insert(node_name.to_string());
                         continue;
                     }
+                    // A shared child block also needs one parent. Dropped duplicate bones
+                    // must not claim children that a retained parent can still attach.
+                    let children = children_names
+                        .into_iter()
+                        .filter(|child| {
+                            if claimed_children.insert(child.clone()) {
+                                true
+                            } else {
+                                warn!(
+                                    "skeleton child {child:?} already has a parent; skipping the reference from {node_name:?}"
+                                );
+                                false
+                            }
+                        })
+                        .collect();
+
+                    // Create bone data
+                    let bone_data = BoneData {
+                        transform: BoneTransform::new(
+                            Some(skel_node.translation().0),
+                            Some(skel_node.rotation().0),
+                            Some(skel_node.scale().0),
+                        ),
+                        children,
+                    };
                     mesh.bones.add_bone(node_name, bone_data)?;
                 }
 
