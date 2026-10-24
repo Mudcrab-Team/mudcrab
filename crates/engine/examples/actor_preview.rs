@@ -181,7 +181,7 @@ fn main() {
     if let Some([red, green, blue]) = skin_tone {
         println!("actor preview: skin tone {red:.3},{green:.3},{blue:.3} (not applied yet)");
     }
-    if let Err(error) = check_inputs(&demo) {
+    if let Err(error) = check_inputs(&demo, sex) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
     }
@@ -442,18 +442,16 @@ fn parse_args() -> Options {
     }
 }
 
-fn check_inputs(demo: &Path) -> Result<(), String> {
-    let body = demo.join(composed_body_scene(ActorSex::Male));
-    let female = demo.join(composed_body_scene(ActorSex::Female));
-    let idle = demo.join(idle_clip_scene(ActorSex::Male));
-    if !body.is_file() && !female.is_file() {
+fn check_inputs(demo: &Path, sex: ActorSex) -> Result<(), String> {
+    let sex_name = sex.as_str();
+    if !demo.join(composed_body_scene(sex)).is_file() {
         return Err(format!(
-            "{} has neither a male nor a female composed body",
+            "{} has no {sex_name} composed body",
             demo.display()
         ));
     }
-    if !idle.is_file() {
-        return Err(format!("{} has no male idle clip", demo.display()));
+    if !demo.join(idle_clip_scene(sex)).is_file() {
+        return Err(format!("{} has no {sex_name} idle clip", demo.display()));
     }
     Ok(())
 }
