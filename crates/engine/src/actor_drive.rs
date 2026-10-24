@@ -165,9 +165,10 @@ fn translate_driven_actors(time: Res<Time>, mut actors: Query<(&ActorDrive, &mut
 
 /// Advances one actor transform by `speed * delta` along its local forward.
 ///
-/// No clip carries displacement, so this is the only source of actor translation.
+/// No clip carries displacement, so this is the only source of actor translation. Speeds
+/// [`gait_for`] treats as idle leave the actor in place.
 pub(crate) fn advance_actor(transform: &mut Transform, speed: f32, delta: f32) {
-    if speed == 0.0 || !speed.is_finite() || !delta.is_finite() {
+    if speed <= 0.0 || !speed.is_finite() || !delta.is_finite() {
         return;
     }
     transform.translation += *transform.forward() * (speed * delta);
@@ -197,6 +198,18 @@ mod tests {
         world_serialization::{WorldAsset, WorldAssetRoot, WorldSerializationPlugin},
     };
     use std::time::Duration;
+
+    #[test]
+    fn advance_actor_leaves_an_idle_speed_in_place() {
+        for speed in [0.0, -100.0, f32::NAN] {
+            let mut transform = Transform::default();
+            advance_actor(&mut transform, speed, 0.5);
+            assert_eq!(transform.translation, Vec3::ZERO, "speed {speed}");
+        }
+        let mut transform = Transform::default();
+        advance_actor(&mut transform, 10.0, 0.5);
+        assert_eq!(transform.translation, Vec3::NEG_Z * 5.0);
+    }
 
     #[test]
     fn gait_for_buckets_every_speed() {
