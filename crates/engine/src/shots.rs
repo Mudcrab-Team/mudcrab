@@ -1035,6 +1035,7 @@ fn request_capture(
                         "timed_out": run.timed_out,
                         "image": path,
                         "dimensions": dimensions,
+                        "visual_profile": receipt.visual_profile,
                         "color_grade": grading.color_grade,
                         "visual_preset": grading.visual_preset,
                         "preset_saturation": grading.preset_saturation,

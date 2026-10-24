@@ -52,6 +52,8 @@ pub(crate) struct CaptureFrame {
     pub work: crate::shots::SettleCounts,
     pub terrain_coverage: Vec<serde_json::Value>,
     pub terrain_gauges: std::collections::BTreeMap<String, f64>,
+    /// Absent only in harnesses that build a world without the engine's startup resources.
+    pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
 }
 
@@ -249,6 +251,7 @@ fn extract_capture_frames(
         Option<Res<SceneVisualPreset>>,
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
+        Option<Res<crate::visual_profile::VisualProfile>>,
     )>,
 ) {
     let (frame, origin, camera, tickets, streaming, renderer, profiler, uploads) = &*frame_inputs;
@@ -261,6 +264,7 @@ fn extract_capture_frames(
         visual_preset,
         tone_source,
         grade_overrides,
+        visual_profile,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -300,6 +304,7 @@ fn extract_capture_frames(
             render_origin: origin.0.to_array(),
             pending_specializations: None,
             work,
+            visual_profile: visual_profile.as_deref().copied(),
             grading: capture_grade_with_overrides(
                 grade_source.as_deref(),
                 tone_source.as_deref(),
@@ -467,6 +472,7 @@ mod tests {
             work: default(),
             terrain_gauges: default(),
             terrain_coverage: default(),
+            visual_profile: None,
             grading: capture_grade(
                 Some(&source),
                 None,
