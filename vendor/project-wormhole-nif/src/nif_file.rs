@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gltf::json::accessor::ComponentType;
 use gltf::json::accessor::GenericComponentType;
@@ -293,6 +293,21 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
             Some(skeleton) => {
                 // Get nodes from skeleton
                 let skel_nodes = skeleton.get_nodes();
+                // The first block with a node name owns that name, matching the order this
+                // loop keeps bones in. Children pointing at a later duplicate are dropped so
+                // the duplicate cannot stay attached to a second parent.
+                let mut winning_block = BTreeMap::new();
+                for (block, node) in skeleton.blocks.iter().enumerate() {
+                    let Ok(node) = node.as_node() else {
+                        continue;
+                    };
+                    let Ok(name) = skeleton.header.get_string(node.name() as usize) else {
+                        continue;
+                    };
+                    if let Ok(block) = u32::try_from(block) {
+                        winning_block.entry(name.to_string()).or_insert(block);
+                    }
+                }
 
                 // Loop through nodes and add them to the bone tree
                 let mut duplicate_names = BTreeSet::new();
@@ -301,7 +316,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                     let node_name = skeleton
                         .header
                         .get_string(skel_node.name() as usize)
-                        .unwrap();
+                        .map_err(|error| format!("skeleton node has an invalid name: {error}"))?;
 
                     // Get children names from string indices. Only the block
                     // variants `get_nodes` walks may become bones, so a child of
@@ -329,7 +344,15 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
                             }
                         };
                         match skeleton.header.get_string(child_node.name() as usize) {
-                            Ok(name) => Some(name.to_string()),
+                            Ok(name) if winning_block.get(name) == Some(index) => {
+                                Some(name.to_string())
+                            }
+                            Ok(name) => {
+                                warn!(
+                                    "skeleton node {node_name:?} references child block {index} ({name:?}), which repeats a node name; skipping the duplicate"
+                                );
+                                None
+                            }
                             Err(error) => {
                                 warn!(
                                     "skeleton node {node_name:?} child block {index} has an invalid name: {error}; skipping it"
@@ -429,6 +452,8 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
             });
         }
     }
+
+    fill_model_space_normals(nif, &mut model);
 
     Ok(model)
 }
@@ -954,6 +979,7 @@ fn legacy_skinned_mesh(
         bones: bones.clone(),
         skin: joint_names,
         inverse_bind_matrices,
+        morph_targets: Vec::new(),
     })
 }
 
@@ -1270,6 +1296,134 @@ pub fn legacy_tri_shape_to_mesh(data: &NiTriShapeData, name: Option<String>) -> 
     }
 }
 
+/// SLSF1 `Model_Space_Normals`: the shape's normal map holds model-space normals, so the
+/// geometry itself usually ships none.
+const SLSF1_MODEL_SPACE_NORMALS: u32 = 1 << 12;
+
+fn geometry_shader_property(block: &NifBlock) -> Option<u32> {
+    match block {
+        NifBlock::BSTriShape(shape) => Some(shape.shader_property),
+        NifBlock::BSDynamicTriShape(shape) => Some(shape.bs_tri_shape.shader_property),
+        NifBlock::BSSubIndexTriShape(shape) => Some(shape.bs_tri_shape.shader_property),
+        NifBlock::BSLODTriShape(shape) => Some(shape.bs_tri_shape.shader_property),
+        NifBlock::NiTriShape(shape) => Some(shape.shader_property),
+        _ => None,
+    }
+}
+
+/// Whether the geometry block at `block_index` is lit through a model-space normal map.
+fn uses_model_space_normals(nif: &NifFile, block_index: u32) -> bool {
+    let Some(property) = nif
+        .blocks
+        .get(block_index as usize)
+        .and_then(geometry_shader_property)
+    else {
+        return false;
+    };
+    matches!(
+        nif.blocks.get(property as usize),
+        Some(NifBlock::BSLightingShaderProperty(shader))
+            if shader.shader_flags_1.raw() & SLSF1_MODEL_SPACE_NORMALS != 0
+    )
+}
+
+/// Gives every model-space-normal shape that carries no vertex normals a smooth set.
+///
+/// Skyrim draws these shapes (bodies, hands, feet, FaceGen heads) entirely from the normal map,
+/// so their vertex buffers omit normals. glTF loaders treat a primitive without `NORMAL` as
+/// flat-shaded and split every vertex, which faceted the skin. The normals are computed from the
+/// same positions the exporter writes, so they sit in the same (shape-local, bind-pose) space
+/// and go through the same skin or node transform. Shapes that already have normals, or that
+/// use tangent-space maps, are left untouched.
+fn fill_model_space_normals(nif: &NifFile, model: &mut Model) {
+    for node in &model.static_nodes {
+        let Some(mesh) = node
+            .mesh
+            .and_then(|index| model.static_meshes.get_mut(index))
+        else {
+            continue;
+        };
+        if mesh.normals.is_empty() && uses_model_space_normals(nif, node.block_index) {
+            mesh.normals = smooth_vertex_normals(&mesh.positions, &mesh.triangles);
+        }
+    }
+    for skeletal in &mut model.skeletal_meshes {
+        let (Some(block), Some(mesh)) = (skeletal.source_block, skeletal.mesh.as_mut()) else {
+            continue;
+        };
+        if mesh.normals.is_empty() && uses_model_space_normals(nif, block) {
+            mesh.normals = smooth_vertex_normals(&mesh.positions, &mesh.triangles);
+        }
+    }
+}
+
+/// Angle-weighted vertex normals, averaged over every vertex that shares a position.
+///
+/// Vertices are welded by exact position first: UV seams duplicate a vertex per side, and
+/// averaging each copy over only its own triangles would leave a visible crease along every
+/// seam. Each face normal contributes in proportion to the corner angle it makes at the vertex
+/// (Thürmer and Wüthrich), so the result depends on the surface's shape rather than on how it
+/// was triangulated; area weighting lets the long thin triangles that border seams and fill
+/// joints pull the normal towards themselves. The face orientation follows the triangle
+/// winding, `(b - a) × (c - a)`, the same convention glTF loaders use for flat normals.
+pub fn smooth_vertex_normals(positions: &[Vec3], triangles: &[glam::u16::U16Vec3]) -> Vec<Vec3> {
+    // `+ 0.0` folds -0.0 into 0.0, so the two zeros weld together.
+    let key = |position: Vec3| {
+        [
+            (position.x + 0.0).to_bits(),
+            (position.y + 0.0).to_bits(),
+            (position.z + 0.0).to_bits(),
+        ]
+    };
+    let mut group_ids = std::collections::HashMap::new();
+    let groups: Vec<usize> = positions
+        .iter()
+        .map(|position| {
+            let next = group_ids.len();
+            *group_ids.entry(key(*position)).or_insert(next)
+        })
+        .collect();
+
+    let mut welded = vec![Vec3::ZERO; group_ids.len()];
+    let mut own = vec![Vec3::ZERO; positions.len()];
+    for triangle in triangles {
+        let corners = [
+            usize::from(triangle.x),
+            usize::from(triangle.y),
+            usize::from(triangle.z),
+        ];
+        if corners.iter().any(|&index| index >= positions.len()) {
+            continue;
+        }
+        let points = corners.map(|index| positions[index]);
+        let face = (points[1] - points[0]).cross(points[2] - points[0]);
+        let length = face.length();
+        if !length.is_finite() || length <= 0.0 {
+            continue;
+        }
+        let face = face / length;
+        for corner in 0..3 {
+            let to_next = (points[(corner + 1) % 3] - points[corner]).normalize_or_zero();
+            let to_previous = (points[(corner + 2) % 3] - points[corner]).normalize_or_zero();
+            let angle = to_next.dot(to_previous).clamp(-1.0, 1.0).acos();
+            let index = corners[corner];
+            welded[groups[index]] += face * angle;
+            own[index] += face * angle;
+        }
+    }
+
+    // A welded sum can cancel where two opposite-facing sheets touch; fall back to the vertex's
+    // own faces, then to +Z for a vertex no drawable triangle uses.
+    (0..positions.len())
+        .map(|index| {
+            welded[groups[index]]
+                .try_normalize()
+                .or_else(|| own[index].try_normalize())
+                .unwrap_or(Vec3::Z)
+        })
+        .collect()
+}
+
 /// Builds a bind-pose/static representation of every geometry block. World
 /// rendering can use this when an old skin has no complete glTF skin export.
 pub fn nif_to_static_model(nif: &NifFile) -> Result<Model, String> {
@@ -1285,6 +1439,7 @@ pub fn nif_to_static_model(nif: &NifFile) -> Result<Model, String> {
             specular: material.specular.clone(),
         })
         .collect();
+    fill_model_space_normals(nif, &mut model);
     model.validate()?;
     Ok(model)
 }
@@ -2612,5 +2767,90 @@ pub fn apply_ue5_mods(root: &mut Root) {
         }
 
         skin.joints = joints;
+    }
+}
+
+#[cfg(test)]
+mod smooth_normal_tests {
+    use super::*;
+    use glam::u16::U16Vec3;
+
+    fn assert_close(actual: Vec3, expected: Vec3) {
+        assert!(
+            (actual - expected).length() < 1e-5,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn welds_split_uv_vertices_into_one_normal() {
+        // Two faces folded 90 degrees along the X axis. Each face owns its copy of the shared
+        // edge, as a UV seam would leave it.
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        ];
+        let triangles = vec![U16Vec3::new(0, 1, 2), U16Vec3::new(3, 4, 5)];
+
+        let normals = smooth_vertex_normals(&positions, &triangles);
+
+        assert_eq!(normals.len(), positions.len());
+        assert_close(normals[0], normals[3]);
+        assert_close(normals[1], normals[5]);
+        // Both faces meet at 90 degrees at the origin, so the welded normal bisects them.
+        assert_close(normals[0], Vec3::new(0.0, 1.0, 1.0).normalize());
+        assert_close(normals[1], Vec3::new(0.0, 1.0, 1.0).normalize());
+        // The unshared corners keep their own face's normal.
+        assert_close(normals[2], Vec3::Z);
+        assert_close(normals[4], Vec3::Y);
+    }
+
+    #[test]
+    fn weights_faces_by_corner_angle_not_area() {
+        // A vertex shared by a large and a small face, with equal 90 degree corners. Area
+        // weighting would lean towards the large face; angle weighting bisects them.
+        let positions = vec![
+            Vec3::ZERO,
+            Vec3::new(10.0, 0.0, 0.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.1),
+            Vec3::new(0.1, 0.0, 0.0),
+        ];
+        let triangles = vec![U16Vec3::new(0, 1, 2), U16Vec3::new(0, 3, 4)];
+
+        let normals = smooth_vertex_normals(&positions, &triangles);
+
+        assert_close(normals[0], Vec3::new(0.0, 1.0, 1.0).normalize());
+    }
+
+    #[test]
+    fn normals_follow_the_winding_and_stay_unit_length() {
+        let positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(5.0, 5.0, 5.0)];
+        let triangles = vec![U16Vec3::new(0, 2, 1)];
+
+        let normals = smooth_vertex_normals(&positions, &triangles);
+
+        assert_close(normals[0], -Vec3::Z);
+        // A vertex no triangle uses still gets a valid unit normal.
+        assert_close(normals[3], Vec3::Z);
+        assert!(normals
+            .iter()
+            .all(|normal| (normal.length() - 1.0).abs() < 1e-5));
+    }
+
+    #[test]
+    fn opposite_sheets_that_touch_keep_their_own_side() {
+        // The same triangle twice with opposite winding: the welded sum cancels.
+        let positions = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::ZERO, Vec3::X, Vec3::Y];
+        let triangles = vec![U16Vec3::new(0, 1, 2), U16Vec3::new(3, 5, 4)];
+
+        let normals = smooth_vertex_normals(&positions, &triangles);
+
+        assert_close(normals[0], Vec3::Z);
+        assert_close(normals[3], -Vec3::Z);
     }
 }

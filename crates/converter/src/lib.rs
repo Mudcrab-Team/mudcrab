@@ -1,11 +1,13 @@
 //! Offline conversion of Skyrim assets into runtime-ready Mudcrab assets.
 
 pub mod actor_models;
+pub mod animation;
 pub mod archive;
 pub mod asset_path;
 pub mod cache;
 pub mod check;
 pub mod collision;
+pub mod compose;
 pub mod config;
 pub mod esm;
 pub mod integration;

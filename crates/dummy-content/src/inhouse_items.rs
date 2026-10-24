@@ -299,22 +299,82 @@ pub fn armature(
     record(b"ARMA", id, &fields)
 }
 
+/// An [`armature`] with `NAM0` (male) and `NAM1` (female) skin texture sets.
+#[must_use]
+pub fn armature_with_skins(
+    id: u32,
+    race_id: u32,
+    slots: u32,
+    paths: (Option<&str>, Option<&str>),
+    skins: (Option<u32>, Option<u32>),
+) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticArmature")),
+        (b"BOD2", body_template(slots)),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(path) = paths.0 {
+        fields.push((b"MOD2", text(path)));
+    }
+    if let Some(path) = paths.1 {
+        fields.push((b"MOD3", text(path)));
+    }
+    if let Some(skin) = skins.0 {
+        fields.push((b"NAM0", skin.to_le_bytes().to_vec()));
+    }
+    if let Some(skin) = skins.1 {
+        fields.push((b"NAM1", skin.to_le_bytes().to_vec()));
+    }
+    record(b"ARMA", id, &fields)
+}
+
 /// An `NPC_` with a race link and the 24-byte `ACBS`; bit 0 selects female.
 #[must_use]
 pub fn npc(id: u32, race_id: u32, female: bool) -> Vec<u8> {
+    npc_fields(id, race_id, female, None, None)
+}
+
+/// An [`npc`] that also carries a `NAM7` body weight in 0..100.
+#[must_use]
+pub fn npc_with_weight(id: u32, race_id: u32, female: bool, weight: f32) -> Vec<u8> {
+    npc_fields(id, race_id, female, Some(weight), None)
+}
+
+/// An [`npc`] with an optional `TPLT` traits template and an optional `NAM7` body weight.
+#[must_use]
+pub fn npc_with_template(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    template: u32,
+    weight: Option<f32>,
+) -> Vec<u8> {
+    npc_fields(id, race_id, female, weight, Some(template))
+}
+
+fn npc_fields(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    weight: Option<f32>,
+    template: Option<u32>,
+) -> Vec<u8> {
     let mut acbs = vec![0u8; 24];
     if female {
         acbs[0] = 1;
     }
-    record(
-        b"NPC_",
-        id,
-        &[
-            (b"EDID", text("SyntheticNpc")),
-            (b"ACBS", acbs),
-            (b"RNAM", race_id.to_le_bytes().to_vec()),
-        ],
-    )
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticNpc")),
+        (b"ACBS", acbs),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(template) = template {
+        fields.push((b"TPLT", template.to_le_bytes().to_vec()));
+    }
+    if let Some(weight) = weight {
+        fields.push((b"NAM7", weight.to_le_bytes().to_vec()));
+    }
+    record(b"NPC_", id, &fields)
 }
 
 /// An `NPC_` whose `RNAM` names `race_id` but which carries no `ACBS`.
