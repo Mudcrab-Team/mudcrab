@@ -3,9 +3,10 @@
 
 use converter::mesh::{MeshConverter, SkeletonResolution, find_skeleton};
 use dummy_content::nif::{
-    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, StaticShape,
-    legacy_dynamic_skinned_shape, legacy_lod_skinned_shape, legacy_nested_skinned_shape,
-    legacy_skinned_shape, static_shape, static_shape_with_bodies,
+    BodyShape, BoxBody, DYNAMIC_POSITION_OFFSET, LegacySkin, SkinInstanceKind, SkinNormals,
+    StaticShape, legacy_dynamic_skinned_shape, legacy_dynamic_skinned_shape_with_normals,
+    legacy_lod_skinned_shape, legacy_nested_skinned_shape, legacy_skinned_shape,
+    legacy_skinned_shape_with_normals, static_shape, static_shape_with_bodies,
 };
 use serde_json::Value;
 use std::{
@@ -291,6 +292,92 @@ fn accessor_f32x4(glb: &Glb, index: u64) -> Vec<[f32; 4]> {
         .collect()
 }
 
+fn accessor_f32x3(glb: &Glb, index: u64) -> Vec<[f32; 3]> {
+    let accessor = &glb.json["accessors"][index as usize];
+    assert_eq!(accessor["componentType"], 5126);
+    assert_eq!(accessor["type"], "VEC3");
+    let view = &glb.json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let count = accessor["count"].as_u64().unwrap() as usize;
+    glb.bin[offset..offset + count * 12]
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|row| {
+            [0, 1, 2]
+                .map(|slot| f32::from_le_bytes(row[slot * 4..slot * 4 + 4].try_into().unwrap()))
+        })
+        .collect()
+}
+
+fn uses_model_space_normals(glb: &Glb, primitive: &Value) -> bool {
+    primitive["material"].as_u64().is_some_and(|material| {
+        glb.json["materials"][material as usize]["extras"]["openSkyrim"]["normalConvention"]
+            == "model_space"
+    })
+}
+
+/// `(mesh, primitive, positions, normals)` of one exported primitive.
+type PrimitiveNormals = (usize, usize, Vec<[f32; 3]>, Vec<[f32; 3]>);
+
+/// Every model-space-normal primitive's `NORMAL` accessor, after checking that it exists,
+/// matches `POSITION` one to one and holds unit vectors. Returns `(mesh, primitive, positions,
+/// normals)` per such primitive.
+fn model_space_normals(glb: &Glb) -> Vec<PrimitiveNormals> {
+    let mut found = Vec::new();
+    for (mesh_index, mesh) in glb.json["meshes"].as_array().unwrap().iter().enumerate() {
+        for (primitive_index, primitive) in
+            mesh["primitives"].as_array().unwrap().iter().enumerate()
+        {
+            if !uses_model_space_normals(glb, primitive) {
+                continue;
+            }
+            let attributes = &primitive["attributes"];
+            let normal = attributes["NORMAL"].as_u64().unwrap_or_else(|| {
+                panic!("model-space mesh {mesh_index} primitive {primitive_index} has no NORMAL")
+            });
+            let positions = accessor_f32x3(glb, attributes["POSITION"].as_u64().unwrap());
+            let normals = accessor_f32x3(glb, normal);
+            assert_eq!(
+                normals.len(),
+                positions.len(),
+                "mesh {mesh_index} primitive {primitive_index} NORMAL count differs from POSITION"
+            );
+            for (vertex, value) in normals.iter().enumerate() {
+                let length = value.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                assert!(
+                    (length - 1.0).abs() < 1e-4,
+                    "mesh {mesh_index} primitive {primitive_index} vertex {vertex} normal {value:?} has length {length}"
+                );
+            }
+            found.push((mesh_index, primitive_index, positions, normals));
+        }
+    }
+    found
+}
+
+/// Fraction of vertices whose normal points away from the primitive's centroid. A closed,
+/// roughly convex surface with outward normals scores close to 1; inverted winding scores
+/// close to 0.
+fn outward_fraction(positions: &[[f32; 3]], normals: &[[f32; 3]]) -> f32 {
+    let count = positions.len() as f32;
+    let centroid = positions.iter().fold([0.0f32; 3], |sum, position| {
+        [0, 1, 2].map(|axis| sum[axis] + position[axis] / count)
+    });
+    let outward = positions
+        .iter()
+        .zip(normals)
+        .filter(|(position, normal)| {
+            (0..3)
+                .map(|axis| (position[axis] - centroid[axis]) * normal[axis])
+                .sum::<f32>()
+                > 0.0
+        })
+        .count();
+    outward as f32 / count
+}
+
 fn accessor_min_max(glb: &Glb, index: u64) -> ([f32; 3], [f32; 3]) {
     fn read(values: &Value) -> [f32; 3] {
         let values = values.as_array().expect("accessor bound must be an array");
@@ -572,6 +659,82 @@ fn legacy_dynamic_tri_shape_exports_skin() {
         "dynamic positions won: expected z={DYNAMIC_POSITION_OFFSET}, got min={min:?} max={max:?}"
     );
     assert_zero_weight_slots_are_joint_zero(&glb, mesh_index, 0);
+}
+
+/// Converts the standard fixture with its shading normals supplied as `normals` says.
+fn convert_with_normals(directory: &Path, normals: SkinNormals, dynamic: bool) -> Glb {
+    let fixture = spec(
+        SkinInstanceKind::Dismember,
+        &SHUFFLED_PALETTE,
+        &WEIGHTS,
+        true,
+        None,
+    );
+    let name = format!("{normals:?}-{dynamic}").to_ascii_lowercase();
+    let nif_path = directory.join(format!("{name}.nif"));
+    let bytes = if dynamic {
+        legacy_dynamic_skinned_shape_with_normals(&fixture, normals)
+    } else {
+        legacy_skinned_shape_with_normals(&fixture, normals)
+    };
+    fs::write(&nif_path, bytes.unwrap()).unwrap();
+    let skeleton_path = write_skeleton_fixture(directory, &fixture);
+    let glb_path = directory.join(format!("{name}.glb"));
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+    assert_skinned_primitives(&glb);
+    glb
+}
+
+#[test]
+fn legacy_model_space_skin_gets_smooth_vertex_normals() {
+    let directory = tempfile::tempdir().unwrap();
+    for dynamic in [false, true] {
+        let glb = convert_with_normals(directory.path(), SkinNormals::ModelSpaceMap, dynamic);
+        let primitives = model_space_normals(&glb);
+        assert_eq!(
+            primitives.len(),
+            1,
+            "dynamic={dynamic}: the model-space shape must be exported once"
+        );
+        let (_, _, positions, normals) = &primitives[0];
+        assert_eq!(positions.len(), WEIGHTS.len());
+        // The fixture is a flat fan wound counter-clockwise about +Z.
+        for (vertex, normal) in normals.iter().enumerate() {
+            assert!(
+                normal[2] > 0.9999,
+                "dynamic={dynamic} vertex {vertex}: expected +Z, got {normal:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn skins_with_vertex_normals_or_tangent_maps_keep_their_normal_attribute() {
+    let directory = tempfile::tempdir().unwrap();
+    let normal_attribute = |glb: &Glb| {
+        let (mesh_index, _) = skinned_meshes(glb)[0];
+        glb.json["meshes"][mesh_index]["primitives"][0]["attributes"]["NORMAL"].as_u64()
+    };
+
+    let omitted = convert_with_normals(directory.path(), SkinNormals::Omitted, false);
+    assert_eq!(
+        normal_attribute(&omitted),
+        None,
+        "a tangent-space shape without vertex normals must stay without NORMAL"
+    );
+
+    let authored = convert_with_normals(directory.path(), SkinNormals::Authored, false);
+    let computed = convert_with_normals(directory.path(), SkinNormals::ModelSpaceMap, false);
+    let authored_normals = accessor_f32x3(&authored, normal_attribute(&authored).unwrap());
+    let computed_normals = accessor_f32x3(&computed, normal_attribute(&computed).unwrap());
+    assert!(authored_normals.iter().all(|normal| normal[2] > 0.99));
+    // Packed authored normals decode with byte quantisation, the computed ones are exact, so
+    // equal values would mean the authored normals had been replaced.
+    assert_ne!(
+        authored_normals, computed_normals,
+        "authored vertex normals must pass through unchanged"
+    );
 }
 
 #[test]
@@ -1248,6 +1411,30 @@ fn retail_heads_export_skin() {
             nif_path.display()
         );
         println!("head={relative} skins={} vertices={vertices}", skins.len());
+
+        let model_space = model_space_normals(&glb);
+        assert!(
+            !model_space.is_empty(),
+            "{} has no model-space-normal primitive",
+            nif_path.display()
+        );
+        // The head skin is the largest model-space shape; eyes, mouth and brows are small
+        // and not closed around their own centroid.
+        let (mesh_index, _, positions, normals) = model_space
+            .iter()
+            .max_by_key(|(_, _, positions, _)| positions.len())
+            .unwrap();
+        let outward = outward_fraction(positions, normals);
+        println!(
+            "head={relative} model_space_primitives={} largest_mesh={mesh_index} vertices={} outward={outward:.3}",
+            model_space.len(),
+            positions.len()
+        );
+        assert!(
+            outward > 0.8,
+            "{} head normals point inward: only {outward:.3} face away from the centroid",
+            nif_path.display()
+        );
     }
 }
 

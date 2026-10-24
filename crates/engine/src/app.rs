@@ -20,6 +20,7 @@ use crate::{
     },
     tone_mapping::SceneToneMapSource,
     world::{
+        actor_catalog::ActorCatalog,
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
             CellRef, ExpectedModelBounds, FormId, InstanceBounds, StreamedCellRoot, StreamingCamera,
@@ -225,6 +226,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             Default::default()
         })
     });
+    // The actor model catalog (#109): the referenced `NPC_` bases this world converted. The spawn
+    // path reads it once per cell commit; a database without the optional tables gives an empty
+    // catalog and every reference spawns exactly as before.
+    let actor_catalog = runtime_data
+        .as_ref()
+        .map(|_| ActorCatalog::open(&config.assets_dir.join("skyrim_world.db")));
     // The streamed world's merged terrain (#215): the land texture table of this conversion, if it
     // has one. Opening it reads one small file; the arrays and chunks load as they are needed.
     let terrain_merge = runtime_data
@@ -358,6 +365,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
+            crate::actor_skin_tone::ActorSkinTonePlugin,
         ))
         // The render→main "prepared and drawable" bridge. Registered for every
         // run: it is what publishes the render world's own answer to "is this surface drawn?" into
@@ -366,6 +374,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         // Registered for every run, lights or not: the plugin owns the budget, not the spawning,
         // and `--lights` is what `streaming::spawn_cell` reads to place anything for it to budget.
         .add_plugins(crate::lights::LightsPlugin)
+        .add_plugins(crate::actor_animation::ActorAnimationPlugin)
+        .add_plugins(crate::actor_drive::ActorDrivePlugin)
+        .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
@@ -392,6 +403,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
         if let Some(environment) = environment {
             app.insert_resource(environment);
+        }
+        if let Some(actor_catalog) = actor_catalog {
+            app.insert_resource(actor_catalog);
         }
         app.insert_resource(database)
             .insert_resource(catalog)
@@ -1360,6 +1374,7 @@ fn terrain_water_fixture_snapshot() -> TerrainSnapshot {
 
 fn setup_terrain_water_fixture(
     mut commands: Commands,
+    config: Res<EngineConfig>,
     reflection: Res<WaterReflectionTexture>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
@@ -1445,7 +1460,7 @@ fn setup_terrain_water_fixture(
         Transform::from_xyz(CELL_SIZE_HALF, 1800.0, 2600.0).looking_at(target, Vec3::Y),
         StreamingCamera,
         FogCamera,
-        Msaa::Off,
+        config.terrain_water_fixture_msaa,
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(MAIN_VIEW_LAYERS),
@@ -3609,6 +3624,7 @@ mod tests {
         .insert_resource(config)
         .insert_resource(WorldDatabase::open(&database_path).unwrap())
         .insert_resource(AssetCatalog::open(&database_path).unwrap())
+        .init_resource::<ActorCatalog>()
         .insert_resource(CellCache::open(&cache_path).unwrap())
         .insert_resource(RenderOrigin(IVec2::ZERO))
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))

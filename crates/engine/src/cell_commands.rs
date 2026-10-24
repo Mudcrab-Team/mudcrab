@@ -578,6 +578,7 @@ mod tests {
         .init_asset::<TerrainMaterial>()
         .init_asset::<WaterMaterial>()
         .init_resource::<AssetCatalog>()
+        .init_resource::<crate::world::actor_catalog::ActorCatalog>()
         .init_resource::<ProfilingState>()
         .init_resource::<ConsoleState>()
         .insert_resource(WaterReflectionTexture(Handle::default()))

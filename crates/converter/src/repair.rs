@@ -770,7 +770,11 @@ fn attempt(
                 crate::mesh::SkeletonResolution::SelfContained => None,
                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
                     return Err(color_eyre::eyre::eyre!(
-                        "NIF {key} declares skin joints no skeleton covers at 50% or more (best coverage {best_coverage:.2})"
+                        "{}",
+                        crate::mesh::unresolved_skeleton_diagnostic(
+                            format_args!("NIF {key}"),
+                            best_coverage
+                        )
                     ));
                 }
             };

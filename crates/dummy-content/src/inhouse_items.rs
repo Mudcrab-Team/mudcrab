@@ -299,6 +299,35 @@ pub fn armature(
     record(b"ARMA", id, &fields)
 }
 
+/// An [`armature`] with `NAM0` (male) and `NAM1` (female) skin texture sets.
+#[must_use]
+pub fn armature_with_skins(
+    id: u32,
+    race_id: u32,
+    slots: u32,
+    paths: (Option<&str>, Option<&str>),
+    skins: (Option<u32>, Option<u32>),
+) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticArmature")),
+        (b"BOD2", body_template(slots)),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(path) = paths.0 {
+        fields.push((b"MOD2", text(path)));
+    }
+    if let Some(path) = paths.1 {
+        fields.push((b"MOD3", text(path)));
+    }
+    if let Some(skin) = skins.0 {
+        fields.push((b"NAM0", skin.to_le_bytes().to_vec()));
+    }
+    if let Some(skin) = skins.1 {
+        fields.push((b"NAM1", skin.to_le_bytes().to_vec()));
+    }
+    record(b"ARMA", id, &fields)
+}
+
 /// An `NPC_` with a race link and the 24-byte `ACBS`; bit 0 selects female.
 #[must_use]
 pub fn npc(id: u32, race_id: u32, female: bool) -> Vec<u8> {

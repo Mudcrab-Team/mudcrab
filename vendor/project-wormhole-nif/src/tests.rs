@@ -813,6 +813,13 @@ mod legacy_skin {
         }
     }
 
+    fn node_with_children(name: u32, children: Vec<u32>) -> NiNode {
+        NiNode {
+            av: av_object(name),
+            children,
+        }
+    }
+
     fn transform(translation: Vec3) -> NiTransform {
         NiTransform {
             rotation: BSMatrix3(Mat3::IDENTITY),
@@ -1083,6 +1090,30 @@ mod legacy_skin {
 
         assert!(error.contains("palette entry 5"), "{error}");
         assert!(error.contains("shape block 1"), "{error}");
+    }
+
+    #[test]
+    fn keeps_a_repeated_skeleton_node_under_its_first_parent_only() {
+        let skeleton = nif_file(
+            vec![
+                NifBlock::NiNode(node_with_children(0, vec![1, 2])),
+                NifBlock::NiNode(node_with_children(1, vec![3])),
+                NifBlock::NiNode(node_with_children(2, vec![4])),
+                NifBlock::NiNode(node(3)),
+                NifBlock::NiNode(node(3)),
+            ],
+            &["Root", "ParentA", "ParentB", "Child"],
+        );
+        let mesh = one_bone_fixture([0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], Vec3::ZERO);
+
+        let model = nif_to_model(&mesh, Some(&skeleton)).unwrap();
+
+        let bones = &model.skeletal_meshes[0].bones.bones;
+        assert!(bones["ParentA"].children.contains("Child"));
+        assert!(
+            !bones["ParentB"].children.contains("Child"),
+            "a dropped duplicate must not keep a second parent"
+        );
     }
 
     #[test]

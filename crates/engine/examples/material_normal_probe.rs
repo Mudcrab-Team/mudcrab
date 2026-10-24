@@ -90,6 +90,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                 uv_offset: [0.25, -0.5],
                 uv_scale: [2.0, 3.0],
                 texture_clamp_mode: (index % 4) as u8,
+                tint_color: None,
                 shader_family: NifShaderFamily::Lighting,
                 lighting_shader_type: Some(LightingShaderType::Default),
                 shader_block: index as u32,
