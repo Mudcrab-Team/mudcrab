@@ -1309,6 +1309,23 @@ mod skin_tests {
     }
 
     #[test]
+    fn legacy_partitions_merging_past_255_bones_flag_the_overflow() {
+        let first: Vec<u16> = (0..200).collect();
+        let second: Vec<u16> = (150..300).collect();
+        let mut bytes = Vec::new();
+        push_u32(&mut bytes, 2);
+        for palette in [&first, &second] {
+            partition_body(&mut bytes, palette, &[], &[], &[]);
+            push_u16(&mut bytes, 0);
+        }
+
+        let (rest, partition) = NiSkinPartition::parse_legacy(&bytes).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(partition.bone_palette.len(), 300);
+        assert!(partition.palette_overflow);
+    }
+
+    #[test]
     fn skin_data_round_trips_header_and_bones() {
         let mut bytes = Vec::new();
         push_transform(&mut bytes, [1.0, 2.0, 3.0], 1.0);

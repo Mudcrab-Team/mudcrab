@@ -558,10 +558,9 @@ fn legacy_skinned_meshes(
 
         let instance_block = shape.skin;
         let Some(instance) = nif.skin_instance_at(instance_block) else {
-            // A skinned file may still contain an unskinned shape (an effect or
-            // editor helper). A SkeletalMesh cannot carry an unskinned
-            // primitive, and emitting a second static model would duplicate the
-            // whole scene, so the shape is left out and reported.
+            // A skinned file may still contain unskinned shapes (effects,
+            // helpers, rigid trap and ruin parts). A SkeletalMesh cannot carry
+            // an unskinned primitive; preserving them is a later #273 stage.
             warn!(
                 "shape block {shape_index} ({block_type}, {name:?}) references no skin instance (block {instance_block}); leaving it out of the skeletal mesh set"
             );
