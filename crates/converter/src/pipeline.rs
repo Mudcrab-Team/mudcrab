@@ -2514,6 +2514,17 @@ fn compose_default_bodies(
     let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
     let skeleton = winning(assets.join("skeleton.nif"));
     for sex in ["male", "female"] {
+        let relative = compose::composed_body_path("default", sex);
+        let output = staging.join(&relative);
+        // A body skipped on this run must not survive from an earlier one: the orphan
+        // sweeps keep composed outputs, and the caller reports whatever is on disk.
+        match fs::remove_file(&output) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to remove {}", output.display()));
+            }
+            _ => {}
+        }
         let part_paths =
             PARTS.map(|(suffix, kind)| (winning(assets.join(format!("{sex}{suffix}"))), kind));
         if !part_paths.iter().any(|(path, _)| path.is_file()) {
@@ -2537,12 +2548,9 @@ fn compose_default_bodies(
             .iter()
             .map(|(path, kind)| BodyPart { path, kind: *kind })
             .collect();
-        let relative = compose::composed_body_path("default", sex);
-        let output = staging.join(&relative);
         let model = match compose::compose_body(&parts, &skeleton) {
             Ok(model) => model,
             Err(error) if !fail_fast => {
-                let _ = fs::remove_file(&output);
                 let message = format!(
                     "{}: failed to compose default {sex} actor body: {error:#}",
                     relative.display()
@@ -7065,6 +7073,29 @@ mod tests {
             !staging
                 .join(crate::compose::composed_body_path("default", "female"))
                 .exists()
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_removes_a_body_whose_part_went_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        compose_staged_bodies(staging, false);
+        assert!(female.is_file());
+
+        fs::remove_file(actor_assets(staging).join("femalehands_1.nif")).unwrap();
+        compose_staged_bodies(staging, false);
+
+        assert!(
+            !female.exists(),
+            "a skipped sex must not keep last run's body"
+        );
+        assert!(
+            staging
+                .join(crate::compose::composed_body_path("default", "male"))
+                .is_file()
         );
     }
 
