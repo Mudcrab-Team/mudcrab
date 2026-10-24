@@ -568,6 +568,13 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {
             Fixed(SINGLE)
         }
+        // The body chain the actor model catalog follows: a race's skin armor, each armature
+        // an armor lists (`MODL` repeats, one FormID per subrecord, so each malformed entry is
+        // dropped alone), and an armature's race. The in-house actors and items schemas remap
+        // all three, and the catalog reads them as load-order FormIDs.
+        b"WNAM" if record_type == b"RACE" => Fixed(SINGLE),
+        b"MODL" if record_type == b"ARMO" => Fixed(SINGLE),
+        b"RNAM" if record_type == b"ARMA" => Fixed(SINGLE),
         b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL" => Fixed(SINGLE),
         // Door destination reference, then position, rotation and flags.
         b"XTEL" if placed => Fixed(&[(32, &[0])]),
@@ -968,6 +975,93 @@ mod tests {
             assert!(warnings.out_of_range.borrow().is_empty());
             assert!(warnings.truncations.borrow().is_empty());
         }
+    }
+
+    /// The body chain is read as load-order FormIDs, so a patch's own `01` index must become
+    /// its slot. Each `MODL` is its own occurrence: a malformed one is dropped alone and an
+    /// out-of-range one is nulled, while the valid siblings keep their order.
+    #[test]
+    fn remaps_actor_body_chain_links_from_the_plugin_slot() {
+        let indices = HashMap::from([("skyrim.esm".into(), 0), ("patch.esp".into(), 2)]);
+        let warnings = RemapWarnings::default();
+        let masters = ["skyrim.esm".to_owned()];
+        let record = |form_id, record_type: &[u8; 4], subrecords| RawRecord {
+            form_id,
+            record_type: *record_type,
+            flags: 0,
+            subrecords,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        };
+        let mut records = vec![
+            record(
+                0x0100_0200,
+                b"RACE",
+                vec![(b"WNAM".to_vec(), 0x0100_0300u32.to_le_bytes().to_vec())],
+            ),
+            record(
+                0x0100_0300,
+                b"ARMO",
+                vec![
+                    (b"EDID".to_vec(), b"Skin\0".to_vec()),
+                    (b"MODL".to_vec(), 0x0100_0400u32.to_le_bytes().to_vec()),
+                    (b"MODL".to_vec(), vec![0xAB; 3]),
+                    (b"MODL".to_vec(), 0x0500_0401u32.to_le_bytes().to_vec()),
+                ],
+            ),
+            record(
+                0x0100_0400,
+                b"ARMA",
+                vec![(b"RNAM".to_vec(), 0x0100_0200u32.to_le_bytes().to_vec())],
+            ),
+            record(
+                0x0100_0401,
+                b"ARMA",
+                vec![(b"RNAM".to_vec(), 0x0000_0019u32.to_le_bytes().to_vec())],
+            ),
+        ];
+        for record in &mut records {
+            remap_record_form_ids(
+                record,
+                "patch.esp",
+                &masters,
+                &indices,
+                &HashMap::new(),
+                &warnings,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            records[0].subrecords[0].1,
+            0x0200_0300u32.to_le_bytes().to_vec()
+        );
+        assert_eq!(
+            records[1].subrecords,
+            [
+                (b"EDID".to_vec(), b"Skin\0".to_vec()),
+                (b"MODL".to_vec(), 0x0200_0400u32.to_le_bytes().to_vec()),
+                (b"MODL".to_vec(), 0u32.to_le_bytes().to_vec()),
+            ]
+        );
+        assert_eq!(
+            records[2].subrecords[0].1,
+            0x0200_0200u32.to_le_bytes().to_vec()
+        );
+        // Index 00 is the master's own DefaultRace, which the catalog compares as `0x19`.
+        assert_eq!(
+            records[3].subrecords[0].1,
+            0x0000_0019u32.to_le_bytes().to_vec()
+        );
+
+        let counts = warnings.skipped_optional.borrow();
+        let (count, example) = &counts["patch.esp"];
+        assert_eq!(*count, 2);
+        assert_eq!(
+            example,
+            "ARMO record source 01000300 (load-order 02000300) MODL must be 4 bytes, found 3"
+        );
     }
 
     /// Each `RDWT` entry names a weather and, optionally, a global; its chance is not a FormID.

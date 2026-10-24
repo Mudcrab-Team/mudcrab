@@ -8,7 +8,7 @@ use converter::esm::{
     EsmParser,
     load_order::{LoadOrder, StableId},
 };
-use dummy_content::inhouse_items as items;
+use dummy_content::{esm, inhouse_items as items, layout};
 use rusqlite::Connection;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,6 +21,8 @@ const MALE_HANDS: &str = "actors\\character\\character assets\\malehands_1.nif";
 const MALE_FEET: &str = "actors\\character\\character assets\\malefeet_1.nif";
 const FEMALE_BODY: &str = "actors\\character\\character assets\\femalebody_1.nif";
 const OTHER_BODY: &str = "actors\\character\\custom\\otherbody.nif";
+const PATCH_BODY: &str = "actors\\patch\\nordbody.nif";
+const DECOY_BODY: &str = "actors\\decoy\\decoybody.nif";
 
 /// A plugin file: an empty `TES4` header followed by the fixture records.
 fn plugin(records: &[Vec<u8>]) -> Vec<u8> {
@@ -439,6 +441,157 @@ fn alvor_resolves_body_hands_feet_and_facegen_head() {
         .find(|row| row.id == 0x0001_3476)
         .expect("Sigrid's row");
     println!("Sigrid (0x00013476) ACBS sex: {}", sigrid.sex);
+}
+
+type ModelRow = (
+    i64,
+    i64,
+    String,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+type PartRow = (i64, String, String);
+
+/// Every published `actor_models` and `actor_model_parts` row, in key order.
+fn actor_rows(connection: &Connection) -> (Vec<ModelRow>, Vec<PartRow>) {
+    let models: Vec<ModelRow> = connection
+        .prepare(
+            "SELECT id, race_id, sex, skin_armo_id, head_model, head_source, resolution FROM actor_models ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let parts: Vec<PartRow> = connection
+        .prepare("SELECT npc_id, slot, model_path FROM actor_model_parts ORDER BY npc_id, slot")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (models, parts)
+}
+
+/// Patch.esp's own `01` index is its slot `02`, behind Unrelated.esp, whose own `01` records
+/// are same-numbered decoys for the patch's skin and armature. Both frontends must follow the
+/// patch's body chain and publish identical rows.
+#[test]
+fn shifted_patch_body_chain_matches_across_frontends() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let generated = esm::plugin(&esm::Plugin {
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        cells: &[esm::PRESET_EXTERIOR_CELL],
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    })
+    .unwrap();
+    // Header only: the generated body's player NPC is outside this patch chain and would add a row.
+    let skyrim = data.join("Skyrim.esm");
+    fs::write(&skyrim, items::dependent_plugin(&generated, &[], &[])).unwrap();
+    let unrelated = data.join("Unrelated.esp");
+    fs::write(
+        &unrelated,
+        items::dependent_plugin(
+            &generated,
+            &["Skyrim.esm"],
+            &[
+                items::skin_armor(0x0100_0300, &[0x0100_0400]),
+                items::armature(
+                    0x0100_0400,
+                    items::DEFAULT_RACE_FORM_ID,
+                    items::BIPED_BODY,
+                    Some(DECOY_BODY),
+                    None,
+                ),
+            ],
+        ),
+    )
+    .unwrap();
+    let patch = data.join("Patch.esp");
+    fs::write(
+        &patch,
+        items::dependent_plugin(
+            &generated,
+            &["Skyrim.esm"],
+            &[
+                items::npc(0x0100_0D62, 0x0100_0200, false),
+                items::race(0x0100_0200, "PatchNordRace", Some(0x0100_0300), true),
+                items::race(0x0100_0201, "PatchOtherRace", None, false),
+                // The other race's body is skipped, the shared hands fill their slot, and the
+                // race's own body wins the body slot whatever order the skin lists it in.
+                items::skin_armor(0x0100_0300, &[0x0100_0420, 0x0100_0400, 0x0100_0410]),
+                items::armature(
+                    0x0100_0420,
+                    0x0100_0201,
+                    items::BIPED_BODY,
+                    Some(OTHER_BODY),
+                    None,
+                ),
+                items::armature(
+                    0x0100_0400,
+                    items::DEFAULT_RACE_FORM_ID,
+                    items::BIPED_HANDS,
+                    Some(MALE_HANDS),
+                    None,
+                ),
+                items::armature(
+                    0x0100_0410,
+                    0x0100_0200,
+                    items::BIPED_BODY,
+                    Some(PATCH_BODY),
+                    None,
+                ),
+            ],
+        ),
+    )
+    .unwrap();
+    let paths = [skyrim.clone(), unrelated, patch];
+
+    let legacy_path = root.path().join("legacy.db");
+    EsmParser::convert_plugins(&paths, &legacy_path).unwrap();
+    let legacy = Connection::open(&legacy_path).unwrap();
+
+    let order = data.join("inhouse.plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n*Unrelated.esp\n*Patch.esp\n").unwrap();
+    let output = root.path().join("inhouse");
+    converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
+    let inhouse = Connection::open(output.join("skyrim_world.db")).unwrap();
+
+    let (models, parts) = actor_rows(&legacy);
+    let facegen = "meshes/actors/character/facegendata/facegeom/patch.esp/00000d62.nif";
+    let expected_models: Vec<ModelRow> = vec![(
+        0x0200_0D62,
+        0x0200_0200,
+        "male".to_owned(),
+        Some(0x0200_0300),
+        Some(facegen.to_owned()),
+        Some("facegen".to_owned()),
+        "body_head".to_owned(),
+    )];
+    assert_eq!(models, expected_models);
+    let expected_parts: Vec<PartRow> = vec![
+        (0x0200_0D62, "body".to_owned(), PATCH_BODY.to_owned()),
+        (0x0200_0D62, "hands".to_owned(), MALE_HANDS.to_owned()),
+    ];
+    assert_eq!(parts, expected_parts);
+    assert_eq!(actor_rows(&inhouse), (models, parts));
 }
 
 /// Retail bodies: the full resolved/unresolved breakdown, Alvor's row and the

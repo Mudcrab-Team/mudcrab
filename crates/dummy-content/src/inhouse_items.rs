@@ -256,13 +256,12 @@ pub fn race_data(facegen_head: bool) -> Vec<u8> {
 /// A `RACE` with an optional `WNAM` skin and its FaceGen-head flag.
 #[must_use]
 pub fn race(id: u32, editor_id: &str, skin: Option<u32>, facegen_head: bool) -> Vec<u8> {
-    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
-        (b"EDID", text(editor_id)),
-        (b"DATA", race_data(facegen_head)),
-    ];
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"EDID", text(editor_id))];
     if let Some(skin) = skin {
         fields.push((b"WNAM", skin.to_le_bytes().to_vec()));
     }
+    // TES5 RACE puts the skin before DATA; the in-house reader enforces that native order.
+    fields.push((b"DATA", race_data(facegen_head)));
     record(b"RACE", id, &fields)
 }
 
