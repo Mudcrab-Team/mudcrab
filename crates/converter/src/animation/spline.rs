@@ -468,6 +468,17 @@ impl Decoded {
             "max frames per block {} leaves no frame step",
             animation.max_frames_per_block
         );
+        // Blocks share their boundary frame, so the layout holds at most this many frames;
+        // a larger count would sample past the last block's data.
+        let layout_frames =
+            i64::from(animation.num_blocks) * (i64::from(animation.max_frames_per_block) - 1) + 1;
+        ensure!(
+            i64::from(animation.num_frames) <= layout_frames,
+            "clip has {} frames but {} blocks of {} frames hold at most {layout_frames}",
+            animation.num_frames,
+            animation.num_blocks,
+            animation.max_frames_per_block
+        );
         ensure!(
             animation.frame_duration.is_finite() && animation.frame_duration > 0.0,
             "invalid frame duration {}",
@@ -677,6 +688,41 @@ mod tests {
             .expect_err("an empty knot domain is rejected")
             .to_string();
         assert!(error.contains("frame 0"), "got {error:?}");
+    }
+
+    fn header_only_animation(num_frames: i32) -> SplineAnimation {
+        SplineAnimation {
+            duration: 1.0,
+            num_transform_tracks: 0,
+            num_float_tracks: 0,
+            extracted_motion: None,
+            num_frames,
+            num_blocks: 2,
+            max_frames_per_block: 256,
+            frame_duration: 1.0 / 30.0,
+            block_offsets: vec![0, 0],
+            float_block_offsets: Vec::new(),
+            data: Vec::new(),
+            endian: 0,
+        }
+    }
+
+    #[test]
+    fn decoded_rejects_more_frames_than_the_block_layout_holds() {
+        let error = |num_frames| {
+            Decoded::new(&header_only_animation(num_frames))
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_default()
+        };
+        assert!(!error(511).contains("hold at most"), "{}", error(511));
+        for num_frames in [512, i32::MAX] {
+            assert!(
+                error(num_frames).contains("hold at most 511"),
+                "{}",
+                error(num_frames)
+            );
+        }
     }
 
     #[test]
