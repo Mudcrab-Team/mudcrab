@@ -1176,14 +1176,7 @@ fn replace_raw_payload(
     }
     // Replacing the name preserves any old-cache inode shared through other names, including
     // corrupt resumed blobs or dangling symlinks. NamedTempFile cleans failed writes on drop.
-    match fs::symlink_metadata(destination) {
-        Ok(_) => fs::remove_file(destination)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    temporary
-        .persist(destination)
-        .map_err(|error| error.error)?;
+    crate::cache::persist_cache_file(temporary, destination)?;
     Ok(())
 }
 

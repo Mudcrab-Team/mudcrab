@@ -800,6 +800,110 @@ pub(crate) fn link_or_copy_spilling(
     )
 }
 
+/// Publish an owned cache temporary by replacing its destination name, preserving old inodes.
+/// Cached proof handles and hard links may still own the previous bytes. On Windows a handle open
+/// on the destination must allow delete sharing (std's default), and the rename needs NTFS.
+pub(crate) fn persist_cache_file(
+    temporary: tempfile::NamedTempFile,
+    destination: &Path,
+) -> std::io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        let mut temporary = temporary;
+        use std::{
+            mem,
+            os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
+        };
+        use windows_sys::Win32::{
+            Storage::FileSystem::{
+                DELETE, FILE_ATTRIBUTE_NORMAL, FILE_RENAME_INFO, FileRenameInfoEx,
+                SetFileAttributesW, SetFileInformationByHandle,
+            },
+            System::WindowsProgramming::{
+                FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
+            },
+        };
+        let wide = |path: &Path| -> std::io::Result<Vec<u16>> {
+            let mut units: Vec<_> = path.as_os_str().encode_wide().collect();
+            if units.contains(&0) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cache path contains NUL",
+                ));
+            }
+            units.push(0);
+            Ok(units)
+        };
+        let name = wide(&std::path::absolute(destination)?)?;
+        let source = wide(temporary.path())?;
+        let name_bytes = (name.len() - 1)
+            .checked_mul(mem::size_of::<u16>())
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "cache path is too long")
+            })?;
+        // The Win32 wrapper requires a terminating NUL in addition to FileNameLength.
+        let buffer_bytes = name
+            .len()
+            .checked_mul(mem::size_of::<u16>())
+            .and_then(|tail| mem::offset_of!(FILE_RENAME_INFO, FileName).checked_add(tail))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cache rename buffer is too large",
+                )
+            })?;
+        let buffer_size = u32::try_from(buffer_bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cache rename buffer is too large",
+            )
+        })?;
+        let mut buffer = vec![
+            FILE_RENAME_INFO::default();
+            buffer_bytes.div_ceil(mem::size_of::<FILE_RENAME_INFO>())
+        ];
+        let rename = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .open(temporary.path())?;
+        // SAFETY: the SDK-typed allocation provides alignment and enough initialized storage for
+        // the header and complete NUL-terminated UTF-16 tail. Both file handles and buffers remain
+        // live throughout the calls. No pointer escapes; the source is our owned temporary.
+        unsafe {
+            let info = buffer.as_mut_ptr();
+            (*info).Anonymous.Flags =
+                FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+            (*info).FileNameLength = name_bytes;
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+                name.len(),
+            );
+            // Match NamedTempFile::persist's durability contract before publishing the file.
+            if SetFileAttributesW(source.as_ptr(), FILE_ATTRIBUTE_NORMAL) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // POSIX replacement preserves the old inode behind proof handles and prior hard links.
+            // MoveFileExW, used by tempfile::persist, refuses this open-destination case.
+            if SetFileInformationByHandle(
+                rename.as_raw_handle(),
+                FileRenameInfoEx,
+                buffer.as_ptr().cast(),
+                buffer_size,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        temporary.disable_cleanup(true);
+        Ok(temporary.into_file())
+    }
+    #[cfg(not(windows))]
+    {
+        temporary.persist(destination).map_err(|error| error.error)
+    }
+}
+
 fn link_or_copy_spilling_with(
     blob: &Path,
     to: &Path,
@@ -813,7 +917,7 @@ fn link_or_copy_spilling_with(
         }
         let temporary = tempfile::NamedTempFile::new_in(to.parent().unwrap())?;
         fs::copy(from, temporary.path())?;
-        temporary.persist(to).map_err(|error| error.error)?;
+        persist_cache_file(temporary, to)?;
         Ok(())
     })
 }
@@ -1087,6 +1191,71 @@ mod tests {
     }
 
     #[test]
+    fn cache_publication_replaces_open_inodes_and_preserves_prior_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("cache");
+        let previous = directory.path().join("previous");
+        fs::write(&destination, b"old bytes").unwrap();
+        fs::hard_link(&destination, &previous).unwrap();
+        let proof = SpillProof::open(&destination).unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        let temporary_path = temporary.path().to_owned();
+        fs::write(temporary.path(), b"new bytes").unwrap();
+        let published = persist_cache_file(temporary, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new bytes");
+        assert_eq!(fs::read(&previous).unwrap(), b"old bytes");
+        assert_eq!(
+            proof.hash(&hash_open_file).unwrap(),
+            hash_file(&previous).unwrap()
+        );
+        assert_eq!(
+            hash_open_file(&published).unwrap(),
+            hash_file(&destination).unwrap()
+        );
+        assert!(!temporary_path.exists());
+
+        let temporary = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        fs::write(temporary.path(), b"fresh bytes").unwrap();
+        let fresh = directory.path().join("fresh");
+        persist_cache_file(temporary, &fresh).unwrap();
+        assert_eq!(fs::read(fresh).unwrap(), b"fresh bytes");
+    }
+
+    #[test]
+    fn failed_cache_publication_removes_the_temporary_and_keeps_the_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        // A directory cannot be replaced by a file, so the rename itself fails.
+        let destination = directory.path().join("occupied");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("kept"), b"kept").unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        let temporary_path = temporary.path().to_owned();
+        fs::write(temporary.path(), b"new bytes").unwrap();
+        assert!(persist_cache_file(temporary, &destination).is_err());
+        assert!(!temporary_path.exists());
+        assert_eq!(fs::read(destination.join("kept")).unwrap(), b"kept");
+    }
+
+    #[test]
+    fn cache_publication_rejects_nul_without_replacing_the_prefix() {
+        let directory = tempfile::tempdir().unwrap();
+        let prefix = directory.path().join("cache");
+        fs::write(&prefix, b"old bytes").unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        let temporary_path = temporary.path().to_owned();
+        fs::write(temporary.path(), b"new bytes").unwrap();
+        let mut invalid = prefix.into_os_string();
+        invalid.push("\0suffix");
+        let error = persist_cache_file(temporary, Path::new(&invalid)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            fs::read(directory.path().join("cache")).unwrap(),
+            b"old bytes"
+        );
+        assert!(!temporary_path.exists());
+    }
+
+    #[test]
     fn corrupt_derived_spills_are_replaced_before_reuse() {
         fn full_blob(from: &Path, to: &Path) -> std::io::Result<()> {
             if from.file_name().is_some_and(|name| name == "blob") {
@@ -1186,7 +1355,7 @@ mod tests {
             .as_file()
             .set_times(fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        replacement.persist(&spill).unwrap();
+        persist_cache_file(replacement, &spill).unwrap();
         assert_eq!(fs::metadata(&spill).unwrap().modified().unwrap(), modified);
         restore(2);
         // A new extraction must verify a restored spill even if the previous
@@ -1218,7 +1387,7 @@ mod tests {
                 replacement
                     .as_file()
                     .set_times(fs::FileTimes::new().set_modified(modified))?;
-                replacement.persist(from).map_err(|error| error.error)?;
+                persist_cache_file(replacement, from)?;
             }
             fs::hard_link(from, to)
         };
@@ -1280,7 +1449,7 @@ mod tests {
         .unwrap();
         let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
         fs::write(replacement.path(), b"later bytes").unwrap();
-        replacement.persist(&blob).unwrap();
+        persist_cache_file(replacement, &blob).unwrap();
         let later = directory.path().join("later");
         link_or_copy_spilling_with(&blob, &later, &cache, &link, &hash_open_file).unwrap();
         assert_eq!(fs::read(later).unwrap(), b"later bytes");
