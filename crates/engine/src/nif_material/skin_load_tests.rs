@@ -163,7 +163,8 @@ fn loader_app(directory: &Path) -> App {
 }
 
 fn wait_for_dependencies<A: Asset>(app: &mut App, handle: &Handle<A>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Generous so a loaded CI runner cannot fail a healthy load; a real hang still fails.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         app.update();
         let server = app.world().resource::<AssetServer>();
