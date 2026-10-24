@@ -347,9 +347,13 @@ pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
 
 /// Check the explicit producer pair so later contracts cannot inherit old mesh reuse.
 /// Each pair names a byte-identical GLB contract; `(24, 26)` must never be read as
-/// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent.
+/// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent. A named
+/// [`MESH_OUTPUT_CONTRACTS`] entry changes GLB bytes without advancing the producer, which
+/// a historical producer's settings proof cannot name, so cross-producer reuse is suspended
+/// while any entry is active.
 pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
-    schema == current || matches!((schema, current), (24, 26) | (27, 28))
+    schema == current
+        || (MESH_OUTPUT_CONTRACTS.is_empty() && matches!((schema, current), (24, 26) | (27, 28)))
 }
 
 /// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
@@ -1354,7 +1358,7 @@ mod tests {
         let entry = IngestionCacheEntry {
             source_hash: "ab".repeat(32),
             selection: IngestionSelection::ConverterInputsV1,
-            recipe: "converter-inputs-v1".to_owned(),
+            recipe: IngestionSelection::ConverterInputsV1.recipe().to_owned(),
             files: vec![IngestedFile {
                 path: "lodsettings/tamriel.lod".to_owned(),
                 size: 4,
@@ -1491,12 +1495,20 @@ mod tests {
     #[test]
     fn both_prior_cache_contracts_limit_coverage_and_unknown_recipes_miss() {
         let pack_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
-            "source_hash": "source", "recipe": "converter-inputs-v1", "files": []
+            "source_hash": "source",
+            "recipe": IngestionSelection::ConverterInputsV1.recipe(),
+            "files": []
         }))
         .unwrap();
         assert!(pack_entry.covers(IngestionSelection::RuntimeEnglishV1));
         assert!(pack_entry.covers(IngestionSelection::ConverterInputsV1));
         assert!(!pack_entry.covers(IngestionSelection::All));
+        // The recipe changed when the animation inputs joined the selection, so a pack minted
+        // under the earlier converter-inputs recipe cannot prove the wider file set.
+        let mut narrower = pack_entry.clone();
+        narrower.recipe = "converter-inputs-v1".into();
+        assert!(!narrower.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!narrower.covers(IngestionSelection::RuntimeEnglishV1));
         let raw_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
             "source_hash": "source", "selection": "runtime_english_v1", "files": []
         }))

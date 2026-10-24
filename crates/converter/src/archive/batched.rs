@@ -823,7 +823,7 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v1" | "runtime-english-v1"
+            "all-v1" | "converter-inputs-v2" | "runtime-english-v2"
         ),
         "unknown ingestion recipe"
     );
@@ -1495,7 +1495,7 @@ mod tests {
         let index = PackIndex {
             version: 1,
             source_hash: source.clone(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version: 0,
             files: vec![PackItem {
                 path: "textures/old.dds".into(),
@@ -1522,7 +1522,7 @@ mod tests {
         let index = PackIndex {
             version: PACK_VERSION,
             source_hash: source.to_owned(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version,
             files: vec![PackItem {
                 path: "textures/a.dds".into(),
@@ -1539,12 +1539,12 @@ mod tests {
         let path = root
             .join("batches")
             .join(source)
-            .join("converter-inputs-v1")
+            .join(ArchiveSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(&bytes)));
         let directory = root
             .join("batches")
             .join(source)
-            .join("converter-inputs-v1");
+            .join(ArchiveSelection::ConverterInputsV1.recipe());
         fs::create_dir_all(&directory).unwrap();
         fs::write(&path, &bytes).unwrap();
         path
@@ -1611,7 +1611,8 @@ mod tests {
             .path()
             .join("batches")
             .join(&source)
-            .join("converter-inputs-v1/unknown.pack");
+            .join(ArchiveSelection::ConverterInputsV1.recipe())
+            .join("unknown.pack");
         fs::write(&malformed, b"unknown future pack").unwrap();
 
         prune_stale_reader_packs(
@@ -1665,7 +1666,7 @@ mod tests {
         let index = PackIndex {
             version: PACK_VERSION,
             source_hash: source.clone(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version: 0,
             files: Vec::new(),
         };
@@ -1945,7 +1946,10 @@ mod tests {
         assert_eq!(current.files.len(), 7);
         assert!(!output.join("sound/a.fuz").exists());
         assert!(!output.join("docs/a.txt").exists());
-        assert_eq!(current.cache_entry.recipe, "converter-inputs-v1");
+        assert_eq!(
+            current.cache_entry.recipe,
+            ArchiveSelection::ConverterInputsV1.recipe()
+        );
         assert!(!packs(&cache).is_empty());
         // A filtered inventory must never be treated as proof of a full archive.
         let all = ArchiveExtractor::extract_cached(

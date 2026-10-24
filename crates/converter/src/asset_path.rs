@@ -12,6 +12,9 @@ pub enum AssetKind {
     Mesh,
     Script,
     LodSettings,
+    /// A source clip or skeleton the animation pass decodes; it has no published output of
+    /// its own, but it is staged beside the meshes it deforms.
+    Animation,
 }
 
 impl AssetKind {
@@ -21,6 +24,7 @@ impl AssetKind {
             Self::Mesh => "meshes",
             Self::Script => "scripts",
             Self::LodSettings => "lodsettings",
+            Self::Animation => "meshes",
         }
     }
 
@@ -30,6 +34,7 @@ impl AssetKind {
             Self::Mesh => &["nif", "glb"],
             Self::Script => &["pex", "luau"],
             Self::LodSettings => &["lod"],
+            Self::Animation => &["hkx"],
         }
     }
 }

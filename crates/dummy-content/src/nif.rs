@@ -162,6 +162,86 @@ pub fn legacy_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
     legacy_skinned_shape_with(spec, LegacyShapeKind::Plain, false)
 }
 
+/// Generates one legacy-skinned NIF with one `BSTriShape` per spec, all bound
+/// to the same two bones. Every shape uses the plain skin kind.
+pub fn legacy_skinned_shapes(specs: &[LegacySkin<'_>]) -> Result<Vec<u8>> {
+    ensure!(!specs.is_empty(), "a skinned NIF needs at least one shape");
+    for spec in specs {
+        validate_skin(spec)?;
+    }
+    ensure!(
+        specs
+            .windows(2)
+            .all(|pair| pair[0].bone_transforms == pair[1].bone_transforms),
+        "shapes sharing a skeleton need the same bone transforms"
+    );
+
+    let mut strings = specs.iter().map(|spec| spec.name).collect::<Vec<_>>();
+    let bone0 = u32::try_from(strings.len())?;
+    strings.push("Bone0");
+    let bone1 = u32::try_from(strings.len())?;
+    strings.push("Bone1");
+
+    let mut children = vec![1_u32, 2];
+    children.extend((0..specs.len()).map(|index| 3 + 6 * index as u32));
+    let mut blocks = vec![fade_node(&children), bone_node(bone0), bone_node(bone1)];
+    let mut block_types = vec!["BSFadeNode", "NiNode", "NiNode"];
+
+    for (index, spec) in specs.iter().enumerate() {
+        let shape_block = 3 + 6 * index as u32;
+        let instance_block = shape_block + 1;
+        let data_block = shape_block + 2;
+        let partition_block = shape_block + 3;
+        let shader_block = shape_block + 4;
+        let texture_block = shape_block + 5;
+        let vertices = skin_vertices(spec);
+        let triangles = fan_triangles(vertices.len());
+        let positions = vertices
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect::<Vec<_>>();
+
+        blocks.push(skinned_tri_shape(
+            index as u32,
+            &positions,
+            instance_block,
+            shader_block,
+            &vertices,
+            &triangles,
+        )?);
+        block_types.push("BSTriShape");
+        blocks.push(skin_instance(
+            spec.instance_kind,
+            data_block,
+            partition_block,
+            1,
+            2,
+        ));
+        block_types.push(match spec.instance_kind {
+            SkinInstanceKind::Dismember => "BSDismemberSkinInstance",
+            SkinInstanceKind::Plain => "NiSkinInstance",
+        });
+        blocks.push(skin_data(&spec.bone_transforms, spec.weights)?);
+        block_types.push("NiSkinData");
+        blocks.push(skin_partition(
+            &vertices,
+            &triangles,
+            spec.palette,
+            spec.weights,
+        )?);
+        block_types.push("NiSkinPartition");
+        blocks.push(lighting_shader_property(false, texture_block));
+        block_types.push("BSLightingShaderProperty");
+        blocks.push(texture_set_with_paths(
+            "textures/generated_skin.dds",
+            "textures/generated_skin_n.dds",
+        )?);
+        block_types.push("BSShaderTextureSet");
+    }
+
+    assemble(blocks, block_types, strings)
+}
+
 /// Generates a legacy-skinned NIF whose second bone hangs off an extra `NiNode`
 /// under the first bone, so a skin joint can have a missing ancestor chain.
 pub fn legacy_nested_skinned_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
