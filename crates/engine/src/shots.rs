@@ -670,6 +670,20 @@ impl ShotsRun {
         self.output_dir.join(format!("{}{suffix}.png", shot.name))
     }
 
+    /// The stage receipt that sits next to [`Self::shot_path`]'s image: `<name>.stages.json`, or
+    /// `<name>-transition.stages.json` for a transition capture.
+    pub fn stages_path(&self, shot: &Shot) -> PathBuf {
+        self.shot_path(shot).with_extension("stages.json")
+    }
+
+    /// Removes the image and stage receipt an earlier run left for this capture. A receipt is
+    /// removed even when the shot no longer lists probes, so measurements from another run are
+    /// never left beside this run's image, whether or not the capture succeeds.
+    fn discard_previous_outputs(&self, shot: &Shot) -> Result<(), String> {
+        discard_previous_shot(&self.shot_path(shot))?;
+        discard_previous_shot(&self.stages_path(shot))
+    }
+
     pub fn log_path(&self) -> PathBuf {
         self.output_dir.join("shots.log")
     }
@@ -1021,7 +1035,7 @@ fn request_capture(
 ) {
     let shot = &run.file.shots[run.shot];
     let path = run.shot_path(shot);
-    if let Err(reason) = discard_previous_shot(&path) {
+    if let Err(reason) = run.discard_previous_outputs(shot) {
         run.fail(reason);
         run.advance();
         return;
@@ -1261,7 +1275,7 @@ impl ShotsRun {
             "image": self.shot_path(shot),
             "probes": probes,
         });
-        let path = self.output_dir.join(format!("{}.stages.json", shot.name));
+        let path = self.stages_path(shot);
         let text = serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?;
         fs::write(&path, text)
             .map_err(|error| format!("could not write {}: {error}", path.display()))
@@ -1857,6 +1871,36 @@ mod tests {
             "tower-east-0 frames=10 settled path=out/tower-east-0.png\n\
              FAILED: shot \"y-05f\": no screenshot reached the disk\n"
         );
+    }
+
+    #[test]
+    fn a_capture_clears_the_previous_image_and_stage_receipt() {
+        let pose = r#""name": "inn", "position": [0, 0, 0], "yaw": 0, "pitch": 0, "hfov": 75"#;
+        let file = ShotsFile::parse(&one_shot(pose)).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut run = ShotsRun::new(file, directory.path().into(), 60);
+        let shot = run.file.shots[0].clone();
+        assert_eq!(
+            run.stages_path(&shot),
+            directory.path().join("inn.stages.json")
+        );
+        // The shot lists no probes, so this run would write no receipt to replace the old one.
+        assert!(shot.probes.is_empty());
+        for path in [run.shot_path(&shot), run.stages_path(&shot)] {
+            fs::write(&path, b"old").unwrap();
+        }
+        run.discard_previous_outputs(&shot).unwrap();
+        assert!(!run.shot_path(&shot).exists());
+        assert!(!run.stages_path(&shot).exists());
+
+        run.transition_capture = true;
+        assert_eq!(
+            run.stages_path(&shot),
+            directory.path().join("inn-transition.stages.json")
+        );
+        fs::create_dir(run.stages_path(&shot)).unwrap();
+        let message = run.discard_previous_outputs(&shot).unwrap_err();
+        assert!(message.contains("inn-transition.stages.json"), "{message}");
     }
 
     #[test]

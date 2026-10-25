@@ -4,7 +4,10 @@
 The tolerance and the probe set are frozen in docs/specs/engine/visual-profiles.md: a probe passes
 when every channel is within 2 % of the reference at stage 3 and within 2 bytes at stage 4. A stage
 is compared when both receipts have a value; one that only one side measured fails, and one
-neither side measured is listed as skipped. Exits 1 when anything fails.
+neither side measured is listed as skipped. Probes are matched by name, and a probe whose
+`world_position` or `patch_px` differs between the receipts is a different measurement and fails.
+A stage 3 value must hold RGB or RGBA and a stage 4 value RGB; anything shorter fails. Exits 1 when
+anything fails.
 """
 
 import argparse
@@ -16,6 +19,9 @@ import sys
 STAGE3_RELATIVE = 0.02
 STAGE4_BYTES = 2.0
 POSE_KEYS = ("worldspace_id", "interior_cell_id", "position", "yaw", "pitch")
+PROBE_KEYS = ("world_position", "patch_px")
+# Channel counts each stage may carry: stage 3 is RGB or RGBA (alpha is not compared), stage 4 RGB.
+STAGE_CHANNELS = {"hdr_pre_tonemap": (3, 4), "output": (3,)}
 
 
 def stage3_ok(reference, candidate, relative):
@@ -23,7 +29,17 @@ def stage3_ok(reference, candidate, relative):
 
 
 def stage4_ok(reference, candidate, tolerance):
-    return all(abs(c - r) <= tolerance for r, c in zip(reference, candidate))
+    return all(abs(c - r) <= tolerance for r, c in zip(reference[:3], candidate[:3]))
+
+
+def malformed(stage, value):
+    """Why a stage value cannot be compared, or None when it holds the channels the stage needs."""
+    if not isinstance(value, list) or len(value) not in STAGE_CHANNELS[stage]:
+        counts = " or ".join(str(count) for count in STAGE_CHANNELS[stage])
+        return f"needs {counts} channels, has {value!r}"
+    if not all(isinstance(channel, (int, float)) and not isinstance(channel, bool) for channel in value):
+        return f"has a non-numeric channel: {value!r}"
+    return None
 
 
 def compare(reference, candidate, relative, tolerance):
@@ -37,6 +53,13 @@ def compare(reference, candidate, relative, tolerance):
         if other is None:
             failures.append(f"{probe['name']}: missing from the candidate")
             continue
+        moved = [key for key in PROBE_KEYS if probe.get(key) != other.get(key)]
+        if moved:
+            failures.extend(
+                f"{probe['name']} {key}: {probe.get(key)} != {other.get(key)}, a different measurement"
+                for key in moved
+            )
+            continue
         for stage, check, limit in (
             ("hdr_pre_tonemap", stage3_ok, relative),
             ("output", stage4_ok, tolerance),
@@ -49,6 +72,9 @@ def compare(reference, candidate, relative, tolerance):
                 missing = "reference" if mine is None else "candidate"
                 reason = (probe if mine is None else other)["unavailable"].get(stage)
                 failures.append(f"{label}: not measured by the {missing} ({reason})")
+            elif problem := malformed(stage, mine) or malformed(stage, theirs):
+                side = "reference" if malformed(stage, mine) else "candidate"
+                failures.append(f"{label}: the {side} {problem}")
             elif check(mine, theirs, limit):
                 passed.append(label)
             else:

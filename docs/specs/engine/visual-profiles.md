@@ -117,6 +117,9 @@ The run writes `<out>/<name>.stages.json` next to the PNG:
   holding an infinite or NaN HDR texel keeps its stage 4 value and lists stage 3 as unavailable.
 - A stage that would have neither a value nor a reason, or a receipt with fewer samples than
   probes, fails the shot.
+- A capture first removes the receipt an earlier run left at its path, even when the shot no
+  longer lists probes, so a failed capture never leaves old measurements beside the new image. A
+  transition capture's receipt is `<name>-transition.stages.json`, next to its image.
 - The shot waits for the stage 3 copy to map, up to the capture timeout, before its `shots.log`
   line is written.
 
@@ -138,7 +141,9 @@ scripts/compare_stage_receipts.py <reference>.stages.json <candidate>.stages.jso
 ```
 
 The script exits 1 when a stage measured on both sides is out of tolerance, when only one side
-measured it, or when the poses differ.
+measured it, when the poses differ, when a probe's `world_position` or `patch_px` differs (a
+different measurement under the same name), or when a stage value lacks its channels: stage 3 needs
+RGB or RGBA, stage 4 RGB.
 
 | Probe | Position | Patch | Pixel | Stage 3 (mudcrab) | Stage 4 (mudcrab) |
 |---|---|---|---|---|---|
