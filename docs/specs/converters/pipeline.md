@@ -24,10 +24,11 @@ Both readers retain their terminal diagnostics and return bounded per-plugin
 summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
 malformed records/frames, unusable candidates, cleared optional links, truncated
 light IDs, and in-house decoder/adapter issues such as omitted fields or missing
-localized text. `PipelineReport.notices` contains successful compatibility
-remaps: master indices past a plugin's list treated as the plugin's own, and the
-in-house reader's supplier-self compatibility lines. Counts and first examples
-remain bounded per plugin and kind.
+localized banks or referenced malformed entries. `PipelineReport.notices` contains
+successful compatibility remaps: master indices past a plugin's list treated as
+the plugin's own, and the in-house reader's supplier-self compatibility lines.
+Absent localized keys in readable banks also produce notices. Counts and first
+examples remain bounded per plugin and kind.
 
 The existing completeness rule requires zero skipped asset inputs and no
 warnings. Usable neighboring records still publish, but data-loss warnings mark
@@ -70,7 +71,9 @@ missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
 columns remain NULL. Missing nonzero keys in readable tables produce counted
 notices; missing or unreadable tables and referenced malformed entries produce
-warnings. A null ID does not require its declared bank. Explicitly resolved
+warnings. Both readers apply this severity policy; the legacy reader resolves
+subrecords whose schema occurrences unambiguously agree on localized type and bank.
+A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.

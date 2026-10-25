@@ -207,20 +207,22 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
-        let (unresolved, localization_warnings) = legacy_text::resolve_localized_fields(
-            &mut master.records,
-            plugin_paths,
-            &order,
-            string_sources,
-        );
+        let (unresolved, localization_warnings, localization_notices) =
+            legacy_text::resolve_localized_fields(
+                &mut master.records,
+                plugin_paths,
+                &order,
+                string_sources,
+            );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
         exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
 
-        for warning in &localization_warnings {
-            eprintln!("{warning}");
+        for diagnostic in localization_warnings.iter().chain(&localization_notices) {
+            eprintln!("{diagnostic}");
         }
         master.warnings.extend(localization_warnings);
+        master.notices.extend(localization_notices);
         Ok(master)
     }
 
