@@ -48,7 +48,6 @@ tempfile = "3.20"
 sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
-gltf = { version = "1.4", default-features = false, features = ["utils"] }
 insta = { version = "1.48", features = ["json", "redactions"] }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
 log = "0.4"

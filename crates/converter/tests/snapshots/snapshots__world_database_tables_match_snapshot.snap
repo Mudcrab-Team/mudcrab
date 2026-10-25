@@ -12,7 +12,10 @@ expression: snapshot
       "race_id": 10,
       "resolution": "unresolved",
       "sex": "male",
-      "skin_armo_id": null
+      "skin_armo_id": null,
+      "skin_tone_b": null,
+      "skin_tone_g": null,
+      "skin_tone_r": null
     }
   ],
   "cells": [

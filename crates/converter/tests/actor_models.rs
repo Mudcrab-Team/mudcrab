@@ -22,6 +22,7 @@ const MALE_FEET: &str = "actors\\character\\character assets\\malefeet_1.nif";
 const FEMALE_BODY: &str = "actors\\character\\character assets\\femalebody_1.nif";
 const OTHER_BODY: &str = "actors\\character\\custom\\otherbody.nif";
 const PATCH_BODY: &str = "actors\\patch\\nordbody.nif";
+const EXACT_BODY: &str = "actors\\patch\\exactracebody.nif";
 const DECOY_BODY: &str = "actors\\decoy\\decoybody.nif";
 
 /// A plugin file: an empty `TES4` header followed by the fixture records.
@@ -174,6 +175,272 @@ fn default_race_is_the_fallback() {
             .models
             .iter()
             .any(|row| row.id == 0x100 && row.resolution == "body_head")
+    );
+}
+
+fn templated_npc(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    traits: bool,
+    template: Option<u32>,
+    skin: Option<u32>,
+) -> Vec<u8> {
+    let mut acbs = vec![0u8; 24];
+    acbs[0] = u8::from(female);
+    acbs[18..20].copy_from_slice(&u16::from(traits).to_le_bytes());
+    let mut fields = vec![(b"ACBS", acbs)];
+    if let Some(template) = template {
+        fields.push((b"TPLT", template.to_le_bytes().to_vec()));
+    }
+    fields.push((b"RNAM", race_id.to_le_bytes().to_vec()));
+    if let Some(skin) = skin {
+        fields.push((b"WNAM", skin.to_le_bytes().to_vec()));
+    }
+    items::record(b"NPC_", id, &fields)
+}
+
+#[test]
+fn traits_root_supplies_race_sex_skin_and_facegen_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        templated_npc(0x100, 0x200, false, true, Some(0x101), None),
+        templated_npc(0x101, 0x201, false, true, Some(0x102), None),
+        templated_npc(0x102, 0x202, true, false, None, Some(0x301)),
+        items::race(0x200, "PlaceholderRace", None, false),
+        items::race(0x201, "IntermediateRace", None, false),
+        items::race(0x202, "RootRace", Some(0x300), true),
+        items::skin_armor(0x300, &[0x400]),
+        items::skin_armor(0x301, &[0x401]),
+        items::armature(0x400, 0x202, items::BIPED_BODY, Some(MALE_BODY), None),
+        items::armature(0x401, 0x202, items::BIPED_BODY, Some(OTHER_BODY), None),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let catalog = resolve(&path);
+    let row = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(
+        (row.race_id, row.sex, row.skin_armo_id),
+        (0x202, "female", Some(0x301))
+    );
+    assert_eq!(
+        row.head_model.as_deref(),
+        Some("meshes/actors/character/facegendata/facegeom/skyrim.esm/00000102.nif")
+    );
+    assert_eq!(
+        catalog
+            .parts
+            .iter()
+            .find(|part| part.npc_id == 0x100)
+            .unwrap()
+            .model_path,
+        OTHER_BODY
+    );
+}
+
+#[test]
+fn race_skin_fallback_and_traits_clear_ignore_template() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        templated_npc(0x100, 0x200, false, true, Some(0x101), None),
+        templated_npc(0x101, 0x201, true, false, None, None),
+        // Traits clear: stale TPLT is ignored; own sex/race/skin remain effective.
+        templated_npc(0x102, 0x200, false, false, Some(0x999), None),
+        items::race(0x200, "RaceA", Some(0x300), false),
+        items::race(0x201, "RaceB", Some(0x301), false),
+        items::skin_armor(0x300, &[0x400]),
+        items::skin_armor(0x301, &[0x401]),
+        items::armature(0x400, 0x200, items::BIPED_BODY, Some(MALE_BODY), None),
+        items::armature(0x401, 0x201, items::BIPED_BODY, Some(OTHER_BODY), None),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let catalog = resolve(&path);
+    let inherited = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(
+        (inherited.race_id, inherited.sex, inherited.skin_armo_id),
+        (0x201, "female", Some(0x301))
+    );
+    let own = catalog.models.iter().find(|row| row.id == 0x102).unwrap();
+    assert_eq!(
+        (own.race_id, own.sex, own.skin_armo_id),
+        (0x200, "male", Some(0x300))
+    );
+}
+
+#[test]
+fn invalid_npc_skin_override_falls_back_with_diagnostic() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        templated_npc(0x100, 0x200, false, false, None, Some(0x999)),
+        items::race(0x200, "RaceA", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400]),
+        items::armature(0x400, 0x200, items::BIPED_BODY, Some(MALE_BODY), None),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let catalog = resolve(&path);
+    assert_eq!(catalog.models[0].skin_armo_id, Some(0x300));
+    assert!(
+        catalog
+            .diagnostics
+            .contains(&converter::actor_models::ActorModelDiagnostic {
+                npc_id: 0x100,
+                reason: UnresolvedReason::MissingNpcSkinOverride,
+            })
+    );
+}
+
+#[test]
+fn zero_deleted_and_wrong_type_npc_skin_overrides_fall_back_precisely() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        templated_npc(0x100, 0x200, false, false, None, Some(0)),
+        templated_npc(0x101, 0x200, false, false, None, Some(0x999)),
+        templated_npc(0x102, 0x200, false, false, None, Some(0x400)),
+        templated_npc(0x103, 0x200, false, false, None, Some(0x401)),
+        items::npc(0x400, 0x200, false),
+        items::race(0x200, "RaceA", Some(0x300), false),
+        items::skin_armor(0x300, &[0x500]),
+        items::armature(
+            0x500,
+            items::DEFAULT_RACE_FORM_ID,
+            items::BIPED_BODY,
+            Some(MALE_BODY),
+            None,
+        ),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let mut raw = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap();
+    raw.insert(
+        0x401,
+        converter::esm::records::RawRecord {
+            form_id: 0x401,
+            record_type: *b"ARMO",
+            flags: 0x20,
+            subrecords: vec![],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        },
+    );
+    let catalog = resolve_actor_models(&raw, &HashMap::new());
+    for (id, reason) in [
+        (0x100, UnresolvedReason::ZeroNpcSkinOverride),
+        (0x101, UnresolvedReason::MissingNpcSkinOverride),
+        (0x102, UnresolvedReason::WrongTypeNpcSkinOverride),
+        (0x103, UnresolvedReason::DeletedNpcSkinOverride),
+    ] {
+        let row = catalog.models.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.skin_armo_id, Some(0x300), "{id:#x}");
+        assert!(
+            catalog
+                .diagnostics
+                .contains(&converter::actor_models::ActorModelDiagnostic { npc_id: id, reason }),
+            "{id:#x}: {:?}",
+            catalog.diagnostics
+        );
+    }
+}
+
+#[test]
+fn unresolved_traits_targets_keep_one_empty_row_with_specific_diagnostic() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = vec![
+        templated_npc(0x100, 0x200, false, true, None, None),
+        templated_npc(0x109, 0x200, false, true, Some(0), None),
+        templated_npc(0x101, 0x200, false, true, Some(0x999), None),
+        templated_npc(0x102, 0x200, false, true, Some(0x106), None),
+        templated_npc(0x103, 0x200, false, true, Some(0x200), None),
+        templated_npc(0x104, 0x200, false, true, Some(0x105), None),
+        templated_npc(0x105, 0x200, false, true, Some(0x104), None),
+        templated_npc(0x107, 0x200, false, true, Some(0x108), None),
+        items::record(b"LVLN", 0x108, &[]),
+        items::race(0x200, "RaceA", Some(0x300), true),
+        items::skin_armor(0x300, &[0x400]),
+        items::armature(0x400, 0x200, items::BIPED_BODY, Some(MALE_BODY), None),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let mut raw = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap();
+    raw.insert(
+        0x106,
+        converter::esm::records::RawRecord {
+            form_id: 0x106,
+            record_type: *b"NPC_",
+            flags: 0x20,
+            subrecords: vec![],
+            cell_form_id: None,
+            worldspace_form_id: None,
+            load_order: 0,
+        },
+    );
+    let catalog = resolve_actor_models(&raw, &HashMap::new());
+    let cases = [
+        (0x100, UnresolvedReason::MissingTraitsTemplate),
+        (0x109, UnresolvedReason::MissingTraitsTemplate),
+        (0x101, UnresolvedReason::MissingTraitsTemplate),
+        (0x102, UnresolvedReason::DeletedTraitsTemplate),
+        (0x103, UnresolvedReason::WrongTypeTraitsTemplate),
+        (0x104, UnresolvedReason::TraitsTemplateCycle),
+        (0x105, UnresolvedReason::TraitsTemplateCycle),
+        (0x107, UnresolvedReason::LeveledTraitsTemplate),
+    ];
+    for (id, reason) in cases {
+        let row = catalog.models.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.resolution, "unresolved", "{id:#x}");
+        assert_eq!(row.race_id, 0, "{id:#x}");
+        assert!(row.head_model.is_none(), "{id:#x}");
+        assert!(
+            !catalog.parts.iter().any(|part| part.npc_id == id),
+            "{id:#x}"
+        );
+        assert!(
+            catalog
+                .diagnostics
+                .contains(&converter::actor_models::ActorModelDiagnostic { npc_id: id, reason }),
+            "{id:#x}: {:?}",
+            catalog.diagnostics
+        );
+    }
+}
+
+#[test]
+fn additional_race_armature_matches_in_authored_order_before_default() {
+    let directory = tempfile::tempdir().unwrap();
+    let additional = items::record(
+        b"ARMA",
+        0x400,
+        &[
+            (b"EDID", items::text("AdditionalRace")),
+            (b"BOD2", items::body_template(items::BIPED_BODY)),
+            (b"RNAM", 0x201u32.to_le_bytes().to_vec()),
+            (b"MODL", 0u32.to_le_bytes().to_vec()),
+            (b"MODL", 0x999u32.to_le_bytes().to_vec()),
+            (b"MODL", 0x200u32.to_le_bytes().to_vec()),
+            (b"MOD2", items::text(OTHER_BODY)),
+        ],
+    );
+    let records = vec![
+        items::npc(0x100, 0x200, false),
+        items::race(0x200, "RaceA", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400, 0x401, 0x402]),
+        additional,
+        items::armature(0x401, 0x200, items::BIPED_BODY, Some(MALE_BODY), None),
+        items::armature(
+            0x402,
+            items::DEFAULT_RACE_FORM_ID,
+            items::BIPED_BODY,
+            Some(DECOY_BODY),
+            None,
+        ),
+    ];
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+    let catalog = resolve(&path);
+    assert_eq!(
+        catalog
+            .parts
+            .iter()
+            .find(|part| part.npc_id == 0x100)
+            .unwrap()
+            .model_path,
+        OTHER_BODY
     );
 }
 
@@ -342,6 +609,7 @@ fn facegen_path_uses_the_plugin_local_form_id() {
         directory.path(),
         "Skyrim.esm",
         &[
+            items::npc(0x100, 0x200, false),
             items::race(0x200, "NordRace", Some(0x300), true),
             items::skin_armor(0x300, &[0x400]),
             items::armature(
@@ -357,7 +625,11 @@ fn facegen_path_uses_the_plugin_local_form_id() {
         directory.path(),
         "Patch.esp",
         &["Skyrim.esm"],
-        &[items::npc(0x0100_0D62, 0x200, false)],
+        &[
+            // Override keeps Skyrim.esm as defining owner for ordinary FaceGen.
+            items::npc(0x0000_0100, 0x200, false),
+            items::npc(0x0100_0D62, 0x200, false),
+        ],
     );
 
     let catalog = resolve_plugins(&[skyrim, patch]);
@@ -371,6 +643,11 @@ fn facegen_path_uses_the_plugin_local_form_id() {
         Some("meshes/actors/character/facegendata/facegeom/patch.esp/00000d62.nif")
     );
     assert_eq!(row.head_source, Some("facegen"));
+    let ordinary_override = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(
+        ordinary_override.head_model.as_deref(),
+        Some("meshes/actors/character/facegendata/facegeom/skyrim.esm/00000100.nif")
+    );
 }
 
 #[test]
@@ -512,9 +789,19 @@ fn shifted_patch_body_chain_matches_across_frontends() {
             &generated,
             &["Skyrim.esm"],
             &[
+                items::race(0x0100_0201, "UnrelatedDecoyRace", Some(0x0100_0301), false),
                 items::skin_armor(0x0100_0300, &[0x0100_0400]),
+                items::skin_armor(0x0100_0301, &[0x0100_0410, 0x0100_0400]),
+                items::npc(0x0100_0D63, 0x0100_0201, false),
                 items::armature(
                     0x0100_0400,
+                    items::DEFAULT_RACE_FORM_ID,
+                    items::BIPED_BODY,
+                    Some(DECOY_BODY),
+                    None,
+                ),
+                items::armature(
+                    0x0100_0410,
                     items::DEFAULT_RACE_FORM_ID,
                     items::BIPED_BODY,
                     Some(DECOY_BODY),
@@ -531,12 +818,47 @@ fn shifted_patch_body_chain_matches_across_frontends() {
             &generated,
             &["Skyrim.esm"],
             &[
-                items::npc(0x0100_0D62, 0x0100_0200, false),
+                templated_npc(
+                    0x0100_0D62,
+                    0x0100_0201,
+                    false,
+                    true,
+                    Some(0x0100_0D63),
+                    Some(0x0100_0300),
+                ),
+                templated_npc(
+                    0x0100_0D63,
+                    0x0100_0201,
+                    false,
+                    true,
+                    Some(0x0100_0D64),
+                    None,
+                ),
+                templated_npc(
+                    0x0100_0D64,
+                    0x0100_0200,
+                    true,
+                    false,
+                    None,
+                    Some(0x0100_0301),
+                ),
+                // No NPC WNAM: this row exercises shifted race WNAM and armor links.
+                items::npc(0x0100_0D65, 0x0100_0200, false),
                 items::race(0x0100_0200, "PatchNordRace", Some(0x0100_0300), true),
                 items::race(0x0100_0201, "PatchOtherRace", None, false),
-                // The other race's body is skipped, the shared hands fill their slot, and the
-                // race's own body wins the body slot whatever order the skin lists it in.
-                items::skin_armor(0x0100_0300, &[0x0100_0420, 0x0100_0400, 0x0100_0410]),
+                // Decoy race is skipped; exact/additional race matches precede DefaultRace even
+                // though the exact match follows it in authored order.
+                items::skin_armor(
+                    0x0100_0300,
+                    &[
+                        0x0100_0420,
+                        0x0100_0440,
+                        0x0100_0400,
+                        0x0100_0430,
+                        0x0100_0410,
+                    ],
+                ),
+                items::skin_armor(0x0100_0301, &[0x0100_0410, 0x0100_0400]),
                 items::armature(
                     0x0100_0420,
                     0x0100_0201,
@@ -552,11 +874,29 @@ fn shifted_patch_body_chain_matches_across_frontends() {
                     None,
                 ),
                 items::armature(
-                    0x0100_0410,
+                    0x0100_0440,
+                    items::DEFAULT_RACE_FORM_ID,
+                    items::BIPED_BODY,
+                    Some(DECOY_BODY),
+                    None,
+                ),
+                items::armature(
+                    0x0100_0430,
                     0x0100_0200,
                     items::BIPED_BODY,
-                    Some(PATCH_BODY),
+                    Some(EXACT_BODY),
                     None,
+                ),
+                items::record(
+                    b"ARMA",
+                    0x0100_0410,
+                    &[
+                        (b"EDID", items::text("PatchAdditionalRace")),
+                        (b"BOD2", items::body_template(items::BIPED_BODY)),
+                        (b"RNAM", 0x0100_0201u32.to_le_bytes().to_vec()),
+                        (b"MOD2", items::text(PATCH_BODY)),
+                        (b"MODL", 0x0100_0200u32.to_le_bytes().to_vec()),
+                    ],
                 ),
             ],
         ),
@@ -575,23 +915,391 @@ fn shifted_patch_body_chain_matches_across_frontends() {
     let inhouse = Connection::open(output.join("skyrim_world.db")).unwrap();
 
     let (models, parts) = actor_rows(&legacy);
-    let facegen = "meshes/actors/character/facegendata/facegeom/patch.esp/00000d62.nif";
-    let expected_models: Vec<ModelRow> = vec![(
-        0x0200_0D62,
-        0x0200_0200,
-        "male".to_owned(),
-        Some(0x0200_0300),
-        Some(facegen.to_owned()),
-        Some("facegen".to_owned()),
-        "body_head".to_owned(),
-    )];
+    let facegen = "meshes/actors/character/facegendata/facegeom/patch.esp/00000d64.nif";
+    let expected_models: Vec<ModelRow> = vec![
+        (
+            0x0100_0D63,
+            0x0100_0201,
+            "male".to_owned(),
+            Some(0x0100_0301),
+            None,
+            None,
+            "body".to_owned(),
+        ),
+        (
+            0x0200_0D62,
+            0x0200_0200,
+            "female".to_owned(),
+            Some(0x0200_0301),
+            Some(facegen.to_owned()),
+            Some("facegen".to_owned()),
+            "body_head".to_owned(),
+        ),
+        (
+            0x0200_0D63,
+            0x0200_0200,
+            "female".to_owned(),
+            Some(0x0200_0301),
+            Some(facegen.to_owned()),
+            Some("facegen".to_owned()),
+            "body_head".to_owned(),
+        ),
+        (
+            0x0200_0D64,
+            0x0200_0200,
+            "female".to_owned(),
+            Some(0x0200_0301),
+            Some(facegen.to_owned()),
+            Some("facegen".to_owned()),
+            "body_head".to_owned(),
+        ),
+        (
+            0x0200_0D65,
+            0x0200_0200,
+            "male".to_owned(),
+            Some(0x0200_0300),
+            Some("meshes/actors/character/facegendata/facegeom/patch.esp/00000d65.nif".to_owned()),
+            Some("facegen".to_owned()),
+            "body_head".to_owned(),
+        ),
+    ];
     assert_eq!(models, expected_models);
     let expected_parts: Vec<PartRow> = vec![
+        (0x0100_0D63, "body".to_owned(), DECOY_BODY.to_owned()),
         (0x0200_0D62, "body".to_owned(), PATCH_BODY.to_owned()),
         (0x0200_0D62, "hands".to_owned(), MALE_HANDS.to_owned()),
+        (0x0200_0D63, "body".to_owned(), PATCH_BODY.to_owned()),
+        (0x0200_0D63, "hands".to_owned(), MALE_HANDS.to_owned()),
+        (0x0200_0D64, "body".to_owned(), PATCH_BODY.to_owned()),
+        (0x0200_0D64, "hands".to_owned(), MALE_HANDS.to_owned()),
+        (0x0200_0D65, "body".to_owned(), EXACT_BODY.to_owned()),
+        (0x0200_0D65, "hands".to_owned(), MALE_HANDS.to_owned()),
     ];
     assert_eq!(parts, expected_parts);
     assert_eq!(actor_rows(&inhouse), (models, parts));
+}
+
+#[test]
+fn shifted_light_patch_template_skin_and_additional_race_links_match_frontends() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let generated = esm::plugin(&esm::Plugin {
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        cells: &[esm::PRESET_EXTERIOR_CELL],
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    })
+    .unwrap();
+    let skyrim = data.join("Skyrim.esm");
+    fs::write(&skyrim, items::dependent_plugin(&generated, &[], &[])).unwrap();
+    let unrelated = data.join("Unrelated.esp");
+    fs::write(
+        &unrelated,
+        items::dependent_plugin(
+            &generated,
+            &["Skyrim.esm"],
+            &[
+                items::npc(0x0100_0D63, 0x0100_0201, false),
+                items::race(0x0100_0200, "DecoyRace", None, false),
+                items::race(0x0100_0201, "DecoyRootRace", Some(0x0100_0301), false),
+                items::skin_armor(0x0100_0301, &[0x0100_0410]),
+                items::record(
+                    b"ARMA",
+                    0x0100_0410,
+                    &[
+                        (b"EDID", items::text("DecoyAdditionalRace")),
+                        (b"BOD2", items::body_template(items::BIPED_BODY)),
+                        (b"RNAM", 0x0100_0201u32.to_le_bytes().to_vec()),
+                        (b"MOD2", items::text(DECOY_BODY)),
+                        (b"MODL", 0x0100_0200u32.to_le_bytes().to_vec()),
+                    ],
+                ),
+            ],
+        ),
+    )
+    .unwrap();
+    let patch = data.join("Patch.esl");
+    let mut patch_bytes = items::dependent_plugin(
+        &generated,
+        &["Skyrim.esm"],
+        &[
+            templated_npc(
+                0x0100_0D62,
+                0x0100_0201,
+                false,
+                true,
+                Some(0x0100_0D63),
+                Some(0x0100_0300),
+            ),
+            templated_npc(
+                0x0100_0D63,
+                0x0100_0200,
+                true,
+                false,
+                None,
+                Some(0x0100_0301),
+            ),
+            // No NPC WNAM: this row exercises shifted light-plugin race WNAM and armor links.
+            items::npc(0x0100_0D64, 0x0100_0200, false),
+            items::race(0x0100_0200, "PatchRootRace", Some(0x0100_0300), true),
+            items::race(0x0100_0201, "PatchPlaceholderRace", None, false),
+            items::skin_armor(
+                0x0100_0300,
+                &[0x0100_0440, 0x0100_0400, 0x0100_0430, 0x0100_0410],
+            ),
+            items::skin_armor(0x0100_0301, &[0x0100_0410, 0x0100_0400]),
+            items::record(
+                b"ARMA",
+                0x0100_0400,
+                &[
+                    (b"EDID", items::text("PatchDefaultRaceHands")),
+                    (b"BOD2", items::body_template(items::BIPED_HANDS)),
+                    (b"RNAM", items::DEFAULT_RACE_FORM_ID.to_le_bytes().to_vec()),
+                    (b"MOD2", items::text(MALE_HANDS)),
+                ],
+            ),
+            items::record(
+                b"ARMA",
+                0x0100_0440,
+                &[
+                    (b"EDID", items::text("PatchDefaultRaceBody")),
+                    (b"BOD2", items::body_template(items::BIPED_BODY)),
+                    (b"RNAM", items::DEFAULT_RACE_FORM_ID.to_le_bytes().to_vec()),
+                    (b"MOD2", items::text(DECOY_BODY)),
+                ],
+            ),
+            items::record(
+                b"ARMA",
+                0x0100_0430,
+                &[
+                    (b"EDID", items::text("PatchExactRaceBody")),
+                    (b"BOD2", items::body_template(items::BIPED_BODY)),
+                    (b"RNAM", 0x0100_0200u32.to_le_bytes().to_vec()),
+                    (b"MOD2", items::text(EXACT_BODY)),
+                ],
+            ),
+            items::record(
+                b"ARMA",
+                0x0100_0410,
+                &[
+                    (b"EDID", items::text("PatchAdditionalRace")),
+                    (b"BOD2", items::body_template(items::BIPED_BODY)),
+                    (b"RNAM", 0x0100_0201u32.to_le_bytes().to_vec()),
+                    (b"MOD2", items::text(PATCH_BODY)),
+                    (b"MODL", 0x0100_0200u32.to_le_bytes().to_vec()),
+                ],
+            ),
+        ],
+    );
+    patch_bytes[8..12].copy_from_slice(&0x200u32.to_le_bytes());
+    fs::write(&patch, patch_bytes).unwrap();
+    let paths = [skyrim.clone(), unrelated, patch];
+
+    let legacy_path = root.path().join("legacy.db");
+    EsmParser::convert_plugins(&paths, &legacy_path).unwrap();
+    let legacy = Connection::open(&legacy_path).unwrap();
+    let order = data.join("inhouse.plugins.txt");
+    fs::write(&order, "*Skyrim.esm\n*Unrelated.esp\n*Patch.esl\n").unwrap();
+    let output = root.path().join("inhouse");
+    converter::esm::inhouse::export_record_bundle_typed(&data, &order, &output, &[]).unwrap();
+    let inhouse = Connection::open(output.join("skyrim_world.db")).unwrap();
+
+    let (legacy_models, legacy_parts) = actor_rows(&legacy);
+    assert_eq!(
+        actor_rows(&inhouse),
+        (legacy_models.clone(), legacy_parts.clone())
+    );
+    let child = legacy_models
+        .iter()
+        .find(|row| row.0 == 0xFE00_0D62)
+        .unwrap();
+    assert_eq!(child.1, 0xFE00_0200);
+    assert_eq!(child.3, Some(0xFE00_0301));
+    assert_eq!(
+        child.4.as_deref(),
+        Some("meshes/actors/character/facegendata/facegeom/patch.esl/00000d63.nif")
+    );
+    assert!(
+        legacy_parts
+            .iter()
+            .any(|part| { part.0 == 0xFE00_0D62 && part.2 == PATCH_BODY })
+    );
+    let race_skin_child = legacy_models
+        .iter()
+        .find(|row| row.0 == 0xFE00_0D64)
+        .unwrap();
+    assert_eq!(race_skin_child.1, 0xFE00_0200);
+    assert_eq!(race_skin_child.3, Some(0xFE00_0300));
+    assert!(
+        legacy_parts
+            .iter()
+            .any(|part| { part.0 == 0xFE00_0D64 && part.1 == "body" && part.2 == EXACT_BODY })
+    );
+    assert!(
+        legacy_parts
+            .iter()
+            .any(|part| { part.0 == 0xFE00_0D64 && part.1 == "hands" && part.2 == MALE_HANDS })
+    );
+}
+
+/// An `NPC_` like [`items::npc`] that also carries a `QNAM` skin tone.
+fn npc_with_skin_tone(id: u32, race_id: u32, tone: [f32; 3]) -> Vec<u8> {
+    items::record(
+        b"NPC_",
+        id,
+        &[
+            (b"EDID", items::text("TonedNpc")),
+            (b"ACBS", vec![0u8; 24]),
+            (b"RNAM", race_id.to_le_bytes().to_vec()),
+            (
+                b"QNAM",
+                tone.iter()
+                    .flat_map(|channel| channel.to_le_bytes())
+                    .collect(),
+            ),
+        ],
+    )
+}
+
+/// The `actor_models` skin tone columns of `id`.
+fn stored_skin_tone(connection: &Connection, id: u32) -> [Option<f64>; 3] {
+    connection
+        .query_row(
+            "SELECT skin_tone_r, skin_tone_g, skin_tone_b FROM actor_models WHERE id=?1",
+            [id],
+            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
+        )
+        .unwrap()
+}
+
+#[test]
+fn qnam_skin_tone_is_published_and_absent_qnam_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let tone = [198.0 / 255.0, 176.0 / 255.0, 168.0 / 255.0];
+    let mut records = vec![
+        npc_with_skin_tone(0x100, 0x200, tone),
+        items::npc(0x101, 0x200, false),
+        npc_with_skin_tone(0x102, 0x200, [0.0; 3]),
+    ];
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let toned = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(toned.skin_tone, Some(tone));
+    let plain = catalog.models.iter().find(|row| row.id == 0x101).unwrap();
+    assert_eq!(plain.skin_tone, None);
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .find(|row| row.id == 0x102)
+            .unwrap()
+            .skin_tone,
+        Some([0.0; 3])
+    );
+
+    let connection = export(directory.path(), &path);
+    assert_eq!(
+        stored_skin_tone(&connection, 0x100),
+        tone.map(|channel| Some(f64::from(channel)))
+    );
+    assert_eq!(stored_skin_tone(&connection, 0x101), [None; 3]);
+    assert_eq!(stored_skin_tone(&connection, 0x102), [Some(0.0); 3]);
+}
+
+/// QNAM is not a confirmed Traits inheritance field. Neither the child's own tone nor the root's
+/// tone is published for this source NPC.
+#[test]
+fn traits_enabled_source_does_not_inherit_qnam_from_child_or_root() {
+    let directory = tempfile::tempdir().unwrap();
+    // QNAM inheritance for Traits-enabled NPCs is unproved.
+    let root = items::record(
+        b"NPC_",
+        0x101,
+        &[
+            (b"ACBS", vec![0u8; 24]),
+            (b"RNAM", 0x200u32.to_le_bytes().to_vec()),
+            (
+                b"QNAM",
+                [0.25_f32, 0.5, 0.75]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            ),
+        ],
+    );
+    let child = items::record(
+        b"NPC_",
+        0x100,
+        &[
+            (b"ACBS", {
+                let mut v = vec![0u8; 24];
+                v[18] = 1;
+                v
+            }),
+            (b"TPLT", 0x101u32.to_le_bytes().to_vec()),
+            (b"RNAM", 0x200u32.to_le_bytes().to_vec()),
+            (
+                b"QNAM",
+                [0.1_f32, 0.2, 0.3]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+            ),
+        ],
+    );
+    let records = vec![
+        child,
+        root,
+        items::race(0x200, "NordRace", Some(0x300), false),
+        items::skin_armor(0x300, &[0x400]),
+        items::armature(0x400, 0x200, items::BIPED_BODY, Some(MALE_BODY), None),
+    ];
+    let path = write_plugin(directory.path(), "TraitsQnam.esp", &records);
+    let catalog = resolve(&path);
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .find(|row| row.id == 0x100)
+            .unwrap()
+            .skin_tone,
+        None
+    );
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .find(|row| row.id == 0x101)
+            .unwrap()
+            .skin_tone,
+        Some([0.25, 0.5, 0.75])
+    );
+}
+
+/// A database whose `actor_models` predates the skin tone gains the columns when the tables are
+/// created again, so a subset export into it can still insert its rows.
+#[test]
+fn an_older_actor_models_table_gains_the_skin_tone_columns() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE actor_models (
+                 id INTEGER PRIMARY KEY, race_id INTEGER NOT NULL, sex TEXT NOT NULL,
+                 skin_armo_id INTEGER, head_model TEXT, head_source TEXT,
+                 resolution TEXT NOT NULL
+             );
+             INSERT INTO actor_models(id, race_id, sex, resolution)
+                 VALUES (0x100, 0x200, 'male', 'body');",
+        )
+        .unwrap();
+    converter::esm::exporter::create_tables(&connection).unwrap();
+    converter::esm::exporter::create_tables(&connection).unwrap();
+    assert_eq!(stored_skin_tone(&connection, 0x100), [None; 3]);
 }
 
 /// Retail bodies: the full resolved/unresolved breakdown, Alvor's row and the
@@ -668,6 +1376,21 @@ fn referenced_npc_bases_resolve_bodies() {
         .expect("Sigrid's row");
     println!("Sigrid (0x00013476) ACBS sex: {}", sigrid.sex);
     println!("Alvor: {alvor:?}");
+    // Retail `QNAM` bytes are whole steps of 1/255: Alvor 198,176,168 and Sigrid 221,221,221.
+    for (row, encoded) in [(alvor, [198.0_f32, 176.0, 168.0]), (sigrid, [221.0; 3])] {
+        let tone = row.skin_tone.expect("retail NPC_ carries QNAM");
+        for (channel, expected) in tone.iter().zip(encoded) {
+            assert!(
+                (channel * 255.0 - expected).abs() < 1e-3,
+                "{:08X}: {tone:?}",
+                row.id
+            );
+        }
+        assert_eq!(
+            stored_skin_tone(&connection, row.id),
+            tone.map(|channel| Some(f64::from(channel)))
+        );
+    }
     for part in &parts {
         println!("Alvor part {}: {}", part.slot.as_str(), part.model_path);
     }

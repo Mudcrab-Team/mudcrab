@@ -1,4 +1,5 @@
 use crate::{
+    animation,
     archive::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession, prune_stale_reader_packs,
@@ -1277,6 +1278,24 @@ impl AssetPipeline {
             let relative = compose::composed_body_path("default", sex);
             if staging.join(&relative).is_file() {
                 report.artifacts.push(relative);
+            }
+        }
+        if config.mo2.is_some() {
+            stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
+        }
+        convert_default_animations(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                let relative = default_animation_output(sex, stem);
+                if staging.join(&relative).is_file() {
+                    report.artifacts.push(relative);
+                }
             }
         }
         let texture_semantics = collect_texture_semantics(staging, &source_textures)?;
@@ -2615,6 +2634,242 @@ fn compose_default_bodies(
     Ok(())
 }
 
+/// The gait clips every character ships, in emission order.
+///
+/// Each entry is the clip name followed by the source/output stem. Ordering is
+/// deterministic so a resumed run, the artifact report, and the logs agree.
+const DEFAULT_ANIMATION_CLIPS: [(&str, &str); 3] = [
+    ("idle", "mt_idle"),
+    ("walkforward", "mt_walkforward"),
+    ("runforward", "mt_runforward"),
+];
+
+/// The staging path of one sex's converted clip.
+fn default_animation_output(sex: &str, stem: &str) -> PathBuf {
+    PathBuf::from("meshes/actors/character/animations")
+        .join(sex)
+        .join(format!("{stem}.glb"))
+}
+
+/// Removes blocking non-regular paths at every derived gait output before the pass can skip or write.
+fn clear_nonregular_animation_outputs(staging: &Path) -> Result<()> {
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            let output = staging.join(default_animation_output(sex, stem));
+            match fs::symlink_metadata(&output) {
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                Ok(metadata) => {
+                    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                        return Err(eyre!(
+                            "refusing to remove directory at gait output {}",
+                            output.display()
+                        ));
+                    }
+                    fs::remove_file(&output)
+                        .wrap_err_with(|| format!("failed to remove {}", output.display()))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .wrap_err_with(|| format!("failed to inspect {}", output.display()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decodes staged default gait clips and writes animation-only GLBs.
+///
+/// Runs after `compose_default_bodies`, so each clip binds to the composed
+/// body's bone tree. Missing inputs and conversion errors are optional notices.
+/// Each input resolves through the winning-source map, including MO2 overrides.
+fn convert_default_animations(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
+    let animations = staging.join("vfs/meshes/actors/character/animations");
+    let assets = staging.join("vfs/meshes/actors/character/character assets");
+    let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
+    let remove_stale = |output: &Path| -> Result<()> {
+        match fs::remove_file(output) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(error).wrap_err_with(|| format!("failed to remove {}", output.display()))
+            }
+            _ => Ok(()),
+        }
+    };
+
+    clear_nonregular_animation_outputs(staging)?;
+
+    let prior_derived_relevance: BTreeMap<_, _> = ["male", "female"]
+        .into_iter()
+        .map(|sex| {
+            let relevant = DEFAULT_ANIMATION_CLIPS.iter().any(|(_, stem)| {
+                let relative = default_animation_output(sex, stem);
+                let key = relative.to_string_lossy().replace('\\', "/");
+                staging.join(relative).is_file() || manifest.failures.contains_key(&key)
+            });
+            (sex, relevant)
+        })
+        .collect();
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            let key = default_animation_output(sex, stem)
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest.failures.remove(&key);
+        }
+    }
+
+    for sex in ["male", "female"] {
+        let outputs: Vec<_> = DEFAULT_ANIMATION_CLIPS
+            .iter()
+            .map(|(clip_name, stem)| {
+                let relative = default_animation_output(sex, stem);
+                let key = relative.to_string_lossy().replace('\\', "/");
+                (*clip_name, *stem, relative, key)
+            })
+            .collect();
+        let skeleton_hkx = winning(assets.join("skeleton.hkx"));
+        let skeleton_nif = winning(assets.join("skeleton.nif"));
+        let body_path = winning(assets.join(format!("{sex}body_1.nif")));
+        let actor_work_exists = skeleton_hkx.is_file()
+            || skeleton_nif.is_file()
+            || body_path.is_file()
+            || outputs.iter().any(|(_, stem, _, _)| {
+                winning(animations.join(sex).join(format!("{stem}.hkx"))).is_file()
+            });
+        let notices_are_relevant =
+            actor_work_exists || prior_derived_relevance.get(sex).copied().unwrap_or(false);
+        let missing = [
+            ("skeleton.hkx", &skeleton_hkx),
+            ("body", &body_path),
+            ("skeleton.nif", &skeleton_nif),
+        ]
+        .into_iter()
+        .find(|(_, path)| !path.is_file());
+        if let Some((label, path)) = missing {
+            for (clip_name, _, relative, _) in &outputs {
+                remove_stale(&staging.join(relative))?;
+                if notices_are_relevant {
+                    report.notices.push(format!(
+                        "{}: skipping default {sex} {clip_name} animation: missing {label} {}",
+                        relative.display(),
+                        path.display()
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let prepared = (|| -> Result<_> {
+            let body_model = crate::mesh::build_skinned_model(&body_path, &skeleton_nif)
+                .wrap_err_with(|| format!("failed to build the default {sex} actor body"))?;
+            let bones = body_model
+                .skeletal_meshes
+                .first()
+                .ok_or_else(|| eyre!("default {sex} actor body has no skeletal mesh"))?
+                .bones
+                .clone();
+            let skeleton_bytes = fs::read(&skeleton_hkx)
+                .wrap_err_with(|| format!("failed to read {}", skeleton_hkx.display()))?;
+            Ok((bones, skeleton_bytes))
+        })();
+        let (bones, skeleton_bytes) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                for (clip_name, _, relative, _) in &outputs {
+                    remove_stale(&staging.join(relative))?;
+                    let message = format!(
+                        "{}: failed to prepare the default {sex} {clip_name} animation: {error:#}",
+                        relative.display()
+                    );
+                    if fail_fast {
+                        for cleanup_sex in ["male", "female"] {
+                            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                                remove_stale(
+                                    &staging.join(default_animation_output(cleanup_sex, stem)),
+                                )?;
+                            }
+                        }
+                        return Err(eyre!("{message}"));
+                    }
+                    report.notices.push(message.clone());
+                    warn!("{message}");
+                }
+                continue;
+            }
+        };
+
+        for (clip_name, stem, relative, _) in outputs {
+            let output = staging.join(&relative);
+            let clip_path = winning(animations.join(sex).join(format!("{stem}.hkx")));
+            if !clip_path.is_file() {
+                remove_stale(&output)?;
+                let message = format!(
+                    "{}: skipping default {sex} {clip_name} animation: missing clip {}",
+                    relative.display(),
+                    clip_path.display()
+                );
+                report.notices.push(message.clone());
+                warn!("{message}");
+                continue;
+            }
+
+            let converted = (|| -> Result<()> {
+                let clip_bytes = fs::read(&clip_path)
+                    .wrap_err_with(|| format!("failed to read {}", clip_path.display()))?;
+                let mut clip =
+                    animation::decode_clip_with_skeleton(&clip_bytes, &skeleton_bytes)
+                        .wrap_err_with(|| format!("failed to decode {}", clip_path.display()))?;
+
+                let candidate_dir = tempfile::tempdir().wrap_err_with(|| {
+                    format!("failed to create a temporary directory for the {sex} {clip_name} clip")
+                })?;
+                let candidate = candidate_dir.path().join(format!("{stem}.glb"));
+                let binding = animation::write_clip_glb(&mut clip, &bones, stem, &candidate)
+                    .wrap_err_with(|| format!("failed to write {}", output.display()))?;
+                let bytes = fs::read(&candidate)?;
+                if !fs::read(&output).is_ok_and(|existing| existing == bytes) {
+                    crate::mesh::write_glb_atomic(&output, &bytes)?;
+                }
+                info!(
+                    "default {sex} {clip_name} animation over {} body bones at {} ({} bound, {} skipped)",
+                    bones.bones.len(),
+                    output.display(),
+                    binding.bound(),
+                    binding.skipped.len()
+                );
+                Ok(())
+            })();
+            if let Err(error) = converted {
+                remove_stale(&output)?;
+                let message = format!(
+                    "{}: failed to convert the default {sex} {clip_name} animation: {error:#}",
+                    relative.display()
+                );
+                if fail_fast {
+                    for cleanup_sex in ["male", "female"] {
+                        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                            remove_stale(
+                                &staging.join(default_animation_output(cleanup_sex, stem)),
+                            )?;
+                        }
+                    }
+                    return Err(eyre!("{message}"));
+                }
+                report.notices.push(message.clone());
+                warn!("{message}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Collects texture usage from staged GLBs and the world database, including scoped replacement normals.
 pub(crate) fn collect_texture_semantics(
     staging: &Path,
@@ -2799,8 +3054,21 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
             let relative = destination.strip_prefix(staging)?.to_owned();
             let runtime_key =
                 canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")?;
-            if source_texture_key(&runtime_key)? != runtime_key {
-                aliases.insert(PathBuf::from(runtime_key));
+            let source_key = source_texture_key(&runtime_key)?;
+            if source_key != runtime_key {
+                aliases.insert(PathBuf::from(&runtime_key));
+                // Bevy's skin material loads the same bytes with linear decoding. Publish its
+                // companion path as well, retaining `.opensky-wrapN` so clamp/repeat images keep
+                // distinct AssetServer identities and sampler settings.
+                if let Some(linear) = runtime_key.strip_suffix(".ktx2") {
+                    let linear = linear.replace(".opensky-srgb", "");
+                    let linear = format!("{linear}.ktx2");
+                    // The canonical source is already the default linear path. Never republish
+                    // it over itself; only sampler-specific companion aliases need a file.
+                    if linear != source_key {
+                        aliases.insert(PathBuf::from(linear));
+                    }
+                }
             }
         }
     }
@@ -3004,7 +3272,7 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
     let mut seen = BTreeMap::<String, PathBuf>::new();
     for source in files
         .iter()
-        .filter(|path| extension(path, &["dds", "nif", "pex", "lod"]))
+        .filter(|path| extension(path, &["dds", "nif", "pex", "lod", "hkx"]))
     {
         let relative = source.strip_prefix(data)?;
         let (kind, extension) = if extension(source, &["dds"]) {
@@ -3013,6 +3281,11 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
             (AssetKind::Mesh, "nif")
         } else if extension(source, &["pex"]) {
             (AssetKind::Script, "pex")
+        } else if extension(source, &["hkx"]) {
+            if !crate::archive::is_animation_input(relative) {
+                continue;
+            }
+            (AssetKind::Animation, "hkx")
         } else {
             (AssetKind::LodSettings, "lod")
         };
@@ -3150,6 +3423,28 @@ fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Resu
     Ok(())
 }
 
+/// Links the winning MO2 animation inputs into the staged VFS, where the animation pass reads
+/// them beside the archive-extracted copies they override.
+fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
+    for (relative, source) in sources {
+        if crate::asset_path::is_authoring_resource(relative)
+            || !crate::archive::is_animation_input(Path::new(relative))
+        {
+            continue;
+        }
+        let destination = vfs.join(crate::archive::safe_relative_path(relative)?);
+        fs::create_dir_all(destination.parent().unwrap())?;
+        link_or_copy(source, &destination)?;
+    }
+    Ok(())
+}
+
+/// Whether a path names an output this converter derives without a matching
+/// source file: composed actor bodies and animation clips.
+fn is_derived_output(relative: &str) -> bool {
+    compose::is_composed_output(relative) || animation::is_animation_output(relative)
+}
+
 /// Removes staged mesh, texture, and script outputs absent from the current MO2 source selection.
 ///
 /// Retains current resume work while preventing removed outputs from contributing stale references.
@@ -3184,7 +3479,7 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
                 .strip_prefix(staging)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if compose::is_composed_output(&relative) {
+            if is_derived_output(&relative) {
                 continue;
             }
             let key = if extension(&path, &["ktx2"]) {
@@ -3438,7 +3733,7 @@ fn remove_orphan_staged_assets(staging: &Path, sources: &[PathBuf]) -> Result<()
         let relative = entry.path().strip_prefix(staging)?;
         if entry.file_type().is_file()
             && extension(entry.path(), &["glb", "ktx2", "luau"])
-            && !compose::is_composed_output(&relative.to_string_lossy().replace('\\', "/"))
+            && !is_derived_output(&relative.to_string_lossy().replace('\\', "/"))
             && !expected.contains(relative)
         {
             fs::remove_file(entry.path()).wrap_err_with(|| {
@@ -5986,9 +6281,14 @@ mod tests {
 
     #[test]
     fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
-        for mode in 0..3 {
+        for mode in 0..=3 {
             for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+                let sampler = if mode == 3 {
+                    String::new()
+                } else {
+                    format!(".opensky-wrap{mode}")
+                };
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
                 assert_eq!(
                     texture_reference_source_key(&alias).as_deref(),
@@ -6011,11 +6311,27 @@ mod tests {
                 glb.extend_from_slice(b"JSON");
                 glb.extend_from_slice(&json);
                 fs::write(root.join("meshes/alias.glb"), glb).unwrap();
-                assert_eq!(
-                    publish_texture_aliases(root).unwrap(),
+                let expected = if transfer.is_empty() && mode == 3 {
+                    vec![]
+                } else if transfer.is_empty() || mode == 3 {
                     vec![PathBuf::from(&alias)]
-                );
+                } else {
+                    let linear = alias.replace(".opensky-srgb", "");
+                    vec![PathBuf::from(&alias), PathBuf::from(linear)]
+                };
+                let published = publish_texture_aliases(root).unwrap();
+                assert_eq!(published, expected);
                 assert_eq!(fs::read(root.join(alias)).unwrap(), b"source");
+                for linear in published
+                    .iter()
+                    .filter(|path| !path.to_string_lossy().contains("srgb"))
+                {
+                    assert_eq!(fs::read(root.join(linear)).unwrap(), b"source");
+                }
+                assert_eq!(
+                    fs::read(root.join("textures/shared.ktx2")).unwrap(),
+                    b"source"
+                );
             }
         }
     }
@@ -7168,16 +7484,20 @@ mod tests {
     }
 
     #[test]
-    fn compose_default_bodies_records_a_failed_sex_as_a_skip() {
+    fn compose_default_bodies_reports_optional_failure_as_a_notice() {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
         stage_default_actor_parts(staging);
         compose_staged_bodies(staging, false);
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(
+            male.is_file(),
+            "the stale body must exist before poisoning a part"
+        );
         stage_a_failing_male_hands(staging);
 
         let (report, manifest) = compose_staged_bodies(staging, false);
 
-        let male = staging.join(crate::compose::composed_body_path("default", "male"));
         let female = staging.join(crate::compose::composed_body_path("default", "female"));
         assert!(!male.exists(), "a failed body must not leave stale output");
         assert!(female.is_file(), "the other sex must still compose");
@@ -7410,6 +7730,726 @@ mod tests {
     }
 
     #[test]
+    fn recognises_only_composed_and_animation_derived_outputs() {
+        assert!(is_derived_output(
+            "meshes/actors/character/composed/default/male/body.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/male/mt_idle.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/female/mt_idle.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/male/mt_walkforward.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/female/mt_runforward.glb"
+        ));
+        assert!(!is_derived_output("meshes/actors/character/malebody_1.glb"));
+        assert!(!is_derived_output(
+            "meshes/actors/character/animations/male/mt_idle.hkx"
+        ));
+        assert!(!is_derived_output(
+            "textures/actors/character/animations/male/mt_idle.ktx2"
+        ));
+        assert!(!is_derived_output(
+            "meshes/actors/character/animation/male/mt_idle.glb"
+        ));
+    }
+
+    #[test]
+    fn animation_clips_survive_orphan_removal() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        fs::write(&orphan, b"clip").unwrap();
+
+        remove_orphan_staged_assets(staging, &[]).unwrap();
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn animation_clips_survive_mo2_pruning() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        fs::write(&orphan, b"clip").unwrap();
+
+        prune_removed_mo2_outputs(staging, &[]).unwrap();
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn all_gait_clips_survive_a_second_cleanup_pass() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+
+        for _ in 0..2 {
+            remove_orphan_staged_assets(staging, &[]).unwrap();
+            prune_removed_mo2_outputs(staging, &[]).unwrap();
+        }
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+    }
+
+    #[test]
+    fn default_animation_clip_table_is_ordered() {
+        assert_eq!(
+            DEFAULT_ANIMATION_CLIPS,
+            [
+                ("idle", "mt_idle"),
+                ("walkforward", "mt_walkforward"),
+                ("runforward", "mt_runforward"),
+            ]
+        );
+        for sex in ["male", "female"] {
+            let paths: Vec<String> = DEFAULT_ANIMATION_CLIPS
+                .iter()
+                .map(|(_, stem)| {
+                    default_animation_output(sex, stem)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            assert_eq!(
+                paths,
+                [
+                    format!("meshes/actors/character/animations/{sex}/mt_idle.glb"),
+                    format!("meshes/actors/character/animations/{sex}/mt_walkforward.glb"),
+                    format!("meshes/actors/character/animations/{sex}/mt_runforward.glb"),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn convert_default_animations_is_a_no_op_without_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(!staging.join("meshes").exists());
+        assert!(report.notices.is_empty());
+    }
+
+    #[test]
+    fn missing_animation_inputs_remove_stale_outputs_and_failure_markers() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        let outputs = write_staged_gait_clips(staging);
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest
+                .failures
+                .insert(key, "stale derived failure".into());
+        }
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert_eq!(report.notices.len(), outputs.len());
+    }
+
+    #[test]
+    fn marker_only_gait_work_keeps_missing_actor_notices_for_both_sexes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                let key = default_animation_output(sex, stem)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                manifest.failures.insert(key, "stale gait failure".into());
+            }
+        }
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert_eq!(report.notices.len(), 6);
+        for sex in ["male", "female"] {
+            assert_eq!(
+                report
+                    .notices
+                    .iter()
+                    .filter(|notice| notice.contains(&format!("default {sex} ")))
+                    .count(),
+                3,
+                "notices: {:?}",
+                report.notices
+            );
+        }
+        assert!(manifest.failures.is_empty());
+    }
+
+    #[test]
+    fn gait_output_directory_collision_is_fatal_and_preserved_with_or_without_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let output = staging.join(default_animation_output("male", "mt_runforward"));
+        fs::create_dir_all(&output).unwrap();
+        let contents = output.join("blocker");
+        fs::write(&contents, b"staged generated assets").unwrap();
+
+        for fail_fast in [false, true] {
+            let mut report = PipelineReport::default();
+            let mut manifest = ConversionManifest::default();
+            let error = convert_default_animations(
+                staging,
+                &BTreeMap::new(),
+                fail_fast,
+                &mut report,
+                &mut manifest,
+            )
+            .expect_err("directory collision must abort preflight");
+            assert!(format!("{error:#}").contains("refusing to remove directory"));
+            assert_eq!(fs::read(&contents).unwrap(), b"staged generated assets");
+            assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+        }
+    }
+
+    #[test]
+    fn gait_output_metadata_errors_are_fatal_without_notices() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let output = staging.join(default_animation_output("male", "mt_runforward"));
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::remove_dir(output.parent().unwrap()).unwrap();
+        fs::write(output.parent().unwrap(), b"not a directory").unwrap();
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        let error = convert_default_animations(
+            staging,
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .expect_err("metadata error must abort preflight without fail-fast");
+
+        assert!(format!("{error:#}").contains("failed to inspect"));
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    #[test]
+    fn gait_output_preflight_preserves_regular_outputs_and_removes_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let regular = staging.join(default_animation_output("female", "mt_idle"));
+        let symlink = staging.join(default_animation_output("male", "mt_walkforward"));
+        let target = directory.path().join("external-target.glb");
+        fs::create_dir_all(regular.parent().unwrap()).unwrap();
+        fs::create_dir_all(symlink.parent().unwrap()).unwrap();
+        fs::write(&regular, b"unchanged clip").unwrap();
+        fs::write(&target, b"external target bytes").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        clear_nonregular_animation_outputs(staging).unwrap();
+
+        assert_eq!(fs::read(regular).unwrap(), b"unchanged clip");
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::symlink_metadata(&symlink).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound,
+                "symlink must be removed"
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"external target bytes");
+        }
+    }
+
+    #[test]
+    fn animation_preparation_failure_is_a_notice_and_keeps_source_repairs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let output = staging.join(MALE_IDLE_GLB);
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"stale clip").unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(MALE_IDLE_GLB.into(), "old derived failure".into());
+        manifest
+            .failures
+            .insert("meshes/source.nif".into(), "source repair failure".into());
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(!output.exists(), "failed conversion must remove stale clip");
+        assert!(!manifest.failures.contains_key(MALE_IDLE_GLB));
+        assert_eq!(
+            manifest
+                .failures
+                .get("meshes/source.nif")
+                .map(String::as_str),
+            Some("source repair failure")
+        );
+        assert!(
+            report.warnings.is_empty(),
+            "warnings: {:?}",
+            report.warnings
+        );
+        assert!(report.notices.iter().any(|notice| {
+            notice.contains(MALE_IDLE_GLB) && notice.contains("failed to prepare")
+        }));
+    }
+
+    #[test]
+    fn animation_preparation_failure_propagates_with_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let outputs = write_staged_gait_clips(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest.failures.insert(key, "stale gait failure".into());
+        }
+
+        let error =
+            convert_default_animations(staging, &BTreeMap::new(), true, &mut report, &mut manifest)
+                .expect_err("fail-fast must propagate an optional-output preparation error");
+
+        assert!(format!("{error:#}").contains("failed to build the default male actor body"));
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    #[test]
+    fn animation_conversion_failure_propagates_with_fail_fast_and_cleans_all_gaits() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let assets = actor_assets(staging);
+        let animations = staging.join("vfs/meshes/actors/character/animations/male");
+        fs::create_dir_all(&assets).unwrap();
+        fs::create_dir_all(&animations).unwrap();
+        write_actor_skeleton(&assets, "SkeletonRoot", &["Bone0", "Bone1"]);
+        write_actor_body_part(&assets, "malebody_1.nif");
+        fs::write(assets.join("skeleton.hkx"), b"synthetic skeleton").unwrap();
+        fs::write(animations.join("mt_idle.hkx"), b"invalid clip").unwrap();
+        let outputs = write_staged_gait_clips(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest.failures.insert(key, "stale gait failure".into());
+        }
+
+        let error =
+            convert_default_animations(staging, &BTreeMap::new(), true, &mut report, &mut manifest)
+                .expect_err("fail-fast must propagate a default clip conversion error");
+
+        assert!(format!("{error:#}").contains("failed to convert the default male idle animation"));
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    fn retail_path(variable: &str) -> PathBuf {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("{variable} must point at an extracted character tree"))
+    }
+
+    fn write_staged_gait_clips(staging: &Path) -> Vec<PathBuf> {
+        DEFAULT_ANIMATION_CLIPS
+            .iter()
+            .flat_map(|(_, stem)| {
+                ["male", "female"].map(|sex| staging.join(default_animation_output(sex, stem)))
+            })
+            .inspect(|path| {
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"clip").unwrap();
+            })
+            .collect()
+    }
+
+    const MALE_IDLE_GLB: &str = "meshes/actors/character/animations/male/mt_idle.glb";
+
+    fn stage_invalid_default_animation(staging: &Path) {
+        let assets = staging.join("vfs/meshes/actors/character/character assets");
+        let animations = staging.join("vfs/meshes/actors/character/animations/male");
+        fs::create_dir_all(&assets).unwrap();
+        fs::create_dir_all(&animations).unwrap();
+        fs::write(assets.join("skeleton.hkx"), b"invalid skeleton").unwrap();
+        fs::write(assets.join("skeleton.nif"), b"invalid skeleton").unwrap();
+        fs::write(assets.join("malebody_1.nif"), b"invalid body").unwrap();
+        fs::write(animations.join("mt_idle.hkx"), b"invalid clip").unwrap();
+    }
+
+    fn read_glb(path: &Path) -> (serde_json::Value, Vec<u8>) {
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(&bytes[..4], b"glTF", "GLB magic");
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[16..20], b"JSON", "JSON chunk type");
+        let json = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let bin_len =
+            u32::from_le_bytes(bytes[20 + json_len..24 + json_len].try_into().unwrap()) as usize;
+        let bin_start = 20 + json_len + 8;
+        (json, bytes[bin_start..bin_start + bin_len].to_vec())
+    }
+
+    fn accessor_values(json: &serde_json::Value, bin: &[u8], index: usize) -> Vec<f32> {
+        let accessor = &json["accessors"][index];
+        let view = &json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let components = match accessor["type"].as_str().unwrap() {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            other => panic!("unexpected accessor type {other}"),
+        };
+        let count = accessor["count"].as_u64().unwrap() as usize;
+        bin[offset..offset + count * components * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect()
+    }
+
+    fn clip_duration(json: &serde_json::Value) -> (f32, usize) {
+        let animation = &json["animations"][0];
+        let input = animation["samplers"][0]["input"].as_u64().unwrap() as usize;
+        let accessor = &json["accessors"][input];
+        (
+            accessor["max"][0].as_f64().unwrap() as f32,
+            accessor["count"].as_u64().unwrap() as usize,
+        )
+    }
+
+    fn rotation_samples(json: &serde_json::Value, bin: &[u8], node_name: &str) -> Vec<[f32; 4]> {
+        let nodes = json["nodes"].as_array().unwrap();
+        let node = nodes
+            .iter()
+            .position(|node| node["name"].as_str() == Some(node_name))
+            .unwrap_or_else(|| panic!("node {node_name} is missing"));
+        let animation = &json["animations"][0];
+        let channel = animation["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|channel| {
+                channel["target"]["node"].as_u64() == Some(node as u64)
+                    && channel["target"]["path"].as_str() == Some("rotation")
+            })
+            .unwrap_or_else(|| panic!("{node_name} has no rotation channel"));
+        let sampler = &animation["samplers"][channel["sampler"].as_u64().unwrap() as usize];
+        accessor_values(json, bin, sampler["output"].as_u64().unwrap() as usize)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| [chunk[0], chunk[1], chunk[2], chunk[3]])
+            .collect()
+    }
+
+    fn quaternion_angle_degrees(a: [f32; 4], b: [f32; 4]) -> f32 {
+        let dot = a
+            .iter()
+            .zip(b)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            .abs()
+            .min(1.0);
+        2.0 * dot.acos().to_degrees()
+    }
+
+    fn stage_retail_animation_tree(
+        staging: &Path,
+        animation_root: &Path,
+        actor_root: &Path,
+        skipped: Option<(&str, &str)>,
+    ) {
+        let assets = staging.join("vfs/meshes/actors/character/character assets");
+        let animations = staging.join("vfs/meshes/actors/character/animations");
+        fs::create_dir_all(&assets).unwrap();
+        fs::copy(
+            animation_root.join("character assets/skeleton.hkx"),
+            assets.join("skeleton.hkx"),
+        )
+        .unwrap();
+        fs::copy(
+            actor_root.join("character/character assets/skeleton.nif"),
+            assets.join("skeleton.nif"),
+        )
+        .unwrap();
+        for sex in ["male", "female"] {
+            fs::create_dir_all(animations.join(sex)).unwrap();
+            fs::copy(
+                actor_root.join(format!("character/character assets/{sex}body_1.nif")),
+                assets.join(format!("{sex}body_1.nif")),
+            )
+            .unwrap();
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                if skipped == Some((sex, clip)) {
+                    continue;
+                }
+                fs::copy(
+                    animation_root.join(format!("animations/{sex}/{stem}.hkx")),
+                    animations.join(sex).join(format!("{stem}.hkx")),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn assert_written_clip(path: &Path, label: &str, expected_duration: Option<f32>) {
+        let (json, _) = read_glb(path);
+        let animation = &json["animations"][0];
+        let channels = animation["channels"].as_array().unwrap();
+        assert_eq!(channels.len(), 288, "{label} channels");
+        let (duration, frames) = clip_duration(&json);
+        println!(
+            "{label}: {} channels, {frames} frames, {duration:.6}s",
+            channels.len()
+        );
+        if let Some(expected) = expected_duration {
+            assert!(
+                (duration - expected).abs() <= 1e-4,
+                "{label} duration {duration}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
+    fn retail_default_animations_emit_all_gait_clips() {
+        let animation_root = retail_path("MUDCRAB_ANIMATION_DIR");
+        let actor_root = retail_path("MUDCRAB_ACTOR_NIF_DIR");
+
+        let full = tempfile::tempdir().unwrap();
+        stage_retail_animation_tree(full.path(), &animation_root, &actor_root, None);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            full.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+
+        let mut written = Vec::new();
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let output = full.path().join(default_animation_output(sex, stem));
+                assert!(output.is_file(), "{sex} {clip} clip must exist");
+                let expected = match clip {
+                    "idle" => Some(9.133_333),
+                    "walkforward" => Some(1.133_333),
+                    _ => None,
+                };
+                assert_written_clip(&output, &format!("{sex} {clip}"), expected);
+                let bytes = fs::read(&output).unwrap();
+                written.push((output, bytes));
+            }
+        }
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            full.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        for (output, first) in &written {
+            assert_eq!(
+                fs::read(output).unwrap(),
+                *first,
+                "a second run must not rewrite {}",
+                output.display()
+            );
+        }
+
+        let partial = tempfile::tempdir().unwrap();
+        stage_retail_animation_tree(
+            partial.path(),
+            &animation_root,
+            &actor_root,
+            Some(("male", "runforward")),
+        );
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            partial.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let output = partial.path().join(default_animation_output(sex, stem));
+                if (sex, clip) == ("male", "runforward") {
+                    assert!(
+                        !output.exists(),
+                        "the missing male run clip must be skipped"
+                    );
+                } else {
+                    assert!(
+                        output.is_file(),
+                        "{sex} {clip} must still be written without the male run clip"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
+    fn retail_default_animations_decode_all_gait_clips() {
+        let animation_root = retail_path("MUDCRAB_ANIMATION_DIR");
+        let actor_root = retail_path("MUDCRAB_ACTOR_NIF_DIR");
+        let skeleton_bytes = fs::read(animation_root.join("character assets/skeleton.hkx"))
+            .expect("read skeleton.hkx");
+
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let bytes = fs::read(animation_root.join(format!("animations/{sex}/{stem}.hkx")))
+                    .unwrap_or_else(|error| panic!("read {sex} {clip}: {error}"));
+                let decoded = animation::decode_clip_with_skeleton(&bytes, &skeleton_bytes)
+                    .unwrap_or_else(|error| panic!("decode {sex} {clip}: {error}"));
+                println!(
+                    "{sex} {clip}: duration {:.6}s, {} frames, {} tracks, {:.3} fps",
+                    decoded.duration_seconds,
+                    decoded.frame_count,
+                    decoded.tracks.len(),
+                    decoded.frames_per_second
+                );
+                assert_eq!(decoded.tracks.len(), 99, "{sex} {clip} tracks");
+                match clip {
+                    "idle" => {
+                        assert_eq!(decoded.frame_count, 275, "{sex} idle frames");
+                        assert!(
+                            (decoded.duration_seconds - 9.133_333).abs() <= 1e-4,
+                            "{sex} idle duration {}",
+                            decoded.duration_seconds
+                        );
+                    }
+                    "walkforward" => {
+                        assert_eq!(decoded.frame_count, 35, "{sex} walk frames");
+                        assert!(
+                            (decoded.duration_seconds - 1.133_333).abs() <= 1e-4,
+                            "{sex} walk duration {}",
+                            decoded.duration_seconds
+                        );
+                    }
+                    "runforward" => assert!(decoded.frame_count > 0, "{sex} run must carry frames"),
+                    other => panic!("unexpected clip {other}"),
+                }
+            }
+        }
+
+        let skeleton_nif = actor_root.join("character/character assets/skeleton.nif");
+        let body = crate::mesh::build_skinned_model(
+            &actor_root.join("character/character assets/malebody_1.nif"),
+            &skeleton_nif,
+        )
+        .expect("build the male body");
+        let bones = body
+            .skeletal_meshes
+            .first()
+            .expect("male body has a skeletal mesh")
+            .bones
+            .clone();
+        let walk_bytes =
+            fs::read(animation_root.join("animations/male/mt_walkforward.hkx")).unwrap();
+        let mut walk = animation::decode_clip_with_skeleton(&walk_bytes, &skeleton_bytes)
+            .expect("decode male walk");
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("mt_walkforward.glb");
+        animation::write_clip_glb(&mut walk, &bones, "mt_walkforward", &output)
+            .expect("write male walk");
+
+        let (json, bin) = read_glb(&output);
+        assert_eq!(json["nodes"].as_array().unwrap().len(), 100);
+        let animation = &json["animations"][0];
+        assert_eq!(animation["channels"].as_array().unwrap().len(), 288);
+        let (duration, frames) = clip_duration(&json);
+        println!("male walk GLB: {frames} frames, {duration:.6}s");
+        assert!(
+            (duration - 1.133_333).abs() <= 1e-4,
+            "male walk GLB duration {duration}"
+        );
+
+        for bone in ["NPC L Thigh [LThg]", "NPC R Thigh [RThg]"] {
+            let samples = rotation_samples(&json, &bin, bone);
+            assert_eq!(samples.len(), frames, "{bone} rotation samples");
+            let first = samples[0];
+            let (peak_frame, peak_angle) = samples
+                .iter()
+                .enumerate()
+                .map(|(frame, sample)| (frame, quaternion_angle_degrees(first, *sample)))
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .unwrap();
+            let final_angle = quaternion_angle_degrees(first, *samples.last().unwrap());
+            println!(
+                "{bone}: peak {peak_angle:.3} deg at frame {peak_frame}, final {final_angle:.3} deg"
+            );
+            assert!(
+                peak_angle > 5.0,
+                "{bone} must move more than 5 degrees, peak {peak_angle}"
+            );
+            assert!(
+                final_angle <= 1.0,
+                "{bone} walk cycle must close, final {final_angle}"
+            );
+        }
+    }
+
+    #[test]
     fn removes_staged_assets_without_current_sources() {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
@@ -7493,6 +8533,65 @@ mod tests {
             vec![PathBuf::from("textures/effects/fire.opensky-srgb.ktx2")]
         );
         assert_eq!(fs::read(staging.join(&aliases[0])).unwrap(), b"texture");
+    }
+
+    #[test]
+    fn loose_character_animation_inputs_are_overlaid_and_other_hkx_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let skeleton = data.join("Meshes/Actors/Character/Character Assets/skeleton.hkx");
+        let behavior = data.join("Meshes/Actors/Character/Behaviors/0_master.hkx");
+        fs::create_dir_all(skeleton.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&skeleton, b"skeleton").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+
+        overlay_loose_assets(&data, &vfs, &discover(&data).unwrap()).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/character assets/skeleton.hkx")).unwrap(),
+            b"skeleton"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn mo2_animation_inputs_stage_the_winning_clips() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+        let clip = directory.path().join("mod/animations/male/mt_idle.hkx");
+        let behavior = directory.path().join("mod/behaviors/0_master.hkx");
+        fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&clip, b"clip").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let sources = BTreeMap::from([
+            (
+                "meshes/actors/character/animations/male/mt_idle.hkx".to_owned(),
+                clip,
+            ),
+            (
+                "meshes/actors/character/behaviors/0_master.hkx".to_owned(),
+                behavior,
+            ),
+        ]);
+
+        stage_mo2_animation_inputs(&vfs, &sources).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/animations/male/mt_idle.hkx")).unwrap(),
+            b"clip"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
     }
 
     #[test]
@@ -10372,7 +11471,7 @@ mod tests {
         fs::write(data.join("review.ba2"), &archive).unwrap();
         let recipe = PathBuf::from("batches")
             .join(hash_bytes(&archive))
-            .join("runtime-english-v1");
+            .join(IngestionSelection::RuntimeEnglishV1.recipe());
         let pack_directory = staging.join(".ingestion-cache").join(&recipe);
         fs::create_dir_all(&pack_directory).unwrap();
         let abandoned = [
@@ -10407,7 +11506,7 @@ mod tests {
         let root = directory.path().join("cache");
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::create_dir_all(root.join(&relative).parent().unwrap()).unwrap();
@@ -10430,7 +11529,7 @@ mod tests {
         assert!(!root.is_absolute());
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::write(staging.join(&relative), b"sealed batch").unwrap();
@@ -10612,8 +11711,12 @@ mod tests {
         fs::write(cache.join(format!("{dead}.2")), b"dead spill").unwrap();
         fs::write(cache.join("probe.tmp"), b"not a blob").unwrap();
         let packs = directory.path().join(".ingestion-cache/batches");
-        let live_packs = packs.join("00".repeat(32)).join("converter-inputs-v1");
-        let dead_packs = packs.join("ff".repeat(32)).join("converter-inputs-v1");
+        let live_packs = packs
+            .join("00".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
+        let dead_packs = packs
+            .join("ff".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
         fs::create_dir_all(&live_packs).unwrap();
         fs::create_dir_all(&dead_packs).unwrap();
         fs::write(live_packs.join(format!("{dead}.pack")), b"live pack").unwrap();

@@ -529,8 +529,7 @@ enum FormIdLayout {
     },
 }
 
-/// Field layouts per xEdit's TES5 definitions
-/// (https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas).
+/// Field layouts per xEdit 9fb016884bec138ea6c7b872cec831537d464c3e's TES5 definitions.
 fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
     use FormIdLayout::{Array, Fixed};
     if matches!(record_type, b"TES4" | b"CLFM" | b"AACT") {
@@ -564,6 +563,8 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         // Music (`ZNAM`) as well, which the in-house schema remaps too.
         b"NAM2" | b"NAM3" | b"WNAM" | b"CNAM" | b"ZNAM" if record_type == b"WRLD" => Fixed(SINGLE),
         b"RNAM" | b"CNAM" | b"INAM" if record_type == b"NPC_" => Fixed(SINGLE),
+        // NPC Traits links: both are optional FormIDs in the actor schema.
+        b"WNAM" | b"TPLT" if record_type == b"NPC_" => Fixed(SINGLE),
         // xEdit 9fb016884bec138ea6c7b872cec831537d464c3e,
         // wbDefinitionsTES5.pas:9463-9468. Match the in-house actors schema.
         b"WKMV" | b"RNMV" | b"SWMV" | b"FLMV" | b"SNMV" | b"SPMV" if record_type == b"RACE" => {
@@ -576,6 +577,9 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         b"WNAM" if record_type == b"RACE" => Fixed(SINGLE),
         b"MODL" if record_type == b"ARMO" => Fixed(SINGLE),
         b"RNAM" if record_type == b"ARMA" => Fixed(SINGLE),
+        // Additional races repeat as one FormID per MODL subrecord; malformed entries
+        // are discarded independently, matching ARMO/MODL's existing clear policy.
+        b"MODL" if record_type == b"ARMA" => Fixed(SINGLE),
         b"XOWN" | b"XGLB" | b"XEZN" | b"XLCN" | b"XLRL" => Fixed(SINGLE),
         // Door destination reference, then position, rotation and flags.
         b"XTEL" if placed => Fixed(&[(32, &[0])]),
@@ -1014,12 +1018,27 @@ mod tests {
             record(
                 0x0100_0400,
                 b"ARMA",
-                vec![(b"RNAM".to_vec(), 0x0100_0200u32.to_le_bytes().to_vec())],
+                vec![
+                    (b"RNAM".to_vec(), 0x0100_0200u32.to_le_bytes().to_vec()),
+                    (b"MODL".to_vec(), 0x0100_0200u32.to_le_bytes().to_vec()),
+                    (b"MODL".to_vec(), vec![0xAB; 3]),
+                    (b"MODL".to_vec(), 0x0100_0201u32.to_le_bytes().to_vec()),
+                ],
             ),
             record(
                 0x0100_0401,
                 b"ARMA",
                 vec![(b"RNAM".to_vec(), 0x0000_0019u32.to_le_bytes().to_vec())],
+            ),
+            record(
+                0x0100_0500,
+                b"NPC_",
+                vec![
+                    (b"WNAM".to_vec(), 0x0100_0300u32.to_le_bytes().to_vec()),
+                    (b"WNAM".to_vec(), vec![0xAB; 3]),
+                    (b"TPLT".to_vec(), 0x0100_0501u32.to_le_bytes().to_vec()),
+                    (b"TPLT".to_vec(), vec![0xAB; 3]),
+                ],
             ),
         ];
         for record in &mut records {
@@ -1050,15 +1069,30 @@ mod tests {
             records[2].subrecords[0].1,
             0x0200_0200u32.to_le_bytes().to_vec()
         );
+        assert_eq!(
+            records[2].subrecords,
+            [
+                (b"RNAM".to_vec(), 0x0200_0200u32.to_le_bytes().to_vec()),
+                (b"MODL".to_vec(), 0x0200_0200u32.to_le_bytes().to_vec()),
+                (b"MODL".to_vec(), 0x0200_0201u32.to_le_bytes().to_vec()),
+            ]
+        );
         // Index 00 is the master's own DefaultRace, which the catalog compares as `0x19`.
         assert_eq!(
             records[3].subrecords[0].1,
             0x0000_0019u32.to_le_bytes().to_vec()
         );
+        assert_eq!(
+            records[4].subrecords,
+            [
+                (b"WNAM".to_vec(), 0x0200_0300u32.to_le_bytes().to_vec()),
+                (b"TPLT".to_vec(), 0x0200_0501u32.to_le_bytes().to_vec()),
+            ]
+        );
 
         let counts = warnings.skipped_optional.borrow();
         let (count, example) = &counts["patch.esp"];
-        assert_eq!(*count, 2);
+        assert_eq!(*count, 5);
         assert_eq!(
             example,
             "ARMO record source 01000300 (load-order 02000300) MODL must be 4 bytes, found 3"

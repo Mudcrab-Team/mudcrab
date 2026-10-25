@@ -1,8 +1,9 @@
-use crate::nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial};
+use crate::nif_material::{
+    EffectPaletteDepthSource, EffectPaletteMaterial, NifNativeMaterialSource,
+};
 use crate::physics::{DebugTankard, PlayerBody, PlayerControlsSystems};
 use crate::{
     config::EngineConfig,
-    nif_depth::NifDepthMaterialSource,
     profiling::ProfilingState,
     render::{
         PLACED_OBJECT_RENDER_LAYERS, QUADRANT_WEIGHT_SAMPLES, TerrainExtension, TerrainMaterial,
@@ -13,6 +14,7 @@ use crate::{
         CellLookup, TerrainMerge, classes::TerrainClasses, material::MergedTerrainMaterial,
     },
     world::{
+        actor_catalog::ActorCatalog,
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
             CELL_SIZE, CellRef, ExpectedModelBounds, ExteriorCellGrid, FormId, InstanceBounds,
@@ -1108,6 +1110,7 @@ fn collect_cells(
     origin: Res<RenderOrigin>,
     asset_server: Res<AssetServer>,
     catalog: Res<AssetCatalog>,
+    actor_catalog: Res<ActorCatalog>,
     reflection: Res<WaterReflectionTexture>,
     mut assets: CellAssets,
     mut streaming: ResMut<StreamingWorld>,
@@ -1300,6 +1303,7 @@ fn collect_cells(
                     &mut commands,
                     &asset_server,
                     &catalog,
+                    &actor_catalog,
                     &reflection,
                     &mut assets.meshes,
                     &mut assets.terrain_materials,
@@ -1441,6 +1445,7 @@ fn spawn_cell(
     commands: &mut Commands,
     asset_server: &AssetServer,
     catalog: &AssetCatalog,
+    actor_catalog: &ActorCatalog,
     reflection: &WaterReflectionTexture,
     meshes: &mut Assets<Mesh>,
     terrain_materials: &mut Assets<TerrainMaterial>,
@@ -1709,6 +1714,24 @@ fn spawn_cell(
             let bounds = model_bounds.map(|bounds| {
                 InstanceBounds::transformed(bounds.min, bounds.max, transform.to_matrix())
             });
+            // A referenced `NPC_` with a catalog row becomes one actor entity. A row the catalog
+            // could not resolve, or one with no body to draw, skips the reference entirely: no
+            // placeholder, no static mesh, and exactly one diagnostic naming the base FormID.
+            let actor_plan = actor_catalog
+                .get(reference.base_form_id)
+                .map(|model| actor_catalog.spawn_plan(model));
+            let actor_plan = match actor_plan {
+                Some(Ok(plan)) => Some(plan),
+                Some(Err(diagnostic)) => {
+                    warn!(
+                        form_id = format_args!("{:08X}", diagnostic.base_form_id),
+                        reason = diagnostic.reason.as_str(),
+                        "actor spawn skipped: {diagnostic}"
+                    );
+                    continue;
+                }
+                None => None,
+            };
             let mut entity = parent.spawn((
                 Name::new(format!("Reference {:08X}", reference.form_id)),
                 FormId(reference.form_id),
@@ -1724,6 +1747,24 @@ fn spawn_cell(
             ));
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
+            }
+            if let Some(plan) = &actor_plan {
+                entity.insert(plan.actor);
+                if !plan.parts.is_empty() {
+                    entity.insert(plan.parts.clone());
+                }
+                if let Some(head) = &plan.head {
+                    entity.insert(head.clone());
+                }
+                if let Some(tone) = plan.skin_tone {
+                    entity.insert(tone);
+                }
+                if plan.uses_composed_body() {
+                    entity.insert((
+                        crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
+                        crate::actor_drive::ActorDrive::default(),
+                    ));
+                }
             }
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
             // surfaces once they are instantiated below it; see `crate::emittance`.
@@ -1763,7 +1804,13 @@ fn spawn_cell(
             {
                 entity.insert(door);
             }
-            if let Some(path) = spawned_model_path(reference.model_path, reference.base_is_marker) {
+            // An actor draws its composed body (or its catalog body part before one exists); every
+            // other reference keeps the model path it always used.
+            let model_path = match &actor_plan {
+                Some(plan) => Some(plan.scene_path.clone()),
+                None => spawned_model_path(reference.model_path, reference.base_is_marker),
+            };
+            if let Some(path) = model_path {
                 model_loads += 1;
                 let sequence = *model_sequence;
                 *model_sequence = model_sequence.saturating_add(1);
@@ -1804,6 +1851,7 @@ fn spawn_cell(
                         base_record_type: reference.base_record_type,
                         static_physics: terrain_physics,
                         cell_id: reference.cell_id,
+                        actor_scene: actor_plan.is_some(),
                     },
                 ));
             }
@@ -2433,7 +2481,7 @@ struct PendingModel {
 }
 
 #[derive(Component)]
-struct PendingAssetProfile {
+pub(crate) struct PendingAssetProfile {
     started: Instant,
     scene_spawned: bool,
     path: String,
@@ -2442,6 +2490,34 @@ struct PendingAssetProfile {
     base_record_type: Option<String>,
     static_physics: bool,
     cell_id: u32,
+    /// An actor scene has no `statics` row, so its bounds come from the spawned hierarchy instead
+    /// of the converter's aggregate bounds.
+    actor_scene: bool,
+}
+
+#[cfg(test)]
+impl PendingAssetProfile {
+    pub(crate) fn test_actor() -> Self {
+        Self {
+            started: Instant::now(),
+            scene_spawned: false,
+            path: "meshes/actors/test.glb".to_owned(),
+            form_id: 1,
+            base_form_id: 1,
+            base_record_type: Some("NPC_".to_owned()),
+            static_physics: false,
+            cell_id: 1,
+            actor_scene: true,
+        }
+    }
+
+    pub(crate) fn mark_instance_spawned_for_test(&mut self) {
+        self.scene_spawned = true;
+    }
+
+    pub(crate) fn instance_spawned_for_test(&self) -> bool {
+        self.scene_spawned
+    }
 }
 
 #[derive(Component)]
@@ -2509,7 +2585,7 @@ type RenderPrimitiveQuery<'world, 'state> = Query<
         Option<&'static MeshMaterial3d<StandardMaterial>>,
         Option<&'static GltfMaterialName>,
         Option<&'static GltfExtras>,
-        Option<&'static NifDepthMaterialSource>,
+        Option<&'static NifNativeMaterialSource>,
     ),
 >;
 
@@ -2868,6 +2944,7 @@ fn track_asset_readiness(
                 global,
                 world_transform,
                 expected_bounds,
+                pending.actor_scene,
                 world_assets.get(&root.0),
                 &children,
                 &transforms,
@@ -3612,6 +3689,7 @@ fn validate_spawned_transforms_and_bounds(
     root_global: &GlobalTransform,
     world_transform: &WorldTransform,
     expected: Option<&ExpectedModelBounds>,
+    actor_scene: bool,
     converted_model: Option<&WorldAsset>,
     children: &Query<&Children>,
     transforms: &Query<(&Transform, &GlobalTransform)>,
@@ -3623,33 +3701,41 @@ fn validate_spawned_transforms_and_bounds(
     if matrix_max_difference(local_matrix, world_transform.0) > 1.0e-4 {
         return Err("WorldTransform differs from the spawned reference Transform".to_owned());
     }
-    let Some(expected) = expected else {
-        // A model the converter wrote no aggregate bounds for is an empty scene: a model with no
-        // renderable geometry, so there is nothing to place, draw or bound. What makes it empty is
-        // read from the converted model itself - the scene the converter wrote, which declares no
-        // node and no mesh - rather than from the spawned instance, so a hierarchy that has not
-        // spawned yet cannot pass as an empty model. A scene that does declare a node or a mesh
-        // and still arrived without aggregate bounds is a conversion defect, and stays as fatal as
-        // any other.
-        let scene = converted_model.ok_or_else(|| {
-            "the converted model is not loaded while validating its bounds; reconvert the asset"
-                .to_owned()
-        })?;
-        let contents = converted_scene_contents(scene);
-        return if contents.is_empty() {
-            Ok(TransformValidationSummary {
-                nodes: 0,
-                empty_model: true,
-            })
-        } else {
-            Err(format!(
-                "converted model has no validated aggregate bounds; reconvert the asset (its converted scene is not empty: {} mesh primitives, {} nodes)",
-                contents.meshes, contents.nodes
-            ))
-        };
+    let expected = match expected {
+        Some(expected) => Some(
+            ExpectedModelBounds::new(expected.min, expected.max).ok_or_else(|| {
+                "converted model bounds are non-finite, empty, or inverted".to_owned()
+            })?,
+        ),
+        None => {
+            // A model the converter wrote no aggregate bounds for is an empty scene: a model with
+            // no renderable geometry, so there is nothing to place, draw or bound. What makes it
+            // empty is read from the converted model itself - the scene the converter wrote, which
+            // declares no node and no mesh - rather than from the spawned instance, so a hierarchy
+            // that has not spawned yet cannot pass as an empty model. A scene that does declare a
+            // node or a mesh and still arrived without aggregate bounds is a conversion defect,
+            // unless it is an actor scene: actor references have no `statics` row, so their bounds
+            // come from the spawned hierarchy itself.
+            let scene = converted_model.ok_or_else(|| {
+                "the converted model is not loaded while validating its bounds; reconvert the asset"
+                    .to_owned()
+            })?;
+            let contents = converted_scene_contents(scene);
+            if contents.is_empty() {
+                return Ok(TransformValidationSummary {
+                    nodes: 0,
+                    empty_model: true,
+                });
+            }
+            if !actor_scene {
+                return Err(format!(
+                    "converted model has no validated aggregate bounds; reconvert the asset (its converted scene is not empty: {} mesh primitives, {} nodes)",
+                    contents.meshes, contents.nodes
+                ));
+            }
+            None
+        }
     };
-    ExpectedModelBounds::new(expected.min, expected.max)
-        .ok_or_else(|| "converted model bounds are non-finite, empty, or inverted".to_owned())?;
 
     let mut actual_min = Vec3::splat(f32::INFINITY);
     let mut actual_max = Vec3::splat(f32::NEG_INFINITY);
@@ -3674,17 +3760,19 @@ fn validate_spawned_transforms_and_bounds(
     if bounded_meshes == 0 {
         return Err("spawned hierarchy contains no bounded mesh".to_owned());
     }
-    let extent = (expected.max - expected.min).abs().max_element().max(1.0);
-    let tolerance = (extent * 1.0e-4).max(1.0e-3);
-    let error = (actual_min - expected.min)
-        .abs()
-        .max((actual_max - expected.max).abs())
-        .max_element();
-    if !error.is_finite() || error > tolerance {
-        return Err(format!(
-            "spawned hierarchy bounds diverge from conversion: expected {:?}..{:?}, actual {:?}..{:?}, tolerance {tolerance}",
-            expected.min, expected.max, actual_min, actual_max
-        ));
+    if let Some(expected) = expected {
+        let extent = (expected.max - expected.min).abs().max_element().max(1.0);
+        let tolerance = (extent * 1.0e-4).max(1.0e-3);
+        let error = (actual_min - expected.min)
+            .abs()
+            .max((actual_max - expected.max).abs())
+            .max_element();
+        if !error.is_finite() || error > tolerance {
+            return Err(format!(
+                "spawned hierarchy bounds diverge from conversion: expected {:?}..{:?}, actual {:?}..{:?}, tolerance {tolerance}",
+                expected.min, expected.max, actual_min, actual_max
+            ));
+        }
     }
     Ok(TransformValidationSummary {
         nodes,
@@ -4119,7 +4207,7 @@ fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Optio
         .and_then(converted_model_path)
 }
 
-fn converted_model_path(path: String) -> Option<String> {
+pub(crate) fn converted_model_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     // The filename is no marker signal: forges and the Civil War map flags carry
@@ -4853,6 +4941,10 @@ impl TerrainCoverage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::{
+        Actor, ActorHead, ActorHeadSource, ActorParts, ActorSlot, ActorSpawnDiagnostic,
+        ActorSpawnSkip,
+    };
     use bevy::ecs::system::RunSystemOnce;
     use bevy_rapier3d::prelude::{
         AdditionalMassProperties, ColliderMassProperties, QueryFilter, ReadRapierContext, Velocity,
@@ -6880,6 +6972,7 @@ mod tests {
                 base_record_type: None,
                 static_physics: false,
                 cell_id: 0x02D4E0,
+                actor_scene: false,
             },
         )
     }
@@ -6960,6 +7053,7 @@ mod tests {
         let mut app = model_app();
         add_placed_object_layer_propagation(&mut app);
         app.init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
             .init_asset::<TerrainMaterial>()
             .init_asset::<WaterMaterial>()
             .insert_resource(RenderOrigin(IVec2::ZERO))
@@ -7044,6 +7138,7 @@ mod tests {
         let mut app = model_app();
         add_placed_object_layer_propagation(&mut app);
         app.init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
             .init_asset::<TerrainMaterial>()
             .init_asset::<WaterMaterial>()
             .insert_resource(RenderOrigin(IVec2::ZERO))
@@ -7071,6 +7166,7 @@ mod tests {
         mut spawned: Local<bool>,
         asset_server: Res<AssetServer>,
         catalog: Res<AssetCatalog>,
+        actor_catalog: Res<ActorCatalog>,
         reflection: Res<WaterReflectionTexture>,
         mut meshes: ResMut<Assets<Mesh>>,
         mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
@@ -7088,6 +7184,7 @@ mod tests {
             &mut commands,
             &asset_server,
             &catalog,
+            &actor_catalog,
             &reflection,
             &mut meshes,
             &mut terrain_materials,
@@ -7747,6 +7844,54 @@ mod tests {
         );
     }
 
+    /// Actor references have no `statics` row, so an actor scene never has converted aggregate
+    /// bounds. It still finishes readiness: its transforms and render assets are validated and the
+    /// spawned hierarchy supplies its own bounds.
+    #[test]
+    fn an_actor_scene_without_static_bounds_becomes_ready() {
+        let mut app = model_app();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(2.0, 4.0, 6.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let handle = add_converted_model(&mut app, converted_scene_with_material(mesh, material));
+        let reference = spawn_model_reference(&mut app, handle, None);
+        app.world_mut()
+            .entity_mut(reference)
+            .get_mut::<PendingAssetProfile>()
+            .expect("the pending profile")
+            .actor_scene = true;
+
+        let metrics = settle_readiness(&mut app);
+
+        assert_eq!(
+            metrics.transform_bounds_validation_failures, 0,
+            "an actor has no static bounds to compare: {:?}",
+            metrics.asset_failures
+        );
+        assert!(
+            metrics.asset_failures.is_empty(),
+            "nothing is recorded as a failed asset: {:?}",
+            metrics.asset_failures
+        );
+        assert_eq!(metrics.assets_ready, 1);
+        assert_eq!(metrics.transform_instances_validated, 1);
+        assert_eq!(metrics.bounds_validated, 1);
+        assert_eq!(metrics.meshes_validated, 1);
+        assert_eq!(metrics.materials_validated, 1);
+        assert_eq!(metrics.empty_model_references, 0);
+        assert!(
+            !app.world()
+                .entity(reference)
+                .contains::<PendingAssetProfile>(),
+            "the actor scene is no longer pending"
+        );
+    }
+
     /// The other direction of the same rule: a model the converter *did* bound, whose spawned
     /// scene turns out to be empty, is not an empty model to wave through - the two disagree and
     /// the disagreement is fatal.
@@ -7956,6 +8101,7 @@ mod tests {
             &root_global,
             &world_transform,
             Some(&expected_bounds),
+            false,
             None,
             &children,
             &transforms,
@@ -8132,6 +8278,7 @@ mod tests {
         mut root: ResMut<SpawnedCellRoot>,
         asset_server: Res<AssetServer>,
         catalog: Res<AssetCatalog>,
+        actor_catalog: Res<ActorCatalog>,
         reflection: Res<WaterReflectionTexture>,
         mut meshes: ResMut<Assets<Mesh>>,
         mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
@@ -8143,6 +8290,7 @@ mod tests {
                 &mut commands,
                 &asset_server,
                 &catalog,
+                &actor_catalog,
                 &reflection,
                 &mut meshes,
                 &mut terrain_materials,
@@ -8181,6 +8329,15 @@ mod tests {
     /// An app that spawns one interior cell holding `references` through the real [`spawn_cell`],
     /// with the engine's lights flag set as `lights`.
     fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
+        spawn_reference_cell_app_with_catalog(references, lights, ActorCatalog::default())
+    }
+
+    /// The same app with a populated actor catalog.
+    fn spawn_reference_cell_app_with_catalog(
+        references: Vec<ReferenceRow>,
+        lights: bool,
+        actor_catalog: ActorCatalog,
+    ) -> App {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("catalogue.db");
         write_empty_catalogue(&path);
@@ -8197,10 +8354,13 @@ mod tests {
             .init_asset::<WaterMaterial>()
             // A reference with a model path asks the asset server for its converted scene.
             .init_asset::<WorldAsset>()
+            // A composed-body actor asks for its idle clip.
+            .init_asset::<bevy::gltf::Gltf>()
             .insert_resource(config)
             .insert_resource(RenderOrigin(IVec2::ZERO))
             .init_resource::<ActiveSpace>()
             .insert_resource(AssetCatalog::open(&path).unwrap())
+            .insert_resource(actor_catalog)
             .insert_resource(WaterReflectionTexture(Handle::default()))
             .insert_resource(QueuedReferences(references))
             .init_resource::<SpawnedCellRoot>()
@@ -8208,6 +8368,65 @@ mod tests {
             .add_systems(Update, spawn_queued_references);
         app.update();
         app
+    }
+
+    /// The documented actor catalog DDL (db-schema.md §18), as an in-memory fixture.
+    fn actor_catalog_connection() -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE actor_models (
+                    id INTEGER PRIMARY KEY,
+                    race_id INTEGER NOT NULL,
+                    sex TEXT NOT NULL,
+                    skin_armo_id INTEGER,
+                    head_model TEXT,
+                    head_source TEXT,
+                    resolution TEXT NOT NULL
+                 );
+                 CREATE TABLE actor_model_parts (
+                    npc_id INTEGER NOT NULL,
+                    slot TEXT NOT NULL,
+                    model_path TEXT NOT NULL,
+                    PRIMARY KEY (npc_id, slot)
+                 );",
+            )
+            .unwrap();
+        connection
+    }
+
+    /// Alvor's catalog row and three authored parts, as the converter publishes them.
+    fn insert_alvor(connection: &rusqlite::Connection) {
+        connection
+            .execute(
+                "INSERT INTO actor_models(id, race_id, sex, skin_armo_id, head_model, head_source, resolution)
+                 VALUES (0x13475, 79686, 'male', NULL,
+                         'meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.nif',
+                         'facegen', 'body_head')",
+                [],
+            )
+            .unwrap();
+        for (slot, path) in [
+            (
+                "body",
+                r"Meshes\Actors\Character\Character Assets\MaleBody_1.NIF",
+            ),
+            (
+                "hands",
+                r"Meshes\Actors\Character\Character Assets\MaleHands_1.nif",
+            ),
+            (
+                "feet",
+                r"Meshes\Actors\Character\Character Assets\MaleFeet_1.nif",
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO actor_model_parts(npc_id, slot, model_path) VALUES (0x13475, ?1, ?2)",
+                    rusqlite::params![slot, path],
+                )
+                .unwrap();
+        }
     }
 
     // ---- Dynamic clutter from authored physics data (#104 phase a) ----
@@ -9053,6 +9272,257 @@ mod tests {
             Some("meshes/furniture/blacksmithforgemarker.glb")
         );
         assert!(drawn.get::<PendingModel>().is_some());
+    }
+
+    /// A referenced `NPC_` with a catalog row becomes one actor entity at the reference's authored
+    /// transform. Its visual root is the composed body, and its hands/feet are components rather
+    /// than scenes.
+    #[test]
+    fn a_referenced_npc_spawns_one_actor_at_its_authored_transform() {
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let connection = actor_catalog_connection();
+        insert_alvor(&connection);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        reference.base_record_type = Some("NPC_".to_owned());
+        reference.model_path = Some(r"Actors\Character\Character Assets\MaleBody_1.NIF".to_owned());
+        reference.position = [128.0, 64.0, -256.0];
+        reference.rotation = [0.0, 1.5, 0.0];
+        let mut app =
+            spawn_reference_cell_app_with_catalog(vec![reference.clone()], false, catalog);
+
+        let actors: Vec<Entity> = {
+            let mut query = app.world_mut().query_filtered::<Entity, With<Actor>>();
+            query.iter(app.world()).collect()
+        };
+        assert_eq!(
+            actors.len(),
+            1,
+            "one NPC_ reference becomes exactly one actor"
+        );
+        let entity = app.world().entity(actors[0]);
+        let actor = entity.get::<Actor>().expect("the actor component");
+        assert_eq!(actor.base_form_id, 0x13475);
+        assert_eq!(actor.race_id, 79686);
+        assert_eq!(actor.sex, crate::actors::ActorSex::Male);
+        assert_eq!(actor.resolution, crate::actors::ActorResolution::BodyHead);
+
+        let transform = *entity.get::<Transform>().expect("the reference transform");
+        assert_eq!(
+            transform.translation,
+            creation_to_bevy(Vec3::from_array(reference.position))
+        );
+        assert_eq!(
+            transform.rotation,
+            creation_rotation_to_bevy(reference.rotation)
+        );
+        assert_eq!(transform.scale, Vec3::ONE);
+
+        let parts = entity.get::<ActorParts>().expect("the catalog parts");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts
+                .get(ActorSlot::Body)
+                .map(|part| part.model_path.as_str()),
+            Some(r"Meshes\Actors\Character\Character Assets\MaleBody_1.NIF")
+        );
+        assert!(parts.get(ActorSlot::Hands).is_some());
+        assert!(parts.get(ActorSlot::Feet).is_some());
+
+        let head = entity.get::<ActorHead>().expect("the catalog head");
+        assert_eq!(head.source, ActorHeadSource::Facegen);
+        assert_eq!(
+            head.model_path,
+            "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.nif"
+        );
+
+        assert_eq!(
+            entity.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/actors/character/composed/default/male/body.glb"),
+            "the visual root is the composed body, not a part scene"
+        );
+        assert!(entity.get::<PendingModel>().is_some());
+        assert_eq!(entity.get::<FormId>(), Some(&FormId(0x13475)));
+    }
+
+    /// Before a composed body is published, the same spawn draws the catalog's authored body part.
+    #[test]
+    fn an_actor_without_a_composed_body_draws_its_catalog_body_part() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        insert_alvor(&connection);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x13475));
+        assert_eq!(
+            entity.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/actors/character/character assets/malebody_1.glb")
+        );
+        assert!(entity.get::<Actor>().is_some());
+        assert!(
+            entity
+                .get::<crate::actor_skin_tone::ActorSkinTone>()
+                .is_none(),
+            "a catalog without the skin tone columns gives no tone"
+        );
+    }
+
+    /// The catalog's `QNAM` skin tone travels to the actor entity, where
+    /// `crate::actor_skin_tone` applies it to the body's `skin_tint` surfaces.
+    #[test]
+    fn an_actor_carries_its_catalog_skin_tone() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute_batch(
+                "ALTER TABLE actor_models ADD COLUMN skin_tone_r REAL;
+                 ALTER TABLE actor_models ADD COLUMN skin_tone_g REAL;
+                 ALTER TABLE actor_models ADD COLUMN skin_tone_b REAL;",
+            )
+            .unwrap();
+        insert_alvor(&connection);
+        connection
+            .execute(
+                "UPDATE actor_models SET skin_tone_r=0.75, skin_tone_g=0.5, skin_tone_b=0.25",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x13475));
+        assert_eq!(
+            entity.get::<crate::actor_skin_tone::ActorSkinTone>(),
+            Some(&crate::actor_skin_tone::ActorSkinTone(Vec3::new(
+                0.75, 0.5, 0.25
+            )))
+        );
+    }
+
+    /// A race with its own body keeps that body and receives no shared human gait, even when the
+    /// default composed body exists.
+    #[test]
+    fn a_custom_race_actor_keeps_its_body_and_gets_no_shared_gait() {
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id, race_id, sex, resolution)
+                 VALUES (0x2000, 0x1000, 'male', 'body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id, slot, model_path)
+                 VALUES (0x2000, 'body',
+                         'Meshes\\Actors\\CustomRace\\Character Assets\\CustomBody.NIF')",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let mut reference = lit_reference(0x2000, None, None);
+        reference.base_form_id = 0x2000;
+        reference.base_record_type = Some("NPC_".to_owned());
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x2000));
+        assert_eq!(
+            entity.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/actors/customrace/character assets/custombody.glb"),
+            "the custom race draws its own body"
+        );
+        assert!(
+            entity.get::<crate::actor_animation::ActorClips>().is_none(),
+            "the shared gait clips only fit the shared humanoid body"
+        );
+        assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
+    }
+
+    /// An unresolved catalog row is skipped entirely: no actor, no placeholder and no static mesh,
+    /// with one typed diagnostic naming the base FormID.
+    #[test]
+    fn an_unresolved_actor_is_skipped_with_a_typed_diagnostic() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id, race_id, sex, resolution)
+                 VALUES (0x13475, 79686, 'male', 'unresolved')",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let model = catalog.get(0x13475).expect("the unresolved catalog row");
+        assert_eq!(
+            catalog.spawn_plan(model).unwrap_err(),
+            ActorSpawnDiagnostic {
+                base_form_id: 0x13475,
+                reason: ActorSpawnSkip::Unresolved,
+            }
+        );
+
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        reference.model_path = Some("Architecture/Wall.nif".to_owned());
+        let mut app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        assert_eq!(
+            app.world_mut().query::<&FormId>().iter(app.world()).count(),
+            0,
+            "the skipped actor spawns no entity at all"
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&MeshHandle>()
+                .iter(app.world())
+                .count(),
+            0,
+            "the skipped actor never falls back to its static model path"
+        );
+        assert_eq!(
+            app.world_mut().query::<&Actor>().iter(app.world()).count(),
+            0
+        );
+    }
+
+    /// A reference whose base has no catalog row keeps the exact spawn path it had before actors.
+    #[test]
+    fn a_non_actor_reference_spawns_its_model_exactly_as_before() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        insert_alvor(&connection);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x200, None, None);
+        reference.model_path = Some("Architecture/Wall.nif".to_owned());
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x200));
+        assert!(entity.get::<Actor>().is_none());
+        assert!(entity.get::<ActorParts>().is_none());
+        assert_eq!(
+            entity.get::<MeshHandle>().map(|handle| handle.0.as_str()),
+            Some("meshes/architecture/wall.glb")
+        );
+        assert!(entity.get::<PendingModel>().is_some());
     }
 
     /// One lit reference, one negative light, one flagged off by default and one plain reference:

@@ -1,3 +1,4 @@
+pub mod actor_catalog;
 pub mod cache;
 pub mod components;
 pub mod database;

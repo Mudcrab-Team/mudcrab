@@ -28,6 +28,7 @@ pub enum TextureSemantic {
     EnvironmentCube,
     EnvironmentMask,
     InnerLayer,
+    FacegenTint,
     Greyscale,
     Unclassified,
 }
@@ -48,6 +49,7 @@ impl TextureEncoding {
                 TextureSemantic::BaseColor
                     | TextureSemantic::SpecularGlossiness
                     | TextureSemantic::Detail
+                    | TextureSemantic::FacegenTint
                     | TextureSemantic::EnvironmentCube
             )
         });

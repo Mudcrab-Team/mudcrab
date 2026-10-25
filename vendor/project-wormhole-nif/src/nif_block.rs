@@ -811,6 +811,124 @@ pub struct BSLightingShaderProperty {
     pub specular_strength: f32,
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
+    /// The fields nif.xml appends for `shader_type`.
+    #[nom(Parse = "{ |i| LightingShaderTypeData::parse_for(i, shader_type) }")]
+    pub type_data: LightingShaderTypeData,
+}
+
+/// The type-specific tail of a [`BSLightingShaderProperty`], selected by its `shader_type`
+/// (nif.xml `cond="Shader Type == n"`). Skyrim LE (BSVER 83) and SE (BSVER 100) store the same
+/// layout; the Fallout 4 and 76 variants of these fields are not read. Types with no fields of
+/// their own, and values nif.xml does not name, carry [`LightingShaderTypeData::None`].
+#[derive(Debug, Default)]
+pub enum LightingShaderTypeData {
+    #[default]
+    None,
+    /// Type 1.
+    EnvironmentMap { env_map_scale: f32 },
+    /// Type 5: the colour the game replaces with the actor's skin tone.
+    SkinTint { skin_tint_color: BSVec3 },
+    /// Type 6: on FaceGen hair, brows and beards, the NPC's hair colour.
+    HairTint { hair_tint_color: BSVec3 },
+    /// Type 7.
+    ParallaxOcc { max_passes: f32, scale: f32 },
+    /// Type 11.
+    MultiLayerParallax {
+        inner_layer_thickness: f32,
+        refraction_scale: f32,
+        inner_layer_texture_scale: BSVec2,
+        env_map_strength: f32,
+    },
+    /// Type 14.
+    SparkleSnow { sparkle_parameters: BSVec4 },
+    /// Type 16.
+    EyeEnvmap {
+        eye_cubemap_scale: f32,
+        left_eye_reflection_center: BSVec3,
+        right_eye_reflection_center: BSVec3,
+    },
+}
+
+impl LightingShaderTypeData {
+    pub fn parse_for(i: &[u8], shader_type: u32) -> IResult<&[u8], Self> {
+        fn vec2(i: &[u8]) -> IResult<&[u8], BSVec2> {
+            let (i, x) = le_f32(i)?;
+            let (i, y) = le_f32(i)?;
+            Ok((i, BSVec2(glam::Vec2::new(x, y))))
+        }
+        fn vec3(i: &[u8]) -> IResult<&[u8], BSVec3> {
+            let (i, x) = le_f32(i)?;
+            let (i, y) = le_f32(i)?;
+            let (i, z) = le_f32(i)?;
+            Ok((i, BSVec3(glam::Vec3::new(x, y, z))))
+        }
+        fn vec4(i: &[u8]) -> IResult<&[u8], BSVec4> {
+            let (i, xyz) = vec3(i)?;
+            let (i, w) = le_f32(i)?;
+            Ok((i, BSVec4(xyz.0.extend(w))))
+        }
+        match shader_type {
+            1 => {
+                let (i, env_map_scale) = le_f32(i)?;
+                Ok((i, Self::EnvironmentMap { env_map_scale }))
+            }
+            5 => {
+                let (i, skin_tint_color) = vec3(i)?;
+                Ok((i, Self::SkinTint { skin_tint_color }))
+            }
+            6 => {
+                let (i, hair_tint_color) = vec3(i)?;
+                Ok((i, Self::HairTint { hair_tint_color }))
+            }
+            7 => {
+                let (i, max_passes) = le_f32(i)?;
+                let (i, scale) = le_f32(i)?;
+                Ok((i, Self::ParallaxOcc { max_passes, scale }))
+            }
+            11 => {
+                let (i, inner_layer_thickness) = le_f32(i)?;
+                let (i, refraction_scale) = le_f32(i)?;
+                let (i, inner_layer_texture_scale) = vec2(i)?;
+                let (i, env_map_strength) = le_f32(i)?;
+                Ok((
+                    i,
+                    Self::MultiLayerParallax {
+                        inner_layer_thickness,
+                        refraction_scale,
+                        inner_layer_texture_scale,
+                        env_map_strength,
+                    },
+                ))
+            }
+            14 => {
+                let (i, sparkle_parameters) = vec4(i)?;
+                Ok((i, Self::SparkleSnow { sparkle_parameters }))
+            }
+            16 => {
+                let (i, eye_cubemap_scale) = le_f32(i)?;
+                let (i, left_eye_reflection_center) = vec3(i)?;
+                let (i, right_eye_reflection_center) = vec3(i)?;
+                Ok((
+                    i,
+                    Self::EyeEnvmap {
+                        eye_cubemap_scale,
+                        left_eye_reflection_center,
+                        right_eye_reflection_center,
+                    },
+                ))
+            }
+            _ => Ok((i, Self::None)),
+        }
+    }
+
+    /// The tint colour of a skin-tint or hair-tint shader.
+    pub fn tint_color(&self) -> Option<BSVec3> {
+        match self {
+            Self::SkinTint { skin_tint_color } => Some(BSVec3(skin_tint_color.0)),
+            Self::HairTint { hair_tint_color } => Some(BSVec3(hair_tint_color.0)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, NomLE)]
@@ -1944,6 +2062,89 @@ mod material_property_tests {
         assert_eq!(property.shader_flags_1.raw(), 0x8240_0302);
         assert_eq!(property.alpha, 1.0);
         assert_eq!(property.glossiness, 80.0);
+    }
+
+    fn lighting_property_bytes(shader_type: u32, tail: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&shader_type.to_le_bytes());
+        push_property(&mut bytes, u32::MAX, &[], u32::MAX);
+        bytes.extend_from_slice(&0x8244_030bu32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_8021u32.to_le_bytes());
+        push_f32(&mut bytes, &[0.0, 0.0, 1.0, 1.0]);
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        push_f32(&mut bytes, &[0.0, 0.0, 0.0, 1.0]);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        push_f32(&mut bytes, &[1.0, 0.0, 70.0, 1.0, 1.0, 1.0, 1.8, 0.3, 2.0]);
+        push_f32(&mut bytes, tail);
+        bytes
+    }
+
+    #[test]
+    fn lighting_property_reads_the_tail_of_its_shader_type() {
+        let tint = [0.439_215_7, 0.462_745_1, 0.345_098_05];
+        let bytes = lighting_property_bytes(6, &tint);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(property.tint_color_for_test(), Some(tint));
+
+        let bytes = lighting_property_bytes(5, &[0.8, 0.6, 0.5]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(property.tint_color_for_test(), Some([0.8, 0.6, 0.5]));
+
+        let eye = [1.3, -2.4, 7.6, 3.8, 2.4, 7.6, 3.8];
+        let bytes = lighting_property_bytes(16, &eye);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        let LightingShaderTypeData::EyeEnvmap {
+            eye_cubemap_scale,
+            right_eye_reflection_center,
+            ..
+        } = property.type_data
+        else {
+            panic!("expected eye data, got {:?}", property.type_data);
+        };
+        assert_eq!(eye_cubemap_scale, 1.3);
+        assert_eq!(right_eye_reflection_center.0, Vec3::new(2.4, 7.6, 3.8));
+
+        let bytes = lighting_property_bytes(11, &[5.0, 0.25, 2.0, 3.0, 1.0]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert!(matches!(
+            property.type_data,
+            LightingShaderTypeData::MultiLayerParallax { refraction_scale, .. } if refraction_scale == 0.25
+        ));
+
+        for (shader_type, tail) in [
+            (1, &[0.5][..]),
+            (7, &[4.0, 1.0]),
+            (14, &[1.0, 2.0, 3.0, 4.0]),
+        ] {
+            let bytes = lighting_property_bytes(shader_type, tail);
+            let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+            assert!(remaining.is_empty(), "type {shader_type}");
+            assert!(
+                property.type_data.tint_color().is_none(),
+                "type {shader_type}"
+            );
+            assert!(!matches!(property.type_data, LightingShaderTypeData::None));
+        }
+
+        let bytes = lighting_property_bytes(4, &[]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert!(matches!(property.type_data, LightingShaderTypeData::None));
+
+        let bytes = lighting_property_bytes(6, &tint[..2]);
+        assert!(BSLightingShaderProperty::parse(&bytes).is_err());
+    }
+
+    impl BSLightingShaderProperty {
+        fn tint_color_for_test(&self) -> Option<[f32; 3]> {
+            self.type_data
+                .tint_color()
+                .map(|colour| colour.0.to_array())
+        }
     }
 
     #[test]

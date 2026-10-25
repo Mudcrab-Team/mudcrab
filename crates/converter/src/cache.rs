@@ -360,7 +360,12 @@ pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
 /// Each name enters the current producer's mesh settings proof, so a normal conversion rebuilds
 /// meshes an earlier converter of the same producer wrote. Append a name per change, never
 /// rename or reorder one, and clear the list when the producer advances.
-pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &["legacy-skin-export"];
+pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
+    "legacy-skin-export",
+    "msn-vertex-normals",
+    "facegen-tint-slot",
+    "lighting-type-data",
+];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
 /// producers keep their recorded proofs; an empty list leaves every proof unchanged.
@@ -1358,7 +1363,7 @@ mod tests {
         let entry = IngestionCacheEntry {
             source_hash: "ab".repeat(32),
             selection: IngestionSelection::ConverterInputsV1,
-            recipe: "converter-inputs-v1".to_owned(),
+            recipe: IngestionSelection::ConverterInputsV1.recipe().to_owned(),
             files: vec![IngestedFile {
                 path: "lodsettings/tamriel.lod".to_owned(),
                 size: 4,
@@ -1495,19 +1500,35 @@ mod tests {
     #[test]
     fn both_prior_cache_contracts_limit_coverage_and_unknown_recipes_miss() {
         let pack_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
-            "source_hash": "source", "recipe": "converter-inputs-v1", "files": []
+            "source_hash": "source",
+            "recipe": IngestionSelection::ConverterInputsV1.recipe(),
+            "files": []
         }))
         .unwrap();
         assert!(pack_entry.covers(IngestionSelection::RuntimeEnglishV1));
         assert!(pack_entry.covers(IngestionSelection::ConverterInputsV1));
         assert!(!pack_entry.covers(IngestionSelection::All));
+        // The recipe changed when the animation inputs joined the selection, so a pack minted
+        // under the earlier converter-inputs recipe cannot prove the wider file set.
+        let mut narrower = pack_entry.clone();
+        narrower.recipe = "converter-inputs-v1".into();
+        assert!(!narrower.covers(IngestionSelection::ConverterInputsV1));
+        assert!(!narrower.covers(IngestionSelection::RuntimeEnglishV1));
         let raw_entry: IngestionCacheEntry = serde_json::from_value(serde_json::json!({
             "source_hash": "source", "selection": "runtime_english_v1", "files": []
         }))
         .unwrap();
-        assert!(raw_entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(!raw_entry.covers(IngestionSelection::RuntimeEnglishV1));
         assert!(!raw_entry.covers(IngestionSelection::All));
         assert!(!raw_entry.covers(IngestionSelection::ConverterInputsV1));
+        let recipe_less_converter_entry: IngestionCacheEntry =
+            serde_json::from_value(serde_json::json!({
+                "source_hash": "source",
+                "selection": "converter_inputs_v1",
+                "files": []
+            }))
+            .unwrap();
+        assert!(!recipe_less_converter_entry.covers(IngestionSelection::ConverterInputsV1));
         let mut conflicting = raw_entry.clone();
         conflicting.recipe = "all-v1".into();
         assert!(!conflicting.covers(IngestionSelection::All));
@@ -1525,6 +1546,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(entry.selection, IngestionSelection::All);
+        assert!(entry.covers(IngestionSelection::All));
+        assert!(entry.covers(IngestionSelection::RuntimeEnglishV1));
+        assert!(entry.covers(IngestionSelection::ConverterInputsV1));
         assert!(
             entry
                 .selection
