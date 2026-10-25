@@ -84,14 +84,24 @@ pub struct ProbeSample {
     pub patch: Option<Patch>,
     /// Mean linear RGBA over the patch, exactly as the main texture stored it.
     pub hdr_pre_tonemap: Option<[f32; 4]>,
+    /// Why `hdr_pre_tonemap` is missing: the probe was off screen, or the patch held a value that
+    /// has no mean.
     pub unavailable: Option<String>,
+}
+
+/// What the capture frame chose: the size of the view the patches index, in physical pixels, and
+/// one sample per probe in the order the shot lists them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProbeCapture {
+    pub viewport: [u32; 2],
+    pub samples: Vec<ProbeSample>,
 }
 
 #[derive(Debug, Default)]
 struct ProbeState {
     points: Vec<ProbePoint>,
     /// Filled when the capture frame is extracted.
-    samples: Option<Vec<ProbeSample>>,
+    capture: Option<ProbeCapture>,
     /// Set once every on-screen patch has been read back, or the read failed.
     result: Option<Result<(), String>>,
 }
@@ -108,16 +118,35 @@ impl ProbeTicket {
         })))
     }
 
-    /// The patches the capture frame chose, once it has been extracted.
-    pub(crate) fn patches(&self) -> Option<Vec<ProbeSample>> {
-        self.0.lock().unwrap().samples.clone()
+    /// The patches the capture frame chose. An error once the frame has been captured means the
+    /// probes cannot be read, never that there is nothing to read.
+    pub(crate) fn patches(&self) -> Result<ProbeCapture, String> {
+        let state = self.0.lock().unwrap();
+        match (&state.capture, &state.result) {
+            (Some(capture), _) => Ok(capture.clone()),
+            (None, Some(Err(reason))) => Err(reason.clone()),
+            (None, _) => Err("the captured frame chose no stage 3 patches".into()),
+        }
     }
 
-    /// `None` while the read is in flight; the samples once it is done.
-    pub(crate) fn finished(&self) -> Option<Result<Vec<ProbeSample>, String>> {
+    /// `None` while the read is in flight; one sample per probe once it is done.
+    pub(crate) fn finished(&self) -> Option<Result<ProbeCapture, String>> {
         let state = self.0.lock().unwrap();
         let result = state.result.clone()?;
-        Some(result.map(|()| state.samples.clone().unwrap_or_default()))
+        Some(result.and_then(|()| {
+            let capture = state
+                .capture
+                .clone()
+                .ok_or("stage 3 finished without choosing patches")?;
+            if capture.samples.len() != state.points.len() {
+                return Err(format!(
+                    "stage 3 has {} samples for {} probes",
+                    capture.samples.len(),
+                    state.points.len()
+                ));
+            }
+            Ok(capture)
+        }))
     }
 
     fn fail(&self, reason: String) {
@@ -149,6 +178,25 @@ fn patch_around(pixel: Vec2, patch: u32, size: UVec2) -> Option<Patch> {
     ))
 }
 
+/// Where a runtime position lands on a view `size` physical pixels across, measured from the
+/// top-left corner, or `None` when it is behind the camera or beyond its depth range. The
+/// patches index the main texture with this, so it must be the same pixel grid the screenshot
+/// is taken on.
+pub fn probe_pixel(clip_from_world: Mat4, runtime: Vec3, size: UVec2) -> Option<Vec2> {
+    let clip = clip_from_world * runtime.extend(1.0);
+    if clip.w.is_nan() || clip.w <= 0.0 {
+        return None;
+    }
+    let ndc = clip.truncate() / clip.w;
+    if !(0.0..=1.0).contains(&ndc.z) {
+        return None;
+    }
+    Some(Vec2::new(
+        (ndc.x + 1.0) * 0.5 * size.x as f32,
+        (1.0 - ndc.y) * 0.5 * size.y as f32,
+    ))
+}
+
 #[derive(Resource, Default)]
 struct ProbeRequests {
     /// The main view's render entity; only that view is sampled.
@@ -170,8 +218,13 @@ fn extract_probe_requests(
         return;
     };
     requests.view = Some(render_entity.id());
-    let size = camera.physical_viewport_size();
-    let scale = camera.target_scaling_factor().unwrap_or(1.0);
+    // A sub-viewport would put the patches and the screenshot on different pixel grids.
+    let size = match (&camera.viewport, camera.physical_target_size()) {
+        (None, Some(size)) => Ok(size),
+        (Some(_), _) => Err("stage 3 probes need the camera to cover its whole target"),
+        (None, None) => Err("the main camera has no render target size"),
+    };
+    let clip_from_world = camera.clip_from_view() * transform.to_matrix().inverse();
     let offset = origin
         .as_deref()
         .map(|origin| crate::shots::shot_camera_translation([0.0; 3], origin.0))
@@ -181,9 +234,16 @@ fn extract_probe_requests(
             continue;
         };
         let mut state = probes.0.lock().unwrap();
-        if state.samples.is_some() {
+        if state.capture.is_some() || state.result.is_some() {
             continue;
         }
+        let size = match size {
+            Ok(size) => size,
+            Err(reason) => {
+                state.result = Some(Err(reason.into()));
+                continue;
+            }
+        };
         let samples = state
             .points
             .iter()
@@ -191,13 +251,8 @@ fn extract_probe_requests(
                 let runtime = Vec3::from(shared::coordinates::creation_to_runtime_vector(
                     point.position,
                 )) + offset;
-                let pixel = camera
-                    .world_to_viewport(transform, runtime)
-                    .ok()
-                    .map(|logical| logical * scale);
-                let patch = size
-                    .zip(pixel)
-                    .and_then(|(size, pixel)| patch_around(pixel, point.patch_px, size));
+                let patch = probe_pixel(clip_from_world, runtime, size)
+                    .and_then(|pixel| patch_around(pixel, point.patch_px, size));
                 ProbeSample {
                     name: point.name.clone(),
                     patch,
@@ -206,7 +261,10 @@ fn extract_probe_requests(
                 }
             })
             .collect();
-        state.samples = Some(samples);
+        state.capture = Some(ProbeCapture {
+            viewport: size.to_array(),
+            samples,
+        });
         drop(state);
         requests.pending.push(probes.clone());
     }
@@ -233,9 +291,15 @@ fn copy_probe_patches(
             ));
             continue;
         }
-        let patches: Vec<(usize, Patch)> = ticket
-            .patches()
-            .unwrap_or_default()
+        let capture = match ticket.patches() {
+            Ok(capture) => capture,
+            Err(reason) => {
+                ticket.fail(reason);
+                continue;
+            }
+        };
+        let patches: Vec<(usize, Patch)> = capture
+            .samples
             .iter()
             .enumerate()
             .filter_map(|(index, sample)| sample.patch.map(|patch| (index, patch)))
@@ -296,7 +360,11 @@ fn map_probe_patches(mut requests: ResMut<ProbeRequests>) {
             let means = {
                 let bytes = mapped.slice(..).get_mapped_range();
                 let state = ticket.0.lock().unwrap();
-                let samples = state.samples.as_deref().unwrap_or_default();
+                let samples = state
+                    .capture
+                    .as_ref()
+                    .map(|capture| capture.samples.as_slice())
+                    .unwrap_or_default();
                 indices
                     .iter()
                     .enumerate()
@@ -309,13 +377,25 @@ fn map_probe_patches(mut requests: ResMut<ProbeRequests>) {
             };
             mapped.unmap();
             let mut state = ticket.0.lock().unwrap();
-            if let Some(samples) = state.samples.as_mut() {
+            if let Some(capture) = state.capture.as_mut() {
                 for (index, mean) in means {
-                    samples[index].hdr_pre_tonemap = Some(mean);
+                    record_mean(&mut capture.samples[index], mean);
                 }
             }
             state.result.get_or_insert(Ok(()));
         });
+    }
+}
+
+/// Stores a patch mean, or why there is none: an infinite or NaN texel (a highlight past the f16
+/// range, say) makes the mean meaningless, and JSON would write it as a bare `null`.
+fn record_mean(sample: &mut ProbeSample, mean: [f32; 4]) {
+    if mean.iter().all(|channel| channel.is_finite()) {
+        sample.hdr_pre_tonemap = Some(mean);
+    } else {
+        sample.unavailable = Some(format!(
+            "the patch holds a non-finite HDR value (mean {mean:?})"
+        ));
     }
 }
 
@@ -430,6 +510,102 @@ mod tests {
             }
         }
         assert_eq!(mean_rgba16f(&bytes, [2, 2]), [1.5; 4]);
+    }
+
+    /// The pixels `docs/specs/engine/visual-profiles.md` lists for the V1 probe set, from the same
+    /// projection the capture uses.
+    #[test]
+    fn the_v1_probes_project_to_their_documented_pixels() {
+        use crate::shots::{
+            ShotsFile, shot_camera_rotation, shot_camera_translation, vertical_fov_degrees,
+        };
+        use bevy::camera::{CameraProjection, PerspectiveProjection};
+        let file = ShotsFile::parse(include_str!(
+            "../tests/fixtures/visual-profile-v1-shots.json"
+        ))
+        .expect("the V1 fixture parses");
+        let shot = &file.shots[0];
+        let size = UVec2::new(file.width, file.height);
+        let view = Transform {
+            translation: shot_camera_translation(shot.position, IVec2::ZERO),
+            rotation: shot_camera_rotation(shot.yaw, shot.pitch),
+            ..default()
+        };
+        let projection = PerspectiveProjection {
+            fov: vertical_fov_degrees(shot.hfov, file.aspect()).to_radians(),
+            aspect_ratio: file.aspect(),
+            ..default()
+        };
+        let clip_from_world = projection.get_clip_from_view() * view.to_matrix().inverse();
+        let documented = [
+            ("sunlit-thatch", [614, 308]),
+            ("upper-thatch", [792, 230]),
+            ("shaded-door-wood", [546, 432]),
+            ("distant-cliff", [676, 112]),
+            ("sunlit-road", [196, 558]),
+            ("shaded-road", [1238, 598]),
+        ];
+        assert_eq!(shot.probes.len(), documented.len());
+        for (point, (name, pixel)) in shot.probes.iter().zip(documented) {
+            assert_eq!(point.name, name);
+            let runtime = Vec3::from(shared::coordinates::creation_to_runtime_vector(
+                point.position,
+            ));
+            let landed = probe_pixel(clip_from_world, runtime, size).expect("on screen");
+            assert_eq!(
+                landed.floor().as_uvec2(),
+                UVec2::from(pixel),
+                "{name}: {landed}"
+            );
+        }
+        let behind = Vec3::from(shared::coordinates::creation_to_runtime_vector([
+            20750.0, -44530.0, 140.0,
+        ]));
+        assert_eq!(probe_pixel(clip_from_world, behind, size), None);
+    }
+
+    #[test]
+    fn a_non_finite_mean_is_unavailable_with_a_reason() {
+        let mut sample = ProbeSample {
+            name: "highlight".into(),
+            patch: Some(([0, 0], [5, 5])),
+            hdr_pre_tonemap: None,
+            unavailable: None,
+        };
+        record_mean(&mut sample, [f32::INFINITY, 1.0, 1.0, 1.0]);
+        assert_eq!(sample.hdr_pre_tonemap, None);
+        assert!(
+            sample
+                .unavailable
+                .as_deref()
+                .unwrap()
+                .contains("non-finite")
+        );
+        record_mean(&mut sample, [0.5, 0.25, 0.125, 1.0]);
+        assert_eq!(sample.hdr_pre_tonemap, Some([0.5, 0.25, 0.125, 1.0]));
+    }
+
+    #[test]
+    fn a_ticket_never_reports_fewer_samples_than_probes() {
+        let point = ProbePoint {
+            name: "thatch".into(),
+            position: [0.0; 3],
+            patch_px: 5,
+        };
+        let ticket = ProbeTicket::new(vec![point.clone(), point]);
+        assert!(ticket.patches().is_err());
+        assert!(ticket.finished().is_none());
+        ticket.0.lock().unwrap().result = Some(Ok(()));
+        assert!(
+            ticket.finished().unwrap().is_err(),
+            "finished without patches"
+        );
+        ticket.0.lock().unwrap().capture = Some(ProbeCapture {
+            viewport: [1280, 720],
+            samples: Vec::new(),
+        });
+        let message = ticket.finished().unwrap().unwrap_err();
+        assert!(message.contains("0 samples for 2 probes"), "{message}");
     }
 
     #[test]
