@@ -102,6 +102,12 @@ struct ReferenceBounds {
 type Triangle = [DVec3; 3];
 const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
+mod skinning;
+
+#[cfg(test)]
+#[path = "grass_cache/skinning_tests.rs"]
+mod skinning_tests;
+
 /// Fingerprints survive eviction; decoded geometry is bounded rather than retaining every model.
 struct GeometryCache {
     root: std::path::PathBuf,
@@ -287,7 +293,24 @@ fn validate_accessor(accessor: &gltf::Accessor<'_>, blob: &[u8]) -> Result<()> {
 
 /// Decode supported GLB scene triangles in model coordinates, omitting blended primitives.
 fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
-    let glb = gltf::Gltf::from_slice(bytes)?;
+    let evaluated = (|| {
+        let mut glb = gltf::Gltf::from_slice_without_validation(bytes)?;
+        skinning::validate_position_references(&glb.document)?;
+        glb.document = gltf::Document::from_json(glb.document.into_json())?;
+        scene_triangles(&glb, true)
+    })();
+    match evaluated {
+        Ok(triangles) => Ok(triangles),
+        Err(error) => {
+            let glb = skinning::static_fallback(bytes)
+                .wrap_err_with(|| format!("obstruction decode failed: {error:#}"))?;
+            scene_triangles(&glb, false)
+        }
+    }
+}
+
+/// Collect one validated model transactionally, optionally evaluating its authored rest pose.
+fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle>> {
     let blob = glb
         .blob
         .as_deref()
@@ -297,16 +320,16 @@ fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
             .all(|buffer| matches!(buffer.source(), gltf::buffer::Source::Bin)),
         "external model buffers unsupported"
     );
-    /// Traverse bounded unskinned scene nodes while composing transforms and collecting triangles.
+    /// Traverse bounded scene nodes, preserving ordinary transforms for unskinned geometry.
     fn visit(
         node: gltf::Node<'_>,
         parent: DMat4,
         blob: &[u8],
         triangles: &mut Vec<Triangle>,
         depth: usize,
+        globals: Option<&[Option<DMat4>]>,
     ) -> Result<()> {
         ensure!(depth < 128, "model hierarchy exceeds inspection depth");
-        ensure!(node.skin().is_none(), "skinned obstruction unsupported");
         let matrix = node
             .transform()
             .matrix()
@@ -348,11 +371,19 @@ fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
                 let reader = primitive.reader(|buffer| {
                     matches!(buffer.source(), gltf::buffer::Source::Bin).then_some(blob)
                 });
-                let vertices: Vec<_> = reader
+                let positions: Vec<_> = reader
                     .read_positions()
                     .ok_or_else(|| color_eyre::eyre::eyre!("missing model positions"))?
-                    .map(|p| transform.transform_point3(DVec3::from_array(p.map(f64::from))))
+                    .map(|p| DVec3::from_array(p.map(f64::from)))
                     .collect();
+                let vertices = if let Some(skin) = node.skin() {
+                    skinning::positions(&primitive, skin, globals.unwrap(), blob, &positions)?
+                } else {
+                    positions
+                        .into_iter()
+                        .map(|p| transform.transform_point3(p))
+                        .collect()
+                };
                 ensure!(
                     vertices.iter().all(|p| p.is_finite()),
                     "nonfinite model positions"
@@ -379,7 +410,7 @@ fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
             }
         }
         for child in node.children() {
-            visit(child, transform, blob, triangles, depth + 1)?;
+            visit(child, transform, blob, triangles, depth + 1, globals)?;
         }
         Ok(())
     }
@@ -388,8 +419,20 @@ fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
         .or_else(|| glb.scenes().next())
         .ok_or_else(|| color_eyre::eyre::eyre!("model has no scene"))?;
     let mut triangles = Vec::new();
+    let globals = if evaluate_skin && glb.nodes().any(|node| node.skin().is_some()) {
+        Some(skinning::scene_transforms(&scene, glb.nodes().len())?)
+    } else {
+        None
+    };
     for node in scene.nodes() {
-        visit(node, DMat4::IDENTITY, blob, &mut triangles, 0)?;
+        visit(
+            node,
+            DMat4::IDENTITY,
+            blob,
+            &mut triangles,
+            0,
+            globals.as_deref(),
+        )?;
     }
     Ok(triangles)
 }
@@ -1064,7 +1107,7 @@ mod tests {
     use crate::esm::{exporter::create_tables, records::RawRecord};
 
     /// Write an unindexed opaque or blended triangle fixture.
-    fn write_mesh(root: &Path, triangles: &[[[f32; 3]; 3]], alpha: &str) {
+    pub(super) fn write_mesh(root: &Path, triangles: &[[[f32; 3]; 3]], alpha: &str) {
         write_mesh_options(root, triangles, alpha, false);
     }
 
@@ -1129,13 +1172,220 @@ mod tests {
     }
 
     /// Modify a generated GLB document and binary payload while preserving container framing.
-    fn edit_mesh(root: &Path, edit: impl FnOnce(&mut serde_json::Value, &mut Vec<u8>)) {
+    pub(super) fn edit_mesh(root: &Path, edit: impl FnOnce(&mut serde_json::Value, &mut Vec<u8>)) {
         let bytes = std::fs::read(root.join("meshes/blocker.glb")).unwrap();
         let glb = gltf::binary::Glb::from_slice(&bytes).unwrap();
         let mut json = serde_json::from_slice(&glb.json).unwrap();
         let mut bin = glb.bin.unwrap().into_owned();
         edit(&mut json, &mut bin);
         write_glb(root, &json, bin);
+    }
+
+    /// Add two reordered joints with distinct bind transforms and two weighted influences.
+    pub(super) fn add_skin(root: &Path, offset_positions: bool) {
+        edit_mesh(root, |json, bin| {
+            let count = json["accessors"][0]["count"].as_u64().unwrap() as usize;
+            if offset_positions {
+                for position in bin[..count * 12].as_chunks_mut::<12>().0 {
+                    for (bytes, offset) in position
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip([17.0, 11.0, -9.0])
+                    {
+                        let value = f32::from_le_bytes(*bytes) - offset;
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+                for key in ["min", "max"] {
+                    for (axis, offset) in [17.0, 11.0, -9.0].into_iter().enumerate() {
+                        let value = json["accessors"][0][key][axis].as_f64().unwrap() - offset;
+                        json["accessors"][0][key][axis] = value.into();
+                    }
+                }
+            }
+            let joint_offset = bin.len();
+            bin.extend(
+                [0u16, 1, 0, 0]
+                    .repeat(count)
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes),
+            );
+            let weight_offset = bin.len();
+            bin.extend(
+                [0.25f32, 0.75, 0.0, 0.0]
+                    .repeat(count)
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes),
+            );
+            let bind_offset = bin.len();
+            // Global joint translations are [20,10,-6] and [-12,23,4]. The weighted
+            // joint * inverse-bind translations are .25*[5,2,-3]+.75*[21,14,-11].
+            for translation in [[-15.0, -8.0, 3.0], [33.0, -9.0, -15.0]] {
+                bin.extend(
+                    glam::Mat4::from_translation(glam::Vec3::from_array(translation))
+                        .to_cols_array()
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes),
+                );
+            }
+            json["bufferViews"].as_array_mut().unwrap().extend([
+                serde_json::json!({"buffer":0,"byteOffset":joint_offset,"byteLength":count*8}),
+                serde_json::json!({"buffer":0,"byteOffset":weight_offset,"byteLength":count*16}),
+                serde_json::json!({"buffer":0,"byteOffset":bind_offset,"byteLength":128}),
+            ]);
+            json["accessors"].as_array_mut().unwrap().extend([
+                serde_json::json!({"bufferView":1,"componentType":5123,"count":count,"type":"VEC4"}),
+                serde_json::json!({"bufferView":2,"componentType":5126,"count":count,"type":"VEC4"}),
+                serde_json::json!({"bufferView":3,"componentType":5126,"count":2,"type":"MAT4"}),
+            ]);
+            json["buffers"][0]["byteLength"] = bin.len().into();
+            json["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"] = 1.into();
+            json["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = 2.into();
+            json["nodes"] = serde_json::json!([
+                {"mesh":0,"skin":0,"translation":if offset_positions {[600,700,800]} else {[0,0,0]}},
+                {"translation":[3,5,7],"children":[2,3]},
+                {"translation":[-15,18,-3]}, {"translation":[17,5,-13]}
+            ]);
+            json["scenes"][0]["nodes"] = serde_json::json!([0, 1]);
+            json["skins"] = serde_json::json!([{"joints":[3,2],"inverseBindMatrices":3}]);
+        });
+    }
+
+    /// Skinning must use the rest joints and inverse binds, ignoring the mesh node transform.
+    #[test]
+    fn skinned_obstruction_matches_equivalent_static_masks() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        let terrain = dir.path().join("terrain.rkyv");
+        let output = dir.path().join("grass.rkyv");
+        write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        let expected = read(&output);
+        let path = dir.path().join("meshes/blocker.glb");
+        let static_triangles = model_triangles(&std::fs::read(&path).unwrap()).unwrap();
+        add_skin(dir.path(), true);
+        let report = write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        assert_eq!(
+            report.skipped_obstruction_models, 0,
+            "valid skin must obstruct"
+        );
+        assert_eq!(
+            model_triangles(&std::fs::read(&path).unwrap()).unwrap(),
+            static_triangles
+        );
+        for (actual, expected) in read(&output).cells.iter().zip(&expected.cells) {
+            assert_eq!(actual.quadrants, expected.quadrants);
+        }
+        assert_ne!(expected.cells[1].quadrants[0].exclusion[16] & 1, 0);
+        let bytes = std::fs::read(&output).unwrap();
+        write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    }
+
+    /// Unusable skin data falls back to static triangles; a bad model never stops neighbours.
+    #[test]
+    fn skinned_obstruction_bad_skin_falls_back_and_bad_positions_skip_locally() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        let terrain = dir.path().join("terrain.rkyv");
+        let output = dir.path().join("grass.rkyv");
+        write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        let expected = read(&output);
+        for case in 0..10 {
+            write_box(dir.path(), [-64.0, -16.0, -48.0], [64.0, 32.0, 48.0]);
+            add_skin(dir.path(), false);
+            edit_mesh(dir.path(), |json, bin| match case {
+                0 => json["skins"][0]["joints"] = serde_json::json!([999]),
+                1 => {
+                    let offset = json["bufferViews"][3]["byteOffset"].as_u64().unwrap() as usize;
+                    bin[offset..offset + 64].fill(0);
+                }
+                2 => {
+                    let offset = json["bufferViews"][1]["byteOffset"].as_u64().unwrap() as usize;
+                    bin[offset..offset + 2].copy_from_slice(&99u16.to_le_bytes());
+                }
+                3 => json["bufferViews"][2]["byteLength"] = 1.into(),
+                4 => {
+                    json["skins"][0].as_object_mut().unwrap().remove("joints");
+                }
+                5 => json["accessors"][1]["bufferView"] = 999.into(),
+                6 => json["accessors"][2]["count"] = 0.into(),
+                // A shared dependency must stay intact: POSITION cannot be removed just
+                // because a malformed JOINTS semantic also references its accessor.
+                7 => json["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"] = 0.into(),
+                8 => {
+                    json["accessors"][1]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("componentType");
+                }
+                9 => json["bufferViews"][1]["buffer"] = 999.into(),
+                _ => unreachable!(),
+            });
+            let report = write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+            assert_eq!(
+                (report.baked_cells, report.skipped_obstruction_models),
+                (3, 0),
+                "fallback case {case}"
+            );
+            for (actual, expected) in read(&output).cells.iter().zip(&expected.cells) {
+                assert_eq!(actual.quadrants, expected.quadrants, "fallback case {case}");
+            }
+        }
+        // Retain a healthy second model when neither the skin nor static positions are usable.
+        write_box(dir.path(), [-64.0, -16.0, -48.0], [64.0, 32.0, 48.0]);
+        std::fs::copy(
+            dir.path().join("meshes/blocker.glb"),
+            dir.path().join("meshes/healthy.glb"),
+        )
+        .unwrap();
+        conn.execute_batch("INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(41,'meshes/healthy.glb',0,-64,-16,-48,64,32,48,1);
+            INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(51,11,1,41,1,4090,64,0,0,0,0,2);").unwrap();
+        add_skin(dir.path(), false);
+        edit_mesh(dir.path(), |json, _| {
+            json["skins"][0]["joints"] = serde_json::json!([999]);
+            json["bufferViews"][0]["byteLength"] = 1.into();
+        });
+        let report = write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        assert_eq!(
+            (report.baked_cells, report.skipped_obstruction_models),
+            (3, 1)
+        );
+        assert_eq!(report.obstruction_diagnostics.len(), 1);
+        assert!(report.warnings().is_empty());
+        for (actual, expected) in read(&output).cells.iter().zip(&expected.cells) {
+            assert_eq!(actual.quadrants, expected.quadrants);
+        }
+    }
+
+    /// Version-two masks with identical model bytes must rebuild, then reuse deterministically.
+    #[test]
+    fn skinned_obstruction_version_two_masks_rebuild_before_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        add_skin(dir.path(), true);
+        let terrain = dir.path().join("terrain.rkyv");
+        let previous = dir.path().join("previous.rkyv");
+        let output = dir.path().join("grass.rkyv");
+        write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
+        let expected = std::fs::read(&output).unwrap();
+        let mut obsolete = read(&output);
+        obsolete.version = 2;
+        for cell in &mut obsolete.cells {
+            for quadrant in &mut cell.quadrants {
+                quadrant.exclusion.fill(0);
+            }
+        }
+        std::fs::write(&previous, rkyv::to_bytes::<Error>(&obsolete).unwrap()).unwrap();
+        let report =
+            write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
+        assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+        std::fs::copy(&output, &previous).unwrap();
+        let report =
+            write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
+        assert_eq!((report.baked_cells, report.reused_cells), (0, 3));
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
     }
 
     /// An unreadable declared index array must produce a diagnostic rather than invented geometry.
@@ -1660,9 +1910,9 @@ mod tests {
         );
     }
 
-    /// Full-layer coverage uses version two and rebuilds caches made from capped terrain.
+    /// Full-layer coverage uses the current version and rebuilds caches made from capped terrain.
     #[test]
-    fn full_layer_grass_cache_uses_version_two_and_rebuilds_version_one() {
+    fn full_layer_grass_cache_uses_current_version_and_rebuilds_version_one() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         let terrain = dir.path().join("terrain.rkyv");
@@ -1671,7 +1921,7 @@ mod tests {
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let mut cache = read(&previous);
         assert_eq!(
-            cache.version, 2,
+            cache.version, 3,
             "full-layer coverage invalidates capped terrain masks"
         );
         cache.version = 1;
@@ -1680,7 +1930,7 @@ mod tests {
         let report =
             write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
         assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
-        assert_eq!(read(&output).version, 2);
+        assert_eq!(read(&output).version, 3);
     }
 
     /// Reuse unchanged cells and invalidate cells affected by rule or reference changes.

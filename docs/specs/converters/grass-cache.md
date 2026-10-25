@@ -22,6 +22,8 @@ derived from heights at runtime rather than duplicated in this cache. No
 instance lists are saved.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
+Version three rebuilds exclusion masks using skinned obstructions in their rest
+pose; older grass masks are not reused. Other asset/cache identities stay unchanged.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -60,7 +62,18 @@ window do not.
 TREE and FLOR base records, generic `meshes/markers/` and `meshes/effects/` paths,
 and alpha-blended primitives are excluded from obstruction inspection, matching
 the earlier policy. Opaque and alpha-mask primitives count as solid triangles;
-alpha textures are not sampled. Missing/invalid meshes, skinned geometry,
+alpha textures are not sampled. Skinned meshes use the unanimated scene's global
+joint transforms multiplied by inverse bind matrices (identity when omitted),
+blended by the vertex joint weights. The skinned mesh node's transform is ignored,
+as defined by the [glTF skinning specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins).
+All declared joint/weight sets participate, with weights normalized per vertex.
+If skin data cannot be evaluated (for example missing joints, singular matrices,
+invalid accessor ranges or joint indices), only that model falls back to its
+static positions under scene/node transforms. If those positions or triangles
+are also unusable, that model is skipped with the bounded diagnostic below;
+healthy neighbouring models and cells continue baking. No filled-bounds fallback
+is used. Unskinned geometry retains its existing transform and sampling behavior.
+Missing/invalid meshes,
 external buffers and unsupported primitives produce model diagnostics and no
 bounds-based fallback. These optional mask omissions produce advisory notices,
 including the skipped-model count and at most 32 model diagnostics, and do not

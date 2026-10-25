@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version two derives coverage from all LAND layers, including those omitted by terrain materials.
-pub const GRASS_CACHE_VERSION: u32 = 2;
+/// Version three includes rest-pose skinned obstructions; older masks must be rebuilt.
+pub const GRASS_CACHE_VERSION: u32 = 3;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
