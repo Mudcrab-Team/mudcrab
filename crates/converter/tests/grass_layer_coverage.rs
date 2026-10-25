@@ -177,7 +177,7 @@ async fn publish(config: &PipelineConfig) -> PipelineReport {
 fn assert_coverage(output: &Path) {
     let bytes = fs::read(output.join("grass_cache.rkyv")).unwrap();
     let cache = rkyv::from_bytes::<GrassCache, rkyv::rancor::Error>(&bytes).unwrap();
-    assert_eq!(cache.version, 3);
+    assert_eq!(cache.version, 4);
     let layer = |cell_id| {
         let cell = cache
             .cells

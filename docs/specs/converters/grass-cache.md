@@ -24,6 +24,9 @@ Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
 Version three rebuilds exclusion masks using skinned obstructions in their rest
 pose; older grass masks are not reused. Other asset/cache identities stay unchanged.
+Version four rebuilds masks using the runtime's initial reference enable state
+and conservative skinned obstruction selection. It changes neither the archive
+layout nor the mesh, texture or terrain cache identities.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -36,16 +39,32 @@ obstruction omissions produce notices, and silently filtered species links do no
 affect that proof. Repairing an unrelated asset cannot restore a lost proof.
 
 Each quadrant stores a 64 by 64 exclusion field: 32 Creation units per bit,
-512 bytes, row-major with the least significant bit first. The converter uses
-validated transformed model bounds only to find references overlapping each
+512 bytes, row-major with the least significant bit first. For static models the
+converter uses validated transformed model bounds to find references overlapping each
 LAND-bearing cell, including neighboring cells outside the reference's owning
 CELL. Persistent CELL records sharing coordinates cannot displace terrain cells.
+Potentially skinned models are candidates throughout their worldspace: raw
+POSITION bounds cannot enclose arbitrary rest-pose skin deformation. After a
+cell misses reuse, bounds of the actual evaluated triangles, transformed with
+the sampler's double-precision reference math, reject distant quadrants before
+triangle sampling. Those bounds survive triangle-cache eviction. No accessor
+min/max metadata is trusted as proof of a skinned envelope. This conservative
+selection can invalidate cells distant from a changed skinned reference.
 Bounds and CELL-relative transforms use double precision to preserve small
 footprints at far modded coordinates. Negative reference scale is supported;
 zero-scale references and references without validated bounds are skipped.
 The unbounded-reference count includes only eligible modeled obstructions, not
 actors, invisible records or excluded vegetation/effects. This count is advisory;
 model conversion failures are still reported by asset integration.
+
+Obstructions use the same shared initial enable-state resolver as runtime
+spawning. A root follows the REFR Initially Disabled header flag; a reference
+with an enable parent follows that parent's resolved state, inverted for the
+opposite-state flag. Parent chains and the built-in enabled PlayerRef follow the
+runtime rules. Missing parents, cycles and unreadable enable data default to
+hidden without aborting healthy neighboring cells. This is the initial package
+snapshot; save-game and script changes are not simulated. Hidden candidates
+remain in cell input keys so later parent-state changes invalidate their masks.
 
 The mask samples each tile center against actual converted GLB solid triangles.
 Scene/node transforms, indexed and unindexed triangle primitives, reference
@@ -79,7 +98,12 @@ bounds-based fallback. These optional mask omissions produce advisory notices,
 including the skipped-model count and at most 32 model diagnostics, and do not
 make an otherwise complete conversion incomplete. This can permit grass through unavailable obstruction
 geometry. The asset root is explicit; canonicalized model files must remain
-inside it. Geometry is decoded only for references touching grass-bearing cells.
+inside it. Geometry is decoded only while rebuilding exclusion masks, after
+checking reuse. Fingerprints hash readable canonical file bytes even when their
+geometry is malformed; inaccessible or noncanonical files use the existing
+unavailable sentinel. Fully reusable warm runs decode no geometry. JSON-only
+inspection classifies potential skins without reading vertex attributes; an
+unclassifiable readable model takes the conservative candidate path.
 A 64 MiB cache accounts for retained triangle allocation capacity and evicts
 least-recently-used models; one oversized model can be decoded transiently but
 is not retained. Model fingerprints remain available after geometry eviction.
@@ -98,8 +122,9 @@ The terrain cache continues to use `shared::CELL_CACHE_VERSION` independently.
 
 Each entry carries a SHA-256 input key covering the grass cache version, cell
 identity/coordinates, terrain fields and raw LAND, relevant winning LTEX/GRAS
-payloads and resolved species links, and every overlapping reference's identity,
-source payload, transform, finalized bounds, canonical model path and SHA-256
+payloads and resolved species links, and every candidate reference's identity,
+source payload, transform, finalized bounds, initial enable inputs throughout
+its parent chain (including missing/cyclic/malformed terminals), canonical model path and SHA-256
 model contents. Replacing triangles or materials invalidates affected cells even
 when model bounds and plugin records remain unchanged. Unavailable files have a
 distinct fingerprint, so restoring geometry also invalidates affected cells.
@@ -122,6 +147,9 @@ its masks are not reused and the source package remains unchanged.
 `metadata-rebuild.json` records
 `grass_baked_cells` and `grass_reused_cells` for that rebuild. Optional obstruction
 mask omissions use the same notice policy as a full conversion.
+Normal conversion with `--invalidate-cache` supplies no previous grass cache,
+so every retained cell is baked. Metadata rebuild and asset repair retain their
+existing rejection of that flag.
 
 Asset repair re-bakes and validates the staged grass cache after finalizing model
 bounds, reusing unchanged cells from the published cache and publishing the replacement

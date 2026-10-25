@@ -21,6 +21,12 @@ use std::{
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct GrassBakeReport {
+    #[cfg(test)]
+    geometry_decodes: usize,
+    pub initially_hidden_references: usize,
+    pub unresolved_enable_references: usize,
+    pub expanded_sampling_cells: usize,
+    pub expanded_sampling_quadrants: usize,
     pub baked_cells: usize,
     pub reused_cells: usize,
     pub unbounded_references: usize,
@@ -62,6 +68,12 @@ impl GrassBakeReport {
     /// metadata rebuilds. Unavailable bounds and unsampleable geometry never make a run incomplete.
     pub fn notices(&self) -> Vec<String> {
         let mut notices = Vec::new();
+        if self.initially_hidden_references > 0 {
+            notices.push(format!("grass exclusion ignored {} initially hidden obstruction references ({} unresolved enable states)", self.initially_hidden_references, self.unresolved_enable_references));
+        }
+        if self.expanded_sampling_cells > 0 || self.expanded_sampling_quadrants > 0 {
+            notices.push(format!("grass exclusion evaluated skinned bounds added {} cells and {} quadrants to sampling", self.expanded_sampling_cells, self.expanded_sampling_quadrants));
+        }
         if self.modelless_rules > 0 {
             notices.push(format!(
                 "grass cache ignored {} grass types without a model",
@@ -87,6 +99,9 @@ impl GrassBakeReport {
 
 #[derive(Clone)]
 struct ReferenceBounds {
+    enabled: bool,
+    unresolved_enable: bool,
+    potential_skin: bool,
     id: u32,
     base_id: u32,
     worldspace: u32,
@@ -102,14 +117,25 @@ struct ReferenceBounds {
 type Triangle = [DVec3; 3];
 const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
+mod enable;
 mod skinning;
 
 #[cfg(test)]
 #[path = "grass_cache/skinning_tests.rs"]
 mod skinning_tests;
 
-/// Fingerprints survive eviction; decoded geometry is bounded rather than retaining every model.
+#[cfg(test)]
+#[path = "grass_cache/review_tests.rs"]
+mod review_tests;
+
+/// Fingerprints and evaluated offsets survive eviction; retained triangles have a byte budget.
 struct GeometryCache {
+    #[cfg(test)]
+    decodes: usize,
+    potential_skins: HashMap<String, bool>,
+    reference_offsets: HashMap<u32, [DVec3; 2]>,
+    expanded_cells: std::collections::BTreeSet<u32>,
+    expanded_quadrants: std::collections::BTreeSet<(u32, u8)>,
     root: std::path::PathBuf,
     hashes: HashMap<String, [u8; 32]>,
     failures: BTreeMap<String, String>,
@@ -122,6 +148,12 @@ impl GeometryCache {
     /// Create an empty geometry cache rooted at a canonical asset directory.
     fn new(root: &Path) -> Result<Self> {
         Ok(Self {
+            #[cfg(test)]
+            decodes: 0,
+            potential_skins: HashMap::new(),
+            reference_offsets: HashMap::new(),
+            expanded_cells: Default::default(),
+            expanded_quadrants: Default::default(),
             root: root.canonicalize()?,
             hashes: HashMap::new(),
             failures: BTreeMap::new(),
@@ -134,9 +166,48 @@ impl GeometryCache {
     /// Return a stable model-content fingerprint, including unavailable geometry.
     fn fingerprint(&mut self, path: &str) -> [u8; 32] {
         if !self.hashes.contains_key(path) {
-            self.get(path);
+            let result = self.model_bytes(path);
+            match result {
+                Ok(bytes) => {
+                    // Classification reads JSON only. Unclassifiable readable models must not
+                    // lose the chance to use the decoder's local static recovery.
+                    let skin = (|| -> Option<bool> {
+                        let glb = gltf::binary::Glb::from_slice(&bytes).ok()?;
+                        let json: serde_json::Value = serde_json::from_slice(&glb.json).ok()?;
+                        Some(
+                            json.get("nodes")?
+                                .as_array()?
+                                .iter()
+                                .any(|node| node.get("skin").is_some()),
+                        )
+                    })()
+                    .unwrap_or(true);
+                    self.potential_skins.insert(path.to_owned(), skin);
+                    self.hashes
+                        .insert(path.to_owned(), Sha256::digest(&bytes).into());
+                }
+                Err(_) => {
+                    self.hashes.insert(
+                        path.to_owned(),
+                        Sha256::digest(b"unavailable obstruction model").into(),
+                    );
+                    self.potential_skins.insert(path.to_owned(), false);
+                }
+            }
         }
         self.hashes[path]
+    }
+
+    /// Read only canonical model paths contained in the explicit asset root.
+    fn model_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let canonical = canonical_asset_path(path, AssetKind::Mesh, "glb")?;
+        ensure!(canonical == path, "noncanonical obstruction path");
+        let file = self.root.join(path).canonicalize()?;
+        ensure!(
+            file.starts_with(&self.root),
+            "obstruction escapes asset root"
+        );
+        Ok(std::fs::read(file)?)
     }
 
     /// Decode eligible solid triangles with bounded retention and per-model diagnostics.
@@ -150,17 +221,14 @@ impl GeometryCache {
             return None;
         }
         let result = (|| -> Result<Arc<Vec<Triangle>>> {
-            let canonical = canonical_asset_path(path, AssetKind::Mesh, "glb")?;
-            ensure!(canonical == path, "noncanonical obstruction path");
-            let file = self.root.join(path).canonicalize()?;
-            ensure!(
-                file.starts_with(&self.root),
-                "obstruction escapes asset root"
-            );
-            let bytes = std::fs::read(file)?;
+            let bytes = self.model_bytes(path)?;
             self.hashes
                 .entry(path.to_owned())
                 .or_insert_with(|| Sha256::digest(&bytes).into());
+            #[cfg(test)]
+            {
+                self.decodes += 1;
+            }
             Ok(Arc::new(model_triangles(&bytes)?))
         })();
         match result {
@@ -469,8 +537,9 @@ pub fn write_grass_cache(
             Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let (references, unbounded_references) = read_reference_bounds(conn)?;
+    let (mut references, unbounded_references) = read_reference_bounds(conn)?;
     let mut refs_by_cell = HashMap::<u32, Vec<&ReferenceBounds>>::new();
+    let mut skinned_by_world = HashMap::<u32, Vec<&ReferenceBounds>>::new();
     let mut spatial = BTreeMap::<(u32, i32, i32), Vec<u32>>::new();
     for land in terrain.cells.iter() {
         let id = land.cell_id.to_native();
@@ -478,7 +547,20 @@ pub fn write_grass_cache(
             spatial.entry(coordinate).or_default().push(id);
         }
     }
+    for reference in &mut references {
+        geometry.fingerprint(&reference.model_path);
+        reference.potential_skin = geometry.potential_skins[&reference.model_path];
+    }
     for reference in &references {
+        if reference.potential_skin {
+            // Raw POSITION bounds cannot limit skin deformation. Keep conservative candidates
+            // independent of geometry so a fully reusable bake never decodes vertices.
+            skinned_by_world
+                .entry(reference.worldspace)
+                .or_default()
+                .push(reference);
+            continue;
+        }
         let first_x = (reference.min[0] / f64::from(GRASS_CELL_SIZE)).floor() as i32;
         let last_x = (reference.max[0] / f64::from(GRASS_CELL_SIZE)).floor() as i32;
         let first_y = (reference.min[1] / f64::from(GRASS_CELL_SIZE)).floor() as i32;
@@ -534,6 +616,14 @@ pub fn write_grass_cache(
         .as_ref()
         .and_then(|map| rkyv::access::<ArchivedGrassCache, Error>(map).ok());
     let mut report = GrassBakeReport {
+        initially_hidden_references: references
+            .iter()
+            .filter(|reference| !reference.enabled)
+            .count(),
+        unresolved_enable_references: references
+            .iter()
+            .filter(|reference| reference.unresolved_enable)
+            .count(),
         unbounded_references,
         skipped_rules,
         first_invalid_rule,
@@ -564,15 +654,23 @@ pub fn write_grass_cache(
         if quadrants.iter().all(|quadrant| quadrant.layers.is_empty()) {
             continue;
         }
-        let refs = refs_by_cell.get(&id).map(Vec::as_slice).unwrap_or_default();
+        let mut refs = refs_by_cell.get(&id).cloned().unwrap_or_default();
+        refs.extend(
+            skinned_by_world
+                .get(&worldspace_id)
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
+        refs.sort_unstable_by_key(|reference| reference.id);
         let mut model_inputs = Vec::with_capacity(refs.len());
-        for reference in refs {
+        for reference in &refs {
             model_inputs.push(geometry.fingerprint(&reference.model_path));
         }
         let hash = input_hash(
             &land,
             (worldspace_id, grid_x, grid_y),
-            refs,
+            &refs,
             &links,
             &rule_inputs,
             land_inputs.get(&id),
@@ -592,11 +690,10 @@ pub fn write_grass_cache(
         }
         for quadrant in &mut quadrants {
             quadrant.exclusion = exclusion_mask(
-                grid_x,
-                grid_y,
+                (id, grid_x, grid_y),
                 quadrant.quadrant,
                 &land.heights,
-                refs,
+                &refs,
                 &mut geometry,
             );
         }
@@ -632,6 +729,12 @@ pub fn write_grass_cache(
     file.sync_all()?;
     validate_grass_cache(path)?;
     report.skipped_obstruction_models = geometry.failures.len();
+    report.expanded_sampling_cells = geometry.expanded_cells.len();
+    report.expanded_sampling_quadrants = geometry.expanded_quadrants.len();
+    #[cfg(test)]
+    {
+        report.geometry_decodes = geometry.decodes;
+    }
     report.obstruction_diagnostics = geometry
         .failures
         .into_iter()
@@ -717,6 +820,7 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
 
 /// Collect eligible exterior obstruction bounds and count references lacking valid bounds.
 fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usize)> {
+    let mut enable = enable::EnableStates::new(conn)?;
     let mut statement = conn.prepare("SELECT s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND COALESCE(s.bounds_valid,0)=0")?;
     let mut unbounded = 0;
     for row in statement.query_map([], |row| {
@@ -763,6 +867,8 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
             continue;
         }
         let mut hash = Sha256::new();
+        let (enabled, enable_hash, unresolved_enable) = enable.reference(id);
+        hash.update(enable_hash);
         for value in position
             .iter()
             .chain(rotation.iter())
@@ -781,6 +887,9 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
             continue;
         }
         references.push(ReferenceBounds {
+            enabled,
+            unresolved_enable,
+            potential_skin: false,
             id,
             base_id,
             worldspace,
@@ -927,13 +1036,13 @@ fn blend_layers(
 
 /// Sample transformed solid triangles at tile centers above rendered terrain heights.
 fn exclusion_mask(
-    grid_x: i32,
-    grid_y: i32,
+    cell: (u32, i32, i32),
     quadrant: u8,
     heights: &[f32],
     refs: &[&ReferenceBounds],
     geometry: &mut GeometryCache,
 ) -> Vec<u8> {
+    let (cell_id, grid_x, grid_y) = cell;
     let mut mask = vec![0; GRASS_EXCLUSION_SIDE * GRASS_EXCLUSION_SIDE / 8];
     let size = f64::from(GRASS_CELL_SIZE) / 2.0;
     let cell_origin = [
@@ -946,10 +1055,34 @@ fn exclusion_mask(
     ];
     let step = size / GRASS_EXCLUSION_SIDE as f64;
     for reference in refs {
-        if (0..2).any(|axis| {
-            reference.max[axis] < cell_origin[axis] + origin[axis]
-                || reference.min[axis] > cell_origin[axis] + origin[axis] + size
-        }) {
+        if !reference.enabled {
+            continue;
+        }
+        let raw_misses = |width: f64, local: [f64; 2]| {
+            (0..2).any(|axis| {
+                reference.max[axis] < cell_origin[axis] + local[axis]
+                    || reference.min[axis] > cell_origin[axis] + local[axis] + width
+            })
+        };
+        // The offsets are minima/maxima of exactly the f64 operations used below. Adding
+        // the same position then subtracting the same CELL origin preserves enclosure.
+        let misses = |bounds: &[DVec3; 2]| {
+            (0..2).any(|axis| {
+                bounds[1][axis] + f64::from(reference.position[axis]) - cell_origin[axis]
+                    < origin[axis]
+                    || bounds[0][axis] + f64::from(reference.position[axis]) - cell_origin[axis]
+                        > origin[axis] + size
+            })
+        };
+        if !reference.potential_skin && raw_misses(size, origin) {
+            continue;
+        }
+        if reference.potential_skin
+            && geometry
+                .reference_offsets
+                .get(&reference.id)
+                .is_some_and(&misses)
+        {
             continue;
         }
         let Some(triangles) = geometry.get(&reference.model_path) else {
@@ -957,6 +1090,30 @@ fn exclusion_mask(
         };
         let q = shared::coordinates::creation_euler_to_runtime_quaternion(reference.rotation);
         let rotation = glam::DQuat::from_array(q.map(f64::from));
+        if reference.potential_skin {
+            let bounds = geometry
+                .reference_offsets
+                .entry(reference.id)
+                .or_insert_with(|| {
+                    let mut bounds = [DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)];
+                    for &p in triangles.iter().flatten() {
+                        let p = rotation * (p * f64::from(reference.scale));
+                        let p = DVec3::new(p.x, -p.z, p.y);
+                        bounds[0] = bounds[0].min(p);
+                        bounds[1] = bounds[1].max(p);
+                    }
+                    bounds
+                });
+            if misses(bounds) {
+                continue;
+            }
+            if raw_misses(f64::from(GRASS_CELL_SIZE), [0.0; 2]) {
+                geometry.expanded_cells.insert(cell_id);
+            }
+            if raw_misses(size, origin) {
+                geometry.expanded_quadrants.insert((cell_id, quadrant));
+            }
+        }
         for triangle in triangles.iter() {
             // Work relative to this CELL before adding local vertices, preserving far-world detail.
             let triangle = triangle.map(|p| {
@@ -1035,7 +1192,7 @@ fn terrain_height(heights: &[f32], x: f32, y: f32) -> f32 {
     }
 }
 
-/// Hash cell terrain, linked rule payloads and overlapping obstruction identities and contents.
+/// Hash cell terrain, linked rules and conservative candidate identities, states and contents.
 fn input_hash(
     land: &CachedLand,
     coordinate: (u32, i32, i32),
@@ -1358,9 +1515,9 @@ mod tests {
         }
     }
 
-    /// Version-two masks with identical model bytes must rebuild, then reuse deterministically.
+    /// Version-three masks with identical model bytes must rebuild, then reuse deterministically.
     #[test]
-    fn skinned_obstruction_version_two_masks_rebuild_before_reuse() {
+    fn skinned_obstruction_version_three_masks_rebuild_before_reuse() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         add_skin(dir.path(), true);
@@ -1370,7 +1527,7 @@ mod tests {
         write_grass_cache(&conn, dir.path(), &terrain, None, &output).unwrap();
         let expected = std::fs::read(&output).unwrap();
         let mut obsolete = read(&output);
-        obsolete.version = 2;
+        obsolete.version = 3;
         for cell in &mut obsolete.cells {
             for quadrant in &mut cell.quadrants {
                 quadrant.exclusion.fill(0);
@@ -1815,7 +1972,7 @@ mod tests {
     }
 
     /// Build grass-bearing neighboring cells and a separate worldspace with a converted blocker.
-    fn fixture(root: &Path) -> Connection {
+    pub(super) fn fixture(root: &Path) -> Connection {
         write_box(root, [-64.0, -16.0, -48.0], [64.0, 32.0, 48.0]);
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
@@ -1849,7 +2006,7 @@ mod tests {
     }
 
     /// Deserialize a grass cache only after structural and semantic validation.
-    fn read(path: &Path) -> GrassCache {
+    pub(super) fn read(path: &Path) -> GrassCache {
         let map = validate_grass_cache(path).unwrap();
         rkyv::deserialize::<GrassCache, Error>(
             rkyv::access::<ArchivedGrassCache, Error>(&map).unwrap(),
@@ -1921,7 +2078,7 @@ mod tests {
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let mut cache = read(&previous);
         assert_eq!(
-            cache.version, 3,
+            cache.version, 4,
             "full-layer coverage invalidates capped terrain masks"
         );
         cache.version = 1;
@@ -1930,7 +2087,7 @@ mod tests {
         let report =
             write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
         assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
-        assert_eq!(read(&output).version, 3);
+        assert_eq!(read(&output).version, 4);
     }
 
     /// Reuse unchanged cells and invalidate cells affected by rule or reference changes.

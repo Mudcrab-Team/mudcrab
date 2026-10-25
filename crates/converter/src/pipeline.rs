@@ -1549,11 +1549,13 @@ impl AssetPipeline {
                 ));
             }
             report.integration = Some(integration);
+            // Explicit invalidation also bypasses otherwise matching published grass masks.
+            let previous_grass = config.output_dir.join("grass_cache.rkyv");
             let grass = write_grass_cache(
                 &Connection::open(staging.join("skyrim_world.db"))?,
                 staging,
                 &staging.join("cell_cache_preserved.rkyv"),
-                Some(&config.output_dir.join("grass_cache.rkyv")),
+                (!config.invalidate_cache).then_some(previous_grass.as_path()),
                 &staging.join("grass_cache.rkyv"),
             )?;
             // Integration already reports failed model conversion. Missing bounds or geometry the
@@ -11231,6 +11233,167 @@ mod tests {
         });
         let report = AssetPipeline::run_async(config, tx).await.unwrap();
         (report, collect.await.unwrap())
+    }
+
+    /// Metadata rebuild rejects invalidation before reading or reusing the source grass cache.
+    #[tokio::test]
+    async fn metadata_rebuild_rejects_invalidate_cache_before_package_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        let source = directory.path().join("absent-source");
+        fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.invalidate_cache = true;
+        let (tx, mut rx) = mpsc::channel(1);
+        let error = AssetPipeline::rebuild_metadata_async(config, &source, tx)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot resume, invalidate, or bypass asset verification"),
+            "wrong invalidation boundary: {error}",
+        );
+        assert!(!source.exists());
+        assert!(!output.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Repair rejects invalidation for previews and publication before inspecting the old cache.
+    #[test]
+    fn repair_rejects_invalidate_cache_before_package_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.invalidate_cache = true;
+        for apply in [false, true] {
+            let error = crate::repair::repair_failed(&config, apply).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("repair cannot resume staging or invalidate the pack"),
+                "wrong invalidation boundary: {error}",
+            );
+            assert!(!output.exists());
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    /// Explicit invalidation regenerates every mask even when previous cell keys still match.
+    #[tokio::test]
+    async fn invalidate_cache_rebakes_all_matching_previous_grass_cells() {
+        /// Read a validated archive into owned data so tests can seed distinct cached masks.
+        fn read_cache(output: &Path) -> shared::grass::GrassCache {
+            let map =
+                crate::esm::grass_cache::validate_grass_cache(&output.join("grass_cache.rkyv"))
+                    .unwrap();
+            rkyv::deserialize::<shared::grass::GrassCache, rkyv::rancor::Error>(
+                rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map)
+                    .unwrap(),
+            )
+            .unwrap()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("modern");
+        fs::create_dir(&data).unwrap();
+        fs::write(
+            data.join("Skyrim.esm"),
+            dummy_content::esm::plugin(&dummy_content::esm::Plugin {
+                author: "Grass invalidation regression",
+                worldspace: "GrassInvalidateWorld",
+                cells: &[
+                    dummy_content::esm::Cell {
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    dummy_content::esm::Cell {
+                        grid_x: 2,
+                        grid_y: -1,
+                    },
+                ],
+                model_path: "test/unavailable.nif",
+                diffuse: "test/unavailable.dds",
+                normal_texture: "test/unavailable_n.dds",
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut patch = grass_policy_record(
+            b"TES4",
+            0,
+            &[(b"MAST", b"Skyrim.esm\0".to_vec()), (b"DATA", vec![0; 8])],
+        );
+        let mut rule = vec![40, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for value in [0.0f32, 0.0, 0.0, 1.0] {
+            rule.extend(value.to_le_bytes());
+        }
+        rule.extend([0; 4]);
+        patch.extend(grass_policy_record(
+            b"GRAS",
+            0x0100_0801,
+            &[(b"MODL", b"grass/optional.nif\0".to_vec()), (b"DATA", rule)],
+        ));
+        patch.extend(grass_policy_record(
+            b"LTEX",
+            4,
+            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+        ));
+        fs::write(data.join("Grass.esp"), patch).unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.no_lod = true;
+        let cold = run_without_progress(config.clone()).await;
+        assert!(cold.complete, "{:?}", cold.warnings);
+        let expected = read_cache(&output);
+        assert_eq!(
+            expected.cells.len(),
+            2,
+            "both exterior cells must carry grass"
+        );
+        let mut seeded = expected.clone();
+        for (index, cell) in seeded.cells.iter_mut().enumerate() {
+            for quadrant in &mut cell.quadrants {
+                assert!(quadrant.exclusion.iter().all(|byte| *byte == 0));
+                quadrant.exclusion.fill(0x51 + index as u8);
+            }
+        }
+        // Keep every input hash intact: these valid masks expose reuse rather than corruption recovery.
+        fs::write(
+            output.join("grass_cache.rkyv"),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&seeded).unwrap(),
+        )
+        .unwrap();
+        let warm = run_without_progress(config.clone()).await;
+        assert!(warm.complete, "{:?}", warm.warnings);
+        assert_eq!(
+            read_cache(&output),
+            seeded,
+            "warm control must reuse all matching cells"
+        );
+
+        config.invalidate_cache = true;
+        let invalidated = run_without_progress(config).await;
+        assert!(invalidated.complete, "{:?}", invalidated.warnings);
+        let actual = read_cache(&output);
+        assert_eq!(actual.cells.len(), 2);
+        for (actual, expected) in actual.cells.iter().zip(&expected.cells) {
+            assert_eq!(
+                actual.input_hash, expected.input_hash,
+                "inputs must still match"
+            );
+            for (quadrant, expected) in actual.quadrants.iter().zip(&expected.quadrants) {
+                assert_eq!(
+                    quadrant.exclusion, expected.exclusion,
+                    "invalidate_cache must rebake matching previous grass cell {:08X}",
+                    actual.cell_id,
+                );
+            }
+        }
     }
 
     /// Legacy database reuse retains the full terrain input needed to publish grass again.

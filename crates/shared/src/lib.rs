@@ -4,6 +4,7 @@ pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
 pub mod grass;
+pub mod initial_enable;
 pub mod lod;
 pub mod plugin_selection;
 pub mod records;

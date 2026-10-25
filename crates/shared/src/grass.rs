@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version three includes rest-pose skinned obstructions; older masks must be rebuilt.
-pub const GRASS_CACHE_VERSION: u32 = 3;
+/// Version four resolves initial visibility and conservatively selects skinned obstructions.
+pub const GRASS_CACHE_VERSION: u32 = 4;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
