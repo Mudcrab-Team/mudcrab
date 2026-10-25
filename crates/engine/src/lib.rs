@@ -1,6 +1,7 @@
 pub mod actor_animation;
 pub mod actor_drive;
 pub mod actor_head;
+pub mod actor_skin_tone;
 pub mod actors;
 pub mod app;
 pub mod bug_report;

@@ -1013,7 +1013,7 @@ fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
+pub(crate) fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
     ensure!(
         bytes.len() >= 20 && &bytes[..4] == b"glTF",
         "invalid GLB container"
@@ -3561,6 +3561,7 @@ mod tests {
                         uv_offset: [0.0; 2],
                         uv_scale: [1.0; 2],
                         texture_clamp_mode: 3,
+                        tint_color: None,
                         shader_family: NifShaderFamily::Lighting,
                         lighting_shader_type: Some(LightingShaderType::Default),
                         shader_block: 0,

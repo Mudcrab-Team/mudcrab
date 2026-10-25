@@ -9,9 +9,11 @@
 // the stock `VertexOutput` does not carry.
 //
 // The fragment stage is `bevy_pbr/render/pbr.wgsl` with the normal and the specular mask taken
-// from the model-space maps (`mudcrab::cs_lighting_msn`) and, on FaceGen heads, the base colour
-// run through Skyrim's FaceGen tint and detail maps. Everything else is the stock
-// `StandardMaterial` path.
+// from the model-space maps (`mudcrab::cs_lighting_msn`), on FaceGen heads the base colour run
+// through Skyrim's FaceGen tint and detail maps, on tinted skin (body, hands, feet) the base
+// colour blended with the actor's skin tone, and on hair, brows and beards the base colour
+// multiplied by the NIF's hair tint. Hair keeps the stock tangent-space normal map: only
+// model-space materials replace the normal. Everything else is the stock `StandardMaterial` path.
 
 #import bevy_pbr::{
     mesh_bindings::mesh,
@@ -30,6 +32,8 @@
 #import mudcrab::cs_lighting_msn::{
     decode_model_space_normal,
     get_facegen_base_color,
+    get_facegen_rgb_tint_base_color,
+    get_hair_vertex_color,
     material_glossiness,
     model_space_glossiness,
     model_space_world_normal,
@@ -48,12 +52,15 @@ const FLAG_MODEL_SPACE_NORMALS: u32 = 1u;
 const FLAG_SPECULAR_MAP: u32 = 2u;
 const FLAG_SPECULAR: u32 = 4u;
 const FLAG_FACEGEN: u32 = 8u;
+const FLAG_SKIN_TINT: u32 = 16u;
+const FLAG_HAIR_TINT: u32 = 32u;
 const FLAG_DEBUG_WORLD_NORMAL: u32 = 65536u;
 const FLAG_DEBUG_VERTEX_NORMAL: u32 = 131072u;
 
 struct SkyrimSkinSettings {
     flags: u32,
-    // Reserved for the skin and hair tints; unused by this shader.
+    // The skin tint (`FLAG_SKIN_TINT`) or hair tint (`FLAG_HAIR_TINT`), encoded RGB in 0..1;
+    // alpha unused.
     tint_color: vec4<f32>,
     detail: vec4<f32>,
 }
@@ -220,6 +227,11 @@ fn stock_vertex_output(skin_in: SkinVertexOutput) -> VertexOutput {
 #endif
 #ifdef VERTEX_COLORS
     in.color = skin_in.color;
+    if (skin.flags & FLAG_HAIR_TINT) != 0u {
+        // Hair's vertex colour masks the tint in green and is not a colour; Bevy would multiply
+        // all of it into the base colour. Only its alpha scales the alpha, as in Skyrim.
+        in.color = vec4<f32>(1.0, 1.0, 1.0, skin_in.color.a);
+    }
 #endif
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     in.instance_index = skin_in.instance_index;
@@ -258,7 +270,17 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
 #endif
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+#ifdef SKYRIM_HAIR_ALPHA_TO_COVERAGE
+    // A masked hair card under MSAA (`skin_material.rs`, "Hair card edges"): coverage instead of
+    // the alpha test. Full at the authored cutoff, where the prepass and shadows stop, and fading
+    // out over the pixel below it.
+    let hair_alpha = pbr_input.material.base_color.a;
+    pbr_input.material.base_color.a = saturate(
+        (hair_alpha - pbr_input.material.alpha_cutoff) / max(fwidth(hair_alpha), 0.0001) + 1.0
+    );
+#else
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+#endif
 
 #ifdef VERTEX_UVS_A
     if (skin.flags & FLAG_FACEGEN) != 0u {
@@ -279,6 +301,17 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         );
         pbr_input.material.base_color = vec4<f32>(
             srgb_decode(facegen),
+            pbr_input.material.base_color.a,
+        );
+    }
+
+    if (skin.flags & FLAG_SKIN_TINT) != 0u {
+        // As for FaceGen above: the game blends on encoded values, and the tint colour is stored
+        // encoded (`NPC_/QNAM`), so the base colour is re-encoded around the blend.
+        let raw_base_color = srgb_encode(pbr_input.material.base_color.rgb);
+        let tinted = get_facegen_rgb_tint_base_color(raw_base_color, skin.tint_color.rgb);
+        pbr_input.material.base_color = vec4<f32>(
+            srgb_decode(tinted),
             pbr_input.material.base_color.a,
         );
     }
@@ -319,6 +352,20 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         pbr_input.material.reflectance *= sqrt(glossiness);
     }
 #endif
+
+    if (skin.flags & FLAG_HAIR_TINT) != 0u {
+        // A shape without vertex colours reads 1, as Skyrim's vertex shader writes for it.
+        var tint_mask = 1.0;
+#ifdef VERTEX_COLORS
+        tint_mask = skin_in.color.g;
+#endif
+        // The tint is stored encoded and lerped on encoded values; `SRGBToWorking` is the decode.
+        let vertex_color = srgb_decode(get_hair_vertex_color(skin.tint_color.rgb, tint_mask));
+        pbr_input.material.base_color = vec4<f32>(
+            pbr_input.material.base_color.rgb * vertex_color,
+            pbr_input.material.base_color.a,
+        );
+    }
 
     apply_decals(&pbr_input);
 

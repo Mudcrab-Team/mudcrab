@@ -1756,6 +1756,9 @@ fn spawn_cell(
                 if let Some(head) = &plan.head {
                     entity.insert(head.clone());
                 }
+                if let Some(tone) = plan.skin_tone {
+                    entity.insert(tone);
+                }
                 if plan.uses_composed_body() {
                     entity.insert((
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
@@ -9366,6 +9369,46 @@ mod tests {
             Some("meshes/actors/character/character assets/malebody_1.glb")
         );
         assert!(entity.get::<Actor>().is_some());
+        assert!(
+            entity
+                .get::<crate::actor_skin_tone::ActorSkinTone>()
+                .is_none(),
+            "a catalog without the skin tone columns gives no tone"
+        );
+    }
+
+    /// The catalog's `QNAM` skin tone travels to the actor entity, where
+    /// `crate::actor_skin_tone` applies it to the body's `skin_tint` surfaces.
+    #[test]
+    fn an_actor_carries_its_catalog_skin_tone() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute_batch(
+                "ALTER TABLE actor_models ADD COLUMN skin_tone_r REAL;
+                 ALTER TABLE actor_models ADD COLUMN skin_tone_g REAL;
+                 ALTER TABLE actor_models ADD COLUMN skin_tone_b REAL;",
+            )
+            .unwrap();
+        insert_alvor(&connection);
+        connection
+            .execute(
+                "UPDATE actor_models SET skin_tone_r=0.75, skin_tone_g=0.5, skin_tone_b=0.25",
+                [],
+            )
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x13475));
+        assert_eq!(
+            entity.get::<crate::actor_skin_tone::ActorSkinTone>(),
+            Some(&crate::actor_skin_tone::ActorSkinTone(Vec3::new(
+                0.75, 0.5, 0.25
+            )))
+        );
     }
 
     /// A race with its own body keeps that body and receives no shared human gait, even when the

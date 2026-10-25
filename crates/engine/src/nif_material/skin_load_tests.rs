@@ -2,7 +2,7 @@
 //! binds: the skin material, its linear `_s` twin and the dependency holder.
 
 use super::*;
-use crate::skin_material::SkyrimSkinFlags;
+use crate::skin_material::{SkyrimSkinFlags, SkyrimSkinKey};
 use bevy::{
     asset::{LoadState, RenderAssetUsages},
     image::{
@@ -38,6 +38,7 @@ impl GltfExtensionHandler for StockStandardHandler {
                 base_color_texture: loaded.base_color_texture.clone(),
                 normal_map_texture: loaded.normal_map_texture.clone(),
                 specular_tint_texture: loaded.specular_tint_texture.clone(),
+                alpha_mode: loaded.alpha_mode,
                 reflectance: loaded.reflectance,
                 ..default()
             },
@@ -541,4 +542,303 @@ fn a_face_tint_head_from_an_older_pack_keeps_the_plain_skin_material() {
     assert_eq!(skin.extension.settings.flags & SkyrimSkinFlags::FACEGEN, 0);
     assert!(skin.extension.facegen_tint.is_none());
     assert!(skin.extension.facegen_detail.is_none());
+}
+
+/// [`write_model_space_gltf`] as a `skin_tint` body part, with `tint_color` published as the NIF's
+/// own skin tint when given.
+fn write_skin_tint_gltf(directory: &Path, tint_color: Option<[f32; 3]>) {
+    write_model_space_gltf(directory, (1 << 31) | (1 << 12) | 1);
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["extensionsUsed"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("OPEN_SKYRIM_material"));
+    let mut extension = serde_json::json!({
+        "shaderFamily": "lighting",
+        "lightingShaderType": "skin_tint",
+    });
+    if let Some(colour) = tint_color {
+        extension["tintColor"] = serde_json::json!(colour);
+    }
+    document["materials"][0]["extensions"]["OPEN_SKYRIM_material"] = extension;
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
+/// Whether the scene's one skin primitive carries [`SkinTintSurface`], and its material.
+fn load_skin_tint_surface(directory: &Path) -> (bool, SkyrimSkinMaterial) {
+    let mut app = loader_app(directory);
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+    wait_for_dependencies(&mut app, &scene);
+    let mut scene_world = app
+        .world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .remove(&scene)
+        .unwrap()
+        .world;
+    let mut query = scene_world.query::<(
+        &MeshMaterial3d<SkyrimSkinMaterial>,
+        Has<crate::skin_material::SkinTintSurface>,
+    )>();
+    let (handle, marked) = query.single(&scene_world).unwrap();
+    let material = app
+        .world()
+        .resource::<Assets<SkyrimSkinMaterial>>()
+        .get(&handle.0)
+        .unwrap()
+        .clone();
+    (marked, material)
+}
+
+#[test]
+fn a_skin_tint_part_is_marked_and_untinted_without_a_nif_colour() {
+    let directory = tempfile::tempdir().unwrap();
+    write_skin_tint_gltf(directory.path(), None);
+    let (marked, skin) = load_skin_tint_surface(directory.path());
+    assert!(
+        marked,
+        "the actor's skin tone finds the surface by its marker"
+    );
+    assert_eq!(
+        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0
+    );
+    assert_eq!(skin.extension.settings.tint_color, Vec4::ONE);
+}
+
+#[test]
+fn a_skin_tint_part_ignores_the_nif_tint_colour() {
+    for colour in [[1.0, 1.0, 1.0], [0.5, 0.4, 0.3]] {
+        let directory = tempfile::tempdir().unwrap();
+        write_skin_tint_gltf(directory.path(), Some(colour));
+        let (marked, skin) = load_skin_tint_surface(directory.path());
+        assert!(marked, "the actor's skin tone still finds the surface");
+        assert_eq!(
+            skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+            0,
+            "{colour:?}"
+        );
+        assert_eq!(skin.extension.settings.tint_color, Vec4::ONE, "{colour:?}");
+    }
+}
+
+#[test]
+fn a_plain_model_space_material_is_not_a_skin_tint_surface() {
+    let directory = tempfile::tempdir().unwrap();
+    write_model_space_gltf(directory.path(), (1 << 31) | (1 << 12) | 1);
+    let (marked, skin) = load_skin_tint_surface(directory.path());
+    assert!(!marked);
+    assert_eq!(
+        skin.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0
+    );
+}
+
+/// [`write_model_space_gltf`] as a FaceGen hair card: a tangent-space (`directx`) `hair_tint`
+/// material with the given flags and, when given, the NIF's hair tint as `tintColor`.
+fn write_hair_gltf(
+    directory: &Path,
+    shader_flags_1: u64,
+    shader_flags_2: u64,
+    tint_color: Option<[f32; 3]>,
+) {
+    write_model_space_gltf(directory, shader_flags_1);
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["extensionsUsed"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("OPEN_SKYRIM_material"));
+    let material = &mut document["materials"][0];
+    material["extras"]["openSkyrim"]["normalConvention"] = serde_json::json!("directx");
+    material["extras"]["openSkyrim"]["shaderFlags2"] = serde_json::json!(shader_flags_2);
+    let mut extension = serde_json::json!({
+        "shaderFamily": "lighting",
+        "lightingShaderType": "hair_tint",
+        "textureSlots": []
+    });
+    if let Some(colour) = tint_color {
+        extension["tintColor"] = serde_json::json!(colour);
+    }
+    material["extensions"]["OPEN_SKYRIM_material"] = extension;
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
+/// [`write_hair_gltf`] as an alpha-tested hair card: glTF `MASK` with `cutoff`.
+fn write_masked_hair_gltf(directory: &Path, cutoff: f32) {
+    write_hair_gltf(directory, 1 << 31, 1, Some(ALVOR_HAIR));
+    let path = directory.join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["materials"][0]["alphaMode"] = serde_json::json!("MASK");
+    document["materials"][0]["alphaCutoff"] = serde_json::json!(cutoff);
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+}
+
+fn load_scene_world(app: &mut App) -> World {
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+    wait_for_dependencies(app, &scene);
+    app.world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .remove(&scene)
+        .unwrap()
+        .world
+}
+
+/// Alvor's hair tint as `00013475.nif` stores it: twice his `HCLF` colour.
+const ALVOR_HAIR: [f32; 3] = [0.439_215_7, 0.462_745_1, 0.345_098_05];
+
+#[test]
+fn hair_loads_as_a_tinted_skin_material_with_its_tangent_space_maps() {
+    let directory = tempfile::tempdir().unwrap();
+    write_hair_gltf(directory.path(), 1 << 31, 1, Some(ALVOR_HAIR));
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut query = scene_world.query::<(
+        &MeshMaterial3d<SkyrimSkinMaterial>,
+        &NifNativeMaterialSource,
+        Option<&MeshMaterial3d<StandardMaterial>>,
+        Has<SkinTintSurface>,
+    )>();
+    let (hair, base, standard, skin_tone) = query.single(&scene_world).unwrap();
+    assert!(standard.is_none(), "a mesh draws once per material binding");
+    assert!(!skin_tone, "the actor's skin tone does not apply to hair");
+    let world = app.world();
+    let hair = world
+        .resource::<Assets<SkyrimSkinMaterial>>()
+        .get(&hair.0)
+        .unwrap();
+    let base = world
+        .resource::<Assets<StandardMaterial>>()
+        .get(&base.0)
+        .unwrap();
+    assert_eq!(hair.extension.settings.flags, SkyrimSkinFlags::HAIR_TINT);
+    assert_eq!(
+        hair.extension.settings.tint_color,
+        Vec3::from_array(ALVOR_HAIR).extend(1.0)
+    );
+    assert!(hair.extension.model_space_normal.is_none());
+    assert!(hair.base.normal_map_texture.is_some());
+    assert_eq!(hair.base.normal_map_texture, base.normal_map_texture);
+    assert_eq!(hair.base.specular_tint_texture, base.specular_tint_texture);
+}
+
+#[test]
+fn decal_hair_draws_tinted_under_its_depth_state() {
+    let directory = tempfile::tempdir().unwrap();
+    // Brows and hairlines: depth test, decal and dynamic decal, no depth write.
+    write_hair_gltf(
+        directory.path(),
+        (1 << 31) | (1 << 26) | (1 << 27),
+        0,
+        Some(ALVOR_HAIR),
+    );
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut skins = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    assert_eq!(skins.iter(&scene_world).count(), 0);
+    let mut depth = scene_world.query::<&MeshMaterial3d<NifDepthMaterial>>();
+    assert_eq!(depth.iter(&scene_world).count(), 0);
+    let mut query = scene_world.query::<(
+        &MeshMaterial3d<SkyrimSkinDepthMaterial>,
+        &NifNativeMaterialSource,
+    )>();
+    let (hair, _) = query.single(&scene_world).unwrap();
+    let world = app.world();
+    assert!(
+        world
+            .resource::<AssetServer>()
+            .is_loaded_with_dependencies(hair.0.id())
+    );
+    let hair = world
+        .resource::<Assets<SkyrimSkinDepthMaterial>>()
+        .get(&hair.0)
+        .unwrap();
+    assert!(hair.extension.state.decal);
+    assert!(!hair.extension.state.depth_write);
+    assert_eq!(
+        hair.base.extension.settings.flags,
+        SkyrimSkinFlags::HAIR_TINT
+    );
+    assert!(hair.base.base.normal_map_texture.is_some());
+}
+
+#[test]
+fn hair_from_an_older_pack_keeps_the_plain_materials() {
+    let directory = tempfile::tempdir().unwrap();
+    write_hair_gltf(directory.path(), (1 << 31) | (1 << 26), 0, None);
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut depth = scene_world.query::<&MeshMaterial3d<NifDepthMaterial>>();
+    assert_eq!(depth.iter(&scene_world).count(), 1);
+    let mut hair = scene_world.query::<&MeshMaterial3d<SkyrimSkinDepthMaterial>>();
+    assert_eq!(hair.iter(&scene_world).count(), 0);
+
+    let directory = tempfile::tempdir().unwrap();
+    write_hair_gltf(directory.path(), 1 << 31, 1, None);
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut standard = scene_world.query::<&MeshMaterial3d<StandardMaterial>>();
+    assert_eq!(standard.iter(&scene_world).count(), 1);
+    let mut skins = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    assert_eq!(skins.iter(&scene_world).count(), 0);
+}
+
+#[test]
+fn default_white_nif_skin_colour_does_not_enable_skin_tint() {
+    let directory = tempfile::tempdir().unwrap();
+    write_model_space_gltf(directory.path(), (1 << 31) | (1 << 12) | 1);
+    let path = directory.path().join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["materials"][0]["extensions"] = serde_json::json!({
+        "OPEN_SKYRIM_material": {
+            "lightingShaderType": "skin_tint",
+            "tintColor": [1.0, 1.0, 1.0]
+        },
+        "KHR_materials_specular": {
+            "specularFactor": 1.0,
+            "specularColorTexture": {"index": 1}
+        }
+    });
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut query = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    let binding = query.single(&scene_world).unwrap();
+    let material = app
+        .world()
+        .resource::<Assets<SkyrimSkinMaterial>>()
+        .get(&binding.0)
+        .unwrap();
+    assert_eq!(
+        material.extension.settings.flags & SkyrimSkinFlags::SKIN_TINT,
+        0,
+        "default-white NIF data must not fabricate an NPC skin tone"
+    );
+}
+
+#[test]
+fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
+    let directory = tempfile::tempdir().unwrap();
+    write_masked_hair_gltf(directory.path(), 0.3);
+    let mut app = loader_app(directory.path());
+    let mut scene_world = load_scene_world(&mut app);
+    let mut query = scene_world.query::<&MeshMaterial3d<SkyrimSkinMaterial>>();
+    let handle = query.single(&scene_world).unwrap().0.clone();
+    let materials = app.world().resource::<Assets<SkyrimSkinMaterial>>();
+    let material = materials.get(&handle).unwrap();
+    // The depth prepass and shadows alpha-test at this cutoff; only the colour pass under MSAA
+    // switches to coverage, which the hair key selects.
+    assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.3));
+    assert!(SkyrimSkinKey::from(&material.extension).hair);
 }

@@ -6,7 +6,7 @@ use crate::{
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
-use bevy::prelude::Resource;
+use bevy::prelude::{Msaa, Resource};
 use shared::lod::LodTier;
 use std::{fmt, path::PathBuf};
 
@@ -206,6 +206,9 @@ pub struct EngineConfig {
     pub diagnostic_asset_fallbacks: bool,
     pub material_fixture: bool,
     pub terrain_water_fixture: bool,
+    /// The sample count the terrain/water fixture camera draws with
+    /// (`--terrain-water-fixture-msaa`). Off by default, so the fixture renders as it always has.
+    pub terrain_water_fixture_msaa: Msaa,
     pub transform_bounds_fixture: bool,
     pub renderer_fixture: bool,
     pub streaming_fixture: bool,
@@ -311,6 +314,7 @@ impl Default for EngineConfig {
             diagnostic_asset_fallbacks: false,
             material_fixture: false,
             terrain_water_fixture: false,
+            terrain_water_fixture_msaa: Msaa::Off,
             transform_bounds_fixture: false,
             renderer_fixture: false,
             streaming_fixture: false,
@@ -418,6 +422,7 @@ Diagnostics:
   --diagnostic-asset-fallbacks          log every fallback asset substitution
   --material-fixture                    run the material fixture (no world database)
   --terrain-water-fixture               run the terrain-water fixture (no world database)
+  --terrain-water-fixture-msaa <n>      terrain-water fixture MSAA samples: 1, 2, 4 or 8 (default: 1)
   --transform-bounds-fixture            run the transform-bounds fixture (no world database)
   --renderer-fixture                    run the renderer fixture (no world database)
   --physics-fixture                     run the physics fixture (no world database)
@@ -1285,6 +1290,10 @@ impl EngineConfig {
                 "--diagnostic-asset-fallbacks" => config.diagnostic_asset_fallbacks = true,
                 "--material-fixture" => config.material_fixture = true,
                 "--terrain-water-fixture" => config.terrain_water_fixture = true,
+                "--terrain-water-fixture-msaa" => {
+                    config.terrain_water_fixture_msaa =
+                        parse_msaa("--terrain-water-fixture-msaa", args.next())?
+                }
                 "--transform-bounds-fixture" => config.transform_bounds_fixture = true,
                 "--renderer-fixture" => config.renderer_fixture = true,
                 "--streaming-fixture" => config.streaming_fixture = true,
@@ -1292,6 +1301,12 @@ impl EngineConfig {
                 "--physics-fixture" => config.physics_fixture = true,
                 unknown => return Err(ConfigError::unrecognized(unknown)),
             }
+        }
+        if config.terrain_water_fixture_msaa != Msaa::Off && !config.terrain_water_fixture {
+            return Err(ConfigError::MissingRequirement {
+                option: "--terrain-water-fixture-msaa",
+                requires: "--terrain-water-fixture",
+            });
         }
         if config.streaming_benchmark_route_speed.is_some()
             && (config.benchmark_only
@@ -1514,6 +1529,18 @@ fn take_value<T: std::str::FromStr>(
     value
         .parse::<T>()
         .map_err(|_| ConfigError::invalid_value(option, Some(value), expected))
+}
+
+fn parse_msaa(option: &'static str, value: Option<String>) -> Result<Msaa, ConfigError> {
+    const EXPECTED: &str = "1, 2, 4 or 8";
+    let raw = take_raw(option, EXPECTED, value)?;
+    match raw.as_str() {
+        "1" | "off" => Ok(Msaa::Off),
+        "2" => Ok(Msaa::Sample2),
+        "4" => Ok(Msaa::Sample4),
+        "8" => Ok(Msaa::Sample8),
+        _ => Err(ConfigError::invalid_value(option, Some(raw), EXPECTED)),
+    }
 }
 
 fn take_mib(
@@ -2928,6 +2955,8 @@ mod tests {
             "--diagnostic-asset-fallbacks",
             "--material-fixture",
             "--terrain-water-fixture",
+            "--terrain-water-fixture-msaa",
+            "4",
             "--transform-bounds-fixture",
             "--renderer-fixture",
             "--streaming-fixture",
@@ -2973,11 +3002,49 @@ mod tests {
         assert!(config.diagnostic_asset_fallbacks);
         assert!(config.material_fixture);
         assert!(config.terrain_water_fixture);
+        assert_eq!(config.terrain_water_fixture_msaa, Msaa::Sample4);
         assert!(config.transform_bounds_fixture);
         assert!(config.renderer_fixture);
         assert!(config.streaming_fixture);
         assert!(config.lights);
         assert!(config.physics_fixture);
+    }
+
+    #[test]
+    fn terrain_water_fixture_msaa_defaults_off_and_needs_the_fixture() {
+        assert_eq!(run_config(&[]).terrain_water_fixture_msaa, Msaa::Off);
+        for (value, expected) in [
+            ("1", Msaa::Off),
+            ("2", Msaa::Sample2),
+            ("4", Msaa::Sample4),
+            ("8", Msaa::Sample8),
+        ] {
+            assert_eq!(
+                run_config(&[
+                    "--terrain-water-fixture",
+                    "--terrain-water-fixture-msaa",
+                    value
+                ])
+                .terrain_water_fixture_msaa,
+                expected,
+                "{value}"
+            );
+        }
+        assert_eq!(
+            parse_error(&["--terrain-water-fixture-msaa", "4"]),
+            ConfigError::MissingRequirement {
+                option: "--terrain-water-fixture-msaa",
+                requires: "--terrain-water-fixture",
+            }
+        );
+        assert!(matches!(
+            parse_error(&[
+                "--terrain-water-fixture",
+                "--terrain-water-fixture-msaa",
+                "3"
+            ]),
+            ConfigError::InvalidValue { .. }
+        ));
     }
 
     /// `--ini` files layer in order and every other option overrides them,

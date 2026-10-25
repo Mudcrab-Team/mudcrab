@@ -22,12 +22,51 @@
 //! texture without sRGB decoding, so they bind as the linear twins of the sRGB textures the
 //! converter publishes, and the shader re-encodes the base colour before the blend.
 //!
-//! The per-actor skin tone and the hair tint extend this material rather than adding new ones.
-//! Each gets a bit in [`SkyrimSkinFlags`] (bits 4-15 are free for them) and reads `tint_color` /
-//! `detail` from the uniform. A bit that is not set leaves the shader's output unchanged. The per-actor skin tone has to be per-instance
-//! data: the labelled material is shared by every instance of a GLB, so the actor spawn clones it
-//! and edits the clone's uniform.
+//! # Skin tone
+//!
+//! A `skin_tint` surface (body, hands, feet) blends its diffuse with a constant tint colour the
+//! same way a FaceGen head blends its tint map ([`SkyrimSkinFlags::SKIN_TINT`], CS's
+//! `FACEGEN_RGB_TINT`). The colour is per NPC (`NPC_/QNAM`), while the labelled material is shared
+//! by every instance of a GLB, and the body GLB by every actor of a sex. The loader only marks
+//! the surface ([`SkinTintSurface`]); [`crate::actor_skin_tone`] gives an actor with QNAM a derived
+//! material carrying that tone. Without QNAM, the flag stays clear, even when the converter
+//! publishes the NIF's default-white shader-tail colour.
+//!
+//! # Hair tint
+//!
+//! FaceGen hair, brows and beards (`hair_tint`) multiply their diffuse by the NIF's hair tint,
+//! masked by the vertex colour's green channel ([`SkyrimSkinFlags::HAIR_TINT`], CS's `HAIR`).
+//! The colour is already per NPC: the FaceGen NIF carries twice the NPC's `HCLF` hair colour. Hair
+//! is tangent-space, so [`hair_material`] keeps the base material whole, normal map included,
+//! and only sets the tint; the model-space branch stays off. It shares this material rather than
+//! adding one because it is the same lighting shader with another define, and the vertex stage
+//! already matches the depth prepass. Most retail brows and hairlines are authored decals and
+//! carry a depth state; they draw as a [`SkyrimSkinDepthMaterial`], the depth extension over the
+//! hair material, as effect palettes do under theirs.
+//!
+//! # Hair card edges
+//!
+//! Hair cards are alpha-tested (glTF `MASK`), and an alpha test leaves a jagged silhouette where
+//! a card crosses a pixel. When the view draws with MSAA, the colour pipeline of a masked hair
+//! material turns on alpha-to-coverage and the shader (`SKYRIM_HAIR_ALPHA_TO_COVERAGE`) writes a
+//! one-pixel coverage ramp instead of discarding, so the samples smooth the edge. The material
+//! itself stays [`AlphaMode::Mask`] with the authored cutoff, and only the colour pass changes:
+//!
+//! - The depth prepass and the shadow passes keep Bevy's alpha test at the authored cutoff.
+//!   Bevy's own [`AlphaMode::AlphaToCoverage`] would give them no cutoff at all (the prepass with
+//!   MSAA draws the whole card) or its fixed 0.05 (shadows), so beards and hair would shadow and
+//!   occlude far more than their visible strands. Retail hair alpha-tests its depth passes too.
+//! - The ramp runs from the cutoff outwards: a pixel the prepass covered is fully covered in
+//!   colour, so no sample keeps the prepass depth without the hair's colour.
+//! - Bevy's mode always sharpens around 0.5, while each retail hair mask authors its own cutoff;
+//!   keeping `Mask` keeps that cutoff in the material's uniform.
+//! - MSAA is part of the mesh pipeline key, so changing it at runtime re-specialises the pipeline:
+//!   without MSAA the colour pass is the plain alpha test.
+//!
+//! Decal hair ([`SkyrimSkinDepthMaterial`]) draws in the sorted blend pass and keeps its alpha
+//! test.
 
+use crate::nif_depth::NifDepthExtension;
 use bevy::{
     asset::{AssetPath, LoadContext},
     gltf::gltf,
@@ -35,13 +74,23 @@ use bevy::{
         ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler,
         ImageSamplerDescriptor,
     },
-    pbr::{ExtendedMaterial, MaterialExtension},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{
+        ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+        MeshPipelineKey,
+    },
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
 };
 
 pub type SkyrimSkinMaterial = ExtendedMaterial<StandardMaterial, SkyrimSkinExtension>;
+
+/// A [`SkyrimSkinMaterial`] under an authored NIF depth state (`crate::nif_depth`): the depth
+/// extension keeps the skin material's shaders and bindings and adds the depth state.
+pub type SkyrimSkinDepthMaterial = ExtendedMaterial<SkyrimSkinMaterial, NifDepthExtension>;
 
 /// Where `embedded_asset!` places the material's shader.
 const SHADER: &str = "embedded://engine/shaders/skyrim_skin.wgsl";
@@ -64,6 +113,13 @@ impl SkyrimSkinFlags {
     /// Bindings 105 and 107 hold a FaceGen head's tint and detail maps; the shader blends them
     /// into the base colour (`GetFacegenBaseColor`).
     pub const FACEGEN: u32 = 1 << 3;
+    /// The base colour is blended with the constant `tint_color` (`GetFacegenRGBTintBaseColor`):
+    /// the skin tone of a `skin_tint` body, hands or feet.
+    pub const SKIN_TINT: u32 = 1 << 4;
+    /// The base colour is multiplied by `tint_color`, masked by the vertex colour's green
+    /// channel; the vertex colour's red and blue are not applied: the hair tint of a `hair_tint`
+    /// surface.
+    pub const HAIR_TINT: u32 = 1 << 5;
     /// Debug: output the shading normal as colour (`N * 0.5 + 0.5`) instead of lighting.
     pub const DEBUG_WORLD_NORMAL: u32 = 1 << 16;
     /// Debug: output the interpolated vertex normal as colour, for comparison.
@@ -76,10 +132,26 @@ impl SkyrimSkinFlags {
 pub struct SkyrimSkinSettings {
     /// [`SkyrimSkinFlags`].
     pub flags: u32,
-    /// Linear RGB tint, alpha unused. Reserved for the skin and hair tints; white until then.
+    /// The [`SkyrimSkinFlags::SKIN_TINT`] or [`SkyrimSkinFlags::HAIR_TINT`] colour, RGB on the
+    /// encoded (gamma) scale the game stores it in, as `NPC_/QNAM` and the NIF do; alpha unused.
+    /// White when no tint is set.
     pub tint_color: Vec4,
     /// Reserved for detail-map parameters; the FaceGen blend uses none.
     pub detail: Vec4,
+}
+
+impl SkyrimSkinSettings {
+    /// Turns the skin tint on with `tone` (encoded RGB, 0..1).
+    pub fn set_skin_tint(&mut self, tone: Vec3) {
+        self.flags |= SkyrimSkinFlags::SKIN_TINT;
+        self.tint_color = tone.extend(1.0);
+    }
+
+    /// Turns the hair tint on with `tint` (encoded RGB).
+    pub fn set_hair_tint(&mut self, tint: Vec3) {
+        self.flags |= SkyrimSkinFlags::HAIR_TINT;
+        self.tint_color = tint.extend(1.0);
+    }
 }
 
 impl Default for SkyrimSkinSettings {
@@ -93,6 +165,7 @@ impl Default for SkyrimSkinSettings {
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[bind_group_data(SkyrimSkinKey)]
 pub struct SkyrimSkinExtension {
     #[uniform(100)]
     pub settings: SkyrimSkinSettings,
@@ -118,6 +191,29 @@ pub struct SkyrimSkinExtension {
     pub(crate) images: Option<Handle<SkyrimSkinImages>>,
 }
 
+/// The part of a [`SkyrimSkinExtension`] its pipelines specialise on.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub struct SkyrimSkinKey {
+    /// The material is hair ([`SkyrimSkinFlags::HAIR_TINT`]): a masked one draws its colour pass
+    /// with alpha-to-coverage under MSAA.
+    pub hair: bool,
+}
+
+impl From<&SkyrimSkinExtension> for SkyrimSkinKey {
+    fn from(extension: &SkyrimSkinExtension) -> Self {
+        Self {
+            hair: extension.settings.flags & SkyrimSkinFlags::HAIR_TINT != 0,
+        }
+    }
+}
+
+/// Marks a primitive whose NIF shader is `skin_tint` and which draws with a
+/// [`SkyrimSkinMaterial`]: the surfaces an actor's skin tone applies to. Reflected so the marker
+/// is cloned with the scene into every world instance.
+#[derive(Component, Clone, Copy, Default, Reflect)]
+#[reflect(Component, Default)]
+pub struct SkinTintSurface;
+
 /// A FaceGen head's tint (texture-set slot 6) and detail (slot 3) maps, both loaded linear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FacegenMaps {
@@ -136,6 +232,48 @@ impl MaterialExtension for SkyrimSkinExtension {
 
     // The prepass and shadow vertex shaders stay Bevy's: the main-pass vertex shader computes
     // positions with the same calls, so the depth it tests against matches.
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        specialize_hair_coverage(descriptor, key.mesh_key, key.bind_group_data);
+        Ok(())
+    }
+}
+
+/// The shader define that swaps a hair card's alpha test for a coverage ramp.
+const HAIR_ALPHA_TO_COVERAGE_DEF: &str = "SKYRIM_HAIR_ALPHA_TO_COVERAGE";
+
+/// Turns on alpha-to-coverage for the colour pass of a masked hair material under MSAA (see
+/// "Hair card edges" above). `MAY_DISCARD` in the key means the material is [`AlphaMode::Mask`];
+/// the sorted decal variant is keyed as a blend and is left alone, as are the prepass and shadow
+/// pipelines (`PREPASS_PIPELINE`), which keep the alpha test.
+fn specialize_hair_coverage(
+    descriptor: &mut RenderPipelineDescriptor,
+    mesh_key: MeshPipelineKey,
+    key: SkyrimSkinKey,
+) {
+    if !key.hair
+        || !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+        || descriptor.multisample.count <= 1
+    {
+        return;
+    }
+    let Some(fragment) = descriptor.fragment.as_mut() else {
+        return;
+    };
+    let prepass = fragment
+        .shader_defs
+        .iter()
+        .any(|def| *def == "PREPASS_PIPELINE".into());
+    if prepass {
+        return;
+    }
+    fragment.shader_defs.push(HAIR_ALPHA_TO_COVERAGE_DEF.into());
+    descriptor.multisample.alpha_to_coverage_enabled = true;
 }
 
 /// The skin material's images, held under a label of their own. `ExtendedMaterial` reports none
@@ -212,6 +350,7 @@ pub fn skin_material(
     model_space_normal: Handle<Image>,
     specular: Option<Handle<Image>>,
     facegen: Option<FacegenMaps>,
+    skin_tint: Option<Vec3>,
     shader_flags_1: u32,
 ) -> SkyrimSkinMaterial {
     base.normal_map_texture = None;
@@ -228,15 +367,33 @@ pub fn skin_material(
     }
     let (facegen_tint, facegen_detail) =
         facegen.map_or((None, None), |maps| (Some(maps.tint), Some(maps.detail)));
+    let mut settings = SkyrimSkinSettings { flags, ..default() };
+    if let Some(tone) = skin_tint {
+        settings.set_skin_tint(tone);
+    }
     SkyrimSkinMaterial {
         base,
         extension: SkyrimSkinExtension {
-            settings: SkyrimSkinSettings { flags, ..default() },
+            settings,
             model_space_normal: Some(model_space_normal),
             specular,
             facegen_tint,
             facegen_detail,
             images: None,
+        },
+    }
+}
+
+/// Builds the hair material: `base` unchanged (its tangent-space normal map included) with the
+/// hair tint set. The model-space branch stays off, so the extension binds no images.
+pub fn hair_material(base: StandardMaterial, tint: Vec3) -> SkyrimSkinMaterial {
+    let mut settings = SkyrimSkinSettings::default();
+    settings.set_hair_tint(tint);
+    SkyrimSkinMaterial {
+        base,
+        extension: SkyrimSkinExtension {
+            settings,
+            ..default()
         },
     }
 }
@@ -254,6 +411,9 @@ pub(crate) fn build(app: &mut App) {
     }
     if !app.is_plugin_added::<MaterialPlugin<SkyrimSkinMaterial>>() {
         app.add_plugins(MaterialPlugin::<SkyrimSkinMaterial>::default());
+    }
+    if !app.is_plugin_added::<MaterialPlugin<SkyrimSkinDepthMaterial>>() {
+        app.add_plugins(MaterialPlugin::<SkyrimSkinDepthMaterial>::default());
     }
 }
 
@@ -358,6 +518,41 @@ pub(crate) fn facegen_texture_indices(material: &gltf::Material<'_>) -> Option<(
     Some((texture("facegen_tint")?, texture("detail")?))
 }
 
+/// Whether the material's NIF shader is `skin_tint` (`OPEN_SKYRIM_material.lightingShaderType`).
+pub(crate) fn is_skin_tint(material: &gltf::Material<'_>) -> bool {
+    lighting_shader_type(material).as_deref() == Some("skin_tint")
+}
+
+fn lighting_shader_type(material: &gltf::Material<'_>) -> Option<String> {
+    let extension = material.extensions()?.get("OPEN_SKYRIM_material")?;
+    Some(extension.get("lightingShaderType")?.as_str()?.to_owned())
+}
+
+/// The NIF's hair tint colour for a `hair_tint` material (`OPEN_SKYRIM_material.tintColor`,
+/// encoded RGB). Packs whose converter does not read the NIF's shader tail carry none, and the
+/// surface keeps the plain material.
+pub(crate) fn nif_hair_tint(material: &gltf::Material<'_>) -> Option<Vec3> {
+    nif_tint_color(material, "hair_tint")
+}
+
+fn nif_tint_color(material: &gltf::Material<'_>, shader: &str) -> Option<Vec3> {
+    if lighting_shader_type(material).as_deref() != Some(shader) {
+        return None;
+    }
+    let colour = material
+        .extensions()?
+        .get("OPEN_SKYRIM_material")?
+        .get("tintColor")?
+        .as_array()?;
+    let channels: Vec<f32> = colour
+        .iter()
+        .take(3)
+        .map(|value| value.as_f64().map(|value| value as f32))
+        .collect::<Option<_>>()?;
+    let tone = Vec3::from_slice(channels.get(..3)?);
+    tone.is_finite().then_some(tone)
+}
+
 /// The glTF texture index of the material's `KHR_materials_specular.specularColorTexture`, which
 /// is where the converter publishes a model-space material's `_s` map.
 pub(crate) fn specular_color_texture_index(material: &gltf::Material<'_>) -> Option<usize> {
@@ -450,6 +645,7 @@ mod tests {
                 normal.clone(),
                 specular.clone(),
                 None,
+                None,
                 flags_1,
             );
             assert!(material.base.normal_map_texture.is_none());
@@ -477,13 +673,50 @@ mod tests {
             tint: images.add(Image::default()),
             detail: images.add(Image::default()),
         };
-        let material = skin_material(base, normal, None, Some(maps.clone()), 0);
+        let material = skin_material(
+            base.clone(),
+            normal.clone(),
+            None,
+            Some(maps.clone()),
+            None,
+            0,
+        );
         assert_eq!(
             material.extension.settings.flags,
             SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::FACEGEN
         );
         assert_eq!(material.extension.facegen_tint, Some(maps.tint));
         assert_eq!(material.extension.facegen_detail, Some(maps.detail));
+
+        let tone = Vec3::new(0.78, 0.69, 0.66);
+        let material = skin_material(base, normal, None, None, Some(tone), 0);
+        assert_eq!(
+            material.extension.settings.flags,
+            SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SKIN_TINT
+        );
+        assert_eq!(material.extension.settings.tint_color, tone.extend(1.0));
+    }
+
+    #[test]
+    fn skin_tint_shader_type_is_detected() {
+        for (shader, expected) in [
+            ("skin_tint", true),
+            ("hair_tint", false),
+            ("face_tint", false),
+        ] {
+            let document = material_with_skyrim_extension(serde_json::json!({
+                "lightingShaderType": shader,
+                "tintColor": [1.0, 1.0, 1.0]
+            }));
+            assert_eq!(
+                is_skin_tint(&document.materials().next().unwrap()),
+                expected
+            );
+        }
+        let document = material_with_skyrim_extension(serde_json::json!({
+            "lightingShaderType": "skin_tint"
+        }));
+        assert!(is_skin_tint(&document.materials().next().unwrap()));
     }
 
     fn material_with_skyrim_extension(extension: serde_json::Value) -> gltf::Gltf {
@@ -532,6 +765,112 @@ mod tests {
     }
 
     #[test]
+    fn the_nif_hair_tint_is_read_from_hair_tint_materials_only() {
+        for (shader, expected) in [
+            ("hair_tint", Some(Vec3::new(0.5, 0.25, 1.0))),
+            ("skin_tint", None),
+            ("default", None),
+        ] {
+            let document = material_with_skyrim_extension(serde_json::json!({
+                "lightingShaderType": shader,
+                "tintColor": [0.5, 0.25, 1.0]
+            }));
+            let material = document.materials().next().unwrap();
+            assert_eq!(nif_hair_tint(&material), expected, "{shader}");
+        }
+        let document = material_with_skyrim_extension(serde_json::json!({
+            "lightingShaderType": "hair_tint"
+        }));
+        assert_eq!(nif_hair_tint(&document.materials().next().unwrap()), None);
+    }
+
+    #[test]
+    fn hair_material_keeps_the_whole_base_and_sets_only_the_tint() {
+        let base = StandardMaterial {
+            base_color_texture: Some(Handle::default()),
+            normal_map_texture: Some(Handle::default()),
+            specular_tint_texture: Some(Handle::default()),
+            flip_normal_map_y: true,
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        let tint = Vec3::new(0.44, 0.46, 0.35);
+        let hair = hair_material(base.clone(), tint);
+        assert_eq!(hair.base.normal_map_texture, base.normal_map_texture);
+        assert_eq!(hair.base.specular_tint_texture, base.specular_tint_texture);
+        assert_eq!(hair.base.flip_normal_map_y, base.flip_normal_map_y);
+        assert_eq!(hair.base.alpha_mode, base.alpha_mode);
+        assert_eq!(hair.extension.settings.flags, SkyrimSkinFlags::HAIR_TINT);
+        assert_eq!(hair.extension.settings.tint_color, tint.extend(1.0));
+        assert!(hair.extension.model_space_normal.is_none());
+        assert!(hair.extension.specular.is_none());
+        assert!(SkyrimSkinKey::from(&hair.extension).hair);
+        assert!(!SkyrimSkinKey::from(&SkyrimSkinExtension::default()).hair);
+    }
+
+    fn pipeline_descriptor(samples: u32, shader_defs: &[&str]) -> RenderPipelineDescriptor {
+        use bevy::render::render_resource::{FragmentState, MultisampleState};
+        RenderPipelineDescriptor {
+            multisample: MultisampleState {
+                count: samples,
+                ..default()
+            },
+            fragment: Some(FragmentState {
+                shader_defs: shader_defs.iter().map(|def| (*def).into()).collect(),
+                ..default()
+            }),
+            ..default()
+        }
+    }
+
+    fn uses_coverage(descriptor: &RenderPipelineDescriptor) -> bool {
+        let defined = descriptor.fragment.as_ref().is_some_and(|fragment| {
+            fragment
+                .shader_defs
+                .contains(&HAIR_ALPHA_TO_COVERAGE_DEF.into())
+        });
+        assert_eq!(defined, descriptor.multisample.alpha_to_coverage_enabled);
+        defined
+    }
+
+    fn specialized(
+        samples: u32,
+        shader_defs: &[&str],
+        mesh_key: MeshPipelineKey,
+        hair: bool,
+    ) -> bool {
+        let mut descriptor = pipeline_descriptor(samples, shader_defs);
+        specialize_hair_coverage(&mut descriptor, mesh_key, SkyrimSkinKey { hair });
+        uses_coverage(&descriptor)
+    }
+
+    #[test]
+    fn masked_hair_colour_pass_uses_coverage_only_under_msaa() {
+        let masked = MeshPipelineKey::MAY_DISCARD;
+        assert!(specialized(4, &[], masked, true));
+        assert!(specialized(2, &[], masked, true));
+        assert!(!specialized(1, &[], masked, true), "no MSAA: alpha test");
+    }
+
+    #[test]
+    fn hair_depth_passes_and_other_materials_keep_the_alpha_test() {
+        let masked = MeshPipelineKey::MAY_DISCARD;
+        assert!(
+            !specialized(4, &["PREPASS_PIPELINE"], masked, true),
+            "prepass and shadows"
+        );
+        assert!(!specialized(4, &[], masked, false), "masked skin");
+        assert!(
+            !specialized(4, &[], MeshPipelineKey::BLEND_ALPHA, true),
+            "sorted decal hair"
+        );
+        assert!(
+            !specialized(4, &[], MeshPipelineKey::NONE, true),
+            "opaque hair"
+        );
+    }
+
+    #[test]
     fn debug_views_replace_only_the_debug_bits() {
         let mut settings = SkyrimSkinSettings {
             flags: SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SPECULAR_MAP,
@@ -569,6 +908,8 @@ mod tests {
             ("FLAG_SPECULAR_MAP", SkyrimSkinFlags::SPECULAR_MAP),
             ("FLAG_SPECULAR", SkyrimSkinFlags::SPECULAR),
             ("FLAG_FACEGEN", SkyrimSkinFlags::FACEGEN),
+            ("FLAG_SKIN_TINT", SkyrimSkinFlags::SKIN_TINT),
+            ("FLAG_HAIR_TINT", SkyrimSkinFlags::HAIR_TINT),
             (
                 "FLAG_DEBUG_WORLD_NORMAL",
                 SkyrimSkinFlags::DEBUG_WORLD_NORMAL,

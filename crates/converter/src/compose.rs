@@ -1,7 +1,10 @@
 //! In-memory composition of the Skyrim body, hands and feet NIFs into one
 //! skinned model that shares a single skeleton.
 
-use crate::material::NifShapeMaterial;
+use crate::actor_models::DEFAULT_RACE_FORM_ID;
+use crate::material::{
+    NifMaterialDisposition, NifShapeMaterial, NifSlotTextureSet, apply_skin_texture_set,
+};
 use crate::mesh::{
     build_skinned_model_with_materials, rewrite_materials_and_texture_uris, write_glb_atomic,
 };
@@ -10,6 +13,7 @@ use color_eyre::{
     eyre::{WrapErr, ensure, eyre},
 };
 use project_wormhole_nif::model::all::{BoneTree, Model};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     fmt, fs,
     ops::Deref,
@@ -26,11 +30,19 @@ pub enum BodyPartKind {
 
 impl fmt::Display for BodyPartKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+        f.write_str(self.slot())
+    }
+}
+
+impl BodyPartKind {
+    /// The `actor_model_parts.slot` string of the armature that supplies this part.
+    #[must_use]
+    pub const fn slot(self) -> &'static str {
+        match self {
             Self::Body => "body",
             Self::Hands => "hands",
             Self::Feet => "feet",
-        })
+        }
     }
 }
 
@@ -38,6 +50,117 @@ impl fmt::Display for BodyPartKind {
 pub struct BodyPart<'a> {
     pub path: &'a Path,
     pub kind: BodyPartKind,
+    /// The armature's skin texture set, applied over the NIF's `skin_tint` shapes the way the
+    /// game applies `ARMA/NAM0`/`NAM1`. `None` keeps the NIF's own textures.
+    pub skin_textures: Option<&'a NifSlotTextureSet>,
+}
+
+/// A `DefaultRace` armature's skin texture set for one sex and biped slot, read from the world
+/// database's actor catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultSkinTextureSet {
+    pub kind: BodyPartKind,
+    /// The armature's `MOD2`/`MOD3` path, as the record wrote it.
+    pub model_path: String,
+    pub textures: NifSlotTextureSet,
+}
+
+/// The skin texture sets of the `DefaultRace` armatures, the ones the composed default body is
+/// built from, for `sex` (`male` or `female`).
+///
+/// The catalog stores each `NPC_`'s armature parts with the armature's race and skin texture set;
+/// the shared humanoid body is the one their `DefaultRace` armatures describe. Per slot, the set
+/// most parts use wins, then the lowest FormID. A database without the catalog columns, or
+/// without a catalog at all, yields no sets, and the composed body keeps the NIFs' textures.
+pub fn default_skin_texture_sets(database: &Path, sex: &str) -> Result<Vec<DefaultSkinTextureSet>> {
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .wrap_err_with(|| format!("open {}", database.display()))?;
+    let has_columns: bool = connection.query_row(
+        "SELECT count(*) = 2 FROM pragma_table_info('actor_model_parts') \
+         WHERE name IN ('armature_race_id', 'skin_texture_set_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    let has_texture_sets: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'texture_sets')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_columns || !has_texture_sets {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT p.slot, min(p.model_path), p.skin_texture_set_id, count(*) AS uses \
+         FROM actor_model_parts p JOIN actor_models m ON m.id = p.npc_id \
+         WHERE m.sex = ?1 AND p.armature_race_id = ?2 AND p.skin_texture_set_id IS NOT NULL \
+         GROUP BY p.slot, lower(p.model_path), p.skin_texture_set_id \
+         ORDER BY p.slot, uses DESC, p.skin_texture_set_id",
+    )?;
+    let candidates = statement
+        .query_map(rusqlite::params![sex, DEFAULT_RACE_FORM_ID], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut sets = Vec::new();
+    for kind in [BodyPartKind::Body, BodyPartKind::Hands, BodyPartKind::Feet] {
+        let Some((_, model_path, texture_set_id)) =
+            candidates.iter().find(|(slot, _, _)| slot == kind.slot())
+        else {
+            continue;
+        };
+        let Some(textures) = read_texture_set(&connection, *texture_set_id)? else {
+            continue;
+        };
+        sets.push(DefaultSkinTextureSet {
+            kind,
+            model_path: model_path.clone(),
+            textures,
+        });
+    }
+    Ok(sets)
+}
+
+/// A `texture_sets` row in NIF slot order (see [`NifSlotTextureSet`]).
+fn read_texture_set(connection: &Connection, id: u32) -> Result<Option<NifSlotTextureSet>> {
+    let slots = connection
+        .query_row(
+            "SELECT diffuse_path, normal_path, glow_path, height_path, environment_path, \
+             mask_path, detail_path, specular_path FROM texture_sets WHERE id = ?1",
+            [id],
+            |row| {
+                let mut slots: [Option<String>; 8] = Default::default();
+                for (index, slot) in slots.iter_mut().enumerate() {
+                    *slot = row.get(index)?;
+                }
+                Ok(slots)
+            },
+        )
+        .optional()?;
+    Ok(slots.map(|slots| NifSlotTextureSet { form_id: id, slots }))
+}
+
+/// The set whose armature uses `part`'s NIF in `kind`'s slot. A set authored for another mesh
+/// (a load order whose `DefaultRace` armature points elsewhere) does not apply.
+#[must_use]
+pub fn skin_texture_set_for<'a>(
+    sets: &'a [DefaultSkinTextureSet],
+    kind: BodyPartKind,
+    part: &Path,
+) -> Option<&'a NifSlotTextureSet> {
+    let file_name = |path: &str| {
+        path.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let part_name = file_name(&part.to_string_lossy());
+    sets.iter()
+        .find(|set| set.kind == kind && file_name(&set.model_path) == part_name)
+        .map(|set| &set.textures)
 }
 
 /// A composed body together with the material contract its exported meshes need.
@@ -116,7 +239,19 @@ pub fn compose_body(parts: &[BodyPart<'_>], skeleton_path: &Path) -> Result<Comp
         model.skeletal_meshes.extend(part_model.skeletal_meshes);
         model.materials.extend(part_model.materials);
 
-        for shape in build.material_contract {
+        for mut shape in build.material_contract {
+            if let (Some(textures), NifMaterialDisposition::Validated { material }) =
+                (part.skin_textures, &mut shape.disposition)
+            {
+                apply_skin_texture_set(material, textures).wrap_err_with(|| {
+                    format!(
+                        "failed to apply skin texture set {:08X} to {} part {}",
+                        textures.form_id,
+                        part.kind,
+                        part.path.display()
+                    )
+                })?;
+            }
             let block = u32::try_from(material_contract.len())
                 .map_err(|_| eyre!("composed body has more than u32::MAX exported shapes"))?;
             material_contract.push(NifShapeMaterial {

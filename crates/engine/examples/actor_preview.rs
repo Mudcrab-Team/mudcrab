@@ -25,6 +25,13 @@
 //! as a tangent-space one shows up as large near-black patches on the back and shoulders, which
 //! this catches without comparing against a reference image.
 //!
+//! The body, hands and feet take an NPC's skin tone (`NPC_/QNAM`) the way the engine's actors do
+//! (`engine::actor_skin_tone`). `--skin-tone R,G,B` sets it directly; otherwise, with
+//! `--database PATH` (a converted `skyrim_world.db` with the actor catalog), it is read from the
+//! catalog row of `--npc FORMID`, by default Alvor (`00013475`) for `--sex male` and Sigrid
+//! (`00013476`) for `--sex female`, whose FaceGen heads the preview draws. With neither, the skin
+//! keeps the model's own tint.
+//!
 //! `--debug-normals msn|vertex` requires `--textures` and renders the skin materials' normals as
 //! colour (`N * 0.5 + 0.5`, written so the PNG holds that value) instead of lighting them: `msn`
 //! the shading normal decoded from the model-space map, `vertex` the interpolated vertex normal.
@@ -51,10 +58,12 @@ use bevy::{
 };
 use engine::{
     actor_animation::{AnimationTarget, IDLE_ANIMATION, animation_targets, idle_clip_scene},
+    actor_skin_tone::{ActorSkinTone, ActorSkinTonePlugin},
     actors::{ActorSex, composed_body_scene},
     nif_depth::NifDepthMaterial,
     nif_material::{EffectPaletteDepthMaterial, EffectPaletteMaterial, NifMaterialPlugin},
-    skin_material::{SkinDebugView, SkyrimSkinMaterial},
+    skin_material::{SkinDebugView, SkyrimSkinDepthMaterial, SkyrimSkinMaterial},
+    world::actor_catalog::ActorCatalog,
 };
 use std::{
     collections::HashMap,
@@ -71,6 +80,9 @@ const CAMERA_FRAMES: u32 = 8;
 const TIME_LIMIT: Duration = Duration::from_secs(180);
 const MALE_HEAD: &str = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013475.glb";
 const FEMALE_HEAD: &str = "meshes/actors/character/facegendata/facegeom/skyrim.esm/00013476.glb";
+/// The `NPC_` records whose heads `MALE_HEAD` and `FEMALE_HEAD` are: Alvor and Sigrid.
+const MALE_NPC: u32 = 0x0001_3475;
+const FEMALE_NPC: u32 = 0x0001_3476;
 const BACKGROUND: Color = Color::srgb(0.11, 0.13, 0.16);
 /// The head's own scene is discarded when even one of its joints has no body bone.
 const MIN_SKIN_FRACTION: f32 = 0.01;
@@ -128,9 +140,11 @@ struct Options {
     textures: bool,
     view: View,
     msaa: Msaa,
-    /// Linear RGB skin tone in 0..1, the scale of an `NPC_` record's `QNAM`. Nothing consumes it
-    /// until the skin material has a tint input; it is carried so the command line stays stable.
+    /// Skin tone in 0..1 on the encoded scale of an `NPC_` record's `QNAM`.
     skin_tone: Option<[f32; 3]>,
+    /// A world database whose actor catalog supplies the tone when `skin_tone` is not given.
+    database: Option<PathBuf>,
+    npc: Option<u32>,
     dark_skin_check: Option<f64>,
     dark_floor: f64,
     debug_normals: SkinDebugView,
@@ -145,6 +159,7 @@ struct Preview {
     msaa: Msaa,
     dark_skin_check: Option<DarkSkinCheck>,
     debug_normals: SkinDebugView,
+    skin_tone: Option<ActorSkinTone>,
     target: Handle<Image>,
     body_scene: Handle<WorldAsset>,
     idle_gltf: Handle<Gltf>,
@@ -193,17 +208,21 @@ fn main() {
         view,
         msaa,
         skin_tone,
+        database,
+        npc,
         dark_skin_check,
         dark_floor,
         debug_normals,
     } = parse_args();
-    if let Some([red, green, blue]) = skin_tone {
-        println!("actor preview: skin tone {red:.3},{green:.3},{blue:.3} (not applied yet)");
-    }
     if let Err(error) = check_debug_normals(textures, debug_normals) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
     }
+    let npc = npc.unwrap_or(match sex {
+        ActorSex::Male => MALE_NPC,
+        ActorSex::Female => FEMALE_NPC,
+    });
+    let skin_tone = resolve_skin_tone(skin_tone, database.as_deref(), npc);
     if let Err(error) = check_inputs(&demo, sex) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
@@ -246,7 +265,7 @@ fn main() {
     });
     // The engine builds converted NIF materials through this glTF hook; without it the preview
     // would render the stock glTF materials instead of what the game draws.
-    app.add_plugins(NifMaterialPlugin);
+    app.add_plugins((NifMaterialPlugin, ActorSkinTonePlugin));
     if !windowed {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
             Duration::from_millis(16),
@@ -312,6 +331,7 @@ fn main() {
             floor: dark_floor,
         }),
         debug_normals,
+        skin_tone,
         phase: Phase::Loading,
         actor: None,
         body_root: None,
@@ -373,9 +393,69 @@ fn parse_skin_tone(value: Option<String>) -> [f32; 3] {
     }
 }
 
+/// The tone the preview applies: `--skin-tone` when given, else the catalog row of `npc` in
+/// `database`, else none.
+fn resolve_skin_tone(
+    explicit: Option<[f32; 3]>,
+    database: Option<&Path>,
+    npc: u32,
+) -> Option<ActorSkinTone> {
+    if let Some(tone) = explicit {
+        let tone = ActorSkinTone::new(tone);
+        if let Some(ActorSkinTone(rgb)) = tone {
+            println!(
+                "actor preview: skin tone {:.3},{:.3},{:.3} from --skin-tone",
+                rgb.x, rgb.y, rgb.z
+            );
+        }
+        return tone;
+    }
+    let database = database?;
+    if !database.is_file() {
+        usage_error(&format!("--database {} is not a file", database.display()));
+    }
+    let catalog = ActorCatalog::open(database);
+    let Some(model) = catalog.get(npc) else {
+        println!(
+            "actor preview: NPC_ {npc:08X} has no actor catalog row in {}; the skin keeps the model's tint",
+            database.display()
+        );
+        return None;
+    };
+    match model.skin_tone {
+        Some(tone) => {
+            println!(
+                "actor preview: skin tone {:.3},{:.3},{:.3} ({:.0},{:.0},{:.0}/255) from NPC_ {npc:08X} QNAM",
+                tone.0.x,
+                tone.0.y,
+                tone.0.z,
+                tone.0.x * 255.0,
+                tone.0.y * 255.0,
+                tone.0.z * 255.0
+            );
+            Some(tone)
+        }
+        None => {
+            println!(
+                "actor preview: NPC_ {npc:08X} has no skin tone in {}; the skin keeps the model's tint",
+                database.display()
+            );
+            None
+        }
+    }
+}
+
+fn parse_form_id(value: Option<String>) -> u32 {
+    value
+        .as_deref()
+        .map(|value| value.trim_start_matches("0x"))
+        .and_then(|value| u32::from_str_radix(value, 16).ok())
+        .unwrap_or_else(|| usage_error("--npc needs a hexadecimal FormID"))
+}
+
 fn parse_args() -> Options {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex|off (msn and vertex require --textures)]";
+    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--database WORLD_DB] [--npc FORMID] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex|off (msn and vertex require --textures)]";
     let Some(demo) = args.next() else {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -391,6 +471,8 @@ fn parse_args() -> Options {
     let mut view = View::default();
     let mut msaa = Msaa::Off;
     let mut skin_tone = None;
+    let mut database = None;
+    let mut npc = None;
     let mut dark_skin_check = None;
     let mut dark_floor = DEFAULT_DARK_FLOOR;
     let mut debug_normals = SkinDebugView::Off;
@@ -404,6 +486,13 @@ fn parse_args() -> Options {
             }
             "--msaa" => msaa = parse_msaa(args.next()),
             "--skin-tone" => skin_tone = Some(parse_skin_tone(args.next())),
+            "--database" => {
+                database = Some(PathBuf::from(
+                    args.next()
+                        .unwrap_or_else(|| usage_error("--database needs a path")),
+                ))
+            }
+            "--npc" => npc = Some(parse_form_id(args.next())),
             "--dark-skin-check" => dark_skin_check = Some(parse_fraction(&flag, args.next())),
             "--dark-floor" => dark_floor = parse_fraction(&flag, args.next()),
             "--sex" => {
@@ -469,6 +558,8 @@ fn parse_args() -> Options {
         view,
         msaa,
         skin_tone,
+        database,
+        npc,
         dark_skin_check,
         dark_floor,
         debug_normals,
@@ -495,6 +586,16 @@ fn check_inputs(demo: &Path, sex: ActorSex) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Mesh entities whose material the flat preview replaces.
+type MaterialBound = Or<(
+    With<MeshMaterial3d<StandardMaterial>>,
+    With<MeshMaterial3d<SkyrimSkinMaterial>>,
+    With<MeshMaterial3d<NifDepthMaterial>>,
+    With<MeshMaterial3d<EffectPaletteMaterial>>,
+    With<MeshMaterial3d<EffectPaletteDepthMaterial>>,
+    With<MeshMaterial3d<SkyrimSkinDepthMaterial>>,
+)>;
 
 fn mark_head_preview_ready(
     ready: On<WorldInstanceReady>,
@@ -542,6 +643,7 @@ fn install_neutral_material(commands: &mut EntityCommands, material: &Handle<Sta
         .remove::<MeshMaterial3d<EffectPaletteMaterial>>()
         .remove::<MeshMaterial3d<EffectPaletteDepthMaterial>>()
         .remove::<MeshMaterial3d<SkyrimSkinMaterial>>()
+        .remove::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
         .insert(MeshMaterial3d(material.clone()));
 }
 
@@ -581,14 +683,6 @@ fn apply_head_skin_mappings(
     }
 }
 
-type PreviewMaterialComponents<'a> = (
-    Option<&'a MeshMaterial3d<StandardMaterial>>,
-    Option<&'a MeshMaterial3d<NifDepthMaterial>>,
-    Option<&'a MeshMaterial3d<EffectPaletteMaterial>>,
-    Option<&'a MeshMaterial3d<EffectPaletteDepthMaterial>>,
-    Option<&'a MeshMaterial3d<SkyrimSkinMaterial>>,
-);
-
 fn timeout_empty_head(commands: &mut Commands, preview: &mut Preview, head_root: Entity) {
     preview.head_wait_frames += 1;
     if preview.head_wait_frames > HEAD_SCENE_TIMEOUT_FRAMES {
@@ -609,7 +703,7 @@ fn drive(
     skins: Query<&SkinnedMesh>,
     head_ready: Query<(), With<HeadPreviewReady>>,
     globals: Query<&GlobalTransform>,
-    material_entities: Query<'_, '_, PreviewMaterialComponents<'_>>,
+    material_entities: Query<(), MaterialBound>,
     mut skin_materials: ResMut<Assets<SkyrimSkinMaterial>>,
     transforms: Query<&Transform>,
     mut exit: MessageWriter<AppExit>,
@@ -630,12 +724,14 @@ fn drive(
                 return;
             }
             LoadState::Loaded => {
-                let actor = commands
-                    .spawn((
-                        Name::new("Actor preview"),
-                        WorldAssetRoot(preview.body_scene.clone()),
-                    ))
-                    .id();
+                let mut actor = commands.spawn((
+                    Name::new("Actor preview"),
+                    WorldAssetRoot(preview.body_scene.clone()),
+                ));
+                if let Some(tone) = preview.skin_tone {
+                    actor.insert(tone);
+                }
+                let actor = actor.id();
                 preview.actor = Some(actor);
             }
             LoadState::NotLoaded | LoadState::Loading => return,
@@ -802,13 +898,7 @@ fn drive(
                         for entity in
                             std::iter::once(body_root).chain(children.iter_descendants(body_root))
                         {
-                            if material_entities.get(entity).is_ok_and(|materials| {
-                                materials.0.is_some()
-                                    || materials.1.is_some()
-                                    || materials.2.is_some()
-                                    || materials.3.is_some()
-                                    || materials.4.is_some()
-                            }) {
+                            if material_entities.contains(entity) {
                                 install_neutral_material(
                                     &mut commands.entity(entity),
                                     &preview.body_material,
@@ -820,13 +910,7 @@ fn drive(
                         for entity in
                             std::iter::once(head_root).chain(children.iter_descendants(head_root))
                         {
-                            if material_entities.get(entity).is_ok_and(|materials| {
-                                materials.0.is_some()
-                                    || materials.1.is_some()
-                                    || materials.2.is_some()
-                                    || materials.3.is_some()
-                                    || materials.4.is_some()
-                            }) {
+                            if material_entities.contains(entity) {
                                 install_neutral_material(
                                     &mut commands.entity(entity),
                                     &preview.head_material,
@@ -1159,6 +1243,7 @@ mod tests {
             msaa: Msaa::Off,
             dark_skin_check: None,
             debug_normals: SkinDebugView::Off,
+            skin_tone: None,
             target: Handle::default(),
             body_scene: Handle::default(),
             idle_gltf: Handle::default(),
@@ -1385,7 +1470,7 @@ mod tests {
     }
 
     #[test]
-    fn neutral_preview_replaces_each_supported_material_type_once() {
+    fn neutral_preview_replaces_supported_materials_and_removes_skin_material() {
         let mut app = App::new();
         let neutral = Handle::<StandardMaterial>::default();
         let entity = app
@@ -1396,6 +1481,7 @@ mod tests {
                 MeshMaterial3d::<EffectPaletteMaterial>(Handle::default()),
                 MeshMaterial3d::<EffectPaletteDepthMaterial>(Handle::default()),
                 MeshMaterial3d::<SkyrimSkinMaterial>(Handle::default()),
+                MeshMaterial3d::<SkyrimSkinDepthMaterial>(Handle::default()),
             ))
             .id();
         app.insert_resource(NeutralMaterial(neutral.clone()));
@@ -1429,5 +1515,44 @@ mod tests {
                 .is_none()
         );
         assert!(entity.get::<MeshMaterial3d<SkyrimSkinMaterial>>().is_none());
+        assert!(
+            entity
+                .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn neutral_preview_binds_depth_only_skin_materials() {
+        let mut app = App::new();
+        let neutral = Handle::<StandardMaterial>::default();
+        let entity = app
+            .world_mut()
+            .spawn(MeshMaterial3d::<SkyrimSkinDepthMaterial>(Handle::default()))
+            .id();
+        app.insert_resource(NeutralMaterial(neutral.clone()));
+        app.add_systems(
+            Update,
+            |mut commands: Commands,
+             material_entities: Query<Entity, MaterialBound>,
+             neutral: Res<NeutralMaterial>| {
+                for entity in &material_entities {
+                    install_neutral_material(&mut commands.entity(entity), &neutral.0);
+                }
+            },
+        );
+
+        app.update();
+
+        let entity = app.world().entity(entity);
+        assert_eq!(
+            entity.get::<MeshMaterial3d<StandardMaterial>>().unwrap().0,
+            neutral
+        );
+        assert!(
+            entity
+                .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
+                .is_none()
+        );
     }
 }

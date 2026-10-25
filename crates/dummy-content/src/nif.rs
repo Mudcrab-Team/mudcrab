@@ -16,6 +16,8 @@ const USER_VERSION: u32 = 12;
 const BETHESDA_VERSION: u32 = 100;
 const NULL_REF: u32 = u32::MAX;
 const SHADER_TYPE_DEFAULT: u32 = 0;
+/// `skin_tint`, whose property ends with the three-float skin tint colour.
+const SHADER_TYPE_SKIN_TINT: u32 = 5;
 const VERTEX_FLAGS: u16 = 0x0001 | 0x0002 | 0x0008;
 const VERTEX_STRIDE: u8 = 6;
 const VERTEX_FLAG_NORMAL: u16 = 0x0008;
@@ -343,11 +345,34 @@ enum LegacyShapeKind {
     Lod,
 }
 
+/// Like [`legacy_skinned_shape_with_normals`] with [`SkinNormals::ModelSpaceMap`], drawn by a
+/// `skin_tint` lighting shader (type 5) with a white tint and the Specular flag, as retail bodies,
+/// hands and feet are.
+pub fn legacy_skin_tint_shape(spec: &LegacySkin<'_>) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(
+        spec,
+        LegacyShapeKind::Plain,
+        false,
+        SkinNormals::ModelSpaceMap,
+        true,
+    )
+}
+
 fn legacy_skinned_shape_with(
     spec: &LegacySkin<'_>,
     kind: LegacyShapeKind,
     nested: bool,
     normals: SkinNormals,
+) -> Result<Vec<u8>> {
+    legacy_skinned_shape_with_shader(spec, kind, nested, normals, false)
+}
+
+fn legacy_skinned_shape_with_shader(
+    spec: &LegacySkin<'_>,
+    kind: LegacyShapeKind,
+    nested: bool,
+    normals: SkinNormals,
+    skin_tint: bool,
 ) -> Result<Vec<u8>> {
     validate_skin(spec)?;
 
@@ -478,11 +503,16 @@ fn legacy_skinned_shape_with(
         normals,
     )?);
     block_types.push("NiSkinPartition");
-    blocks.push(lighting_shader_property_with_flags(
-        normals.shader_flags_1(),
-        0,
-        texture_block,
-    ));
+    // Retail skin shaders set SLSF1 Specular (bit 0) on top of the skinning and normal flags.
+    let flags_1 = normals.shader_flags_1() | u32::from(skin_tint);
+    let mut shader = lighting_shader_property_with_flags(flags_1, 0, texture_block);
+    if skin_tint {
+        shader[0..4].copy_from_slice(&SHADER_TYPE_SKIN_TINT.to_le_bytes());
+        for channel in [1.0_f32; 3] {
+            push_f32(&mut shader, channel);
+        }
+    }
+    blocks.push(shader);
     block_types.push("BSLightingShaderProperty");
     blocks.push(texture_set_with_paths(
         "textures/generated_skin.dds",

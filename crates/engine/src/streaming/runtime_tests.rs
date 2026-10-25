@@ -78,6 +78,7 @@ fn known_catalog() -> StreamingCostCatalog {
     for (path, kind, resident, transient) in [
         ("meshes/a.glb", ResourceKind::SceneGeometry, 64, 8),
         ("meshes/b.glb", ResourceKind::SceneGeometry, 128, 16),
+        ("meshes/skin-depth.glb", ResourceKind::SceneGeometry, 64, 8),
         ("textures/shared.ktx2", ResourceKind::Texture, 512, 32),
     ] {
         catalog.resources.insert(
@@ -88,7 +89,7 @@ fn known_catalog() -> StreamingCostCatalog {
             ),
         );
     }
-    for path in ["meshes/a.glb", "meshes/b.glb"] {
+    for path in ["meshes/a.glb", "meshes/b.glb", "meshes/skin-depth.glb"] {
         catalog.scenes.insert(
             path.into(),
             SceneCost {
@@ -542,6 +543,7 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
     let (mut app, _directory) = fixture(true);
     app.init_asset::<NifDepthMaterial>();
     app.init_asset::<SkyrimSkinMaterial>();
+    app.init_asset::<SkyrimSkinDepthMaterial>();
     let depth = app
         .world_mut()
         .resource_mut::<Assets<NifDepthMaterial>>()
@@ -564,6 +566,24 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
             base: default(),
             extension: SkyrimSkinExtension::default(),
         });
+    let skin_depth = app
+        .world_mut()
+        .resource_mut::<Assets<SkyrimSkinDepthMaterial>>()
+        .add(SkyrimSkinDepthMaterial {
+            base: SkyrimSkinMaterial {
+                base: default(),
+                extension: SkyrimSkinExtension::default(),
+            },
+            extension: NifDepthExtension {
+                state: NifDepthState {
+                    depth_test: true,
+                    depth_write: false,
+                    decal: false,
+                    alpha_mask: false,
+                    cast_shadows: true,
+                },
+            },
+        });
     let watch = |materials: Vec<_>| ResourceWatch {
         demand: PreparationDemand {
             key: PreparationKey::Resource(1),
@@ -579,10 +599,16 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
     };
     let depth_watch = watch(vec![depth.id().untyped()]);
     let skin_watch = watch(vec![skin.id().untyped()]);
-    let mixed_watch = watch(vec![depth.id().untyped(), skin.id().untyped()]);
+    let skin_depth_watch = watch(vec![skin_depth.id().untyped()]);
+    let mixed_watch = watch(vec![
+        depth.id().untyped(),
+        skin.id().untyped(),
+        skin_depth.id().untyped(),
+    ]);
 
     assert!(!cpu_absent(app.world(), &depth_watch));
     assert!(!cpu_absent(app.world(), &skin_watch));
+    assert!(!cpu_absent(app.world(), &skin_depth_watch));
     assert!(!cpu_absent(app.world(), &mixed_watch));
 
     app.world_mut()
@@ -595,6 +621,10 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
     app.world_mut()
         .resource_mut::<Assets<SkyrimSkinMaterial>>()
         .remove(skin.id());
+    assert!(!cpu_absent(app.world(), &skin_depth_watch));
+    app.world_mut()
+        .resource_mut::<Assets<SkyrimSkinDepthMaterial>>()
+        .remove(skin_depth.id());
     assert!(cpu_absent(app.world(), &mixed_watch));
 }
 
@@ -604,6 +634,7 @@ fn orphan_watch_treats_missing_extended_material_resources_as_unknown() {
     for id in [
         Handle::<NifDepthMaterial>::default().id().untyped(),
         Handle::<SkyrimSkinMaterial>::default().id().untyped(),
+        Handle::<SkyrimSkinDepthMaterial>::default().id().untyped(),
     ] {
         let watch = ResourceWatch {
             demand: PreparationDemand {
@@ -620,6 +651,135 @@ fn orphan_watch_treats_missing_extended_material_resources_as_unknown() {
         };
         assert!(!cpu_absent(app.world(), &watch));
     }
+}
+
+#[test]
+fn orphaned_skin_depth_material_releases_budget_after_cpu_disposal() {
+    let (mut app, _directory) = catalog_dependency_fixture();
+    app.init_asset::<SkyrimSkinDepthMaterial>();
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .memory_limit = Some(128 + 16 + 512 + 32);
+    let (key, scene) = register_catalog_scene(&mut app, "meshes/skin-depth.glb");
+    let scene_id = scene.id();
+    let material_handle = app
+        .world()
+        .resource::<Assets<WorldAsset>>()
+        .get(scene_id)
+        .unwrap()
+        .world
+        .iter_entities()
+        .find_map(|entity| {
+            entity
+                .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
+                .map(|material| material.0.clone())
+        })
+        .unwrap();
+    let material_id = material_handle.id().untyped();
+    let image_id = app
+        .world()
+        .resource::<Assets<SkyrimSkinDepthMaterial>>()
+        .get(material_handle.id())
+        .unwrap()
+        .base
+        .extension
+        .model_space_normal
+        .as_ref()
+        .unwrap()
+        .id();
+    observe_at(&mut app, 1);
+    let bridge = app.world().resource::<StreamingPreparationBridge>().clone();
+    bridge.publish_fixture(2, watched_demands(&app), true);
+    observe_at(&mut app, 2);
+    let geometry = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .resource_key("meshes/skin-depth.glb", None);
+    let texture = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .resource_key("textures/shared.ktx2", None);
+    assert!(app.world().resource::<StreamingRuntime>().scenes[&key].prepared);
+    assert!(
+        app.world().resource::<StreamingRuntime>().watches[&geometry]
+            .demand
+            .materials
+            .contains(&material_id)
+    );
+
+    app.world_mut()
+        .resource_mut::<SceneAdmission>()
+        .reconcile_demands([]);
+    drop(scene);
+    app.update();
+    observe_at(&mut app, 3);
+    assert!(
+        app.world().resource::<StreamingRuntime>().watches[&geometry]
+            .orphaned_frame
+            .is_some()
+    );
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .orphan_bytes(),
+        Some(64 + 512)
+    );
+    assert!(
+        !app.world_mut()
+            .resource_mut::<StreamingRuntime>()
+            .reserve_scene(&scene_key("meshes/b.glb")),
+        "another scene must wait while shared orphan claims remain charged"
+    );
+    let orphaned_frame = app.world().resource::<StreamingRuntime>().watches[&geometry]
+        .orphaned_frame
+        .unwrap();
+    observe_at(&mut app, orphaned_frame + 1);
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .watches
+            .contains_key(&geometry)
+    );
+
+    app.world_mut()
+        .resource_mut::<Assets<SkyrimSkinDepthMaterial>>()
+        .remove(material_id.typed_debug_checked::<SkyrimSkinDepthMaterial>());
+    drop(material_handle);
+    app.world_mut()
+        .resource_mut::<Assets<Image>>()
+        .remove(image_id);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    let watch = &runtime.watches[&geometry];
+    let root_scene = watch.root_scene.unwrap();
+    assert!(
+        cpu_absent(app.world(), watch),
+        "root_present={} load_state={:?} material_present={}",
+        app.world()
+            .resource::<Assets<WorldAsset>>()
+            .contains(root_scene),
+        app.world()
+            .resource::<AssetServer>()
+            .get_load_state(root_scene),
+        app.world()
+            .resource::<Assets<SkyrimSkinDepthMaterial>>()
+            .contains(material_id.typed_debug_checked::<SkyrimSkinDepthMaterial>()),
+    );
+    let release_frame = orphaned_frame + 2;
+    bridge.publish_absent_fixture(release_frame, watched_demands(&app));
+    observe_at(&mut app, release_frame);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    assert!(!runtime.watches.contains_key(&geometry));
+    assert!(!runtime.watches.contains_key(&texture));
+    assert_eq!(runtime.ledger.totals().orphan_bytes(), Some(0));
+    assert_eq!(runtime.ledger.totals().resident_bytes, 0);
+    assert_eq!(runtime.ledger.totals().transient_bytes, 0);
+    assert!(
+        app.world_mut()
+            .resource_mut::<StreamingRuntime>()
+            .reserve_scene(&scene_key("meshes/b.glb"))
+    );
 }
 
 #[test]
@@ -1708,6 +1868,35 @@ impl bevy::asset::AssetLoader for CatalogSceneLoader {
                 },
             );
             scene.spawn(MeshMaterial3d(material));
+        } else if context
+            .path()
+            .path()
+            .file_name()
+            .is_some_and(|name| name == "skin-depth.glb")
+        {
+            let model_space_normal = context.load::<Image>("textures/shared.ktx2");
+            let material = context.add_labeled_asset(
+                "SkinDepthMaterial",
+                SkyrimSkinDepthMaterial {
+                    base: SkyrimSkinMaterial {
+                        base: default(),
+                        extension: SkyrimSkinExtension {
+                            model_space_normal: Some(model_space_normal),
+                            ..default()
+                        },
+                    },
+                    extension: NifDepthExtension {
+                        state: NifDepthState {
+                            depth_test: true,
+                            depth_write: false,
+                            decal: false,
+                            alpha_mask: false,
+                            cast_shadows: true,
+                        },
+                    },
+                },
+            );
+            scene.spawn(MeshMaterial3d(material));
         }
         Ok(WorldAsset::new(scene))
     }
@@ -1743,7 +1932,12 @@ fn catalog_dependency_fixture() -> (App, tempfile::TempDir) {
     let (mut app, directory) = fixture(true);
     app.register_asset_loader(CatalogSceneLoader)
         .register_asset_loader(CatalogImageLoader);
-    for path in ["meshes/a.glb", "meshes/b.glb", "textures/shared.ktx2"] {
+    for path in [
+        "meshes/a.glb",
+        "meshes/b.glb",
+        "meshes/skin-depth.glb",
+        "textures/shared.ktx2",
+    ] {
         let file = directory.path().join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, []).unwrap();
