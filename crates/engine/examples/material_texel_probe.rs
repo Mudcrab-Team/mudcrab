@@ -194,16 +194,16 @@ fn prepare(
         target_format,
         None,
     ));
-    let colour_srgb = profile.decodes_colour_srgb();
     let cases = fixtures
         .0
         .iter()
         .map(|fixture| {
+            // Every fixture is an `.opensky-srgb` alias: the profile's loader, not the probe,
+            // decides its colour space. That is the path a converted colour texture takes.
             let load = |path: &str, mip1: bool| {
                 asset_server
                     .load_builder()
                     .with_settings(move |settings: &mut ImageLoaderSettings| {
-                        settings.is_srgb = colour_srgb;
                         settings.sampler = ImageSampler::Descriptor(texel_sampler(mip1));
                     })
                     .load::<Image>(path.to_owned())
@@ -313,12 +313,12 @@ fn build_fixtures(directory: &Path) -> Vec<Fixture> {
             let path0 = if spec.alias {
                 format!("{}.opensky-srgb.opensky-wrap0.ktx2", spec.name)
             } else {
-                format!("{}.ktx2", spec.name)
+                format!("{}.opensky-srgb.ktx2", spec.name)
             };
             let path1 = if spec.alias {
                 format!("{}.mip1.opensky-srgb.opensky-wrap0.ktx2", spec.name)
             } else {
-                format!("{}.mip1.ktx2", spec.name)
+                format!("{}.mip1.opensky-srgb.ktx2", spec.name)
             };
             std::fs::write(directory.join(&path0), &ktx2).unwrap();
             std::fs::write(directory.join(&path1), &ktx2).unwrap();

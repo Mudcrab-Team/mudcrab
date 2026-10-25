@@ -49,6 +49,8 @@ mod streaming_trace;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
+#[cfg(test)]
+mod test_support;
 pub mod tone_mapping;
 pub mod visibility_optimization;
 pub mod visual_profile;

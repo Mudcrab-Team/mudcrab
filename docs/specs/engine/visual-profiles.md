@@ -65,17 +65,27 @@ loads that same alias as the UNORM twin of the format `mudcrab` gets, chosen onc
   as sRGB (or as UNORM under `mudcrab`) fails its surface instead of drawing with the wrong values.
 - Terrain diffuse images and merged terrain arrays follow the same helper. Their files still store
   the sRGB block format; only the load's decode changes.
-- Effect palettes are the exception. The converter publishes a palette at a plain linear path
-  rather than under a `.opensky-srgb` alias, and Bevy keys images by path, so neither profile can
-  give it a second colour space without a second file. Both samples it through an sRGB view for
-  now; a pack that publishes a palette alias would let `skyrim` read it raw.
+- The shaders learn the choice too. The skin and effect-palette fragment shaders specialise on a
+  `RAW_COLOUR_TEXELS` define: their sRGB re-encode/decode round-trips exist to undo Bevy's sRGB
+  sampling, and with raw texels they are skipped. Without it, a raw palette index is encoded again
+  and every effect picks an entry that is too bright, and skin, FaceGen and hair tints blend in the
+  wrong space.
+- Terrain LOD chunks embed their albedo in the GLB, so no asset loader reaches it. The engine
+  retags that one image per chunk to its UNORM twin before the chunk's first draw; its bytes are
+  colour-space-agnostic and there is no second upload to pay for. Without it, distant terrain is a
+  brightness step away from near terrain.
+- Effect palettes are the exception for their own colour, not their index. A palette is published
+  at a plain linear path, not under an `.opensky-srgb` alias, and Bevy keys images by path, so both
+  profiles sample the palette texture through an sRGB view. `skyrim` still picks the right entry:
+  the source texture's grey level arrives raw and the shader no longer re-encodes it. A pack that
+  publishes a palette alias would let the palette's own colours be read raw too.
 
-Two limits are known and accepted for this package. Images embedded in a glTF (`bufferView` or a
-`data:` URI) are decoded by Bevy's glTF loader itself, which no `AssetLoader` wraps: under `skyrim`
-they arrive as sRGB and their surface fails validation loudly. NIF conversion writes external KTX2
-URIs, so this reaches mod glTFs only. A texture used through both its colour alias and its linear
-twin uploads the same bytes twice; that costs no extra memory over `mudcrab` and merging the two is
-a follow-up.
+One limit is known and accepted for this package. An image embedded in a mod glTF (`bufferView` or
+a `data:` URI) is decoded by `bevy_gltf` itself, which no `AssetLoader` wraps and the engine does
+not own, so under `skyrim` it arrives as sRGB and its surface fails validation loudly. NIF
+conversion writes external KTX2 URIs, so this reaches mod glTFs only. A texture used through both
+its colour alias and its linear twin uploads the same bytes twice; that costs no extra memory over
+`mudcrab` and merging the two is a follow-up.
 
 ## Stage receipts
 
@@ -200,5 +210,6 @@ bit-identical stage 3 and stage 4 values at every probe, and the V2 reference bu
 gives the same stage 4 values.
 
 V1 tolerance, so the noise floor does not set it: registration does. A probe passes when each
-channel is within **2 % relative at stage 3** and **2 bytes at stage 4**, which covers a 3 px
+channel is within **2 % relative at stage 3**, or within one 8-bit step where the reference is at
+or near zero, and within **2 bytes at stage 4**, which covers a 3 px
 misregistration at every probe in the set. The tolerance is frozen in #358 before any P1 result.

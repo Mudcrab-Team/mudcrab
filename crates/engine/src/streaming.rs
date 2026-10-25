@@ -1106,6 +1106,7 @@ fn despawn_subtree(world: &mut World, root: Entity) -> usize {
 fn collect_cells(
     mut commands: Commands,
     config: Res<EngineConfig>,
+    profile: Res<VisualProfile>,
     database: Res<WorldDatabase>,
     cache: Res<CellCache>,
     origin: Res<RenderOrigin>,
@@ -1318,7 +1319,7 @@ fn collect_cells(
                     merged,
                     &mut streaming.next_model_sequence,
                     &mut profiler,
-                    config.visual_profile.decodes_colour_srgb(),
+                    profile.decodes_colour_srgb(),
                 );
                 match root {
                     Ok(root) => {
@@ -2606,6 +2607,7 @@ type ReadinessExtras<'world, 'state> = (
     ResMut<'world, crate::pacing::PacingTracker>,
     Query<'world, 'state, (), With<crate::physics::DynamicClutter>>,
     EffectPalettePrimitives<'world, 'state>,
+    Res<'world, VisualProfile>,
 );
 
 /// Converted effect surfaces drawn through their palette (`crate::nif_material`): these carry an
@@ -2881,7 +2883,7 @@ fn track_asset_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
     mut static_cache: ResMut<StaticCollisionCache>,
-    (mut meshes, mut materials, camera, mut pacing, clutter, palettes): ReadinessExtras,
+    (mut meshes, mut materials, camera, mut pacing, clutter, palettes, profile): ReadinessExtras,
     (mut metrics, mut runtime): (
         ResMut<StreamingMetrics>,
         Option<ResMut<runtime::StreamingRuntime>>,
@@ -3010,7 +3012,7 @@ fn track_asset_readiness(
                 &materials,
                 (&palettes.0, palettes.1.as_deref()),
                 &images,
-                config.visual_profile.decodes_colour_srgb(),
+                profile.decodes_colour_srgb(),
             );
             let summary = match validation {
                 Ok(summary) => summary,
@@ -6818,7 +6820,7 @@ mod tests {
                 base_color_texture: Some(base_color),
                 ..default()
             },
-            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6),
+            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6, false),
         };
         assert_eq!(
             validate_effect_palette_material(&material(srgb.clone(), srgb.clone()), &images, true),
@@ -6987,6 +6989,7 @@ mod tests {
         .init_resource::<SceneSpawnBatch>()
         .init_resource::<StaticCollisionCache>()
         .init_resource::<crate::pacing::PacingTracker>()
+        .init_resource::<VisualProfile>()
         // The converted scene holds entities, and the spawner reads each of their components out
         // of the type registry.
         .register_type::<ChildOf>()

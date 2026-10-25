@@ -6,6 +6,7 @@ use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
     swap_bridge::SwapWaiting,
+    visual_profile::VisualProfile,
     world::{
         components::{CELL_SIZE, StreamingCamera},
         database::{LodChunkMetadata, LodChunkQuery, WorldDatabase},
@@ -698,6 +699,10 @@ pub(super) fn track_lod_readiness(
     children: Query<&Children>,
     names: Query<&Name>,
     mesh_handles: Query<&Mesh3d>,
+    materials: Query<&MeshMaterial3d<StandardMaterial>>,
+    material_assets: Res<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    profile: Res<VisualProfile>,
     mut pending_chunks: Query<(Entity, &LodChunkRoot, &mut PendingLodChunk)>,
     mut streaming: ResMut<LodStreaming>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -785,6 +790,15 @@ pub(super) fn track_lod_readiness(
                 continue;
             }
         };
+        if !profile.decodes_colour_srgb() {
+            adopt_raw_lod_colour_textures(
+                entity,
+                &children,
+                &materials,
+                &material_assets,
+                &mut images,
+            );
+        }
         for (patch, coverage) in &patches {
             commands
                 .entity(*patch)
@@ -1446,6 +1460,33 @@ fn fail_chunk(
     commands.entity(entity).try_despawn();
 }
 
+/// Retags a chunk's embedded albedo to the profile's raw texels.
+///
+/// A chunk GLB carries its albedo as a bufferView image, which `bevy_gltf` decodes itself, so the
+/// raw-texel asset loader never sees it. The bytes do not depend on the colour space, the image is
+/// loaded once per chunk, and this runs before the chunk is first drawn, so retagging here is what
+/// keeps distant terrain matching near terrain under `skyrim`.
+fn adopt_raw_lod_colour_textures(
+    root: Entity,
+    children: &Query<&Children>,
+    materials: &Query<&MeshMaterial3d<StandardMaterial>>,
+    material_assets: &Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) {
+    let mut stack = vec![root];
+    while let Some(entity) = stack.pop() {
+        if let Ok(material_handle) = materials.get(entity)
+            && let Some(material) = material_assets.get(&material_handle.0)
+            && let Some(base_color) = material.base_color_texture.as_ref()
+        {
+            crate::raw_texel::retag_to_raw_texels(images, base_color);
+        }
+        if let Ok(direct) = children.get(entity) {
+            stack.extend(direct.iter());
+        }
+    }
+}
+
 fn validate_lod_scene(
     root: Entity,
     metadata: &LodChunkMetadata,
@@ -1867,6 +1908,70 @@ fn update_counts(
 mod tests {
     use super::*;
     use crate::world::database::LodChunkBounds;
+
+    #[test]
+    fn a_lod_chunks_embedded_albedo_is_retagged_before_its_first_draw() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        #[derive(Resource)]
+        struct Root(Entity);
+
+        fn adopt(
+            root: Res<Root>,
+            children: Query<&Children>,
+            materials: Query<&MeshMaterial3d<StandardMaterial>>,
+            material_assets: Res<Assets<StandardMaterial>>,
+            mut images: ResMut<Assets<Image>>,
+        ) {
+            adopt_raw_lod_colour_textures(
+                root.0,
+                &children,
+                &materials,
+                &material_assets,
+                &mut images,
+            );
+        }
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let albedo = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new(
+                bevy::render::render_resource::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                vec![0u8; 8],
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                base_color_texture: Some(albedo.clone()),
+                ..default()
+            });
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .spawn((MeshMaterial3d(material), ChildOf(root)));
+        app.insert_resource(Root(root));
+        app.world_mut().run_system_once(adopt).unwrap();
+
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&albedo)
+                .unwrap()
+                .texture_descriptor
+                .format,
+            bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm
+        );
+    }
     use bevy::ecs::system::RunSystemOnce;
 
     /// A reach equal to each tier's chunk side (4/8/16 cells), the smallest

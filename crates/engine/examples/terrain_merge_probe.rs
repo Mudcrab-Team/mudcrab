@@ -106,10 +106,16 @@ enum PixelCheck {
 
 fn main() {
     let mut output = PathBuf::from("terrain-merge-probe");
+    let mut profile = engine::visual_profile::VisualProfile::Mudcrab;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--output" => output = args.next().expect("output directory").into(),
+            "--profile" => {
+                let raw = args.next().expect("--profile requires mudcrab or skyrim");
+                profile = engine::visual_profile::VisualProfile::parse(&raw)
+                    .unwrap_or_else(|| panic!("unknown visual profile {raw}"));
+            }
             _ => panic!("unknown argument {arg}"),
         }
     }
@@ -137,6 +143,7 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>(),
     )
+    .insert_resource(profile)
     .add_plugins(TerrainMergePlugin::new(None))
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),

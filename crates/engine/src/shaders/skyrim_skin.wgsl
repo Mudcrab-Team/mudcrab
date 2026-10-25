@@ -290,7 +290,12 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
         // base colour factor and vertex colour in, which Skyrim applies after this blend; the two
         // orders agree for the white factor and vertex colours FaceGen heads carry.
         let uv = (pbr_input.material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;
+#ifdef RAW_COLOUR_TEXELS
+        // The texel already is the encoded value the game blends on.
+        let raw_base_color = pbr_input.material.base_color.rgb;
+#else
         let raw_base_color = srgb_encode(pbr_input.material.base_color.rgb);
+#endif
         let facegen = get_facegen_base_color(
             raw_base_color,
             uv,
@@ -299,21 +304,33 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
             facegen_detail_texture,
             facegen_detail_sampler,
         );
+#ifdef RAW_COLOUR_TEXELS
+        pbr_input.material.base_color = vec4<f32>(facegen, pbr_input.material.base_color.a);
+#else
         pbr_input.material.base_color = vec4<f32>(
             srgb_decode(facegen),
             pbr_input.material.base_color.a,
         );
+#endif
     }
 
     if (skin.flags & FLAG_SKIN_TINT) != 0u {
         // As for FaceGen above: the game blends on encoded values, and the tint colour is stored
         // encoded (`NPC_/QNAM`), so the base colour is re-encoded around the blend.
+#ifdef RAW_COLOUR_TEXELS
+        let raw_base_color = pbr_input.material.base_color.rgb;
+#else
         let raw_base_color = srgb_encode(pbr_input.material.base_color.rgb);
+#endif
         let tinted = get_facegen_rgb_tint_base_color(raw_base_color, skin.tint_color.rgb);
+#ifdef RAW_COLOUR_TEXELS
+        pbr_input.material.base_color = vec4<f32>(tinted, pbr_input.material.base_color.a);
+#else
         pbr_input.material.base_color = vec4<f32>(
             srgb_decode(tinted),
             pbr_input.material.base_color.a,
         );
+#endif
     }
 
     if (skin.flags & FLAG_MODEL_SPACE_NORMALS) != 0u {
@@ -359,8 +376,13 @@ fn fragment(skin_in: SkinVertexOutput, @builtin(front_facing) is_front: bool) ->
 #ifdef VERTEX_COLORS
         tint_mask = skin_in.color.g;
 #endif
-        // The tint is stored encoded and lerped on encoded values; `SRGBToWorking` is the decode.
+        // The tint is stored encoded and lerped on encoded values; `SRGBToWorking` is the decode,
+        // which is only owed when the base colour arrived decoded.
+#ifdef RAW_COLOUR_TEXELS
+        let vertex_color = get_hair_vertex_color(skin.tint_color.rgb, tint_mask);
+#else
         let vertex_color = srgb_decode(get_hair_vertex_color(skin.tint_color.rgb, tint_mask));
+#endif
         pbr_input.material.base_color = vec4<f32>(
             pbr_input.material.base_color.rgb * vertex_color,
             pbr_input.material.base_color.a,

@@ -1147,41 +1147,17 @@ mod tests {
         assert!(check_array_file(dir.path(), slot, LandTextureUsage::DiffuseSrgb).is_err());
     }
 
-    fn bc1_ktx2() -> Vec<u8> {
-        use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
-
-        let mut dds = Dds::new_dxgi(NewDxgiParams {
-            height: 8,
-            width: 8,
-            depth: None,
-            format: DxgiFormat::BC1_UNorm,
-            mipmap_levels: Some(1),
-            array_layers: None,
-            caps2: None,
-            is_cubemap: false,
-            resource_dimension: D3D10ResourceDimension::Texture2D,
-            alpha_mode: AlphaMode::Straight,
-        })
-        .unwrap();
-        for (index, byte) in dds.data.iter_mut().enumerate() {
-            *byte = (index * 7 + 3) as u8;
-        }
-        let mut bytes = Vec::new();
-        dds.write(&mut bytes).unwrap();
-        converter::texture::TextureConverter::convert_uncompressed(
-            &bytes,
-            converter::texture::TextureEncoding::ColorSrgb,
-        )
-        .unwrap()
-    }
-
     #[test]
     fn array_loads_follow_the_profile_colour_space() {
         use bevy::asset::AssetPlugin;
         use bevy::image::{CompressedImageFormats, ImageLoader, ImagePlugin};
 
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("array.ktx2"), bc1_ktx2()).unwrap();
+        std::fs::write(
+            directory.path().join("array.ktx2"),
+            crate::test_support::colour_ktx2(ddsfile::DxgiFormat::BC1_UNorm, 1),
+        )
+        .unwrap();
         let slot = ClassSlot {
             array: 0,
             path: "array.ktx2".to_owned(),
@@ -1208,20 +1184,7 @@ mod tests {
             app.cleanup();
             let server = app.world().resource::<AssetServer>().clone();
             let handle = load_array(&server, &slot, LandTextureUsage::DiffuseSrgb, colour_srgb);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                app.update();
-                if app
-                    .world()
-                    .resource::<Assets<Image>>()
-                    .get(&handle)
-                    .is_some()
-                {
-                    break;
-                }
-                assert!(std::time::Instant::now() < deadline, "array load timed out");
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            crate::test_support::wait_for_asset(&mut app, &handle);
             let image = app
                 .world()
                 .resource::<Assets<Image>>()

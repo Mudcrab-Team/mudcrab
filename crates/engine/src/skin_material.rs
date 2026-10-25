@@ -187,6 +187,9 @@ pub struct SkyrimSkinExtension {
     pub facegen_detail: Option<Handle<Image>>,
     /// The [`SkyrimSkinImages`] holder this material depends on. Nothing else holds it, and a
     /// labeled asset without a strong handle can be freed before its dependency reports loaded.
+    /// The base colour texture is the authored byte rather than an sRGB-decoded colour, so the
+    /// shader must not undo a decode that never happened.
+    pub raw_colour_texels: bool,
     #[reflect(ignore)]
     pub(crate) images: Option<Handle<SkyrimSkinImages>>,
 }
@@ -197,12 +200,16 @@ pub struct SkyrimSkinKey {
     /// The material is hair ([`SkyrimSkinFlags::HAIR_TINT`]): a masked one draws its colour pass
     /// with alpha-to-coverage under MSAA.
     pub hair: bool,
+    /// The base colour texture decodes as raw authored bytes, so the shader leaves its blends in
+    /// that space instead of re-encoding and decoding around them.
+    pub raw_colour_texels: bool,
 }
 
 impl From<&SkyrimSkinExtension> for SkyrimSkinKey {
     fn from(extension: &SkyrimSkinExtension) -> Self {
         Self {
             hair: extension.settings.flags & SkyrimSkinFlags::HAIR_TINT != 0,
+            raw_colour_texels: extension.raw_colour_texels,
         }
     }
 }
@@ -240,6 +247,9 @@ impl MaterialExtension for SkyrimSkinExtension {
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         specialize_hair_coverage(descriptor, key.mesh_key, key.bind_group_data);
+        if key.bind_group_data.raw_colour_texels {
+            crate::raw_texel::specialize_raw_colour_texels(descriptor);
+        }
         Ok(())
     }
 }
@@ -352,6 +362,7 @@ pub fn skin_material(
     facegen: Option<FacegenMaps>,
     skin_tint: Option<Vec3>,
     shader_flags_1: u32,
+    raw_colour_texels: bool,
 ) -> SkyrimSkinMaterial {
     base.normal_map_texture = None;
     base.specular_tint_texture = None;
@@ -379,6 +390,7 @@ pub fn skin_material(
             specular,
             facegen_tint,
             facegen_detail,
+            raw_colour_texels,
             images: None,
         },
     }
@@ -386,13 +398,18 @@ pub fn skin_material(
 
 /// Builds the hair material: `base` unchanged (its tangent-space normal map included) with the
 /// hair tint set. The model-space branch stays off, so the extension binds no images.
-pub fn hair_material(base: StandardMaterial, tint: Vec3) -> SkyrimSkinMaterial {
+pub fn hair_material(
+    base: StandardMaterial,
+    tint: Vec3,
+    raw_colour_texels: bool,
+) -> SkyrimSkinMaterial {
     let mut settings = SkyrimSkinSettings::default();
     settings.set_hair_tint(tint);
     SkyrimSkinMaterial {
         base,
         extension: SkyrimSkinExtension {
             settings,
+            raw_colour_texels,
             ..default()
         },
     }
@@ -647,6 +664,7 @@ mod tests {
                 None,
                 None,
                 flags_1,
+                false,
             );
             assert!(material.base.normal_map_texture.is_none());
             assert!(material.base.specular_tint_texture.is_none());
@@ -680,6 +698,7 @@ mod tests {
             Some(maps.clone()),
             None,
             0,
+            false,
         );
         assert_eq!(
             material.extension.settings.flags,
@@ -689,7 +708,7 @@ mod tests {
         assert_eq!(material.extension.facegen_detail, Some(maps.detail));
 
         let tone = Vec3::new(0.78, 0.69, 0.66);
-        let material = skin_material(base, normal, None, None, Some(tone), 0);
+        let material = skin_material(base, normal, None, None, Some(tone), 0, false);
         assert_eq!(
             material.extension.settings.flags,
             SkyrimSkinFlags::MODEL_SPACE_NORMALS | SkyrimSkinFlags::SKIN_TINT
@@ -795,7 +814,7 @@ mod tests {
             ..default()
         };
         let tint = Vec3::new(0.44, 0.46, 0.35);
-        let hair = hair_material(base.clone(), tint);
+        let hair = hair_material(base.clone(), tint, false);
         assert_eq!(hair.base.normal_map_texture, base.normal_map_texture);
         assert_eq!(hair.base.specular_tint_texture, base.specular_tint_texture);
         assert_eq!(hair.base.flip_normal_map_y, base.flip_normal_map_y);
@@ -840,8 +859,33 @@ mod tests {
         hair: bool,
     ) -> bool {
         let mut descriptor = pipeline_descriptor(samples, shader_defs);
-        specialize_hair_coverage(&mut descriptor, mesh_key, SkyrimSkinKey { hair });
+        specialize_hair_coverage(
+            &mut descriptor,
+            mesh_key,
+            SkyrimSkinKey { hair, ..default() },
+        );
         uses_coverage(&descriptor)
+    }
+
+    #[test]
+    fn raw_colour_texels_reaches_the_skin_pipeline() {
+        let raw = SkyrimSkinExtension {
+            raw_colour_texels: true,
+            ..default()
+        };
+        assert!(SkyrimSkinKey::from(&raw).raw_colour_texels);
+        assert!(!SkyrimSkinKey::from(&SkyrimSkinExtension::default()).raw_colour_texels);
+
+        let mut descriptor = pipeline_descriptor(1, &[]);
+        crate::raw_texel::specialize_raw_colour_texels(&mut descriptor);
+        assert!(
+            descriptor
+                .fragment
+                .as_ref()
+                .unwrap()
+                .shader_defs
+                .contains(&crate::raw_texel::RAW_COLOUR_TEXELS_DEF.into())
+        );
     }
 
     #[test]

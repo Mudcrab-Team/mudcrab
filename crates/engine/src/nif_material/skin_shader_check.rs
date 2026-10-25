@@ -158,7 +158,7 @@ const OIT: &str = r#"
 fn oit_draw(position: vec4<f32>, color: vec4<f32>) {}
 "#;
 
-fn shader_defs(skinned: bool) -> HashMap<String, ShaderDefValue> {
+fn shader_defs(skinned: bool, raw_colour_texels: bool) -> HashMap<String, ShaderDefValue> {
     let mut defs = HashMap::new();
     defs.insert("MATERIAL_BIND_GROUP".into(), ShaderDefValue::UInt(3));
     for name in [
@@ -176,11 +176,18 @@ fn shader_defs(skinned: bool) -> HashMap<String, ShaderDefValue> {
     if skinned {
         defs.insert("SKINNED".into(), ShaderDefValue::Bool(true));
     }
+    if raw_colour_texels {
+        defs.insert("RAW_COLOUR_TEXELS".into(), ShaderDefValue::Bool(true));
+    }
     defs
 }
 
-fn compose(source: &str, skinned: bool) -> Result<wgpu::naga::Module, String> {
-    let shader_defs = shader_defs(skinned);
+fn compose(
+    source: &str,
+    skinned: bool,
+    raw_colour_texels: bool,
+) -> Result<wgpu::naga::Module, String> {
+    let shader_defs = shader_defs(skinned, raw_colour_texels);
     let mut composer = Composer::default();
     for (path, module_source) in [
         ("cs_lighting_msn.wgsl", LIGHTING),
@@ -222,12 +229,15 @@ fn compose(source: &str, skinned: bool) -> Result<wgpu::naga::Module, String> {
 #[test]
 fn production_skin_shader_composes_for_static_and_skinned_meshes() {
     for skinned in [false, true] {
-        compose(SHADER, skinned).unwrap_or_else(|error| {
-            panic!(
-                "{} mesh shader failed:\n{error}",
-                if skinned { "skinned" } else { "static" }
-            )
-        });
+        for raw_colour_texels in [false, true] {
+            compose(SHADER, skinned, raw_colour_texels).unwrap_or_else(|error| {
+                panic!(
+                    "{}{} mesh shader failed:\n{error}",
+                    if skinned { "skinned" } else { "static" },
+                    if raw_colour_texels { " raw-texel" } else { "" }
+                )
+            });
+        }
     }
 }
 
@@ -235,7 +245,7 @@ fn production_skin_shader_composes_for_static_and_skinned_meshes() {
 fn missing_skinned_vertex_field_fails_composition() {
     let broken = SHADER.replace("vertex.joint_indices", "vertex.missing_joint_indices");
     assert_ne!(broken, SHADER);
-    let error = compose(&broken, true).expect_err("missing skinned vertex field must fail");
+    let error = compose(&broken, true, false).expect_err("missing skinned vertex field must fail");
     assert!(
         error.contains("missing_joint_indices"),
         "unexpected error: {error}"

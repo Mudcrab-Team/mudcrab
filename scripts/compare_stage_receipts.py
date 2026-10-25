@@ -2,7 +2,9 @@
 """Compare two stage receipts (`<shot>.stages.json`) probe by probe under the V1 tolerance.
 
 The tolerance and the probe set are frozen in docs/specs/engine/visual-profiles.md: a probe passes
-when every channel is within 2 % of the reference at stage 3 and within 2 bytes at stage 4. A stage
+when every channel is within 2 % of the reference at stage 3 (or within one 8-bit step when the
+reference is at or near zero, where a purely relative tolerance has no room for noise) and within
+2 bytes at stage 4. A stage
 is compared when both receipts have a value; one that only one side measured fails, and one
 neither side measured is listed as skipped. Probes are matched by name, and a probe whose
 `world_position` or `patch_px` differs between the receipts is a different measurement and fails.
@@ -17,6 +19,8 @@ import sys
 
 
 STAGE3_RELATIVE = 0.02
+# One 8-bit step: a relative tolerance alone fails a channel that legitimately reads 0.0.
+STAGE3_ABSOLUTE = 1.0 / 255.0
 STAGE4_BYTES = 2.0
 POSE_KEYS = ("worldspace_id", "interior_cell_id", "position", "yaw", "pitch")
 PROBE_KEYS = ("world_position", "patch_px")
@@ -24,8 +28,11 @@ PROBE_KEYS = ("world_position", "patch_px")
 STAGE_CHANNELS = {"hdr_pre_tonemap": (3, 4), "output": (3,)}
 
 
-def stage3_ok(reference, candidate, relative):
-    return all(abs(c - r) <= relative * abs(r) for r, c in zip(reference[:3], candidate[:3]))
+def stage3_ok(reference, candidate, relative, absolute):
+    return all(
+        abs(c - r) <= max(relative * abs(r), absolute)
+        for r, c in zip(reference[:3], candidate[:3])
+    )
 
 
 def stage4_ok(reference, candidate, tolerance):
@@ -42,7 +49,7 @@ def malformed(stage, value):
     return None
 
 
-def compare(reference, candidate, relative, tolerance):
+def compare(reference, candidate, relative, tolerance, absolute=STAGE3_ABSOLUTE):
     failures, skipped, passed = [], [], []
     for key in POSE_KEYS:
         if reference["pose"].get(key) != candidate["pose"].get(key):
@@ -60,9 +67,9 @@ def compare(reference, candidate, relative, tolerance):
                 for key in moved
             )
             continue
-        for stage, check, limit in (
-            ("hdr_pre_tonemap", stage3_ok, relative),
-            ("output", stage4_ok, tolerance),
+        for stage, check, limits in (
+            ("hdr_pre_tonemap", stage3_ok, (relative, absolute)),
+            ("output", stage4_ok, (tolerance,)),
         ):
             mine, theirs = probe["stages"].get(stage), other["stages"].get(stage)
             label = f"{probe['name']} {stage}"
@@ -75,7 +82,7 @@ def compare(reference, candidate, relative, tolerance):
             elif problem := malformed(stage, mine) or malformed(stage, theirs):
                 side = "reference" if malformed(stage, mine) else "candidate"
                 failures.append(f"{label}: the {side} {problem}")
-            elif check(mine, theirs, limit):
+            elif check(mine, theirs, *limits):
                 passed.append(label)
             else:
                 failures.append(f"{label}: {mine} -> {theirs}")
@@ -88,17 +95,22 @@ def main():
     parser.add_argument("reference", type=Path)
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--stage3-relative", type=float, default=STAGE3_RELATIVE)
+    parser.add_argument("--stage3-absolute", type=float, default=STAGE3_ABSOLUTE)
     parser.add_argument("--stage4-bytes", type=float, default=STAGE4_BYTES)
     args = parser.parse_args()
     reference = json.loads(args.reference.read_text())
     candidate = json.loads(args.candidate.read_text())
-    failures, skipped, passed = compare(reference, candidate, args.stage3_relative, args.stage4_bytes)
+    failures, skipped, passed = compare(
+        reference, candidate, args.stage3_relative, args.stage4_bytes, args.stage3_absolute
+    )
     print(json.dumps({
         "reference": {"side": reference.get("side"), "visual_profile": reference.get("visual_profile"),
                       "build": reference.get("build")},
         "candidate": {"side": candidate.get("side"), "visual_profile": candidate.get("visual_profile"),
                       "build": candidate.get("build")},
-        "tolerance": {"stage3_relative": args.stage3_relative, "stage4_bytes": args.stage4_bytes},
+        "tolerance": {"stage3_relative": args.stage3_relative,
+                      "stage3_absolute": args.stage3_absolute,
+                      "stage4_bytes": args.stage4_bytes},
         "passed": passed, "skipped": skipped, "failures": failures,
     }, indent=2))
     sys.exit(1 if failures else 0)

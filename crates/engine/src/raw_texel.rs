@@ -14,18 +14,22 @@ use bevy::{
     },
     prelude::*,
     reflect::TypePath,
-    render::render_resource::TextureFormat,
+    render::render_resource::{RenderPipelineDescriptor, TextureFormat},
 };
 
 use crate::visual_profile::VisualProfile;
 
 /// The alias extensions this loader claims. The literal list exists because `AssetLoader` hands
 /// back a `&'static [&str]`; `alias_extensions_match_the_shared_infixes` keeps it honest.
-const ALIAS_EXTENSIONS: [&str; 4] = [
+const ALIAS_EXTENSIONS: [&str; 8] = [
     "opensky-srgb.ktx2",
     "opensky-srgb.opensky-wrap0.ktx2",
     "opensky-srgb.opensky-wrap1.ktx2",
     "opensky-srgb.opensky-wrap2.ktx2",
+    "opensky-srgb.png",
+    "opensky-srgb.opensky-wrap0.png",
+    "opensky-srgb.opensky-wrap1.png",
+    "opensky-srgb.opensky-wrap2.png",
 ];
 
 #[derive(Debug)]
@@ -106,6 +110,60 @@ impl AssetLoader for RawTexelImageLoader {
     }
 }
 
+/// The UNORM twin of an sRGB format, or `None` when the format already is linear.
+///
+/// Every [`TextureFormat`] with an sRGB view stores the same bytes as its UNORM twin, so a retag
+/// never changes data. Formats Bevy decodes while loading (the KTX2 `R8`/`Rg8` sRGB transcodes)
+/// have no sRGB `TextureFormat` at all; they arrive as `R8Unorm`/`Rg8Unorm` already.
+pub(crate) fn unorm_twin(format: TextureFormat) -> Option<TextureFormat> {
+    Some(match format {
+        TextureFormat::Bc1RgbaUnormSrgb => TextureFormat::Bc1RgbaUnorm,
+        TextureFormat::Bc2RgbaUnormSrgb => TextureFormat::Bc2RgbaUnorm,
+        TextureFormat::Bc3RgbaUnormSrgb => TextureFormat::Bc3RgbaUnorm,
+        TextureFormat::Bc7RgbaUnormSrgb => TextureFormat::Bc7RgbaUnorm,
+        TextureFormat::Etc2Rgb8A1UnormSrgb => TextureFormat::Etc2Rgb8A1Unorm,
+        TextureFormat::Etc2Rgb8UnormSrgb => TextureFormat::Etc2Rgb8Unorm,
+        TextureFormat::Etc2Rgba8UnormSrgb => TextureFormat::Etc2Rgba8Unorm,
+        TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+        TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
+        TextureFormat::Astc {
+            block,
+            channel: wgpu::AstcChannel::UnormSrgb,
+        } => TextureFormat::Astc {
+            block,
+            channel: wgpu::AstcChannel::Unorm,
+        },
+        _ => return None,
+    })
+}
+
+/// Retags an already-loaded colour image to its raw-texel twin, returning whether it changed.
+///
+/// This is for images no [`AssetLoader`] can reach, such as the albedo embedded in a terrain LOD
+/// chunk's GLB. Their bytes are colour-space-agnostic, the image is loaded once per chunk, and the
+/// retag happens before the chunk's first draw, so the double upload that rules out a retag for
+/// streamed textures does not apply.
+pub(crate) fn retag_to_raw_texels(images: &mut Assets<Image>, handle: &Handle<Image>) -> bool {
+    let Some(mut image) = images.get_mut(handle) else {
+        return false;
+    };
+    let Some(twin) = unorm_twin(image.texture_descriptor.format) else {
+        return false;
+    };
+    image.texture_descriptor.format = twin;
+    true
+}
+
+/// The fragment-shader define that tells a material its colour texture holds authored bytes.
+pub(crate) const RAW_COLOUR_TEXELS_DEF: &str = "RAW_COLOUR_TEXELS";
+
+/// Marks the fragment shaders of the pipeline being specialised as reading raw colour texels.
+pub(crate) fn specialize_raw_colour_texels(descriptor: &mut RenderPipelineDescriptor) {
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        fragment.shader_defs.push(RAW_COLOUR_TEXELS_DEF.into());
+    }
+}
+
 /// Registers [`RawTexelImageLoader`] under `skyrim` and nothing under `mudcrab`, so the default
 /// profile keeps exactly the loader graph it had.
 pub struct RawTexelPlugin {
@@ -141,45 +199,22 @@ impl Plugin for RawTexelPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wait_for_asset;
     use bevy::{
         asset::RenderAssetUsages,
-        asset::{AssetApp, AssetPlugin, LoadState},
+        asset::{AssetApp, AssetPlugin},
         gltf::{Gltf, GltfMaterial, GltfPlugin},
         image::{ImageLoader, ImagePlugin, ImageSampler},
     };
-    use converter::texture::{TextureConverter, TextureEncoding};
-    use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
+    use ddsfile::DxgiFormat;
     use std::path::Path;
 
-    fn dds_bytes(format: DxgiFormat, mip_levels: u32) -> Vec<u8> {
-        let mut dds = Dds::new_dxgi(NewDxgiParams {
-            height: 8,
-            width: 8,
-            depth: None,
-            format,
-            mipmap_levels: Some(mip_levels),
-            array_layers: None,
-            caps2: None,
-            is_cubemap: false,
-            resource_dimension: D3D10ResourceDimension::Texture2D,
-            alpha_mode: AlphaMode::Straight,
-        })
-        .unwrap();
-        for (index, byte) in dds.data.iter_mut().enumerate() {
-            *byte = (index * 7 + 3) as u8;
-        }
-        let mut bytes = Vec::new();
-        dds.write(&mut bytes).unwrap();
-        bytes
-    }
-
-    fn ktx2(format: DxgiFormat) -> Vec<u8> {
-        TextureConverter::convert_uncompressed(&dds_bytes(format, 2), TextureEncoding::ColorSrgb)
-            .unwrap()
-    }
-
     fn write_ktx2(directory: &Path, name: &str, format: DxgiFormat) {
-        std::fs::write(directory.join(name), ktx2(format)).unwrap();
+        std::fs::write(
+            directory.join(name),
+            crate::test_support::colour_ktx2(format, 2),
+        )
+        .unwrap();
     }
 
     fn app(directory: &Path, profile: VisualProfile) -> App {
@@ -203,25 +238,6 @@ mod tests {
         app
     }
 
-    fn wait<A: Asset>(app: &mut App, handle: &Handle<A>) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            app.update();
-            let server = app.world().resource::<AssetServer>();
-            if let LoadState::Failed(error) = server.load_state(handle.id()) {
-                panic!("fixture load failed: {error}");
-            }
-            if server.is_loaded_with_dependencies(handle.id()) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "fixture load timed out"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-
     fn loaded_format(app: &App, handle: &Handle<Image>) -> TextureFormat {
         app.world()
             .resource::<Assets<Image>>()
@@ -232,14 +248,72 @@ mod tests {
     }
 
     #[test]
+    fn raw_texels_retag_every_srgb_view_to_its_unorm_twin() {
+        for (srgb, raw) in [
+            (TextureFormat::Bc1RgbaUnormSrgb, TextureFormat::Bc1RgbaUnorm),
+            (TextureFormat::Bc2RgbaUnormSrgb, TextureFormat::Bc2RgbaUnorm),
+            (TextureFormat::Bc3RgbaUnormSrgb, TextureFormat::Bc3RgbaUnorm),
+            (TextureFormat::Bc7RgbaUnormSrgb, TextureFormat::Bc7RgbaUnorm),
+            (
+                TextureFormat::Etc2Rgb8UnormSrgb,
+                TextureFormat::Etc2Rgb8Unorm,
+            ),
+            (TextureFormat::Rgba8UnormSrgb, TextureFormat::Rgba8Unorm),
+            (TextureFormat::Bgra8UnormSrgb, TextureFormat::Bgra8Unorm),
+        ] {
+            assert_eq!(unorm_twin(srgb), Some(raw));
+        }
+        assert_eq!(unorm_twin(TextureFormat::R8Unorm), None);
+        assert_eq!(unorm_twin(TextureFormat::Bc1RgbaUnorm), None);
+    }
+
+    #[test]
+    fn an_embedded_lod_albedo_is_retagged_to_raw_texels() {
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            vec![0u8; 8],
+            TextureFormat::Bc1RgbaUnormSrgb,
+            RenderAssetUsages::default(),
+        ));
+        assert!(retag_to_raw_texels(&mut images, &handle));
+        assert_eq!(
+            images.get(&handle).unwrap().texture_descriptor.format,
+            TextureFormat::Bc1RgbaUnorm
+        );
+        assert!(!retag_to_raw_texels(&mut images, &handle));
+
+        let linear = images.add(Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            vec![0u8; 16],
+            TextureFormat::R8Unorm,
+            RenderAssetUsages::default(),
+        ));
+        assert!(!retag_to_raw_texels(&mut images, &linear));
+    }
+
+    #[test]
     fn alias_extensions_match_the_shared_infixes() {
         let transfer = shared::texture_aliases::SRGB_TEXTURE_SUFFIX.trim_start_matches('.');
-        let expected: Vec<String> = std::iter::once(format!("{transfer}.ktx2"))
-            .chain(
-                shared::texture_aliases::WRAP_TEXTURE_SUFFIXES
-                    .into_iter()
-                    .map(|wrap| format!("{transfer}{wrap}.ktx2")),
-            )
+        let expected: Vec<String> = ["ktx2", "png"]
+            .into_iter()
+            .flat_map(|extension| {
+                std::iter::once(format!("{transfer}.{extension}")).chain(
+                    shared::texture_aliases::WRAP_TEXTURE_SUFFIXES
+                        .into_iter()
+                        .map(move |wrap| format!("{transfer}{wrap}.{extension}")),
+                )
+            })
             .collect();
         assert_eq!(ALIAS_EXTENSIONS.to_vec(), expected);
     }
@@ -292,12 +366,33 @@ mod tests {
         for (name, format, _) in cases {
             write_ktx2(directory.path(), name, format);
         }
+        Image::new_fill(
+            bevy::render::render_resource::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[10, 20, 30, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD,
+        )
+        .try_into_dynamic()
+        .unwrap()
+        .save(directory.path().join("png.opensky-srgb.png"))
+        .unwrap();
         let mut app = app(directory.path(), VisualProfile::Skyrim);
         for (name, _, expected) in cases {
             let handle = app.world().resource::<AssetServer>().load::<Image>(name);
-            wait(&mut app, &handle);
+            wait_for_asset(&mut app, &handle);
             assert_eq!(loaded_format(&app, &handle), expected, "{name}");
         }
+        let png = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<Image>("png.opensky-srgb.png");
+        wait_for_asset(&mut app, &png);
+        assert_eq!(loaded_format(&app, &png), TextureFormat::Rgba8Unorm);
     }
 
     #[test]
@@ -313,7 +408,7 @@ mod tests {
             .world()
             .resource::<AssetServer>()
             .load::<Image>("bc1.opensky-srgb.ktx2");
-        wait(&mut app, &handle);
+        wait_for_asset(&mut app, &handle);
         assert_eq!(
             loaded_format(&app, &handle),
             TextureFormat::Bc1RgbaUnormSrgb
@@ -345,7 +440,7 @@ mod tests {
             ("plain.png", TextureFormat::Rgba8UnormSrgb),
         ] {
             let handle = app.world().resource::<AssetServer>().load::<Image>(name);
-            wait(&mut app, &handle);
+            wait_for_asset(&mut app, &handle);
             assert_eq!(loaded_format(&app, &handle), expected, "{name}");
         }
     }
@@ -386,7 +481,7 @@ mod tests {
             .world()
             .resource::<AssetServer>()
             .load::<Gltf>("body.gltf");
-        wait(&mut app, &gltf_handle);
+        wait_for_asset(&mut app, &gltf_handle);
 
         let world = app.world();
         let gltf = world.resource::<Assets<Gltf>>().get(&gltf_handle).unwrap();
@@ -478,7 +573,7 @@ mod tests {
             .world()
             .resource::<AssetServer>()
             .load::<Gltf>("body.gltf");
-        wait(&mut app, &gltf_handle);
+        wait_for_asset(&mut app, &gltf_handle);
 
         let world = app.world();
         let gltf = world.resource::<Assets<Gltf>>().get(&gltf_handle).unwrap();

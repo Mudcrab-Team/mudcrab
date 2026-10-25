@@ -1814,6 +1814,7 @@ mod tests {
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
         "--stage3-relative", // compare_stage_receipts.py
+        "--stage3-absolute", // compare_stage_receipts.py
         "--stage4-bytes", // compare_stage_receipts.py
     ];
 
