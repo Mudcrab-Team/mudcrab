@@ -34,6 +34,9 @@ The check runs twice: once on the command line, and again after saved settings a
 saved `skyrim` profile can meet a mudcrab-only flag. `--image-space`, `--image-space-weather` and
 `--image-space-slot` stay valid under both profiles; P1b reads them.
 
+Only launch options are checked. Grade and exposure values saved from the settings menu are not
+refused or hidden under `skyrim` until P1b.
+
 ## Receipts
 
 Every receipt names the profile it describes:
@@ -41,6 +44,11 @@ Every receipt names the profile it describes:
 - `shots.log`: `visual_profile` on each capture line, and inside `captured_frame`.
 - `SceneState` (live console) and `SceneShot` receipts: `visual_profile`.
 - Bug-report snapshots: `configured_rendering.visual_profile`.
+
+The benchmark run fingerprint (`fingerprint.rs`) does not carry the profile yet. While both profiles
+draw the same pixels it does not need to; once P1 makes `skyrim` render differently, the profile
+belongs in the fingerprint's graphics section so two benchmark runs of different profiles are never
+compared as one.
 
 ## Stage receipts
 
@@ -64,6 +72,8 @@ earlier capture) or a sub-pixel offset does not move the result.
   "side": "mudcrab",
   "visual_profile": "skyrim",
   "build": "<commit or SkyrimSE.exe SHA-256>",
+  "build_dirty": false,
+  "viewport": [1280, 720],
   "pose": { "worldspace_id": 60, "position": [21750, -44530, 140], "yaw": 90, "pitch": -3, "hfov": 80 },
   "probes": [
     {
@@ -78,6 +88,9 @@ earlier capture) or a sub-pixel offset does not move the result.
 ```
 
 A stage is either a value or listed under `unavailable` with its reason; it is never left out.
+`viewport` is the size of the pixel grid the patches index. `build_dirty` says whether the build's
+worktree had uncommitted changes (`true`, `false`, or `"unknown"` when packaging supplied the commit
+without it), so two builds of one commit are told apart.
 
 ### Writing stage receipts from a shots run
 
@@ -97,8 +110,13 @@ The run writes `<out>/<name>.stages.json` next to the PNG:
   patch. It is copied in the same frame as the screenshot and the capture receipt, after bloom and
   before Bevy's `tonemapping` pass, so it includes exposure and fog and excludes the tone curve and
   the cinematic grade. A main texture in any other format fails the shot.
-- **Stage 4** (`output`) is the mean RGB byte of the written PNG over the same patch.
-- A probe that projects off screen keeps its row, with both stages under `unavailable`.
+- **Stage 4** (`output`) is the mean RGB byte of the written PNG over the same patch. The patches
+  index the main texture, so the PNG must be the size stage 3 sampled (`viewport`); any other size
+  fails the shot rather than reading a different region. A camera with a sub-viewport fails too.
+- A probe that projects off screen keeps its row, with both stages under `unavailable`. A patch
+  holding an infinite or NaN HDR texel keeps its stage 4 value and lists stage 3 as unavailable.
+- A stage that would have neither a value nor a reason, or a receipt with fewer samples than
+  probes, fails the shot.
 - The shot waits for the stage 3 copy to map, up to the capture timeout, before its `shots.log`
   line is written.
 
@@ -108,7 +126,19 @@ open, and each committed probe is checked against its capture.
 ### The V1 probe set
 
 One pose, the Sleeping Giant Inn in Riverwood: worldspace 60, position `[21750, -44530, 140]`, yaw
-90, pitch -3, HFOV 80, 1280×720.
+90, pitch -3, HFOV 80, 1280×720. The set is the shots file
+`crates/engine/tests/fixtures/visual-profile-v1-shots.json`; a unit test projects each probe and
+checks it lands on the pixel listed below. Capture it, then compare two receipts under the
+tolerance:
+
+```bash
+engine --assets <pack> --worldspace 0x3c --visual-profile <profile> \
+  --shots crates/engine/tests/fixtures/visual-profile-v1-shots.json --shots-out <dir>
+scripts/compare_stage_receipts.py <reference>.stages.json <candidate>.stages.json
+```
+
+The script exits 1 when a stage measured on both sides is out of tolerance, when only one side
+measured it, or when the poses differ.
 
 | Probe | Position | Patch | Pixel | Stage 3 (mudcrab) | Stage 4 (mudcrab) |
 |---|---|---|---|---|---|

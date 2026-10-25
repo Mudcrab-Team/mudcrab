@@ -49,6 +49,7 @@ do not capture interactive mouse/controller input.
 | `yaw` | Skyrim heading in degrees: 0 looks north (`+Y`), 90 east (`+X`), clockwise seen from above. |
 | `pitch` | Skyrim's X angle in degrees: positive looks down. |
 | `hfov` | Horizontal field of view in degrees, between 0 and 180; the vertical one follows from the frame's aspect. |
+| `probes` | Optional named world positions to measure. The run writes `<out>/<name>.stages.json` with each probe's pre-tonemap HDR color and output bytes; the format, the probe fields and the V1 probe set are in [visual-profiles.md](visual-profiles.md#writing-stage-receipts-from-a-shots-run). |
 | `reference`, `note` | Free text for people and comparison tools; the engine ignores them, and any other field. |
 
 `name` has to be a file this engine can create on Windows, since it is written there: no `/`, `\`,

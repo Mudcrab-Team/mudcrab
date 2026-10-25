@@ -1786,6 +1786,8 @@ mod tests {
         "--pixel",  // sample_skyrim_tonemap_gpu.py
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
+        "--stage3-relative", // compare_stage_receipts.py
+        "--stage4-bytes", // compare_stage_receipts.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
