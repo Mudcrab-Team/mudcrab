@@ -4971,6 +4971,7 @@ mod tests {
             hfov: 60.0,
             reference: None,
             note: None,
+            probes: Vec::new(),
         };
 
         assert_eq!(

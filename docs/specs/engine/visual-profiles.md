@@ -79,5 +79,31 @@ earlier capture) or a sub-pixel offset does not move the result.
 
 A stage is either a value or listed under `unavailable` with its reason; it is never left out.
 
+### Writing stage receipts from a shots run
+
+A shot in a `--shots` file may list `probes`. Each probe has a `name` that is unique within the
+shot, a `position` in absolute Creation units, and an optional `patch_px`, the side of the averaged
+square: odd, 1 to 31, default 5.
+
+```json
+{ "name": "sleeping-giant", "worldspace_id": 60, "position": [21750, -44530, 140],
+  "yaw": 90, "pitch": -3, "hfov": 80,
+  "probes": [ { "name": "sunlit-thatch", "position": [21900, -44300, 520] } ] }
+```
+
+The run writes `<out>/<name>.stages.json` next to the PNG:
+
+- **Stage 3** (`hdr_pre_tonemap`) is the mean RGBA of the main view's `Rgba16Float` texture over the
+  patch. It is copied in the same frame as the screenshot and the capture receipt, after bloom and
+  before Bevy's `tonemapping` pass, so it includes exposure and fog and excludes the tone curve and
+  the cinematic grade. A main texture in any other format fails the shot.
+- **Stage 4** (`output`) is the mean RGB byte of the written PNG over the same patch.
+- A probe that projects off screen keeps its row, with both stages under `unavailable`.
+- The shot waits for the stage 3 copy to map, up to the capture timeout, before its `shots.log`
+  line is written.
+
+A probe hidden behind nearer geometry samples that geometry. Probe positions are chosen in the
+open, and each committed probe is checked against its capture.
+
 The probe list, with the world positions measured on the converted pack, and the V1 tolerance
 derived from repeat-capture noise are recorded here and in #358 before any P1 result.

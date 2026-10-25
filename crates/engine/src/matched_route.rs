@@ -109,6 +109,7 @@ impl MatchedRoute {
                 hfov: self.hfov_degrees,
                 reference: None,
                 note: None,
+                probes: Vec::new(),
             })
             .collect();
         let file = ShotsFile {

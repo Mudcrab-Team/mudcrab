@@ -38,6 +38,8 @@ pub(crate) struct CaptureTicket {
     /// reports only the failures of this shot: an earlier shot's failures are history, and one
     /// that happens after the request still shows up in the receipt.
     baseline: crate::shots::Failures,
+    /// Stage 3 probes read from the same frame, when the request names any.
+    probes: Option<crate::hdr_probe::ProbeTicket>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -160,7 +162,20 @@ impl CaptureTicket {
         Self {
             receipt: Arc::new(Mutex::new(None)),
             baseline,
+            probes: None,
         }
+    }
+
+    /// Also samples these points before tone mapping in the captured frame.
+    pub(crate) fn with_probes(mut self, points: Vec<crate::hdr_probe::ProbePoint>) -> Self {
+        if !points.is_empty() {
+            self.probes = Some(crate::hdr_probe::ProbeTicket::new(points));
+        }
+        self
+    }
+
+    pub(crate) fn probes(&self) -> Option<&crate::hdr_probe::ProbeTicket> {
+        self.probes.as_ref()
     }
 
     #[cfg(test)]
@@ -182,7 +197,8 @@ pub(crate) struct CaptureFramePlugin;
 impl Plugin for CaptureFramePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RetryReadiness>()
-            .init_resource::<TransferReadiness>();
+            .init_resource::<TransferReadiness>()
+            .add_plugins(crate::hdr_probe::HdrProbePlugin);
         let bridge = app.world().resource::<RetryReadiness>().clone();
         let transfers = app.world().resource::<TransferReadiness>().clone();
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
