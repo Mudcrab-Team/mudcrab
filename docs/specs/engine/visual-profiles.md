@@ -105,5 +105,38 @@ The run writes `<out>/<name>.stages.json` next to the PNG:
 A probe hidden behind nearer geometry samples that geometry. Probe positions are chosen in the
 open, and each committed probe is checked against its capture.
 
-The probe list, with the world positions measured on the converted pack, and the V1 tolerance
-derived from repeat-capture noise are recorded here and in #358 before any P1 result.
+### The V1 probe set
+
+One pose, the Sleeping Giant Inn in Riverwood: worldspace 60, position `[21750, -44530, 140]`, yaw
+90, pitch -3, HFOV 80, 1280×720.
+
+| Probe | Position | Patch | Pixel | Stage 3 (mudcrab) | Stage 4 (mudcrab) |
+|---|---|---|---|---|---|
+| `sunlit-thatch` | `[23089.6, -44485.0, 301.2]` | 15 | 614, 308 | 0.2586, 0.2123, 0.1375 | 220.8, 197.5, 154.2 |
+| `upper-thatch` | `[23329.6, -44849.1, 494.1]` | 15 | 792, 230 | 0.0432, 0.0465, 0.0378 | 93.0, 91.5, 76.0 |
+| `shaded-door-wood` | `[23188.0, -44354.3, 79.0]` | 15 | 546, 432 | 0.0215, 0.0351, 0.0390 | 62.1, 76.5, 75.7 |
+| `distant-cliff` | `[27658.1, -44818.0, 2405.3]` | 15 | 676, 112 | 0.1226, 0.1459, 0.1399 | 165.7, 169.5, 156.1 |
+| `sunlit-road` | `[23020.3, -43800.3, -120.5]` | 15 | 196, 558 | 0.0645, 0.0669, 0.0547 | 114.5, 111.0, 93.4 |
+| `shaded-road` | `[22897.6, -45417.2, -153.9]` | 9 | 1238, 598 | 0.0082, 0.0136, 0.0147 | 26.6, 37.2, 36.2 |
+
+How the set was chosen:
+
+- Each patch is the one in its surface's region whose mean moves least when the patch shifts by
+  up to 3 px in any direction, measured on the stage 4 image. The worst is `shaded-door-wood` at
+  1.6 % (1.1 bytes); the largest absolute move is `sunlit-thatch` at 1.9 bytes. Patches that were
+  merely flat did badly here: a 5 px door patch moved 31 %.
+- No probe sits on foliage, water or anything animated. Foreground pine needles differ between
+  runs of the same build, up to 88 bytes per pixel, though two shots in one run match.
+- Each position lies on the camera ray through its pixel. Road and cliff depths are where that ray
+  meets the terrain heightmap; inn depths are estimated from the terrain at the porch steps. Depth
+  only matters if the other side's camera position differs, since any point on the ray projects to
+  the same pixel from the same eye at any HFOV.
+- Every patch was checked against the capture it describes.
+
+Repeat-capture noise is zero: two shots of the pose in one run, in each of two runs, gave
+bit-identical stage 3 and stage 4 values at every probe, and the V2 reference build at `88b25a2`
+gives the same stage 4 values.
+
+V1 tolerance, so the noise floor does not set it: registration does. A probe passes when each
+channel is within **2 % relative at stage 3** and **2 bytes at stage 4**, which covers a 3 px
+misregistration at every probe in the set. The tolerance is frozen in #358 before any P1 result.
