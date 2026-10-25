@@ -27,6 +27,10 @@ pose; older grass masks are not reused. Other asset/cache identities stay unchan
 Version four rebuilds masks using the runtime's initial reference enable state
 and conservative skinned obstruction selection. It changes neither the archive
 layout nor the mesh, texture or terrain cache identities.
+Version five adds each cell's omitted-obstruction outcomes and skinned sampling
+admissions alongside its masks, so reuse retains the same bounded notices without
+decoding geometry again. Older grass artifacts rebuild; mask sampling and the
+mesh, texture and terrain cache identities are unchanged.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -104,6 +108,16 @@ geometry is malformed; inaccessible or noncanonical files use the existing
 unavailable sentinel. Fully reusable warm runs decode no geometry. JSON-only
 inspection classifies potential skins without reading vertex attributes; an
 unclassifiable readable model takes the conservative candidate path.
+Fingerprinting records missing or unreadable files immediately, including eligible
+references outside grass-bearing cells or initially hidden references. Each cell
+also stores the sorted unique model paths and failure reasons encountered while
+baking its masks, plus a byte whose lower four bits mark expanded quadrant
+admissions and whose bit four marks an expanded cell admission. Only hash-matched
+reused cells restore those outcomes; rebuilt or removed cells discard their old
+outcomes. Current file-read errors take precedence over stored reasons. Reports
+deduplicate failures by model path, count every failed model, and retain the first
+32 path-sorted diagnostics. This keeps counts and examples stable across repeated
+reuse while repairs and changed reference inputs remove obsolete decode notices.
 A 64 MiB cache accounts for retained triangle allocation capacity and evicts
 least-recently-used models; one oversized model can be decoded transiently but
 is not retained. Model fingerprints remain available after geometry eviction.

@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version four resolves initial visibility and conservatively selects skinned obstructions.
-pub const GRASS_CACHE_VERSION: u32 = 4;
+/// Version five retains obstruction notice provenance alongside reusable masks.
+pub const GRASS_CACHE_VERSION: u32 = 5;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
@@ -47,6 +47,13 @@ pub struct GrassQuadrant {
 
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 #[rkyv(bytecheck())]
+pub struct GrassObstructionFailure {
+    pub model_path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+#[rkyv(bytecheck())]
 pub struct GrassCell {
     pub cell_id: u32,
     pub worldspace_id: u32,
@@ -57,6 +64,10 @@ pub struct GrassCell {
     pub heights: Vec<f32>,
     pub water_height: Option<f32>,
     pub quadrants: Vec<GrassQuadrant>,
+    /// Sorted unique model paths omitted while baking these masks.
+    pub obstruction_failures: Vec<GrassObstructionFailure>,
+    /// Lower four bits mark expanded quadrants; bit four marks an expanded cell.
+    pub expanded_sampling: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
@@ -102,6 +113,22 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
             return Err("grass cells must have sorted unique IDs");
         }
         previous = Some(id);
+        let mut last_path = None;
+        for failure in cell.obstruction_failures.iter() {
+            let path = failure.model_path.as_str();
+            if path.is_empty()
+                || failure.reason.is_empty()
+                || last_path.is_some_and(|last| last >= path)
+            {
+                return Err("invalid grass obstruction failures");
+            }
+            last_path = Some(path);
+        }
+        if cell.expanded_sampling & !0x1f != 0
+            || (cell.expanded_sampling & 0x10 != 0 && cell.expanded_sampling & 0x0f == 0)
+        {
+            return Err("invalid grass sampling admissions");
+        }
         if cell.heights.len() != 33 * 33
             || cell.quadrants.len() != 4
             || cell

@@ -139,6 +139,8 @@ struct GeometryCache {
     root: std::path::PathBuf,
     hashes: HashMap<String, [u8; 32]>,
     failures: BTreeMap<String, String>,
+    /// Failed gets for the cell currently being baked, including memoized failures.
+    cell_failures: std::collections::BTreeSet<String>,
     meshes: HashMap<String, (Arc<Vec<Triangle>>, u64)>,
     bytes: usize,
     clock: u64,
@@ -157,6 +159,7 @@ impl GeometryCache {
             root: root.canonicalize()?,
             hashes: HashMap::new(),
             failures: BTreeMap::new(),
+            cell_failures: Default::default(),
             meshes: HashMap::new(),
             bytes: 0,
             clock: 0,
@@ -186,12 +189,13 @@ impl GeometryCache {
                     self.hashes
                         .insert(path.to_owned(), Sha256::digest(&bytes).into());
                 }
-                Err(_) => {
+                Err(error) => {
                     self.hashes.insert(
                         path.to_owned(),
                         Sha256::digest(b"unavailable obstruction model").into(),
                     );
                     self.potential_skins.insert(path.to_owned(), false);
+                    self.failures.insert(path.to_owned(), format!("{error:#}"));
                 }
             }
         }
@@ -218,6 +222,7 @@ impl GeometryCache {
             return Some(Arc::clone(mesh));
         }
         if self.failures.contains_key(path) {
+            self.cell_failures.insert(path.to_owned());
             return None;
         }
         let result = (|| -> Result<Arc<Vec<Triangle>>> {
@@ -258,6 +263,7 @@ impl GeometryCache {
                     .entry(path.to_owned())
                     .or_insert_with(|| Sha256::digest(b"unavailable obstruction model").into());
                 self.failures.insert(path.to_owned(), format!("{error:#}"));
+                self.cell_failures.insert(path.to_owned());
                 None
             }
         }
@@ -684,10 +690,27 @@ pub fn write_grass_cache(
                 .map(|index| &cache.cells[index])
         }) && previous.input_hash.iter().copied().eq(hash)
         {
-            cells.push(rkyv::deserialize::<GrassCell, Error>(previous)?);
+            let cell = rkyv::deserialize::<GrassCell, Error>(previous)?;
+            for failure in &cell.obstruction_failures {
+                // A current read error is authoritative, even for an unavailable hash match.
+                geometry
+                    .failures
+                    .entry(failure.model_path.clone())
+                    .or_insert_with(|| failure.reason.clone());
+            }
+            if cell.expanded_sampling & 0x10 != 0 {
+                geometry.expanded_cells.insert(id);
+            }
+            for quadrant in 0..4 {
+                if cell.expanded_sampling & (1 << quadrant) != 0 {
+                    geometry.expanded_quadrants.insert((id, quadrant));
+                }
+            }
+            cells.push(cell);
             report.reused_cells += 1;
             continue;
         }
+        geometry.cell_failures.clear();
         for quadrant in &mut quadrants {
             quadrant.exclusion = exclusion_mask(
                 (id, grid_x, grid_y),
@@ -706,6 +729,19 @@ pub fn write_grass_cache(
             heights: land.heights,
             water_height: land.water_height,
             quadrants,
+            obstruction_failures: geometry
+                .cell_failures
+                .iter()
+                .map(|path| GrassObstructionFailure {
+                    model_path: path.clone(),
+                    reason: geometry.failures[path].clone(),
+                })
+                .collect(),
+            expanded_sampling: (u8::from(geometry.expanded_cells.contains(&id)) << 4)
+                | (0..4).fold(0, |bits, quadrant| {
+                    bits | (u8::from(geometry.expanded_quadrants.contains(&(id, quadrant)))
+                        << quadrant)
+                }),
         });
         report.baked_cells += 1;
     }
@@ -2078,7 +2114,7 @@ mod tests {
         write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
         let mut cache = read(&previous);
         assert_eq!(
-            cache.version, 4,
+            cache.version, GRASS_CACHE_VERSION,
             "full-layer coverage invalidates capped terrain masks"
         );
         cache.version = 1;
@@ -2087,7 +2123,7 @@ mod tests {
         let report =
             write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
         assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
-        assert_eq!(read(&output).version, 4);
+        assert_eq!(read(&output).version, GRASS_CACHE_VERSION);
     }
 
     /// Reuse unchanged cells and invalidate cells affected by rule or reference changes.
@@ -2463,7 +2499,7 @@ mod tests {
         );
 
         let mut obsolete = read(&first);
-        obsolete.version = 5;
+        obsolete.version = GRASS_CACHE_VERSION + 1;
         std::fs::write(&first, rkyv::to_bytes::<Error>(&obsolete).unwrap()).unwrap();
         assert!(validate_grass_cache(&first).is_err());
         let report = write_grass_cache(&conn, dir.path(), &terrain, Some(&first), &next).unwrap();
