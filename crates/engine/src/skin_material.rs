@@ -443,7 +443,7 @@ pub(crate) fn load_linear_twin(
 
 fn linear_twin_path(path: &AssetPath<'static>) -> Option<AssetPath<'static>> {
     let name = path.path().file_name()?.to_str()?;
-    let linear = name.replace(".opensky-srgb", "");
+    let linear = name.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
     Some(
         AssetPath::from_path_buf(path.path().with_file_name(linear))
             .with_source(path.source().clone_owned()),

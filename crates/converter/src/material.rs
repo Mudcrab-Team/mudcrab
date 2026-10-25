@@ -6,6 +6,7 @@ use project_wormhole_nif::{
     nif_file::NifFile,
 };
 use serde::{Deserialize, Serialize};
+use shared::texture_aliases::{SRGB_TEXTURE_SUFFIX, wrap_texture_suffix};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -418,9 +419,9 @@ impl TextureRegistry {
         } else {
             canonical.clone()
         };
-        if clamp != 3 {
+        if let Some(sampler) = wrap_texture_suffix(clamp) {
             runtime_path = format!(
-                "{}.opensky-wrap{clamp}.ktx2",
+                "{}{sampler}.ktx2",
                 runtime_path.strip_suffix(".ktx2").ok_or_else(|| {
                     color_eyre::eyre::eyre!("runtime texture is not KTX2: {runtime_path}")
                 })?
@@ -440,7 +441,7 @@ fn srgb_texture_alias(canonical: &str) -> Result<String> {
     let stem = canonical
         .strip_suffix(".ktx2")
         .ok_or_else(|| color_eyre::eyre::eyre!("runtime texture is not KTX2: {canonical}"))?;
-    Ok(format!("{stem}.opensky-srgb.ktx2"))
+    Ok(format!("{stem}{SRGB_TEXTURE_SUFFIX}.ktx2"))
 }
 
 /// Approximate the width of Skyrim's Blinn-Phong exponent with a GGX lobe.
