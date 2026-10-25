@@ -1121,8 +1121,9 @@ fn request_capture(
     run.enter(Phase::Capture);
 }
 
-/// Why stage 1 has no value yet; removed when P1a observes raw albedo.
-const RAW_ALBEDO_PENDING: &str = "lands with P1a #360";
+/// Why stage 1 has no scene value yet: the format is proven offline, the scene probe needs the
+/// Creation lighting backend that exposes albedo as a named intermediate.
+const RAW_ALBEDO_PENDING: &str = "lands with P1c (#362); format proven by material_texel_probe";
 /// Why stage 2 has no value yet; removed when P1c observes the pre-fog lighting sum.
 const LIT_PRE_FOG_PENDING: &str = "lands with P1c #362";
 

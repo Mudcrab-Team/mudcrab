@@ -2845,6 +2845,7 @@ dependencies = [
  "dummy-content",
  "gltf",
  "image 0.25.10",
+ "image_dds 0.7.2",
  "ktx2",
  "libc",
  "memmap2",

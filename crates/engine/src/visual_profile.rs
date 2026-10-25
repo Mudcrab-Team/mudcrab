@@ -77,6 +77,18 @@ impl VisualProfile {
         }
     }
 
+    /// Whether colour textures are sampled through an sRGB view.
+    ///
+    /// `skyrim` evaluates the authored bytes raw, so every colour slot loads the UNORM twin of the
+    /// format it gets under `mudcrab`. This is the one place that answers the question: every
+    /// `is_srgb` and colour-space validator asks it instead of hardcoding a side.
+    pub fn decodes_colour_srgb(self) -> bool {
+        match self {
+            Self::Mudcrab => true,
+            Self::Skyrim => false,
+        }
+    }
+
     /// The first explicit launch option that belongs to another profile, with the reason.
     pub fn foreign_option<'a>(
         self,
@@ -109,6 +121,12 @@ mod tests {
         assert_eq!(VisualProfile::from_index(2), None);
         assert_eq!(VisualProfile::default(), VisualProfile::Mudcrab);
         assert_eq!(VisualProfile::Mudcrab.index(), 0);
+    }
+
+    #[test]
+    fn only_mudcrab_decodes_colour_through_srgb() {
+        assert!(VisualProfile::Mudcrab.decodes_colour_srgb());
+        assert!(!VisualProfile::Skyrim.decodes_colour_srgb());
     }
 
     #[test]

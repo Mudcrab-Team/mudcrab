@@ -450,8 +450,12 @@ fn check_device(
 
 /// The texture format a class's array must have once loaded: the table's block format in the
 /// colour space its usage decodes in.
-pub fn expected_format(format: LandTextureFormat, usage: LandTextureUsage) -> TextureFormat {
-    let srgb = usage == LandTextureUsage::DiffuseSrgb;
+pub fn expected_format(
+    format: LandTextureFormat,
+    usage: LandTextureUsage,
+    colour_srgb: bool,
+) -> TextureFormat {
+    let srgb = usage == LandTextureUsage::DiffuseSrgb && colour_srgb;
     match (format, srgb) {
         (LandTextureFormat::Bc1, true) => TextureFormat::Bc1RgbaUnormSrgb,
         (LandTextureFormat::Bc1, false) => TextureFormat::Bc1RgbaUnorm,
@@ -478,9 +482,10 @@ pub fn validate_array_image(
     image: &Image,
     slot: &ClassSlot,
     usage: LandTextureUsage,
+    colour_srgb: bool,
 ) -> Result<(), String> {
     let describe = |what: String| format!("land texture array {}: {what}", slot.path);
-    let wanted = expected_format(slot.format, usage);
+    let wanted = expected_format(slot.format, usage, colour_srgb);
     let descriptor = &image.texture_descriptor;
     if descriptor.format != wanted {
         return Err(describe(format!(
@@ -595,6 +600,7 @@ fn load_array(
     asset_server: &AssetServer,
     slot: &ClassSlot,
     usage: LandTextureUsage,
+    colour_srgb: bool,
 ) -> Handle<Image> {
     asset_server
         .load_builder()
@@ -603,7 +609,7 @@ fn load_array(
             // The loader takes the colour space from this setting, not from the file; the
             // file's own format is checked against the usage before loading
             // (`check_array_file`).
-            settings.is_srgb = usage == LandTextureUsage::DiffuseSrgb;
+            settings.is_srgb = usage == LandTextureUsage::DiffuseSrgb && colour_srgb;
             // The pixels are only needed on the GPU: Bevy drops the CPU copy after upload, and
             // the checks read the image's descriptor, which stays.
             settings.asset_usage = RenderAssetUsages::RENDER_WORLD;
@@ -623,10 +629,12 @@ fn advance_terrain_merge(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut materials: ResMut<Assets<MergedTerrainMaterial>>,
     metrics: Option<ResMut<StreamingMetrics>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
 ) {
     let Some(mut merge) = merge else {
         return;
     };
+    let colour_srgb = profile.decodes_colour_srgb();
     let expired = merge.setup_expired(Instant::now());
     let mut metrics = metrics;
     if let Some(metrics) = metrics.as_deref_mut()
@@ -663,12 +671,26 @@ fn advance_terrain_merge(
                 let diffuse = classes
                     .diffuse
                     .iter()
-                    .map(|slot| load_array(&asset_server, slot, LandTextureUsage::DiffuseSrgb))
+                    .map(|slot| {
+                        load_array(
+                            &asset_server,
+                            slot,
+                            LandTextureUsage::DiffuseSrgb,
+                            colour_srgb,
+                        )
+                    })
                     .collect();
                 let normal = classes
                     .normal
                     .iter()
-                    .map(|slot| load_array(&asset_server, slot, LandTextureUsage::NormalLinear))
+                    .map(|slot| {
+                        load_array(
+                            &asset_server,
+                            slot,
+                            LandTextureUsage::NormalLinear,
+                            colour_srgb,
+                        )
+                    })
                     .collect();
                 let entries = buffers.add(ShaderBuffer::new(
                     &classes.entry_bytes(),
@@ -710,7 +732,9 @@ fn advance_terrain_merge(
                     }
                     LoadState::Loaded => match images.get(handle) {
                         Some(image) => {
-                            if let Err(reason) = validate_array_image(image, slot, usage) {
+                            if let Err(reason) =
+                                validate_array_image(image, slot, usage, colour_srgb)
+                            {
                                 refusal = Some(reason);
                                 break;
                             }
@@ -972,17 +996,17 @@ mod tests {
             slot.layers,
             true,
         );
-        validate_array_image(&good, slot, usage).unwrap();
+        validate_array_image(&good, slot, usage, true).unwrap();
 
         let linear = array_image(TextureFormat::Bc1RgbaUnorm, slot.size, slot.layers, true);
         assert!(
-            validate_array_image(&linear, slot, usage)
+            validate_array_image(&linear, slot, usage, true)
                 .unwrap_err()
                 .contains("expected Bc1RgbaUnormSrgb")
         );
         let short = array_image(TextureFormat::Bc1RgbaUnormSrgb, slot.size, 3, true);
         assert!(
-            validate_array_image(&short, slot, usage)
+            validate_array_image(&short, slot, usage, true)
                 .unwrap_err()
                 .contains("with 3 layers")
         );
@@ -993,14 +1017,14 @@ mod tests {
             false,
         );
         assert!(
-            validate_array_image(&clamped, slot, usage)
+            validate_array_image(&clamped, slot, usage, true)
                 .unwrap_err()
                 .contains("repeating sampler")
         );
         let mut flat = good.clone();
         flat.texture_view_descriptor = None;
         assert!(
-            validate_array_image(&flat, slot, usage)
+            validate_array_image(&flat, slot, usage, true)
                 .unwrap_err()
                 .contains("2D array")
         );
@@ -1012,14 +1036,16 @@ mod tests {
             normal.layers,
             true,
         );
-        validate_array_image(&linear_bc3, normal, LandTextureUsage::NormalLinear).unwrap();
+        validate_array_image(&linear_bc3, normal, LandTextureUsage::NormalLinear, true).unwrap();
         let srgb_bc3 = array_image(
             TextureFormat::Bc3RgbaUnormSrgb,
             normal.size,
             normal.layers,
             true,
         );
-        assert!(validate_array_image(&srgb_bc3, normal, LandTextureUsage::NormalLinear).is_err());
+        assert!(
+            validate_array_image(&srgb_bc3, normal, LandTextureUsage::NormalLinear, true).is_err()
+        );
     }
 
     /// An 80-byte KTX2 header with the given `vkFormat`, size and layer count.
@@ -1121,6 +1147,93 @@ mod tests {
         assert!(check_array_file(dir.path(), slot, LandTextureUsage::DiffuseSrgb).is_err());
     }
 
+    fn bc1_ktx2() -> Vec<u8> {
+        use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
+
+        let mut dds = Dds::new_dxgi(NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: DxgiFormat::BC1_UNorm,
+            mipmap_levels: Some(1),
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        for (index, byte) in dds.data.iter_mut().enumerate() {
+            *byte = (index * 7 + 3) as u8;
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        converter::texture::TextureConverter::convert_uncompressed(
+            &bytes,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn array_loads_follow_the_profile_colour_space() {
+        use bevy::asset::AssetPlugin;
+        use bevy::image::{CompressedImageFormats, ImageLoader, ImagePlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("array.ktx2"), bc1_ktx2()).unwrap();
+        let slot = ClassSlot {
+            array: 0,
+            path: "array.ktx2".to_owned(),
+            format: LandTextureFormat::Bc1,
+            size: 8,
+            layers: 1,
+        };
+        for (colour_srgb, expected) in [
+            (true, TextureFormat::Bc1RgbaUnormSrgb),
+            (false, TextureFormat::Bc1RgbaUnorm),
+        ] {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin {
+                    file_path: directory.path().to_string_lossy().into_owned(),
+                    ..default()
+                },
+                ImagePlugin::default(),
+            ))
+            .init_asset::<Image>()
+            .register_asset_loader(ImageLoader::new(CompressedImageFormats::all()));
+            app.finish();
+            app.cleanup();
+            let server = app.world().resource::<AssetServer>().clone();
+            let handle = load_array(&server, &slot, LandTextureUsage::DiffuseSrgb, colour_srgb);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                app.update();
+                if app
+                    .world()
+                    .resource::<Assets<Image>>()
+                    .get(&handle)
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "array load timed out");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&handle)
+                .unwrap();
+            assert_eq!(
+                image.texture_descriptor.format, expected,
+                "colour_srgb={colour_srgb}"
+            );
+        }
+    }
+
     #[test]
     fn setup_runs_out_of_time_exactly_at_the_timeout() {
         let now = Instant::now();
@@ -1157,7 +1270,8 @@ mod tests {
             .init_asset::<ShaderBuffer>()
             .init_asset::<MergedTerrainMaterial>()
             .insert_resource(merge)
-            .init_resource::<StreamingMetrics>();
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<crate::visual_profile::VisualProfile>();
         let slot = TerrainMergeVerdict::default();
         if let Some(verdict) = verdict {
             slot.0.set(verdict).unwrap();

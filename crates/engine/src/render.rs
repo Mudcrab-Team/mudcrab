@@ -504,6 +504,7 @@ impl TerrainExtension {
         quadrant: u8,
         catalog: &AssetCatalog,
         asset_server: &AssetServer,
+        colour_srgb: bool,
     ) -> Result<(Self, TerrainImages), String> {
         let mut textures: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
         let mut normals: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
@@ -537,8 +538,9 @@ impl TerrainExtension {
                 })?;
             let handle = asset_server
                 .load_builder()
-                .with_settings(|settings: &mut ImageLoaderSettings| {
+                .with_settings(move |settings: &mut ImageLoaderSettings| {
                     settings.sampler = ImageSampler::Descriptor(terrain_layer_sampler());
+                    settings.is_srgb = colour_srgb;
                 })
                 .load(path.to_owned());
             *target = Some(handle.clone());
@@ -2048,6 +2050,118 @@ mod tests {
         );
     }
 
+    fn bc1_ktx2() -> Vec<u8> {
+        use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
+
+        let mut dds = Dds::new_dxgi(NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: DxgiFormat::BC1_UNorm,
+            mipmap_levels: Some(1),
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        for (index, byte) in dds.data.iter_mut().enumerate() {
+            *byte = (index * 7 + 3) as u8;
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        converter::texture::TextureConverter::convert_uncompressed(
+            &bytes,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn terrain_diffuse_loads_in_the_profile_colour_space() {
+        use bevy::asset::{AssetPlugin, LoadState};
+        use bevy::image::{CompressedImageFormats, ImageLoader, ImagePlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("textures")).unwrap();
+        std::fs::write(directory.path().join("textures/diffuse.ktx2"), bc1_ktx2()).unwrap();
+        let database = directory.path().join("catalogue.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 INSERT INTO texture_sets VALUES(1,'textures/diffuse.ktx2');
+                 INSERT INTO landscape_textures VALUES(1,1);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&database).unwrap();
+        for (colour_srgb, expected) in [
+            (
+                true,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
+            ),
+            (
+                false,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin {
+                    file_path: directory.path().to_string_lossy().into_owned(),
+                    ..default()
+                },
+                ImagePlugin::default(),
+            ))
+            .init_asset::<Image>()
+            .register_asset_loader(ImageLoader::new(CompressedImageFormats::all()));
+            app.finish();
+            app.cleanup();
+            let server = app.world().resource::<AssetServer>().clone();
+            let terrain = terrain_fixture_with_overlays(7, &[]);
+            let (_extension, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, &server, colour_srgb)
+                    .unwrap();
+            assert_eq!(images.color.len(), 1);
+            let handle = images.color[0].clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                app.update();
+                let server = app.world().resource::<AssetServer>();
+                if let LoadState::Failed(error) = server.load_state(handle.id()) {
+                    panic!("diffuse load failed: {error}");
+                }
+                if app
+                    .world()
+                    .resource::<Assets<Image>>()
+                    .get(&handle)
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "diffuse load timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&handle)
+                .unwrap();
+            assert_eq!(
+                image.texture_descriptor.format, expected,
+                "colour_srgb={colour_srgb}"
+            );
+        }
+    }
+
     /// Zero overlays keep material slots and weights without image requests; a nonzero LTEX
     /// with no diffuse image still fails without preventing a subsequent placeholder build.
     #[test]
@@ -2083,7 +2197,7 @@ mod tests {
             }
         }
         let (extension, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
                 .expect("zero overlays keep material slots and do not request a texture");
         assert!(images.color.is_empty() && images.normal.is_empty());
         assert!(
@@ -2108,12 +2222,12 @@ mod tests {
         assert_eq!(sample(1, 0), 0.0);
 
         terrain.layers[2].texture_form_id = 0x844;
-        let error = TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+        let error = TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
             .err()
             .expect("a nonzero LTEX without a diffuse image still fails");
         assert!(error.contains("00000844") && error.contains("no diffuse image"));
         terrain.layers[2].texture_form_id = 0;
-        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).is_ok());
+        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).is_ok());
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order

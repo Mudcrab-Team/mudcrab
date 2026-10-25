@@ -119,10 +119,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| crate::settings::prepare_settings(&mut config));
     // A saved profile can disagree with an explicit launch option the parser already accepted.
     config.check_visual_profile()?;
-    info!(
-        profile = config.visual_profile.name(),
-        "visual profile active; changing it requires a restart"
-    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
@@ -323,6 +319,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
@@ -350,6 +347,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     ..default()
                 }),
         )
+        .add_plugins(crate::raw_texel::RawTexelPlugin {
+            profile: visual_profile,
+        })
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin {
@@ -398,6 +398,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }
+    info!(
+        profile = visual_profile.name(),
+        colour_textures = if visual_profile.decodes_colour_srgb() {
+            "sRGB"
+        } else {
+            "raw UNORM"
+        },
+        "visual profile active; changing it requires a restart"
+    );
     if app
         .world()
         .resource::<EngineConfig>()
@@ -1248,6 +1257,7 @@ fn validate_material_fixture(
     query: Query<(&CanonicalMaterialKind, &MeshMaterial3d<StandardMaterial>)>,
     materials: Res<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
+    config: Res<EngineConfig>,
     mut state: ResMut<CanonicalMaterialFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
@@ -1288,7 +1298,11 @@ fn validate_material_fixture(
                     }
                     _ => Ok(()),
                 }?;
-                validate_standard_material(material, &images)
+                validate_standard_material(
+                    material,
+                    &images,
+                    config.visual_profile.decodes_colour_srgb(),
+                )
             });
         match result {
             Ok(count) => validated_images += count,
@@ -3637,6 +3651,7 @@ mod tests {
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
         .init_resource::<ProfilingState>()
         .init_resource::<StreamingFixtureState>()
+        .init_resource::<crate::visual_profile::VisualProfile>()
         .add_plugins(StreamingPlugin)
         .add_systems(
             PreUpdate,

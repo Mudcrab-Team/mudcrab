@@ -745,6 +745,7 @@ fn spawn_merged_cell(
         }),
         &mut 0,
         &mut profiler,
+        true,
     )
     .expect("spawn cell");
 }
