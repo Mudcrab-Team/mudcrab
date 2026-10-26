@@ -171,68 +171,6 @@ pub struct CacheEntry {
     pub output_hash: String,
 }
 
-/// Body composition with thin morph inputs and effective catalog skin choices.
-pub(crate) const BODY_COMPOSE_RECIPE: &str = "body-compose-v2";
-
-/// Recipe-owned context digest, alongside the four canonical raw input hashes.
-pub(crate) const BODY_COMPOSE_CONTEXT: &str = "recipes/body-compose-v2/context.json";
-
-/// The heavy parts and skeleton shared by historical and current body recipes.
-pub(crate) fn body_compose_inputs(sex: &str) -> [String; 4] {
-    let assets = "meshes/actors/character/character assets";
-    [
-        format!("{assets}/{sex}body_1.nif"),
-        format!("{assets}/{sex}hands_1.nif"),
-        format!("{assets}/{sex}feet_1.nif"),
-        format!("{assets}/skeleton.nif"),
-    ]
-}
-
-/// Versioned default-gait recipe and its canonical raw input contract.
-pub(crate) const DEFAULT_GAIT_RECIPE: &str = "default-gait-v1";
-
-/// The complete input set shared by gait proof production and reuse validation.
-pub(crate) fn default_gait_inputs(sex: &str, stem: &str) -> [String; 4] {
-    let assets = "meshes/actors/character/character assets";
-    [
-        format!("{assets}/{sex}body_1.nif"),
-        format!("{assets}/skeleton.nif"),
-        format!("{assets}/skeleton.hkx"),
-        format!("meshes/actors/character/animations/{sex}/{stem}.hkx"),
-    ]
-}
-
-/// Provenance for a generated output with several winning raw source inputs.
-/// Recipe versions identify the operation; producer and mesh settings remain
-/// in the surrounding manifest, including during metadata-only rebuilds.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DerivedOutput {
-    pub recipe: String,
-    /// Canonical logical source paths and SHA-256 hashes of their winning bytes,
-    /// plus any recipe-owned context digest required by the versioned recipe.
-    pub inputs: BTreeMap<String, String>,
-    pub output_size: u64,
-    pub output_hash: String,
-}
-
-/// Keeps malformed proof keys as ineligible placeholders for counted local diagnostics.
-/// Semantic validation (paths, recipes and hashes) belongs to the reuse consumer.
-fn deserialize_derived_outputs<'de, D>(
-    deserializer: D,
-) -> std::result::Result<BTreeMap<String, DerivedOutput>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    let serde_json::Value::Object(values) = value else {
-        return Ok(BTreeMap::new());
-    };
-    Ok(values
-        .into_iter()
-        .map(|(key, value)| (key, serde_json::from_value(value).unwrap_or_default()))
-        .collect())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestedFile {
     pub path: String,
@@ -386,13 +324,6 @@ pub struct ConversionManifest {
     #[serde(default)]
     pub archives: BTreeMap<String, IngestionCacheEntry>,
     pub entries: BTreeMap<String, CacheEntry>,
-    /// Optional multi-input proofs keyed by canonical published output paths.
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "deserialize_derived_outputs"
-    )]
-    pub derived_outputs: BTreeMap<String, DerivedOutput>,
 }
 
 /// Historical producers whose scripts may pass normal reuse eligibility.
@@ -1292,48 +1223,6 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Legacy absence and malformed optional records do not poison neighboring proofs.
-    #[test]
-    fn derived_output_deserialization_is_tolerant_per_value() {
-        let base = serde_json::to_value(ConversionManifest::default()).unwrap();
-        assert!(base.get("derived_outputs").is_none());
-        let legacy: ConversionManifest = serde_json::from_value(base.clone()).unwrap();
-        assert!(legacy.derived_outputs.is_empty());
-        let valid = serde_json::json!({
-            "recipe": "body-compose-v1",
-            "inputs": {"meshes/body.nif": "raw-hash"},
-            "output_size": 17,
-            "output_hash": "output-hash"
-        });
-        let mut json = base.clone();
-        json["derived_outputs"] = serde_json::json!({
-            "meshes/good.glb": valid,
-            "meshes/null.glb": null,
-            "meshes/string.glb": "bad",
-            "meshes/missing.glb": {"recipe": "body-compose-v1"},
-            "meshes/type.glb": {
-                "recipe": "default-gait-v1", "inputs": [],
-                "output_size": "large", "output_hash": 123
-            }
-        });
-        let manifest: ConversionManifest = serde_json::from_value(json).unwrap();
-        assert_eq!(manifest.derived_outputs.len(), 5);
-        assert_eq!(manifest.derived_outputs["meshes/good.glb"].output_size, 17);
-        assert_eq!(
-            manifest.derived_outputs["meshes/missing.glb"],
-            DerivedOutput::default()
-        );
-        let roundtrip: ConversionManifest =
-            serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert_eq!(roundtrip, manifest);
-        for malformed_map in [serde_json::Value::Null, serde_json::json!([1, 2])] {
-            let mut json = base.clone();
-            json["derived_outputs"] = malformed_map;
-            let manifest: ConversionManifest = serde_json::from_value(json).unwrap();
-            assert!(manifest.derived_outputs.is_empty());
-        }
-    }
 
     /// Historical absence stays unknown while known loss and success round-trip distinctly.
     #[test]
