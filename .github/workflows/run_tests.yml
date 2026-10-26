@@ -37,9 +37,15 @@ jobs:
 
       - id: filter
         name: Filter changed files
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          if [ -z "${GITHUB_BASE_REF:-}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; then
+            echo "In a merge queue run comparing to merge_group.base_sha"
+            git fetch origin "$MERGE_GROUP_BASE_SHA" --depth=350
+            COMPARE_REV="$MERGE_GROUP_BASE_SHA"
+          elif [ -z "${GITHUB_BASE_REF:-}" ]; then
             echo "Not in a PR context (i.e., push event)"
             COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           else
@@ -378,10 +384,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
-          # One name per line. Commit statuses that must be "success".
+          # One name per line. Commit statuses that must be "success". Anyone
+          # with Write access, and any workflow, can post a status under any
+          # name; CodeRabbit's own statuses show no creator, while a status
+          # posted by a person or by github-actions names its creator. Only
+          # statuses without a creator are trusted.
           REQUIRED_STATUSES: |
             CodeRabbit
-          # Check runs that must finish "success" or "neutral". Greptile is
+          # Check runs (only the Greptile app's are read) that must finish
+          # "success" or "neutral". Greptile is
           # advisory today; move "Greptile Review" here to make it blocking.
           REQUIRED_CHECKS: ""
           ADVISORY_CHECKS: |
@@ -392,8 +403,8 @@ jobs:
 
           while true; do
             pending=0
-            statuses="$(gh api "repos/${REPO}/commits/${SHA}/status" --jq '.statuses | map({(.context): .state}) | add // {}')"
-            checks="$(gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" --jq '.check_runs | map({(.name): (if .status == "completed" then .conclusion else "pending" end)}) | add // {}')"
+            statuses="$(gh api "repos/${REPO}/commits/${SHA}/status" --jq '.statuses | map(select(.creator == null) | {(.context): .state}) | add // {}')"
+            checks="$(gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" --jq '.check_runs | map(select(.app.slug == "greptile-apps") | {(.name): (if .status == "completed" then .conclusion else "pending" end)}) | add // {}')"
 
             while IFS= read -r name; do
               [ -n "$name" ] || continue

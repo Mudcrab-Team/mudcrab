@@ -18,7 +18,7 @@ Each rank includes everything below it.
 ## How review and merge work
 
 - `main` is protected by the `main_protection` ruleset: one approving review from a code owner, a passing `tests_pass` check, and every review thread resolved. New pushes dismiss earlier approvals.
-- [CODEOWNERS](.github/CODEOWNERS) lists the Core team. Only a Core approval satisfies the code owner requirement. A Maintainer's approval is still welcome and useful feedback, but it is advisory.
+- [CODEOWNERS](.github/CODEOWNERS) names the Core team, `@Mudcrab-Team/core`. Only a Core approval satisfies the code owner requirement. Until CODEOWNERS points at that team, it lists Core members by handle, and promoting someone to Core also adds their handle there. A Maintainer's approval is still welcome and useful feedback, but it is advisory.
 - Anyone with Write access (Maintainer or Core) can send a pull request through the merge queue once the ruleset is satisfied, or arm auto-merge so it enters the queue as soon as it is. The author may do this for their own pull request. A Core approval on a PR with auto-merge armed ships it. A Core member who pushes to a pull request can approve it.
 - Stacked pull requests: layers that target another branch are not gated by the ruleset. The layer that targets `main` is.
 - The step-by-step path from idea to merge is in [docs/contributing/workflow.md](docs/contributing/workflow.md).
@@ -35,7 +35,7 @@ Promotion happens in the open, as an issue or a pull request, so everyone can se
 
 ## Teams
 
-Each rank is a GitHub team in the `Mudcrab-Team` organization: `triage`, `maintainers`, `core`, and `owners`. Changing someone's rank means changing their team membership. The team settings, not a list in a file, are the source of truth for who holds a rank, so no document needs updating by hand.
+The ranks with GitHub access are teams in the `Mudcrab-Team` organization: `triage`, `maintainers` and `core`. Contributors have no access and no team. The Owner hat is the `owners` team, which holds Admin and the ruleset bypass. Changing someone's rank means changing their team membership. The team settings, not a list in a file, are the source of truth for who holds a rank, so no document needs updating by hand.
 
 ## As the project grows
 

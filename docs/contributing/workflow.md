@@ -43,7 +43,7 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 - CodeRabbit reviews every non-draft PR automatically. Answer each of its comments: fix it, or say why not, then resolve the thread. Unresolved threads block the merge.
 - Get an **Approve** review from a Core member (the code owners in [CODEOWNERS](../../.github/CODEOWNERS); see [GOVERNANCE.md](../../GOVERNANCE.md)). CodeRabbit's review and passing CI do not replace this approval, and a Maintainer's approval is advisory. A comment or a resolved thread does not count as approval.
 - Answer human reviewers point by point, in their order: **Fixed** (with the commit), **No change** (with the reason), or **Unresolved**.
-- If `main` moves while your PR is open, merge `main` into your branch (or use the "Update branch" button). Don't rebase or force-push a branch that is under review.
+- If `main` moves while your PR is open, leave your branch alone: it does not have to be up to date. Merge `main` into it (or use the "Update branch" button) only to resolve a real conflict or to get something your change depends on. Don't rebase or force-push a branch that is under review.
 - Changes pushed after approval need another review: stale approvals are dismissed, and a Core member must approve the new head. That can be the Core member who pushed it, for example after resolving a conflict.
 
 ## 6. Merge (maintainers)
