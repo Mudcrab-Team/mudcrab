@@ -17,7 +17,10 @@ struct ReleaseMetadata {
 fn main() {
     let version = env!("CARGO_PKG_VERSION").to_string();
     let git_commit = std::env::var("GITHUB_SHA").unwrap_or_else(|_| {
-        let out = Command::new("git").args(["rev-parse", "HEAD"]).output().ok();
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok();
         out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default()
     });

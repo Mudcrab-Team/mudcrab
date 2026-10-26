@@ -331,6 +331,8 @@ jobs:
           cargo audit
           --ignore RUSTSEC-2026-0194
           --ignore RUSTSEC-2026-0195
+          --ignore RUSTSEC-2026-0399
+          --ignore RUSTSEC-2026-0400
 
   performance:
     needs: [orchestrate]

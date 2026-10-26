@@ -95,7 +95,7 @@ try {
         $DesktopShortcut.WorkingDirectory = $InstallDir
         $DesktopShortcut.Description = "Mudcrab - Modern Skyrim Engine & Converter"
         $DesktopShortcut.Save()
-        Write-Host "✓ Created Desktop shortcut" -ForegroundColor Green
+        Write-Host "[OK] Created Desktop shortcut" -ForegroundColor Green
 
         # Start Menu Shortcut
         $StartMenuPath = [Environment]::GetFolderPath("Programs")
@@ -108,12 +108,12 @@ try {
         $StartShortcut.WorkingDirectory = $InstallDir
         $StartShortcut.Description = "Mudcrab - Modern Skyrim Engine & Converter"
         $StartShortcut.Save()
-        Write-Host "✓ Created Start Menu shortcut" -ForegroundColor Green
+        Write-Host "[OK] Created Start Menu shortcut" -ForegroundColor Green
     }
 } catch {
     Write-Warning "Could not create shortcuts: $_"
 }
 
 Write-Host ""
-Write-Host "🦀 Mudcrab $Tag successfully installed!" -ForegroundColor Green
+Write-Host "Mudcrab $Tag successfully installed!" -ForegroundColor Green
 Write-Host "Run 'launcher.exe' or open Mudcrab from your Desktop/Start Menu." -ForegroundColor Yellow
