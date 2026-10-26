@@ -393,6 +393,9 @@ pub struct ConversionManifest {
         deserialize_with = "deserialize_derived_outputs"
     )]
     pub derived_outputs: BTreeMap<String, DerivedOutput>,
+    /// Versioned derived output, separate from the upstream core contract.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<shared::extensions::ExtensionEntry>,
 }
 
 /// Historical producers whose scripts may pass normal reuse eligibility.
@@ -1295,6 +1298,30 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extensions_are_optional_and_round_trip_without_changing_core_fields() {
+        let mut manifest = ConversionManifest::default();
+        let before = serde_json::to_value(&manifest).unwrap();
+        assert!(before.get("extensions").is_none());
+        let legacy: ConversionManifest = serde_json::from_value(before.clone()).unwrap();
+        assert!(legacy.extensions.is_empty());
+        manifest
+            .extensions
+            .push(shared::extensions::ExtensionEntry {
+                id: "example.payload".to_owned(),
+                version: 1,
+                owns: shared::extensions::ExtensionOwns::default(),
+                sha256: "0".repeat(64),
+                built_from: "core".to_owned(),
+                stats: BTreeMap::new(),
+            });
+        let mut with_extension = serde_json::to_value(&manifest).unwrap();
+        let restored: ConversionManifest = serde_json::from_value(with_extension.clone()).unwrap();
+        assert_eq!(restored, manifest);
+        with_extension.as_object_mut().unwrap().remove("extensions");
+        assert_eq!(with_extension, before);
+    }
 
     /// Legacy absence and malformed optional records do not poison neighboring proofs.
     #[test]
