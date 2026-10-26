@@ -29,11 +29,14 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
     ### {{ group | upper_first }}
     {%- for commit in commits %}
-        - {{ commit.message | split(pat="\n") | first | upper_first | trim }}\
+        - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | split(pat="\n") | first | upper_first | trim }}\
             {% if commit.remote.username %} by @{{ commit.remote.username }}{%- endif -%}
             {% if commit.remote.pr_number %} in \
             [#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}) \
             {%- endif -%}
+        {% if commit.breaking_description %}
+          > {{ commit.breaking_description | replace(from="\n", to="\n> ") }}
+        {%- endif -%}
     {% endfor %}
 {% endfor %}
 
@@ -73,7 +76,7 @@ trim = true
 
 [git]
 tag_pattern = "v?[0-9]+\\.[0-9]+\\.[0-9]+"
-skip_tags = "v.*-(alpha|beta|rc).*"
+ignore_tags = "v.*-(alpha|beta|rc).*"
 conventional_commits = true
 filter_unconventional = false
 commit_preprocessors = [
@@ -86,6 +89,7 @@ link_parsers = [
 # Assigns commits to groups.
 # Optionally sets the commit's scope and can decide to exclude commits from further processing.
 commit_parsers = [
+  { body = ".*security", group = "Security (Wards & Spellbreaker)" },
   { message = "^feat", group = "Added (Forged in Skyforge)" },
   { message = "^[a|A]dd", group = "Added (Forged in Skyforge)" },
   { message = "^[s|S]upport", group = "Added (Forged in Skyforge)" },
@@ -102,7 +106,6 @@ commit_parsers = [
   { message = "^test", group = "Fixed (School of Restoration)" },
   { message = "^fix", group = "Fixed (School of Restoration)" },
   { message = "^.*: fix", group = "Fixed (School of Restoration)" },
-  { body = ".*security", group = "Security (Wards & Spellbreaker)" },
   { message = "^chore\\(release\\): prepare for", skip = true },
   { message = "^chore\\(deps.*\\)", skip = true },
   { message = "^chore\\(pr\\)", skip = true },
