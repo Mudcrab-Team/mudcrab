@@ -27,18 +27,22 @@ else
     RESET=''
 fi
 
+# Print the message in $1 to stdout with the installer progress prefix and colors.
 info() {
     printf "${BLUE}${BOLD}==>${RESET} ${BOLD}%s${RESET}\n" "$1"
 }
 
+# Print the message in $1 to stdout with a success marker and colors.
 success() {
     printf "${GREEN}${BOLD}✓${RESET} %s\n" "$1"
 }
 
+# Print the message in $1 to stdout with a warning marker and colors.
 warn() {
     printf "${YELLOW}${BOLD}!${RESET} %s\n" "$1"
 }
 
+# Print the message in $1 to stderr with an error prefix and colors, then exit 1.
 error() {
     printf "${RED}${BOLD}error:${RESET} %s\n" "$1" >&2
     exit 1
@@ -106,6 +110,7 @@ info "Downloading Mudcrab ${BOLD}${TAG}${RESET} (${TARGET})..."
 
 # 3. Create temporary directory for download
 TMP_DIR="$(mktemp -d)"
+# Remove the download directory in TMP_DIR when the exit or signal trap runs.
 cleanup() {
     rm -rf "$TMP_DIR"
 }

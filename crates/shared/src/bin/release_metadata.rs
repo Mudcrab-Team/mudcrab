@@ -14,6 +14,11 @@ struct ReleaseMetadata {
     streaming_cost_schema: u32,
 }
 
+/// Print release identifiers and schema versions as pretty-printed JSON to stdout.
+///
+/// Use `GITHUB_SHA` and `GITHUB_REF_NAME` when set; otherwise resolve the commit
+/// with `git rev-parse HEAD` and derive the tag from the Cargo package version.
+/// If Git cannot be run, the fallback commit is empty.
 fn main() {
     let version = env!("CARGO_PKG_VERSION").to_string();
     let git_commit = std::env::var("GITHUB_SHA").unwrap_or_else(|_| {
