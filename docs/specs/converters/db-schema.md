@@ -1418,7 +1418,8 @@ CREATE TABLE IF NOT EXISTS actor_models (
     resolution TEXT NOT NULL,        -- 'body', 'body_head', 'unresolved'
     skin_tone_r REAL,                -- NPC_/QNAM, 0..1, encoded scale
     skin_tone_g REAL,
-    skin_tone_b REAL
+    skin_tone_b REAL,
+    weight REAL                      -- NPC_/NAM7, 0..100
 );
 CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
@@ -1463,6 +1464,15 @@ inheritance.
 The columns arrived after the first catalog export without a schema bump: `create_tables` adds
 them to an older reused `actor_models`, and the engine probes for them, so a database without them
 still loads and its actors stay untinted.
+
+**Body weight.** `NPC_/NAM7` is one little-endian `f32` in 0..100: the weight the game blends
+between the thin (`_0`) and heavy (`_1`) body meshes (0 is thinnest, 100 is heaviest). The column
+is nullable; a base with no `NAM7`, or with a short, non-finite or out-of-range one, stores `NULL`
+and the engine draws the heavy body. The weight comes only from the base's own record: `TPLT`
+template inheritance is not resolved for it, matching `QNAM` and `RNAM`. The column arrived after
+the first catalog export without a schema bump (`WORLD_DATABASE_SCHEMA_VERSION` stays 9):
+`create_tables` adds it to an older reused `actor_models`, and the engine probes for it, so a
+database without it still loads.
 
 **Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
 `missing_acbs` diagnostic.

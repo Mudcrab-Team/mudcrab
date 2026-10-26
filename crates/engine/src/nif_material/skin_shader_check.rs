@@ -20,7 +20,26 @@ struct Mesh {
     current_skin_index: u32,
     local_from_world_transpose_a: mat2x4<f32>,
     local_from_world_transpose_b: f32,
+    first_vertex_index: u32,
+    morph_descriptor_index: u32,
 }
+#ifdef MORPH_TARGETS
+struct MorphDescriptor {
+    current_weights_offset: u32,
+    prev_weights_offset: u32,
+    targets_offset: u32,
+    vertex_count: u32,
+    weight_count: u32,
+}
+struct MorphAttributes {
+    position: vec3<f32>,
+    pad_a: f32,
+    normal: vec3<f32>,
+    pad_b: f32,
+    tangent: vec3<f32>,
+    pad_c: f32,
+}
+#endif
 "#;
 const MESH_BINDINGS: &str = r#"
 #define_import_path bevy_pbr::mesh_bindings
@@ -101,6 +120,38 @@ fn skin_model(indexes: vec4<u32>, weights: vec4<f32>, instance_index: u32) -> ma
 fn inverse_transpose_3x3m(input: mat3x3<f32>) -> mat3x3<f32> { return input; }
 fn skin_normals(world: mat4x4<f32>, normal: vec3<f32>) -> vec3<f32> { return normal; }
 "#;
+const MORPH: &str = r#"
+#define_import_path bevy_pbr::morph
+#import bevy_pbr::mesh_types::{MorphAttributes, MorphDescriptor}
+#import bevy_pbr::mesh_bindings::mesh
+@group(2) @binding(2) var<storage> morph_weights: array<f32>;
+@group(2) @binding(3) var<storage> morph_targets: array<MorphAttributes>;
+@group(2) @binding(8) var<storage> morph_descriptors: array<MorphDescriptor>;
+fn layer_count(instance_index: u32) -> u32 {
+    let descriptor = mesh[instance_index].morph_descriptor_index;
+    return morph_descriptors[descriptor].weight_count;
+}
+fn weight_at(weight_index: u32, instance_index: u32) -> f32 {
+    let descriptor = mesh[instance_index].morph_descriptor_index;
+    let offset = morph_descriptors[descriptor].current_weights_offset;
+    return morph_weights[offset + weight_index];
+}
+fn morph_position(vertex_index: u32, weight_index: u32, instance_index: u32) -> vec3<f32> {
+    let descriptor = mesh[instance_index].morph_descriptor_index;
+    let target_index = morph_descriptors[descriptor].targets_offset + weight_index * morph_descriptors[descriptor].vertex_count + vertex_index;
+    return morph_targets[target_index].position;
+}
+fn morph_normal(vertex_index: u32, weight_index: u32, instance_index: u32) -> vec3<f32> {
+    let descriptor = mesh[instance_index].morph_descriptor_index;
+    let target_index = morph_descriptors[descriptor].targets_offset + weight_index * morph_descriptors[descriptor].vertex_count + vertex_index;
+    return morph_targets[target_index].normal;
+}
+fn morph_tangent(vertex_index: u32, weight_index: u32, instance_index: u32) -> vec3<f32> {
+    let descriptor = mesh[instance_index].morph_descriptor_index;
+    let target_index = morph_descriptors[descriptor].targets_offset + weight_index * morph_descriptors[descriptor].vertex_count + vertex_index;
+    return morph_targets[target_index].tangent;
+}
+"#;
 const MATHS: &str = r#"
 #define_import_path bevy_render::maths
 fn mat2x4_f32_to_mat3x3_unpack(a: mat2x4<f32>, b: f32) -> mat3x3<f32> {
@@ -158,7 +209,11 @@ const OIT: &str = r#"
 fn oit_draw(position: vec4<f32>, color: vec4<f32>) {}
 "#;
 
-fn shader_defs(skinned: bool, raw_colour_texels: bool) -> HashMap<String, ShaderDefValue> {
+fn shader_defs(
+    skinned: bool,
+    morphed: bool,
+    raw_colour_texels: bool,
+) -> HashMap<String, ShaderDefValue> {
     let mut defs = HashMap::new();
     defs.insert("MATERIAL_BIND_GROUP".into(), ShaderDefValue::UInt(3));
     for name in [
@@ -176,6 +231,9 @@ fn shader_defs(skinned: bool, raw_colour_texels: bool) -> HashMap<String, Shader
     if skinned {
         defs.insert("SKINNED".into(), ShaderDefValue::Bool(true));
     }
+    if morphed {
+        defs.insert("MORPH_TARGETS".into(), ShaderDefValue::Bool(true));
+    }
     if raw_colour_texels {
         defs.insert("RAW_COLOUR_TEXELS".into(), ShaderDefValue::Bool(true));
     }
@@ -185,9 +243,10 @@ fn shader_defs(skinned: bool, raw_colour_texels: bool) -> HashMap<String, Shader
 fn compose(
     source: &str,
     skinned: bool,
+    morphed: bool,
     raw_colour_texels: bool,
 ) -> Result<wgpu::naga::Module, String> {
-    let shader_defs = shader_defs(skinned, raw_colour_texels);
+    let shader_defs = shader_defs(skinned, morphed, raw_colour_texels);
     let mut composer = Composer::default();
     for (path, module_source) in [
         ("cs_lighting_msn.wgsl", LIGHTING),
@@ -196,6 +255,7 @@ fn compose(
         ("forward_io.wgsl", FORWARD_IO),
         ("mesh_functions.wgsl", MESH_FUNCTIONS),
         ("skinning.wgsl", SKINNING),
+        ("morph.wgsl", MORPH),
         ("maths.wgsl", MATHS),
         ("mesh_view_bindings.wgsl", MESH_VIEW),
         ("view_transformations.wgsl", VIEW_TRANSFORMATIONS),
@@ -228,16 +288,46 @@ fn compose(
 
 #[test]
 fn production_skin_shader_composes_for_static_and_skinned_meshes() {
-    for skinned in [false, true] {
+    for (skinned, morphed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let source = if morphed {
+            SHADER.to_owned()
+        } else {
+            SHADER.replace("#ifdef MORPH_TARGETS", "#ifdef DISABLED_MORPH_TARGETS")
+        };
         for raw_colour_texels in [false, true] {
-            compose(SHADER, skinned, raw_colour_texels).unwrap_or_else(|error| {
-                panic!(
-                    "{}{} mesh shader failed:\n{error}",
-                    if skinned { "skinned" } else { "static" },
-                    if raw_colour_texels { " raw-texel" } else { "" }
-                )
-            });
+            let module =
+                compose(&source, skinned, morphed, raw_colour_texels).unwrap_or_else(|error| {
+                    panic!(
+                        "{}{}{} mesh shader failed:\n{error}",
+                        if skinned { "skinned" } else { "static" },
+                        if morphed { " morphed" } else { "" },
+                        if raw_colour_texels { " raw-texel" } else { "" }
+                    )
+                });
+            assert_facegen_bindings(&module);
         }
+    }
+}
+
+fn assert_facegen_bindings(module: &wgpu::naga::Module) {
+    for (name, expected) in [
+        ("facegen_tint_texture", 105),
+        ("facegen_tint_sampler", 106),
+        ("facegen_detail_texture", 107),
+        ("facegen_detail_sampler", 108),
+    ] {
+        let binding = module
+            .global_variables
+            .iter()
+            .find_map(|(_, variable)| {
+                (variable.name.as_deref() == Some(name)).then_some(variable.binding.as_ref())
+            })
+            .flatten()
+            .unwrap_or_else(|| panic!("missing FaceGen binding {name}"));
+        assert_eq!(
+            binding.binding, expected,
+            "wrong FaceGen binding for {name}"
+        );
     }
 }
 
@@ -245,9 +335,25 @@ fn production_skin_shader_composes_for_static_and_skinned_meshes() {
 fn missing_skinned_vertex_field_fails_composition() {
     let broken = SHADER.replace("vertex.joint_indices", "vertex.missing_joint_indices");
     assert_ne!(broken, SHADER);
-    let error = compose(&broken, true, false).expect_err("missing skinned vertex field must fail");
+    let error =
+        compose(&broken, true, false, false).expect_err("missing skinned vertex field must fail");
     assert!(
         error.contains("missing_joint_indices"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn missing_facegen_sampler_symbol_fails_composition() {
+    let broken = SHADER.replace(
+        "var facegen_detail_sampler: sampler;",
+        "var facegen_missing_sampler: sampler;",
+    );
+    assert_ne!(broken, SHADER);
+    let error =
+        compose(&broken, false, false, false).expect_err("missing FaceGen sampler must fail");
+    assert!(
+        error.contains("facegen_detail_sampler"),
         "unexpected error: {error}"
     );
 }

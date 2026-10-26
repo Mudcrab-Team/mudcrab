@@ -217,7 +217,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
              resolution TEXT NOT NULL,        -- 'body', 'body_head', 'unresolved'
              skin_tone_r REAL,                -- NPC_/QNAM, 0..1, encoded scale
              skin_tone_g REAL,
-             skin_tone_b REAL
+             skin_tone_b REAL,
+             weight REAL                      -- NPC_/NAM7, 0..100
          );
          CREATE TABLE IF NOT EXISTS actor_model_parts (
              npc_id INTEGER NOT NULL,
@@ -325,6 +326,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // later exports added, so a complete export can still insert into it.
     add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
+    add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;
     add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
@@ -357,6 +359,9 @@ const ACTOR_SKIN_TONE_COLUMNS: &[(&str, &str)] = &[
     ("skin_tone_g", "REAL"),
     ("skin_tone_b", "REAL"),
 ];
+
+/// The `actor_models` column added after the skin tone columns: `NPC_/NAM7`.
+const ACTOR_WEIGHT_COLUMNS: &[(&str, &str)] = &[("weight", "REAL")];
 
 /// The `actor_model_parts` columns added after the first catalog export: the armature's race
 /// and its skin texture set.
@@ -1021,7 +1026,7 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
     let mut delete_model = tx.prepare_cached("DELETE FROM actor_models WHERE id=?1")?;
     let mut delete_parts = tx.prepare_cached("DELETE FROM actor_model_parts WHERE npc_id=?1")?;
     let mut insert_model = tx.prepare_cached(
-        "INSERT OR REPLACE INTO actor_models(id, race_id, sex, skin_armo_id, head_model, head_source, resolution, skin_tone_r, skin_tone_g, skin_tone_b) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT OR REPLACE INTO actor_models(id, race_id, sex, skin_armo_id, head_model, head_source, resolution, skin_tone_r, skin_tone_g, skin_tone_b, weight) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     let mut insert_part = tx.prepare_cached(
         "INSERT OR REPLACE INTO actor_model_parts(npc_id, slot, model_path, armature_race_id, skin_texture_set_id) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1039,7 +1044,8 @@ fn insert_actor_models(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -
             row.resolution,
             row.skin_tone.map(|tone| tone[0]),
             row.skin_tone.map(|tone| tone[1]),
-            row.skin_tone.map(|tone| tone[2])
+            row.skin_tone.map(|tone| tone[2]),
+            row.weight
         ])?;
     }
     for part in &catalog.parts {

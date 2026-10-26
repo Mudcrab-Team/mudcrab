@@ -10,6 +10,9 @@
 //! `MUDCRAB_DEMO_ASSETS` (output tree), `MUDCRAB_ACTOR_NIF_DIR` (extracted `meshes/actors`),
 //! `MUDCRAB_ANIMATION_DIR` (extracted `meshes/actors/character`) and `MUDCRAB_TEXTURE_DIR` (the
 //! retail `Data` folder holding the texture archives).
+//!
+//! `MUDCRAB_DEMO_EXTRA_HEADS` optionally names more `Skyrim.esm` FaceGen heads to convert into the
+//! same tree, as comma-separated FormIDs (`00013bbf,0001bdb1`), for previewing other NPCs.
 
 use converter::{
     animation::{decode_clip_with_skeleton, write_clip_glb},
@@ -37,6 +40,26 @@ const HEADS: [&str; 2] = ["00013475", "00013476"];
 /// Converted alongside `HEADS` because the engine's `retail_head_follows_the_animated_body_bone`
 /// loads this head from the same tree.
 const RETAIL_TEST_HEADS: [&str; 1] = ["0010f5a1"];
+
+/// The FormIDs listed in `MUDCRAB_DEMO_EXTRA_HEADS`, lower-cased like the converted head paths.
+fn extra_heads() -> Vec<String> {
+    let Some(value) = std::env::var_os("MUDCRAB_DEMO_EXTRA_HEADS") else {
+        return Vec::new();
+    };
+    value
+        .to_string_lossy()
+        .split(',')
+        .map(|form| form.trim().trim_start_matches("0x").to_ascii_lowercase())
+        .filter(|form| !form.is_empty())
+        .map(|form| {
+            assert!(
+                form.len() == 8 && form.chars().all(|c| c.is_ascii_hexdigit()),
+                "MUDCRAB_DEMO_EXTRA_HEADS entry `{form}` is not an 8-digit hexadecimal FormID"
+            );
+            form
+        })
+        .collect()
+}
 
 fn env_dir(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
@@ -556,7 +579,17 @@ fn materialises_the_converted_actor_assets() {
         }
     }
 
-    for head in HEADS.into_iter().chain(RETAIL_TEST_HEADS) {
+    let mut heads: Vec<String> = HEADS
+        .into_iter()
+        .chain(RETAIL_TEST_HEADS)
+        .map(str::to_owned)
+        .collect();
+    for head in extra_heads() {
+        if !heads.contains(&head) {
+            heads.push(head);
+        }
+    }
+    for head in &heads {
         let head_nif = actor_root
             .join("character/facegendata/facegeom/skyrim.esm")
             .join(format!("{head}.nif"));

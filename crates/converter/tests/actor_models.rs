@@ -1281,10 +1281,138 @@ fn traits_enabled_source_does_not_inherit_qnam_from_child_or_root() {
     );
 }
 
-/// A database whose `actor_models` predates the skin tone gains the columns when the tables are
-/// created again, so a subset export into it can still insert its rows.
+/// The `actor_models.weight` of `id`.
+fn stored_weight(connection: &Connection, id: u32) -> Option<f64> {
+    connection
+        .query_row("SELECT weight FROM actor_models WHERE id=?1", [id], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
 #[test]
-fn an_older_actor_models_table_gains_the_skin_tone_columns() {
+fn nam7_body_weight_is_published_and_an_absent_nam7_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut records = vec![
+        items::npc_with_weight(0x100, 0x200, false, 20.0),
+        items::npc(0x101, 0x200, false),
+        items::npc_with_weight(0x102, 0x200, false, 100.0),
+        items::npc_with_weight(0x103, 0x200, false, 0.0),
+    ];
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let light = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(light.weight, Some(20.0));
+    let plain = catalog.models.iter().find(|row| row.id == 0x101).unwrap();
+    assert_eq!(plain.weight, None);
+    let heavy = catalog.models.iter().find(|row| row.id == 0x102).unwrap();
+    assert_eq!(heavy.weight, Some(100.0));
+    let thin = catalog.models.iter().find(|row| row.id == 0x103).unwrap();
+    assert_eq!(thin.weight, Some(0.0));
+
+    let connection = export(directory.path(), &path);
+    assert_eq!(stored_weight(&connection, 0x100), Some(20.0));
+    assert_eq!(stored_weight(&connection, 0x101), None);
+    assert_eq!(stored_weight(&connection, 0x102), Some(100.0));
+    assert_eq!(stored_weight(&connection, 0x103), Some(0.0));
+}
+
+#[test]
+fn an_out_of_range_or_non_finite_nam7_stays_null() {
+    let directory = tempfile::tempdir().unwrap();
+    let weights = [100.5_f32, -0.5, f32::NAN, f32::INFINITY];
+    let mut records: Vec<Vec<u8>> = weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| items::npc_with_weight(0x100 + index as u32, 0x200, false, *weight))
+        .collect();
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let connection = export(directory.path(), &path);
+    for (index, weight) in weights.iter().enumerate() {
+        let id = 0x100 + index as u32;
+        let row = catalog.models.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.weight, None, "{weight}");
+        assert_eq!(stored_weight(&connection, id), None, "{weight}");
+    }
+}
+
+#[test]
+fn nam7_with_non_four_byte_payloads_is_rejected_as_malformed() {
+    let directory = tempfile::tempdir().unwrap();
+    let trailing = [25.0_f32.to_le_bytes().as_slice(), &[0xAA]].concat();
+    let payloads = [vec![0x00, 0x00, 0xC8], trailing];
+    let mut records: Vec<_> = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            items::npc_with_weight_payload(0x100 + index as u32, 0x200, false, payload)
+        })
+        .collect();
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let connection = export(directory.path(), &path);
+    for (index, payload) in payloads.iter().enumerate() {
+        let id = 0x100 + index as u32;
+        let row = catalog.models.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.weight, None, "payload {payload:?}");
+        assert_eq!(stored_weight(&connection, id), None, "payload {payload:?}");
+    }
+}
+
+#[test]
+fn a_templated_npc_keeps_its_own_nam7_and_never_inherits_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let traits_npc = |id: u32, race: u32, weight: Option<f32>| {
+        let mut acbs = vec![0u8; 24];
+        acbs[18..20].copy_from_slice(&1u16.to_le_bytes());
+        let mut fields = vec![
+            (b"ACBS", acbs),
+            (b"TPLT", 0x900u32.to_le_bytes().to_vec()),
+            (b"RNAM", race.to_le_bytes().to_vec()),
+        ];
+        if let Some(weight) = weight {
+            fields.push((b"NAM7", weight.to_le_bytes().to_vec()));
+        }
+        items::record(b"NPC_", id, &fields)
+    };
+    let mut records = vec![
+        // Traits inherit race from template; NAM7 remains own-record only.
+        items::npc_with_weight(0x900, 0x201, false, 80.0),
+        traits_npc(0x100, 0x200, Some(20.0)),
+        traits_npc(0x101, 0x200, None),
+        items::race(0x200, "OwnRace", Some(0x300), false),
+        items::race(0x201, "TemplateRace", Some(0x301), false),
+    ];
+    records.extend(nord_body_only(0x300));
+    let path = write_plugin(directory.path(), "Skyrim.esm", &records);
+
+    let catalog = resolve(&path);
+    let no_nam7 = catalog.models.iter().find(|row| row.id == 0x101).unwrap();
+    assert_eq!(
+        no_nam7.race_id, 0x201,
+        "traits must resolve through template"
+    );
+    assert_eq!(no_nam7.weight, None);
+    let own = catalog.models.iter().find(|row| row.id == 0x100).unwrap();
+    assert_eq!(own.race_id, 0x201, "traits must resolve through template");
+    assert_eq!(own.weight, Some(20.0));
+
+    let connection = export(directory.path(), &path);
+    assert_eq!(stored_weight(&connection, 0x100), Some(20.0));
+    assert_eq!(stored_weight(&connection, 0x101), None);
+}
+
+/// A database whose `actor_models` predates the skin tone and weight columns gains them when the
+/// tables are created again, so a subset export into it can still insert its rows.
+#[test]
+fn an_older_actor_models_table_gains_the_skin_tone_and_weight_columns() {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
@@ -1300,6 +1428,7 @@ fn an_older_actor_models_table_gains_the_skin_tone_columns() {
     converter::esm::exporter::create_tables(&connection).unwrap();
     converter::esm::exporter::create_tables(&connection).unwrap();
     assert_eq!(stored_skin_tone(&connection, 0x100), [None; 3]);
+    assert_eq!(stored_weight(&connection, 0x100), None);
 }
 
 const FEMALE_HANDS: &str = "actors\\character\\character assets\\femalehands_1.nif";

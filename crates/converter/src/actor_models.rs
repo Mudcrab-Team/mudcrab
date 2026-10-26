@@ -135,6 +135,9 @@ pub struct ActorModelRow {
     /// `NPC_/QNAM`, the body skin tone as RGB in 0..1 on the encoded (not linearised) scale.
     /// The game hands it to the body, hands and feet shaders as their tint colour.
     pub skin_tone: Option<[f32; 3]>,
+    /// `NPC_/NAM7`, the body's own-record weight in 0..100. Traits inheritance is unresolved;
+    /// absent, malformed, non-finite or out-of-range values mean no weight.
+    pub weight: Option<f32>,
 }
 
 /// One `actor_model_parts` row: a biped slot's model path.
@@ -193,11 +196,13 @@ pub fn resolve_actor_models(
     npc_ids.sort_unstable();
 
     for id in npc_ids {
+        let source_view = SubrecordView::new(&records[&id].subrecords);
         let Some(root_id) = traits_root(id, records, &mut catalog) else {
-            catalog.models.push(unresolved_row(id));
+            catalog
+                .models
+                .push(unresolved_row(id, npc_weight(&source_view)));
             continue;
         };
-        let source_view = SubrecordView::new(&records[&id].subrecords);
         let view = SubrecordView::new(&records[&root_id].subrecords);
         let (female, acbs_missing) = npc_sex(&view);
         if acbs_missing {
@@ -220,6 +225,8 @@ pub fn resolve_actor_models(
             skin_tone: (!traits_enabled(&source_view))
                 .then(|| npc_skin_tone(&source_view))
                 .flatten(),
+            // NAM7 follows the conservative own-record policy from QNAM; never infer Traits.
+            weight: npc_weight(&source_view),
         };
 
         let Some(race_id) = view.get_form_id(b"RNAM").filter(|race_id| *race_id != 0) else {
@@ -278,7 +285,7 @@ pub fn resolve_actor_models(
     catalog
 }
 
-fn unresolved_row(id: u32) -> ActorModelRow {
+fn unresolved_row(id: u32, weight: Option<f32>) -> ActorModelRow {
     ActorModelRow {
         id,
         race_id: 0,
@@ -288,6 +295,7 @@ fn unresolved_row(id: u32) -> ActorModelRow {
         head_source: None,
         resolution: "unresolved",
         skin_tone: None,
+        weight,
     }
 }
 
@@ -416,6 +424,15 @@ fn npc_skin_tone(view: &SubrecordView<'_>) -> Option<[f32; 3]> {
     };
     let tone = [channel(0)?, channel(4)?, channel(8)?];
     tone.iter().all(|value| value.is_finite()).then_some(tone)
+}
+
+/// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.
+/// `NPC_/NAM7`: exactly one little-endian `f32` in 0..=100. A malformed, non-finite or out-of-
+/// range value is no weight, so the engine keeps the heavy body.
+fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
+    let data = view.find(b"NAM7").filter(|data| data.len() == 4)?;
+    let weight = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    (weight.is_finite() && (0.0..=100.0).contains(&weight)).then_some(weight)
 }
 
 /// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.

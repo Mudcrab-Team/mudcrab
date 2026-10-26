@@ -12,7 +12,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure, eyre},
 };
-use project_wormhole_nif::model::all::{BoneTree, Model};
+use project_wormhole_nif::model::all::{BoneTree, Model, MorphTarget, SkeletalMesh};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     fmt, fs,
@@ -296,6 +296,90 @@ pub fn composed_body_glb(body: &ComposedBody, output: &Path) -> Result<Vec<u8>> 
         .to_glb(name)
         .map_err(|error| eyre!("composed body GLB export failed: {error}"))?;
     rewrite_materials_and_texture_uris(glb, &body.material_contract, &body.shape_blocks, output)
+}
+
+/// Whether the two meshes can share per-vertex morph deltas.
+fn check_same_topology(thin: &SkeletalMesh, heavy: &SkeletalMesh) -> Option<&'static str> {
+    let (Some(thin_mesh), Some(heavy_mesh)) = (&thin.mesh, &heavy.mesh) else {
+        return Some("skeletal mesh geometry is missing");
+    };
+    if thin_mesh.positions.len() != heavy_mesh.positions.len() {
+        return Some("skeletal mesh vertex counts differ");
+    }
+    (thin_mesh.triangles != heavy_mesh.triangles)
+        .then_some("skeletal mesh triangle topology differs")
+}
+
+/// Result of checking the optional thin body against its heavy base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinTargetOutcome {
+    /// Every mesh matched, and the target was attached.
+    Attached,
+    /// Mesh count, geometry, topology, or normals cannot support the target.
+    Unavailable(&'static str),
+}
+
+/// Adds the thin composition to `heavy` as a `thin` morph target on every skeletal mesh.
+///
+/// Skinning, materials and texture sets stay on `heavy`, as the game keeps them at weight 100.
+/// The target holds `thin - heavy` position and normal deltas, so morph weight 1 yields the thin
+/// body and 0 yields today's heavy body. Nothing is changed when any mesh fails the topology
+/// check.
+pub fn attach_thin_target(
+    heavy: &mut ComposedBody,
+    thin: &ComposedBody,
+) -> Result<ThinTargetOutcome> {
+    if thin.model.skeletal_meshes.len() != heavy.model.skeletal_meshes.len() {
+        return Ok(ThinTargetOutcome::Unavailable(
+            "skeletal mesh counts differ",
+        ));
+    }
+
+    let mut targets = Vec::with_capacity(thin.model.skeletal_meshes.len());
+    for index in 0..thin.model.skeletal_meshes.len() {
+        let thin_mesh = &thin.model.skeletal_meshes[index];
+        let heavy_mesh = &heavy.model.skeletal_meshes[index];
+        if let Some(reason) = check_same_topology(thin_mesh, heavy_mesh) {
+            return Ok(ThinTargetOutcome::Unavailable(reason));
+        }
+        let (Some(thin_geometry), Some(heavy_geometry)) = (&thin_mesh.mesh, &heavy_mesh.mesh)
+        else {
+            return Ok(ThinTargetOutcome::Unavailable(
+                "skeletal mesh geometry is missing",
+            ));
+        };
+        if thin_geometry.normals.len() != thin_geometry.positions.len()
+            || heavy_geometry.normals.len() != heavy_geometry.positions.len()
+        {
+            return Ok(ThinTargetOutcome::Unavailable(
+                "per-vertex normals are missing or incomplete",
+            ));
+        }
+        targets.push(MorphTarget {
+            name: "thin".to_owned(),
+            positions: thin_geometry
+                .positions
+                .iter()
+                .zip(&heavy_geometry.positions)
+                .map(|(thin, heavy)| *thin - *heavy)
+                .collect(),
+            normals: thin_geometry
+                .normals
+                .iter()
+                .zip(&heavy_geometry.normals)
+                .map(|(thin, heavy)| *thin - *heavy)
+                .collect(),
+        });
+    }
+
+    for (mesh, target) in heavy.model.skeletal_meshes.iter_mut().zip(targets) {
+        mesh.morph_targets = vec![target];
+    }
+    heavy
+        .model
+        .validate()
+        .map_err(|error| eyre!("invalid body with a thin morph target: {error}"))?;
+    Ok(ThinTargetOutcome::Attached)
 }
 
 /// Writes a composed model as a GLB using the same exporter, material publication and atomic

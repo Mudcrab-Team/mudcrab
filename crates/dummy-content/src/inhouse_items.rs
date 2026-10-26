@@ -330,19 +330,72 @@ pub fn armature_with_skins(
 /// An `NPC_` with a race link and the 24-byte `ACBS`; bit 0 selects female.
 #[must_use]
 pub fn npc(id: u32, race_id: u32, female: bool) -> Vec<u8> {
+    npc_fields(id, race_id, female, None, None)
+}
+
+/// An [`npc`] that also carries a `NAM7` body weight in 0..100.
+#[must_use]
+pub fn npc_with_weight(id: u32, race_id: u32, female: bool, weight: f32) -> Vec<u8> {
+    npc_fields(id, race_id, female, Some(weight), None)
+}
+
+/// An [`npc`] with the supplied raw `NAM7` payload for malformed-record tests.
+#[must_use]
+pub fn npc_with_weight_payload(id: u32, race_id: u32, female: bool, payload: &[u8]) -> Vec<u8> {
+    npc_fields_with_weight_payload(id, race_id, female, Some(payload.to_vec()), None)
+}
+
+/// An [`npc`] with an optional `TPLT` traits template and an optional `NAM7` body weight.
+#[must_use]
+pub fn npc_with_template(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    template: u32,
+    weight: Option<f32>,
+) -> Vec<u8> {
+    npc_fields(id, race_id, female, weight, Some(template))
+}
+
+fn npc_fields(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    weight: Option<f32>,
+    template: Option<u32>,
+) -> Vec<u8> {
+    npc_fields_with_weight_payload(
+        id,
+        race_id,
+        female,
+        weight.map(|weight| weight.to_le_bytes().to_vec()),
+        template,
+    )
+}
+
+fn npc_fields_with_weight_payload(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    weight_payload: Option<Vec<u8>>,
+    template: Option<u32>,
+) -> Vec<u8> {
     let mut acbs = vec![0u8; 24];
     if female {
         acbs[0] = 1;
     }
-    record(
-        b"NPC_",
-        id,
-        &[
-            (b"EDID", text("SyntheticNpc")),
-            (b"ACBS", acbs),
-            (b"RNAM", race_id.to_le_bytes().to_vec()),
-        ],
-    )
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticNpc")),
+        (b"ACBS", acbs),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(template) = template {
+        fields.push((b"TPLT", template.to_le_bytes().to_vec()));
+    }
+    if let Some(weight_payload) = weight_payload {
+        fields.push((b"NAM7", weight_payload));
+    }
+    record(b"NPC_", id, &fields)
 }
 
 /// An `NPC_` whose `RNAM` names `race_id` but which carries no `ACBS`.
