@@ -2215,7 +2215,9 @@ fn static_decision_from_asset(
                     ));
                 }
                 StaticCollisionDecision::Authored(parts, notes)
-            } else if lost_bodies > 0 || asset.skipped.is_empty() {
+            } else if asset.skipped.is_empty() {
+                // Nothing was dropped and nothing failed to convert: the tier is the whole reason
+                // this record has no shapes, which is a policy outcome rather than a failure.
                 StaticCollisionDecision::AuthoredAbsent
             } else {
                 StaticCollisionDecision::Skipped(asset.skipped.join("; "))
@@ -5434,6 +5436,23 @@ mod tests {
         );
         let decision = static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset);
         assert!(matches!(decision, StaticCollisionDecision::AuthoredAbsent));
+    }
+
+    #[test]
+    fn authored_only_still_reports_a_converter_failure_on_a_dynamic_only_model() {
+        let mut asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        asset
+            .skipped
+            .push("block 4: collision target is not exported".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("not exported"), "{reason}");
+            }
+            _ => panic!("a converter failure must not be reported as an authored absence"),
+        }
     }
 
     #[test]
