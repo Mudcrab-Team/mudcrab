@@ -250,7 +250,9 @@ async fn initialize_renderer(
     let (device, queue) = adapter.request_device(&descriptor).await.unwrap();
     bevy::log::debug!("Configured wgpu adapter Limits: {:#?}", device.limits());
     bevy::log::debug!("Configured wgpu adapter Features: {:#?}", device.features());
-    RenderResources(
+    // The constructor keeps this call valid when another workspace member
+    // enables `raw_vulkan_init`, which adds a field to the tuple struct.
+    RenderResources::from_wgpu(
         RenderDevice::from(device),
         RenderQueue(Arc::new(WgpuWrapper::new(queue))),
         RenderAdapterInfo(WgpuWrapper::new(adapter_info)),

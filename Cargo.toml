@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+# Include both patched renderer crates in workspace checks and tests.
 members = [
     "crates/converter",
     "crates/dummy-content",
@@ -7,6 +8,8 @@ members = [
     "crates/launcher",
     "crates/mo2",
     "crates/shared",
+    "vendor/bevy_render-0.19.0",
+    "vendor/bevy_pbr-0.19.0",
 ]
 
 [workspace.package]
@@ -59,14 +62,24 @@ project-wormhole-esm = "0.1.0"
 # The vendored copy changes only that requirement to 0.14, so the engine's KTX2
 # decoder shares the fixed zstd with the converter. The advisories and the removal
 # criteria are in vendor/bevy_image/README.mudcrab.md.
+# Production renderer patches; provenance and patch inventories are in each vendor README.
 [patch.crates-io]
 bevy_image = { path = "vendor/bevy_image" }
+bevy_render = { path = "vendor/bevy_render-0.19.0" }
+bevy_pbr = { path = "vendor/bevy_pbr-0.19.0" }
 
 # Workspace profile optimization
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# Retain dependency optimization when selecting renderer tests as a workspace package.
+[profile.dev.package.bevy_render]
+opt-level = 3
+
+[profile.dev.package.bevy_pbr]
 opt-level = 3
 
 [profile.release]
