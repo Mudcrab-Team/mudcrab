@@ -41,21 +41,40 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 ## 5. Review
 
 - CodeRabbit reviews every non-draft PR automatically. Answer each of its comments: fix it, or say why not, then resolve the thread. Unresolved threads block the merge.
-- Get an **Approve** review from another human collaborator listed in [CODEOWNERS](../../.github/CODEOWNERS). CodeRabbit's review and passing CI do not replace this approval. A comment or a resolved thread does not count as approval.
+- Get an **Approve** review from a Core member (the code owners in [CODEOWNERS](../../.github/CODEOWNERS); see [GOVERNANCE.md](../../GOVERNANCE.md)). CodeRabbit's review and passing CI do not replace this approval, and a Maintainer's approval is advisory. A comment or a resolved thread does not count as approval.
 - Answer human reviewers point by point, in their order: **Fixed** (with the commit), **No change** (with the reason), or **Unresolved**.
 - If `main` moves while your PR is open, merge `main` into your branch (or use the "Update branch" button). Don't rebase or force-push a branch that is under review.
 - Changes pushed after approval need another review: stale approvals are dismissed, and someone other than the last person to push must approve the latest push.
 
 ## 6. Merge (maintainers)
 
-The `main_protection` ruleset requires at least one approving review, approval from a human code owner, passing `tests_pass` and `CodeRabbit` checks from their respective GitHub Apps, an up-to-date branch, and every review thread resolved. It dismisses stale approvals and requires approval of the latest push by someone other than the person who pushed it. There are no bypass actors, and these requirements apply to administrators too. `main` accepts squash or rebase merges; there is no merge queue.
+The `main_protection` ruleset requires at least one approving review, approval from a human code owner, a passing `tests_pass` check, and every review thread resolved. `tests_pass` includes a `reviewers_pass` job that waits for CodeRabbit to report success on the PR's latest commit (Greptile's result is logged but does not block). The branch does not have to be up to date with `main`; CI also runs on every push to `main`. It dismisses stale approvals and requires approval of the latest push by someone other than the person who pushed it. Only Owners (organization owners) can bypass the ruleset. The bypass was added on purpose, to work through a backlog of pull requests. `main` accepts squash or rebase merges; there is no merge queue.
 
-The PR author may merge after another human collaborator approves and all checks pass. Keep [CODEOWNERS](../../.github/CODEOWNERS) in sync when collaborators gain or lose write access. Its catch-all rule also covers changes to CODEOWNERS itself. Administrators can still edit repository settings, so changing or disabling these requirements is a separate policy change.
+Anyone with Write access (Maintainers and Core) may merge once a Core member has approved and all checks pass, including the PR author. [CODEOWNERS](../../.github/CODEOWNERS) lists the Core team, so promoting someone to Core is a team change, not an edit to that file. Its catch-all rule also covers changes to CODEOWNERS itself. Only Owners can edit repository settings, so changing or disabling these requirements is a separate policy change.
 
 - Use **Squash and merge**. Keep the PR title as the commit title.
 - Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
-- After a merge, the other open PRs are behind `main` and need it merged in again before they can merge.
+- After a merge, the other open PRs can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
+
+### Updating a branch, and stacks
+
+A rebase rewrites every commit of the branch, so it counts as a new push by whoever ran it. The ruleset dismisses approvals when new commits arrive and does not let the person who made the latest push supply the approval for it, so after a rebase the PR needs a fresh approval from a Core member other than that person, even if the diff did not change.
+
+- Prefer **Update branch** (a merge of `main` into the branch) over a rebase: it adds a commit instead of rewriting the branch.
+- A stack must be rebased after its bottom PR merges, so each remaining layer needs a fresh Core approval. Ask for reviews layer by layer as they reach the bottom, not all at once.
+- Merge a PR as soon as it is approved and green, so the others fall behind less.
 
 ## AI agents
 
 Agents follow the same steps, plus [AI_POLICY.md](../AI_POLICY.md). In particular, an agent searches issues and PRs before starting (step 1), never claims or posts without its human's OK, and says in one line that it wrote or helped with a text.
+
+### Suggesting something to work on
+
+When its human has no task in mind, or has just finished one, an agent can offer to look for open work. It only suggests: the human picks, and claiming follows step 2.
+
+```bash
+gh issue list --label "help wanted" --state open --json number,title,assignees,labels,updatedAt
+gh issue list --label "good first issue" --state open --json number,title,assignees,labels,updatedAt
+```
+
+Drop issues that have an assignee, carry `S-blocked`, or have a claim in the comments or an open PR (step 1). Present a short list: issue number, title, and one line on why it fits. Say plainly when nothing is free.

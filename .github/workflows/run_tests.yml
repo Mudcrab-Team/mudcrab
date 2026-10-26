@@ -12,6 +12,10 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+    # ready_for_review re-runs the suite so reviewers_pass checks a PR that
+    # was a draft (and skipped it) when it was last pushed.
+    types: [ opened, synchronize, reopened, ready_for_review ]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -355,9 +359,83 @@ jobs:
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
 
+  # CodeRabbit and Greptile review a pull request's head commit and never
+  # report on a merge queue commit. The ruleset therefore requires only
+  # tests_pass, and this job makes tests_pass wait for the bot reviews on the
+  # PR. A PR cannot enter the queue until tests_pass is green, so the queue run
+  # (event merge_group) skips this job.
+  reviewers_pass:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+    steps:
+      - name: Wait for AI reviewers on the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          # One name per line. Commit statuses that must be "success".
+          REQUIRED_STATUSES: |
+            CodeRabbit
+          # Check runs that must finish "success" or "neutral". Greptile is
+          # advisory today; move "Greptile Review" here to make it blocking.
+          REQUIRED_CHECKS: ""
+          ADVISORY_CHECKS: |
+            Greptile Review
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 25 * 60))
+
+          while true; do
+            pending=0
+            statuses="$(gh api "repos/${REPO}/commits/${SHA}/status" --jq '.statuses | map({(.context): .state}) | add // {}')"
+            checks="$(gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" --jq '.check_runs | map({(.name): (if .status == "completed" then .conclusion else "pending" end)}) | add // {}')"
+
+            while IFS= read -r name; do
+              [ -n "$name" ] || continue
+              state="$(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$statuses")"
+              echo "status ${name}: ${state}"
+              case "$state" in
+                success) ;;
+                failure|error) echo "::error::${name} reported ${state} on ${SHA}"; exit 1 ;;
+                *) pending=1 ;;
+              esac
+            done <<<"$REQUIRED_STATUSES"
+
+            while IFS= read -r name; do
+              [ -n "$name" ] || continue
+              state="$(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$checks")"
+              echo "check ${name}: ${state}"
+              case "$state" in
+                success|neutral) ;;
+                pending|missing) pending=1 ;;
+                *) echo "::error::${name} finished ${state} on ${SHA}"; exit 1 ;;
+              esac
+            done <<<"$REQUIRED_CHECKS"
+
+            if [ "$pending" -eq 0 ]; then
+              while IFS= read -r name; do
+                [ -n "$name" ] || continue
+                echo "advisory check ${name}: $(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$checks")"
+              done <<<"$ADVISORY_CHECKS"
+              exit 0
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for AI reviewers on ${SHA}"
+              exit 1
+            fi
+            sleep 30
+          done
+
   tests_pass:
     needs:
       - orchestrate
+      - reviewers_pass
       - format
       - scripts
       - native_profiling
@@ -385,6 +463,7 @@ jobs:
           }
 
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
+          check_result "reviewers_pass" "$RESULT_REVIEWERS_PASS"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
           check_result "native_profiling" "$RESULT_NATIVE_PROFILING"
@@ -399,6 +478,7 @@ jobs:
           exit $EXIT_CODE
         env:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
+          RESULT_REVIEWERS_PASS: ${{ needs.reviewers_pass.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
           RESULT_NATIVE_PROFILING: ${{ needs.native_profiling.result }}

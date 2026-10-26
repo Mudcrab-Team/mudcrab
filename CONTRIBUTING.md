@@ -97,7 +97,7 @@ acceptance runs), since `quick` frame times are not comparable.
 
 ## 🛠️ Development Workflow
 
-The full path from idea to merge (checking for overlap, claiming an issue, drafts, review, merging) is in [`docs/contributing/workflow.md`](docs/contributing/workflow.md). The short version:
+The full path from idea to merge (checking for overlap, claiming an issue, drafts, review, merging) is in [`docs/contributing/workflow.md`](docs/contributing/workflow.md). Who can review, approve and merge is in [`GOVERNANCE.md`](GOVERNANCE.md). The short version:
 
 1. **Find or Create an Issue, and Claim It:**
    Search open issues *and* pull requests, including who is assigned, so no one else is working on the same thing. Assign yourself, or, if GitHub doesn't let you, comment "I'm taking this": the comment counts as your claim.
