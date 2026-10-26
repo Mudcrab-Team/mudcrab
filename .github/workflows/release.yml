@@ -150,13 +150,18 @@ jobs:
             -p launcher -p engine -p converter \
             --bin launcher --bin engine --bin converter --bin world-inspect
 
+      - name: Stage distribution payload
+        shell: bash
+        run: |
+          bash scripts/stage-release.sh --target "${{ matrix.target }}"
+
       - name: Package binaries (Unix)
         if: runner.os != 'Windows'
         run: |
           TAG="${{ needs.preflight.outputs.tag }}"
           ARCHIVE="mudcrab-${TAG}-${{ matrix.target }}.${{ matrix.archive_ext }}"
-          cd "target/${{ matrix.target }}/release"
-          tar -czf "../../../${ARCHIVE}" launcher engine converter world-inspect
+          cd "target/${{ matrix.target }}/staging"
+          tar -czf "../../../${ARCHIVE}" *
           cd ../../..
           sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
 
@@ -166,8 +171,8 @@ jobs:
         run: |
           TAG="${{ needs.preflight.outputs.tag }}"
           ARCHIVE="mudcrab-${TAG}-${{ matrix.target }}.${{ matrix.archive_ext }}"
-          cd "target/${{ matrix.target }}/release"
-          7z a "../../../${ARCHIVE}" launcher.exe engine.exe converter.exe world-inspect.exe
+          cd "target/${{ matrix.target }}/staging"
+          7z a "../../../${ARCHIVE}" *
           cd ../../..
           sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
 
@@ -180,7 +185,7 @@ jobs:
           ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           "$ISCC_PATH" \
             "/DAppVersion=${CLEAN_VERSION}" \
-            "/DBinDir=$(pwd)/target/${{ matrix.target }}/release" \
+            "/DStagingDir=$(pwd)/target/${{ matrix.target }}/staging" \
             "/DOutputDir=$(pwd)" \
             installer/windows/mudcrab.iss
           SETUP_EXE="mudcrab-${TAG}-windows-x64-setup.exe"

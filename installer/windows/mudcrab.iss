@@ -7,8 +7,8 @@
   #define AppVersion "0.1.0"
 #endif
 
-#ifndef BinDir
-  #define BinDir "..\..\target\x86_64-pc-windows-msvc\release"
+#ifndef StagingDir
+  #define StagingDir "..\..\target\x86_64-pc-windows-msvc\staging"
 #endif
 
 #ifndef OutputDir
@@ -56,10 +56,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#BinDir}\launcher.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BinDir}\engine.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BinDir}\converter.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BinDir}\world-inspect.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Ingest all staged binaries and assets from the unified staging seam
+Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Mudcrab Launcher"; Filename: "{app}\launcher.exe"; WorkingDir: "{app}"
