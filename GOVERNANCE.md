@@ -17,9 +17,9 @@ Each rank includes everything below it.
 
 ## How review and merge work
 
-- `main` is protected by the `main_protection` ruleset: one approving review from a code owner, passing checks, every review thread resolved, and an approval of the latest push from someone other than the person who pushed it.
+- `main` is protected by the `main_protection` ruleset: one approving review from a code owner, a passing `tests_pass` check, and every review thread resolved. New pushes dismiss earlier approvals.
 - [CODEOWNERS](.github/CODEOWNERS) lists the Core team. Only a Core approval satisfies the code owner requirement. A Maintainer's approval is still welcome and useful feedback, but it is advisory.
-- Anyone with Write access (Maintainer or Core) can merge a pull request once the ruleset is satisfied. The author may merge their own pull request after a Core member has approved it.
+- Anyone with Write access (Maintainer or Core) can send a pull request through the merge queue once the ruleset is satisfied, or arm auto-merge so it enters the queue as soon as it is. The author may do this for their own pull request. A Core approval on a PR with auto-merge armed ships it. A Core member who pushes to a pull request can approve it.
 - Stacked pull requests: layers that target another branch are not gated by the ruleset. The layer that targets `main` is.
 - The step-by-step path from idea to merge is in [docs/contributing/workflow.md](docs/contributing/workflow.md).
 
