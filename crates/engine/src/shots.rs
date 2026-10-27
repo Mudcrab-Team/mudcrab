@@ -1644,7 +1644,7 @@ mod tests {
                 one_shot(
                     r#""name": "x", "position": [0, 0, 0], "yaw": 0, "pitch": 0, "hfov": 1e39"#,
                 ),
-                "not a number",
+                "number out of range",
             ),
             (
                 one_shot(
@@ -1798,6 +1798,29 @@ mod tests {
             let text = one_shot(&format!(r#"{pose}, "probes": {probes}"#));
             let message = ShotsFile::parse(&text).expect_err(expected).to_string();
             assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
+    fn nonfinite_pose_values_are_rejected_by_validation() {
+        let good = ShotsFile::parse(&one_shot(
+            r#""name": "x", "position": [0, 0, 0], "yaw": 0, "pitch": 0, "hfov": 75"#,
+        ))
+        .unwrap();
+        // JSON rejects overflow before validation; programmatic poses must reject it too.
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for component in 0..6 {
+                let mut file = good.clone();
+                let shot = &mut file.shots[0];
+                match component {
+                    0..=2 => shot.position[component] = value,
+                    3 => shot.yaw = value,
+                    4 => shot.pitch = value,
+                    _ => shot.hfov = value,
+                }
+                let error = file.validate().expect_err("nonfinite poses must fail");
+                assert!(error.to_string().contains("not a number"));
+            }
         }
     }
 
