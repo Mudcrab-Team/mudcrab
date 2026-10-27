@@ -106,13 +106,20 @@ fn neutralize_unused(json: &mut Value, field: &str, live: &BTreeSet<usize>) {
     }
 }
 
-/// Follow the core glTF graph after exclusions. Keep all remaining materials, all mesh
+/// Follow the core glTF graph after exclusions. Keep all live materials, all mesh
 /// attributes/morphs, skin matrices and animation inputs/outputs, including off-scene users.
 /// Nodes, skins, animations, mesh indices and binary payloads are never rewritten.
 fn isolate_unused_dependencies(json: &mut Value) {
     if has_extensions(json) {
         return;
     }
+    let mut materials = BTreeSet::new();
+    for mesh in json["meshes"].as_array().into_iter().flatten() {
+        for primitive in mesh["primitives"].as_array().into_iter().flatten() {
+            keep_index(&mut materials, &primitive["material"]);
+        }
+    }
+    neutralize_unused(json, "materials", &materials);
     let mut textures = BTreeSet::new();
     for material in json["materials"].as_array().into_iter().flatten() {
         for path in [
