@@ -120,6 +120,10 @@ def owned_files(root: Path, entries: list[str]) -> list[str]:
     """
     paths: set[str] = set()
     for entry in entries:
+        relative = entry[:-1] if entry.endswith('/') else entry
+        if (not relative or "\\" in entry or ":" in entry or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in entry)
+                or any(part in ("", ".", "..") or part.endswith((".", " ")) for part in relative.split('/'))):
+            raise ValueError(f"owned file path {entry!r} must be a canonical dataset-relative path")
         if entry.endswith("/"):
             folder = root / entry
             if not folder.is_dir():
@@ -146,15 +150,24 @@ def glb_json(path: Path) -> dict:
 
 
 def gltf_extension_value(document: dict, name: str) -> str | None:
-    """`<pointer>=<json>` pairs joined by `;`, document level first, then materials in order."""
+    """All extension occurrences, located by JSON pointers in stable object/array order."""
     parts = []
-    top = document.get("extensions", {})
-    if name in top:
-        parts.append(f"/extensions/{name}={encode_json(top[name])}")
-    for index, material in enumerate(document.get("materials", [])):
-        extension = material.get("extensions", {})
-        if name in extension:
-            parts.append(f"/materials/{index}/extensions/{name}={encode_json(extension[name])}")
+
+    def pointer(segment: str) -> str:
+        return segment.replace("~", "~0").replace("/", "~1")
+
+    def visit(value, path: str) -> None:
+        if isinstance(value, dict):
+            extensions = value.get("extensions")
+            if isinstance(extensions, dict) and name in extensions:
+                parts.append(f"{path}/extensions/{pointer(name)}={encode_json(extensions[name])}")
+            for key in sorted(value, key=lambda key: key.encode("utf-8")):
+                visit(value[key], f"{path}/{pointer(key)}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}/{index}")
+
+    visit(document, "")
     return ";".join(parts) if parts else None
 
 

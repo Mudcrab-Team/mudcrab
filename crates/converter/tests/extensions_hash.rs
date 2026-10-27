@@ -88,13 +88,6 @@ async fn python_reference_accepts_the_converter_manifest() {
         !ids.contains(&shared::extensions::DOOR_LINKS),
         "door links are core output"
     );
-    // The dummy-content meshes use neither `MUDCRAB_material` nor the animation extension, so the
-    // material extension is not listed: a manifest entry for data nothing contains would hide a
-    // manifest/content mismatch.
-    assert!(
-        !ids.contains(&shared::extensions::MATERIAL),
-        "material listed although no mesh uses it: {ids:?}"
-    );
     assert!(shared::extensions::ownership_problems(&manifest.extensions).is_empty());
     for entry in &manifest.extensions {
         assert_eq!(entry.sha256.len(), 64, "{}", entry.id);
@@ -121,77 +114,6 @@ async fn python_reference_accepts_the_converter_manifest() {
         "tests/support/extension_hash_reference.py disagrees with the converter:\n{}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
-    );
-}
-
-#[test]
-fn synthetic_inventory_hash_matches_python_without_a_native_producer() {
-    let directory = tempfile::tempdir().unwrap();
-    let connection = rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
-    converter::esm::exporter::create_tables(&connection).unwrap();
-    connection.execute_batch(r#"
-         CREATE TABLE IF NOT EXISTS lod_grid (
-             worldspace_id INTEGER PRIMARY KEY, origin_x INTEGER NOT NULL, origin_y INTEGER NOT NULL,
-             levels TEXT NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS lod_block (
-             worldspace_id INTEGER NOT NULL, kind TEXT NOT NULL, level INTEGER NOT NULL,
-             block_x INTEGER NOT NULL, block_y INTEGER NOT NULL, mesh_path TEXT NOT NULL,
-             bounds_min_x REAL, bounds_min_y REAL, bounds_min_z REAL,
-             bounds_max_x REAL, bounds_max_y REAL, bounds_max_z REAL,
-             PRIMARY KEY (worldspace_id, kind, level, block_x, block_y)
-         );
-         CREATE TABLE IF NOT EXISTS lod_tree_type (
-             worldspace_id INTEGER NOT NULL, tree_index INTEGER NOT NULL, mesh_path TEXT NOT NULL,
-             size_x REAL NOT NULL, size_y REAL NOT NULL,
-             u0 REAL NOT NULL, v0 REAL NOT NULL, u1 REAL NOT NULL, v1 REAL NOT NULL,
-             PRIMARY KEY (worldspace_id, tree_index)
-         );
-         CREATE TABLE IF NOT EXISTS lod_tree_instance (
-             worldspace_id INTEGER NOT NULL, block_x INTEGER NOT NULL, block_y INTEGER NOT NULL,
-             tree_index INTEGER NOT NULL, pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
-             rotation REAL NOT NULL DEFAULT 0, scale REAL NOT NULL DEFAULT 1
-         );
-         CREATE INDEX IF NOT EXISTS idx_lod_tree_block ON lod_tree_instance(worldspace_id, block_x, block_y);
-
-        INSERT INTO lod_build VALUES(1, 'synthetic-core');
-        INSERT INTO lod_grid VALUES(7, -4, 8, '4,8');
-        INSERT INTO lod_block VALUES(7, 'objects', 4, 0, 0, 'meshes/terrain/block.glb',
-            NULL, NULL, NULL, NULL, NULL, NULL);
-        INSERT INTO lod_tree_type VALUES(7, 0, 'meshes/terrain/tree.glb', 2.0, 4.0, 0.0, 0.0, 1.0, 1.0);
-        INSERT INTO lod_tree_instance VALUES(7, 0, 0, 0, 0.5, -1.25, 3.0, 0.0, 1.0);
-    "#).unwrap();
-    drop(connection);
-    fs::create_dir_all(directory.path().join("meshes/terrain")).unwrap();
-    // Valid empty glTF JSON chunks: hashes own the files, no native mesh converter is involved.
-    let json = b"{\"asset\":{\"version\":\"2.0\"}} ";
-    assert!(json.len().is_multiple_of(4));
-    let mut mesh = b"glTF".to_vec();
-    mesh.extend_from_slice(&2u32.to_le_bytes());
-    mesh.extend_from_slice(&((20 + json.len()) as u32).to_le_bytes());
-    mesh.extend_from_slice(&(json.len() as u32).to_le_bytes());
-    mesh.extend_from_slice(b"JSON");
-    mesh.extend_from_slice(json);
-    for name in ["block.glb", "tree.glb"] {
-        fs::write(directory.path().join("meshes/terrain").join(name), &mesh).unwrap();
-    }
-    let mut manifest = converter::cache::ConversionManifest::default();
-    converter::extensions::refresh_manifest(&mut manifest, directory.path()).unwrap();
-    assert_eq!(manifest.extensions.len(), 1);
-    assert_eq!(manifest.extensions[0].id, shared::extensions::LOD_INVENTORY);
-    manifest
-        .save(&directory.path().join("conversion-manifest.json"))
-        .unwrap();
-    verify_set(directory.path());
-    fs::write(
-        directory.path().join("meshes/terrain/block.glb"),
-        b"changed",
-    )
-    .unwrap();
-    let listed = &manifest.extensions[0];
-    assert_ne!(
-        converter::extensions::recompute_hash(directory.path(), listed).unwrap(),
-        listed.sha256
     );
 }
 
@@ -252,7 +174,7 @@ fn verify_set(set: &Path) {
     );
 }
 
-/// A finalized entry from another writer (as the cluster finalizers write): its own table and
+/// A finalized entry from another writer: its own table and
 /// folder, built from the data set's core identity and listed next to the converter's entries.
 #[tokio::test]
 async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
@@ -271,17 +193,19 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
         .unwrap()
         .expect("the dummy conversion records a core build identity");
     connection
-        .execute_batch("CREATE TABLE cluster_x(a INTEGER); INSERT INTO cluster_x VALUES (7);")
+        .execute_batch(
+            "CREATE TABLE extra_payload(a INTEGER); INSERT INTO extra_payload VALUES (7);",
+        )
         .unwrap();
     drop(connection);
-    fs::create_dir_all(output.join("clusters")).unwrap();
-    fs::write(output.join("clusters/a.bin"), b"payload").unwrap();
+    fs::create_dir_all(output.join("payload")).unwrap();
+    fs::write(output.join("payload/a.bin"), b"payload").unwrap();
     let mut entry = shared::extensions::ExtensionEntry {
-        id: "mudcrab.clusters".to_owned(),
+        id: "example.payload".to_owned(),
         version: 1,
         owns: shared::extensions::ExtensionOwns {
-            tables: vec!["cluster_x".to_owned()],
-            files: vec!["clusters/".to_owned()],
+            tables: vec!["extra_payload".to_owned()],
+            files: vec!["payload/".to_owned()],
             ..Default::default()
         },
         sha256: String::new(),
@@ -309,7 +233,7 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
     // The own-entries-only comparison this replaces would have failed here.
     verify_set(&output);
 
-    fs::write(output.join("clusters/a.bin"), b"tampered").unwrap();
+    fs::write(output.join("payload/a.bin"), b"tampered").unwrap();
     let outcome = std::panic::catch_unwind(|| verify_set(&output));
     assert!(outcome.is_err(), "changed owned bytes must be rejected");
 }
@@ -362,7 +286,7 @@ assert oracle.index_line(connection, 'IDX_EXTRA') == 'index IDX_EXTRA CREATE IND
 
 /// A real data set, not a fixture: `MUDCRAB_EXTENSIONS_SET=<folder> cargo nextest run -p converter
 /// --test extensions_hash --run-ignored all`. Every listed entry, the converter's own and any
-/// finalized one such as the cluster pair, is verified by [`verify_set`]; this is the check that
+/// finalized payload, is verified by [`verify_set`]; this is the check that
 /// found a float-parsing disagreement between Rust and Python on real glTF data.
 #[test]
 #[ignore = "needs a converted data set: set MUDCRAB_EXTENSIONS_SET"]
@@ -371,6 +295,52 @@ fn real_data_set_hashes_agree_in_rust_and_python() {
         panic!("set MUDCRAB_EXTENSIONS_SET to a converted data set folder");
     };
     verify_set(Path::new(&set));
+}
+
+#[test]
+fn generic_gltf_locations_and_pointer_escaping_match_python() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let connection = rusqlite::Connection::open(root.join("skyrim_world.db")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE lod_build(build_identity TEXT); INSERT INTO lod_build VALUES('core');",
+        )
+        .unwrap();
+    drop(connection);
+    fs::create_dir(root.join("meshes")).unwrap();
+    let name = "EXAMPLE_payload~/";
+    let document = serde_json::json!({
+        "extensionsUsed": [name],
+        "extensions": {name: {"value": 1}},
+        "materials": [{"extensions": {name: {"value": 2}}}],
+        "nodes": [{"extensions": {name: {"value": 3}}}],
+        "meshes": [{"primitives": [{"extensions": {name: {"value": 4}}}]}],
+        "extras": {"key~/": {"extensions": {name: {"value": 5}}}}
+    });
+    fs::write(
+        root.join("meshes/example.gltf"),
+        serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    let mut entry = shared::extensions::ExtensionEntry {
+        id: "example.payload".into(),
+        version: 1,
+        owns: shared::extensions::ExtensionOwns {
+            gltf_extensions: vec![name.into()],
+            ..Default::default()
+        },
+        sha256: String::new(),
+        built_from: "core".into(),
+        stats: Default::default(),
+    };
+    entry.sha256 = converter::extensions::recompute_hash(root, &entry).unwrap();
+    let mut manifest = converter::cache::ConversionManifest::default();
+    converter::extensions::refresh_manifest_with_finalized(&mut manifest, root, &[entry]).unwrap();
+    manifest
+        .save(&root.join("conversion-manifest.json"))
+        .unwrap();
+    verify_set(root);
 }
 
 #[test]
@@ -412,6 +382,20 @@ with tempfile.TemporaryDirectory() as root:
     (root / 'meshes/rock.glb').write_bytes(mesh)
     entry = {'id': 'mudcrab.material', 'version': 1, 'owns': {'gltf_extensions': ['MUDCRAB_material']}}
     assert oracle.extension_hash(root, entry) == '714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567'
+    node = {'extensionsUsed': ['EXAMPLE_payload'],
+            'nodes': [{'extensions': {'EXAMPLE_payload': {'value': 1}}}]}
+    primitive = {'extensionsUsed': ['EXAMPLE_payload'],
+                 'meshes': [{'primitives': [{'extensions': {'EXAMPLE_payload': {'value': 1}}}]}]}
+    assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') is not None
+    assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') != oracle.gltf_extension_value(primitive, 'EXAMPLE_payload')
+    for alias in ['meshes/./rock.glb', 'meshes/../meshes/rock.glb', 'meshes//rock.glb',
+                  'meshes\\rock.glb', '../outside.bin', '/absolute.bin', 'Q:/absolute.bin', '']:
+        try:
+            oracle.owned_files(root, [alias])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted noncanonical owned path: {alias!r}')
 "#;
     let result = Command::new(python)
         .arg("-I")

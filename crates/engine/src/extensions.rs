@@ -4,8 +4,7 @@
 //! needs a supported version and must match any recorded core identity; stale or unsupported declarations
 //! disable its join. A usable declaration with missing or incomplete columns is an error.
 //!
-//! Material status is metadata for a subsequent reader. This module installs capability and
-//! notice resources, not optional payload readers or playback plugins. Declaration checks do
+//! This module installs capability and notice resources. Declaration checks do
 //! not recompute payload hashes. See `docs/specs/converters/extensions.md`.
 
 use std::ops::RangeInclusive;
@@ -13,7 +12,7 @@ use std::path::Path;
 
 use bevy::prelude::*;
 use color_eyre::eyre::{Result, WrapErr};
-use shared::extensions::{DOOR_LINKS, DataExtensions, ExtensionStatus, MATERIAL};
+use shared::extensions::{DOOR_LINKS, DataExtensions, ExtensionStatus};
 
 use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures, has_door_links};
 
@@ -22,19 +21,16 @@ use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures, has_door_li
 pub enum Feature {
     /// Ordinary load-door destinations in [`crate::world::database`].
     DoorLinks,
-    /// Capability metadata for extra material data; this patch installs no material reader.
-    Material,
 }
 
 impl Feature {
     /// Every feature, in the order notices are listed.
-    pub const ALL: [Self; 2] = [Self::DoorLinks, Self::Material];
+    pub const ALL: [Self; 1] = [Self::DoorLinks];
 
     /// The extension id the feature reads.
     pub const fn extension(self) -> &'static str {
         match self {
             Self::DoorLinks => DOOR_LINKS,
-            Self::Material => MATERIAL,
         }
     }
 
@@ -42,7 +38,6 @@ impl Feature {
     pub const fn label(self) -> &'static str {
         match self {
             Self::DoorLinks => "load-door links",
-            Self::Material => "extra material data (UV transform, falloff, blend, animation)",
         }
     }
 
@@ -148,10 +143,8 @@ impl RuntimeFeatures {
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {
-        if feature == Feature::DoorLinks {
-            self.has_doors && self.door_links != DoorLinksAccess::Disabled
-        } else {
-            self.extensions.status(feature).is_present()
+        match feature {
+            Feature::DoorLinks => self.has_doors && self.door_links != DoorLinksAccess::Disabled,
         }
     }
 
@@ -234,33 +227,12 @@ pub(crate) mod fixtures {
             pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
             rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
             destination_cell_id INTEGER, destination_worldspace_id INTEGER);
-        CREATE TABLE static_materials(id INTEGER PRIMARY KEY,
-            material_object INTEGER NOT NULL, material_max_angle REAL NOT NULL);
-        CREATE TABLE matos(id INTEGER PRIMARY KEY, editor_id TEXT,
-            falloff_scale REAL NOT NULL, falloff_bias REAL NOT NULL,
-            noise_uv_scale REAL NOT NULL, material_uv_scale REAL NOT NULL,
-            dir_proj_x REAL NOT NULL, dir_proj_y REAL NOT NULL, dir_proj_z REAL NOT NULL,
-            normal_dampener REAL NOT NULL,
-            single_pass_color INTEGER NOT NULL, single_pass INTEGER NOT NULL);
-        CREATE TABLE space_lighting(
-            space_id INTEGER PRIMARY KEY, is_interior INTEGER NOT NULL, template_id INTEGER,
-            ambient INTEGER, directional INTEGER, fog INTEGER,
-            fog_near REAL, fog_far REAL, fog_power REAL, fog_clip REAL,
-            direction_rot_xy INTEGER, direction_rot_z INTEGER, direction_fade REAL,
-            sky_upper INTEGER, sky_fog INTEGER, sky_lower INTEGER,
-            sun INTEGER, sun_illuminance REAL, climate_id INTEGER, weather_id INTEGER,
-            has_sky INTEGER NOT NULL,
-            fog_far_color INTEGER, fog_max REAL, light_fade_begin REAL, light_fade_end REAL);
         INSERT INTO cells VALUES(5, 60);
         INSERT INTO cells VALUES(100, NULL);
         INSERT INTO \"references\" VALUES(1, 5, 10, 20, 30);
         INSERT INTO \"references\" VALUES(2, 100, 1, 2, 3);
         INSERT INTO door_links VALUES(1, 2, 1, 2, 3, 0, 0, 1.5, 100, NULL);
         INSERT INTO door_links VALUES(2, 1, 10, 20, 30, 0, 0, 0.5, 5, 60);
-        INSERT INTO matos VALUES(151849, 'SnowMaterialObject1P', 0.35, 0.4, 48.0, 170.66667,
-            0.0, 0.0, -1.0, 0.4, 8287339, 1);
-        INSERT INTO static_materials VALUES(900, 151849, 120.0);
-        INSERT INTO space_lighting(space_id, is_interior, has_sky) VALUES(7, 1, 0);
     ";
 
     /// The manifest of a `main` data set: no `extensions` key.
@@ -319,7 +291,6 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{MAIN_MANIFEST, data_set, manifest};
     use super::*;
-    use shared::extensions::LOD_INVENTORY;
     fn open(directory: &tempfile::TempDir) -> Result<RuntimeFeatures> {
         open_features(directory.path(), read_data_extensions(directory.path())?)
     }
@@ -465,12 +436,12 @@ mod tests {
     #[test]
     fn extensions_the_engine_does_not_read_are_ignored() {
         let directory = data_set(
-            &manifest(&[(LOD_INVENTORY, 1, "core"), ("someone.else", 9, "x")]),
+            &manifest(&[("example.payload", 1, "core"), ("someone.else", 9, "x")]),
             Some("core"),
             &[],
         );
         let features = open(&directory).unwrap();
-        assert_eq!(features.notices.len(), 1);
+        assert_eq!(features.notices.len(), 0);
         assert!(features.enabled(Feature::DoorLinks));
     }
     #[test]
@@ -518,6 +489,32 @@ mod tests {
                 .for_feature(Feature::DoorLinks)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn legacy_door_open_accepts_sqlite_table_case_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skyrim_world.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE door_links RENAME TO renamed_door_links;
+             ALTER TABLE renamed_door_links RENAME TO DOOR_LINKS;",
+            )
+            .unwrap();
+        drop(connection);
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            only(Feature::DoorLinks, 1, "core"),
+        )
+        .unwrap();
+        let features = open(&directory).unwrap();
+        assert_eq!(
+            features.world_database().door_links,
+            DoorLinksAccess::LegacyExtension
+        );
+        crate::world::database::WorldDatabase::open_with(&path, features.world_database()).unwrap();
     }
 
     #[test]

@@ -522,7 +522,7 @@ fn require_table(path: &Path, table: &str, feature: crate::extensions::Feature) 
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", path.display()))?;
     let found: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE",
         [table],
         |row| row.get(0),
     )?;

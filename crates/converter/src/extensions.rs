@@ -16,8 +16,7 @@ use std::path::Path;
 use color_eyre::eyre::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags};
 use shared::extensions::{
-    DIRECTIONAL_SNOW, DOOR_LINKS, ExtensionEntry, ExtensionHasher, ExtensionOwns, LOD_INVENTORY,
-    MATERIAL, SPACE_LIGHTING, core_build_identity,
+    DOOR_LINKS, ExtensionEntry, ExtensionHasher, ExtensionOwns, core_build_identity,
 };
 use walkdir::WalkDir;
 
@@ -35,12 +34,6 @@ pub struct ExtensionSpec {
     pub id: &'static str,
     pub version: u32,
     pub owns: ExtensionOwns,
-}
-
-fn names(items: &[&str]) -> Vec<String> {
-    let mut list: Vec<String> = items.iter().map(|item| (*item).to_owned()).collect();
-    list.sort_unstable();
-    list
 }
 
 /// Persistent core tables owned by the ordinary exporter and its provenance writers,
@@ -133,51 +126,10 @@ const MAIN_CORE_INDEXES: &[&str] = &[
     "record_overrides_source",
 ];
 
-/// Every extension the converter writes. Each `owns` list is sorted.
+/// Built-in payload registrations. The ordinary converter currently writes only core output.
+/// A feature adds its descriptors together with its producer, rather than claiming absent data.
 pub fn specs() -> Vec<ExtensionSpec> {
-    vec![
-        ExtensionSpec {
-            id: LOD_INVENTORY,
-            version: 1,
-            owns: ExtensionOwns {
-                tables: names(&[
-                    "lod_block",
-                    "lod_grid",
-                    "lod_tree_instance",
-                    "lod_tree_type",
-                ]),
-                indexes: names(&["idx_lod_tree_block"]),
-                // The block and tree-billboard meshes converted from .btr/.bto/.lst: main converts
-                // only .nif meshes, so everything below this folder is the extension's.
-                files: names(&["meshes/terrain/"]),
-                ..Default::default()
-            },
-        },
-        ExtensionSpec {
-            id: SPACE_LIGHTING,
-            version: 1,
-            owns: ExtensionOwns {
-                tables: names(&["space_lighting"]),
-                ..Default::default()
-            },
-        },
-        ExtensionSpec {
-            id: DIRECTIONAL_SNOW,
-            version: 1,
-            owns: ExtensionOwns {
-                tables: names(&["matos", "static_materials"]),
-                ..Default::default()
-            },
-        },
-        ExtensionSpec {
-            id: MATERIAL,
-            version: 1,
-            owns: ExtensionOwns {
-                gltf_extensions: names(&["MUDCRAB_material", "OPEN_SKYRIM_material_animation"]),
-                ..Default::default()
-            },
-        },
-    ]
+    Vec::new()
 }
 
 /// Builds the manifest entries of the finished output folder `output`.
@@ -186,6 +138,13 @@ pub fn specs() -> Vec<ExtensionSpec> {
 /// exists in `skyrim_world.db`. An extension that owns only glTF extensions is listed when an
 /// output mesh declares one of those names in `extensionsUsed`. If a table is missing the extension is not listed.
 pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
+    build_entries_with_specs(output, specs())
+}
+
+fn build_entries_with_specs(
+    output: &Path,
+    specifications: Vec<ExtensionSpec>,
+) -> Result<Vec<ExtensionEntry>> {
     let database = output.join(DATABASE);
     let connection = if database.is_file() {
         Some(
@@ -210,7 +169,7 @@ pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
         gltf_used: bool,
     }
     let mut pending = Vec::new();
-    for spec in specs() {
+    for spec in specifications {
         let owns_database = !spec.owns.tables.is_empty();
         if owns_database {
             let Some(connection) = &connection else {
@@ -233,18 +192,6 @@ pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
             }
             for index in &spec.owns.indexes {
                 hasher.add_index(connection, index)?;
-            }
-        }
-        if spec.id == LOD_INVENTORY
-            && let Some(connection) = &connection
-        {
-            for kind in ["terrain", "objects"] {
-                let count: u64 = connection.query_row(
-                    "SELECT count(*) FROM lod_block WHERE kind = ?1",
-                    [kind],
-                    |row| row.get(0),
-                )?;
-                stats.insert(format!("lod_block_{kind}"), count);
             }
         }
         for (relative, path) in owned_files(output, &spec.owns.files)? {
@@ -273,26 +220,16 @@ pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
                 .replace('\\', "/");
             let json = read_gltf_json(&mesh)
                 .wrap_err_with(|| format!("reading the glTF header of {}", mesh.display()))?;
-            let mut document: Option<serde_json::Value> = None;
+            let document: serde_json::Value = serde_json::from_slice(&json)
+                .wrap_err_with(|| format!("{} has an invalid glTF JSON chunk", mesh.display()))?;
             for entry in &mut pending {
                 for name in &entry.spec.owns.gltf_extensions {
-                    // A document that never spells the name cannot use it.
-                    if !contains(&json, name.as_bytes()) {
-                        continue;
-                    }
-                    if document.is_none() {
-                        document = Some(serde_json::from_slice(&json).wrap_err_with(|| {
-                            format!("{} has an invalid glTF JSON chunk", mesh.display())
-                        })?);
-                    }
-                    if let Some(document) = &document {
-                        let used = document["extensionsUsed"].as_array().is_some_and(|used| {
-                            used.iter()
-                                .any(|value| value.as_str() == Some(name.as_str()))
-                        });
-                        entry.gltf_used |= used;
-                        entry.hasher.add_gltf(name, &relative, document);
-                    }
+                    let used = document["extensionsUsed"].as_array().is_some_and(|used| {
+                        used.iter()
+                            .any(|value| value.as_str() == Some(name.as_str()))
+                    });
+                    entry.gltf_used |= used;
+                    entry.hasher.add_gltf(name, &relative, &document);
                 }
             }
         }
@@ -356,19 +293,10 @@ pub fn recompute_hash(output: &Path, entry: &ExtensionEntry) -> Result<String> {
                 .replace('\\', "/");
             let json = read_gltf_json(&mesh)
                 .wrap_err_with(|| format!("reading the glTF header of {}", mesh.display()))?;
-            let mut document: Option<serde_json::Value> = None;
+            let document: serde_json::Value = serde_json::from_slice(&json)
+                .wrap_err_with(|| format!("{} has an invalid glTF JSON chunk", mesh.display()))?;
             for name in &entry.owns.gltf_extensions {
-                if !contains(&json, name.as_bytes()) {
-                    continue;
-                }
-                if document.is_none() {
-                    document = Some(serde_json::from_slice(&json).wrap_err_with(|| {
-                        format!("{} has an invalid glTF JSON chunk", mesh.display())
-                    })?);
-                }
-                if let Some(document) = &document {
-                    hasher.add_gltf(name, &relative, document);
-                }
+                hasher.add_gltf(name, &relative, &document);
             }
         }
     }
@@ -506,6 +434,21 @@ fn count_rows(connection: &Connection, table: &str) -> Result<u64> {
 fn owned_files(root: &Path, entries: &[String]) -> Result<Vec<(String, std::path::PathBuf)>> {
     let mut files = BTreeMap::new();
     for entry in entries {
+        let relative = entry.strip_suffix('/').unwrap_or(entry);
+        color_eyre::eyre::ensure!(
+            !relative.is_empty()
+                && !entry.contains('\\')
+                && !entry.contains(':')
+                && !entry.chars().any(char::is_control)
+                && relative.split('/').all(|part| {
+                    !part.is_empty()
+                        && part != "."
+                        && part != ".."
+                        && !part.ends_with('.')
+                        && !part.ends_with(' ')
+                }),
+            "owned file path {entry:?} must be a canonical dataset-relative path"
+        );
         if entry.ends_with('/') {
             let folder = root.join(entry.trim_end_matches('/'));
             if !folder.is_dir() {
@@ -582,63 +525,99 @@ fn read_gltf_json(path: &Path) -> Result<Vec<u8>> {
     Ok(json)
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn specs_are_sorted_and_never_overlap() {
-        let mut seen: BTreeSet<(&str, String)> = BTreeSet::new();
-        let mut ids = BTreeSet::new();
-        for spec in specs() {
-            assert!(ids.insert(spec.id), "{} is listed twice", spec.id);
-            for (kind, list) in [
-                ("table", &spec.owns.tables),
-                ("index", &spec.owns.indexes),
-                ("file", &spec.owns.files),
-                ("gltf", &spec.owns.gltf_extensions),
-            ] {
-                assert!(list.is_sorted(), "{} {kind} list is not sorted", spec.id);
-                for item in list {
-                    assert!(
-                        seen.insert((kind, item.clone())),
-                        "{kind} {item} is owned twice"
-                    );
-                }
-            }
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    fn output_with_tables(without: &[&str]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+        crate::esm::exporter::create_tables(&connection).unwrap();
+        for table in without {
+            connection
+                .execute_batch(&format!(
+                    "DROP TABLE IF EXISTS {}",
+                    shared::extensions::quote_identifier(table)
+                ))
+                .unwrap();
+        }
+        directory
+    }
+
+    fn gltf_spec() -> ExtensionSpec {
+        ExtensionSpec {
+            id: "example.payload",
+            version: 1,
+            owns: ExtensionOwns {
+                gltf_extensions: vec!["EXAMPLE_payload".into()],
+                ..Default::default()
+            },
         }
     }
 
     #[test]
-    fn nothing_owned_is_a_main_core_table() {
-        for spec in specs() {
-            for table in &spec.owns.tables {
-                assert!(
-                    !MAIN_CORE_TABLES.contains(&table.as_str()),
-                    "{} owns the core table {table}",
-                    spec.id
-                );
-            }
-            for index in &spec.owns.indexes {
-                assert!(
-                    !MAIN_CORE_INDEXES.contains(&index.as_str()),
-                    "{} owns the core index {index}",
-                    spec.id
-                );
-            }
-        }
+    fn ordinary_converter_registers_no_optional_payloads() {
+        assert!(specs().is_empty());
+        let directory = output_with_tables(&[]);
+        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+        connection
+            .execute_batch("CREATE TABLE extra_payload(value INTEGER);")
+            .unwrap();
+        assert!(build_entries(directory.path()).unwrap().is_empty());
+        let mut manifest = ConversionManifest::default();
+        manifest.extensions.push(ExtensionEntry {
+            id: DOOR_LINKS.into(),
+            version: 1,
+            owns: ExtensionOwns::default(),
+            sha256: String::new(),
+            built_from: String::new(),
+            stats: BTreeMap::new(),
+        });
+        refresh_manifest(&mut manifest, directory.path()).unwrap();
+        assert!(manifest.extensions.is_empty());
     }
 
-    /// The core list above is `main`'s: every table this converter writes is either on it or owned
-    /// by an extension, so a new table cannot be added to the database without a decision.
+    #[test]
+    fn explicit_descriptors_hash_their_own_tables_indexes_and_files() {
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "core");
+        let finalized = custom_entry(
+            directory.path(),
+            "example.payload",
+            "extra_payload",
+            "payload",
+        );
+        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+        connection
+            .execute_batch("CREATE INDEX idx_payload ON extra_payload(a);")
+            .unwrap();
+        let spec = ExtensionSpec {
+            id: "example.payload",
+            version: 1,
+            owns: ExtensionOwns {
+                tables: vec!["extra_payload".into()],
+                indexes: vec!["idx_payload".into()],
+                files: vec!["payload/".into()],
+                ..Default::default()
+            },
+        };
+        let entries = build_entries_with_specs(directory.path(), vec![spec]).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].stats["extra_payload"], 1);
+        assert_eq!(entries[0].built_from, "core");
+        assert_eq!(
+            entries[0].sha256,
+            recompute_hash(directory.path(), &entries[0]).unwrap()
+        );
+        assert_ne!(entries[0].sha256, finalized.sha256);
+        assert!(build_entries(directory.path()).unwrap().is_empty());
+    }
+
     #[test]
     fn every_converter_table_is_core_or_owned() {
         let connection = Connection::open_in_memory().unwrap();
@@ -764,24 +743,6 @@ mod tests {
     fn finalized_sql_aliases_conflict_with_converter_and_foreign_owners() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        for (table, index) in [("SPACE_LIGHTING", ""), ("", "IDX_LOD_TREE_BLOCK")] {
-            let mut entry = ExtensionEntry {
-                id: "example.extra".into(),
-                version: 1,
-                owns: ExtensionOwns::default(),
-                sha256: String::new(),
-                built_from: "abc".into(),
-                stats: BTreeMap::new(),
-            };
-            if !table.is_empty() {
-                entry.owns.tables.push(table.into());
-            }
-            if !index.is_empty() {
-                entry.owns.indexes.push(index.into());
-            }
-            entry.sha256 = recompute_hash(directory.path(), &entry).unwrap();
-            assert!(refused(directory.path(), &[entry]).contains("ownership conflicts"));
-        }
         let one = custom_entry(directory.path(), "example.a", "extra_table", "extra");
         let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
         connection
@@ -842,167 +803,6 @@ mod tests {
     }
 
     #[test]
-    fn statics_is_main_s_table() {
-        let connection = Connection::open_in_memory().unwrap();
-        crate::esm::exporter::create_tables(&connection).unwrap();
-        let columns: Vec<String> = connection
-            .prepare("SELECT name FROM pragma_table_info('statics')")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            columns,
-            [
-                "id",
-                "editor_id",
-                "model_path",
-                "flags",
-                "full_name",
-                "bounds_min_x",
-                "bounds_min_y",
-                "bounds_min_z",
-                "bounds_max_x",
-                "bounds_max_y",
-                "bounds_max_z",
-                "bounds_valid"
-            ]
-        );
-    }
-
-    fn glb(json: &str) -> Vec<u8> {
-        let mut json = json.as_bytes().to_vec();
-        while !json.len().is_multiple_of(4) {
-            json.push(b' ');
-        }
-        let mut bytes = b"glTF".to_vec();
-        bytes.extend_from_slice(&2u32.to_le_bytes());
-        bytes.extend_from_slice(&((20 + json.len()) as u32).to_le_bytes());
-        bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(b"JSON");
-        bytes.extend_from_slice(&json);
-        bytes
-    }
-
-    fn output_with_tables(tables: &[&str]) -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
-        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
-        crate::esm::exporter::create_tables(&connection).unwrap();
-        // Capability hashing reads existing extension schemas; its fixture must not
-        // depend on optional production exporters being installed in this build.
-        connection
-            .execute_batch(
-                r#"
-         CREATE TABLE IF NOT EXISTS lod_grid (
-             worldspace_id INTEGER PRIMARY KEY, origin_x INTEGER NOT NULL, origin_y INTEGER NOT NULL,
-             levels TEXT NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS lod_block (
-             worldspace_id INTEGER NOT NULL, kind TEXT NOT NULL, level INTEGER NOT NULL,
-             block_x INTEGER NOT NULL, block_y INTEGER NOT NULL, mesh_path TEXT NOT NULL,
-             bounds_min_x REAL, bounds_min_y REAL, bounds_min_z REAL,
-             bounds_max_x REAL, bounds_max_y REAL, bounds_max_z REAL,
-             PRIMARY KEY (worldspace_id, kind, level, block_x, block_y)
-         );
-         CREATE TABLE IF NOT EXISTS lod_tree_type (
-             worldspace_id INTEGER NOT NULL, tree_index INTEGER NOT NULL, mesh_path TEXT NOT NULL,
-             size_x REAL NOT NULL, size_y REAL NOT NULL,
-             u0 REAL NOT NULL, v0 REAL NOT NULL, u1 REAL NOT NULL, v1 REAL NOT NULL,
-             PRIMARY KEY (worldspace_id, tree_index)
-         );
-         CREATE TABLE IF NOT EXISTS lod_tree_instance (
-             worldspace_id INTEGER NOT NULL, block_x INTEGER NOT NULL, block_y INTEGER NOT NULL,
-             tree_index INTEGER NOT NULL, pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
-             rotation REAL NOT NULL DEFAULT 0, scale REAL NOT NULL DEFAULT 1
-         );
-         CREATE INDEX IF NOT EXISTS idx_lod_tree_block ON lod_tree_instance(worldspace_id, block_x, block_y);
-         CREATE TABLE IF NOT EXISTS static_materials (
-             id INTEGER PRIMARY KEY,            -- the statics row
-             material_object INTEGER NOT NULL,  -- DNAM bytes 4..8: the MATO
-             material_max_angle REAL NOT NULL   -- DNAM bytes 0..4: degrees of coverage, in the snow shader's terms
-         );
-         CREATE TABLE IF NOT EXISTS matos (
-             id INTEGER PRIMARY KEY, editor_id TEXT,
-             falloff_scale REAL NOT NULL, falloff_bias REAL NOT NULL,
-             noise_uv_scale REAL NOT NULL, material_uv_scale REAL NOT NULL,
-             dir_proj_x REAL NOT NULL, dir_proj_y REAL NOT NULL, dir_proj_z REAL NOT NULL,
-             normal_dampener REAL NOT NULL,
-             single_pass_color INTEGER NOT NULL, single_pass INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS space_lighting (
-             space_id INTEGER PRIMARY KEY,   -- a CELL or WRLD FormID: one row per space
-             is_interior INTEGER NOT NULL,   -- 1 for a CELL, 0 for a WRLD
-             template_id INTEGER,            -- the cell's LTMP, remapped; NULL for a worldspace
-             ambient INTEGER, directional INTEGER, fog INTEGER,
-             fog_near REAL, fog_far REAL, fog_power REAL, fog_clip REAL,
-             direction_rot_xy INTEGER, direction_rot_z INTEGER, direction_fade REAL,
-             sky_upper INTEGER, sky_fog INTEGER, sky_lower INTEGER,
-             sun INTEGER, sun_illuminance REAL,
-             climate_id INTEGER, weather_id INTEGER,
-             has_sky INTEGER NOT NULL,
-             -- An interior's XCLL beyond the near fog: the colour the fog reaches at its far
-             -- distance, the most it covers, and the distances over which the cell's point
-             -- lights fade out. NULL for a worldspace.
-             fog_far_color INTEGER, fog_max REAL,
-             light_fade_begin REAL, light_fade_end REAL
-         );
-                "#,
-            )
-            .unwrap();
-        for table in tables {
-            connection
-                .execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])
-                .unwrap();
-        }
-        directory
-    }
-
-    #[test]
-    fn lists_what_was_written_even_with_zero_rows() {
-        let directory = output_with_tables(&[]);
-        let entries = build_entries(directory.path()).unwrap();
-        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
-        // No mesh in the folder: the glTF-only extension is not listed.
-        assert_eq!(ids, [LOD_INVENTORY, SPACE_LIGHTING, DIRECTIONAL_SNOW]);
-        let lod = &entries[0];
-        assert_eq!(lod.stats["lod_grid"], 0);
-        assert_eq!(lod.stats["lod_block_terrain"], 0);
-        assert_eq!(
-            lod.built_from, "",
-            "no lod_build row means an empty identity"
-        );
-        assert!(shared::extensions::ownership_problems(&entries).is_empty());
-    }
-
-    #[test]
-    fn promoted_door_links_are_core_and_old_manifest_entries_are_retired() {
-        let directory = output_with_tables(&[]);
-        let mut manifest = ConversionManifest::default();
-        let mut legacy = build_entries(directory.path()).unwrap()[0].clone();
-        legacy.id = DOOR_LINKS.to_owned();
-        legacy.owns = ExtensionOwns {
-            tables: names(&["door_links"]),
-            ..Default::default()
-        };
-        manifest.extensions.push(legacy);
-        refresh_manifest(&mut manifest, directory.path()).unwrap();
-        assert!(
-            !manifest
-                .extensions
-                .iter()
-                .any(|entry| entry.id == DOOR_LINKS)
-        );
-        assert!(
-            !manifest
-                .extensions
-                .iter()
-                .flat_map(|entry| &entry.owns.tables)
-                .any(|table| table == "door_links" || table == "emittance")
-        );
-    }
-
-    #[test]
     fn finalized_extensions_cannot_claim_core_tables_or_retired_door_identity() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
@@ -1022,81 +822,21 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_table_leaves_the_extension_out() {
-        let directory = output_with_tables(&["static_materials", "door_links"]);
-        let entries = build_entries(directory.path()).unwrap();
-        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
-        assert_eq!(ids, [LOD_INVENTORY, SPACE_LIGHTING]);
-    }
-
-    #[test]
     fn no_database_lists_no_table_extension() {
         let directory = tempfile::tempdir().unwrap();
         assert!(build_entries(directory.path()).unwrap().is_empty());
     }
 
-    #[test]
-    fn rows_change_the_hash_and_stats_count_them() {
-        let directory = output_with_tables(&[]);
-        let before = build_entries(directory.path()).unwrap();
-        let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
+    fn with_identity(output: &Path, identity: &str) {
+        let connection = Connection::open(output.join(DATABASE)).unwrap();
         connection
             .execute(
-                "INSERT INTO static_materials(id, material_object, material_max_angle) VALUES (1, 2, 3.5)",
-                [],
+                "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
+                [identity],
             )
             .unwrap();
-        connection
-            .execute(
-                "INSERT INTO lod_build(id, build_identity) VALUES (1, 'abc')",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        let after = build_entries(directory.path()).unwrap();
-        let snow = |entries: &[ExtensionEntry]| {
-            entries
-                .iter()
-                .find(|entry| entry.id == DIRECTIONAL_SNOW)
-                .cloned()
-                .unwrap()
-        };
-        assert_ne!(snow(&before).sha256, snow(&after).sha256);
-        assert_eq!(snow(&after).stats["static_materials"], 1);
-        assert_eq!(snow(&after).stats["matos"], 0);
-        assert_eq!(snow(&after).built_from, "abc");
-        assert_eq!(snow(&before).built_from, "");
     }
 
-    #[test]
-    fn meshes_feed_the_material_hash() {
-        let directory = output_with_tables(&[]);
-        fs::create_dir_all(directory.path().join("meshes")).unwrap();
-        fs::write(
-            directory.path().join("meshes/plain.glb"),
-            glb(r#"{"asset":{"version":"2.0"}}"#),
-        )
-        .unwrap();
-        // No mesh uses the extension: it is not listed (a listed entry would describe nothing).
-        let listed = |entries: &[ExtensionEntry]| entries.iter().any(|entry| entry.id == MATERIAL);
-        assert!(!listed(&build_entries(directory.path()).unwrap()));
-        fs::write(
-            directory.path().join("meshes/rock.glb"),
-            glb(
-                r#"{"asset":{"version":"2.0"},"extensionsUsed":["MUDCRAB_material"],
-                "materials":[{"extensions":{"MUDCRAB_material":{"uvScale":[1,2.5]}}}]}"#,
-            ),
-        )
-        .unwrap();
-        let used = build_entries(directory.path())
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.id == MATERIAL)
-            .expect("a mesh that uses MUDCRAB_material lists the extension");
-        assert_ne!(used.sha256, ExtensionHasher::new(MATERIAL, 1).finish());
-    }
-
-    /// A finalized extension owning a table and a folder, as a cluster finalizer would write it.
     fn custom_entry(output: &Path, id: &str, table: &str, folder: &str) -> ExtensionEntry {
         let connection = Connection::open(output.join(DATABASE)).unwrap();
         connection
@@ -1127,31 +867,16 @@ mod tests {
         entry
     }
 
-    fn with_identity(output: &Path, identity: &str) {
-        let connection = Connection::open(output.join(DATABASE)).unwrap();
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
-                [identity],
-            )
-            .unwrap();
-    }
-
     #[test]
     fn finalized_entries_join_the_converter_s_own() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        let base = custom_entry(
-            directory.path(),
-            "mudcrab.clusters",
-            "cluster_x",
-            "clusters",
-        );
+        let base = custom_entry(directory.path(), "example.geometry", "payload_x", "payload");
         let terrain = custom_entry(
             directory.path(),
-            "mudcrab.cluster_terrain",
-            "cluster_t",
-            "clusters_terrain",
+            "example.terrain",
+            "payload_t",
+            "terrain_payload",
         );
         let mut manifest = ConversionManifest::default();
         refresh_manifest_with_finalized(
@@ -1161,16 +886,7 @@ mod tests {
         )
         .unwrap();
         let ids: Vec<&str> = manifest.extensions.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                LOD_INVENTORY,
-                SPACE_LIGHTING,
-                DIRECTIONAL_SNOW,
-                "mudcrab.clusters",
-                "mudcrab.cluster_terrain"
-            ]
-        );
+        assert_eq!(ids, ["example.geometry", "example.terrain"]);
         assert_eq!(
             manifest.extensions.iter().find(|entry| entry.id == base.id),
             Some(&base)
@@ -1190,7 +906,6 @@ mod tests {
         assert_eq!(plain.extensions, empty.extensions);
     }
 
-    /// Every refusal leaves the in-memory manifest as it was.
     fn refused(output: &Path, finalized: &[ExtensionEntry]) -> String {
         let mut manifest = ConversionManifest {
             extensions: vec![ExtensionEntry {
@@ -1217,12 +932,7 @@ mod tests {
     fn a_mismatched_core_identity_is_refused() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        let entry = custom_entry(
-            directory.path(),
-            "mudcrab.clusters",
-            "cluster_x",
-            "clusters",
-        );
+        let entry = custom_entry(directory.path(), "example.geometry", "payload_x", "payload");
         with_identity(directory.path(), "def");
         assert!(refused(directory.path(), std::slice::from_ref(&entry)).contains("was built from"));
         // A data set without any identity cannot take a finalized entry either.
@@ -1236,27 +946,14 @@ mod tests {
     fn duplicate_ids_and_conflicting_ownership_are_refused() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        let one = custom_entry(
-            directory.path(),
-            "mudcrab.clusters",
-            "cluster_x",
-            "clusters",
-        );
+        let one = custom_entry(directory.path(), "example.geometry", "payload_x", "payload");
         assert!(refused(directory.path(), &[one.clone(), one.clone()]).contains("listed twice"));
-        let mut clash = custom_entry(directory.path(), "mudcrab.other", "cluster_y", "other");
-        clash.id = SPACE_LIGHTING.to_owned();
-        assert!(refused(directory.path(), &[clash]).contains("listed twice"));
-        // Same table as the converter's own space_lighting, under a new id.
         let mut taken = one.clone();
-        taken.id = "mudcrab.taken".to_owned();
-        taken.owns = ExtensionOwns {
-            tables: vec!["space_lighting".to_owned()],
-            ..Default::default()
-        };
+        taken.id = "example.taken".into();
+        taken.owns.files.clear();
         taken.sha256 = recompute_hash(directory.path(), &taken).unwrap();
-        assert!(refused(directory.path(), &[taken]).contains("ownership conflicts"));
-        let mut shared_folder =
-            custom_entry(directory.path(), "mudcrab.b", "cluster_b", "clusters");
+        assert!(refused(directory.path(), &[one.clone(), taken]).contains("ownership conflicts"));
+        let mut shared_folder = custom_entry(directory.path(), "mudcrab.b", "payload_b", "payload");
         shared_folder.sha256 = recompute_hash(directory.path(), &shared_folder).unwrap();
         assert!(refused(directory.path(), &[one, shared_folder]).contains("ownership conflicts"));
     }
@@ -1265,20 +962,15 @@ mod tests {
     fn changed_owned_bytes_are_refused() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        let entry = custom_entry(
-            directory.path(),
-            "mudcrab.clusters",
-            "cluster_x",
-            "clusters",
-        );
-        fs::write(directory.path().join("clusters/a.bin"), b"changed").unwrap();
+        let entry = custom_entry(directory.path(), "example.geometry", "payload_x", "payload");
+        fs::write(directory.path().join("payload/a.bin"), b"changed").unwrap();
         assert!(
             refused(directory.path(), std::slice::from_ref(&entry)).contains("content hashes to")
         );
-        fs::write(directory.path().join("clusters/a.bin"), b"payload").unwrap();
+        fs::write(directory.path().join("payload/a.bin"), b"payload").unwrap();
         let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
         connection
-            .execute("INSERT INTO cluster_x VALUES (8)", [])
+            .execute("INSERT INTO payload_x VALUES (8)", [])
             .unwrap();
         drop(connection);
         assert!(refused(directory.path(), &[entry]).contains("content hashes to"));
@@ -1288,18 +980,13 @@ mod tests {
     fn nested_file_ownership_is_refused() {
         let directory = output_with_tables(&[]);
         with_identity(directory.path(), "abc");
-        let base = custom_entry(
-            directory.path(),
-            "mudcrab.clusters",
-            "cluster_x",
-            "clusters",
-        );
+        let base = custom_entry(directory.path(), "example.geometry", "payload_x", "payload");
         // Another extension owning a folder or an exact file below the base's folder.
         let mut below = custom_entry(
             directory.path(),
-            "mudcrab.cluster_terrain",
-            "cluster_t",
-            "clusters/terrain",
+            "example.terrain",
+            "payload_t",
+            "payload/terrain",
         );
         // The nested files exist now, so the base hash covers them.
         let mut base = base;
@@ -1308,7 +995,7 @@ mod tests {
             refused(directory.path(), &[base.clone(), below.clone()]).contains("overlaps"),
             "a folder below another extension's folder"
         );
-        below.owns.files = vec!["clusters/a.bin".to_owned()];
+        below.owns.files = vec!["payload/a.bin".to_owned()];
         below.sha256 = recompute_hash(directory.path(), &below).unwrap();
         assert!(
             refused(directory.path(), &[base.clone(), below.clone()]).contains("overlaps"),
@@ -1316,32 +1003,130 @@ mod tests {
         );
         // Order does not matter, and the converter's own mesh folder counts too.
         assert!(refused(directory.path(), &[below, base.clone()]).contains("overlaps"));
-        let mut meshes = custom_entry(
-            directory.path(),
-            "mudcrab.m",
-            "cluster_m",
-            "meshes/terrain/x",
-        );
-        meshes.owns.files = vec!["meshes/terrain/x/".to_owned()];
-        meshes.sha256 = recompute_hash(directory.path(), &meshes).unwrap();
-        assert!(refused(directory.path(), &[meshes]).contains("overlaps"));
         // Disjoint folders with a shared name prefix are fine.
-        let sibling = custom_entry(directory.path(), "mudcrab.s", "cluster_s", "clusters_extra");
+        let sibling = custom_entry(directory.path(), "mudcrab.s", "payload_s", "payload_extra");
         let mut manifest = ConversionManifest::default();
         refresh_manifest_with_finalized(&mut manifest, directory.path(), &[base, sibling]).unwrap();
     }
 
     #[test]
+    fn escaped_gltf_names_match_semantic_discovery_and_hashes() {
+        let directory = output_with_tables(&[]);
+        let path = directory.path().join("meshes/escaped.gltf");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let plain = r#"{"extensionsUsed":["EXAMPLE_payload"],"materials":[{"extensions":{"EXAMPLE_payload":{"value":1}}}]}"#;
+        fs::write(&path, plain).unwrap();
+        let entries = build_entries_with_specs(directory.path(), vec![gltf_spec()]).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "example.payload")
+            .unwrap();
+        let hash = recompute_hash(directory.path(), entry).unwrap();
+        fs::write(
+            &path,
+            plain.replace("EXAMPLE_payload", r"\u0045XAMPLE_payload"),
+        )
+        .unwrap();
+        assert_eq!(
+            build_entries_with_specs(directory.path(), vec![gltf_spec()]).unwrap(),
+            entries
+        );
+        assert_eq!(recompute_hash(directory.path(), entry).unwrap(), hash);
+        fs::write(
+            &path,
+            plain
+                .replace("EXAMPLE_payload", r"\u0045XAMPLE_payload")
+                .replace("value\":1", "value\":2"),
+        )
+        .unwrap();
+        assert_ne!(recompute_hash(directory.path(), entry).unwrap(), hash);
+    }
+
+    #[test]
+    fn finalized_entries_refuse_file_aliases_without_mutating_the_manifest() {
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "abc");
+        let canonical = custom_entry(directory.path(), "example.a", "extra_table", "extra");
+        let mut alias = canonical.clone();
+        alias.id = "example.b".into();
+        alias.owns = ExtensionOwns {
+            files: vec!["extra/./a.bin".into()],
+            ..Default::default()
+        };
+        let mut hasher = ExtensionHasher::new(&alias.id, alias.version);
+        hasher.add_file("extra/./a.bin", b"payload");
+        alias.sha256 = hasher.finish();
+        assert!(refused(directory.path(), &[canonical, alias]).contains("canonical"));
+    }
+
+    #[test]
+    fn owned_files_reject_aliases_and_paths_outside_the_dataset() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("extra")).unwrap();
+        fs::write(directory.path().join("extra/a.bin"), b"payload").unwrap();
+        for path in [
+            "extra/./a.bin",
+            "extra/../extra/a.bin",
+            "extra//a.bin",
+            "extra\\a.bin",
+            "../outside.bin",
+            "/absolute.bin",
+            "Q:/absolute.bin",
+            "extra//",
+            "./",
+            "",
+        ] {
+            assert!(
+                owned_files(directory.path(), &[path.into()]).is_err(),
+                "accepted {path:?}"
+            );
+        }
+        assert_eq!(
+            owned_files(directory.path(), &["extra/a.bin".into()])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            owned_files(directory.path(), &["extra/".into()])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_missing_exact_owned_file_is_an_error() {
         let directory = output_with_tables(&[]);
-        let error = owned_files(directory.path(), &["clusters/nothing.bin".to_owned()])
+        let error = owned_files(directory.path(), &["payload/nothing.bin".to_owned()])
             .expect_err("an exact file must exist");
         assert!(format!("{error}").contains("is missing"));
         // A missing folder entry covers nothing.
         assert!(
-            owned_files(directory.path(), &["clusters/".to_owned()])
+            owned_files(directory.path(), &["payload/".to_owned()])
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn canonical_owned_files_reject_equivalent_dot_aliases(
+            folder in "[a-z][a-z0-9]{0,7}",
+            file in "[a-z][a-z0-9]{0,7}",
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            fs::create_dir(directory.path().join(&folder)).unwrap();
+            let path = format!("{folder}/{file}.bin");
+            fs::write(directory.path().join(&path), b"payload").unwrap();
+            proptest::prop_assert_eq!(owned_files(directory.path(), &[path]).unwrap().len(), 1);
+            for alias in [
+                format!("{folder}/./{file}.bin"),
+                format!("{folder}/../{folder}/{file}.bin"),
+                format!("{folder}//{file}.bin"),
+            ] {
+                proptest::prop_assert!(owned_files(directory.path(), std::slice::from_ref(&alias)).is_err(), "accepted {}", alias);
+            }
+        }
     }
 }

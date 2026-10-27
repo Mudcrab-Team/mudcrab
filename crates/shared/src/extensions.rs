@@ -1,20 +1,14 @@
-//! Data set extensions: derived output that `main`'s converter does not write.
+//! Versioned payload declarations and deterministic content hashes.
 //!
-//! The core of a converted data set (every table, column, file and manifest value `main`'s converter
-//! writes) stays byte for byte `main`'s. Everything else is an *extension*: a named, versioned set
-//! of whole tables, indexes, files or glTF extension names, listed in `conversion-manifest.json`.
-//! For example, a legacy door-link declaration (door links are now core output):
+//! Optional derived payloads own whole tables, indexes, files or glTF extension names without
+//! changing the upstream core contract. [`ExtensionEntry`] and [`ExtensionOwns`] are independent
+//! of their enclosing manifest: both base manifests and overlay documents may embed them.
+//! [`DataExtensions::from_manifest_json`] reads an `extensions` array with an explicit current
+//! core identity; [`DataExtensions::load`] is the base dataset convenience loader.
 //!
-//! ```json
-//! "extensions": [{ "id": "mudcrab.door_links", "version": 1,
-//!                  "owns": { "tables": ["door_links"], "indexes": [], "files": [], "gltf_extensions": [] },
-//!                  "sha256": "...", "built_from": "...", "stats": { "links": 2 } }]
-//! ```
-//!
-//! A runtime reads the core it supports plus the extensions it knows ([`DataExtensions`]); a
-//! feature whose extension is missing, stale or too new is not built and says why. The content
-//! hash (`mudcrab-ext-hash-v1`, [`ExtensionHasher`]) matches the reference implementation in
-//! `crates/converter/tests/support/extension_hash_reference.py`.
+//! A reader asks for its own ID and supported versions. Missing, stale or unsupported payloads
+//! remain distinguishable, while [`ExtensionHasher`] implements the canonical content digest.
+//! Reference: `crates/converter/tests/support/extension_hash_reference.py`.
 //! Contract: `docs/specs/converters/extensions.md`.
 
 use std::borrow::Cow;
@@ -32,17 +26,8 @@ use sha2::{Digest, Sha256};
 /// Name of the content hash algorithm, the first line of every hashed stream.
 pub const HASH_ALGORITHM: &str = "mudcrab-ext-hash-v1";
 
-/// Distant-object LOD inventory: grids, blocks, tree types and instances.
-pub const LOD_INVENTORY: &str = "mudcrab.lod_inventory";
 /// Load-door teleport links (`XTEL`).
 pub const DOOR_LINKS: &str = "mudcrab.door_links";
-/// Per-space lighting (`XCLL`, `LGTM`).
-pub const SPACE_LIGHTING: &str = "mudcrab.space_lighting";
-/// Directional snow: material objects (`MATO`) and each static's material (`STAT DNAM`).
-pub const DIRECTIONAL_SNOW: &str = "mudcrab.directional_snow";
-/// Material data beyond `OPEN_SKYRIM_material`: UV transform, effect falloff, blend factors, animation.
-pub const MATERIAL: &str = "mudcrab.material";
-
 /// What one extension wrote. Every list is sorted; a `files` entry ending in `/` covers every file
 /// below that directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,8 +185,7 @@ impl DataExtensions {
 }
 
 /// The schemas of `connection` that can hold dataset objects: `main` and every attached database,
-/// never `temp`. A converter stage connection is a cluster database with the base attached as
-/// `base`; the engine's is the base with the overlay attached as `clusters`.
+/// never `temp`. Callers may attach a core database to a derived-payload database, or vice versa.
 pub fn dataset_schemas(connection: &Connection) -> Result<Vec<String>> {
     let mut statement = connection.prepare("PRAGMA database_list")?;
     let names = statement
@@ -446,19 +430,7 @@ impl ExtensionHasher {
             return;
         }
         let mut parts = Vec::new();
-        if let Some(value) = document["extensions"].get(name) {
-            parts.push(format!("/extensions/{name}={}", encode_json(value)));
-        }
-        if let Some(materials) = document["materials"].as_array() {
-            for (index, material) in materials.iter().enumerate() {
-                if let Some(value) = material["extensions"].get(name) {
-                    parts.push(format!(
-                        "/materials/{index}/extensions/{name}={}",
-                        encode_json(value)
-                    ));
-                }
-            }
-        }
+        collect_gltf_extension(document, name, "", &mut parts);
         if parts.is_empty() {
             return;
         }
@@ -499,6 +471,50 @@ impl ExtensionHasher {
         }
         hex(&digest.finalize())
     }
+}
+
+/// Collect every owned occurrence in deterministic object-key/array order. JSON pointers
+/// distinguish identical values at different locations; root/material streams retain their order.
+fn collect_gltf_extension(
+    value: &serde_json::Value,
+    name: &str,
+    pointer: &str,
+    parts: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(extension) = object
+                .get("extensions")
+                .and_then(|extensions| extensions.get(name))
+            {
+                parts.push(format!(
+                    "{pointer}/extensions/{}={}",
+                    escape_pointer(name),
+                    encode_json(extension)
+                ));
+            }
+            let mut keys: Vec<_> = object.keys().collect();
+            keys.sort_unstable();
+            for key in keys {
+                collect_gltf_extension(
+                    &object[key],
+                    name,
+                    &format!("{pointer}/{}", escape_pointer(key)),
+                    parts,
+                );
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_gltf_extension(item, name, &format!("{pointer}/{index}"), parts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn escape_pointer(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
 }
 
 /// Hashes the database parts of an entry (tables and indexes) plus the given files and meshes.
@@ -617,6 +633,9 @@ fn encode_json_into(value: &serde_json::Value, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const MATERIAL_FIXTURE_ID: &str = "mudcrab.material";
+    const STALE_ID: &str = "example.stale";
+    const MISSING_ID: &str = "example.missing";
 
     #[test]
     fn fast_sql_hex_matches_the_original_byte_encoding() {
@@ -739,10 +758,40 @@ mod tests {
             ]
         });
         let plain = serde_json::json!({"asset": {"version": "2.0"}});
-        let mut hasher = ExtensionHasher::new(MATERIAL, 1);
+        let mut hasher = ExtensionHasher::new(MATERIAL_FIXTURE_ID, 1);
         hasher.add_gltf("MUDCRAB_material", "meshes/rock.glb", &rock);
         hasher.add_gltf("MUDCRAB_material", "meshes/plain.glb", &plain);
         assert_eq!(hasher.finish(), PINNED_MATERIAL);
+    }
+
+    #[test]
+    fn gltf_hash_covers_nodes_primitives_and_occurrence_paths() {
+        let hash = |document: &serde_json::Value| {
+            let mut hasher = ExtensionHasher::new("example.payload", 1);
+            hasher.add_gltf("EXAMPLE_payload", "meshes/example.gltf", document);
+            hasher.finish()
+        };
+        let document = serde_json::json!({
+            "extensionsUsed": ["EXAMPLE_payload"],
+            "nodes": [{"extensions": {"EXAMPLE_payload": {"value": 1}}}],
+            "meshes": [{"primitives": [{"extensions": {"EXAMPLE_payload": {"value": 2}}}]}]
+        });
+        let original = hash(&document);
+        for pointer in [
+            "/nodes/0/extensions/EXAMPLE_payload/value",
+            "/meshes/0/primitives/0/extensions/EXAMPLE_payload/value",
+        ] {
+            let mut changed = document.clone();
+            *changed.pointer_mut(pointer).unwrap() = 3.into();
+            assert_ne!(hash(&changed), original, "unhashed occurrence: {pointer}");
+        }
+        let mut moved = document.clone();
+        moved["scenes"] = moved.as_object_mut().unwrap().remove("nodes").unwrap();
+        assert_ne!(
+            hash(&moved),
+            original,
+            "occurrence location is part of the hash"
+        );
     }
 
     #[test]
@@ -782,8 +831,8 @@ mod tests {
         let manifest = serde_json::json!({
             "schema_version": 26,
             "complete": true,
-            "extensions": [entry(DOOR_LINKS, 1, "core"), entry(MATERIAL, 3, "core"),
-                           entry(SPACE_LIGHTING, 1, "older")]
+            "extensions": [entry(DOOR_LINKS, 1, "core"), entry(MATERIAL_FIXTURE_ID, 3, "core"),
+                           entry(STALE_ID, 1, "older")]
         });
         let data =
             DataExtensions::from_manifest_json(&manifest.to_string(), Some("core".into())).unwrap();
@@ -791,20 +840,41 @@ mod tests {
             data.status(DOOR_LINKS, 1..=1),
             ExtensionStatus::Present { version: 1 }
         );
-        assert_eq!(data.status(LOD_INVENTORY, 1..=1), ExtensionStatus::Missing);
+        assert_eq!(data.status(MISSING_ID, 1..=1), ExtensionStatus::Missing);
         assert_eq!(
-            data.status(MATERIAL, 1..=2),
+            data.status(MATERIAL_FIXTURE_ID, 1..=2),
             ExtensionStatus::UnsupportedVersion {
                 version: 3,
                 supported: 1..=2
             }
         );
         assert_eq!(
-            data.status(SPACE_LIGHTING, 1..=1),
+            data.status(STALE_ID, 1..=1),
             ExtensionStatus::Stale {
                 built_from: "older".into()
             }
         );
+    }
+
+    #[test]
+    fn overlay_declarations_use_the_same_generic_contract_and_explicit_base_identity() {
+        let document = serde_json::json!({
+            "format": "example.overlay", "base": {"build_identity": "core"},
+            "extensions": [entry("example.overlay_payload", 1, "core")]
+        });
+        let data =
+            DataExtensions::from_manifest_json(&document.to_string(), Some("core".into())).unwrap();
+        assert_eq!(
+            data.status("example.overlay_payload", 1..=1),
+            ExtensionStatus::Present { version: 1 }
+        );
+        let stale =
+            DataExtensions::from_manifest_json(&document.to_string(), Some("new-core".into()))
+                .unwrap();
+        assert!(matches!(
+            stale.status("example.overlay_payload", 1..=1),
+            ExtensionStatus::Stale { .. }
+        ));
     }
 
     #[test]
@@ -819,7 +889,7 @@ mod tests {
     #[test]
     fn sql_ownership_uses_ascii_case_but_preserves_other_name_rules() {
         for (first, second, conflicts) in [
-            ("space_lighting", "SPACE_LIGHTING", true),
+            ("extra_payload", "EXTRA_PAYLOAD", true),
             ("idx_lod_tree_block", "IDX_LOD_TREE_BLOCK", true),
             ("Mixed_Ä", "mIXED_Ä", true),
             ("Ä", "ä", false),
@@ -927,7 +997,7 @@ mod tests {
         assert!(DataExtensions::from_manifest_json(&manifest.to_string(), None).is_err());
         let mut a = entry(DOOR_LINKS, 1, "c");
         a.owns.tables = vec!["door_links".into()];
-        let mut b = entry(MATERIAL, 1, "c");
+        let mut b = entry(MATERIAL_FIXTURE_ID, 1, "c");
         b.owns.tables = vec!["door_links".into()];
         assert_eq!(
             ownership_problems([&a, &b]),
