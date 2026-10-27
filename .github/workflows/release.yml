@@ -81,8 +81,6 @@ jobs:
 
           CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "shared").version')"
           TAG_VERSION="${TAG#v}"
-          TAG_VERSION="${TAG_VERSION%%+*}"
-          TAG_VERSION="${TAG_VERSION%%-*}"
           if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
             echo "::error::Tag '$TAG' does not match Cargo.toml workspace version '$CARGO_VERSION'!"
             exit 1
@@ -98,7 +96,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.resolve_tag.outputs.tag }}
         run: |
-          git-cliff --tag "$TAG" --output RELEASE_NOTES.md
+          git-cliff --current --tag "$TAG" --output RELEASE_NOTES.md
 
       - name: Generate release-metadata.json
         env:
