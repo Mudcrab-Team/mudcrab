@@ -536,7 +536,6 @@ fn update_grass_uniforms(
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
     time: Res<Time>,
     fade: Res<GrassFade>,
-    suns: Query<(&DirectionalLight, &GlobalTransform)>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
     mut metrics: ResMut<GrassRenderMetrics>,
@@ -546,7 +545,6 @@ fn update_grass_uniforms(
             commands.entity(camera).insert(GrassView);
         }
     }
-    let sun = suns.iter().next();
     let eye = cameras
         .single()
         .ok()
@@ -561,11 +559,6 @@ fn update_grass_uniforms(
             time.elapsed_secs_wrapped(),
             if fade.enabled { 0.0 } else { 1.0 },
         );
-        if let Some((light, pose)) = sun {
-            primitive.uniform.sun_direction = (-pose.forward()).extend(0.0);
-            primitive.uniform.sun_color =
-                Vec4::from_array(light.color.to_linear().to_f32_array()) * light.illuminance;
-        }
         if let Some(ambient) = &ambient {
             primitive.uniform.ambient =
                 Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
@@ -584,6 +577,7 @@ struct GrassPipeline {
     shader: Handle<Shader>,
     view_layout: BindGroupLayoutDescriptor,
     batch_layout: BindGroupLayoutDescriptor,
+    scene: Option<bevy::pbr::MeshPipeline>,
 }
 
 /// Load the grass shader and initialize its render pipeline resource.
@@ -599,6 +593,7 @@ impl GrassPipeline {
     fn new(shader: Handle<Shader>) -> Self {
         Self {
             shader,
+            scene: None,
             view_layout: BindGroupLayoutDescriptor::new(
                 "grass view",
                 &BindGroupLayoutEntries::sequential(
@@ -633,6 +628,7 @@ struct GrassKey {
     format: TextureFormat,
     prepass: bool,
     tonemapping: Option<Tonemapping>,
+    scene: Option<bevy::pbr::MeshPipelineKey>,
 }
 
 impl GrassKey {
@@ -648,6 +644,7 @@ impl GrassKey {
             samples,
             format,
             prepass,
+            scene: None,
             // Like Bevy's material pipeline, HDR leaves mapping to the camera
             // postprocess. Depth coverage never needs display conversion.
             tonemapping: if prepass || hdr { None } else { tonemapping },
@@ -706,10 +703,32 @@ impl SpecializedMeshPipeline for GrassPipeline {
                 .into(),
             );
         }
+        // Reuse the prepared terrain view layout, including shadow textures,
+        // cascades, filtering and bias. The depth pass keeps its coverage-only layout.
+        let mut layouts = vec![self.view_layout.clone(), self.batch_layout.clone()];
+        if let Some(scene_key) = key.scene {
+            let descriptor = self
+                .scene
+                .as_ref()
+                .expect("scene pipeline initialized")
+                .specialize(scene_key, layout)?;
+            layouts = descriptor.layout[..2].to_vec();
+            layouts.push(self.batch_layout.clone());
+            defs.retain(|def| {
+                !matches!(def,
+                bevy::shader::ShaderDefVal::UInt(name, _) if name.starts_with("TONEMAPPING_LUT_"))
+            });
+            defs.extend(descriptor.vertex.shader_defs);
+            defs.push("GRASS_SCENE".into());
+        }
+        defs.push(bevy::shader::ShaderDefVal::UInt(
+            "GRASS_GROUP".into(),
+            if key.scene.is_some() { 2 } else { 1 },
+        ));
         let fragment = if key.prepass { "prepass" } else { "fragment" };
         Ok(RenderPipelineDescriptor {
             label: Some("grass instances".into()),
-            layout: vec![self.view_layout.clone(), self.batch_layout.clone()],
+            layout: layouts,
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: defs.clone(),
@@ -804,6 +823,26 @@ fn prepare_view(
     }
 }
 
+/// Select the same first per-view sun as Bevy's prepared directional-light array.
+/// Lights are fragment-only in the shared view layout, so vertex lighting receives
+/// direction/color through the grass uniform instead of reading that binding.
+fn prepared_grass_sun(
+    suns: &Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>,
+    layers: &bevy::camera::visibility::RenderLayers,
+) -> (Vec4, Vec4) {
+    let sun = suns
+        .iter()
+        .filter(|(_, light)| light.render_layers.intersects(layers))
+        // Keep in sync with Bevy's prepare_lights ordering before its per-view filter.
+        .min_by_key(|(entity, light)| (light.volumetric, light.shadow_maps_enabled, *entity));
+    sun.map_or((Vec4::Y, Vec4::ZERO), |(_, light)| {
+        (
+            light.transform.back().extend(0.0),
+            Vec4::from_array(light.color.to_f32_array()) * light.illuminance,
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Prepare shared instance buffers and per-primitive GPU bindings.
 fn prepare_grass(
@@ -817,7 +856,11 @@ fn prepare_grass(
     fallback: Res<bevy::render::texture::FallbackImage>,
     budget: Res<GrassUploadBudget>,
     mut buffers: ResMut<GrassInstanceBuffers>,
+    suns: Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>,
+    views: Query<Option<&bevy::camera::visibility::RenderLayers>, With<GrassView>>,
 ) {
+    let layers = views.single().ok().flatten().cloned().unwrap_or_default();
+    let (sun_direction, sun_color) = prepared_grass_sun(&suns, &layers);
     buffers
         .0
         .retain(|_, (instances, _)| instances.strong_count() > 0);
@@ -827,7 +870,10 @@ fn prepare_grass(
         if let Some(mut gpu) = gpu
             && Arc::ptr_eq(&gpu.instances, &data.instances)
         {
-            gpu.uniform.set(data.uniform.clone());
+            let mut uniform = data.uniform.clone();
+            uniform.sun_direction = sun_direction;
+            uniform.sun_color = sun_color;
+            gpu.uniform.set(uniform);
             gpu.uniform.write_buffer(&device, &queue);
             continue;
         }
@@ -860,7 +906,10 @@ fn prepare_grass(
             uploaded += 1;
             buffer
         };
-        let mut uniform = UniformBuffer::from(data.uniform.clone());
+        let mut value = data.uniform.clone();
+        value.sun_direction = sun_direction;
+        value.sun_color = sun_color;
+        let mut uniform = UniformBuffer::from(value);
         uniform.write_buffer(&device, &queue);
         let bind_group = device.create_bind_group(
             "grass batch",
@@ -885,7 +934,9 @@ fn prepare_grass(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Independent per-view ECS inputs.
 /// Queue eligible grass primitives into the main and depth render phases.
 fn queue_grass(
-    pipeline: Res<GrassPipeline>,
+    mut pipeline: ResMut<GrassPipeline>,
+    scene: Res<bevy::pbr::MeshPipeline>,
+    view_keys: Res<bevy::pbr::ViewKeyCache>,
     mut pipelines: ResMut<SpecializedMeshPipelines<GrassPipeline>>,
     cache: Res<PipelineCache>,
     meshes: Res<RenderAssets<RenderMesh>>,
@@ -906,6 +957,7 @@ fn queue_grass(
     mut pre_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dPrepass>>,
     mut queued: ResMut<GrassQueuedEntities>,
 ) {
+    pipeline.scene = Some(scene.clone());
     clear_queued_grass(&mut queued, &mut main_phases, &mut pre_phases);
     for (view, msaa, camera, tonemapping) in &views {
         for (entity, main_entity, data) in &primitives {
@@ -921,13 +973,20 @@ fn queue_grass(
                 .or_default()
                 .push(*main_entity);
             for prepass in [true, false] {
-                let key = GrassKey::new(
+                let mut key = GrassKey::new(
                     msaa.samples(),
                     view.target_format,
                     prepass,
                     camera.is_some_and(|camera| camera.hdr),
                     tonemapping.copied(),
                 );
+                if !prepass {
+                    let Some(scene_key) = view_keys.get(&view.retained_view_entity).copied() else {
+                        // Never bind a terrain view to the depth-only layout.
+                        continue;
+                    };
+                    key.scene = Some(scene_key);
+                }
                 let Ok(id) = pipelines.specialize(&cache, &pipeline, key, &mesh.layout) else {
                     continue;
                 };
@@ -1021,12 +1080,13 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         &'static ViewUniformOffset,
         &'static ExtractedView,
         &'static GrassViewBindGroup,
+        Option<&'static bevy::pbr::MeshViewBindGroup>,
     );
     type ItemQuery = (Read<GrassPrimitive>, Read<GrassGpu>);
     /// Bind grass resources and issue an instanced draw for the prepared primitive.
     fn render<'w>(
         _: &P,
-        (offset, view, view_group): QueryItem<'w, '_, Self::ViewQuery>,
+        (offset, view, view_group, scene_group): QueryItem<'w, '_, Self::ViewQuery>,
         item: Option<QueryItem<'w, '_, Self::ItemQuery>>,
         (meshes, allocator): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
@@ -1045,8 +1105,17 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         if count == 0 {
             return RenderCommandResult::Skip;
         }
-        pass.set_bind_group(0, &view_group.0, &[offset.offset]);
-        pass.set_bind_group(1, &gpu.bind_group, &[]);
+        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
+            let Some(group) = scene_group else {
+                return RenderCommandResult::Skip;
+            };
+            pass.set_bind_group(0, &group.main, &group.main_offsets);
+            pass.set_bind_group(1, &group.binding_array, &[]);
+            pass.set_bind_group(2, &gpu.bind_group, &[]);
+        } else {
+            pass.set_bind_group(0, &view_group.0, &[offset.offset]);
+            pass.set_bind_group(1, &gpu.bind_group, &[]);
+        }
         pass.set_vertex_buffer(0, vertices.buffer.slice(..));
         pass.set_vertex_buffer(1, gpu.buffer.slice(..));
         match &mesh.buffer_info {
@@ -1275,7 +1344,7 @@ mod tests {
             .split("struct Grass {")
             .nth(1)
             .unwrap()
-            .split("@group(1)")
+            .split("@group(")
             .next()
             .unwrap();
         let coverage = shader
@@ -1549,6 +1618,74 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Build an extracted sun with independently chosen ordering, layers and radiance.
+    fn extracted_sun(
+        shadows: bool,
+        layer: usize,
+        color: LinearRgba,
+        illuminance: f32,
+    ) -> bevy::pbr::ExtractedDirectionalLight {
+        bevy::pbr::ExtractedDirectionalLight {
+            color,
+            illuminance,
+            transform: GlobalTransform::IDENTITY,
+            shadow_maps_enabled: shadows,
+            contact_shadows_enabled: false,
+            volumetric: false,
+            affects_lightmapped_mesh_diffuse: true,
+            shadow_depth_bias: 0.02,
+            shadow_normal_bias: 0.3,
+            cascade_shadow_config: default(),
+            cascades: default(),
+            frusta: default(),
+            render_layers: bevy::camera::visibility::RenderLayers::layer(layer),
+            soft_shadow_size: None,
+            occlusion_culling: false,
+            sun_disk_angular_size: 0.0,
+            sun_disk_intensity: 0.0,
+        }
+    }
+
+    #[test]
+    /// Match prepared-light ordering, stable entity ties, view layers and the no-sun fallback.
+    fn g3_vertex_sun_matches_prepared_shadow_light() {
+        use bevy::{camera::visibility::RenderLayers, ecs::system::SystemState};
+        let mut world = World::new();
+        world.spawn(extracted_sun(true, 0, LinearRgba::RED, 11.0));
+        world.spawn(extracted_sun(false, 1, LinearRgba::GREEN, 13.0));
+        let first = world.spawn_empty().id();
+        let second = world.spawn_empty().id();
+        // Entity ordering is opaque and need not follow allocation order.
+        let (lower, higher) = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        world.entity_mut(lower).insert(extracted_sun(
+            false,
+            0,
+            LinearRgba::new(0.25, 0.5, 1.0, 1.0),
+            20.0,
+        ));
+        world
+            .entity_mut(higher)
+            .insert(extracted_sun(false, 0, LinearRgba::RED, 17.0));
+        let mut state: SystemState<Query<(Entity, &bevy::pbr::ExtractedDirectionalLight)>> =
+            SystemState::new(&mut world);
+        let suns = state.get(&world).unwrap();
+        let (direction, color) = prepared_grass_sun(&suns, &RenderLayers::default());
+        assert_eq!(direction, Vec4::Z);
+        assert_eq!(color, Vec4::new(5.0, 10.0, 20.0, 20.0));
+        assert_eq!(
+            prepared_grass_sun(&suns, &RenderLayers::layer(1)).1,
+            Vec4::new(0.0, 13.0, 0.0, 13.0)
+        );
+        assert_eq!(
+            prepared_grass_sun(&suns, &RenderLayers::layer(9)),
+            (Vec4::Y, Vec4::ZERO)
+        );
     }
 
     #[test]
@@ -1925,7 +2062,7 @@ mod tests {
         // of its fields, to check the CPU upload's member offset and total span.
         let shader = include_str!("shaders/grass.wgsl");
         let start = shader.find("struct Grass {").unwrap();
-        let end = shader[start..].find("@group(1)").unwrap() + start;
+        let end = shader[start..].find("@group(").unwrap() + start;
         let module = wgpu::naga::front::wgsl::parse_str(&shader[start..end]).unwrap();
         let (_, uniform) = module
             .types
@@ -2022,3 +2159,11 @@ mod tests {
         assert_eq!(metrics.failures, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "grass_lighting_tests.rs"]
+mod grass_lighting_tests;
+
+#[cfg(test)]
+#[path = "grass_shader_tests.rs"]
+mod grass_shader_tests;

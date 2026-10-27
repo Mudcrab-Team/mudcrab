@@ -1,11 +1,18 @@
 // One vertex transform and coverage function for depth and color. Masked materials
 // use texture/material alpha; authored vertex alpha remains available for animation.
+#ifdef GRASS_SCENE
+#import bevy_pbr::{
+    mesh_view_bindings::{view, lights},
+    shadows::fetch_directional_shadow,
+}
+#else
 #import bevy_render::view::View
+@group(0) @binding(0) var<uniform> view: View;
+#endif
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
 
-@group(0) @binding(0) var<uniform> view: View;
 struct Grass {
     world_from_cell: mat4x4<f32>,
     model: mat4x4<f32>,
@@ -19,11 +26,11 @@ struct Grass {
     ambient: vec4<f32>,
     uv_transform: mat3x3<f32>,
 }
-@group(1) @binding(0) var<uniform> grass: Grass;
-@group(1) @binding(1) var albedo: texture_2d<f32>;
-@group(1) @binding(2) var albedo_sampler: sampler;
-@group(1) @binding(3) var wind: texture_2d<f32>;
-@group(1) @binding(4) var wind_sampler: sampler;
+@group(#{GRASS_GROUP}) @binding(0) var<uniform> grass: Grass;
+@group(#{GRASS_GROUP}) @binding(1) var albedo: texture_2d<f32>;
+@group(#{GRASS_GROUP}) @binding(2) var albedo_sampler: sampler;
+@group(#{GRASS_GROUP}) @binding(3) var wind: texture_2d<f32>;
+@group(#{GRASS_GROUP}) @binding(4) var wind_sampler: sampler;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
@@ -44,6 +51,7 @@ struct Varyings {
     @location(1) color: vec4<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) light: vec3<f32>,
+    @location(4) world_position: vec4<f32>,
 }
 fn signed_byte(value: u32) -> f32 {
     return f32(i32((value & 255u) ^ 128u) - 128) / 127.0;
@@ -59,7 +67,7 @@ fn vertex(input: Vertex) -> Varyings {
     let height = grass.height_wind.x + f32(input.packed.y & 65535u) * grass.height_wind.y / 65535.0;
     let rotation = f32((input.packed.y >> 16u) & 255u) * (6.28318530718 / 256.0);
     let scale = f32(input.packed.y >> 24u) * (2.0 / 255.0);
-    let brightness = f32(input.packed.z & 255u) * (2.0 / 255.0);
+    let brightness = f32(input.packed.z & 255u) / 255.0;
     let flags = u32(grass.absolute_grid.z);
     var p = (grass.model * vec4(input.position,1.0)).xyz;
     var n = vec3(0.0,1.0,0.0);
@@ -84,6 +92,7 @@ fn vertex(input: Vertex) -> Varyings {
     let root = (grass.world_from_cell * vec4(xy.x,height,-xy.y,1.0)).xyz;
     let world = grass.world_from_cell * vec4(p + vec3(xy.x,height,-xy.y),1.0);
     out.position = view.clip_from_world * world;
+    out.world_position = world;
     let distance = length((root-view.world_position).xz);
     let fraction = select(clamp((grass.fade.y-distance)/max(grass.fade.y-grass.fade.x,1.0),0.0,1.0),1.0,grass.fade.w != 0.0);
     if f32(input.packed.w) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
@@ -129,15 +138,35 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
 fn lighting(normal:vec3<f32>) -> vec3<f32> {
-    let diffuse = abs(dot(normalize(normal),normalize(grass.sun_direction.xyz)));
-    return (grass.ambient.rgb + grass.sun_color.rgb*diffuse) * view.exposure / 3.14159265;
+    // Keep the authored blade normal on both raster sides, matching the k=0
+    // measured model. Flipping a back face would restore unwanted direct sun.
+    let sun_direction = grass.sun_direction.xyz;
+    let sun_color = grass.sun_color.rgb;
+    let diffuse = max(dot(normalize(normal),normalize(sun_direction)),0.0);
+    // Interpolate only direct illumination; ambient is added once per fragment.
+    return sun_color*diffuse;
+}
+// Reuse terrain's prepared directional shadow maps and cascade/filter/bias policy.
+// Disabled shadows (or no directional light) leave the direct term unchanged.
+fn directional_shadow(input:Varyings) -> f32 {
+#ifdef GRASS_SCENE
+    if lights.n_directional_lights > 0u {
+        if (lights.directional_lights[0].flags & 1u) != 0u {
+            return fetch_directional_shadow(0u,input.world_position,normalize(input.normal),
+                (view.view_from_world*input.world_position).z,input.position.xy);
+        }
+    }
+#endif
+    return 1.0;
 }
 @fragment
 fn fragment(input:Varyings,@builtin(sample_index) sample_index:u32) -> Fragment {
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
-    let light = select(lighting(input.normal),input.light,(u32(grass.absolute_grid.z)&1u)!=0u);
+    let direct = select(lighting(input.normal),input.light,(u32(grass.absolute_grid.z)&1u)!=0u);
+    let shadow = directional_shadow(input);
+    let light = (grass.ambient.rgb + direct*shadow) * view.exposure / 3.14159265;
     out.color = vec4(base.rgb * light,1.0);
 #ifdef TONEMAP_IN_SHADER
     // Match standard materials for LDR targets. HDR is mapped after the main

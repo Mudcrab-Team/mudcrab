@@ -48,9 +48,13 @@ Position range supplies deterministic XY jitter over the total span
 leaves the cell is rejected instead of being clamped into an artificial edge row.
 Exclusion is checked only at the final position. Slope and water
 rules and the selected species' painted texture support are rechecked after
-jitter. Height range supplies variation around unit
-scale, and color range supplies brightness variation around one, both clamped
-to 0..2. These variation equations are MudCrab policy. Slope is evaluated
+jitter. Height range supplies variation around unit scale, clamped to 0..2.
+Colour Range supplies darken-only brightness `b = 1 - r*u`, with record range
+`r` clamped to `[0,1]` and deterministic random channel `u` in `[0,1)`.
+Brightness is stored as `round(255*b)` and decoded as `byte/255`, so it never
+exceeds 1; rounding changes the ideal lower bound by at most `0.5/255`.
+Zero range is exactly 1. Scale keeps its separate 0..2 encoding.
+These variation equations are MudCrab policy. Slope is evaluated
 in degrees from the rendered terrain triangle's geometric normal. Height uses
 the terrain mesh's anti-diagonal triangles, including after position jitter;
 bilinear height interpolation can bury grass on a nonplanar quad. The spacing option controls the
@@ -106,8 +110,33 @@ The color pass uses the camera's Bevy tone-mapping method, LUT and color grading
 for non-HDR targets, matching the color treatment of standard scene materials.
 HDR targets defer tone mapping to the later shared pass; depth remains colorless.
 This prevents exposed sunlight from clipping directly into an LDR target.
-Lighting remains a two-sided diffuse approximation: grass does not sample scene
-shadows, local lights or fog, so tone-mapping consistency is not full PBR parity.
+Lighting uses one-sided Lambert diffuse `max(dot(N_blade,L),0)`, with no
+back-light term. Cards remain visible from both sides; the authored, transformed
+blade normal is kept on both raster sides without a front-facing flip. This
+matches the measured k=0 model: an authored normal facing away from the sun
+receives ambient only. The GRAS Vertex Lighting flag selects interpolated vertex
+lighting; otherwise the blade normal is evaluated per fragment.
+
+The color pass receives the existing directional shadows using Bevy's prepared
+terrain view bindings, cascades, filtering and normal/depth bias. Direct light
+and shadow sampling use the same first prepared directional light for the view,
+respecting Bevy's ordering and render layers. Shadow visibility multiplies only
+the direct sun term, retaining the existing ambient response and exposure:
+`(ambient + sun * Lambert * visibility) * exposure / pi`. With no directional
+light there is no direct term; disabled shadows use visibility 1. Shadowing never
+changes texture/material alpha, sample coverage or depth-prepass cutouts. Grass
+still does not cast shadows or add local lights or fog; this is not full PBR parity.
+
+Controlled matched-view measurements from the 2026-10-27 grass colour-layer
+experiment and back-light sweep favored k=0 in all five sampled biomes. The
+combination of one-sided lighting, shadow reception, darken-only range and an
+unproven vertex-space conversion closed about 79% of the measured mean-RGB gap.
+These are empirical design evidence, not claims about Skyrim's internal shader
+or exact Colour Range distribution. This implementation uses the first three
+changes only: authored vertex RGB remains numerically unchanged, with no extra
+sRGB conversion, LAND tint, ambient retuning or weather changes. Runtime instance
+brightness changes require no converted grass-cache/schema update. Instance
+size, placement/counts and generation-budget accounting remain unchanged.
 Grass enables 4x MSAA on the world camera, including while interactive renderer
 preferences change. The saved MSAA preference still applies to reflections and
 runs without grass. Both fragment passes use `sample_index` to discard samples

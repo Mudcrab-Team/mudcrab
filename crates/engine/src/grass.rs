@@ -94,8 +94,9 @@ pub struct GrassInstance {
     /// Quantized Creation-local XYZ; height uses the batch's minimum/span.
     pub position: [u16; 3],
     pub rotation: u8,
-    /// Scale and brightness use the range 0..2.
+    /// Scale uses the range 0..2.
     pub scale: u8,
+    /// Darken-only brightness uses the unit range (byte / 255).
     pub color: u8,
     /// Creation-space unit normal multiplied by 127.
     pub normal: [i8; 3],
