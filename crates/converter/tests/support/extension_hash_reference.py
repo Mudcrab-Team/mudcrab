@@ -57,8 +57,78 @@ def validate_name(name: str) -> None:
         raise ValueError(f"name {name!r} is empty or contains a control character")
 
 
+def _parsed_number(token: str) -> int | float:
+    """Model serde_json 1.0.150's default number parsing, without float_roundtrip.
+
+    json.loads validates the token grammar. Keep serde_json's u64 significand,
+    discarded digits and separate binary64 scaling: Python's float(token) can
+    round differently. This is a test oracle, not a production JSON parser.
+    """
+    negative = token.startswith("-")
+    unsigned = token[1:] if negative else token
+    mantissa, separator, explicit_exp = unsigned.lower().partition("e")
+    integer, decimal, fraction = mantissa.partition(".")
+    significand = 0
+    exponent = 0
+    long_integer = False
+    for digit in integer:
+        candidate = significand * 10 + int(digit)
+        if long_integer or candidate > (1 << 64) - 1:
+            long_integer = True
+            exponent += 1
+        else:
+            significand = candidate
+    if not long_integer and not decimal and not separator:
+        if not negative:
+            return significand
+        if 0 < significand <= 1 << 63:
+            return -significand
+        return -float(significand)  # Includes integer -0 as negative binary64 zero.
+    for digit in fraction:
+        candidate = significand * 10 + int(digit)
+        if candidate > (1 << 64) - 1:
+            break  # serde_json ignores every remaining fractional digit.
+        significand = candidate
+        exponent -= 1
+    if separator:
+        negative_exp = explicit_exp.startswith("-")
+        magnitude = 0
+        for digit in explicit_exp.lstrip("+-"):
+            magnitude = magnitude * 10 + int(digit)
+            if magnitude > (1 << 31) - 1:
+                if significand and not negative_exp:
+                    raise ValueError("glTF JSON number is outside the finite binary64 range")
+                return -0.0 if negative else 0.0
+        exponent += -magnitude if negative_exp else magnitude
+        exponent = max(-(1 << 31), min((1 << 31) - 1, exponent))
+    number = float(significand)
+    while abs(exponent) > 308:
+        if number == 0.0:
+            break
+        if exponent >= 0:
+            raise ValueError("glTF JSON number is outside the finite binary64 range")
+        number /= 1e308
+        exponent += 308
+    else:
+        power = float("1e" + str(abs(exponent)))
+        number = number * power if exponent >= 0 else number / power
+    if not math.isfinite(number):
+        raise ValueError("glTF JSON number is outside the finite binary64 range")
+    return -number if negative else number
+
+
+def _reject_constant(token: str):
+    raise ValueError(f"invalid JSON number {token}")
+
+
+def parse_json(source):
+    """Parse JSON with default serde_json integer types and binary64 rounding."""
+    return json.loads(source, parse_int=_parsed_number, parse_float=_parsed_number,
+                      parse_constant=_reject_constant)
+
+
 def encode_json(value) -> str:
-    """Canonical JSON: sorted keys, exact integers, binary64-compatible numbers, UTF-8 strings."""
+    """Canonical parsed JSON: sorted keys, native exact integers, binary64 bits, UTF-8 strings."""
     if value is None:
         return "null"
     if value is True:
@@ -66,11 +136,9 @@ def encode_json(value) -> str:
     if value is False:
         return "false"
     if isinstance(value, int):
-        try:
-            number = float(value)
-        except OverflowError:
-            return f"i{value}"
-        return _real(number) if int(number) == value else f"i{value}"
+        if not -(1 << 63) <= value <= (1 << 64) - 1:
+            raise ValueError("integer outside serde_json's native range; use parse_json on its JSON token")
+        return f"i{value}"
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("glTF JSON number is outside the finite binary64 range")
@@ -143,7 +211,7 @@ def glb_json(path: Path) -> dict:
     """Validate GLB lengths against the open file before reading its JSON payload."""
     with path.open("rb") as source:
         if path.suffix.lower() == ".gltf":
-            return json.loads(source.read())
+            return parse_json(source.read())
         source.seek(0, 2)
         size = source.tell()
         source.seek(0)
@@ -162,7 +230,7 @@ def glb_json(path: Path) -> dict:
         payload = source.read(chunk_length)
         if len(payload) != chunk_length:
             raise ValueError(f"{path} has a truncated JSON chunk")
-        return json.loads(payload)
+        return parse_json(payload)
 
 
 def gltf_extension_value(document: dict, name: str) -> str | None:

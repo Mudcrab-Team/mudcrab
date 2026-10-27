@@ -305,31 +305,12 @@ mod tests {
         }
     }
 
-    /// Reproduce the pre-arbitrary_precision DOM's f32 widening independently of the writer.
-    fn legacy_value(value: &Value) -> serde_json::Value {
-        match value {
-            Value::Float(value) => serde_json::json!({"Float": f64::from(*value)}),
-            Value::Struct(members) => serde_json::json!({
-                "Struct": members.iter().map(|(name, value)| (name, legacy_value(value))).collect::<Vec<_>>()
-            }),
-            Value::Array(values) => serde_json::json!({
-                "Array": values.iter().map(legacy_value).collect::<Vec<_>>()
-            }),
-            Value::CompactArray(values) => legacy_value(&Value::Array(values.materialize())),
-            _ => serde_json::to_value(value).unwrap(),
-        }
-    }
-
     /// The retained materialized production expression is the shape/value oracle.
     fn materialized(
         record: &DecodedRecord,
         localization: &BTreeMap<usize, serde_json::Value>,
     ) -> serde_json::Value {
-        let mut document = serde_json::json!({"form_id":record.form_id,"source_form_id":record.source_form_id,"record_type":record.record_type,"flags":record.flags,"load_order":record.load_order,"version_control":record.version_control,"form_version":record.form_version,"header_unknown":record.header_unknown,"cell_form_id":record.cell_form_id,"worldspace_form_id":record.worldspace_form_id,"topic_form_id":record.topic_form_id,"source_topic_form_id":record.source_topic_form_id,"topic_group_offset":record.topic_group_offset,"source_record_offset":record.source_record_offset,"fields":record.fields,"rejected_fields":record.rejected_fields,"payload_complete":record.payload_complete,"supported":record.supported,"localization":localization,"source_payload_sha256":crate::cache::hash_bytes(&record.raw_payload)});
-        for (index, field) in record.fields.iter().enumerate() {
-            document["fields"][index]["value"] = legacy_value(&field.value);
-        }
-        document
+        serde_json::json!({"form_id":record.form_id,"source_form_id":record.source_form_id,"record_type":record.record_type,"flags":record.flags,"load_order":record.load_order,"version_control":record.version_control,"form_version":record.form_version,"header_unknown":record.header_unknown,"cell_form_id":record.cell_form_id,"worldspace_form_id":record.worldspace_form_id,"topic_form_id":record.topic_form_id,"source_topic_form_id":record.source_topic_form_id,"topic_group_offset":record.topic_group_offset,"source_record_offset":record.source_record_offset,"fields":record.fields,"rejected_fields":record.rejected_fields,"payload_complete":record.payload_complete,"supported":record.supported,"localization":localization,"source_payload_sha256":crate::cache::hash_bytes(&record.raw_payload)})
     }
 
     /// Parse the streamed representation for exact shape and numeric equivalence.
@@ -350,7 +331,8 @@ mod tests {
             Value::Float(value) => {
                 if value.is_finite() {
                     let streamed = serde_json::to_string(&ValueView(expected)).unwrap();
-                    let old = serde_json::to_string(&legacy_value(expected)).unwrap();
+                    let old =
+                        serde_json::to_string(&serde_json::to_value(expected).unwrap()).unwrap();
                     assert_eq!(streamed, old, "numeric token must match the prior DOM");
                     let number = streamed
                         .strip_prefix("{\"Float\":")

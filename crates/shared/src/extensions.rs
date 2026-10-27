@@ -730,8 +730,8 @@ fn encode_sql(value: ValueRef<'_>, out: &mut String) {
     }
 }
 
-/// Canonical JSON: keys sorted bytewise, strings as UTF-8 hex. Exactly representable integers
-/// retain binary64 encoding; other integers use exact decimal text rather than losing bits.
+/// Canonical JSON of parsed values: sorted keys, UTF-8 hex strings, exact native integers and
+/// binary64 float bits. Integer `1` and floating-point `1.0` have different encodings.
 pub fn encode_json(value: &serde_json::Value) -> Result<String> {
     let mut out = String::new();
     encode_json_into(value, &mut out)?;
@@ -745,23 +745,21 @@ fn encode_json_into(value: &serde_json::Value, out: &mut String) -> Result<()> {
         Value::Bool(true) => out.push_str("true"),
         Value::Bool(false) => out.push_str("false"),
         Value::Number(number) => {
-            let literal = number.to_string();
-            if literal == "-0" {
-                push_real(0.0, out);
-                return Ok(());
-            }
-            let real = number.as_f64().filter(|value| value.is_finite());
-            if !literal.contains(['.', 'e', 'E'])
-                && !real.is_some_and(|value| format!("{value:.0}") == literal)
-            {
+            if let Some(integer) = number.as_u64() {
                 out.push('i');
-                out.push_str(&literal);
+                out.push_str(&integer.to_string());
+            } else if let Some(integer) = number.as_i64() {
+                out.push('i');
+                out.push_str(&integer.to_string());
             } else {
-                let real = real.ok_or_else(|| {
-                    color_eyre::eyre::eyre!(
-                        "glTF JSON number {literal} is outside the finite binary64 range"
-                    )
-                })?;
+                let real = number
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!(
+                            "glTF JSON number {number} is outside the finite binary64 range"
+                        )
+                    })?;
                 push_real(real, out);
             }
         }
@@ -870,7 +868,7 @@ mod tests {
         "5c9f99438d7658c66aafebaa45045f6d553f0d52521309be28b1ef108db20e87";
 
     const PINNED_MATERIAL: &str =
-        "714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567";
+        "a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41";
 
     fn sample_database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
@@ -981,7 +979,7 @@ mod tests {
         ] {
             assert_ne!(encode_json(&first).unwrap(), encode_json(&second).unwrap());
         }
-        assert_eq!(
+        assert_ne!(
             encode_json(&serde_json::json!(1)).unwrap(),
             encode_json(&serde_json::json!(1.0)).unwrap()
         );
@@ -989,24 +987,26 @@ mod tests {
             encode_json(&serde_json::json!(u64::MAX)).unwrap(),
             "i18446744073709551615"
         );
-        for (first, second) in [
-            ("-9223372036854775808", "-9223372036854775809"),
-            ("18446744073709551616", "18446744073709551617"),
-        ] {
-            let first = serde_json::from_str(first).unwrap();
-            let second = serde_json::from_str(second).unwrap();
-            assert_ne!(encode_json(&first).unwrap(), encode_json(&second).unwrap());
-        }
-        let integer = "9".repeat(400);
-        let value = serde_json::from_str(&integer).unwrap();
-        assert_eq!(encode_json(&value).unwrap(), format!("i{integer}"));
-        let overflow = serde_json::from_str("1e999").unwrap();
-        assert!(
-            encode_json(&overflow)
-                .unwrap_err()
-                .to_string()
-                .contains("finite binary64 range")
+        let first: serde_json::Value = serde_json::from_str("18446744073709551616").unwrap();
+        let second: serde_json::Value = serde_json::from_str("18446744073709551617").unwrap();
+        assert!(first.is_f64() && second.is_f64());
+        assert_eq!(
+            first, second,
+            "the standard parser has already rounded these tokens"
         );
+        assert_eq!(encode_json(&first).unwrap(), encode_json(&second).unwrap());
+        assert_eq!(encode_json(&serde_json::json!(0)).unwrap(), "i0");
+        assert_eq!(
+            encode_json(&serde_json::from_str("-0").unwrap()).unwrap(),
+            "f8000000000000000"
+        );
+        assert_eq!(
+            encode_json(&serde_json::json!(0.0)).unwrap(),
+            "f0000000000000000"
+        );
+        let integer = "9".repeat(400);
+        assert!(serde_json::from_str::<serde_json::Value>(&integer).is_err());
+        assert!(serde_json::from_str::<serde_json::Value>("1e999").is_err());
     }
 
     #[test]

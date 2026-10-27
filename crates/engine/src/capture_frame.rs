@@ -531,8 +531,8 @@ mod tests {
         assert_eq!(captured_grade.color_grade, "snapshot-srgb");
         assert_eq!(captured_grade.visual_preset, "cool-gray");
         assert_eq!(
-            captured_grade.resolved_grade["brightness"],
-            serde_json::json!(1.38_f32)
+            captured_grade.resolved_grade["brightness"].as_f64(),
+            Some(f64::from(1.38_f32))
         );
         assert_eq!(
             captured_grade.source["source_kind"],

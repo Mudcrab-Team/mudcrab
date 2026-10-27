@@ -391,7 +391,7 @@ fn generic_gltf_locations_and_pointer_escaping_match_python() {
 }
 
 #[test]
-fn json_numbers_keep_exact_integer_identity_in_both_languages() {
+fn json_numbers_hash_default_serde_parsed_values_in_both_languages() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let entry = shared::extensions::ExtensionEntry {
@@ -406,30 +406,48 @@ fn json_numbers_keep_exact_integer_identity_in_both_languages() {
         stats: Default::default(),
     };
     let mut cases = Vec::new();
+    // Native integers are exact; floats hash their parsed binary64 value. Default
+    // serde_json rounding is not always Python float(token) / float_roundtrip.
     for (literal, encoded) in [
-        ("1", "f3ff0000000000000"),
+        ("1", "i1"),
         ("1.0", "f3ff0000000000000"),
-        ("9007199254740992", "f4340000000000000"),
+        ("9007199254740992", "i9007199254740992"),
         ("9007199254740993", "i9007199254740993"),
-        ("9007199254740994", "f4340000000000001"),
-        ("9007199254740993.0", "f4340000000000000"),
-        ("-9007199254740992", "fc340000000000000"),
+        ("9007199254740994", "i9007199254740994"),
+        ("9007199254740993.0", "f4340000000000001"),
+        ("-9007199254740992", "i-9007199254740992"),
         ("-9007199254740993", "i-9007199254740993"),
         ("9223372036854775807", "i9223372036854775807"),
-        ("-9223372036854775808", "fc3e0000000000000"),
+        ("-9223372036854775808", "i-9223372036854775808"),
         ("-9223372036854775807", "i-9223372036854775807"),
         ("18446744073709551615", "i18446744073709551615"),
-        ("-9223372036854775809", "i-9223372036854775809"),
+        ("-9223372036854775809", "fc3e0000000000000"),
         ("18446744073709551616", "f43f0000000000000"),
-        ("18446744073709551617", "i18446744073709551617"),
+        ("18446744073709551617", "f43f0000000000000"),
         (
             "340282366920938463463374607431768211457",
-            "i340282366920938463463374607431768211457",
+            "f47f0000000000000",
         ),
-        ("18446744073709549568", "f43efffffffffffff"),
-        ("0", "f0000000000000000"),
-        ("-0", "f0000000000000000"),
+        ("18446744073709549568", "i18446744073709549568"),
+        ("0", "i0"),
+        ("-0", "f8000000000000000"),
         ("-0.0", "f8000000000000000"),
+        ("0.0", "f0000000000000000"),
+        ("0.1", "f3fb999999999999a"),
+        ("1e23", "f44b52d02c7e14af6"),
+        ("1.2345678901234567", "f3ff3c0ca428c59fb"),
+        ("3.141592653589793", "f400921fb54442d18"),
+        ("2.2250738585072014e-308", "f0010000000000000"),
+        ("5e-324", "f0000000000000001"),
+        ("1e-400", "f0000000000000000"),
+        ("-1e-400", "f8000000000000000"),
+        ("0e2147483648", "f0000000000000000"),
+        ("-0e2147483648", "f8000000000000000"),
+        ("1e-2147483648", "f0000000000000000"),
+        ("1.7976931348623157e308", "f7fefffffffffffff"),
+        ("123456789012345678901.2345", "f441ac53a7e04bcd9"),
+        ("0.1234567890123456789012345", "f3fbf9add3746f65f"),
+        ("-18446744073709551616", "fc3f0000000000000"),
     ] {
         let value: serde_json::Value = serde_json::from_str(literal).unwrap();
         assert_eq!(
@@ -446,14 +464,38 @@ fn json_numbers_keep_exact_integer_identity_in_both_languages() {
             "literal": literal, "encoded": encoded, "document": document, "hash": hash
         }));
     }
-    assert_eq!(
+    assert_ne!(
         cases[0]["hash"], cases[1]["hash"],
-        "1 and 1.0 retain the same stream"
+        "1 and 1.0 have different parsed number types"
     );
     assert_ne!(
         cases[2]["hash"], cases[3]["hash"],
-        "adjacent large integers must differ"
+        "adjacent large native integers must differ"
     );
+    assert_eq!(
+        cases[13]["hash"], cases[14]["hash"],
+        "beyond-native integer tokens may collapse to the same parsed float"
+    );
+    let rejected = [
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "1e309",
+        "-1e309",
+        "1e2147483648",
+        "-1e2147483648",
+        "1.7976931348623159e308",
+        "18446744073709551616e308",
+        "01",
+        "1.",
+        "1e",
+    ];
+    for literal in rejected {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(literal).is_err(),
+            "accepted invalid or overflowing number {literal}"
+        );
+    }
     let Some(python) = python() else {
         return;
     };
@@ -467,9 +509,23 @@ spec.loader.exec_module(oracle)
 root = pathlib.Path(sys.argv[2])
 entry = json.loads(sys.argv[3])
 for case in json.loads(sys.argv[4]):
-    assert oracle.encode_json(json.loads(case['literal'])) == case['encoded'], case
+    assert oracle.encode_json(oracle.parse_json(case['literal'])) == case['encoded'], case
     (root / 'numbers.gltf').write_text(case['document'], encoding='utf-8')
     assert oracle.extension_hash(root, entry) == case['hash'], case
+for literal in json.loads(sys.argv[5]):
+    try:
+        oracle.parse_json(literal)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'accepted invalid or overflowing number {literal}')
+for integer in (-(1 << 63) - 1, 1 << 64, 10 ** 400):
+    try:
+        oracle.encode_json(integer)
+    except ValueError as error:
+        assert 'use parse_json' in str(error), error
+    else:
+        raise AssertionError(f'accepted unparsed out-of-range integer {integer}')
 "#;
     let result = Command::new(python)
         .args(["-B", "-I", "-c", code])
@@ -477,6 +533,7 @@ for case in json.loads(sys.argv[4]):
         .arg(root)
         .arg(serde_json::to_string(&entry).unwrap())
         .arg(serde_json::to_string(&cases).unwrap())
+        .arg(serde_json::to_string(&rejected).unwrap())
         .output()
         .unwrap();
     assert!(
@@ -593,6 +650,16 @@ with tempfile.TemporaryDirectory() as root:
     path.write_bytes(header(oracle.GLB_MAGIC, 2, 36, 4, oracle.GLB_JSON_CHUNK)
                      + b'{}  ' + struct.pack('<II', 4, 0x004e4942) + b'data')
     assert oracle.glb_json(path) == {}
+    # Both glTF readers must preserve serde_json's number type and default ULP rounding.
+    payload = b'[1,1.0,-0,9007199254740993.0]'
+    expected = '[i1,f3ff0000000000000,f8000000000000000,f4340000000000001]'
+    text_path = pathlib.Path(root) / 'numbers.gltf'
+    text_path.write_bytes(payload)
+    assert oracle.encode_json(oracle.glb_json(text_path)) == expected
+    payload += b' ' * (-len(payload) % 4)
+    path.write_bytes(header(oracle.GLB_MAGIC, 2, 20 + len(payload), len(payload), oracle.GLB_JSON_CHUNK)
+                     + payload)
+    assert oracle.encode_json(oracle.glb_json(path)) == expected
 "#;
     let result = Command::new(python)
         .args(["-B", "-I", "-c", code])
@@ -650,7 +717,7 @@ with tempfile.TemporaryDirectory() as root:
     mesh += struct.pack('<II', len(payload), oracle.GLB_JSON_CHUNK) + payload
     (root / 'meshes/rock.glb').write_bytes(mesh)
     entry = {'id': 'mudcrab.material', 'version': 1, 'owns': {'gltf_extensions': ['MUDCRAB_material']}}
-    assert oracle.extension_hash(root, entry) == '714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567'
+    assert oracle.extension_hash(root, entry) == 'a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41'
     node = {'extensionsUsed': ['EXAMPLE_payload'],
             'nodes': [{'extensions': {'EXAMPLE_payload': {'value': 1}}}]}
     primitive = {'extensionsUsed': ['EXAMPLE_payload'],
@@ -658,7 +725,7 @@ with tempfile.TemporaryDirectory() as root:
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') is not None
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') != oracle.gltf_extension_value(primitive, 'EXAMPLE_payload')
     entry['owns']['gltf_extensions'] *= 2
-    assert oracle.extension_hash(root, entry) == '714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567'
+    assert oracle.extension_hash(root, entry) == 'a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41'
     entry['sha256'] = oracle.extension_hash(root, entry)
     (root / oracle.MANIFEST).write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
     assert not oracle.check(root), 'legacy standalone material streams remain checkable'

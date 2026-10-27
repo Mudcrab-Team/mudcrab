@@ -164,17 +164,27 @@ the canonical digest with `finish`. The digest is SHA-256 over UTF-8 lines termi
 the algorithm name, extension ID and version, followed by owned tables, indexes, files and glTF
 values in deterministic order. Table rows are canonically encoded and sorted before column
 declarations. Indexes contribute their stored SQL; files contribute their content SHA-256.
-Strings contribute UTF-8 hex and floating values contribute their binary64 bits. JSON parsing enables
-`serde_json/float_roundtrip` to preserve binary64 values and `arbitrary_precision` to retain
-integer tokens outside the signed/unsigned 64-bit range before hashing.
+Strings contribute UTF-8 hex and floating values contribute their binary64 bits.
 
-JSON floats and integers exactly representable as binary64 retain the original binary64 bit
-encoding. Integers that are not exactly representable use `i` followed by their exact decimal
-value, rather than rounded floating-point bits. Distinct integers above `2^53`, including
-signed and unsigned 64-bit extremes and larger integer tokens, therefore do not collide
-through binary64 rounding. Non-integer numbers outside finite binary64 range are errors;
-`encode_json` and `add_gltf` return those errors rather than encoding a NaN placeholder.
-The integer token `-0` canonicalizes to integer zero; floating `-0.0` retains its sign bit.
+JSON numeric hashing is defined by the parsed `serde_json::Value` and `serde_json::Number`,
+not by raw JSON token text. A number accepted by `as_u64` or `as_i64` always contributes `i`
+followed by its exact decimal integer value. Every remaining finite `f64` contributes `f`
+followed by exactly 16 lowercase hexadecimal digits encoding its binary64 bits. Thus parsed
+`1` contributes `i1`, while parsed `1.0` contributes `f3ff0000000000000`; their hashes differ.
+Native signed and unsigned 64-bit integers remain exact, including adjacent integers above
+`2^53` within those bounds.
+
+The default JSON parser stores integer tokens outside `[-2^63, 2^64 - 1]` as `f64`; those
+values may round or collapse to the same parsed value. Raw spelling is intentionally lost
+before hashing, and the contract makes no exact-integer or decimal-precision claim for those
+values or other parsed floating-point numbers. The token `-0` is parsed as floating negative
+zero. Integer `0` contributes `i0`, floating `0.0` contributes `f0000000000000000`, and both
+`-0` and `-0.0` contribute `f8000000000000000`. Floating zero sign bits are retained.
+The default parser rejects non-finite and out-of-range numbers. Hashing requires finite
+floating-point values and reports an error rather than encoding a NaN placeholder.
+This contract uses the default production parser without `arbitrary_precision`,
+`float_roundtrip`, `RawValue`, or other production parser changes. Core serialization and
+output retain their existing behavior.
 
 SQL hashing is not streaming: it buffers the canonical encoded rows of all owned tables until
 `finish`, with one byte range per row for sorting. Hex-encoded text and blobs take approximately
@@ -199,7 +209,8 @@ meshes.
 
 `shared::extensions::ExtensionHasher` defines the Rust stream. The independent standard-library
 reference is `crates/converter/tests/support/extension_hash_reference.py`. It can check content
-hashes recorded in a base manifest:
+hashes recorded in a base manifest. Its test-only numeric parsing callbacks match the default
+`serde_json` parser's numeric behavior; they do not change production parsing or serialization:
 
 ```text
 python -I crates/converter/tests/support/extension_hash_reference.py <dataset-root>

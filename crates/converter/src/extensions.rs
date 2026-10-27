@@ -1133,7 +1133,7 @@ mod tests {
             recompute_hash(directory.path(), &entry)
                 .unwrap_err()
                 .to_string()
-                .contains("finite binary64 range")
+                .contains("invalid glTF JSON chunk")
         );
     }
 
