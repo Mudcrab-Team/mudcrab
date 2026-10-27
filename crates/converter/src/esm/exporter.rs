@@ -326,12 +326,12 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a complete export can still insert into it.
     add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
-    // Old association rows cannot recover GNAM order; a complete export replaces them.
-    // The additive default still lets subset exports preserve unrelated old lists.
+    // Mark old rows for read-only recovery from the winning raw LTEX payload.
+    // Subset exports preserve these lists; included LTEX records replace their ordinals.
     add_missing_columns(
         conn,
         "landscape_texture_grasses",
-        &[("ordinal", "INTEGER NOT NULL DEFAULT 0")],
+        &[("ordinal", "INTEGER NOT NULL DEFAULT -1")],
     )?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
     add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;

@@ -160,8 +160,11 @@ fn placement_resolved_species_order_is_hashed_without_raw_record_change() {
     conn.execute("UPDATE landscape_texture_grasses SET ordinal=gras_id", [])
         .unwrap();
     let (_, before) = bake(&conn, dir.path(), None, "hash-before.rkyv");
-    conn.execute("UPDATE landscape_texture_grasses SET ordinal=-gras_id", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE landscape_texture_grasses SET ordinal=1000-gras_id",
+        [],
+    )
+    .unwrap();
     let (report, after) = bake(
         &conn,
         dir.path(),

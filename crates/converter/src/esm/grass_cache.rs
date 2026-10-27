@@ -35,6 +35,9 @@ pub struct GrassBakeReport {
     pub skipped_rules: usize,
     /// Lowest FormID among the skipped modeled rules, named in the warning.
     pub first_invalid_rule: Option<u32>,
+    /// Legacy lists with omitted fields or unreadable winning LTEX payloads.
+    pub skipped_texture_lists: usize,
+    pub first_invalid_texture: Option<u32>,
     /// Grass types without a model: they draw nothing in game either, so nothing is lost.
     pub modelless_rules: usize,
     pub skipped_cells: usize,
@@ -53,6 +56,16 @@ impl GrassBakeReport {
             warnings.push(format!(
                 "grass cache skipped {} incomplete or invalid grass rules{first}",
                 self.skipped_rules
+            ));
+        }
+        if self.skipped_texture_lists > 0 {
+            let first = self
+                .first_invalid_texture
+                .map(|id| format!("; first LTEX {id:08X}"))
+                .unwrap_or_default();
+            warnings.push(format!(
+                "grass cache omitted unreadable legacy LTEX grass data from {} lists{first}",
+                self.skipped_texture_lists
             ));
         }
         if let Some(cell) = self.first_invalid_cell {
@@ -118,6 +131,7 @@ type Triangle = [DVec3; 3];
 const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
 mod enable;
+mod links;
 mod skinning;
 mod visibility;
 
@@ -533,16 +547,8 @@ pub fn write_grass_cache(
     let (types, skipped_rules, modelless_rules, first_invalid_rule) = read_types(conn)?;
     let valid_types: std::collections::BTreeSet<_> =
         types.iter().map(|rule| rule.form_id).collect();
-    let mut links = BTreeMap::<u32, Vec<u32>>::new();
-    let mut statement = conn.prepare(
-        "SELECT ltex_id,gras_id FROM landscape_texture_grasses ORDER BY ltex_id,ordinal,gras_id",
-    )?;
-    for pair in statement.query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))? {
-        let (texture, grass) = pair?;
-        if valid_types.contains(&grass) {
-            links.entry(texture).or_default().push(grass);
-        }
-    }
+    let (links, skipped_texture_lists, first_invalid_texture) =
+        links::read_links(conn, &valid_types)?;
     let mut statement = conn.prepare("SELECT id,worldspace_id,grid_x,grid_y FROM cells WHERE worldspace_id IS NOT NULL AND grid_x IS NOT NULL AND grid_y IS NOT NULL AND (flags & 1)=0 ORDER BY id")?;
     let coordinates: BTreeMap<u32, (u32, i32, i32)> = statement
         .query_map([], |row| {
@@ -628,6 +634,8 @@ pub fn write_grass_cache(
         .as_ref()
         .and_then(|map| rkyv::access::<ArchivedGrassCache, Error>(map).ok());
     let mut report = GrassBakeReport {
+        skipped_texture_lists,
+        first_invalid_texture,
         initially_hidden_references: references
             .iter()
             .filter(|reference| !reference.enabled)

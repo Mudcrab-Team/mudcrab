@@ -17,7 +17,11 @@ first occurrence; unresolved or deleted species are filtered without reordering
 survivors. A winning override replaces the entire list, including an empty list.
 Runtime species caps can take the first N in this order; the global rule table
 remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores normalized
-overlay weights and the base residual. Both record readers supply the complete
+overlay weights and the base residual. Existing databases without stored GNAM
+ordinals recover order from the winning remapped raw LTEX payloads, including
+during asset repair. An unreadable legacy payload omits that list; an invalid GNAM
+field omits only that field. Both produce a bounded warning while usable entries,
+neighboring lists and cells still publish. Both record readers supply the complete
 `cell_cache_preserved.rkyv` terrain projection to the grass bake, retaining layers
 beyond the runtime terrain material's one base plus five overlays per quadrant.
 The converter normalizes all texture layers before omitting grassless or

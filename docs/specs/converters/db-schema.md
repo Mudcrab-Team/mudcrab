@@ -1069,8 +1069,9 @@ as a deterministic tie fallback), preserving source order rather than sorting sp
 by FormID. Gaps after discarded or duplicate occurrences are allowed.
 The winning LTEX list replaces the earlier list in full, including its order and an
 empty replacement. `create_tables` adds `ordinal` to older association tables with a
-zero default, preserving unrelated rows during subset exports. Those default values
-cannot reconstruct lost source order; a complete export rebuilds it from records.
+negative sentinel, preserving unrelated rows during subset exports. The grass baker
+recovers those lists, and lists in databases without the column, from winning raw
+LTEX records without mutating the database. A complete export writes explicit ordinals.
 There is no foreign key on the grass target: a deleted or unresolved grass can still be named by a texture,
 and consumers resolve it against `grass_types`. Both projections refresh atomically
 from a complete effective load-order export, removing stale grass and associations

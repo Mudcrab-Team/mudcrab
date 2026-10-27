@@ -262,6 +262,116 @@ async fn check_repair(reader: RecordReader, grass_loss: bool) {
     );
 }
 
+/// Repairing a pre-ordinal package recovers authored order from its winning raw LTEX.
+#[tokio::test]
+async fn asset_repair_recovers_legacy_database_gnam_order() {
+    for (migrate_before_repair, corrupt_field) in [(false, false), (true, false), (false, true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = fixture(directory.path(), RecordReader::Legacy, false);
+        let plugin_path = config.data_dir.join("Grass.esp");
+        let mut plugin = fs::read(&plugin_path).unwrap();
+        plugin.extend(record(
+            b"LTEX",
+            4,
+            &[
+                field(b"GNAM", &0x0100_0802u32.to_le_bytes()),
+                field(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+            ]
+            .concat(),
+        ));
+        fs::write(&plugin_path, plugin).unwrap();
+        let report = publish(&config).await;
+        assert_eq!(
+            report.skipped, 1,
+            "the independent DDS failure must be repairable"
+        );
+        let database = config.output_dir.join("skyrim_world.db");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        conn.execute_batch("ALTER TABLE landscape_texture_grasses DROP COLUMN ordinal")
+            .unwrap();
+        if corrupt_field {
+            let data = converter::esm::extractors::serialize_subrecords(&[
+                (b"GNAM".to_vec(), 0x0100_0802u32.to_le_bytes().to_vec()),
+                (b"GNAM".to_vec(), vec![1, 2, 3]),
+                (b"GNAM".to_vec(), 0x0100_0801u32.to_le_bytes().to_vec()),
+            ]);
+            conn.execute("UPDATE records SET data=?1 WHERE form_id=4", [data])
+                .unwrap();
+        }
+        if migrate_before_repair {
+            converter::esm::exporter::create_tables(&conn).unwrap();
+        }
+        drop(conn);
+        let manifest_path = config.output_dir.join("conversion-manifest.json");
+        let mut manifest = converter::cache::ConversionManifest::load(&manifest_path).unwrap();
+        for entry in manifest
+            .entries
+            .values_mut()
+            .filter(|entry| entry.output == "skyrim_world.db")
+        {
+            entry.output_hash = converter::cache::hash_file(&database).unwrap();
+            entry.output_size = fs::metadata(&database).unwrap().len();
+        }
+        manifest.save(&manifest_path).unwrap();
+        let replacement = dds::generate(
+            &dds::Spec::new(dds::Format::Bc1Unorm, 4, 4),
+            &mut Rng::new(0x1389_74A5),
+        )
+        .unwrap();
+        fs::write(config.data_dir.join("textures/repair.dds"), replacement).unwrap();
+        let result = repair_failed(&config, true);
+        assert!(
+            result.is_ok(),
+            "a legacy association schema must not abort asset repair: {result:?}"
+        );
+        let repair = result.unwrap();
+        assert!(repair.published);
+        assert!(repair.failures.is_empty());
+        assert_eq!(
+            repair.warnings.len(),
+            usize::from(corrupt_field),
+            "{:?}",
+            repair.warnings
+        );
+        if corrupt_field {
+            assert!(
+                repair.warnings[0].contains(
+                    "unreadable legacy LTEX grass data from 1 lists; first LTEX 00000004"
+                )
+            );
+        }
+        let bytes = fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap();
+        let cache =
+            rkyv::from_bytes::<shared::grass::GrassCache, rkyv::rancor::Error>(&bytes).unwrap();
+        assert_eq!(cache.version, 6);
+        assert_eq!(cache.cells.len(), 2);
+        assert_eq!(
+            cache
+                .types
+                .iter()
+                .map(|rule| rule.form_id)
+                .collect::<Vec<_>>(),
+            [0x0100_0801, 0x0100_0802]
+        );
+        for cell in &cache.cells {
+            let layers = cell
+                .quadrants
+                .iter()
+                .flat_map(|q| &q.layers)
+                .collect::<Vec<_>>();
+            assert!(
+                !layers.is_empty(),
+                "legacy recovery must retain grass-bearing layers in cell {}",
+                cell.cell_id
+            );
+            for layer in layers {
+                assert_eq!(layer.grass_ids, [0x0100_0802, 0x0100_0801]);
+            }
+        }
+        assert_eq!(json(&manifest_path)["complete"], !corrupt_field);
+    }
+}
+
 /// Default frontend must preserve a grass-only loss after successful asset repair.
 #[tokio::test]
 async fn inhouse_grass_loss_survives_asset_repair() {
