@@ -4,7 +4,7 @@
 //! changing the upstream core contract. [`ExtensionEntry`] and [`ExtensionOwns`] are independent
 //! of their enclosing manifest: both base manifests and overlay documents may embed them.
 //! [`DataExtensions::from_manifest_json`] reads an `extensions` array with an explicit current
-//! core identity; [`DataExtensions::load`] is the base dataset convenience loader.
+//! core identity supplied by the reader.
 //!
 //! A reader asks for its own ID and supported versions. Missing, stale or unsupported payloads
 //! remain distinguishable, while [`ExtensionHasher`] implements the canonical content digest.
@@ -12,7 +12,7 @@
 //! Contract: `docs/specs/converters/extensions.md`.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -31,6 +31,7 @@ pub const DOOR_LINKS: &str = "mudcrab.door_links";
 /// What one extension wrote. Every list is sorted; a `files` entry ending in `/` covers every file
 /// below that directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExtensionOwns {
     #[serde(default)]
     pub tables: Vec<String>,
@@ -56,11 +57,82 @@ pub struct ExtensionEntry {
     pub stats: BTreeMap<String, u64>,
 }
 
-/// The `extensions` key of a conversion manifest; every other key is ignored.
-#[derive(Debug, Default, Deserialize)]
+impl ExtensionEntry {
+    /// Reject names that would inject control characters into the line-framed hash stream.
+    pub fn validate_names(&self) -> Result<()> {
+        for name in std::iter::once(&self.id)
+            .chain(&self.owns.tables)
+            .chain(&self.owns.indexes)
+            .chain(&self.owns.files)
+            .chain(&self.owns.gltf_extensions)
+        {
+            ensure!(
+                !name.is_empty() && !name.chars().any(char::is_control),
+                "extension declaration has an empty name or control characters: {name:?}"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A rejected optional declaration. An identifiable rejected entry still disables its reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionIssue {
+    pub id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Default, Deserialize)]
 struct ManifestExtensions {
     #[serde(default)]
-    extensions: Vec<ExtensionEntry>,
+    extensions: Option<serde_json::Value>,
+}
+
+/// Decode optional declarations independently. A bad entry never poisons its valid neighbors.
+/// Duplicate IDs are all rejected rather than choosing one declaration arbitrarily.
+pub fn parse_entries(value: &serde_json::Value) -> (Vec<ExtensionEntry>, Vec<ExtensionIssue>) {
+    let Some(values) = value.as_array() else {
+        return (
+            Vec::new(),
+            vec![ExtensionIssue {
+                id: None,
+                reason: "extensions is not an array; ignored optional declarations".into(),
+            }],
+        );
+    };
+    let mut entries = Vec::new();
+    let mut issues = Vec::new();
+    let mut ids = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for value in values {
+        let id = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        if let Some(id) = &id
+            && !ids.insert(id.clone())
+        {
+            duplicates.insert(id.clone());
+            issues.push(ExtensionIssue {
+                id: Some(id.clone()),
+                reason: format!("extension {id} is listed twice"),
+            });
+        }
+        let decoded = serde_json::from_value::<ExtensionEntry>(value.clone())
+            .map_err(|error| error.to_string())
+            .and_then(|entry| {
+                entry
+                    .validate_names()
+                    .map(|()| entry)
+                    .map_err(|error| error.to_string())
+            });
+        match decoded {
+            Ok(entry) => entries.push(entry),
+            Err(reason) => issues.push(ExtensionIssue { id, reason }),
+        }
+    }
+    entries.retain(|entry| !duplicates.contains(&entry.id));
+    (entries, issues)
 }
 
 /// Whether a data set carries an extension a feature needs, at a version it reads.
@@ -114,42 +186,67 @@ impl fmt::Display for ExtensionStatus {
 pub struct DataExtensions {
     entries: BTreeMap<String, ExtensionEntry>,
     core_identity: Option<String>,
+    issues: Vec<ExtensionIssue>,
 }
 
 impl DataExtensions {
     /// Reads the `extensions` list from a conversion manifest's text. `core_identity` is the data
     /// set's current core build identity, when it has one; without it no extension counts as stale.
     pub fn from_manifest_json(text: &str, core_identity: Option<String>) -> Result<Self> {
+        ensure!(
+            text.trim_start().starts_with('{'),
+            "the manifest must be a JSON object"
+        );
         let manifest: ManifestExtensions =
             serde_json::from_str(text).context("reading the manifest's extensions list")?;
-        let mut entries = BTreeMap::new();
-        for entry in manifest.extensions {
-            if let Some(previous) = entries.insert(entry.id.clone(), entry) {
-                bail!("extension {} is listed twice", previous.id);
-            }
-        }
+        let (entries, issues) = manifest
+            .extensions
+            .as_ref()
+            .map(parse_entries)
+            .unwrap_or_default();
         Ok(Self {
-            entries,
+            entries: entries
+                .into_iter()
+                .map(|entry| (entry.id.clone(), entry))
+                .collect(),
             core_identity,
+            issues,
         })
     }
 
-    /// Reads `conversion-manifest.json` in `root` and the core identity from `skyrim_world.db`'s
-    /// `lod_build` table, when there is one.
+    /// Base-layout convenience loader for readers that need all declared freshness anchors.
+    /// Empty, rejected-only and unanchored registries do not consult the database.
     pub fn load(root: &Path) -> Result<Self> {
-        let manifest_path = root.join("conversion-manifest.json");
-        let text = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        let path = root.join("conversion-manifest.json");
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let mut data = Self::from_manifest_json(&text, None)?;
         let database = root.join("skyrim_world.db");
-        let core_identity = if database.is_file() {
-            core_build_identity(&Connection::open_with_flags(
+        if data
+            .entries
+            .values()
+            .any(|entry| !entry.built_from.is_empty())
+            && database.is_file()
+        {
+            data.core_identity = core_build_identity(&Connection::open_with_flags(
                 &database,
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?)?
-        } else {
-            None
-        };
-        Self::from_manifest_json(&text, core_identity)
+            )?)?;
+        }
+        Ok(data)
+    }
+
+    pub fn issues(&self) -> impl Iterator<Item = &ExtensionIssue> {
+        self.issues.iter()
+    }
+
+    /// Includes rejected declarations so a malformed entry cannot bypass a reader's gate.
+    pub fn is_declared(&self, id: &str) -> bool {
+        self.entries.contains_key(id)
+            || self
+                .issues
+                .iter()
+                .any(|issue| issue.id.as_deref() == Some(id))
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &ExtensionEntry> {
@@ -186,7 +283,7 @@ impl DataExtensions {
 
 /// The schemas of `connection` that can hold dataset objects: `main` and every attached database,
 /// never `temp`. Callers may attach a core database to a derived-payload database, or vice versa.
-pub fn dataset_schemas(connection: &Connection) -> Result<Vec<String>> {
+fn dataset_schemas(connection: &Connection) -> Result<Vec<String>> {
     let mut statement = connection.prepare("PRAGMA database_list")?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(1))?
@@ -256,29 +353,38 @@ pub fn core_build_identity(connection: &Connection) -> Result<Option<String>> {
     let Some(schema) = locate_object(connection, "table", "lod_build")? else {
         return Ok(None);
     };
-    let identity = connection
-        .query_row(
-            &format!(
-                "SELECT build_identity FROM {}.lod_build LIMIT 1",
-                quote_identifier(&schema)
-            ),
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT build_identity FROM {}.lod_build LIMIT 2",
+            quote_identifier(&schema)
+        ))
         .with_context(|| format!("reading core build identity from {schema}.lod_build"))?;
-    Ok(identity)
+    let identities = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("reading core build identity from {schema}.lod_build"))?;
+    ensure!(
+        identities.len() <= 1,
+        "{schema}.lod_build has multiple core build identities"
+    );
+    Ok(identities.into_iter().next())
 }
 
 /// Problems with ownership across a list: two extensions owning the same item, or an id twice.
-/// SQL table/index names compare with SQLite ASCII case equivalence. File and glTF names
-/// retain their exact spelling, as do the names in the content hash stream.
+/// SQL names and file ownership compare with ASCII case equivalence on every platform.
+/// Directory prefixes conflict too. glTF names remain case-sensitive. Declared spelling remains
+/// part of the hash stream.
 pub fn ownership_problems<'a>(
     entries: impl IntoIterator<Item = &'a ExtensionEntry>,
 ) -> Vec<String> {
     let mut seen: BTreeMap<(&'static str, Cow<'a, str>), &'a str> = BTreeMap::new();
+    let mut ids = BTreeSet::new();
+    let mut files: Vec<(&str, String)> = Vec::new();
     let mut problems = Vec::new();
     for entry in entries {
+        if !ids.insert(entry.id.as_str()) {
+            problems.push(format!("extension {} is listed twice", entry.id));
+        }
         let kinds: [(&'static str, &'a Vec<String>); 4] = [
             ("table", &entry.owns.tables),
             ("index", &entry.owns.indexes),
@@ -286,12 +392,31 @@ pub fn ownership_problems<'a>(
             ("gltf_extension", &entry.owns.gltf_extensions),
         ];
         for (kind, names) in kinds {
+            let mut local = BTreeSet::new();
             for name in names {
-                let key = if matches!(kind, "table" | "index") {
-                    Cow::Owned(name.to_ascii_lowercase())
+                let key: Cow<'a, str> = if kind == "gltf_extension" {
+                    Cow::Borrowed(name)
                 } else {
-                    Cow::Borrowed(name.as_str())
+                    Cow::Owned(name.to_ascii_lowercase())
                 };
+                if !local.insert(key.clone()) {
+                    continue;
+                }
+                if kind == "file" {
+                    for (other_id, other) in &files {
+                        if *other_id != entry.id
+                            && other != key.as_ref()
+                            && ((other.ends_with('/') && key.starts_with(other.as_str()))
+                                || (key.ends_with('/') && other.starts_with(key.as_ref())))
+                        {
+                            problems.push(format!(
+                                "file {name} of {} overlaps file {other} of {other_id}",
+                                entry.id
+                            ));
+                        }
+                    }
+                    files.push((&entry.id, key.to_string()));
+                }
                 let owner = *seen.entry((kind, key)).or_insert(entry.id.as_str());
                 if owner != entry.id {
                     problems.push(format!(
@@ -340,7 +465,13 @@ impl ExtensionHasher {
     }
 
     /// Adds every row and the column declarations of `table`.
+    /// Canonical sorting retains encoded rows in memory until `finish`; text/blob bytes use
+    /// two hex characters per byte, plus one range per row. This is not a streaming API.
     pub fn add_table(&mut self, connection: &Connection, table: &str) -> Result<()> {
+        ensure!(
+            !table.is_empty() && !table.chars().any(char::is_control),
+            "invalid table name {table:?}"
+        );
         let schema = locate_object(connection, "table", table)?
             .ok_or_else(|| color_eyre::eyre::eyre!("table {table} is missing"))?;
         let quoted = format!("{}.{}", quote_identifier(&schema), quote_identifier(table));
@@ -387,6 +518,10 @@ impl ExtensionHasher {
 
     /// Adds an index's stored `CREATE INDEX` statement.
     pub fn add_index(&mut self, connection: &Connection, index: &str) -> Result<()> {
+        ensure!(
+            !index.is_empty() && !index.chars().any(char::is_control),
+            "invalid index name {index:?}"
+        );
         let Some(schema) = locate_object(connection, "index", index)? else {
             bail!("index {index} is missing");
         };
@@ -397,9 +532,11 @@ impl ExtensionHasher {
                     quote_identifier(&schema)
                 ),
                 [index],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
-            .ok();
+            .optional()
+            .with_context(|| format!("reading index {index}"))?
+            .flatten();
         let Some(sql) = sql else {
             bail!("index {index} is missing");
         };
@@ -422,23 +559,30 @@ impl ExtensionHasher {
     }
 
     /// Adds the values of glTF extension `name` in one mesh document, if the mesh uses it.
-    pub fn add_gltf(&mut self, name: &str, relative_path: &str, document: &serde_json::Value) {
+    /// Returns whether any owned payload was hashed; unrepresentable float values are errors.
+    pub fn add_gltf(
+        &mut self,
+        name: &str,
+        relative_path: &str,
+        document: &serde_json::Value,
+    ) -> Result<bool> {
         let used = document["extensionsUsed"]
             .as_array()
             .is_some_and(|used| used.iter().any(|value| value.as_str() == Some(name)));
         if !used {
-            return;
+            return Ok(false);
         }
         let mut parts = Vec::new();
-        collect_gltf_extension(document, name, "", &mut parts);
+        collect_gltf_extension(document, name, "", &mut parts)?;
         if parts.is_empty() {
-            return;
+            return Ok(false);
         }
         let digest = hex(&Sha256::digest(parts.join(";").as_bytes()));
         self.gltf.entry(name.to_owned()).or_default().insert(
             relative_path.to_owned(),
             format!("gltf {name} {relative_path} {digest}"),
         );
+        Ok(true)
     }
 
     /// The lowercase hex SHA-256 of the stream.
@@ -480,7 +624,7 @@ fn collect_gltf_extension(
     name: &str,
     pointer: &str,
     parts: &mut Vec<String>,
-) {
+) -> Result<()> {
     match value {
         serde_json::Value::Object(object) => {
             if let Some(extension) = object
@@ -490,7 +634,7 @@ fn collect_gltf_extension(
                 parts.push(format!(
                     "{pointer}/extensions/{}={}",
                     escape_pointer(name),
-                    encode_json(extension)
+                    encode_json(extension)?
                 ));
             }
             let mut keys: Vec<_> = object.keys().collect();
@@ -501,24 +645,26 @@ fn collect_gltf_extension(
                     name,
                     &format!("{pointer}/{}", escape_pointer(key)),
                     parts,
-                );
+                )?;
             }
         }
         serde_json::Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                collect_gltf_extension(item, name, &format!("{pointer}/{index}"), parts);
+                collect_gltf_extension(item, name, &format!("{pointer}/{index}"), parts)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn escape_pointer(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
 }
 
-/// Hashes the database parts of an entry (tables and indexes) plus the given files and meshes.
-pub fn hash_database_extension(
+/// Hashes the database parts of an entry (tables and indexes) without filesystem content.
+#[cfg(test)]
+fn hash_database_extension(
     connection: &Connection,
     id: &str,
     version: u32,
@@ -584,20 +730,41 @@ fn encode_sql(value: ValueRef<'_>, out: &mut String) {
     }
 }
 
-/// Canonical JSON: keys sorted bytewise, numbers as binary64 bits, strings as UTF-8 hex.
-pub fn encode_json(value: &serde_json::Value) -> String {
+/// Canonical JSON: keys sorted bytewise, strings as UTF-8 hex. Exactly representable integers
+/// retain binary64 encoding; other integers use exact decimal text rather than losing bits.
+pub fn encode_json(value: &serde_json::Value) -> Result<String> {
     let mut out = String::new();
-    encode_json_into(value, &mut out);
-    out
+    encode_json_into(value, &mut out)?;
+    Ok(out)
 }
 
-fn encode_json_into(value: &serde_json::Value, out: &mut String) {
+fn encode_json_into(value: &serde_json::Value, out: &mut String) -> Result<()> {
     use serde_json::Value;
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
         Value::Bool(false) => out.push_str("false"),
-        Value::Number(number) => push_real(number.as_f64().unwrap_or(f64::NAN), out),
+        Value::Number(number) => {
+            let literal = number.to_string();
+            if literal == "-0" {
+                push_real(0.0, out);
+                return Ok(());
+            }
+            let real = number.as_f64().filter(|value| value.is_finite());
+            if !literal.contains(['.', 'e', 'E'])
+                && !real.is_some_and(|value| format!("{value:.0}") == literal)
+            {
+                out.push('i');
+                out.push_str(&literal);
+            } else {
+                let real = real.ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "glTF JSON number {literal} is outside the finite binary64 range"
+                    )
+                })?;
+                push_real(real, out);
+            }
+        }
         Value::String(text) => {
             out.push('t');
             out.push_str(&hex(text.as_bytes()));
@@ -608,7 +775,7 @@ fn encode_json_into(value: &serde_json::Value, out: &mut String) {
                 if index > 0 {
                     out.push(',');
                 }
-                encode_json_into(item, out);
+                encode_json_into(item, out)?;
             }
             out.push(']');
         }
@@ -623,17 +790,18 @@ fn encode_json_into(value: &serde_json::Value, out: &mut String) {
                 out.push('t');
                 out.push_str(&hex(key.as_bytes()));
                 out.push(':');
-                encode_json_into(&map[key], out);
+                encode_json_into(&map[key], out)?;
             }
             out.push('}');
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const MATERIAL_FIXTURE_ID: &str = "mudcrab.material";
+    const OTHER_ID: &str = "example.other";
     const STALE_ID: &str = "example.stale";
     const MISSING_ID: &str = "example.missing";
 
@@ -700,6 +868,7 @@ mod tests {
     // These values also pin the neutral Python oracle in the converter integration tests.
     const PINNED_DOOR_LINKS: &str =
         "5c9f99438d7658c66aafebaa45045f6d553f0d52521309be28b1ef108db20e87";
+
     const PINNED_MATERIAL: &str =
         "714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567";
 
@@ -738,11 +907,11 @@ mod tests {
 
     #[test]
     fn file_digest_equals_file_bytes() {
-        let bytes = b"cluster bytes";
+        let bytes = b"payload bytes";
         let mut by_bytes = ExtensionHasher::new(DOOR_LINKS, 1);
-        by_bytes.add_file("clusters/a.bin", bytes);
+        by_bytes.add_file("payload/a.bin", bytes);
         let mut by_digest = ExtensionHasher::new(DOOR_LINKS, 1);
-        by_digest.add_file_digest("clusters/a.bin", &hex(&Sha256::digest(bytes)));
+        by_digest.add_file_digest("payload/a.bin", &hex(&Sha256::digest(bytes)));
         assert_eq!(by_bytes.finish(), by_digest.finish());
     }
 
@@ -758,9 +927,13 @@ mod tests {
             ]
         });
         let plain = serde_json::json!({"asset": {"version": "2.0"}});
-        let mut hasher = ExtensionHasher::new(MATERIAL_FIXTURE_ID, 1);
-        hasher.add_gltf("MUDCRAB_material", "meshes/rock.glb", &rock);
-        hasher.add_gltf("MUDCRAB_material", "meshes/plain.glb", &plain);
+        let mut hasher = ExtensionHasher::new("mudcrab.material", 1);
+        hasher
+            .add_gltf("MUDCRAB_material", "meshes/rock.glb", &rock)
+            .unwrap();
+        hasher
+            .add_gltf("MUDCRAB_material", "meshes/plain.glb", &plain)
+            .unwrap();
         assert_eq!(hasher.finish(), PINNED_MATERIAL);
     }
 
@@ -768,7 +941,9 @@ mod tests {
     fn gltf_hash_covers_nodes_primitives_and_occurrence_paths() {
         let hash = |document: &serde_json::Value| {
             let mut hasher = ExtensionHasher::new("example.payload", 1);
-            hasher.add_gltf("EXAMPLE_payload", "meshes/example.gltf", document);
+            hasher
+                .add_gltf("EXAMPLE_payload", "meshes/example.gltf", document)
+                .unwrap();
             hasher.finish()
         };
         let document = serde_json::json!({
@@ -791,6 +966,60 @@ mod tests {
             hash(&moved),
             original,
             "occurrence location is part of the hash"
+        );
+    }
+
+    #[test]
+    fn canonical_json_does_not_round_distinct_large_integers_together() {
+        for (first, second) in [
+            (
+                serde_json::json!(9_007_199_254_740_992u64),
+                serde_json::json!(9_007_199_254_740_993u64),
+            ),
+            (serde_json::json!(u64::MAX - 1), serde_json::json!(u64::MAX)),
+            (serde_json::json!(i64::MIN), serde_json::json!(i64::MIN + 1)),
+        ] {
+            assert_ne!(encode_json(&first).unwrap(), encode_json(&second).unwrap());
+        }
+        assert_eq!(
+            encode_json(&serde_json::json!(1)).unwrap(),
+            encode_json(&serde_json::json!(1.0)).unwrap()
+        );
+        assert_eq!(
+            encode_json(&serde_json::json!(u64::MAX)).unwrap(),
+            "i18446744073709551615"
+        );
+        for (first, second) in [
+            ("-9223372036854775808", "-9223372036854775809"),
+            ("18446744073709551616", "18446744073709551617"),
+        ] {
+            let first = serde_json::from_str(first).unwrap();
+            let second = serde_json::from_str(second).unwrap();
+            assert_ne!(encode_json(&first).unwrap(), encode_json(&second).unwrap());
+        }
+        let integer = "9".repeat(400);
+        let value = serde_json::from_str(&integer).unwrap();
+        assert_eq!(encode_json(&value).unwrap(), format!("i{integer}"));
+        let overflow = serde_json::from_str("1e999").unwrap();
+        assert!(
+            encode_json(&overflow)
+                .unwrap_err()
+                .to_string()
+                .contains("finite binary64 range")
+        );
+    }
+
+    #[test]
+    fn index_without_stored_sql_is_rejected() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE payload(a UNIQUE);")
+            .unwrap();
+        let mut hasher = ExtensionHasher::new("example.payload", 1);
+        assert!(
+            hasher
+                .add_index(&connection, "sqlite_autoindex_payload_1")
+                .is_err()
         );
     }
 
@@ -831,7 +1060,7 @@ mod tests {
         let manifest = serde_json::json!({
             "schema_version": 26,
             "complete": true,
-            "extensions": [entry(DOOR_LINKS, 1, "core"), entry(MATERIAL_FIXTURE_ID, 3, "core"),
+            "extensions": [entry(DOOR_LINKS, 1, "core"), entry(OTHER_ID, 3, "core"),
                            entry(STALE_ID, 1, "older")]
         });
         let data =
@@ -842,7 +1071,7 @@ mod tests {
         );
         assert_eq!(data.status(MISSING_ID, 1..=1), ExtensionStatus::Missing);
         assert_eq!(
-            data.status(MATERIAL_FIXTURE_ID, 1..=2),
+            data.status(OTHER_ID, 1..=2),
             ExtensionStatus::UnsupportedVersion {
                 version: 3,
                 supported: 1..=2
@@ -911,12 +1140,9 @@ mod tests {
         let mut b = entry("example.b", 1, "core");
         a.owns.files = vec!["meshes/Asset.glb".into()];
         b.owns.files = vec!["meshes/asset.glb".into()];
-        a.owns.gltf_extensions = vec!["EXAMPLE_payload".into()];
-        b.owns.gltf_extensions = vec!["example_payload".into()];
-        assert!(ownership_problems([&a, &b]).is_empty());
+        assert_eq!(ownership_problems([&a, &b]).len(), 1);
         b.owns.files = a.owns.files.clone();
-        b.owns.gltf_extensions = a.owns.gltf_extensions.clone();
-        assert_eq!(ownership_problems([&a, &b]).len(), 2);
+        assert_eq!(ownership_problems([&a, &b]).len(), 1);
     }
 
     #[test]
@@ -994,14 +1220,96 @@ mod tests {
     #[test]
     fn duplicate_ids_and_shared_items_are_refused() {
         let manifest = serde_json::json!({"extensions": [entry(DOOR_LINKS, 1, "c"), entry(DOOR_LINKS, 1, "c")]});
-        assert!(DataExtensions::from_manifest_json(&manifest.to_string(), None).is_err());
+        let data = DataExtensions::from_manifest_json(&manifest.to_string(), None).unwrap();
+        assert_eq!(data.status(DOOR_LINKS, 1..=1), ExtensionStatus::Missing);
+        assert!(data.is_declared(DOOR_LINKS));
+        assert!(
+            data.issues()
+                .any(|issue| issue.reason.contains("listed twice"))
+        );
+        let duplicate = entry("example.a", 1, "c");
+        assert_eq!(
+            ownership_problems([&duplicate, &duplicate]),
+            vec!["extension example.a is listed twice"]
+        );
         let mut a = entry(DOOR_LINKS, 1, "c");
         a.owns.tables = vec!["door_links".into()];
-        let mut b = entry(MATERIAL_FIXTURE_ID, 1, "c");
+        let mut b = entry(OTHER_ID, 1, "c");
         b.owns.tables = vec!["door_links".into()];
         assert_eq!(
             ownership_problems([&a, &b]),
-            vec!["table door_links is owned by mudcrab.door_links and mudcrab.material".to_owned()]
+            vec!["table door_links is owned by mudcrab.door_links and example.other".to_owned()]
         );
+    }
+
+    #[test]
+    fn malformed_optional_entries_do_not_poison_valid_neighbors() {
+        let good = entry("example.good", 1, "core");
+        for malformed in [
+            serde_json::json!({"id": DOOR_LINKS}),
+            serde_json::json!({"id": DOOR_LINKS, "version": 1, "sha256": "", "built_from": "core", "stats": {"rows": 1.5}}),
+            serde_json::json!({"id": DOOR_LINKS, "version": 2, "owns": {"future_payload": ["data"]}, "sha256": "", "built_from": "core"}),
+            serde_json::json!(42),
+        ] {
+            let manifest = serde_json::json!({"extensions": [malformed, good]});
+            let data =
+                DataExtensions::from_manifest_json(&manifest.to_string(), Some("core".into()))
+                    .unwrap();
+            assert_eq!(data.entries().count(), 1);
+            assert_eq!(
+                data.status("example.good", 1..=1),
+                ExtensionStatus::Present { version: 1 }
+            );
+            assert_eq!(data.status(DOOR_LINKS, 1..=1), ExtensionStatus::Missing);
+            assert!(data.issues().next().is_some());
+        }
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!(false),
+        ] {
+            let data = DataExtensions::from_manifest_json(
+                &serde_json::json!({"extensions": value}).to_string(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(data.entries().count(), 0);
+        }
+    }
+
+    #[test]
+    fn file_ownership_refuses_case_aliases_and_nested_prefixes_in_either_order() {
+        let mut a = entry("example.a", 1, "core");
+        a.owns.files = vec!["Payload/".into()];
+        for path in ["payload/a.bin", "PAYLOAD/nested/", "payload/"] {
+            let mut b = entry("example.b", 1, "core");
+            b.owns.files = vec![path.into()];
+            assert!(!ownership_problems([&a, &b]).is_empty());
+            assert!(!ownership_problems([&b, &a]).is_empty());
+        }
+        assert!(ownership_problems([&a]).is_empty());
+    }
+
+    #[test]
+    fn multiple_core_identity_rows_are_refused() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE lod_build(build_identity TEXT); INSERT INTO lod_build VALUES('a'), ('b');").unwrap();
+        assert!(
+            core_build_identity(&connection)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple core build identities")
+        );
+    }
+
+    #[test]
+    fn declared_control_characters_are_rejected_without_rejecting_the_manifest() {
+        for kind in ["tables", "indexes", "files"] {
+            let mut value = serde_json::to_value(entry("example.bad", 1, "core")).unwrap();
+            value["owns"][kind] = serde_json::json!(["bad\nname"]);
+            let (entries, issues) = parse_entries(&serde_json::json!([value]));
+            assert!(entries.is_empty());
+            assert!(issues[0].reason.contains("control characters"));
+        }
     }
 }

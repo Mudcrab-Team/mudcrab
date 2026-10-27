@@ -233,6 +233,24 @@ where
         .collect())
 }
 
+fn deserialize_extensions<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<shared::extensions::ExtensionEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let (entries, issues) = shared::extensions::parse_entries(&value);
+    for issue in issues {
+        log::warn!(
+            "ignored optional capability declaration {:?}: {}",
+            issue.id,
+            issue.reason
+        );
+    }
+    Ok(entries)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestedFile {
     pub path: String,
@@ -394,7 +412,11 @@ pub struct ConversionManifest {
     )]
     pub derived_outputs: BTreeMap<String, DerivedOutput>,
     /// Versioned derived output, separate from the upstream core contract.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_extensions"
+    )]
     pub extensions: Vec<shared::extensions::ExtensionEntry>,
 }
 
@@ -1298,6 +1320,29 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_capability_parse_is_tolerant_per_entry() {
+        let good = shared::extensions::ExtensionEntry {
+            id: "example.valid".into(),
+            version: 1,
+            owns: Default::default(),
+            sha256: String::new(),
+            built_from: "core".into(),
+            stats: Default::default(),
+        };
+        let mut document = serde_json::to_value(ConversionManifest::default()).unwrap();
+        document["extensions"] = serde_json::json!([
+            {"id": "example.missing_fields"},
+            {"id": "example.float_stat", "version": 1, "sha256": "", "built_from": "core", "stats": {"rows": 1.5}},
+            good,
+        ]);
+        let manifest: ConversionManifest = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(manifest.extensions, vec![good]);
+        document["extensions"] = serde_json::Value::Null;
+        let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
+        assert!(manifest.extensions.is_empty());
+    }
 
     #[test]
     fn extensions_are_optional_and_round_trip_without_changing_core_fields() {

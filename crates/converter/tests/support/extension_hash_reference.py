@@ -1,33 +1,20 @@
 """Neutral test oracle for the mudcrab-ext-hash-v1 extension hash stream.
 
-Extracted from tools/extension_hash.py at c1233aa80c71d3ea3a485917ef5ffe28f6b43431.
-SQL ownership uses SQLite ASCII case equivalence, and index lookup accepts SQL case aliases.
-The canonical hash encoding and base dataset check are retained.
+SQL and file ownership use ASCII case equivalence on every platform.
+Directory ownership includes nested paths; index lookup accepts SQL case aliases.
 Run with a dataset root to print problems and exit 1 when invalid.
 """
 
 
 from __future__ import annotations
 
-
 import argparse
-
-
 import hashlib
-
-
 import json
-
-
+import math
 import sqlite3
-
-
 import struct
-
-
 import sys
-
-
 from pathlib import Path
 
 
@@ -36,7 +23,7 @@ DATABASE = "skyrim_world.db"
 MANIFEST = "conversion-manifest.json"
 GLB_MAGIC = 0x46546C67
 GLB_JSON_CHUNK = 0x4E4F534A
-SQL_IDENTIFIER_CASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+ASCII_CASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 def _hex_text(text: str) -> str:
@@ -64,16 +51,30 @@ def encode_sql(value) -> str:
     raise TypeError(f"unsupported SQLite value {value!r}")
 
 
+def validate_name(name: str) -> None:
+    """Names must not inject control characters into the line-framed hash stream."""
+    if not name or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in name):
+        raise ValueError(f"name {name!r} is empty or contains a control character")
+
+
 def encode_json(value) -> str:
-    """Canonical JSON: sorted keys, numbers as binary64 bits, strings as UTF-8 hex."""
+    """Canonical JSON: sorted keys, exact integers, binary64-compatible numbers, UTF-8 strings."""
     if value is None:
         return "null"
     if value is True:
         return "true"
     if value is False:
         return "false"
-    if isinstance(value, (int, float)):
-        return _real(float(value))
+    if isinstance(value, int):
+        try:
+            number = float(value)
+        except OverflowError:
+            return f"i{value}"
+        return _real(number) if int(number) == value else f"i{value}"
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("glTF JSON number is outside the finite binary64 range")
+        return _real(value)
     if isinstance(value, str):
         return "t" + _hex_text(value)
     if isinstance(value, list):
@@ -93,6 +94,7 @@ def _quote(name: str) -> str:
 
 
 def table_lines(connection: sqlite3.Connection, table: str) -> list[str]:
+    validate_name(table)
     columns = connection.execute(f"PRAGMA table_info({_quote(table)})").fetchall()
     if not columns:
         raise LookupError(f"table {table} is missing")
@@ -105,11 +107,12 @@ def table_lines(connection: sqlite3.Connection, table: str) -> list[str]:
 
 
 def index_line(connection: sqlite3.Connection, index: str) -> str:
+    validate_name(index)
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ? COLLATE NOCASE", (index,)
     ).fetchone()
-    if row is None:
-        raise LookupError(f"index {index} is missing")
+    if row is None or row[0] is None:
+        raise LookupError(f"index {index} is missing or has no stored SQL")
     return f"index {index} {row[0]}"
 
 
@@ -137,16 +140,29 @@ def owned_files(root: Path, entries: list[str]) -> list[str]:
 
 
 def glb_json(path: Path) -> dict:
-    data = path.read_bytes()
-    if path.suffix.lower() == ".gltf":
-        return json.loads(data)
-    magic, _version, _length = struct.unpack_from("<III", data, 0)
-    if magic != GLB_MAGIC:
-        raise ValueError(f"{path} is not a GLB")
-    chunk_length, chunk_type = struct.unpack_from("<II", data, 12)
-    if chunk_type != GLB_JSON_CHUNK:
-        raise ValueError(f"{path} has no JSON chunk first")
-    return json.loads(data[20 : 20 + chunk_length])
+    """Validate GLB lengths against the open file before reading its JSON payload."""
+    with path.open("rb") as source:
+        if path.suffix.lower() == ".gltf":
+            return json.loads(source.read())
+        source.seek(0, 2)
+        size = source.tell()
+        source.seek(0)
+        if size < 20:
+            raise ValueError(f"{path} has a truncated GLB header")
+        magic, version, length = struct.unpack("<III", source.read(12))
+        if magic != GLB_MAGIC or version != 2:
+            raise ValueError(f"{path} is not a version 2 GLB")
+        if length != size:
+            raise ValueError(f"{path} declares a GLB length different from its file size")
+        chunk_length, chunk_type = struct.unpack("<II", source.read(8))
+        if chunk_type != GLB_JSON_CHUNK:
+            raise ValueError(f"{path} has no JSON chunk first")
+        if chunk_length > size - 20 or chunk_length % 4:
+            raise ValueError(f"{path} has an invalid JSON chunk length")
+        payload = source.read(chunk_length)
+        if len(payload) != chunk_length:
+            raise ValueError(f"{path} has a truncated JSON chunk")
+        return json.loads(payload)
 
 
 def gltf_extension_value(document: dict, name: str) -> str | None:
@@ -179,12 +195,17 @@ def mesh_files(root: Path) -> list[Path]:
 def extension_lines(
     root: Path, entry: dict, meshes: list[Path] | None = None, database: Path | None = None
 ) -> list[str]:
-    """The hashed stream of one entry. `database` is the file holding its tables and indexes
-    (default `<root>/skyrim_world.db`; an overlay passes its `clusters.db`)."""
+    """Hash owned SQL, file and glTF content; an optional database supplies SQL objects."""
+    validate_name(entry["id"])
     owns = entry.get("owns", {})
+    if set(owns) - {"tables", "indexes", "files", "gltf_extensions"}:
+        raise ValueError("unsupported ownership kind")
+    for names in owns.values():
+        for name in names:
+            validate_name(name)
     lines = [ALGORITHM, str(entry["id"]), str(int(entry["version"]))]
-    tables = sorted(owns.get("tables", []))
-    indexes = sorted(owns.get("indexes", []))
+    tables = sorted(set(owns.get("tables", [])))
+    indexes = sorted(set(owns.get("indexes", [])))
     if tables or indexes:
         connection = _open_read_only(database if database is not None else root / DATABASE)
         try:
@@ -196,14 +217,15 @@ def extension_lines(
             connection.close()
     for path in owned_files(root, owns.get("files", [])):
         lines.append(f"file {path} {hashlib.sha256((root / path).read_bytes()).hexdigest()}")
-    gltf_names = sorted(owns.get("gltf_extensions", []))
+    gltf_names = sorted(set(owns.get("gltf_extensions", [])))
     if gltf_names:
         if meshes is None:
             meshes = mesh_files(root)
         documents = [(m.relative_to(root).as_posix(), glb_json(m)) for m in meshes]
         for name in gltf_names:
             for path, document in documents:
-                if name not in document.get("extensionsUsed", []):
+                used = document.get("extensionsUsed") if isinstance(document, dict) else None
+                if not isinstance(used, list) or name not in used:
                     continue
                 value = gltf_extension_value(document, name)
                 if value is not None:
@@ -228,31 +250,75 @@ def load_extensions(root: Path) -> list[dict]:
 
 
 def ownership_problems(extensions: list[dict]) -> list[str]:
-    """Disjoint ownership: SQL names compare ASCII case-insensitively; files/glTF exactly."""
+    """Duplicate IDs and cross-entry ASCII-case-equivalent or nested ownership."""
     seen: dict[tuple[str, str], str] = {}
+    files: list[tuple[str, str]] = []
     problems = []
     ids = set()
     for entry in extensions:
         if entry["id"] in ids:
             problems.append(f"extension {entry['id']} is listed twice")
         ids.add(entry["id"])
-        for kind, names in entry.get("owns", {}).items():
-            for name in names:
-                key = name.translate(SQL_IDENTIFIER_CASE) if kind in ("tables", "indexes") else name
+        owns = entry.get("owns", {})
+        for kind in ("tables", "indexes", "files", "gltf_extensions"):
+            local = set()
+            for name in owns.get(kind, []):
+                key = name if kind == "gltf_extensions" else name.translate(ASCII_CASE)
+                if key in local:
+                    continue
+                local.add(key)
                 owner = seen.setdefault((kind, key), entry["id"])
                 if owner != entry["id"]:
                     problems.append(f"{kind[:-1]} {name} is owned by {owner} and {entry['id']}")
+                if kind == "files":
+                    for previous, previous_owner in files:
+                        nested = ((key.endswith('/') and previous.startswith(key))
+                                  or (previous.endswith('/') and key.startswith(previous)))
+                        if previous_owner != entry["id"] and key != previous and nested:
+                            problems.append(f"file {name} of {entry['id']} overlaps file {previous} of {previous_owner}")
+                    files.append((key, entry["id"]))
     return problems
+
+
+def core_build_identity(root: Path) -> str | None:
+    """A finalized entry needs exactly one nonempty TEXT core identity."""
+    if not (root / DATABASE).is_file():
+        return None
+    connection = _open_read_only(root / DATABASE)
+    try:
+        row = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name = 'lod_build' COLLATE NOCASE"
+        ).fetchone()
+        if row is None:
+            return None
+        if row[0] != "table":
+            raise ValueError("lod_build must be a table")
+        identities = connection.execute("SELECT build_identity FROM lod_build LIMIT 2").fetchall()
+    finally:
+        connection.close()
+    if len(identities) > 1:
+        raise ValueError("lod_build has more than one core identity row")
+    if not identities:
+        return None
+    identity = identities[0][0]
+    if not isinstance(identity, str):
+        raise ValueError("core build identity must be TEXT")
+    return identity
 
 
 def check(root: Path) -> list[str]:
     """Problems with the data set's extension list; empty means every hash matches."""
     extensions = load_extensions(root)
     problems = ownership_problems(extensions)
-    meshes = None
-    if any(entry.get("owns", {}).get("gltf_extensions") for entry in extensions):
-        meshes = mesh_files(root)
+    # Standalone legacy hash fixtures omit provenance; finalized entries declare built_from.
+    finalized = [entry for entry in extensions if "built_from" in entry]
+    identity = core_build_identity(root) if finalized else None
+    if finalized and not identity:
+        problems.append("finalized extensions require a nonempty core build identity")
+    meshes = mesh_files(root) if any(entry.get("owns", {}).get("gltf_extensions") for entry in extensions) else None
     for entry in extensions:
+        if identity and "built_from" in entry and entry["built_from"] != identity:
+            problems.append(f"{entry['id']}: built_from does not match the core build identity")
         try:
             actual = extension_hash(root, entry, meshes)
         except (LookupError, ValueError) as error:

@@ -136,7 +136,7 @@ pub fn specs() -> Vec<ExtensionSpec> {
 ///
 /// An extension is listed when the converter wrote it, even with zero rows: every table it owns
 /// exists in `skyrim_world.db`. An extension that owns only glTF extensions is listed when an
-/// output mesh declares one of those names in `extensionsUsed`. If a table is missing the extension is not listed.
+/// output mesh contains an owned payload occurrence. If a table is missing the extension is not listed.
 pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
     build_entries_with_specs(output, specs())
 }
@@ -145,6 +145,9 @@ fn build_entries_with_specs(
     output: &Path,
     specifications: Vec<ExtensionSpec>,
 ) -> Result<Vec<ExtensionEntry>> {
+    if specifications.is_empty() {
+        return Ok(Vec::new());
+    }
     let database = output.join(DATABASE);
     let connection = if database.is_file() {
         Some(
@@ -154,13 +157,6 @@ fn build_entries_with_specs(
     } else {
         None
     };
-    // `built_from` is the core build identity. A database without a `lod_build` row (a conversion
-    // with no distant LOD, or no database at all) has none: the empty string says so.
-    let built_from = match &connection {
-        Some(connection) => core_build_identity(connection)?.unwrap_or_default(),
-        None => String::new(),
-    };
-
     struct Pending {
         spec: ExtensionSpec,
         hasher: ExtensionHasher,
@@ -170,6 +166,12 @@ fn build_entries_with_specs(
     }
     let mut pending = Vec::new();
     for spec in specifications {
+        color_eyre::eyre::ensure!(
+            spec.owns.indexes.is_empty() || connection.is_some(),
+            "extension {} owns indexes but {} is missing",
+            spec.id,
+            database.display()
+        );
         let owns_database = !spec.owns.tables.is_empty();
         if owns_database {
             let Some(connection) = &connection else {
@@ -220,16 +222,14 @@ fn build_entries_with_specs(
                 .replace('\\', "/");
             let json = read_gltf_json(&mesh)
                 .wrap_err_with(|| format!("reading the glTF header of {}", mesh.display()))?;
-            let document: serde_json::Value = serde_json::from_slice(&json)
-                .wrap_err_with(|| format!("{} has an invalid glTF JSON chunk", mesh.display()))?;
+            let document: serde_json::Value =
+                serde_json::from_slice(json.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&json))
+                    .wrap_err_with(|| {
+                        format!("{} has an invalid glTF JSON chunk", mesh.display())
+                    })?;
             for entry in &mut pending {
                 for name in &entry.spec.owns.gltf_extensions {
-                    let used = document["extensionsUsed"].as_array().is_some_and(|used| {
-                        used.iter()
-                            .any(|value| value.as_str() == Some(name.as_str()))
-                    });
-                    entry.gltf_used |= used;
-                    entry.hasher.add_gltf(name, &relative, &document);
+                    entry.gltf_used |= entry.hasher.add_gltf(name, &relative, &document)?;
                 }
             }
         }
@@ -244,7 +244,18 @@ fn build_entries_with_specs(
         });
     }
 
-    Ok(pending
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    let built_from = match &connection {
+        Some(connection) => core_build_identity(connection)?.unwrap_or_default(),
+        None => String::new(),
+    };
+    color_eyre::eyre::ensure!(
+        !built_from.is_empty(),
+        "cannot publish capabilities without a core build identity (lod_build); --no-lod datasets have no freshness anchor"
+    );
+    let entries: Vec<_> = pending
         .into_iter()
         .map(|entry| ExtensionEntry {
             id: entry.spec.id.to_owned(),
@@ -254,19 +265,66 @@ fn build_entries_with_specs(
             built_from: built_from.clone(),
             stats: entry.stats,
         })
-        .collect())
+        .collect();
+    for entry in &entries {
+        entry.validate_names()?;
+    }
+    let problems = shared::extensions::ownership_problems(&entries);
+    color_eyre::eyre::ensure!(
+        problems.is_empty(),
+        "extension ownership conflicts: {}",
+        problems.join("; ")
+    );
+    Ok(entries)
 }
 
-/// Recomputes `manifest.extensions` from the finished output folder. Call it wherever the
-/// database or meshes a manifest describes were last changed, right before the manifest is saved.
+/// Refreshes built-in entries and retains still-valid declarations from other finalizers.
+/// Rejected or changed declarations are dropped with a warning; no identity or hash is minted.
 pub fn refresh_manifest(manifest: &mut ConversionManifest, output: &Path) -> Result<()> {
-    manifest.extensions = build_entries(output)?;
-    Ok(())
+    refresh_manifest_with_notices(manifest, output).map(|_| ())
+}
+
+pub(crate) fn refresh_manifest_with_notices(
+    manifest: &mut ConversionManifest,
+    output: &Path,
+) -> Result<Vec<String>> {
+    let mut entries = build_entries(output)?;
+    let own_ids: std::collections::BTreeSet<_> = specs().into_iter().map(|spec| spec.id).collect();
+    let mut notices = Vec::new();
+    for entry in &manifest.extensions {
+        if own_ids.contains(entry.id.as_str()) {
+            continue;
+        }
+        let result = (|| -> Result<()> {
+            reject_core_claims(entry)?;
+            validate_content_hash(output, entry)?;
+            let problems = shared::extensions::ownership_problems(
+                entries.iter().chain(std::iter::once(entry)),
+            );
+            color_eyre::eyre::ensure!(
+                problems.is_empty(),
+                "extension ownership conflicts: {}",
+                problems.join("; ")
+            );
+            Ok(())
+        })();
+        match result {
+            Ok(()) => entries.push(entry.clone()),
+            Err(error) => {
+                let notice = format!("dropped capability {} during refresh: {error:#}", entry.id);
+                log::warn!("{notice}");
+                notices.push(notice);
+            }
+        }
+    }
+    manifest.extensions = entries;
+    Ok(notices)
 }
 
 /// Recomputes `mudcrab-ext-hash-v1` of `entry` from what `output` holds now, reading only what the
 /// entry's `owns` lists. Errors when an owned table, index or exact file is missing.
 pub fn recompute_hash(output: &Path, entry: &ExtensionEntry) -> Result<String> {
+    entry.validate_names()?;
     let mut hasher = ExtensionHasher::new(&entry.id, entry.version);
     if !entry.owns.tables.is_empty() || !entry.owns.indexes.is_empty() {
         let database = output.join(DATABASE);
@@ -293,131 +351,133 @@ pub fn recompute_hash(output: &Path, entry: &ExtensionEntry) -> Result<String> {
                 .replace('\\', "/");
             let json = read_gltf_json(&mesh)
                 .wrap_err_with(|| format!("reading the glTF header of {}", mesh.display()))?;
-            let document: serde_json::Value = serde_json::from_slice(&json)
-                .wrap_err_with(|| format!("{} has an invalid glTF JSON chunk", mesh.display()))?;
+            let document: serde_json::Value =
+                serde_json::from_slice(json.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&json))
+                    .wrap_err_with(|| {
+                        format!("{} has an invalid glTF JSON chunk", mesh.display())
+                    })?;
             for name in &entry.owns.gltf_extensions {
-                hasher.add_gltf(name, &relative, &document);
+                hasher.add_gltf(name, &relative, &document)?;
             }
         }
     }
     Ok(hasher.finish())
 }
 
-/// Like [`refresh_manifest`], and also lists independently versioned payloads already written
-/// by another finalizer.
-///
-/// The caller holds the exclusive asset lock and the entries come from finalizers that ran under it;
-/// this function mints no provenance. It sets `manifest.extensions` to the converter's own entries
-/// followed by `finalized`, or leaves the manifest untouched and returns an error when:
-/// * a finalized entry's `built_from` is empty or not the data set's current core build identity,
-/// * an id is listed twice (including a clash with this converter's own extensions),
-/// * two extensions own the same table, index, file entry or glTF extension name,
-/// * a finalized entry's `sha256` is not the hash of the content now in `output`.
-///
-/// With an empty `finalized` it behaves like [`refresh_manifest`].
+/// Publishes built-in entries plus the explicitly finalized declarations.
+/// The caller holds the exclusive asset lock. Every supplied entry needs a current nonempty
+/// core identity, disjoint non-core ownership, and the actual content hash. Errors leave the
+/// manifest untouched. With no supplied entries, existing declarations are refreshed in place.
 pub fn refresh_manifest_with_finalized(
     manifest: &mut ConversionManifest,
     output: &Path,
     finalized: &[ExtensionEntry],
 ) -> Result<()> {
-    let mut entries = build_entries(output)?;
-    if !finalized.is_empty() {
-        let database = output.join(DATABASE);
-        let current = if database.is_file() {
-            let connection =
-                Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                    .wrap_err_with(|| format!("opening {}", database.display()))?;
-            core_build_identity(&connection)?.unwrap_or_default()
-        } else {
-            String::new()
-        };
-        if current.is_empty() {
-            bail!(
-                "{} has no core build identity (lod_build), so finalized extensions cannot be listed",
-                output.display()
-            );
-        }
-        let mut ids: std::collections::BTreeSet<&str> =
-            entries.iter().map(|entry| entry.id.as_str()).collect();
-        for entry in finalized {
-            if entry.id == DOOR_LINKS
-                || entry.owns.tables.iter().any(|table| {
-                    MAIN_CORE_TABLES
-                        .iter()
-                        .any(|core| core.eq_ignore_ascii_case(table))
-                })
-                || entry.owns.indexes.iter().any(|index| {
-                    MAIN_CORE_INDEXES
-                        .iter()
-                        .any(|core| core.eq_ignore_ascii_case(index))
-                })
-            {
-                bail!(
-                    "extension {} claims promoted or core-owned output",
-                    entry.id
-                );
-            }
-            if entry.built_from != current {
-                bail!(
-                    "extension {} was built from {:?}, but the data set's core is {current}",
-                    entry.id,
-                    entry.built_from
-                );
-            }
-            if !ids.insert(entry.id.as_str()) {
-                bail!("extension {} is listed twice", entry.id);
-            }
-            let actual = recompute_hash(output, entry)
-                .wrap_err_with(|| format!("hashing extension {}", entry.id))?;
-            if actual != entry.sha256 {
-                bail!(
-                    "extension {} lists sha256 {}, but its content hashes to {actual}",
-                    entry.id,
-                    entry.sha256
-                );
-            }
-        }
-        entries.extend(finalized.iter().cloned());
-        let mut problems = shared::extensions::ownership_problems(&entries);
-        problems.extend(file_prefix_overlaps(&entries));
-        if !problems.is_empty() {
-            bail!("extension ownership conflicts: {}", problems.join("; "));
-        }
+    if finalized.is_empty() {
+        return refresh_manifest(manifest, output);
     }
+    let mut entries = build_entries(output)?;
+    let current = publication_identity(output)?;
+    for entry in finalized {
+        validate_finalized(output, entry, &current)?;
+    }
+    entries.extend(finalized.iter().cloned());
+    let problems = shared::extensions::ownership_problems(&entries);
+    color_eyre::eyre::ensure!(
+        problems.is_empty(),
+        "extension ownership conflicts: {}",
+        problems.join("; ")
+    );
     manifest.extensions = entries;
     Ok(())
 }
 
-/// Files two extensions own through different spellings: a folder entry (ending in `/`) covers
-/// every path below it, so it overlaps a file or folder of another extension that starts with it.
-/// Exact equal strings are already reported by `ownership_problems`.
-fn file_prefix_overlaps(entries: &[ExtensionEntry]) -> Vec<String> {
-    let mut problems = Vec::new();
-    for (index, first) in entries.iter().enumerate() {
-        for second in &entries[index + 1..] {
-            for a in &first.owns.files {
-                for b in &second.owns.files {
-                    let nested = (a.ends_with('/') && b.starts_with(a.as_str()))
-                        || (b.ends_with('/') && a.starts_with(b.as_str()));
-                    if nested && a != b {
-                        problems.push(format!(
-                            "file {a} of {} overlaps file {b} of {}",
-                            first.id, second.id
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    problems
+fn publication_identity(output: &Path) -> Result<String> {
+    let database = output.join(DATABASE);
+    let current = if database.is_file() {
+        let connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .wrap_err_with(|| format!("opening {}", database.display()))?;
+        core_build_identity(&connection)?.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    color_eyre::eyre::ensure!(
+        !current.is_empty(),
+        "{} has no core build identity (lod_build); cannot publish capabilities for --no-lod datasets without a freshness anchor",
+        output.display()
+    );
+    Ok(current)
+}
+
+fn reject_core_claims(entry: &ExtensionEntry) -> Result<()> {
+    entry.validate_names()?;
+    let claims_core = entry.id == DOOR_LINKS
+        || entry.owns.tables.iter().any(|table| {
+            MAIN_CORE_TABLES
+                .iter()
+                .any(|core| core.eq_ignore_ascii_case(table))
+        })
+        || entry.owns.indexes.iter().any(|index| {
+            MAIN_CORE_INDEXES
+                .iter()
+                .any(|core| core.eq_ignore_ascii_case(index))
+        })
+        || entry.owns.gltf_extensions.iter().any(|name| {
+            [
+                "OPEN_SKYRIM_material",
+                "KHR_texture_transform",
+                "KHR_materials_emissive_strength",
+                "KHR_materials_specular",
+            ]
+            .contains(&name.as_str())
+        })
+        || entry.owns.files.iter().any(|file| {
+            let file = file.to_ascii_lowercase();
+            let exact = file.trim_end_matches('/');
+            [
+                DATABASE,
+                "conversion-manifest.json",
+                "cell_cache.rkyv",
+                "lod-manifest.json",
+            ]
+            .contains(&exact)
+                || ["meshes/", "lod/", "terrain/"]
+                    .iter()
+                    .any(|core| exact == core.trim_end_matches('/') || file.starts_with(*core))
+        });
+    color_eyre::eyre::ensure!(
+        !claims_core,
+        "extension {} claims promoted or core-owned output",
+        entry.id
+    );
+    Ok(())
+}
+
+fn validate_finalized(output: &Path, entry: &ExtensionEntry, current: &str) -> Result<()> {
+    reject_core_claims(entry)?;
+    color_eyre::eyre::ensure!(
+        entry.built_from == current,
+        "extension {} was built from {:?}, but the data set's core is {current}",
+        entry.id,
+        entry.built_from
+    );
+    validate_content_hash(output, entry)
+}
+
+fn validate_content_hash(output: &Path, entry: &ExtensionEntry) -> Result<()> {
+    let actual = recompute_hash(output, entry)
+        .wrap_err_with(|| format!("hashing extension {}", entry.id))?;
+    color_eyre::eyre::ensure!(
+        actual == entry.sha256,
+        "extension {} lists sha256 {}, but its content hashes to {actual}",
+        entry.id,
+        entry.sha256
+    );
+    Ok(())
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get(0),
-    )?)
+    Ok(shared::extensions::locate_object(connection, "table", table)?.is_some())
 }
 
 fn count_rows(connection: &Connection, table: &str) -> Result<u64> {
@@ -516,10 +576,28 @@ fn read_gltf_json(path: &Path) -> Result<Vec<u8>> {
     if &header[0..4] != GLB_MAGIC {
         bail!("not a GLB");
     }
+    color_eyre::eyre::ensure!(
+        u32::from_le_bytes(header[4..8].try_into()?) == 2,
+        "unsupported GLB version"
+    );
     if &header[16..20] != GLB_JSON_CHUNK {
         bail!("no JSON chunk first");
     }
-    let length = u32::from_le_bytes(header[12..16].try_into().expect("four bytes")) as usize;
+    let file_length = file.metadata()?.len();
+    let declared = u64::from(u32::from_le_bytes(header[8..12].try_into()?));
+    let length = u32::from_le_bytes(header[12..16].try_into()?) as usize;
+    color_eyre::eyre::ensure!(
+        declared == file_length && declared >= 20,
+        "GLB declared length does not match file size"
+    );
+    color_eyre::eyre::ensure!(
+        length as u64 <= file_length - 20,
+        "GLB JSON chunk length exceeds file size"
+    );
+    color_eyre::eyre::ensure!(
+        length.is_multiple_of(4),
+        "GLB JSON chunk length is not aligned"
+    );
     let mut json = vec![0u8; length];
     file.read_exact(&mut json)?;
     Ok(json)
@@ -775,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_identity_cannot_publish_or_replace_manifest_entries() {
+    fn malformed_identity_blocks_publication_but_preserves_existing_payloads() {
         for sql in [
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, renamed_identity TEXT);",
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity);
@@ -788,16 +866,14 @@ mod tests {
             connection.execute_batch("DROP TABLE lod_build;").unwrap();
             connection.execute_batch(sql).unwrap();
             drop(connection);
-            let error = build_entries(directory.path()).unwrap_err();
-            assert!(format!("{error:#}").contains("reading core build identity"));
+            assert!(build_entries(directory.path()).unwrap().is_empty());
             let mut manifest = ConversionManifest {
                 extensions: vec![entry.clone()],
                 ..Default::default()
             };
-            let before = serde_json::to_value(&manifest).unwrap();
-            let error = refresh_manifest(&mut manifest, directory.path()).unwrap_err();
-            assert!(format!("{error:#}").contains("reading core build identity"));
-            assert_eq!(serde_json::to_value(&manifest).unwrap(), before);
+            let notices = refresh_manifest_with_notices(&mut manifest, directory.path()).unwrap();
+            assert_eq!(manifest.extensions, vec![entry.clone()]);
+            assert!(notices.is_empty());
             assert!(refused(directory.path(), &[entry]).contains("reading core build identity"));
         }
     }
@@ -825,6 +901,240 @@ mod tests {
     fn no_database_lists_no_table_extension() {
         let directory = tempfile::tempdir().unwrap();
         assert!(build_entries(directory.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_registry_does_not_open_a_malformed_database() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join(DATABASE), b"not a database").unwrap();
+        fs::write(
+            directory.path().join("conversion-manifest.json"),
+            br#"{"extensions":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            shared::extensions::DataExtensions::load(directory.path())
+                .unwrap()
+                .entries()
+                .count(),
+            0
+        );
+        assert!(build_entries(directory.path()).unwrap().is_empty());
+        refresh_manifest(&mut ConversionManifest::default(), directory.path()).unwrap();
+    }
+
+    #[test]
+    fn index_only_spec_requires_its_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let spec = ExtensionSpec {
+            id: "example.index",
+            version: 1,
+            owns: ExtensionOwns {
+                indexes: names(&["idx_payload"]),
+                ..Default::default()
+            },
+        };
+        assert!(
+            build_entries_with_specs(directory.path(), vec![spec])
+                .unwrap_err()
+                .to_string()
+                .contains("owns indexes")
+        );
+    }
+
+    #[test]
+    fn table_discovery_matches_hasher_case_and_view_rules() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE payload(a); CREATE VIEW payload_view AS SELECT * FROM payload;",
+            )
+            .unwrap();
+        assert!(table_exists(&connection, "PAYLOAD").unwrap());
+        assert!(
+            table_exists(&connection, "payload_view")
+                .unwrap_err()
+                .to_string()
+                .contains("view")
+        );
+    }
+
+    #[test]
+    fn foreign_declarations_survive_refresh_until_payload_bytes_change() {
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "abc");
+        let entry = custom_entry(
+            directory.path(),
+            "example.foreign",
+            "extra_payload",
+            "payload",
+        );
+        let mut manifest = ConversionManifest {
+            extensions: vec![entry.clone()],
+            ..Default::default()
+        };
+        assert!(
+            refresh_manifest_with_notices(&mut manifest, directory.path())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(manifest.extensions, vec![entry.clone()]);
+        // A changed base identity must retain the original anchor so readers can report Stale.
+        with_identity(directory.path(), "changed-core");
+        assert!(
+            refresh_manifest_with_notices(&mut manifest, directory.path())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(manifest.extensions, vec![entry.clone()]);
+        let data = shared::extensions::DataExtensions::from_manifest_json(
+            &serde_json::to_string(&manifest).unwrap(),
+            Some("changed-core".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            data.status(&entry.id, 1..=1),
+            shared::extensions::ExtensionStatus::Stale {
+                built_from: "abc".into(),
+            }
+        );
+        fs::write(directory.path().join("payload/a.bin"), b"changed").unwrap();
+        let notices = refresh_manifest_with_notices(&mut manifest, directory.path()).unwrap();
+        assert!(manifest.extensions.is_empty());
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("example.foreign") && notices[0].contains("content hashes to"));
+    }
+
+    #[test]
+    fn missing_lod_identity_refuses_new_capability_publication() {
+        let directory = output_with_tables(&[]);
+        let entry = custom_entry(
+            directory.path(),
+            "example.foreign",
+            "extra_payload",
+            "payload",
+        );
+        let error = refused(directory.path(), &[entry]);
+        assert!(error.contains("--no-lod") && error.contains("freshness anchor"));
+    }
+
+    #[test]
+    fn finalized_entries_cannot_claim_core_files_or_mesh_folders() {
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "core");
+        let mut entry = custom_entry(
+            directory.path(),
+            "example.foreign",
+            "extra_payload",
+            "payload",
+        );
+        for name in [
+            "skyrim_world.db",
+            "SKYRIM_WORLD.DB",
+            "conversion-manifest.json",
+            "cell_cache.rkyv",
+            "meshes/",
+            "MESHES/a.glb",
+            "lod/",
+            "terrain/a.glb",
+        ] {
+            entry.owns.files = vec![name.into()];
+            // Policy rejection must precede any attempt to read or hash these paths.
+            assert!(refused(directory.path(), std::slice::from_ref(&entry)).contains("core-owned"));
+        }
+    }
+
+    #[test]
+    fn core_gltf_names_cannot_be_claimed_but_additional_payload_names_can() {
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "abc");
+        let mut entry = custom_entry(
+            directory.path(),
+            "example.foreign",
+            "extra_payload",
+            "payload",
+        );
+        entry.owns = ExtensionOwns::default();
+        for name in [
+            "OPEN_SKYRIM_material",
+            "KHR_texture_transform",
+            "KHR_materials_emissive_strength",
+            "KHR_materials_specular",
+        ] {
+            entry.owns.gltf_extensions = vec![name.into()];
+            assert!(refused(directory.path(), std::slice::from_ref(&entry)).contains("core-owned"));
+        }
+        entry.owns.gltf_extensions = vec!["OPEN_SKYRIM_material_animation".into()];
+        fs::write(directory.path().join("example.gltf"), br#"{"extensionsUsed":["OPEN_SKYRIM_material_animation"],"extensions":{"OPEN_SKYRIM_material_animation":{"value":1}}}"#).unwrap();
+        entry.sha256 = recompute_hash(directory.path(), &entry).unwrap();
+        refresh_manifest_with_finalized(
+            &mut ConversionManifest::default(),
+            directory.path(),
+            &[entry],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn glb_chunk_length_is_checked_before_allocating() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("bad.glb");
+        let mut header = Vec::new();
+        header.extend_from_slice(GLB_MAGIC);
+        header.extend_from_slice(&2u32.to_le_bytes());
+        header.extend_from_slice(&20u32.to_le_bytes());
+        header.extend_from_slice(&u32::MAX.to_le_bytes());
+        header.extend_from_slice(GLB_JSON_CHUNK);
+        fs::write(&path, header).unwrap();
+        assert!(
+            read_gltf_json(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("chunk length exceeds file size")
+        );
+    }
+
+    #[test]
+    fn gltf_only_descriptor_needs_payload_values_not_only_a_used_name() {
+        let directory = output_with_tables(&[]);
+        fs::write(
+            directory.path().join("empty.gltf"),
+            br#"{"extensionsUsed":["EXAMPLE_payload"]}"#,
+        )
+        .unwrap();
+        assert!(
+            build_entries_with_specs(directory.path(), vec![gltf_spec()])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn gltf_bom_is_accepted_but_owned_float_overflow_is_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.gltf");
+        let entry = ExtensionEntry {
+            id: "example.payload".into(),
+            version: 1,
+            owns: gltf_spec().owns,
+            sha256: String::new(),
+            built_from: "core".into(),
+            stats: Default::default(),
+        };
+        let document = br#"{"extensionsUsed":["EXAMPLE_payload"],"extensions":{"EXAMPLE_payload":{"value":1}}}"#;
+        fs::write(&path, document).unwrap();
+        let plain = recompute_hash(directory.path(), &entry).unwrap();
+        let mut bom = b"\xef\xbb\xbf".to_vec();
+        bom.extend_from_slice(document);
+        fs::write(&path, bom).unwrap();
+        assert_eq!(recompute_hash(directory.path(), &entry).unwrap(), plain);
+        fs::write(&path, br#"{"extensionsUsed":["EXAMPLE_payload"],"extensions":{"EXAMPLE_payload":{"value":1e999}}}"#).unwrap();
+        assert!(
+            recompute_hash(directory.path(), &entry)
+                .unwrap_err()
+                .to_string()
+                .contains("finite binary64 range")
+        );
     }
 
     fn with_identity(output: &Path, identity: &str) {
@@ -1012,6 +1322,7 @@ mod tests {
     #[test]
     fn escaped_gltf_names_match_semantic_discovery_and_hashes() {
         let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "core");
         let path = directory.path().join("meshes/escaped.gltf");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let plain = r#"{"extensionsUsed":["EXAMPLE_payload"],"materials":[{"extensions":{"EXAMPLE_payload":{"value":1}}}]}"#;

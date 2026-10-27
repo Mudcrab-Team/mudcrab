@@ -30,11 +30,67 @@ use common::cpu_lod_config;
 use dummy_content::{esm, layout};
 use insta::assert_json_snapshot;
 use rusqlite::{Connection, types::Value as SqlValue};
+use serde::{
+    Serialize, Serializer,
+    ser::{Error as _, SerializeMap, SerializeSeq},
+};
 use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+// Insta's generic serializer does not understand serde_json's arbitrary-precision
+// Number protocol. Emit ordinary primitives here without changing production JSON.
+struct SnapshotValue<'a>(&'a Value);
+
+impl Serialize for SnapshotValue<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Null => serializer.serialize_unit(),
+            Value::Bool(value) => serializer.serialize_bool(*value),
+            Value::String(value) => serializer.serialize_str(value),
+            Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    return serializer.serialize_i64(value);
+                }
+                if let Some(value) = value.as_u64() {
+                    return serializer.serialize_u64(value);
+                }
+                // A wider integer must fail instead of silently losing precision
+                // through f64. Only decimal or exponent tokens may use that path.
+                if !value.to_string().contains(['.', 'e', 'E']) {
+                    return Err(S::Error::custom(format!(
+                        "snapshot integer is outside the i64/u64 range: {value}"
+                    )));
+                }
+                let number = value
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .ok_or_else(|| {
+                        S::Error::custom(format!(
+                            "snapshot number is outside the finite f64 range: {value}"
+                        ))
+                    })?;
+                serializer.serialize_f64(number)
+            }
+            Value::Array(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(&SnapshotValue(value))?;
+                }
+                sequence.end()
+            }
+            Value::Object(values) => {
+                let mut map = serializer.serialize_map(Some(values.len()))?;
+                for (key, value) in values {
+                    map.serialize_entry(key, &SnapshotValue(value))?;
+                }
+                map.end()
+            }
+        }
+    }
+}
 
 /// The bytes `dummy-content gen --with-interior` writes: one exterior cell,
 /// its auto-load door into one interior cell, and the return door. The spec is
@@ -176,7 +232,11 @@ async fn converted_static_model_gltf_matches_snapshot() {
     // `OPEN_SKYRIM_material` is absent because the material stage writes it only
     // for a material with an extra texture slot or an alpha flag, and the
     // fixture's quad has neither (`crates/converter/src/material.rs`).
-    assert_json_snapshot!(document);
+    assert_json_snapshot!(
+        "converted_static_model_gltf_matches_snapshot",
+        SnapshotValue(&document),
+        "document"
+    );
 }
 
 #[test]
@@ -207,7 +267,11 @@ fn world_database_tables_match_snapshot() {
     });
 
     assert_no_machine_paths(&snapshot, directory.path());
-    assert_json_snapshot!(snapshot);
+    assert_json_snapshot!(
+        "world_database_tables_match_snapshot",
+        SnapshotValue(&snapshot),
+        "snapshot"
+    );
 }
 
 #[tokio::test]
@@ -218,7 +282,7 @@ async fn conversion_manifest_matches_snapshot() {
             .unwrap();
 
     assert_no_machine_paths(&manifest, directory.path());
-    assert_json_snapshot!(manifest, {
+    assert_json_snapshot!("conversion_manifest_matches_snapshot", SnapshotValue(&manifest), {
         // Content digests carry nothing a reviewer can read, and a texture's
         // digest depends on the basis-universal encoder rather than on the
         // converter; entry keys, output paths and sizes are the reviewable
@@ -227,7 +291,7 @@ async fn conversion_manifest_matches_snapshot() {
         ".**.source_hash" => "[source_hash]",
         ".**.output_hash" => "[output_hash]",
         ".**.hash" => "[hash]",
-    });
+    }, "manifest");
 }
 
 #[tokio::test]
@@ -254,7 +318,7 @@ async fn pipeline_report_matches_snapshot() {
     }
 
     assert_no_machine_paths(&report, directory.path());
-    assert_json_snapshot!(report, {
+    assert_json_snapshot!("pipeline_report_matches_snapshot", SnapshotValue(&report), {
         // Wall-clock time.
         ".elapsed_ms" => "[elapsed_ms]",
         ".lod_elapsed_ms" => "[lod_elapsed_ms]",
@@ -273,5 +337,5 @@ async fn pipeline_report_matches_snapshot() {
         // which is not stable between runs; sorting keeps the same set of
         // published files readable.
         ".artifacts" => insta::sorted_redaction(),
-    });
+    }, "report");
 }

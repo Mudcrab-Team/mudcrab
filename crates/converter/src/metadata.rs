@@ -717,7 +717,11 @@ async fn rebuild_into(
     manifest.archives.clear();
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
-    crate::extensions::refresh_manifest(manifest, staging)?;
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            manifest, staging,
+        )?);
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),

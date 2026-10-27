@@ -173,17 +173,18 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
-        let features = open_features(
-            &config.assets_dir,
-            read_data_extensions(&config.assets_dir)?,
-        )?;
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         Some((
-            WorldDatabase::open_with(&database_path, features.world_database())?,
-            AssetCatalog::open(&database_path)?,
-            CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
-            InitialCameraGroundHeight(0.0),
-            None,
-            features,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
+                InitialCameraGroundHeight(0.0),
+                None,
+            ),
+            extensions,
+            notices,
         ))
     } else if config.benchmark_only
         || config.material_fixture
@@ -196,10 +197,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         validate_runtime_assets(&config)?;
         let database_path = config.assets_dir.join("skyrim_world.db");
-        let features = open_features(
-            &config.assets_dir,
-            read_data_extensions(&config.assets_dir)?,
-        )?;
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
         let spawn_ground_height = if interactive_world_physics {
@@ -221,12 +220,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             )?);
         }
         Some((
-            WorldDatabase::open_with(&database_path, features.world_database())?,
-            AssetCatalog::open(&database_path)?,
-            cache,
-            InitialCameraGroundHeight(ground_height),
-            spawn_ground_height,
-            features,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                cache,
+                InitialCameraGroundHeight(ground_height),
+                spawn_ground_height,
+            ),
+            extensions,
+            notices,
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
@@ -308,9 +310,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
     // Capability state must exist before any renderer plugin builds.
-    if let Some((_, _, _, _, _, features)) = &runtime_data {
-        app.insert_resource(features.extensions.clone());
-    }
+    let runtime_data = runtime_data.map(|(runtime_data, extensions, notices)| {
+        app.insert_resource(extensions).insert_resource(notices);
+        runtime_data
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -423,10 +426,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.init_resource::<StreamingBenchmarkRoute>()
             .add_systems(PreUpdate, drive_streaming_benchmark_route);
     }
-    if let Some((database, catalog, cache, ground_height, spawn_ground_height, features)) =
-        runtime_data
-    {
-        features.install(&mut app);
+    if let Some((database, catalog, cache, ground_height, spawn_ground_height)) = runtime_data {
         if let Some(environment) = environment {
             app.insert_resource(environment);
         }

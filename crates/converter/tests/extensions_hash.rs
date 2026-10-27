@@ -21,16 +21,20 @@ async fn convert(config: converter::PipelineConfig) -> converter::pipeline::Pipe
 }
 
 fn python() -> Option<&'static str> {
-    ["python", "python3"].into_iter().find(|name| {
+    let executable = ["python", "python3"].into_iter().find(|name| {
         Command::new(name)
             .arg("--version")
             .output()
             .is_ok_and(|output| output.status.success())
-    })
+    });
+    if executable.is_none() {
+        eprintln!("skipped the Python cross check: neither `python` nor `python3` is on PATH");
+    }
+    executable
 }
 
 #[tokio::test]
-async fn python_reference_accepts_the_converter_manifest() {
+async fn ordinary_conversion_publishes_core_output_only() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let output = directory.path().join("assets");
@@ -84,37 +88,6 @@ async fn python_reference_accepts_the_converter_manifest() {
         "real conversion must retain core references"
     );
     drop(connection);
-    assert!(
-        !ids.contains(&shared::extensions::DOOR_LINKS),
-        "door links are core output"
-    );
-    assert!(shared::extensions::ownership_problems(&manifest.extensions).is_empty());
-    for entry in &manifest.extensions {
-        assert_eq!(entry.sha256.len(), 64, "{}", entry.id);
-    }
-
-    // The Rust side recomputes the same hashes from the published folder.
-    let again = converter::extensions::build_entries(&output).unwrap();
-    assert_eq!(again, manifest.extensions);
-
-    let Some(python) = python() else {
-        eprintln!("skipped the Python cross check: `python` is not on PATH");
-        return;
-    };
-    let script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
-    let result = Command::new(python)
-        .arg("-I")
-        .arg(&script)
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "tests/support/extension_hash_reference.py disagrees with the converter:\n{}\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
 }
 
 /// Checks every extension a data set lists, own or foreign, under a shared asset lock.
@@ -126,11 +99,13 @@ async fn python_reference_accepts_the_converter_manifest() {
 ///   a `sha256` equal to `recompute_hash` of the content on disk. Nothing is minted or dropped.
 ///   The composer cannot recompute a foreign entry's `stats` or `version` meaning: those are
 ///   taken as listed and are not independently verified here.
-/// * `tests/support/extension_hash_reference.py` must then accept every listed entry.
-fn verify_set(set: &Path) {
-    let _lock = shared::asset_lock::AssetLock::acquire_shared(set).unwrap();
+/// * When Python is available, `tests/support/extension_hash_reference.py` must accept every entry.
+fn verify_set(set: &Path) -> color_eyre::Result<()> {
+    use color_eyre::eyre::ensure;
+
+    let _lock = shared::asset_lock::AssetLock::acquire_shared(set)?;
     let manifest: converter::cache::ConversionManifest =
-        serde_json::from_slice(&fs::read(set.join("conversion-manifest.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(set.join("conversion-manifest.json"))?)?;
     let own_ids: Vec<String> = converter::extensions::specs()
         .iter()
         .map(|spec| spec.id.to_owned())
@@ -140,38 +115,38 @@ fn verify_set(set: &Path) {
         .iter()
         .cloned()
         .partition(|entry| own_ids.contains(&entry.id));
-    assert_eq!(
-        converter::extensions::build_entries(set).unwrap(),
-        own,
+    ensure!(
+        converter::extensions::build_entries(set)? == own,
         "Rust recompute of the converter's own extensions must match the listed entries"
     );
     let mut composed = converter::cache::ConversionManifest::default();
-    converter::extensions::refresh_manifest_with_finalized(&mut composed, set, &foreign)
-        .unwrap_or_else(|error| panic!("a listed foreign extension is not valid: {error:#}"));
+    converter::extensions::refresh_manifest_with_finalized(&mut composed, set, &foreign)?;
     let by_id = |entries: &[shared::extensions::ExtensionEntry]| {
         let mut entries = entries.to_vec();
         entries.sort_by(|a, b| a.id.cmp(&b.id));
         entries
     };
-    assert_eq!(
-        by_id(&composed.extensions),
-        by_id(&manifest.extensions),
+    ensure!(
+        by_id(&composed.extensions) == by_id(&manifest.extensions),
         "the composed list must equal the manifest's, with nothing minted or dropped"
     );
-    let python = python().expect("python on PATH");
+    let Some(python) = python() else {
+        return Ok(());
+    };
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
     let result = Command::new(python)
         .arg("-I")
         .arg(&script)
         .arg(set)
-        .output()
-        .unwrap();
-    assert!(
+        .output()?;
+    ensure!(
         result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stdout)
+        "Python reference rejected the manifest:\n{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
     );
+    Ok(())
 }
 
 /// A finalized entry from another writer: its own table and
@@ -183,10 +158,6 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
     let output = directory.path().join("assets");
     generate_data(&data);
     convert(converter::PipelineConfig::new(&data, &output)).await;
-    if python().is_none() {
-        eprintln!("skipped: `python` is not on PATH");
-        return;
-    }
     let database = output.join("skyrim_world.db");
     let connection = rusqlite::Connection::open(&database).unwrap();
     let identity = shared::extensions::core_build_identity(&connection)
@@ -194,7 +165,8 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
         .expect("the dummy conversion records a core build identity");
     connection
         .execute_batch(
-            "CREATE TABLE extra_payload(a INTEGER); INSERT INTO extra_payload VALUES (7);",
+            "CREATE TABLE extra_payload(a INTEGER); INSERT INTO extra_payload VALUES (7);
+             CREATE INDEX idx_extra_payload ON extra_payload(a);",
         )
         .unwrap();
     drop(connection);
@@ -205,6 +177,7 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
         version: 1,
         owns: shared::extensions::ExtensionOwns {
             tables: vec!["extra_payload".to_owned()],
+            indexes: vec!["idx_extra_payload".to_owned()],
             files: vec!["payload/".to_owned()],
             ..Default::default()
         },
@@ -213,6 +186,10 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
         stats: Default::default(),
     };
     entry.sha256 = converter::extensions::recompute_hash(&output, &entry).unwrap();
+    assert_eq!(
+        entry.sha256, "9eaa74826afac6eab8915e2ba2e02f62a36ef70b4336bd48442bc35684fb9f21",
+        "the table/index/file stream must retain its pinned encoding"
+    );
     let manifest_path = output.join("conversion-manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -230,30 +207,89 @@ async fn a_finalized_foreign_entry_passes_and_a_tampered_one_fails() {
     )
     .unwrap();
 
-    // The own-entries-only comparison this replaces would have failed here.
-    verify_set(&output);
+    verify_set(&output).unwrap();
 
     fs::write(output.join("payload/a.bin"), b"tampered").unwrap();
-    let outcome = std::panic::catch_unwind(|| verify_set(&output));
-    assert!(outcome.is_err(), "changed owned bytes must be rejected");
+    let error = verify_set(&output).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!(
+            "extension {} lists sha256 {}",
+            entry.id, entry.sha256
+        )) && message.contains("but its content hashes to"),
+        "changed owned bytes must produce a hash mismatch: {message}"
+    );
 }
 
 #[test]
-fn python_ownership_uses_sqlite_ascii_case_rules() {
-    let python = python().expect("python on PATH");
+fn python_ownership_uses_ascii_case_and_nested_file_rules() {
+    let mut cases = Vec::new();
+    for (kind, first, second, conflict) in [
+        ("tables", "Extra", "eXTRA", true),
+        ("indexes", "Idx_Extra", "idx_extra", true),
+        (
+            "gltf_extensions",
+            "EXAMPLE_payload",
+            "example_payload",
+            false,
+        ),
+        (
+            "gltf_extensions",
+            "EXAMPLE_payload",
+            "EXAMPLE_payload",
+            true,
+        ),
+        ("tables", "Ä", "ä", false),
+        ("files", "Payload/a.bin", "payload/A.BIN", true),
+        ("files", "Payload/", "payload/a.bin", true),
+        ("files", "Payload/", "PAYLOAD/nested/", true),
+        ("files", "payload/", "payload_other/a.bin", false),
+        ("files", "Ä/", "ä/a.bin", false),
+    ] {
+        let entries: Vec<shared::extensions::ExtensionEntry> =
+            serde_json::from_value(serde_json::json!([
+                {"id": "a", "version": 1, "sha256": "", "built_from": "core",
+                 "owns": {(kind): [first, first]}},
+                {"id": "b", "version": 1, "sha256": "", "built_from": "core",
+                 "owns": {(kind): [second, second]}}
+            ]))
+            .unwrap();
+        let problems = shared::extensions::ownership_problems(&entries);
+        assert_eq!(
+            !problems.is_empty(),
+            conflict,
+            "{kind}: {first} vs {second}: {problems:?}"
+        );
+        cases.push(serde_json::json!({"entries": entries, "conflict": conflict}));
+    }
+    let duplicate_ids: Vec<shared::extensions::ExtensionEntry> =
+        serde_json::from_value(serde_json::json!([
+            {"id": "same", "version": 1, "sha256": "", "built_from": "core",
+             "owns": {"tables": ["first"]}},
+            {"id": "same", "version": 1, "sha256": "", "built_from": "core",
+             "owns": {"tables": ["second"]}}
+        ]))
+        .unwrap();
+    assert!(!shared::extensions::ownership_problems(&duplicate_ids).is_empty());
+    cases.push(serde_json::json!({"entries": duplicate_ids, "conflict": true}));
+    let Some(python) = python() else {
+        return;
+    };
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
     let code = r#"
-import importlib.util, sqlite3, sys
+import importlib.util, json, sqlite3, sys
 spec = importlib.util.spec_from_file_location('oracle', sys.argv[1])
 oracle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oracle)
+for case in json.loads(sys.argv[2]):
+    assert bool(oracle.ownership_problems(case['entries'])) == case['conflict'], case
 def entry(id, kind, name):
     return {'id': id, 'owns': {kind: [name]}}
 connection = sqlite3.connect(':memory:')
 for kind in ('tables', 'indexes'):
-    for first, second in [('space_lighting', 'SPACE_LIGHTING'),
-                          ('idx_lod_tree_block', 'IDX_LOD_TREE_BLOCK'),
+    for first, second in [('extra_payload', 'EXTRA_PAYLOAD'),
+                          ('idx_extra_payload', 'IDX_EXTRA_PAYLOAD'),
                           ('Mixed_Ä', 'mIXED_Ä'), ('Ä', 'ä'), ('Σ', 'σ'), ('ß', 'ss')]:
         same = bool(connection.execute('SELECT ? = ? COLLATE NOCASE', (first, second)).fetchone()[0])
         a, b = entry('example.a', kind, first), entry('example.b', kind, second)
@@ -263,9 +299,19 @@ for kind in ('tables', 'indexes'):
         first, second = 'prefix_' + chr(code), 'prefix_' + chr(code).upper()
         same = bool(connection.execute('SELECT ? = ? COLLATE NOCASE', (first, second)).fetchone()[0])
         assert bool(oracle.ownership_problems([entry('a', kind, first), entry('b', kind, second)])) == same
-for kind in ('files', 'gltf_extensions'):
-    assert not oracle.ownership_problems([entry('a', kind, 'Payload'), entry('b', kind, 'payload')])
-    assert oracle.ownership_problems([entry('a', kind, 'Payload'), entry('b', kind, 'Payload')])
+for first, second in [('Payload/a.bin', 'payload/A.BIN'), ('Payload/', 'payload/a.bin'),
+                      ('Payload/', 'PAYLOAD/nested/'), ('Payload/', 'Payload/')]:
+    a, b = entry('a', 'files', first), entry('b', 'files', second)
+    assert oracle.ownership_problems([a, b]), (first, second)
+    assert oracle.ownership_problems([b, a]), (second, first)
+for first, second in [('payload/', 'payload_other/a.bin'), ('Ä/', 'ä/a.bin')]:
+    assert not oracle.ownership_problems([entry('a', 'files', first), entry('b', 'files', second)])
+assert not oracle.ownership_problems([entry('a', 'gltf_extensions', 'Payload'), entry('b', 'gltf_extensions', 'payload')])
+assert oracle.ownership_problems([entry('a', 'gltf_extensions', 'Payload'), entry('b', 'gltf_extensions', 'Payload')])
+assert oracle.ownership_problems([entry('same', 'tables', 'a'), entry('same', 'tables', 'b')])
+for kind in ('tables', 'indexes', 'files', 'gltf_extensions'):
+    repeated = {'id': 'a', 'owns': {kind: ['Payload', 'Payload', 'PAYLOAD']}}
+    assert not oracle.ownership_problems([repeated])
 connection.executescript('CREATE TABLE extra(a); CREATE INDEX idx_extra ON extra(a);')
 assert oracle.index_line(connection, 'IDX_EXTRA') == 'index IDX_EXTRA CREATE INDEX idx_extra ON extra(a)'
 "#;
@@ -275,6 +321,7 @@ assert oracle.index_line(connection, 'IDX_EXTRA') == 'index IDX_EXTRA CREATE IND
         .arg("-c")
         .arg(code)
         .arg(script)
+        .arg(serde_json::to_string(&cases).unwrap())
         .output()
         .unwrap();
     assert!(
@@ -286,15 +333,15 @@ assert oracle.index_line(connection, 'IDX_EXTRA') == 'index IDX_EXTRA CREATE IND
 
 /// A real data set, not a fixture: `MUDCRAB_EXTENSIONS_SET=<folder> cargo nextest run -p converter
 /// --test extensions_hash --run-ignored all`. Every listed entry, the converter's own and any
-/// finalized payload, is verified by [`verify_set`]; this is the check that
-/// found a float-parsing disagreement between Rust and Python on real glTF data.
+/// finalized payload, is verified by [`verify_set`].
 #[test]
 #[ignore = "needs a converted data set: set MUDCRAB_EXTENSIONS_SET"]
 fn real_data_set_hashes_agree_in_rust_and_python() {
     let Some(set) = std::env::var_os("MUDCRAB_EXTENSIONS_SET") else {
-        panic!("set MUDCRAB_EXTENSIONS_SET to a converted data set folder");
+        eprintln!("skipped: MUDCRAB_EXTENSIONS_SET is unset; no converted data set was supplied");
+        return;
     };
-    verify_set(Path::new(&set));
+    verify_set(Path::new(&set)).unwrap();
 }
 
 #[test]
@@ -327,7 +374,7 @@ fn generic_gltf_locations_and_pointer_escaping_match_python() {
         id: "example.payload".into(),
         version: 1,
         owns: shared::extensions::ExtensionOwns {
-            gltf_extensions: vec![name.into()],
+            gltf_extensions: vec![name.into(), name.into()],
             ..Default::default()
         },
         sha256: String::new(),
@@ -340,16 +387,234 @@ fn generic_gltf_locations_and_pointer_escaping_match_python() {
     manifest
         .save(&root.join("conversion-manifest.json"))
         .unwrap();
-    verify_set(root);
+    verify_set(root).unwrap();
+}
+
+#[test]
+fn json_numbers_keep_exact_integer_identity_in_both_languages() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let entry = shared::extensions::ExtensionEntry {
+        id: "example.numbers".into(),
+        version: 1,
+        owns: shared::extensions::ExtensionOwns {
+            gltf_extensions: vec!["EXAMPLE_numbers".into()],
+            ..Default::default()
+        },
+        sha256: String::new(),
+        built_from: "core".into(),
+        stats: Default::default(),
+    };
+    let mut cases = Vec::new();
+    for (literal, encoded) in [
+        ("1", "f3ff0000000000000"),
+        ("1.0", "f3ff0000000000000"),
+        ("9007199254740992", "f4340000000000000"),
+        ("9007199254740993", "i9007199254740993"),
+        ("9007199254740994", "f4340000000000001"),
+        ("9007199254740993.0", "f4340000000000000"),
+        ("-9007199254740992", "fc340000000000000"),
+        ("-9007199254740993", "i-9007199254740993"),
+        ("9223372036854775807", "i9223372036854775807"),
+        ("-9223372036854775808", "fc3e0000000000000"),
+        ("-9223372036854775807", "i-9223372036854775807"),
+        ("18446744073709551615", "i18446744073709551615"),
+        ("-9223372036854775809", "i-9223372036854775809"),
+        ("18446744073709551616", "f43f0000000000000"),
+        ("18446744073709551617", "i18446744073709551617"),
+        (
+            "340282366920938463463374607431768211457",
+            "i340282366920938463463374607431768211457",
+        ),
+        ("18446744073709549568", "f43efffffffffffff"),
+        ("0", "f0000000000000000"),
+        ("-0", "f0000000000000000"),
+        ("-0.0", "f8000000000000000"),
+    ] {
+        let value: serde_json::Value = serde_json::from_str(literal).unwrap();
+        assert_eq!(
+            shared::extensions::encode_json(&value).unwrap(),
+            encoded,
+            "{literal}"
+        );
+        let document = format!(
+            r#"{{"extensionsUsed":["EXAMPLE_numbers"],"extensions":{{"EXAMPLE_numbers":{literal}}}}}"#
+        );
+        fs::write(root.join("numbers.gltf"), &document).unwrap();
+        let hash = converter::extensions::recompute_hash(root, &entry).unwrap();
+        cases.push(serde_json::json!({
+            "literal": literal, "encoded": encoded, "document": document, "hash": hash
+        }));
+    }
+    assert_eq!(
+        cases[0]["hash"], cases[1]["hash"],
+        "1 and 1.0 retain the same stream"
+    );
+    assert_ne!(
+        cases[2]["hash"], cases[3]["hash"],
+        "adjacent large integers must differ"
+    );
+    let Some(python) = python() else {
+        return;
+    };
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
+    let code = r#"
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location('oracle', sys.argv[1])
+oracle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(oracle)
+root = pathlib.Path(sys.argv[2])
+entry = json.loads(sys.argv[3])
+for case in json.loads(sys.argv[4]):
+    assert oracle.encode_json(json.loads(case['literal'])) == case['encoded'], case
+    (root / 'numbers.gltf').write_text(case['document'], encoding='utf-8')
+    assert oracle.extension_hash(root, entry) == case['hash'], case
+"#;
+    let result = Command::new(python)
+        .args(["-B", "-I", "-c", code])
+        .arg(script)
+        .arg(root)
+        .arg(serde_json::to_string(&entry).unwrap())
+        .arg(serde_json::to_string(&cases).unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn gltf_extensions_used_requires_an_array_in_both_languages() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let entry = shared::extensions::ExtensionEntry {
+        id: "example.payload".into(),
+        version: 1,
+        owns: shared::extensions::ExtensionOwns {
+            gltf_extensions: vec!["EXAMPLE_payload".into()],
+            ..Default::default()
+        },
+        sha256: String::new(),
+        built_from: "core".into(),
+        stats: Default::default(),
+    };
+    let empty = shared::extensions::ExtensionHasher::new(&entry.id, entry.version).finish();
+    let mut cases = Vec::new();
+    for used in [
+        serde_json::Value::Null,
+        serde_json::json!("EXAMPLE_payload_extra"),
+        serde_json::json!({"EXAMPLE_payload": true}),
+        serde_json::json!(true),
+        serde_json::json!(["EXAMPLE_payload"]),
+    ] {
+        let document = serde_json::json!({
+            "extensionsUsed": used,
+            "extensions": {"EXAMPLE_payload": {"value": 1}}
+        });
+        fs::write(
+            root.join("example.gltf"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let hash = converter::extensions::recompute_hash(root, &entry).unwrap();
+        assert_eq!(hash == empty, !used.is_array(), "{used}");
+        cases.push(serde_json::json!({"document": document, "hash": hash}));
+    }
+    let Some(python) = python() else {
+        return;
+    };
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
+    let code = r#"
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location('oracle', sys.argv[1])
+oracle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(oracle)
+root = pathlib.Path(sys.argv[2])
+entry = json.loads(sys.argv[3])
+for case in json.loads(sys.argv[4]):
+    (root / 'example.gltf').write_text(json.dumps(case['document']), encoding='utf-8')
+    assert oracle.extension_hash(root, entry) == case['hash'], case
+"#;
+    let result = Command::new(python)
+        .args(["-B", "-I", "-c", code])
+        .arg(script)
+        .arg(root)
+        .arg(serde_json::to_string(&entry).unwrap())
+        .arg(serde_json::to_string(&cases).unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn python_gltf_parser_rejects_invalid_lengths() {
+    let Some(python) = python() else {
+        return;
+    };
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
+    let code = r#"
+import importlib.util, pathlib, struct, sys, tempfile
+spec = importlib.util.spec_from_file_location('oracle', sys.argv[1])
+oracle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(oracle)
+with tempfile.TemporaryDirectory() as root:
+    path = pathlib.Path(root) / 'example.glb'
+    header = lambda magic, version, length, chunk, kind: struct.pack('<IIIII', magic, version, length, chunk, kind)
+    valid = header(oracle.GLB_MAGIC, 2, 24, 4, oracle.GLB_JSON_CHUNK) + b'{}  '
+    path.write_bytes(valid)
+    assert oracle.glb_json(path) == {}
+    for malformed in [
+        valid[:12],
+        header(0, 2, 24, 4, oracle.GLB_JSON_CHUNK) + b'{}  ',
+        header(oracle.GLB_MAGIC, 1, 24, 4, oracle.GLB_JSON_CHUNK) + b'{}  ',
+        header(oracle.GLB_MAGIC, 2, 28, 4, oracle.GLB_JSON_CHUNK) + b'{}  ',
+        header(oracle.GLB_MAGIC, 2, 20, 4, oracle.GLB_JSON_CHUNK) + b'{}  ',
+        header(oracle.GLB_MAGIC, 2, 24, 4, 0) + b'{}  ',
+        header(oracle.GLB_MAGIC, 2, 24, 0xfffffffc, oracle.GLB_JSON_CHUNK) + b'{}  ',
+        header(oracle.GLB_MAGIC, 2, 23, 3, oracle.GLB_JSON_CHUNK) + b'{} ',
+    ]:
+        path.write_bytes(malformed)
+        try:
+            oracle.glb_json(path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted malformed GLB: {malformed!r}')
+    # A non-JSON chunk after the bounded first JSON chunk is permitted.
+    path.write_bytes(header(oracle.GLB_MAGIC, 2, 36, 4, oracle.GLB_JSON_CHUNK)
+                     + b'{}  ' + struct.pack('<II', 4, 0x004e4942) + b'data')
+    assert oracle.glb_json(path) == {}
+"#;
+    let result = Command::new(python)
+        .args(["-B", "-I", "-c", code])
+        .arg(script)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]
 fn python_oracle_retains_the_pinned_hash_streams() {
-    let python = python().expect("python on PATH");
+    let Some(python) = python() else {
+        return;
+    };
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/extension_hash_reference.py");
     let code = r#"
-import importlib.util, pathlib, sqlite3, sys, tempfile
+import importlib.util, json, pathlib, sqlite3, sys, tempfile
 spec = importlib.util.spec_from_file_location('oracle', sys.argv[1])
 oracle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oracle)
@@ -357,18 +622,22 @@ with tempfile.TemporaryDirectory() as root:
     root = pathlib.Path(root)
     db = sqlite3.connect(root / oracle.DATABASE)
     db.executescript('''
-        CREATE TABLE statics (id INTEGER PRIMARY KEY, editor_id TEXT, model_path TEXT);
-        INSERT INTO statics VALUES (16, 'RockA', 'meshes/rock.glb');
         CREATE TABLE door_links (ref_id INTEGER PRIMARY KEY, destination_ref_id INTEGER,
                                  pos_x REAL, pos_y REAL, pos_z REAL, note TEXT, data BLOB);
         INSERT INTO door_links VALUES (2, 1, 0.5, -1.25, 1e-7, 'Whiterun \u2713', x'00ff');
         INSERT INTO door_links VALUES (1, 2, 3.0, 4.0, NULL, NULL, NULL);
         CREATE INDEX idx_door_links_destination ON door_links(destination_ref_id);
+        CREATE TABLE extra_payload(a INTEGER);
+        INSERT INTO extra_payload VALUES (7);
+        CREATE INDEX idx_extra_payload ON extra_payload(a);
     ''')
     db.close()
     entry = {'id': 'mudcrab.door_links', 'version': 1,
              'owns': {'tables': ['door_links'], 'indexes': ['idx_door_links_destination']}}
-    assert oracle.extension_hash(root, entry) == '5c9f99438d7658c66aafebaa45045f6d553f0d52521309be28b1ef108db20e87'
+    entry['sha256'] = '5c9f99438d7658c66aafebaa45045f6d553f0d52521309be28b1ef108db20e87'
+    assert oracle.extension_hash(root, entry) == entry['sha256']
+    (root / oracle.MANIFEST).write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
+    assert not oracle.check(root), 'legacy standalone SQL streams remain checkable'
     (root / 'meshes').mkdir()
     rock = {'asset': {'version': '2.0'}, 'extensionsUsed': ['MUDCRAB_material', 'OPEN_SKYRIM_material'],
             'materials': [{'extensions': {'OPEN_SKYRIM_material': {'shaderFlags1': 1},
@@ -388,16 +657,91 @@ with tempfile.TemporaryDirectory() as root:
                  'meshes': [{'primitives': [{'extensions': {'EXAMPLE_payload': {'value': 1}}}]}]}
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') is not None
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') != oracle.gltf_extension_value(primitive, 'EXAMPLE_payload')
-    for alias in ['meshes/./rock.glb', 'meshes/../meshes/rock.glb', 'meshes//rock.glb',
-                  'meshes\\rock.glb', '../outside.bin', '/absolute.bin', 'Q:/absolute.bin', '']:
+    entry['owns']['gltf_extensions'] *= 2
+    assert oracle.extension_hash(root, entry) == '714a8bfd6413db8bf63f22174dfb3f5c173a8126f93625d1c63a00b7df144567'
+    entry['sha256'] = oracle.extension_hash(root, entry)
+    (root / oracle.MANIFEST).write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
+    assert not oracle.check(root), 'legacy standalone material streams remain checkable'
+    (root / 'payload').mkdir()
+    (root / 'payload/a.bin').write_bytes(b'payload')
+    entry = {'id': 'example.payload', 'version': 1, 'built_from': 'core',
+             'owns': {'tables': ['extra_payload'], 'indexes': ['idx_extra_payload'], 'files': ['payload/']}}
+    pinned = '9eaa74826afac6eab8915e2ba2e02f62a36ef70b4336bd48442bc35684fb9f21'
+    assert oracle.extension_hash(root, entry) == pinned
+    for kind in entry['owns']:
+        entry['owns'][kind] *= 2
+    assert oracle.extension_hash(root, entry) == pinned
+    assert oracle.owned_files(root, ['payload/', 'payload/a.bin']) == ['payload/a.bin']
+    for alias in ['payload/./a.bin', 'payload/../payload/a.bin', 'payload//a.bin',
+                  'payload\\a.bin', '../outside.bin', '/absolute.bin', 'Q:/absolute.bin', '',
+                  'meshes/./rock.glb', 'meshes/../meshes/rock.glb', 'meshes//rock.glb', 'meshes\\rock.glb',
+                  'payload/trailing.', 'payload/trailing ', 'payload/control\n.bin']:
         try:
             oracle.owned_files(root, [alias])
         except ValueError:
             pass
         else:
             raise AssertionError(f'accepted noncanonical owned path: {alias!r}')
+    for name in ['', 'bad\nname', 'bad\rname', 'bad\x00name', 'bad\x7fname', 'bad\x85name']:
+        for kind in ('tables', 'indexes', 'files', 'gltf_extensions'):
+            invalid = {'id': 'example.invalid', 'version': 1, 'owns': {kind: [name]}}
+            try:
+                oracle.extension_hash(root, invalid)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'accepted invalid {kind} name: {name!r}')
+        try:
+            oracle.extension_hash(root, {'id': name, 'version': 1})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted invalid id: {name!r}')
+
+    entry['sha256'] = pinned
+    manifest = root / oracle.MANIFEST
+    manifest.write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
+    assert oracle.check(root), 'finalized payload without core identity must be refused'
+    db = sqlite3.connect(root / oracle.DATABASE)
+    db.execute('CREATE TABLE lod_build(build_identity)')
+    db.commit()
+    assert oracle.check(root), 'zero identity rows must not certify a finalized payload'
+    db.execute("INSERT INTO lod_build VALUES ('core')")
+    db.commit()
+    assert not oracle.check(root)
+    entry['built_from'] = 'older-core'
+    manifest.write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
+    assert oracle.check(root), 'stale finalized payload must be refused'
+    entry['built_from'] = 'core'
+    manifest.write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
+    db.execute("INSERT INTO lod_build VALUES ('other-core')")
+    db.commit()
+    try:
+        oracle.check(root)
+    except ValueError as error:
+        assert 'more than one' in str(error), error
+    else:
+        raise AssertionError('accepted multiple core identity rows')
+    db.execute('DELETE FROM lod_build')
+    for identity in ('', 7, None):
+        db.execute('INSERT INTO lod_build VALUES (?)', (identity,))
+        db.commit()
+        try:
+            problems = oracle.check(root)
+        except ValueError as error:
+            assert 'must be TEXT' in str(error), error
+        else:
+            assert problems, f'accepted invalid core identity {identity!r}'
+        db.execute('DELETE FROM lod_build')
+    db.execute('DROP TABLE lod_build')
+    db.execute('CREATE TABLE lod_build(other_column)')
+    db.commit()
+    manifest.write_text(json.dumps({}), encoding='utf-8')
+    assert not oracle.check(root), 'core-only data does not require a core identity'
+    db.close()
 "#;
     let result = Command::new(python)
+        .arg("-B")
         .arg("-I")
         .arg("-c")
         .arg(code)

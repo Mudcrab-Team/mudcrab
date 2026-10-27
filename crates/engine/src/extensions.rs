@@ -4,17 +4,17 @@
 //! needs a supported version and must match any recorded core identity; stale or unsupported declarations
 //! disable its join. A usable declaration with missing or incomplete columns is an error.
 //!
-//! This module installs capability and notice resources. Declaration checks do
-//! not recompute payload hashes. See `docs/specs/converters/extensions.md`.
+//! Declaration checks do not recompute payload hashes. The database validates door columns
+//! when it opens. See `docs/specs/converters/extensions.md`.
 
 use std::ops::RangeInclusive;
 use std::path::Path;
 
 use bevy::prelude::*;
 use color_eyre::eyre::{Result, WrapErr};
-use shared::extensions::{DOOR_LINKS, DataExtensions, ExtensionStatus};
+use shared::extensions::{DOOR_LINKS, DataExtensions, ExtensionStatus, core_build_identity};
 
-use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures, has_door_links};
+use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures};
 
 /// An engine feature that needs a data set extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -34,7 +34,7 @@ impl Feature {
         }
     }
 
-    /// What the settings menu and the log call the feature.
+    /// The feature's name in notices and logs.
     pub const fn label(self) -> &'static str {
         match self {
             Self::DoorLinks => "load-door links",
@@ -52,13 +52,13 @@ impl Feature {
 pub struct ExtensionNotice {
     /// The extension id (`mudcrab.door_links`).
     pub extension: &'static str,
-    /// The feature's name, for the menu entry ([`Feature::label`]).
+    /// The feature's name ([`Feature::label`]).
     pub feature: &'static str,
-    /// Why it is off and what to do, the [`ExtensionStatus`] text.
+    /// Why it is off and what to do.
     pub reason: String,
 }
 
-/// Capability notices in [`Feature::ALL`] order, available to later settings consumers.
+/// Capability notices in [`Feature::ALL`] order.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionNotices(Vec<ExtensionNotice>);
 
@@ -104,14 +104,39 @@ impl DataSetExtensions {
     }
 }
 
-/// Reads the extensions list of `assets_dir`'s `conversion-manifest.json` (and the core build
-/// identity from its database). A dataset without a manifest lists no extensions; ordinary core
-/// doors still use schema discovery. A manifest that cannot be read is an error.
+/// Reads `conversion-manifest.json`, consulting the database's core identity only for a supported
+/// door declaration with a freshness anchor. A dataset without a manifest lists no extensions;
+/// ordinary core doors still use schema discovery. A manifest that cannot be read is an error.
 pub fn read_data_extensions(assets_dir: &Path) -> Result<DataExtensions> {
-    if !assets_dir.join("conversion-manifest.json").is_file() {
+    let manifest = assets_dir.join("conversion-manifest.json");
+    if !manifest.is_file() {
         return Ok(DataExtensions::default());
     }
-    DataExtensions::load(assets_dir)
+    let text = std::fs::read_to_string(&manifest)
+        .wrap_err_with(|| format!("reading {}", manifest.display()))?;
+    let data = DataExtensions::from_manifest_json(&text, None)
+        .wrap_err_with(|| format!("cannot read the extensions of {}", assets_dir.display()))?;
+    let needs_identity = Feature::ALL.into_iter().any(|feature| {
+        data.get(feature.extension()).is_some_and(|entry| {
+            feature.versions().contains(&entry.version) && !entry.built_from.is_empty()
+        })
+    });
+    if !needs_identity {
+        return Ok(data);
+    }
+    let database = assets_dir.join("skyrim_world.db");
+    let core_identity = if database.is_file() {
+        let connection = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .wrap_err_with(|| format!("opening {}", database.display()))?;
+        core_build_identity(&connection)
+            .wrap_err_with(|| format!("cannot read the extensions of {}", assets_dir.display()))?
+    } else {
+        None
+    };
+    DataExtensions::from_manifest_json(&text, core_identity)
         .wrap_err_with(|| format!("cannot read the extensions of {}", assets_dir.display()))
 }
 
@@ -126,69 +151,38 @@ fn reason(status: &ExtensionStatus) -> String {
     }
 }
 
-/// The public capability state used by the database and mesh readers.
-/// Private extension catalogs are installed by their introducing adapters.
-pub struct RuntimeFeatures {
-    pub extensions: DataSetExtensions,
-    pub notices: ExtensionNotices,
-    door_links: DoorLinksAccess,
-    has_doors: bool,
-}
-
-impl RuntimeFeatures {
-    pub fn world_database(&self) -> WorldDatabaseFeatures {
-        WorldDatabaseFeatures {
-            door_links: self.door_links,
-        }
-    }
-
-    pub fn enabled(&self, feature: Feature) -> bool {
-        match feature {
-            Feature::DoorLinks => self.has_doors && self.door_links != DoorLinksAccess::Disabled,
-        }
-    }
-
-    pub fn install(self, app: &mut App) {
-        app.insert_resource(self.extensions)
-            .insert_resource(self.notices);
-    }
-}
-
-/// Opens the public capability gates without importing private feature readers.
+/// Selects the door access policy and capability notices from the manifest.
 /// An invalid legacy declaration cannot bypass the gate through core discovery.
-pub fn open_features(assets_dir: &Path, data: DataExtensions) -> Result<RuntimeFeatures> {
+pub fn open_features(
+    data: DataExtensions,
+) -> (DataSetExtensions, ExtensionNotices, WorldDatabaseFeatures) {
     let extensions = DataSetExtensions::new(data);
-    let database = assets_dir.join("skyrim_world.db");
-    let has_doors = if database.is_file() {
-        let connection = rusqlite::Connection::open_with_flags(
-            &database,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        has_door_links(&connection)?
-    } else {
-        false
-    };
-    let declared = extensions.data().get(DOOR_LINKS).is_some();
+    let declared = extensions.data().is_declared(DOOR_LINKS);
     let door_links = if !declared {
         DoorLinksAccess::Core
     } else if extensions.status(Feature::DoorLinks).is_present() {
-        color_eyre::eyre::ensure!(
-            has_doors,
-            "extension {} is listed but its door_links table lacks columns",
-            DOOR_LINKS
-        );
         DoorLinksAccess::LegacyExtension
     } else {
         DoorLinksAccess::Disabled
     };
     let mut notices = Vec::new();
     for feature in Feature::ALL {
-        if feature == Feature::DoorLinks && !declared && has_doors {
+        if !extensions.data().is_declared(feature.extension()) {
             continue;
         }
         let status = extensions.status(feature);
         if !status.is_present() {
-            let reason = reason(&status);
+            let reason = match extensions
+                .data()
+                .issues()
+                .find(|issue| issue.id.as_deref() == Some(feature.extension()))
+            {
+                Some(issue) => format!(
+                    "invalid declaration: {}; convert the data set again",
+                    issue.reason
+                ),
+                None => reason(&status),
+            };
             warn!(
                 feature = feature.label(),
                 extension = feature.extension(),
@@ -203,12 +197,11 @@ pub fn open_features(assets_dir: &Path, data: DataExtensions) -> Result<RuntimeF
             });
         }
     }
-    Ok(RuntimeFeatures {
+    (
         extensions,
-        notices: ExtensionNotices(notices),
-        door_links,
-        has_doors,
-    })
+        ExtensionNotices(notices),
+        WorldDatabaseFeatures { door_links },
+    )
 }
 
 #[cfg(test)]
@@ -291,8 +284,10 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{MAIN_MANIFEST, data_set, manifest};
     use super::*;
-    fn open(directory: &tempfile::TempDir) -> Result<RuntimeFeatures> {
-        open_features(directory.path(), read_data_extensions(directory.path())?)
+    fn open(
+        directory: &tempfile::TempDir,
+    ) -> Result<(DataSetExtensions, ExtensionNotices, WorldDatabaseFeatures)> {
+        Ok(open_features(read_data_extensions(directory.path())?))
     }
 
     fn only(feature: Feature, version: u32, built_from: &str) -> String {
@@ -302,9 +297,9 @@ mod tests {
     #[test]
     fn core_door_links_need_no_legacy_extension_declaration() {
         let directory = data_set(MAIN_MANIFEST, None, &[]);
-        let features = open(&directory).unwrap();
-        assert!(features.enabled(Feature::DoorLinks));
-        assert!(features.notices.for_feature(Feature::DoorLinks).is_none());
+        let (_, notices, database_features) = open(&directory).unwrap();
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+        assert!(notices.for_feature(Feature::DoorLinks).is_none());
     }
 
     #[test]
@@ -316,13 +311,13 @@ mod tests {
         drop(connection);
         std::fs::write(directory.path().join("conversion-manifest.json"),
             serde_json::json!({"schema_version": shared::LOD_CONVERTER_SCHEMA_VERSION, "complete": true}).to_string()).unwrap();
-        let features = open(&directory).unwrap();
-        assert!(features.enabled(Feature::DoorLinks));
-        assert_eq!(features.world_database().door_links, DoorLinksAccess::Core);
-        assert!(features.extensions.data().get(DOOR_LINKS).is_none());
+        let (extensions, notices, database_features) = open(&directory).unwrap();
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+        assert!(extensions.data().get(DOOR_LINKS).is_none());
+        assert!(notices.is_empty());
         crate::world::database::WorldDatabase::open_with(
             &directory.path().join("skyrim_world.db"),
-            features.world_database(),
+            database_features,
         )
         .unwrap();
     }
@@ -341,11 +336,102 @@ mod tests {
     }
 
     #[test]
+    fn irrelevant_registries_do_not_read_an_odd_core_identity() {
+        let cases = [
+            (MAIN_MANIFEST.to_owned(), DoorLinksAccess::Core, 0),
+            (r#"{"extensions":[]}"#.to_owned(), DoorLinksAccess::Core, 0),
+            (
+                r#"{"extensions":null}"#.to_owned(),
+                DoorLinksAccess::Core,
+                0,
+            ),
+            (r#"{"extensions":{}}"#.to_owned(), DoorLinksAccess::Core, 0),
+            (
+                manifest(&[("example.payload", 1, "older")]),
+                DoorLinksAccess::Core,
+                0,
+            ),
+            (
+                r#"{"extensions":[{"id":"example.payload","version":"future"}]}"#.to_owned(),
+                DoorLinksAccess::Core,
+                0,
+            ),
+            (
+                r#"{"extensions":[null,42,{"version":1}]}"#.to_owned(),
+                DoorLinksAccess::Core,
+                0,
+            ),
+            (
+                only(Feature::DoorLinks, 2, "older"),
+                DoorLinksAccess::Disabled,
+                1,
+            ),
+            (
+                only(Feature::DoorLinks, 1, ""),
+                DoorLinksAccess::LegacyExtension,
+                0,
+            ),
+        ];
+        for (text, access, notice_count) in cases {
+            for sql in [
+                "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, renamed_identity TEXT);",
+                "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity);
+                 INSERT INTO lod_build VALUES(1, 42);",
+            ] {
+                let directory = data_set(&text, None, &[]);
+                let connection =
+                    rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+                connection.execute_batch(sql).unwrap();
+                drop(connection);
+                let (_, notices, database_features) = open(&directory).unwrap();
+                assert_eq!(database_features.door_links, access, "{text}; {sql}");
+                assert_eq!(notices.len(), notice_count, "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_malformed_legacy_door_declaration_disables_core_discovery_with_a_notice() {
+        let text = r#"{"extensions":[{"id":"mudcrab.door_links","version":"broken"}]}"#;
+        let directory = data_set(text, None, &[]);
+        let connection =
+            rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch("CREATE TABLE lod_build(renamed_identity TEXT);")
+            .unwrap();
+        drop(connection);
+        let (extensions, notices, database_features) = open(&directory).unwrap();
+        assert!(extensions.data().is_declared(DOOR_LINKS));
+        assert_eq!(
+            extensions.status(Feature::DoorLinks),
+            ExtensionStatus::Missing
+        );
+        assert_eq!(database_features.door_links, DoorLinksAccess::Disabled);
+        let issue = extensions
+            .data()
+            .issues()
+            .find(|issue| issue.id.as_deref() == Some(DOOR_LINKS))
+            .unwrap();
+        let notice = notices.for_feature(Feature::DoorLinks).unwrap();
+        assert!(notice.reason.contains(&issue.reason), "{}", notice.reason);
+        assert_eq!(notices.len(), 1);
+    }
+
+    #[test]
+    fn undeclared_features_do_not_open_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("skyrim_world.db"), b"not sqlite").unwrap();
+        let (_, notices, database_features) = open(&directory).unwrap();
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+        assert!(notices.is_empty());
+    }
+
+    #[test]
     fn a_stale_extension_is_off_with_the_reason() {
         for feature in Feature::ALL {
             let directory = data_set(&only(feature, 1, "older"), Some("core"), &[]);
-            let features = open(&directory).unwrap();
-            let notice = features.notices.for_feature(feature).unwrap();
+            let (_, notices, database_features) = open(&directory).unwrap();
+            let notice = notices.for_feature(feature).unwrap();
             assert!(
                 notice
                     .reason
@@ -354,12 +440,8 @@ mod tests {
                 "{}",
                 notice.reason
             );
-            assert!(!features.enabled(feature));
             if feature == Feature::DoorLinks {
-                assert_eq!(
-                    features.world_database().door_links,
-                    DoorLinksAccess::Disabled
-                );
+                assert_eq!(database_features.door_links, DoorLinksAccess::Disabled);
             }
         }
     }
@@ -375,10 +457,10 @@ mod tests {
                 rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
             connection.execute_batch(sql).unwrap();
             drop(connection);
-            let features = open(&directory).unwrap();
-            assert!(features.enabled(Feature::DoorLinks));
+            let (_, notices, database_features) = open(&directory).unwrap();
+            assert!(notices.is_empty());
             assert_eq!(
-                features.world_database().door_links,
+                database_features.door_links,
                 DoorLinksAccess::LegacyExtension
             );
         }
@@ -400,9 +482,7 @@ mod tests {
                 only(Feature::DoorLinks, 1, "older"),
             )
             .unwrap();
-            let error = open(&directory)
-                .err()
-                .expect("malformed identity must fail loading");
+            let error = open(&directory).expect_err("malformed identity must fail loading");
             let context = format!("{error:#}");
             assert!(context.contains("cannot read the extensions"), "{context}");
             assert!(context.contains("reading core build identity"), "{context}");
@@ -413,8 +493,8 @@ mod tests {
     fn an_unsupported_version_is_off_with_the_reason() {
         for feature in Feature::ALL {
             let directory = data_set(&only(feature, 2, "core"), Some("core"), &[]);
-            let features = open(&directory).unwrap();
-            let notice = features.notices.for_feature(feature).unwrap();
+            let (_, notices, database_features) = open(&directory).unwrap();
+            let notice = notices.for_feature(feature).unwrap();
             assert!(
                 notice
                     .reason
@@ -423,12 +503,8 @@ mod tests {
                 "{}",
                 notice.reason
             );
-            assert!(!features.enabled(feature));
             if feature == Feature::DoorLinks {
-                assert_eq!(
-                    features.world_database().door_links,
-                    DoorLinksAccess::Disabled
-                );
+                assert_eq!(database_features.door_links, DoorLinksAccess::Disabled);
             }
         }
     }
@@ -440,55 +516,20 @@ mod tests {
             Some("core"),
             &[],
         );
-        let features = open(&directory).unwrap();
-        assert_eq!(features.notices.len(), 0);
-        assert!(features.enabled(Feature::DoorLinks));
-    }
-    #[test]
-    fn a_declared_door_extension_requires_its_complete_table() {
-        let directory = data_set(
-            &only(Feature::DoorLinks, 1, "core"),
-            Some("core"),
-            &["door_links"],
-        );
-        let error = open(&directory)
-            .err()
-            .expect("missing declared table must fail");
-        assert!(format!("{error:#}").contains("door_links"));
+        let (_, notices, database_features) = open(&directory).unwrap();
+        assert!(notices.is_empty());
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
     }
 
     #[test]
-    fn declared_legacy_doors_reject_incomplete_columns() {
-        let directory = data_set(&only(Feature::DoorLinks, 1, "core"), Some("core"), &[]);
-        let connection =
-            rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
-        connection
-            .execute_batch("ALTER TABLE door_links DROP COLUMN rot_z;")
-            .unwrap();
-        let error = open(&directory)
-            .err()
-            .expect("incomplete declared table must fail");
-        assert!(format!("{error:#}").contains("door_links"));
-    }
-
-    #[test]
-    fn install_retains_validated_capabilities_and_notices() {
+    fn unsupported_capability_retains_its_status_and_notice() {
         let directory = data_set(&only(Feature::DoorLinks, 2, "core"), Some("core"), &[]);
-        let features = open(&directory).unwrap();
-        let mut app = App::new();
-        features.install(&mut app);
+        let (extensions, notices, _) = open(&directory).unwrap();
         assert!(matches!(
-            app.world()
-                .resource::<DataSetExtensions>()
-                .status(Feature::DoorLinks),
+            extensions.status(Feature::DoorLinks),
             ExtensionStatus::UnsupportedVersion { .. }
         ));
-        assert!(
-            app.world()
-                .resource::<ExtensionNotices>()
-                .for_feature(Feature::DoorLinks)
-                .is_some()
-        );
+        assert!(notices.for_feature(Feature::DoorLinks).is_some());
     }
 
     #[test]
@@ -509,12 +550,13 @@ mod tests {
             only(Feature::DoorLinks, 1, "core"),
         )
         .unwrap();
-        let features = open(&directory).unwrap();
+        let (_, notices, database_features) = open(&directory).unwrap();
+        assert!(notices.is_empty());
         assert_eq!(
-            features.world_database().door_links,
+            database_features.door_links,
             DoorLinksAccess::LegacyExtension
         );
-        crate::world::database::WorldDatabase::open_with(&path, features.world_database()).unwrap();
+        crate::world::database::WorldDatabase::open_with(&path, database_features).unwrap();
     }
 
     #[test]
@@ -532,17 +574,31 @@ mod tests {
                 })
                 .unwrap();
             drop(connection);
-            let error = crate::world::database::WorldDatabase::open_with(
-                &path,
-                WorldDatabaseFeatures {
-                    door_links: DoorLinksAccess::LegacyExtension,
-                },
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                only(Feature::DoorLinks, 1, "core"),
             )
-            .err()
-            .expect("declared malformed legacy schema must fail at open");
+            .unwrap();
+            let (_, notices, database_features) = open(&directory).unwrap();
+            assert!(notices.is_empty());
+            assert_eq!(
+                database_features.door_links,
+                DoorLinksAccess::LegacyExtension
+            );
+            let error = crate::world::database::WorldDatabase::open_with(&path, database_features)
+                .err()
+                .expect("declared malformed legacy schema must fail at open");
             assert!(format!("{error:#}").contains("door_links"));
             // Undeclared legacy core packages retain the existing optional-table behavior.
-            crate::world::database::WorldDatabase::open(&path).unwrap();
+            std::fs::write(
+                directory.path().join("conversion-manifest.json"),
+                MAIN_MANIFEST,
+            )
+            .unwrap();
+            let (_, notices, database_features) = open(&directory).unwrap();
+            assert!(notices.is_empty());
+            assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+            crate::world::database::WorldDatabase::open_with(&path, database_features).unwrap();
         }
     }
 }
