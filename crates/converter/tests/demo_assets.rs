@@ -3,18 +3,26 @@
 //! The engine's retail tests are `#[ignore]`d because they need a converted tree on disk. This
 //! test builds that tree from retail Skyrim data: both composed default bodies, the three gait
 //! clips per sex over the composed bone tree, the FaceGen heads, and the DDS textures those GLBs
-//! reference, converted to KTX2 from the retail `Data` folder.
+//! reference, converted to KTX2 from the retail `Data` folder. When that folder holds
+//! `Skyrim.esm`, its actor catalog supplies the bodies' armature skin texture sets.
 //!
 //! Inputs come from the environment and the test does nothing unless all four are set:
 //! `MUDCRAB_DEMO_ASSETS` (output tree), `MUDCRAB_ACTOR_NIF_DIR` (extracted `meshes/actors`),
 //! `MUDCRAB_ANIMATION_DIR` (extracted `meshes/actors/character`) and `MUDCRAB_TEXTURE_DIR` (the
 //! retail `Data` folder holding the texture archives).
+//!
+//! `MUDCRAB_DEMO_EXTRA_HEADS` optionally names more `Skyrim.esm` FaceGen heads to convert into the
+//! same tree, as comma-separated FormIDs (`00013bbf,0001bdb1`), for previewing other NPCs.
 
 use converter::{
     animation::{decode_clip_with_skeleton, write_clip_glb},
     archive::ArchiveExtractor,
     asset_path::{resolve_asset_uri, runtime_texture_source},
-    compose::{BodyPart, BodyPartKind, compose_body, write_composed_body},
+    compose::{
+        BodyPart, BodyPartKind, compose_body, default_skin_texture_sets, skin_texture_set_for,
+        write_composed_body,
+    },
+    esm::EsmParser,
     mesh::MeshConverter,
     texture::{TextureConverter, TextureEncoding, TextureSemantic},
 };
@@ -32,6 +40,26 @@ const HEADS: [&str; 2] = ["00013475", "00013476"];
 /// Converted alongside `HEADS` because the engine's `retail_head_follows_the_animated_body_bone`
 /// loads this head from the same tree.
 const RETAIL_TEST_HEADS: [&str; 1] = ["0010f5a1"];
+
+/// The FormIDs listed in `MUDCRAB_DEMO_EXTRA_HEADS`, lower-cased like the converted head paths.
+fn extra_heads() -> Vec<String> {
+    let Some(value) = std::env::var_os("MUDCRAB_DEMO_EXTRA_HEADS") else {
+        return Vec::new();
+    };
+    value
+        .to_string_lossy()
+        .split(',')
+        .map(|form| form.trim().trim_start_matches("0x").to_ascii_lowercase())
+        .filter(|form| !form.is_empty())
+        .map(|form| {
+            assert!(
+                form.len() == 8 && form.chars().all(|c| c.is_ascii_hexdigit()),
+                "MUDCRAB_DEMO_EXTRA_HEADS entry `{form}` is not an 8-digit hexadecimal FormID"
+            );
+            form
+        })
+        .collect()
+}
 
 fn env_dir(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
@@ -438,7 +466,34 @@ fn materialises_the_converted_actor_assets() {
 
     assert!(skeleton_nif.is_file(), "missing {}", skeleton_nif.display());
 
+    // The armature skin texture sets come from the actor catalog, as in a full conversion.
+    let catalog_dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_dir.path().join("skyrim_world.db");
+    let esm = texture_root.join("Skyrim.esm");
+    let has_catalog = esm.is_file();
+    if has_catalog {
+        EsmParser::convert_plugins(std::slice::from_ref(&esm), &catalog)
+            .unwrap_or_else(|error| panic!("export {}: {error:#}", esm.display()));
+    } else {
+        println!(
+            "no {}: composed bodies keep the NIF textures",
+            esm.display()
+        );
+    }
+
     for sex in ["male", "female"] {
+        let skins = if has_catalog {
+            default_skin_texture_sets(&catalog, sex)
+                .unwrap_or_else(|error| panic!("read the {sex} skin texture sets: {error:#}"))
+        } else {
+            Vec::new()
+        };
+        for skin in &skins {
+            println!(
+                "skin sex={sex} slot={} texture_set={:08X} model={}",
+                skin.kind, skin.textures.form_id, skin.model_path
+            );
+        }
         let parts = [
             (
                 character_assets.join(format!("{sex}body_1.nif")),
@@ -457,7 +512,11 @@ fn materialises_the_converted_actor_assets() {
             .iter()
             .map(|(path, kind)| {
                 assert!(path.is_file(), "missing {}", path.display());
-                BodyPart { path, kind: *kind }
+                BodyPart {
+                    path,
+                    kind: *kind,
+                    skin_textures: skin_texture_set_for(&skins, *kind, path),
+                }
             })
             .collect();
         let model = compose_body(&body_parts, &skeleton_nif)
@@ -520,7 +579,17 @@ fn materialises_the_converted_actor_assets() {
         }
     }
 
-    for head in HEADS.into_iter().chain(RETAIL_TEST_HEADS) {
+    let mut heads: Vec<String> = HEADS
+        .into_iter()
+        .chain(RETAIL_TEST_HEADS)
+        .map(str::to_owned)
+        .collect();
+    for head in extra_heads() {
+        if !heads.contains(&head) {
+            heads.push(head);
+        }
+    }
+    for head in &heads {
         let head_nif = actor_root
             .join("character/facegendata/facegeom/skyrim.esm")
             .join(format!("{head}.nif"));

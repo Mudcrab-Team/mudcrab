@@ -995,6 +995,7 @@ fn legacy_skinned_mesh(
         bones: bones.clone(),
         skin: joint_names,
         inverse_bind_matrices,
+        morph_targets: Vec::new(),
     })
 }
 

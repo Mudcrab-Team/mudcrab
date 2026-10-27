@@ -1759,6 +1759,11 @@ fn spawn_cell(
                 if let Some(tone) = plan.skin_tone {
                     entity.insert(tone);
                 }
+                if let Some(weight) = plan.weight {
+                    entity.insert(crate::actor_body_weight::ActorBodyWeight(
+                        (1.0 - weight / 100.0).clamp(0.0, 1.0),
+                    ));
+                }
                 if plan.uses_composed_body() {
                     entity.insert((
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
@@ -9409,6 +9414,30 @@ mod tests {
                 0.75, 0.5, 0.25
             )))
         );
+    }
+
+    /// The catalog's `NAM7` body weight becomes the morph value `1 - NAM7 / 100`.
+    #[test]
+    fn an_actor_carries_its_catalog_body_weight() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = actor_catalog_connection();
+        connection
+            .execute("ALTER TABLE actor_models ADD COLUMN weight REAL", [])
+            .unwrap();
+        insert_alvor(&connection);
+        connection
+            .execute("UPDATE actor_models SET weight=20.0", [])
+            .unwrap();
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x13475));
+        let weight = entity
+            .get::<crate::actor_body_weight::ActorBodyWeight>()
+            .expect("the body weight component");
+        assert!((weight.0 - 0.8).abs() < 1e-6, "{weight:?}");
     }
 
     /// A race with its own body keeps that body and receives no shared human gait, even when the

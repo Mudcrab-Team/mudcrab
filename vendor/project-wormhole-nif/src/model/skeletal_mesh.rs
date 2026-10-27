@@ -15,6 +15,19 @@ pub struct SkeletalMesh {
     pub bones: BoneTree,
     pub skin: Vec<String>,
     pub inverse_bind_matrices: Vec<BSMatrix4>,
+    /// Per-vertex position and normal deltas applied on top of `mesh`.
+    ///
+    /// Each target must carry one entry per vertex. The deltas are already in
+    /// the mesh's coordinate space; the writer emits them without transforming
+    /// or re-encoding them.
+    pub morph_targets: Vec<MorphTarget>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MorphTarget {
+    pub name: String,
+    pub positions: Vec<glam::Vec3>,
+    pub normals: Vec<glam::Vec3>,
 }
 
 impl SkeletalMesh {
@@ -90,6 +103,7 @@ impl Default for SkeletalMesh {
             bones: BoneTree::new(),
             skin: Vec::new(),
             inverse_bind_matrices: Vec::new(),
+            morph_targets: Vec::new(),
         }
     }
 }

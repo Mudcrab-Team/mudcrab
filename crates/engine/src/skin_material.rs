@@ -43,6 +43,28 @@
 //! already matches the depth prepass. Most retail brows and hairlines are authored decals and
 //! carry a depth state; they draw as a [`SkyrimSkinDepthMaterial`], the depth extension over the
 //! hair material, as effect palettes do under theirs.
+//!
+//! # Hair card edges
+//!
+//! Hair cards are alpha-tested (glTF `MASK`), and an alpha test leaves a jagged silhouette where
+//! a card crosses a pixel. When the view draws with MSAA, the colour pipeline of a masked hair
+//! material turns on alpha-to-coverage and the shader (`SKYRIM_HAIR_ALPHA_TO_COVERAGE`) writes a
+//! one-pixel coverage ramp instead of discarding, so the samples smooth the edge. The material
+//! itself stays [`AlphaMode::Mask`] with the authored cutoff, and only the colour pass changes:
+//!
+//! - The depth prepass and the shadow passes keep Bevy's alpha test at the authored cutoff.
+//!   Bevy's own [`AlphaMode::AlphaToCoverage`] would give them no cutoff at all (the prepass with
+//!   MSAA draws the whole card) or its fixed 0.05 (shadows), so beards and hair would shadow and
+//!   occlude far more than their visible strands. Retail hair alpha-tests its depth passes too.
+//! - The ramp runs from the cutoff outwards: a pixel the prepass covered is fully covered in
+//!   colour, so no sample keeps the prepass depth without the hair's colour.
+//! - Bevy's mode always sharpens around 0.5, while each retail hair mask authors its own cutoff;
+//!   keeping `Mask` keeps that cutoff in the material's uniform.
+//! - MSAA is part of the mesh pipeline key, so changing it at runtime re-specialises the pipeline:
+//!   without MSAA the colour pass is the plain alpha test.
+//!
+//! Decal hair ([`SkyrimSkinDepthMaterial`]) draws in the sorted blend pass and keeps its alpha
+//! test.
 
 use crate::nif_depth::NifDepthExtension;
 use bevy::{
@@ -52,9 +74,15 @@ use bevy::{
         ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler,
         ImageSamplerDescriptor,
     },
-    pbr::{ExtendedMaterial, MaterialExtension},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{
+        ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+        MeshPipelineKey,
+    },
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
 };
 
@@ -137,6 +165,7 @@ impl Default for SkyrimSkinSettings {
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[bind_group_data(SkyrimSkinKey)]
 pub struct SkyrimSkinExtension {
     #[uniform(100)]
     pub settings: SkyrimSkinSettings,
@@ -160,6 +189,22 @@ pub struct SkyrimSkinExtension {
     /// labeled asset without a strong handle can be freed before its dependency reports loaded.
     #[reflect(ignore)]
     pub(crate) images: Option<Handle<SkyrimSkinImages>>,
+}
+
+/// The part of a [`SkyrimSkinExtension`] its pipelines specialise on.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub struct SkyrimSkinKey {
+    /// The material is hair ([`SkyrimSkinFlags::HAIR_TINT`]): a masked one draws its colour pass
+    /// with alpha-to-coverage under MSAA.
+    pub hair: bool,
+}
+
+impl From<&SkyrimSkinExtension> for SkyrimSkinKey {
+    fn from(extension: &SkyrimSkinExtension) -> Self {
+        Self {
+            hair: extension.settings.flags & SkyrimSkinFlags::HAIR_TINT != 0,
+        }
+    }
 }
 
 /// Marks a primitive whose NIF shader is `skin_tint` and which draws with a
@@ -187,6 +232,48 @@ impl MaterialExtension for SkyrimSkinExtension {
 
     // The prepass and shadow vertex shaders stay Bevy's: the main-pass vertex shader computes
     // positions with the same calls, so the depth it tests against matches.
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        specialize_hair_coverage(descriptor, key.mesh_key, key.bind_group_data);
+        Ok(())
+    }
+}
+
+/// The shader define that swaps a hair card's alpha test for a coverage ramp.
+const HAIR_ALPHA_TO_COVERAGE_DEF: &str = "SKYRIM_HAIR_ALPHA_TO_COVERAGE";
+
+/// Turns on alpha-to-coverage for the colour pass of a masked hair material under MSAA (see
+/// "Hair card edges" above). `MAY_DISCARD` in the key means the material is [`AlphaMode::Mask`];
+/// the sorted decal variant is keyed as a blend and is left alone, as are the prepass and shadow
+/// pipelines (`PREPASS_PIPELINE`), which keep the alpha test.
+fn specialize_hair_coverage(
+    descriptor: &mut RenderPipelineDescriptor,
+    mesh_key: MeshPipelineKey,
+    key: SkyrimSkinKey,
+) {
+    if !key.hair
+        || !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+        || descriptor.multisample.count <= 1
+    {
+        return;
+    }
+    let Some(fragment) = descriptor.fragment.as_mut() else {
+        return;
+    };
+    let prepass = fragment
+        .shader_defs
+        .iter()
+        .any(|def| *def == "PREPASS_PIPELINE".into());
+    if prepass {
+        return;
+    }
+    fragment.shader_defs.push(HAIR_ALPHA_TO_COVERAGE_DEF.into());
+    descriptor.multisample.alpha_to_coverage_enabled = true;
 }
 
 /// The skin material's images, held under a label of their own. `ExtendedMaterial` reports none
@@ -717,6 +804,70 @@ mod tests {
         assert_eq!(hair.extension.settings.tint_color, tint.extend(1.0));
         assert!(hair.extension.model_space_normal.is_none());
         assert!(hair.extension.specular.is_none());
+        assert!(SkyrimSkinKey::from(&hair.extension).hair);
+        assert!(!SkyrimSkinKey::from(&SkyrimSkinExtension::default()).hair);
+    }
+
+    fn pipeline_descriptor(samples: u32, shader_defs: &[&str]) -> RenderPipelineDescriptor {
+        use bevy::render::render_resource::{FragmentState, MultisampleState};
+        RenderPipelineDescriptor {
+            multisample: MultisampleState {
+                count: samples,
+                ..default()
+            },
+            fragment: Some(FragmentState {
+                shader_defs: shader_defs.iter().map(|def| (*def).into()).collect(),
+                ..default()
+            }),
+            ..default()
+        }
+    }
+
+    fn uses_coverage(descriptor: &RenderPipelineDescriptor) -> bool {
+        let defined = descriptor.fragment.as_ref().is_some_and(|fragment| {
+            fragment
+                .shader_defs
+                .contains(&HAIR_ALPHA_TO_COVERAGE_DEF.into())
+        });
+        assert_eq!(defined, descriptor.multisample.alpha_to_coverage_enabled);
+        defined
+    }
+
+    fn specialized(
+        samples: u32,
+        shader_defs: &[&str],
+        mesh_key: MeshPipelineKey,
+        hair: bool,
+    ) -> bool {
+        let mut descriptor = pipeline_descriptor(samples, shader_defs);
+        specialize_hair_coverage(&mut descriptor, mesh_key, SkyrimSkinKey { hair });
+        uses_coverage(&descriptor)
+    }
+
+    #[test]
+    fn masked_hair_colour_pass_uses_coverage_only_under_msaa() {
+        let masked = MeshPipelineKey::MAY_DISCARD;
+        assert!(specialized(4, &[], masked, true));
+        assert!(specialized(2, &[], masked, true));
+        assert!(!specialized(1, &[], masked, true), "no MSAA: alpha test");
+    }
+
+    #[test]
+    fn hair_depth_passes_and_other_materials_keep_the_alpha_test() {
+        let masked = MeshPipelineKey::MAY_DISCARD;
+        assert!(
+            !specialized(4, &["PREPASS_PIPELINE"], masked, true),
+            "prepass and shadows"
+        );
+        assert!(!specialized(4, &[], masked, false), "masked skin");
+        assert!(
+            !specialized(4, &[], MeshPipelineKey::BLEND_ALPHA, true),
+            "sorted decal hair"
+        );
+        assert!(
+            !specialized(4, &[], MeshPipelineKey::NONE, true),
+            "opaque hair"
+        );
     }
 
     #[test]

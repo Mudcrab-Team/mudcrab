@@ -1013,7 +1013,7 @@ fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
+pub(crate) fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
     ensure!(
         bytes.len() >= 20 && &bytes[..4] == b"glTF",
         "invalid GLB container"

@@ -135,6 +135,9 @@ pub struct ActorModelRow {
     /// `NPC_/QNAM`, the body skin tone as RGB in 0..1 on the encoded (not linearised) scale.
     /// The game hands it to the body, hands and feet shaders as their tint colour.
     pub skin_tone: Option<[f32; 3]>,
+    /// `NPC_/NAM7`, the body's own-record weight in 0..100. Traits inheritance is unresolved;
+    /// absent, malformed, non-finite or out-of-range values mean no weight.
+    pub weight: Option<f32>,
 }
 
 /// One `actor_model_parts` row: a biped slot's model path.
@@ -146,6 +149,11 @@ pub struct ActorModelPartRow {
     pub slot: ActorModelSlot,
     /// The `MOD2`/`MOD3` path, as the record wrote it.
     pub model_path: String,
+    /// The armature's own `RNAM`: the NPC's race for an exact match, else `DefaultRace`.
+    pub armature_race_id: u32,
+    /// The armature's skin texture set for the NPC's sex (`NAM0` male, `NAM1` female), which the
+    /// game applies over the part NIF's own textures.
+    pub skin_texture_set_id: Option<u32>,
 }
 
 /// One unresolved-or-notable base, with the reason it was recorded.
@@ -188,11 +196,13 @@ pub fn resolve_actor_models(
     npc_ids.sort_unstable();
 
     for id in npc_ids {
+        let source_view = SubrecordView::new(&records[&id].subrecords);
         let Some(root_id) = traits_root(id, records, &mut catalog) else {
-            catalog.models.push(unresolved_row(id));
+            catalog
+                .models
+                .push(unresolved_row(id, npc_weight(&source_view)));
             continue;
         };
-        let source_view = SubrecordView::new(&records[&id].subrecords);
         let view = SubrecordView::new(&records[&root_id].subrecords);
         let (female, acbs_missing) = npc_sex(&view);
         if acbs_missing {
@@ -215,6 +225,8 @@ pub fn resolve_actor_models(
             skin_tone: (!traits_enabled(&source_view))
                 .then(|| npc_skin_tone(&source_view))
                 .flatten(),
+            // NAM7 follows the conservative own-record policy from QNAM; never infer Traits.
+            weight: npc_weight(&source_view),
         };
 
         let Some(race_id) = view.get_form_id(b"RNAM").filter(|race_id| *race_id != 0) else {
@@ -273,7 +285,7 @@ pub fn resolve_actor_models(
     catalog
 }
 
-fn unresolved_row(id: u32) -> ActorModelRow {
+fn unresolved_row(id: u32, weight: Option<f32>) -> ActorModelRow {
     ActorModelRow {
         id,
         race_id: 0,
@@ -283,6 +295,7 @@ fn unresolved_row(id: u32) -> ActorModelRow {
         head_source: None,
         resolution: "unresolved",
         skin_tone: None,
+        weight,
     }
 }
 
@@ -414,6 +427,15 @@ fn npc_skin_tone(view: &SubrecordView<'_>) -> Option<[f32; 3]> {
 }
 
 /// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.
+/// `NPC_/NAM7`: exactly one little-endian `f32` in 0..=100. A malformed, non-finite or out-of-
+/// range value is no weight, so the engine keeps the heavy body.
+fn npc_weight(view: &SubrecordView<'_>) -> Option<f32> {
+    let data = view.find(b"NAM7").filter(|data| data.len() == 4)?;
+    let weight = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    (weight.is_finite() && (0.0..=100.0).contains(&weight)).then_some(weight)
+}
+
+/// Follows effective skin armor -> `ARMO/MODL` -> compatible `ARMA` tiers, and fills biped slots.
 fn resolve_body(
     records: &HashMap<u32, RawRecord>,
     skin_id: Option<u32>,
@@ -449,8 +471,8 @@ fn resolve_body(
     }
 
     // Preserve authored order across exact and additional-race compatible entries.
-    let mut compatible = Vec::new();
-    let mut default = Vec::new();
+    let mut compatible: Vec<(u32, u32)> = Vec::new();
+    let mut default: Vec<(u32, u32)> = Vec::new();
     for armature_id in armatures {
         let Some(armature) = records
             .get(&armature_id)
@@ -459,7 +481,8 @@ fn resolve_body(
             continue;
         };
         let armature_view = SubrecordView::new(&armature.subrecords);
-        let exact_race = armature_view.get_form_id(b"RNAM") == Some(race_id);
+        let armature_race_id = armature_view.get_form_id(b"RNAM").unwrap_or(0);
+        let exact_race = armature_race_id == race_id;
         let additional_race = armature_view.get_form_ids(b"MODL").into_iter().any(|id| {
             id != 0
                 && id == race_id
@@ -468,15 +491,15 @@ fn resolve_body(
                     .is_some_and(|race| &race.record_type == b"RACE" && !race.is_deleted())
         });
         if exact_race || additional_race {
-            compatible.push(armature_id);
-        } else if armature_view.get_form_id(b"RNAM") == Some(DEFAULT_RACE_FORM_ID) {
-            default.push(armature_id);
+            compatible.push((armature_id, armature_race_id));
+        } else if armature_race_id == DEFAULT_RACE_FORM_ID {
+            default.push((armature_id, DEFAULT_RACE_FORM_ID));
         }
     }
 
     let mut parts: Vec<ActorModelPartRow> = Vec::new();
     let mut seen_paths: BTreeSet<String> = BTreeSet::new();
-    for armature_id in compatible.into_iter().chain(default) {
+    for (armature_id, armature_race_id) in compatible.into_iter().chain(default) {
         let armature = &records[&armature_id];
         let view = SubrecordView::new(&armature.subrecords);
         let slot = match classify_slot(view.find(b"BOD2").or_else(|| view.find(b"BODT"))) {
@@ -504,10 +527,14 @@ fn resolve_body(
         if parts.iter().any(|part| part.slot == slot) || !seen_paths.insert(path.to_lowercase()) {
             continue;
         }
+        // No fallback to the other sex's set: an armature without one keeps the NIF's textures.
+        let skin_tag = if female { b"NAM1" } else { b"NAM0" };
         parts.push(ActorModelPartRow {
             npc_id,
             slot,
             model_path: path,
+            armature_race_id,
+            skin_texture_set_id: view.get_form_id(skin_tag).filter(|id| *id != 0),
         });
     }
 

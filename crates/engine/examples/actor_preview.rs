@@ -32,13 +32,31 @@
 //! (`00013476`) for `--sex female`, whose FaceGen heads the preview draws. With neither, the skin
 //! keeps the model's own tint.
 //!
-//! `--debug-normals msn|vertex` requires `--textures` and renders the skin materials' normals as
-//! colour (`N * 0.5 + 0.5`, written so the PNG holds that value) instead of lighting them: `msn`
-//! the shading normal decoded from the model-space map, `vertex` the interpolated vertex normal.
-//! Red is world +X, green +Y (up), blue +Z. The actor faces -Z, where the camera stands at yaw 0,
-//! so the front has almost no blue and the back (seen at yaw 180) is blue. `--debug-normals off`
-//! keeps the normal lit rendering and does not require `--textures`.
+//! The body takes the same NPC's weight (`NPC_/NAM7`) through the `thin` morph target
+//! (`engine::actor_body_weight`). `--weight 0..100` sets it directly; otherwise it comes from the
+//! same catalog row. With neither, the body stays heavy.
+//!
+//! `--debug-normals msn|vertex` requires `--textures` and renders the skin materials' normals as colour (`N * 0.5 + 0.5`,
+//! written so the PNG holds that value) instead of lighting them: `msn` the shading normal decoded
+//! from the model-space map, `vertex` the interpolated vertex normal. Red is world +X, green +Y
+//! (up), blue +Z. The actor faces -Z, where the camera stands at yaw 0, so the front has almost no
+//! blue and the back (seen at yaw 180) is blue. `--debug-normals off` keeps normal lit rendering and needs no `--textures`.
+//!
+//! `--body PATH` loads another composed body GLB (relative to the converted tree) in place of the
+//! default one for `--sex`.
+//!
+//! `--focus` frames the whole `body`, the `upper` body (head and chest) or the `head`.
+//!
+//! `--frames N` switches to a sequence: instead of one PNG it writes `<stem>_0000.png` up to
+//! `<stem>_{N-1}.png` next to the output path, all from one process. Every frame advances the idle
+//! clip by exactly `1 / --fps` seconds (default 30) of virtual time, whatever the capture costs:
+//! the clock only steps once the previous frame is on disk, so the animation never skips or
+//! repeats a pose. `--orbit DEGREES` turns the camera rig (camera and both lights) around the
+//! actor by that much over the sequence, starting at `--yaw`, and `--focus-end body|upper|head`
+//! eases the framing from `--focus` to that box, for a push-in. Every frame is checked for being
+//! empty, and the run prints how much consecutive frames differ.
 
+use bevy::time::TimeUpdateStrategy;
 use bevy::{
     animation::{
         AnimatedBy, AnimationPlayer,
@@ -58,6 +76,7 @@ use bevy::{
 };
 use engine::{
     actor_animation::{AnimationTarget, IDLE_ANIMATION, animation_targets, idle_clip_scene},
+    actor_body_weight::{ActorBodyWeight, ActorBodyWeightPlugin},
     actor_skin_tone::{ActorSkinTone, ActorSkinTonePlugin},
     actors::{ActorSex, composed_body_scene},
     nif_depth::NifDepthMaterial,
@@ -99,6 +118,9 @@ const DEFAULT_DARK_FLOOR: f64 = 0.10;
 /// box centre, so a small lift keeps the face mid-frame with the crown and chin in view.
 const HEAD_FRAME_LIFT: f32 = 2.0;
 const HEAD_SCENE_TIMEOUT_FRAMES: u32 = 300;
+/// Offset of the upper-body framing box centre from the head bone: the box reaches from just
+/// above the crown to the chest.
+const UPPER_FRAME_DROP: f32 = -8.0;
 
 #[derive(Debug, Clone)]
 enum HeadChoice {
@@ -112,7 +134,29 @@ enum Phase {
     Loading,
     Settling,
     Rendering,
+    /// `--frames`: capturing the sequence one frame at a time.
+    Sequence,
     Captured,
+}
+
+/// The part of the actor the camera frames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Framing {
+    #[default]
+    Body,
+    Upper,
+    Head,
+}
+
+impl Framing {
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("body") => Some(Self::Body),
+            Some("upper") => Some(Self::Upper),
+            Some("head") => Some(Self::Head),
+            _ => None,
+        }
+    }
 }
 
 /// Where the camera stands relative to the default front-three-quarter view.
@@ -120,7 +164,43 @@ enum Phase {
 struct View {
     yaw_degrees: f32,
     pitch_degrees: f32,
-    head: bool,
+    framing: Framing,
+}
+
+/// `--frames`: a fixed-step image sequence instead of a single PNG.
+#[derive(Debug, Clone, Copy)]
+struct Sequence {
+    frames: u32,
+    orbit_degrees: f32,
+    end_framing: Option<Framing>,
+    step: Duration,
+}
+
+/// Tags the entities `spawn_camera` places, so a sequence can move the rig per frame.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+enum RigPart {
+    Camera,
+    Key,
+    Fill,
+}
+
+/// Progress of a `--frames` capture.
+#[derive(Default)]
+struct SequenceState {
+    start_bounds: (Vec3, Vec3),
+    end_bounds: (Vec3, Vec3),
+    /// Index of the next frame to request.
+    next: u32,
+    /// The frame whose screenshot has been requested but not yet written.
+    pending: Option<u32>,
+    /// The clock was set to step on the coming update, so the next request sees a new pose.
+    armed: bool,
+    written: u32,
+    empty_frames: u32,
+    identical_frames: u32,
+    previous: Option<Vec<u8>>,
+    /// Mean absolute per-channel difference between consecutive frames, on a 0..255 scale.
+    differences: Vec<f64>,
 }
 
 /// Fails the run when too many actor pixels are darker than `floor`.
@@ -136,18 +216,22 @@ struct Options {
     output: PathBuf,
     sex: ActorSex,
     head: HeadChoice,
+    body: Option<String>,
     windowed: bool,
     textures: bool,
     view: View,
     msaa: Msaa,
     /// Skin tone in 0..1 on the encoded scale of an `NPC_` record's `QNAM`.
     skin_tone: Option<[f32; 3]>,
+    /// `NPC_/NAM7` body weight in 0..100; the morph value is `1 - weight / 100`.
+    weight: Option<f32>,
     /// A world database whose actor catalog supplies the tone when `skin_tone` is not given.
     database: Option<PathBuf>,
     npc: Option<u32>,
     dark_skin_check: Option<f64>,
     dark_floor: f64,
     debug_normals: SkinDebugView,
+    sequence: Option<Sequence>,
 }
 
 #[derive(Resource)]
@@ -160,6 +244,7 @@ struct Preview {
     dark_skin_check: Option<DarkSkinCheck>,
     debug_normals: SkinDebugView,
     skin_tone: Option<ActorSkinTone>,
+    body_weight: Option<f32>,
     target: Handle<Image>,
     body_scene: Handle<WorldAsset>,
     idle_gltf: Handle<Gltf>,
@@ -183,6 +268,8 @@ struct Preview {
     settle_frames: u32,
     camera_frames: u32,
     started: Instant,
+    sequence: Option<Sequence>,
+    sequence_state: SequenceState,
 }
 
 #[derive(Component)]
@@ -203,27 +290,32 @@ fn main() {
         output,
         sex,
         head,
+        body,
         windowed,
         textures,
         view,
         msaa,
         skin_tone,
+        weight,
         database,
         npc,
         dark_skin_check,
         dark_floor,
         debug_normals,
+        sequence,
     } = parse_args();
     if let Err(error) = check_debug_normals(textures, debug_normals) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
     }
+    let body_path = body.unwrap_or_else(|| composed_body_scene(sex).to_owned());
     let npc = npc.unwrap_or(match sex {
         ActorSex::Male => MALE_NPC,
         ActorSex::Female => FEMALE_NPC,
     });
     let skin_tone = resolve_skin_tone(skin_tone, database.as_deref(), npc);
-    if let Err(error) = check_inputs(&demo, sex) {
+    let body_weight = resolve_body_weight(weight, database.as_deref(), npc);
+    if let Err(error) = check_inputs(&demo, sex, &body_path) {
         eprintln!("actor preview: {error}");
         std::process::exit(2);
     }
@@ -265,11 +357,20 @@ fn main() {
     });
     // The engine builds converted NIF materials through this glTF hook; without it the preview
     // would render the stock glTF materials instead of what the game draws.
-    app.add_plugins((NifMaterialPlugin, ActorSkinTonePlugin));
+    app.add_plugins((
+        NifMaterialPlugin,
+        ActorSkinTonePlugin,
+        ActorBodyWeightPlugin,
+    ));
     if !windowed {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
             Duration::from_millis(16),
         ));
+    }
+    if let Some(sequence) = sequence {
+        // Virtual time follows this step instead of the wall clock, so the settle and every
+        // captured frame see the same amount of animation regardless of render speed.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(sequence.step));
     }
 
     let target = app
@@ -306,8 +407,7 @@ fn main() {
         HeadChoice::None => None,
         HeadChoice::Path(path) => Some(path),
     };
-    let body_scene =
-        asset_server.load(GltfAssetLabel::Scene(0).from_asset(composed_body_scene(sex).to_owned()));
+    let body_scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset(body_path));
     let idle_gltf = asset_server.load(idle_clip_scene(sex));
     let head_scene = head_path
         .as_ref()
@@ -332,6 +432,7 @@ fn main() {
         }),
         debug_normals,
         skin_tone,
+        body_weight,
         phase: Phase::Loading,
         actor: None,
         body_root: None,
@@ -347,9 +448,11 @@ fn main() {
         settle_frames: 0,
         camera_frames: 0,
         started: Instant::now(),
+        sequence,
+        sequence_state: SequenceState::default(),
     })
     .add_observer(mark_head_preview_ready)
-    .add_systems(Update, drive);
+    .add_systems(Update, (drive, drive_sequence).chain());
 
     let result = app.run();
     if !result.is_success() {
@@ -390,6 +493,51 @@ fn parse_skin_tone(value: Option<String>) -> [f32; 3] {
     match channels.as_deref() {
         Some(&[red, green, blue]) => [red, green, blue],
         _ => usage_error("--skin-tone needs R,G,B with each channel between 0 and 1"),
+    }
+}
+
+fn parse_body_weight(value: Option<String>) -> f32 {
+    match value.as_deref().map(str::trim).map(str::parse::<f32>) {
+        Some(Ok(weight)) if (0.0..=100.0).contains(&weight) => weight,
+        _ => usage_error("--weight needs a number between 0 and 100"),
+    }
+}
+
+/// The morph value for the preview's `thin` body target: `--weight` when given, else the catalog
+/// row of `npc` in `database`, else none (the heavy body).
+fn resolve_body_weight(explicit: Option<f32>, database: Option<&Path>, npc: u32) -> Option<f32> {
+    if let Some(weight) = explicit {
+        let morph = 1.0 - weight / 100.0;
+        println!("actor preview: body weight {weight:.0} (morph thin {morph:.3}) from --weight");
+        return Some(morph);
+    }
+    let database = database?;
+    if !database.is_file() {
+        usage_error(&format!("--database {} is not a file", database.display()));
+    }
+    let catalog = ActorCatalog::open(database);
+    let Some(model) = catalog.get(npc) else {
+        println!(
+            "actor preview: NPC_ {npc:08X} has no actor catalog row in {}; the body stays heavy",
+            database.display()
+        );
+        return None;
+    };
+    match model.weight {
+        Some(weight) => {
+            let morph = 1.0 - weight / 100.0;
+            println!(
+                "actor preview: body weight {weight:.0} (morph thin {morph:.3}) from NPC_ {npc:08X} NAM7"
+            );
+            Some(morph)
+        }
+        None => {
+            println!(
+                "actor preview: NPC_ {npc:08X} has no body weight in {}; the body stays heavy",
+                database.display()
+            );
+            None
+        }
     }
 }
 
@@ -455,7 +603,7 @@ fn parse_form_id(value: Option<String>) -> u32 {
 
 fn parse_args() -> Options {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--database WORLD_DB] [--npc FORMID] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex|off (msn and vertex require --textures)]";
+    let usage = "usage: actor_preview <converted_assets_dir> <output.png> [--sex male|female] [--head PATH|none] [--body PATH] [--textures] [--window] [--yaw DEG] [--pitch DEG] [--focus body|upper|head] [--msaa 1|2|4|8] [--skin-tone R,G,B] [--weight 0..100] [--database WORLD_DB] [--npc FORMID] [--dark-skin-check MAX_FRACTION] [--dark-floor LUMINANCE] [--debug-normals msn|vertex|off (msn and vertex require --textures)] [--frames N [--fps FPS] [--orbit DEG] [--focus-end body|upper|head]]";
     let Some(demo) = args.next() else {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -466,18 +614,48 @@ fn parse_args() -> Options {
     };
     let mut sex = ActorSex::Male;
     let mut head = HeadChoice::Default;
+    let mut body = None;
     let mut windowed = false;
     let mut textures = false;
     let mut view = View::default();
     let mut msaa = Msaa::Off;
     let mut skin_tone = None;
+    let mut weight = None;
     let mut database = None;
     let mut npc = None;
     let mut dark_skin_check = None;
     let mut dark_floor = DEFAULT_DARK_FLOOR;
     let mut debug_normals = SkinDebugView::Off;
+    let mut frames = None;
+    let mut fps = 30.0f32;
+    let mut orbit_degrees = 0.0f32;
+    let mut end_framing = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--frames" => {
+                frames = match args.next().and_then(|value| value.parse::<u32>().ok()) {
+                    Some(count) if count > 0 => Some(count),
+                    _ => usage_error("--frames needs a positive frame count"),
+                }
+            }
+            "--fps" => {
+                fps = match args.next().and_then(|value| value.parse::<f32>().ok()) {
+                    Some(rate) if rate.is_finite() && rate > 0.0 => rate,
+                    _ => usage_error("--fps needs a positive frame rate"),
+                }
+            }
+            "--orbit" => {
+                orbit_degrees = match args.next().and_then(|value| value.parse::<f32>().ok()) {
+                    Some(degrees) if degrees.is_finite() => degrees,
+                    _ => usage_error("--orbit needs a number of degrees"),
+                }
+            }
+            "--focus-end" => {
+                end_framing = match Framing::parse(args.next().as_deref()) {
+                    Some(framing) => Some(framing),
+                    None => usage_error("--focus-end needs body, upper or head"),
+                }
+            }
             "--debug-normals" => {
                 debug_normals = match args.next().as_deref().and_then(SkinDebugView::parse) {
                     Some(view) => view,
@@ -486,6 +664,7 @@ fn parse_args() -> Options {
             }
             "--msaa" => msaa = parse_msaa(args.next()),
             "--skin-tone" => skin_tone = Some(parse_skin_tone(args.next())),
+            "--weight" => weight = Some(parse_body_weight(args.next())),
             "--database" => {
                 database = Some(PathBuf::from(
                     args.next()
@@ -521,16 +700,18 @@ fn parse_args() -> Options {
                 }
             }
             "--focus" => {
-                view.head = match args.next().as_deref() {
-                    Some("head") => true,
-                    Some("body") => false,
-                    _ => {
-                        eprintln!("actor preview: --focus needs body or head");
-                        std::process::exit(2);
-                    }
+                view.framing = match Framing::parse(args.next().as_deref()) {
+                    Some(framing) => framing,
+                    None => usage_error("--focus needs body, upper or head"),
                 };
             }
             "--textures" => textures = true,
+            "--body" => {
+                body = Some(
+                    args.next()
+                        .unwrap_or_else(|| usage_error("--body needs a GLB path")),
+                )
+            }
             "--head" => {
                 let Some(value) = args.next() else {
                     eprintln!("actor preview: --head needs a path or none");
@@ -548,21 +729,36 @@ fn parse_args() -> Options {
             }
         }
     }
+    let sequence = frames.map(|frames| Sequence {
+        frames,
+        orbit_degrees,
+        end_framing,
+        step: Duration::from_secs_f64(1.0 / f64::from(fps)),
+    });
+    if sequence.is_none() && (orbit_degrees != 0.0 || end_framing.is_some()) {
+        usage_error("--orbit and --focus-end need --frames");
+    }
+    if sequence.is_some() && (windowed || dark_skin_check.is_some()) {
+        usage_error("--frames cannot be combined with --window or --dark-skin-check");
+    }
     Options {
         demo: PathBuf::from(demo),
         output: PathBuf::from(output),
         sex,
         head,
+        body,
         windowed,
         textures,
         view,
         msaa,
         skin_tone,
+        weight,
         database,
         npc,
         dark_skin_check,
         dark_floor,
         debug_normals,
+        sequence,
     }
 }
 
@@ -573,13 +769,10 @@ fn check_debug_normals(textures: bool, debug_normals: SkinDebugView) -> Result<(
     Ok(())
 }
 
-fn check_inputs(demo: &Path, sex: ActorSex) -> Result<(), String> {
+fn check_inputs(demo: &Path, sex: ActorSex, body: &str) -> Result<(), String> {
     let sex_name = sex.as_str();
-    if !demo.join(composed_body_scene(sex)).is_file() {
-        return Err(format!(
-            "{} has no {sex_name} composed body",
-            demo.display()
-        ));
+    if !demo.join(body).is_file() {
+        return Err(format!("{} has no {sex_name} body {body}", demo.display()));
     }
     if !demo.join(idle_clip_scene(sex)).is_file() {
         return Err(format!("{} has no {sex_name} idle clip", demo.display()));
@@ -590,10 +783,10 @@ fn check_inputs(demo: &Path, sex: ActorSex) -> Result<(), String> {
 /// Mesh entities whose material the flat preview replaces.
 type MaterialBound = Or<(
     With<MeshMaterial3d<StandardMaterial>>,
+    With<MeshMaterial3d<SkyrimSkinMaterial>>,
     With<MeshMaterial3d<NifDepthMaterial>>,
     With<MeshMaterial3d<EffectPaletteMaterial>>,
     With<MeshMaterial3d<EffectPaletteDepthMaterial>>,
-    With<MeshMaterial3d<SkyrimSkinMaterial>>,
     With<MeshMaterial3d<SkyrimSkinDepthMaterial>>,
 )>;
 
@@ -642,8 +835,8 @@ fn install_neutral_material(commands: &mut EntityCommands, material: &Handle<Sta
         .remove::<MeshMaterial3d<NifDepthMaterial>>()
         .remove::<MeshMaterial3d<EffectPaletteMaterial>>()
         .remove::<MeshMaterial3d<EffectPaletteDepthMaterial>>()
-        .remove::<MeshMaterial3d<SkyrimSkinMaterial>>()
         .remove::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
+        .remove::<MeshMaterial3d<SkyrimSkinMaterial>>()
         .insert(MeshMaterial3d(material.clone()));
 }
 
@@ -708,8 +901,12 @@ fn drive(
     transforms: Query<&Transform>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let time_limit = TIME_LIMIT
+        + preview.sequence.map_or(Duration::ZERO, |sequence| {
+            Duration::from_secs(sequence.frames.into())
+        });
     if !(preview.windowed && preview.phase == Phase::Captured)
-        && preview.started.elapsed() > TIME_LIMIT
+        && preview.started.elapsed() > time_limit
     {
         preview.fail("timed out before the frame was captured");
         exit.write(AppExit::error());
@@ -730,6 +927,9 @@ fn drive(
                 ));
                 if let Some(tone) = preview.skin_tone {
                     actor.insert(tone);
+                }
+                if let Some(weight) = preview.body_weight {
+                    actor.insert(ActorBodyWeight(weight));
                 }
                 let actor = actor.id();
                 preview.actor = Some(actor);
@@ -888,11 +1088,14 @@ fn drive(
                         transforms.get(*entity).is_ok_and(|after| after != before)
                     })
                     .count();
-                let bounds = if preview.view.head {
-                    head_bounds(&preview, &globals)
-                } else {
-                    body_bounds(&preview, &globals)
-                };
+                let bounds = framing_bounds(&preview, &globals, preview.view.framing);
+                if let Some(sequence) = preview.sequence {
+                    let end = sequence.end_framing.map_or(bounds, |framing| {
+                        framing_bounds(&preview, &globals, framing)
+                    });
+                    preview.sequence_state.start_bounds = bounds;
+                    preview.sequence_state.end_bounds = end;
+                }
                 if !preview.textures {
                     if let Some(body_root) = preview.body_root {
                         for entity in
@@ -941,6 +1144,10 @@ fn drive(
     if preview.phase == Phase::Rendering {
         preview.camera_frames += 1;
         if preview.camera_frames >= CAMERA_FRAMES {
+            if preview.sequence.is_some() {
+                preview.phase = Phase::Sequence;
+                return;
+            }
             if preview.windowed {
                 println!(
                     "actor preview: window open with {} bound targets and {} moving bones; close it to exit",
@@ -955,6 +1162,192 @@ fn drive(
             preview.phase = Phase::Captured;
         }
     }
+}
+
+/// Captures a `--frames` sequence one frame at a time.
+///
+/// Each frame is requested on an update whose clock stepped by exactly one frame, and the clock
+/// is then held (`ManualDuration(ZERO)`) until that frame is written. Re-arming the step takes one
+/// extra update, because the strategy is read at the start of the next frame.
+fn drive_sequence(
+    mut commands: Commands,
+    mut preview: ResMut<Preview>,
+    mut strategy: ResMut<TimeUpdateStrategy>,
+    mut rig: Query<(&RigPart, &mut Transform, Option<&mut Projection>)>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if preview.phase != Phase::Sequence {
+        return;
+    }
+    let Some(sequence) = preview.sequence else {
+        return;
+    };
+    if preview.sequence_state.pending.is_some() {
+        return;
+    }
+    if preview.sequence_state.written >= sequence.frames {
+        finish_sequence(&preview, sequence, &mut exit);
+        preview.phase = Phase::Captured;
+        return;
+    }
+    if !preview.sequence_state.armed {
+        *strategy = TimeUpdateStrategy::ManualDuration(sequence.step);
+        preview.sequence_state.armed = true;
+        return;
+    }
+
+    let frame = preview.sequence_state.next;
+    let progress = if sequence.frames > 1 {
+        frame as f32 / (sequence.frames - 1) as f32
+    } else {
+        0.0
+    };
+    let ease = progress * progress * (3.0 - 2.0 * progress);
+    let (start_min, start_max) = preview.sequence_state.start_bounds;
+    let (end_min, end_max) = preview.sequence_state.end_bounds;
+    let bounds = (start_min.lerp(end_min, ease), start_max.lerp(end_max, ease));
+    let view = View {
+        yaw_degrees: preview.view.yaw_degrees
+            + sequence.orbit_degrees * frame as f32 / sequence.frames as f32,
+        ..preview.view
+    };
+    let layout = rig_layout(view, bounds);
+    for (part, mut transform, projection) in &mut rig {
+        *transform = match part {
+            RigPart::Camera => layout.camera,
+            RigPart::Key => layout.key,
+            RigPart::Fill => layout.fill,
+        };
+        if let Some(mut projection) = projection {
+            *projection = layout.projection();
+        }
+    }
+
+    commands
+        .spawn(Screenshot::image(preview.target.clone()))
+        .observe(write_sequence_frame);
+    preview.sequence_state.pending = Some(frame);
+    preview.sequence_state.next = frame + 1;
+    preview.sequence_state.armed = false;
+    *strategy = TimeUpdateStrategy::ManualDuration(Duration::ZERO);
+}
+
+/// `<dir>/<stem>_0000.png` for frame 0 of `output`.
+fn sequence_frame_path(output: &Path, frame: u32) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .map_or_else(|| "frame".into(), |stem| stem.to_string_lossy());
+    output.with_file_name(format!("{stem}_{frame:04}.png"))
+}
+
+fn write_sequence_frame(
+    event: On<ScreenshotCaptured>,
+    mut preview: ResMut<Preview>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(frame) = preview.sequence_state.pending else {
+        return;
+    };
+    let Ok(dynamic) = event.image.clone().try_into_dynamic() else {
+        eprintln!("actor preview: frame {frame} cannot be converted to a PNG");
+        exit.write(AppExit::error());
+        return;
+    };
+    let image = dynamic.to_rgb8();
+    let pixels = f64::from(image.width()) * f64::from(image.height());
+    let mean_luminance = image
+        .pixels()
+        .map(|pixel| pixel_luminance(pixel.0))
+        .sum::<f64>()
+        / pixels;
+    let background = corner_color(&image);
+    let foreground = image
+        .pixels()
+        .filter(|pixel| {
+            pixel.0.iter().zip(background).any(|(channel, background)| {
+                u16::from(*channel).abs_diff(u16::from(background)) > FOREGROUND_DISTANCE
+            })
+        })
+        .count() as f64
+        / pixels;
+    let path = sequence_frame_path(&preview.output, frame);
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("actor preview: cannot create {}: {error}", parent.display());
+        exit.write(AppExit::error());
+        return;
+    }
+    if let Err(error) = image.save(&path) {
+        eprintln!("actor preview: cannot write {}: {error}", path.display());
+        exit.write(AppExit::error());
+        return;
+    }
+
+    let state = &mut preview.sequence_state;
+    if foreground < f64::from(MIN_SKIN_FRACTION) || mean_luminance < f64::from(MIN_LUMINANCE) {
+        eprintln!(
+            "actor preview: frame {frame} looks empty (foreground {foreground:.3}, luminance {mean_luminance:.3})"
+        );
+        state.empty_frames += 1;
+    }
+    let raw = image.into_raw();
+    if let Some(previous) = &state.previous {
+        let total: u64 = previous
+            .iter()
+            .zip(&raw)
+            .map(|(before, after)| u64::from(before.abs_diff(*after)))
+            .sum();
+        let difference = total as f64 / raw.len() as f64;
+        if total == 0 {
+            state.identical_frames += 1;
+        }
+        state.differences.push(difference);
+    }
+    state.previous = Some(raw);
+    state.pending = None;
+    state.written += 1;
+}
+
+fn finish_sequence(preview: &Preview, sequence: Sequence, exit: &mut MessageWriter<AppExit>) {
+    let state = &preview.sequence_state;
+    let (min, max, mean) = if state.differences.is_empty() {
+        (0.0, 0.0, 0.0)
+    } else {
+        let min = state
+            .differences
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let max = state.differences.iter().copied().fold(0.0, f64::max);
+        let mean = state.differences.iter().sum::<f64>() / state.differences.len() as f64;
+        (min, max, mean)
+    };
+    println!(
+        "actor preview: wrote {} frames {} .. {} at {:.3} s per frame, orbit {} degrees",
+        state.written,
+        sequence_frame_path(&preview.output, 0).display(),
+        sequence_frame_path(&preview.output, sequence.frames - 1).display(),
+        sequence.step.as_secs_f64(),
+        sequence.orbit_degrees
+    );
+    println!(
+        "actor preview: consecutive frame difference min {min:.3} mean {mean:.3} max {max:.3}; {} identical, {} empty",
+        state.identical_frames, state.empty_frames
+    );
+    println!(
+        "actor preview: {} body scene nodes, {} animation targets bound, {} bones moved since bind, {} head skins rehosted, {} head nodes",
+        preview.body_nodes,
+        preview.targets.len(),
+        preview.moved_bones,
+        preview.head_skins,
+        preview.head_nodes
+    );
+    exit.write(if state.empty_frames == 0 {
+        AppExit::Success
+    } else {
+        AppExit::error()
+    });
 }
 
 fn clip_animation(gltf: Option<&Gltf>) -> Option<Handle<AnimationClip>> {
@@ -988,6 +1381,32 @@ fn body_bounds(preview: &Preview, globals: &Query<&GlobalTransform>) -> (Vec3, V
     (min - Vec3::splat(pad), max + Vec3::splat(pad))
 }
 
+fn framing_bounds(
+    preview: &Preview,
+    globals: &Query<&GlobalTransform>,
+    framing: Framing,
+) -> (Vec3, Vec3) {
+    match framing {
+        Framing::Body => body_bounds(preview, globals),
+        Framing::Upper => upper_bounds(preview, globals),
+        Framing::Head => head_bounds(preview, globals),
+    }
+}
+
+/// A box from the crown down to the chest, centred under the head bone.
+fn upper_bounds(preview: &Preview, globals: &Query<&GlobalTransform>) -> (Vec3, Vec3) {
+    let Some(head) = preview
+        .bone_names
+        .get("NPC Head [Head]")
+        .and_then(|entity| globals.get(*entity).ok())
+    else {
+        return body_bounds(preview, globals);
+    };
+    let center = head.translation() + Vec3::new(0.0, UPPER_FRAME_DROP, 0.0);
+    let half = Vec3::new(14.0, 17.0, 11.0);
+    (center - half, center + half)
+}
+
 /// A box around the head bone, sized to frame the face and hair.
 fn head_bounds(preview: &Preview, globals: &Query<&GlobalTransform>) -> (Vec3, Vec3) {
     let Some(head) = preview
@@ -1002,7 +1421,28 @@ fn head_bounds(preview: &Preview, globals: &Query<&GlobalTransform>) -> (Vec3, V
     (center - half, center + half)
 }
 
-fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, Vec3)) {
+/// Camera and light placement for one view of `bounds`.
+struct RigLayout {
+    camera: Transform,
+    key: Transform,
+    fill: Transform,
+    fov: f32,
+    distance: f32,
+}
+
+impl RigLayout {
+    fn projection(&self) -> Projection {
+        Projection::Perspective(PerspectiveProjection {
+            fov: self.fov,
+            aspect_ratio: WIDTH as f32 / HEIGHT as f32,
+            near: self.distance * 0.01,
+            far: self.distance * 10.0,
+            ..default()
+        })
+    }
+}
+
+fn rig_layout(view: View, (min, max): (Vec3, Vec3)) -> RigLayout {
     let center = (min + max) * 0.5;
     let size = max - min;
     let fov = 40f32.to_radians();
@@ -1016,9 +1456,9 @@ fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, V
 
     // The converted actor faces -Z, so the camera sits on that side of the body.
     // The rig (camera and both lights) orbits the actor together, so every view stays lit.
-    let orbit = Quat::from_rotation_y(preview.view.yaw_degrees.to_radians());
+    let orbit = Quat::from_rotation_y(view.yaw_degrees.to_radians());
     let around = |offset: Vec3| center + orbit * offset;
-    let pitch = preview.view.pitch_degrees.to_radians();
+    let pitch = view.pitch_degrees.to_radians();
     let camera_offset = Vec3::new(distance * 0.16, size.y * 0.12, -distance);
     let camera_offset = if pitch == 0.0 {
         camera_offset
@@ -1030,26 +1470,42 @@ fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, V
     let camera_position = around(camera_offset);
     let look_at = center + Vec3::new(0.0, size.y * 0.04, 0.0);
 
+    RigLayout {
+        camera: Transform::from_translation(camera_position).looking_at(look_at, Vec3::Y),
+        key: Transform::from_translation(around(Vec3::new(
+            -distance * 0.6,
+            max.y - center.y + size.y * 0.8,
+            -distance * 0.9,
+        )))
+        .looking_at(center, Vec3::Y),
+        fill: Transform::from_translation(around(Vec3::new(
+            distance * 0.8,
+            size.y * 0.3,
+            -distance * 0.4,
+        )))
+        .looking_at(center, Vec3::Y),
+        fov,
+        distance,
+    }
+}
+
+fn spawn_camera(commands: &mut Commands, preview: &Preview, bounds: (Vec3, Vec3)) {
+    let layout = rig_layout(preview.view, bounds);
     commands.spawn((
         Camera3d::default(),
         Camera {
             clear_color: ClearColorConfig::Custom(BACKGROUND),
             ..default()
         },
-        Projection::Perspective(PerspectiveProjection {
-            fov,
-            aspect_ratio: aspect,
-            near: distance * 0.01,
-            far: distance * 10.0,
-            ..default()
-        }),
+        layout.projection(),
         if preview.windowed {
             RenderTarget::Window(WindowRef::Primary)
         } else {
             RenderTarget::Image(preview.target.clone().into())
         },
         preview.msaa,
-        Transform::from_translation(camera_position).looking_at(look_at, Vec3::Y),
+        layout.camera,
+        RigPart::Camera,
     ));
 
     commands.spawn((
@@ -1059,12 +1515,8 @@ fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, V
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_translation(around(Vec3::new(
-            -distance * 0.6,
-            max.y - center.y + size.y * 0.8,
-            -distance * 0.9,
-        )))
-        .looking_at(center, Vec3::Y),
+        layout.key,
+        RigPart::Key,
     ));
     commands.spawn((
         DirectionalLight {
@@ -1073,12 +1525,8 @@ fn spawn_camera(commands: &mut Commands, preview: &Preview, (min, max): (Vec3, V
             shadow_maps_enabled: false,
             ..default()
         },
-        Transform::from_translation(around(Vec3::new(
-            distance * 0.8,
-            size.y * 0.3,
-            -distance * 0.4,
-        )))
-        .looking_at(center, Vec3::Y),
+        layout.fill,
+        RigPart::Fill,
     ));
 }
 
@@ -1242,6 +1690,9 @@ mod tests {
             textures: false,
             msaa: Msaa::Off,
             dark_skin_check: None,
+            debug_normals: SkinDebugView::Off,
+            skin_tone: None,
+            body_weight: None,
             target: Handle::default(),
             body_scene: Handle::default(),
             idle_gltf: Handle::default(),
@@ -1249,8 +1700,6 @@ mod tests {
             head_scene: Some(Handle::default()),
             body_material: Handle::default(),
             head_material: Handle::default(),
-            skin_tone: None,
-            debug_normals: SkinDebugView::Off,
             phase: Phase::Loading,
             actor: None,
             body_root: None,
@@ -1266,6 +1715,8 @@ mod tests {
             settle_frames: 0,
             camera_frames: 0,
             started: Instant::now(),
+            sequence: None,
+            sequence_state: SequenceState::default(),
         }
     }
 
@@ -1276,22 +1727,69 @@ mod tests {
     }
 
     #[test]
-    fn input_check_requires_the_selected_sex_body_and_idle() {
+    fn input_check_requires_selected_body_and_selected_sex_idle() {
         let demo = tempfile::tempdir().unwrap();
         write_asset(demo.path(), composed_body_scene(ActorSex::Male));
         write_asset(demo.path(), idle_clip_scene(ActorSex::Male));
         write_asset(demo.path(), composed_body_scene(ActorSex::Female));
 
         assert_eq!(
-            check_inputs(demo.path(), ActorSex::Female).unwrap_err(),
+            check_inputs(
+                demo.path(),
+                ActorSex::Female,
+                composed_body_scene(ActorSex::Female)
+            )
+            .unwrap_err(),
             format!("{} has no female idle clip", demo.path().display())
         );
 
         write_asset(demo.path(), idle_clip_scene(ActorSex::Female));
         std::fs::remove_file(demo.path().join(composed_body_scene(ActorSex::Female))).unwrap();
         assert_eq!(
-            check_inputs(demo.path(), ActorSex::Female).unwrap_err(),
-            format!("{} has no female composed body", demo.path().display())
+            check_inputs(
+                demo.path(),
+                ActorSex::Female,
+                composed_body_scene(ActorSex::Female)
+            )
+            .unwrap_err(),
+            format!(
+                "{} has no female body {}",
+                demo.path().display(),
+                composed_body_scene(ActorSex::Female)
+            )
+        );
+
+        write_asset(demo.path(), "custom/body.glb");
+        assert!(check_inputs(demo.path(), ActorSex::Female, "custom/body.glb").is_ok());
+        write_asset(demo.path(), composed_body_scene(ActorSex::Female));
+        assert_eq!(
+            check_inputs(demo.path(), ActorSex::Female, "missing/body.glb").unwrap_err(),
+            format!(
+                "{} has no female body missing/body.glb",
+                demo.path().display()
+            )
+        );
+        std::fs::remove_file(demo.path().join(idle_clip_scene(ActorSex::Male))).unwrap();
+        assert_eq!(
+            check_inputs(demo.path(), ActorSex::Male, "custom/body.glb").unwrap_err(),
+            format!("{} has no male idle clip", demo.path().display())
+        );
+    }
+
+    #[test]
+    fn sequence_paths_preserve_zero_based_frame_indices() {
+        let output = Path::new("preview.png");
+        assert_eq!(
+            sequence_frame_path(output, 0),
+            PathBuf::from("preview_0000.png")
+        );
+        assert_eq!(
+            sequence_frame_path(output, 11),
+            PathBuf::from("preview_0011.png")
+        );
+        assert_eq!(
+            sequence_frame_path(output, 119),
+            PathBuf::from("preview_0119.png")
         );
     }
 
@@ -1304,9 +1802,15 @@ mod tests {
             );
             assert!(check_debug_normals(true, view).is_ok());
         }
-
         assert!(check_debug_normals(false, SkinDebugView::Off).is_ok());
         assert!(check_debug_normals(true, SkinDebugView::Off).is_ok());
+    }
+
+    #[test]
+    fn preview_weight_maps_endpoints_and_midpoint_to_thin_morph() {
+        assert_eq!(resolve_body_weight(Some(0.0), None, 0x100), Some(1.0));
+        assert_eq!(resolve_body_weight(Some(50.0), None, 0x100), Some(0.5));
+        assert_eq!(resolve_body_weight(Some(100.0), None, 0x100), Some(0.0));
     }
 
     #[test]
@@ -1470,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn neutral_preview_replaces_each_supported_material_type_once() {
+    fn neutral_preview_replaces_supported_materials_and_removes_skin_material() {
         let mut app = App::new();
         let neutral = Handle::<StandardMaterial>::default();
         let entity = app
@@ -1515,40 +2019,6 @@ mod tests {
                 .is_none()
         );
         assert!(entity.get::<MeshMaterial3d<SkyrimSkinMaterial>>().is_none());
-        assert!(
-            entity
-                .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn neutral_preview_binds_depth_only_skin_materials() {
-        let mut app = App::new();
-        let neutral = Handle::<StandardMaterial>::default();
-        let entity = app
-            .world_mut()
-            .spawn(MeshMaterial3d::<SkyrimSkinDepthMaterial>(Handle::default()))
-            .id();
-        app.insert_resource(NeutralMaterial(neutral.clone()));
-        app.add_systems(
-            Update,
-            |mut commands: Commands,
-             material_entities: Query<Entity, MaterialBound>,
-             neutral: Res<NeutralMaterial>| {
-                for entity in &material_entities {
-                    install_neutral_material(&mut commands.entity(entity), &neutral.0);
-                }
-            },
-        );
-
-        app.update();
-
-        let entity = app.world().entity(entity);
-        assert_eq!(
-            entity.get::<MeshMaterial3d<StandardMaterial>>().unwrap().0,
-            neutral
-        );
         assert!(
             entity
                 .get::<MeshMaterial3d<SkyrimSkinDepthMaterial>>()
