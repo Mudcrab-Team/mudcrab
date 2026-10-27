@@ -6,12 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::esm::{extractors::extract_subrecords, types::ArchivedRecordData};
 
+type OrderedGrassLinks = BTreeMap<u32, Vec<u32>>;
+
 /// Read explicit ordinals, or recover legacy order from winning remapped LTEX data.
 /// Return the number and first texture with omitted legacy data, retaining usable fields.
 pub(super) fn read_links(
     conn: &Connection,
     valid_types: &BTreeSet<u32>,
-) -> Result<(BTreeMap<u32, Vec<u32>>, usize, Option<u32>)> {
+) -> Result<(OrderedGrassLinks, usize, Option<u32>)> {
     let mut columns = conn.prepare("PRAGMA table_info(landscape_texture_grasses)")?;
     let mut has_ordinal = false;
     for name in columns.query_map([], |row| row.get::<_, String>(1))? {
