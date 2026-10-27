@@ -1334,8 +1334,8 @@ mod tests {
                 output_hash: hash_bytes(proven),
             },
         );
-        // A writable occupant with a read-only parent makes the old overwrite-then-unlink path
-        // leave rejected bytes, while Windows denies the same unlink through the read-only file.
+        // A read-only parent blocks unlink on Unix. On Windows, keep a shared-write handle
+        // without delete sharing: the old overwrite-then-unlink path could leave rejected bytes.
         let destination = staging.join(relative);
         let parent = destination.parent().unwrap().to_path_buf();
         fs::create_dir_all(&parent).unwrap();
@@ -1346,6 +1346,7 @@ mod tests {
             fs::set_permissions(path, permissions).unwrap();
         };
         set_readonly(parent.as_path(), true);
+        #[cfg(not(windows))]
         set_readonly(destination.as_path(), true);
         // Root can unlink through a read-only parent; skip rather than assert rejection.
         #[cfg(unix)]
@@ -1354,7 +1355,19 @@ mod tests {
             eprintln!("skipping: Unix permissions allow root to remove the fixture");
             return;
         }
+        #[cfg(windows)]
+        let removal_guard = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&destination)
+                .unwrap()
+        };
         let result = copy_verified_assets(&source, &staging, &mut manifest, &mut Vec::new());
+        #[cfg(windows)]
+        drop(removal_guard);
         set_readonly(destination.as_path(), false);
         set_readonly(parent.as_path(), false);
         assert!(result.is_err(), "unremovable occupant must fail closed");
