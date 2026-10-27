@@ -377,6 +377,33 @@ fn palette_effect_shadow_cutoffs_match_bevy_alpha_modes() {
     ));
 }
 
+/// Offline invisibility proofs follow the engine shader's strict cutoff, including equality.
+#[test]
+fn grass_mask_visibility_matches_runtime_alpha_discard() {
+    for (alpha, cutoff, invisible) in [
+        (0.0, 1.0, true),
+        (0.49, 0.5, true),
+        (0.5, 0.5, false),
+        (0.0, 0.0, false),
+    ] {
+        let material = serde_json::json!({"alphaMode":"MASK","alphaCutoff":cutoff,
+            "pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,alpha]}});
+        assert_eq!(
+            shadow_discards(AlphaMode::Mask, [1.0, 1.0, 1.0, alpha], cutoff),
+            invisible
+        );
+        assert_eq!(
+            shared::model_visibility::mask_cannot_render(&material, false),
+            invisible
+        );
+    }
+    assert!(!shared::model_visibility::mask_cannot_render(
+        &serde_json::json!({"alphaMode":"OPAQUE",
+        "pbrMetallicRoughness":{"baseColorFactor":[0,0,0,0]}}),
+        false
+    ));
+}
+
 #[test]
 fn prepass_mirrors_bevys_premultiplied_alpha_cutoff_locally() {
     // naga_oil substitutes an imported `pbr_prepass_functions` constant with its qualified name

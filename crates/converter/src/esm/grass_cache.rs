@@ -119,6 +119,7 @@ const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
 mod enable;
 mod skinning;
+mod visibility;
 
 #[cfg(test)]
 #[path = "grass_cache/skinning_tests.rs"]
@@ -127,6 +128,9 @@ mod skinning_tests;
 #[cfg(test)]
 #[path = "grass_cache/review_tests.rs"]
 mod review_tests;
+
+#[cfg(test)]
+mod placement_tests;
 
 /// Fingerprints and evaluated offsets survive eviction; retained triangles have a byte budget.
 struct GeometryCache {
@@ -365,8 +369,10 @@ fn validate_accessor(accessor: &gltf::Accessor<'_>, blob: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Decode supported GLB scene triangles in model coordinates, omitting blended primitives.
+/// Decode supported visible GLB scene triangles, omitting blended primitives by grass policy.
 fn model_triangles(bytes: &[u8]) -> Result<Vec<Triangle>> {
+    let prepared = visibility::prepare(bytes)?;
+    let bytes = prepared.as_ref();
     let evaluated = (|| {
         let mut glb = gltf::Gltf::from_slice_without_validation(bytes)?;
         skinning::validate_position_references(&glb.document)?;
@@ -529,7 +535,7 @@ pub fn write_grass_cache(
         types.iter().map(|rule| rule.form_id).collect();
     let mut links = BTreeMap::<u32, Vec<u32>>::new();
     let mut statement = conn.prepare(
-        "SELECT ltex_id,gras_id FROM landscape_texture_grasses ORDER BY ltex_id,gras_id",
+        "SELECT ltex_id,gras_id FROM landscape_texture_grasses ORDER BY ltex_id,ordinal,gras_id",
     )?;
     for pair in statement.query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))? {
         let (texture, grass) = pair?;

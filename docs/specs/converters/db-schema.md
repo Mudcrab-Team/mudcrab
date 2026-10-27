@@ -1051,6 +1051,7 @@ CREATE TABLE IF NOT EXISTS grass_types (
 CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
     ltex_id INTEGER NOT NULL,           -- resolved LTEX FormID
     gras_id INTEGER NOT NULL,           -- resolved GNAM GRAS FormID
+    ordinal INTEGER NOT NULL DEFAULT 0, -- first GNAM occurrence in the winning list
     PRIMARY KEY (ltex_id, gras_id)
 );
 ```
@@ -1061,9 +1062,16 @@ Either At Most Above and Either At Most Below, respectively. `flags` bits 0,
 1 and 2 mean Vertex Lighting, Uniform Scaling and Fit to Slope. These definitions
 establish the authored contract, not Skyrim's exact placement equations.
 
-Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse.
-The winning LTEX list replaces the earlier list in full. There is no foreign key on
-the grass target: a deleted or unresolved grass can still be named by a texture,
+Each non-null repeated `LTEX.GNAM` yields an association; duplicate pairs collapse,
+retaining the first occurrence's zero-based `ordinal`. Both record readers use this
+projection. Consumers read each texture's species in `ordinal` order (with `gras_id`
+as a deterministic tie fallback), preserving source order rather than sorting species
+by FormID. Gaps after discarded or duplicate occurrences are allowed.
+The winning LTEX list replaces the earlier list in full, including its order and an
+empty replacement. `create_tables` adds `ordinal` to older association tables with a
+zero default, preserving unrelated rows during subset exports. Those default values
+cannot reconstruct lost source order; a complete export rebuilds it from records.
+There is no foreign key on the grass target: a deleted or unresolved grass can still be named by a texture,
 and consumers resolve it against `grass_types`. Both projections refresh atomically
 from a complete effective load-order export, removing stale grass and associations
 on deletions or later overrides. Deleted GRAS records therefore do not reappear as

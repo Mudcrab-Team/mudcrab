@@ -12,7 +12,11 @@ Grassless cells are omitted. Each stored cell keeps its 33 by 33 height field,
 resolved water height, and
 four quadrants in Creation XY order (southwest, southeast, northwest,
 northeast). Each terrain layer retains every resolved grass species assigned
-by the winning LTEX record. Its 17 by 17 row-major blend field stores normalized
+by the winning LTEX record, in GNAM occurrence order. Duplicate links retain their
+first occurrence; unresolved or deleted species are filtered without reordering
+survivors. A winning override replaces the entire list, including an empty list.
+Runtime species caps can take the first N in this order; the global rule table
+remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores normalized
 overlay weights and the base residual. Both record readers supply the complete
 `cell_cache_preserved.rkyv` terrain projection to the grass bake, retaining layers
 beyond the runtime terrain material's one base plus five overlays per quadrant.
@@ -31,6 +35,8 @@ Version five adds each cell's omitted-obstruction outcomes and skinned sampling
 admissions alongside its masks, so reuse retains the same bounded notices without
 decoding geometry again. Older grass artifacts rebuild; mask sampling and the
 mesh, texture and terrain cache identities are unchanged.
+Version six rebuilds masks without invisible or explicitly excluded primitives
+and preserves authored GNAM species order. Only the grass artifact is invalidated.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -84,8 +90,18 @@ window do not.
 
 TREE and FLOR base records, generic `meshes/markers/` and `meshes/effects/` paths,
 and alpha-blended primitives are excluded from obstruction inspection, matching
-the earlier policy. Opaque and alpha-mask primitives count as solid triangles;
-alpha textures are not sampled. Skinned meshes use the unanimated scene's global
+the earlier policy. Converted primitive `openSkyrim.materialExclusion` declarations
+and material `openSkyrim.nonRenderingExclusion` declarations are omitted before
+typed geometry validation, so a broken excluded material cannot discard healthy
+sibling geometry. Live siblings retain their original material validation.
+Opaque and visible alpha-mask primitives count as solid triangles; alpha textures
+are not sampled. The shared visibility contract mirrors the engine's strict MASK
+discard (`alpha < cutoff`, default cutoff 0.5): without vertex colors or
+alpha-replacing extensions, the base-color alpha factor bounds sampled alpha.
+A factor below the cutoff therefore never obstructs. Equality and OPAQUE alpha
+zero remain visible; palette-alpha replacement and unknown extensions do not use
+this proof. Node children and skin joints remain available when a primitive is omitted.
+Skinned meshes use the unanimated scene's global
 joint transforms multiplied by inverse bind matrices (identity when omitted),
 blended by the vertex joint weights. The skinned mesh node's transform is ignored,
 as defined by the [glTF skinning specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#skins).
@@ -136,7 +152,7 @@ The terrain cache continues to use `shared::CELL_CACHE_VERSION` independently.
 
 Each entry carries a SHA-256 input key covering the grass cache version, cell
 identity/coordinates, terrain fields and raw LAND, relevant winning LTEX/GRAS
-payloads and resolved species links, and every candidate reference's identity,
+payloads and resolved species links in GNAM order, and every candidate reference's identity,
 source payload, transform, finalized bounds, initial enable inputs throughout
 its parent chain (including missing/cyclic/malformed terminals), canonical model path and SHA-256
 model contents. Replacing triangles or materials invalidates affected cells even

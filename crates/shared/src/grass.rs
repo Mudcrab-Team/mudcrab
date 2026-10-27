@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version five retains obstruction notice provenance alongside reusable masks.
-pub const GRASS_CACHE_VERSION: u32 = 5;
+/// Version six omits invisible primitives and preserves winning LTEX GNAM order.
+pub const GRASS_CACHE_VERSION: u32 = 6;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
@@ -29,6 +29,7 @@ pub struct GrassType {
 #[rkyv(bytecheck())]
 pub struct GrassLayer {
     pub texture_form_id: u32,
+    /// Resolved unique species in the winning LTEX's GNAM occurrence order.
     pub grass_ids: Vec<u32>,
     /// Effective blend weights, row-major 17 by 17, including base residual.
     pub weights: Vec<f32>,
@@ -157,10 +158,10 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
                 {
                     return Err("invalid grass blend field");
                 }
-                let mut last = None;
+                let mut seen = std::collections::BTreeSet::new();
                 for grass_id in layer.grass_ids.iter() {
                     let id = grass_id.to_native();
-                    if last.is_some_and(|previous| previous >= id)
+                    if !seen.insert(id)
                         || cache
                             .types
                             .binary_search_by_key(&id, |rule| rule.form_id.to_native())
@@ -168,7 +169,6 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
                     {
                         return Err("invalid grass layer species");
                     }
-                    last = Some(id);
                 }
             }
         }
