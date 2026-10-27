@@ -16,12 +16,12 @@ struct ReleaseMetadata {
 
 /// Print release identifiers and schema versions as pretty-printed JSON to stdout.
 ///
-/// Use `GITHUB_SHA` and `GITHUB_REF_NAME` when set; otherwise resolve the commit
+/// Use `RELEASE_COMMIT` and `RELEASE_TAG` when set; otherwise resolve the commit
 /// with `git rev-parse HEAD` and derive the tag from the Cargo package version.
 /// If Git cannot be run, the fallback commit is empty.
 fn main() {
     let version = env!("CARGO_PKG_VERSION").to_string();
-    let git_commit = std::env::var("GITHUB_SHA").unwrap_or_else(|_| {
+    let git_commit = std::env::var("RELEASE_COMMIT").unwrap_or_else(|_| {
         let out = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
@@ -30,7 +30,7 @@ fn main() {
             .unwrap_or_default()
     });
 
-    let tag = std::env::var("GITHUB_REF_NAME").unwrap_or_else(|_| format!("v{version}"));
+    let tag = std::env::var("RELEASE_TAG").unwrap_or_else(|_| format!("v{version}"));
 
     let meta = ReleaseMetadata {
         version,

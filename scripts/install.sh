@@ -133,7 +133,14 @@ BINARIES="launcher engine converter world-inspect"
 for bin in $BINARIES; do
     if [ -f "${INSTALL_DIR}/bin/${bin}" ]; then
         chmod +x "${INSTALL_DIR}/bin/${bin}"
-        ln -sf "${INSTALL_DIR}/bin/${bin}" "${BIN_DIR}/${bin}"
+        LINK="${BIN_DIR}/${bin}"
+        if [ -e "$LINK" ] || [ -L "$LINK" ]; then
+            # Only replace a symlink that already points into this installation.
+            if [ ! -L "$LINK" ] || [ "$(readlink "$LINK")" != "${INSTALL_DIR}/bin/${bin}" ]; then
+                error "Refusing to overwrite existing '${LINK}'. Remove it or set MUDCRAB_BIN_DIR to another directory."
+            fi
+        fi
+        ln -sf "${INSTALL_DIR}/bin/${bin}" "$LINK"
     fi
 done
 
@@ -141,11 +148,13 @@ done
 if [ "$OS" = "Linux" ]; then
     APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     mkdir -p "$APPS_DIR"
+    # Desktop Entry Exec: quote the path and escape \ " ` $ inside the quotes.
+    DESKTOP_EXEC="$(printf '%s' "${BIN_DIR}/launcher" | sed -e 's/[\\"`$]/\\&/g')"
     cat <<EOF > "${APPS_DIR}/mudcrab.desktop"
 [Desktop Entry]
 Name=Mudcrab
 Comment=Modern Skyrim Engine and Converter
-Exec=${BIN_DIR}/launcher
+Exec="${DESKTOP_EXEC}"
 Terminal=false
 Type=Application
 Categories=Game;
@@ -163,7 +172,7 @@ case ":$PATH:" in
         printf "\n"
         warn "${BIN_DIR} is not in your PATH!"
         printf "To run 'launcher', 'engine', or 'converter' from anywhere, add this to your shell profile:\n\n"
-        printf "  ${BOLD}export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}\n\n"
+        printf "  ${BOLD}export PATH=\"%s:\$PATH\"${RESET}\n\n" "$BIN_DIR"
         ;;
 esac
 

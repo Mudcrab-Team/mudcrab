@@ -357,6 +357,22 @@ jobs:
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
 
+  pr_title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Conventional Commit PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          TYPES='feat|fix|perf|refactor|docs|test|chore|ci'
+          SCOPES='converter|engine|launcher|shared|mo2|dummy-content|ci|scripts|release|deps'
+          REGEX="^(${TYPES})(\((${SCOPES})\))?!?: .+"
+          if [[ ! "$PR_TITLE" =~ $REGEX ]] || [ "${#PR_TITLE}" -gt 72 ]; then
+            echo "::error::PR title '$PR_TITLE' must be 'type(scope): description' (max 72 chars). See docs/contributing/writing-prs.md."
+            exit 1
+          fi
+
   tests_pass:
     needs:
       - orchestrate
@@ -370,6 +386,7 @@ jobs:
       - test
       - security
       - performance
+      - pr_title
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -397,6 +414,7 @@ jobs:
           check_result "test" "$RESULT_TEST"
           check_result "security" "$RESULT_SECURITY"
           check_result "performance" "$RESULT_PERFORMANCE"
+          check_result "pr_title" "$RESULT_PR_TITLE"
 
           exit $EXIT_CODE
         env:
@@ -411,3 +429,4 @@ jobs:
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_PERFORMANCE: ${{ needs.performance.result }}
+          RESULT_PR_TITLE: ${{ needs.pr_title.result }}

@@ -76,7 +76,9 @@ try {
 
 # 6. Add to User PATH if missing
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($UserPath -notlike "*$BinDir*") {
+$NormalizedBin = $BinDir.TrimEnd('\')
+$PathEntries = @($UserPath -split ';' | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
+if ($PathEntries -notcontains $NormalizedBin) {
     Write-Host "==> Adding $BinDir to User PATH..." -ForegroundColor Cyan
     [Environment]::SetEnvironmentVariable("Path", "$BinDir;$UserPath", "User")
     $env:Path = "$BinDir;$env:Path"
