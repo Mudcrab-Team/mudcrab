@@ -32,6 +32,11 @@ order. Effective blend weight is shared among a texture's nominated species;
 weights for repeated species accumulate across layers. The INI type cap selects
 the first N species in stable cache FormID order per texture, and the texture
 threshold rejects blend weights below its value. Both apply again after jitter.
+The current converter and cache do not retain LTEX GNAM occurrence order; the
+shared validator requires ascending species IDs. xEdit defines Grasses as a
+sorted array, which does not establish a native first-N priority rule. Preserving
+GNAM occurrence order would require a converter/cache contract change before
+the runtime could use it. This cap remains MudCrab policy, not Skyrim parity.
 Species that fail slope
 or water rules cannot compete. Each eligible species scores its blended weight
 and density through a deterministic exponential race; the highest score wins.
@@ -86,7 +91,15 @@ authored texture scale/offset and shared immutable instance buffer. The texture
 transform applies to the same UV varying used by color and depth cutouts.
 Grass creates entities per species/primitive,
 with no per-instance entities. Depth prepass and main pass use the same authored
-texture and vertex-alpha cutout expression. Opaque primitives retain full coverage
+texture/material alpha cutout expression. Vertex RGB retains its authored tint,
+multiplied by material RGB and instance brightness. Grass vertex alpha does not
+control opacity: [grass authoring accounts](https://stepmodifications.org/forum/topic/20502-im-making-a-grass-mod-and-need-some-tips/)
+identify it as an animation/wind weight, while the
+[NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
+describe its storage without prescribing a grass opacity equation. The converted
+alpha attribute remains intact but is unused by the current grass wind model;
+an exact Skyrim wind equation or ambient-alpha interpretation is not established.
+Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
 grass draws, and grass does not enter shadow phases or water reflections.
 The color pass uses the camera's Bevy tone-mapping method, LUT and color grading

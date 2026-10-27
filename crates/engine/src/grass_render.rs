@@ -1078,6 +1078,8 @@ mod tests {
     use super::*;
     use bevy::gltf::GltfPrimitive;
 
+    include!("grass_render_alpha_tests.rs");
+
     /// Build one authored material through the production primitive-template traversal.
     fn alpha_template(alpha_mode: Option<AlphaMode>, alpha: f32) -> PrimitiveTemplate {
         let mut materials = Assets::<GltfMaterial>::default();

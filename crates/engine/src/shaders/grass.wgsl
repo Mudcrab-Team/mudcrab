@@ -1,5 +1,5 @@
 // One vertex transform and coverage function for depth and color. Masked materials
-// use authored vertex alpha in both passes (unlike the standard depth path).
+// use texture/material alpha; authored vertex alpha remains available for animation.
 #import bevy_render::view::View
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
@@ -96,7 +96,8 @@ fn vertex(input: Vertex) -> Varyings {
     out.uv = (grass.uv_transform * vec3(out.uv,1.0)).xy;
     out.color = grass.color * vec4(vec3(brightness),1.0);
 #ifdef COLOR
-    out.color *= input.color;
+    // Preserve authored RGB tint. The current wind model leaves vertex alpha unused.
+    out.color *= vec4(input.color.rgb,1.0);
 #endif
     out.normal = normalize((grass.world_from_cell * vec4(n,0.0)).xyz);
     out.light = lighting(out.normal);
