@@ -439,9 +439,13 @@ fn reject_core_claims(entry: &ExtensionEntry) -> Result<()> {
                 "conversion-manifest.json",
                 "cell_cache.rkyv",
                 "lod-manifest.json",
+                "integration-report.json",
+                "record-reader.json",
+                "metadata-rebuild.json",
+                "metadata-source-conversion-manifest.json",
             ]
             .contains(&exact)
-                || ["meshes/", "lod/", "terrain/"]
+                || ["meshes/", "textures/", "scripts/", "lod/", "terrain/"]
                     .iter()
                     .any(|core| exact == core.trim_end_matches('/') || file.starts_with(*core))
         });
@@ -606,6 +610,63 @@ fn read_gltf_json(path: &Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finalized_entries_cannot_claim_core_asset_folders_or_provenance_files() {
+        let mut allowed = Vec::new();
+        for path in [
+            "textures/",
+            "textures/example.ktx2",
+            "scripts/",
+            "scripts/example.luau",
+            "integration-report.json",
+            "record-reader.json",
+            "metadata-rebuild.json",
+            "metadata-source-conversion-manifest.json",
+        ] {
+            for spelling in [path.to_owned(), path.to_ascii_uppercase()] {
+                let entry = ExtensionEntry {
+                    id: "example.extra".into(),
+                    version: 1,
+                    owns: ExtensionOwns {
+                        files: vec![spelling.clone()],
+                        ..Default::default()
+                    },
+                    sha256: "0".repeat(64),
+                    built_from: "core".into(),
+                    stats: BTreeMap::new(),
+                };
+                if reject_core_claims(&entry).is_ok() {
+                    allowed.push(spelling);
+                }
+            }
+        }
+        assert!(
+            allowed.is_empty(),
+            "core output claims were accepted: {allowed:?}"
+        );
+        for path in [
+            "textures_extra/payload.bin",
+            "scripts-addon/payload.bin",
+            "addons/integration-report.json",
+        ] {
+            let entry = ExtensionEntry {
+                id: "example.extra".into(),
+                version: 1,
+                owns: ExtensionOwns {
+                    files: vec![path.into()],
+                    ..Default::default()
+                },
+                sha256: "0".repeat(64),
+                built_from: "core".into(),
+                stats: BTreeMap::new(),
+            };
+            assert!(
+                reject_core_claims(&entry).is_ok(),
+                "unrelated namespaced output was rejected: {path}"
+            );
+        }
+    }
     use std::collections::BTreeSet;
 
     fn names(items: &[&str]) -> Vec<String> {

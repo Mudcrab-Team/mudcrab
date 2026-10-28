@@ -146,8 +146,11 @@ built-in descriptor; missing owned tables, indexes or exact files are errors.
 Finalized publication validates declared names and rejects `DOOR_LINKS`
 (`mudcrab.door_links`) and known core table/index claims, including the six core RTree shadow
 tables. It also rejects file ownership of `skyrim_world.db`, `conversion-manifest.json`,
-`cell_cache.rkyv` and `lod-manifest.json`, and ownership of or below the core `meshes/`, `lod/`
-and `terrain/` directories. SQL and file guards use ASCII case-insensitive comparison.
+`cell_cache.rkyv`, `lod-manifest.json`, `integration-report.json`, `record-reader.json`,
+`metadata-rebuild.json` and `metadata-source-conversion-manifest.json`, and ownership of or
+below the core `meshes/`, `textures/`, `scripts/`, `lod/` and `terrain/` directories.
+SQL and file guards use ASCII case-insensitive comparison. Unrelated sibling prefixes and
+files below a separate add-on directory remain available to extension producers.
 Core glTF names `OPEN_SKYRIM_material`, `KHR_texture_transform`,
 `KHR_materials_emissive_strength` and `KHR_materials_specular` cannot be claimed either.
 Producers remain responsible for preserving any additional core ownership. Versions,

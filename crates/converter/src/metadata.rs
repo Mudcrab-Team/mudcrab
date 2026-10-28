@@ -715,13 +715,13 @@ async fn rebuild_into(
     manifest.schema_addons = config.schemas()?.identities().to_vec();
     // No archive extraction cache is copied by this route.
     manifest.archives.clear();
-    report.complete = conversion_is_complete(&report);
-    manifest.complete = report.complete;
     report
         .warnings
         .extend(crate::extensions::refresh_manifest_with_notices(
             manifest, staging,
         )?);
+    report.complete = conversion_is_complete(&report);
+    manifest.complete = report.complete;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),

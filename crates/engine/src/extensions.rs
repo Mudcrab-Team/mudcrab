@@ -183,10 +183,9 @@ pub fn open_features(
                 ),
                 None => reason(&status),
             };
-            warn!(
-                feature = feature.label(),
-                extension = feature.extension(),
-                "{} is off: extension {}: {reason}",
+            // Capability selection precedes LogPlugin installation.
+            eprintln!(
+                "warning: {} is off: extension {}: {reason}",
                 feature.label(),
                 feature.extension()
             );
@@ -284,6 +283,44 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{MAIN_MANIFEST, data_set, manifest};
     use super::*;
+
+    #[test]
+    fn capability_rejection_is_visible_before_logging() {
+        const CHILD: &str = "MUDCRAB_TEST_CAPABILITY_STDERR_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let directory = data_set(&only(Feature::DoorLinks, 2, "older"), Some("core"), &[]);
+            let (_, notices, _) = open(&directory).unwrap();
+            assert_eq!(notices.len(), 1);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "extensions::tests::capability_rejection_is_visible_before_logging",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("load-door links is off"),
+            "pre-logging reason absent from stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("mudcrab.door_links"),
+            "extension id absent: {stderr}"
+        );
+        assert!(
+            stderr.contains("update the engine"),
+            "remediation absent: {stderr}"
+        );
+    }
     fn open(
         directory: &tempfile::TempDir,
     ) -> Result<(DataSetExtensions, ExtensionNotices, WorldDatabaseFeatures)> {
