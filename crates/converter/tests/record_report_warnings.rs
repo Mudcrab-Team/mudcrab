@@ -595,6 +595,101 @@ async fn missing_localized_text_marks_both_readers_incomplete_without_losing_nei
     }
 }
 
+/// Readable banks distinguish absent keys from malformed entries without losing neighbors.
+#[tokio::test]
+async fn readable_localized_gaps_are_notices_but_malformed_entries_remain_warnings() {
+    let directory = tempfile::tempdir().unwrap();
+    for malformed in [false, true] {
+        let case = directory
+            .path()
+            .join(if malformed { "malformed" } else { "absent" });
+        let data = case.join("Data");
+        let mut body = keyword(0x801, b"BeforeSubtitle\0");
+        for (id, key) in [(0x806, 17u32), (0x807, 33), (0x808, 0), (0x809, 34)] {
+            body.extend(record(
+                b"SNDR",
+                id,
+                0,
+                &[
+                    field(b"EDID", format!("Sound{id:X}\0").as_bytes()),
+                    field(b"FNAM", &key.to_le_bytes()),
+                ]
+                .concat(),
+            ));
+        }
+        body.extend(keyword(0x80A, b"AfterSubtitle\0"));
+        plugin(&data, "Subtitles.esm", 0x81, &[], &body);
+        let mut entries = vec![(33u32, 0u32), (34, 9)];
+        if malformed {
+            entries.push((17, u32::MAX));
+        }
+        let mut bank = (entries.len() as u32).to_le_bytes().to_vec();
+        bank.extend(10u32.to_le_bytes());
+        for (key, offset) in entries {
+            bank.extend(key.to_le_bytes());
+            bank.extend(offset.to_le_bytes());
+        }
+        bank.extend(b"Resolved\0\0");
+        fs::create_dir(data.join("Strings")).unwrap();
+        fs::write(data.join("Strings/Subtitles_english.strings"), bank).unwrap();
+        let mut reader_rows = Vec::new();
+        for (name, reader) in [
+            ("legacy", RecordReader::Legacy),
+            ("inhouse", RecordReader::Inhouse),
+        ] {
+            let output = case.join(name);
+            let report = publish(&data, &output, reader).await;
+            assert_eq!(
+                record_ids(&output),
+                [0x801, 0x806, 0x807, 0x808, 0x809, 0x80A]
+            );
+            assert_eq!(fields(&output, 0x806, b"FNAM"), [b"\0".to_vec()]);
+            assert_eq!(fields(&output, 0x807, b"FNAM"), [b"Resolved\0".to_vec()]);
+            assert_eq!(fields(&output, 0x808, b"FNAM"), [b"\0".to_vec()]);
+            assert_eq!(fields(&output, 0x809, b"FNAM"), [b"\0".to_vec()]);
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report.complete, !malformed, "{reader:?}: {report:?}");
+            assert_eq!(manifest["complete"], !malformed);
+            assert_eq!(manifest["record_data_complete"], !malformed);
+            assert_eq!(report.skipped, 0);
+            let notices: Vec<_> = report
+                .notices
+                .iter()
+                .filter(|line| line.contains("localized IDs missing from readable string tables"))
+                .collect();
+            if malformed {
+                assert_eq!(report.warnings.len(), 1, "{report:?}");
+                assert!(report.warnings[0].contains("localized ID 17"), "{report:?}");
+                assert!(notices.is_empty(), "{report:?}");
+            } else {
+                assert!(report.warnings.is_empty(), "{report:?}");
+                assert_eq!(notices.len(), 1, "{report:?}");
+                assert!(
+                    notices[0].contains("1 localized IDs missing from readable string tables"),
+                    "{report:?}"
+                );
+                assert!(notices[0].contains("00000806"), "{report:?}");
+                assert!(notices[0].contains("localized ID 17"), "{report:?}");
+            }
+            let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+            let rows: Vec<(u32, Vec<u8>)> = connection
+                .prepare("SELECT form_id,data FROM records ORDER BY form_id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            reader_rows.push(rows);
+        }
+        assert_eq!(
+            reader_rows[0], reader_rows[1],
+            "both readers publish identical rows"
+        );
+    }
+}
+
 /// Clean input remains complete under both readers without any new warning lines.
 #[tokio::test]
 async fn clean_legacy_and_inhouse_reports_remain_complete() {

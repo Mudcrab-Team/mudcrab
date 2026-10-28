@@ -17,7 +17,7 @@ This document details the technical specification for converting Bethesda NetImm
 | Skyrim NIF Block Type                            | glTF 2.0 Equivalent     | Conversion Logic                                                                  |
 | :----------------------------------------------- | :---------------------- | :-------------------------------------------------------------------------------- |
 | **`NiHeader`**                                   | `asset` metadata        | Copy generator & version tags                                                     |
-| **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`)    |
+| **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`); the root block's is dropped (below) |
 | **`BSTriShape` / `BSDynamicTriShape` / `NiTriShape`** | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers; `NiTriShape` is static geometry only (§7.2) |
 | **`BSLightingShaderProperty`**                   | `materials`             | Map Bethesda shader flags to glTF PBR Metallic Roughness properties               |
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
@@ -31,6 +31,17 @@ parent transform and sat at the scene root (#288): a forge's glow, flames and qu
 floated about 170 units away from the forge.
 There is no converter schema bump: conversions made before this change keep their cached GLBs
 until they are reconverted.
+
+**Root transform.** A placed reference replaces its model root's local transform with its own, so
+the root block's authored translation, rotation and scale never apply in game. The static scene
+writes the root node (block 0) with an identity transform, and collision shapes start from an
+identity root as well. Evidence: `clutter/counterset/countercornerin01.nif` has a 90 degree root
+rotation. In the Riverwood Trader (`RiverwoodRiverwoodTrader`) it meets `CounterStraight01` and
+`CounterLeft01` edge to edge only without that rotation. `dlc01/lod/soulcairn/sc_spire04_lod.nif`
+(90 degree root) matches the footprint of `sc_spire04.nif` (identity root) to within 18 units only
+without it, against 106 units with it. About 740 of the 18,862 meshes in `Skyrim - Meshes0.bsa`
+author a root rotation, 391 of them under `architecture/`. Bone nodes read from a separate
+skeleton NIF are unchanged.
 
 ---
 

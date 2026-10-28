@@ -1,4 +1,4 @@
-//! Opt-in default-reader report control over authenticated official inputs, without assets.
+//! Opt-in legacy-reader report control over authenticated official inputs, without assets.
 use super::{EsmParser, exporter::validate_database, load_order::LoadOrder, plugins_txt};
 use crate::{
     config::RecordReader,
@@ -51,9 +51,10 @@ fn reader_summary_kind(message: &str) -> &'static str {
     }
 }
 
-/// Preserve actual DB/report observations before checking the two known compatibility notices.
+/// Preserve actual DB/report observations before checking compatibility and missing-key notices.
 /// Input hashing and retained-output ownership are enforced by the owning execution receipt.
 /// This exercises reader export plus the shared completeness rule, not a full asset pipeline.
+/// Optional MUDCRAB_REPORT_STRINGS points to banks extracted outside the read-only Data folder.
 #[test]
 #[ignore = "requires explicit MUDCRAB_REPORT_DATA, PLUGINS and fresh retained OUTPUT"]
 fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
@@ -66,13 +67,16 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         "this control requires selected plugins"
     );
     let order = LoadOrder::read(&plugins).unwrap();
+    let strings = std::env::var_os("MUDCRAB_REPORT_STRINGS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data.clone());
     fs::create_dir(&output).unwrap();
     let database_path = output.join("skyrim_world.db");
     let conversion = EsmParser::convert_plugins_with_reader_and_schemas(
         &plugins,
         &database_path,
         RecordReader::Legacy,
-        &data,
+        &strings,
         crate::config::DEFAULT_LANGUAGE,
         None,
     )
@@ -133,8 +137,9 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
     fs::write(
         output.join("reader-report-control.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "scope": "default-reader records/DB export and shared report completeness only",
+            "scope": "legacy-reader records/DB export and shared report completeness only",
             "data": data,
+            "strings": strings,
             "plugins_file": list,
             "selected_plugins": plugins.len(),
             "database_plugins": database_plugins,
@@ -164,8 +169,9 @@ fn official_legacy_reader_report_has_no_warnings_and_is_complete() {
         [
             "notice: dawnguard.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0307B5B9 in ACTI)",
             "notice: skyrim.esm: 1 FormID occurrences name a master index past the plugin's master list and were treated as the plugin's own (first: 0123C00E in GMST)",
+            "notice: skyrim.esm: 5 localized IDs missing from readable string tables (first: 0003C7E3 FNAM missing localized ID 17)",
         ],
-        "official control must retain exactly the two known compatibility notices"
+        "official control must retain compatibility and readable-bank missing-key notices"
     );
     assert!(
         report.complete,

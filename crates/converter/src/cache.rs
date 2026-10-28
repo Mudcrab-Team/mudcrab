@@ -435,6 +435,8 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "facegen-tint-slot",
     "lighting-type-data",
     "msn-specular-default",
+    "hidden-niavobject-excluded",
+    "nif-root-transform-ignored",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

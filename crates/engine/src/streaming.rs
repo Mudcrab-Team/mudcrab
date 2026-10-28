@@ -208,6 +208,10 @@ pub struct StreamingWorld {
     /// Keep each dispatched payload accounted for after its cell leaves the wanted window.
     /// An entry survives channel delivery and deferral until the response is consumed.
     outstanding_cells: HashMap<CellKey, u64>,
+    /// The exterior grid square `plan_cells` measured this frame's window against, or `None` when
+    /// it had no camera to plan from. The lifecycle check compares against it to tell a root the
+    /// planner kept from one that only looks out of range because the camera moved since.
+    planned_center: Option<IVec2>,
     /// Responses for exterior cells with terrain that arrived while the merged terrain arrays were
     /// still loading, in arrival order. They are replayed, ahead of new responses, once the merged
     /// path is ready or refused; every other cell is committed without waiting.
@@ -554,6 +558,14 @@ pub struct StreamingMetrics {
     pub orphaned_cell_roots: u64,
     pub missing_cell_roots: u64,
     pub out_of_range_cell_roots: u64,
+    /// Peak count of the roots `out_of_range_cell_roots` would count if it measured against the
+    /// centre `plan_cells` used instead of the camera read at check time. Diagnostic only: it is
+    /// not part of `streaming_invariant_failures` and gates nothing.
+    pub out_of_range_vs_planned_roots: u64,
+    /// Largest per-axis distance, in cells, between the planner's centre and the check's centre.
+    pub max_plan_check_center_offset: i32,
+    /// Lifecycle checks that ran without a centre from `plan_cells` because it had no camera.
+    pub invariant_checks_without_plan: u64,
     pub streaming_invariant_failures: u64,
     pub origin_rebases: u64,
     pub streaming_fixture_validated: bool,
@@ -851,6 +863,7 @@ fn plan_cells(
     commit_budget.lod_priority = !commit_budget.lod_priority;
     commit_budget.reserved_for_lod = false;
     let Ok(camera) = camera.single() else {
+        streaming.planned_center = None;
         return;
     };
     // Screenshot runs frame the configured start cell from an artistic
@@ -859,6 +872,7 @@ fn plan_cells(
     // the framed cells empty; anchor on the start cell instead. Interactive
     // runs keep following the camera.
     let center = window_center(&config, camera.translation, origin.0);
+    streaming.planned_center = Some(center);
     let wanted = wanted_cells(&space, config.worldspace_id, center, config.stream_radius);
     let mut ordered: Vec<_> = wanted.iter().copied().collect();
     let controlled = config.streaming_controls_enabled();
@@ -1427,6 +1441,14 @@ pub(crate) fn streaming_center(translation: Vec3, origin: IVec2) -> IVec2 {
     )
 }
 
+/// Whole cells `update_render_origin` moves the origin by for a camera at `translation`.
+fn rebase_shift(translation: Vec3) -> IVec2 {
+    IVec2::new(
+        (translation.x / CELL_SIZE).trunc() as i32,
+        (-translation.z / CELL_SIZE).trunc() as i32,
+    )
+}
+
 /// Whether a loaded cell stays loaded. Exteriors fall out of the radius the camera carries; an
 /// interior has no grid square to fall out of, so it stays until something unloads it (a load door
 /// crossing unloads every cell of the space it leaves, see [`unload_all_cells_now`]).
@@ -1437,6 +1459,25 @@ fn cell_within_unload_radius(key: CellKey, center: IVec2, radius: i32) -> bool {
         }
         CellKey::Interior(_) => true,
     }
+}
+
+/// The grid squares of the non-retiring exterior roots more than `unload_radius` cells from
+/// `center` on either axis: the roots the lifecycle check reports as out of range.
+fn roots_outside_window<'a>(
+    roots: &'a [(Entity, &'a CellRef, Option<&'a ExteriorCellGrid>)],
+    retiring: &'a HashSet<Entity>,
+    center: IVec2,
+    unload_radius: i32,
+) -> impl Iterator<Item = IVec2> + 'a {
+    roots
+        .iter()
+        // A retiring root is outside the radius by construction: it is waiting for its turn in
+        // the unload budget, which [`despawn_cells`] bounds, so its lag is not a violation.
+        .filter(move |(entity, _, _)| !retiring.contains(entity))
+        .filter_map(|(_, _, grid)| grid.map(|grid| grid.0))
+        .filter(move |grid| {
+            (grid.x - center.x).abs() > unload_radius || (grid.y - center.y).abs() > unload_radius
+        })
 }
 
 /// Build a cell hierarchy and request its model scenes, recording their IDs for optional tracing.
@@ -4791,10 +4832,7 @@ fn update_render_origin(
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
-    let shift = IVec2::new(
-        (camera.translation.x / CELL_SIZE).trunc() as i32,
-        (-camera.translation.z / CELL_SIZE).trunc() as i32,
-    );
+    let shift = rebase_shift(camera.translation);
     if shift == IVec2::ZERO {
         return;
     }
@@ -4892,22 +4930,23 @@ fn validate_streaming_lifecycle(
     let duplicate_roots = roots_by_cell.values().filter(|count| **count > 1).count() as u64;
     let orphaned_roots = root_entities.difference(&resident_entities).count() as u64;
     let missing_roots = resident_entities.difference(&root_entities).count() as u64;
-    let out_of_range_roots = camera.single().map_or(0, |camera| {
-        // Must match plan_cells: screenshot runs anchor streaming on the
-        // start cell, not the camera.
-        let center = window_center(&config, camera.translation, origin.0);
-        root_entries
-            .iter()
-            // A retiring root is outside the radius by construction: it is waiting for its turn in
-            // the unload budget, which [`despawn_cells`] bounds, so its lag is not a violation.
-            .filter(|(entity, _, _)| !retiring_entities.contains(entity))
-            .filter_map(|(_, _, grid)| *grid)
-            .filter(|grid| {
-                (grid.0.x - center.x).abs() > config.unload_radius
-                    || (grid.0.y - center.y).abs() > config.unload_radius
-            })
-            .count() as u64
+    let unload_radius = config.unload_radius;
+    let camera_translation = camera.single().ok().map(|camera| camera.translation);
+    // Must match plan_cells: screenshot runs anchor streaming on the start cell, not the camera.
+    let current_center =
+        camera_translation.map(|translation| window_center(&config, translation, origin.0));
+    let planned_center = streaming.planned_center;
+    let out_of_range_roots = current_center.map_or(0, |center| {
+        roots_outside_window(&root_entries, &retiring_entities, center, unload_radius).count()
+            as u64
     });
+    let out_of_range_vs_planned = planned_center.map_or(0, |center| {
+        roots_outside_window(&root_entries, &retiring_entities, center, unload_radius).count()
+            as u64
+    });
+    let plan_check_offset = planned_center
+        .zip(current_center)
+        .map(|(planned, current)| current - planned);
     let violations = duplicate_roots + orphaned_roots + missing_roots + out_of_range_roots;
 
     metrics.active_requests = active_requests;
@@ -4918,12 +4957,49 @@ fn validate_streaming_lifecycle(
     metrics.orphaned_cell_roots = metrics.orphaned_cell_roots.max(orphaned_roots);
     metrics.missing_cell_roots = metrics.missing_cell_roots.max(missing_roots);
     metrics.out_of_range_cell_roots = metrics.out_of_range_cell_roots.max(out_of_range_roots);
+    metrics.out_of_range_vs_planned_roots = metrics
+        .out_of_range_vs_planned_roots
+        .max(out_of_range_vs_planned);
+    if let Some(offset) = plan_check_offset {
+        metrics.max_plan_check_center_offset = metrics
+            .max_plan_check_center_offset
+            .max(offset.abs().max_element());
+    }
+    if planned_center.is_none() {
+        metrics.invariant_checks_without_plan =
+            metrics.invariant_checks_without_plan.saturating_add(1);
+    }
     if violations > metrics.streaming_invariant_failures {
+        // The first offending roots measured against the check-time centre, each with its
+        // distance from both centres: one trailing column is drift, scattered cells are a leak.
+        let sample: Vec<_> = current_center
+            .map(|center| {
+                roots_outside_window(&root_entries, &retiring_entities, center, unload_radius)
+                    .take(8)
+                    .map(|grid| {
+                        (
+                            grid,
+                            (grid - center).abs().max_element(),
+                            planned_center.map(|planned| (grid - planned).abs().max_element()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         error!(
             duplicate_roots,
             orphaned_roots,
             missing_roots,
             out_of_range_roots,
+            out_of_range_vs_planned,
+            planned_center = ?planned_center,
+            current_center = ?current_center,
+            plan_check_offset = ?plan_check_offset,
+            camera_translation = ?camera_translation,
+            origin = ?origin.0,
+            stream_radius = config.stream_radius,
+            unload_radius,
+            sample = ?sample,
             "streaming lifecycle invariant failed"
         );
         profiler.event("streaming", "invariant_failed", None);
@@ -5911,6 +5987,168 @@ mod tests {
 
     fn streaming_metrics(app: &App) -> StreamingMetrics {
         app.world().resource::<StreamingMetrics>().clone()
+    }
+
+    /// A camera move to apply between the plan and the check, once.
+    #[derive(Resource, Default)]
+    struct MidFrameShift(Option<IVec2>);
+
+    /// A resident root to commit between the plan and the check, once.
+    #[derive(Resource, Default)]
+    struct MidFrameLeak(Option<IVec2>);
+
+    fn apply_mid_frame_shift(
+        mut shift: ResMut<MidFrameShift>,
+        mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    ) {
+        let Some(shift) = shift.0.take() else {
+            return;
+        };
+        let mut transform = camera.single_mut().unwrap();
+        transform.translation.x += shift.x as f32 * CELL_SIZE;
+        transform.translation.z -= shift.y as f32 * CELL_SIZE;
+    }
+
+    fn inject_mid_frame_leak(world: &mut World) {
+        let Some(grid) = world.resource_mut::<MidFrameLeak>().0.take() else {
+            return;
+        };
+        let root = world
+            .spawn((
+                CellRef(cell_id_of(grid.x, grid.y)),
+                StreamedCellRoot,
+                ExteriorCellGrid(grid),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        world
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(exterior_key(grid.x, grid.y), CellStatus::Resident { root });
+    }
+
+    /// [`streaming_test_app`] with hooks that act after `plan_cells` and before the check, where
+    /// no production system runs for a static interactive camera.
+    fn mid_frame_test_app() -> (App, tempfile::TempDir) {
+        let (mut app, directory) = streaming_test_app(EngineConfig {
+            stream_radius: 2,
+            unload_radius: 3,
+            ..default()
+        });
+        app.init_resource::<MidFrameShift>()
+            .init_resource::<MidFrameLeak>()
+            .add_systems(
+                Update,
+                (apply_mid_frame_shift, inject_mid_frame_leak)
+                    .after(plan_cells)
+                    .before(validate_streaming_lifecycle),
+            );
+        (app, directory)
+    }
+
+    /// The radius-2 window around `center`, all resident.
+    fn spawn_radius_two_window(app: &mut App, center: IVec2) {
+        for grid_y in (center.y - 2)..=(center.y + 2) {
+            for grid_x in (center.x - 2)..=(center.x + 2) {
+                spawn_mock_cell(app, grid_x, grid_y, true);
+            }
+        }
+    }
+
+    #[test]
+    fn a_static_camera_keeps_the_plan_and_check_centers_equal() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        for _ in 0..3 {
+            app.update();
+        }
+
+        assert_eq!(
+            app.world().resource::<StreamingWorld>().planned_center,
+            Some(start)
+        );
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 0);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 0);
+        assert_eq!(metrics.max_plan_check_center_offset, 0);
+        assert_eq!(metrics.streaming_invariant_failures, 0);
+        assert_eq!(metrics.invariant_checks_without_plan, 0);
+    }
+
+    #[test]
+    fn a_mid_frame_camera_crossing_is_measured_as_plan_drift() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        app.update();
+
+        move_camera(&mut app, IVec2::X);
+        app.world_mut().resource_mut::<MidFrameShift>().0 = Some(IVec2::X);
+        app.update();
+
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 5);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 0);
+        assert_eq!(metrics.max_plan_check_center_offset, 1);
+        assert_eq!(metrics.streaming_invariant_failures, 5);
+
+        app.update();
+        let settled = streaming_metrics(&app);
+        assert_eq!(settled.out_of_range_cell_roots, 5);
+        assert_eq!(settled.out_of_range_vs_planned_roots, 0);
+    }
+
+    #[test]
+    fn a_root_committed_outside_the_planned_window_is_measured_as_a_leak() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        app.update();
+
+        app.world_mut().resource_mut::<MidFrameLeak>().0 = Some(IVec2::new(10, 0));
+        app.update();
+
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 1);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 1);
+        assert_eq!(metrics.max_plan_check_center_offset, 0);
+        assert_eq!(metrics.streaming_invariant_failures, 1);
+    }
+
+    #[test]
+    fn a_render_origin_rebase_does_not_move_the_streaming_center() {
+        for origin in [IVec2::ZERO, IVec2::new(5, -12), IVec2::new(-40, 37)] {
+            for (x, z) in [
+                (2048.0, -2048.0),
+                (4096.0, 0.0),
+                (0.0, -4096.0),
+                (-4096.0, 4096.0),
+                (8192.0, -12288.0),
+                (4095.999, -4095.999),
+                (4096.001, 0.5),
+                (-0.001, 0.001),
+                (12.0, -20.0),
+            ] {
+                let translation = Vec3::new(x, 0.0, z);
+                let shift = rebase_shift(translation);
+                let rebased = translation
+                    - Vec3::new(
+                        shift.x as f32 * CELL_SIZE,
+                        0.0,
+                        -(shift.y as f32) * CELL_SIZE,
+                    );
+                assert_eq!(
+                    streaming_center(rebased, origin + shift),
+                    streaming_center(translation, origin),
+                    "translation {translation:?} origin {origin:?}"
+                );
+            }
+        }
     }
 
     #[test]

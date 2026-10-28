@@ -195,7 +195,7 @@ fn classify(motion_system: u8, quality_type: u8, mass: f32) -> BodyKind {
 /// glTF node index the exporter gives a NIF block: the static scene writes one node per
 /// scene node (every block `NifBlock::as_node` accepts) and geometry block, in block order.
 /// The converter re-checks this against the model it exported (`mesh.rs`).
-fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
+pub(crate) fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     fn exported(block: &NifBlock) -> bool {
         block.as_node().is_ok()
             || matches!(
@@ -369,11 +369,17 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
                 &raw_av
             }
         };
-        let local = Mat4::from_scale_rotation_translation(
-            Vec3::splat(av.scale.0),
-            Quat::from_mat3(&av.rotation.0.0),
-            av.translation.0.0,
-        );
+        // The placing reference replaces the root's transform, as for the render nodes
+        // (`crate::mesh::NIF_ROOT_BLOCK`).
+        let local = if index == crate::mesh::NIF_ROOT_BLOCK as usize {
+            Mat4::IDENTITY
+        } else {
+            Mat4::from_scale_rotation_translation(
+                Vec3::splat(av.scale.0),
+                Quat::from_mat3(&av.rotation.0.0),
+                av.translation.0.0,
+            )
+        };
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
             if let Ok(node) = block.as_node()
@@ -1255,7 +1261,10 @@ mod tests {
         let predicted_index = gltf_node_index(&nif, target).unwrap() as usize;
         assert_eq!(node_name(&nif, target), "target");
 
-        let model = nif_to_static_model(&nif).unwrap();
+        // The converter drops the root block's own transform before publishing; the vendor
+        // parser keeps it, so apply the same rule here before comparing the two.
+        let mut model = nif_to_static_model(&nif).unwrap();
+        crate::mesh::clear_root_transform(&mut model);
         let (gltf, _) = model
             .to_gltf("collision-node-regression".to_owned())
             .unwrap();
@@ -1285,8 +1294,7 @@ mod tests {
             assert!((collision - exported).abs() < 1.0e-4);
         }
         assert!(
-            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(4.0, 32.0, 38.0))
-                .length()
+            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(6.0, 3.0, 4.0)).length()
                 < 1.0e-4
         );
     }
