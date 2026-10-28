@@ -120,7 +120,7 @@ fn quantize(value: f32, span: f32) -> u16 {
 }
 
 // Apply texture suitability and the type cap at both the candidate and jittered
-// position. Cache v6 retains each texture's GNAM order; native Skyrim selection is not
+// position. The cache retains each texture's GNAM order; native Skyrim selection is not
 // reproduced by this deterministic placement algorithm.
 /// Apply the texture threshold and species cap to sampled layer coverage.
 fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfig) -> f32 {

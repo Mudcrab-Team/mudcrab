@@ -148,26 +148,29 @@ mod tests {
     }
 
     #[test]
-    /// Accept v6 GNAM-ordered masks and reject stale v5 version headers.
-    fn accepts_v6_and_rejects_stale_v5_masks() {
+    /// Accept marker-filtered masks and reject both pre-order and pre-marker producers.
+    fn accepts_marker_filtered_masks_and_rejects_stale_versions() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("grass_cache.rkyv");
         let mut data = source();
-        data.version = 6;
+        data.version = 7;
         std::fs::write(&path, rkyv::to_bytes::<Error>(&data).unwrap()).unwrap();
         {
             let cache = GrassCache::open(&path).unwrap();
             assert_eq!(cache.cell_at(3, -9, -8), Some(7));
             assert_eq!(f32::from(cache.cell(42).unwrap().heights[0]), 205.0);
         }
-        data.version = 5;
-        std::fs::write(&path, rkyv::to_bytes::<Error>(&data).unwrap()).unwrap();
-        let error = GrassCache::open(&path).err().unwrap().to_string();
-        assert!(
-            error
-                .contains("unsupported grass cache version 5; reconvert grass masks for version 6"),
-            "{error}"
-        );
+        for version in [5, 6] {
+            data.version = version;
+            std::fs::write(&path, rkyv::to_bytes::<Error>(&data).unwrap()).unwrap();
+            let error = GrassCache::open(&path).err().unwrap().to_string();
+            assert!(
+                error.contains(&format!(
+                    "unsupported grass cache version {version}; reconvert grass masks for version 7"
+                )),
+                "{error}"
+            );
+        }
     }
 
     #[test]

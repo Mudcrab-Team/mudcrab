@@ -37,10 +37,18 @@ first occurrences and filters unresolved/deleted links without reordering surviv
 the runtime never sorts the per-layer list by FormID. Only the global rule table
 and output batches use FormID order for lookup and deterministic organization.
 For example, LReachGrass01 nominates ReachGrass02, ReachGrass01, TundraGrass03;
-the default cap admits ReachGrass02 and ReachGrass01. The existing version gate
-rejects v5 archives and requests reconversion, because their sorted lists cannot
-recover GNAM priority. See the [cache contract](../converters/grass-cache.md).
+the default cap admits ReachGrass02 and ReachGrass01. The version gate rejects
+pre-marker producers and requests reconversion: v5 sorted lists cannot recover
+GNAM priority, and v6 masks can still contain header-flagged markers. See the
+[cache contract](../converters/grass-cache.md).
 This first-N cap remains MudCrab policy, not a claim of Skyrim's selection algorithm.
+A [public replacement implementation](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L117)
+instead admits three resolved entries for INI value two. Its per-texture list is
+reused across spatial patches, without a random species subset for each quadrant.
+That precise native-boundary claim remains unverified here; MudCrab retains its
+documented exact cap, including zero admitting no species. The replacement also
+uses thresholded per-species patches rather than MudCrab's opacity-weighted,
+shared-slot competition, so changing only the cap does not establish placement parity.
 Species that fail slope
 or water rules cannot compete. Each eligible species scores its blended weight
 and density through a deterministic exponential race; the highest score wins.
@@ -120,6 +128,21 @@ blade normal is kept on both raster sides without a front-facing flip. This
 matches the measured k=0 model: an authored normal facing away from the sun
 receives ambient only. The GRAS Vertex Lighting flag selects interpolated vertex
 lighting; otherwise the blade normal is evaluated per fragment.
+[Creation Kit's Grass documentation](https://ck.uesp.net/w/index.php?title=Grass&oldid=11790)
+describes Vertex Lighting as using the terrain normal underneath the grass.
+MudCrab's blade-normal branch does not yet implement that behavior. Flag masks
+are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
+the audited official grasses use `0x06`, leaving Vertex Lighting off.
+
+Instance brightness is `round(255 * (1 - u * ColorRange))`, with `u` in `[0,1)`:
+255 is neutral and 128 is approximately half brightness. LAND VCLR is decoded for
+terrain but is absent from the grass cache and does not affect these instances.
+The public replacement's [colour formula](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L173)
+uses scalar LAND-colour luminance and, on white terrain, a wider `[1-2r,1]`
+darkening factor before clamping. These are documented compatibility differences;
+field layouts and darken-only authoring guidance do not prove an exact native
+distribution or a direct RGB LAND tint. Wave Period drives the current scrolling
+wind model, but its exact native timing and waveform remain unverified.
 
 The color pass receives the existing directional shadows using Bevy's prepared
 terrain view bindings, cascades, filtering and normal/depth bias. Direct light
