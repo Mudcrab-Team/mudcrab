@@ -7,6 +7,7 @@ members = [
     "crates/engine",
     "crates/launcher",
     "crates/mo2",
+    "crates/meshopt-cluster",
     "crates/shared",
     "vendor/bevy_render-0.19.0",
     "vendor/bevy_pbr-0.19.0",

@@ -77,3 +77,15 @@ not use the Community Shaders logo or name it as an endorsement.
    under MIT or Apache-2.0 keep that licence and its notice, and need their own row.
 4. Do not port from `features/Upscaling` (NVIDIA Streamline and AMD FidelityFX have their own
    licences), `features/RenderDoc`, or the Community Shaders logo.
+
+## meshoptimizer
+
+[meshoptimizer](https://github.com/zeux/meshoptimizer) v1.3 (MIT, Copyright (c) 2016-2026 Arseny
+Kapoulkine) is vendored unmodified under `vendor/meshoptimizer`, except for a small patch to
+`demo/clusterlod.h` listed in `vendor/meshoptimizer/MUDCRAB-README.md`. The `meshopt-cluster`
+crate builds a subset of it and wraps it for the converter. Its licence text is
+`vendor/meshoptimizer/LICENSE.md`.
+
+| Mudcrab path | Upstream | License |
+|---|---|---|
+| `vendor/meshoptimizer` | https://github.com/zeux/meshoptimizer, tag `v1.3` | MIT |

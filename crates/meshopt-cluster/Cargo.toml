@@ -1,0 +1,16 @@
+[package]
+name = "meshopt-cluster"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Safe Rust API over meshoptimizer's clusterlod.h (cluster LOD hierarchy); C++ built with cc"
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+gltf = "1.4"
