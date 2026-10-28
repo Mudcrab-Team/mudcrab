@@ -15,11 +15,14 @@ start with `/` are filesystem or site-absolute paths rather than repository
 links, which is how the private working notes cite their own machines. Links
 inside fenced code blocks and inline code spans are ignored, because they are
 examples. Angle-bracket autolinks and raw HTML are not part of this contract.
+
+This script deliberately takes no options. `crates/engine` audits every flag a
+script under `scripts/` names against the engine parser, so a repository-wide
+read-only check has no reason to add one.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 import subprocess
 from pathlib import Path
@@ -125,23 +128,10 @@ def check(root: Path, documents: list[str], allowed=ALLOWED):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=ROOT,
-                        help="repository root (default: this checkout)")
-    parser.add_argument("--verbose", action="store_true",
-                        help="list the allowed links and their reasons")
-    parser.add_argument("documents", nargs="*",
-                        help="Markdown files to check (default: git ls-files '*.md')")
-    args = parser.parse_args()
-
-    root = args.root.resolve()
-    documents = args.documents or tracked_documents(root)
-    checked, problems, permitted = check(root, documents)
+    documents = tracked_documents(ROOT)
+    checked, problems, permitted = check(ROOT, documents)
     for name, number, target, reason in problems:
         print(f"{name}:{number}: {target} ({reason})")
-    if args.verbose:
-        for name, number, target, reason in permitted:
-            print(f"allowed {name}:{number}: {target} ({reason})")
     summary = (f"{len(problems)} broken relative link{'s' if len(problems) != 1 else ''} "
                f"in {len(documents)} files ({checked} links checked, "
                f"{len(permitted)} allowed)")
