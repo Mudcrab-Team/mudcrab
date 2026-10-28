@@ -249,10 +249,11 @@ fn hidden_blocks(blocks: &[NifBlock]) -> BTreeSet<usize> {
         if !hidden.insert(index) {
             continue;
         }
-        let children = match &blocks[index] {
-            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => &node.children,
-            NifBlock::BSMultiBoundNode(block) => &block.node.children,
-            _ => continue,
+        // Every node type the static scene follows, not a hand-picked subset: a hidden
+        // `BSOrderedNode` or `NiBillboardNode` hides its children the same way.
+        let children = match blocks[index].as_node() {
+            Ok(node) => &node.children,
+            Err(_) => continue,
         };
         pending.extend(
             children
@@ -266,10 +267,13 @@ fn hidden_blocks(blocks: &[NifBlock]) -> BTreeSet<usize> {
 
 fn av_flags(block: &NifBlock) -> Option<&NiAVObjectFlags> {
     match block {
-        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(&node.av.flags),
-        NifBlock::BSMultiBoundNode(block) => Some(&block.node.av.flags),
+        // The legacy parser keeps the shape's own flags; every other block type exposes the
+        // `NiAVObject` header the same way.
         NifBlock::NiTriShape(shape) => Some(&shape.flags),
-        _ => modern_shape(block).map(|shape| &shape.av.flags),
+        _ => match block.as_node() {
+            Ok(node) => Some(&node.av.flags),
+            Err(_) => modern_shape(block).map(|shape| &shape.av.flags),
+        },
     }
 }
 
