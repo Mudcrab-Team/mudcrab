@@ -1,14 +1,17 @@
 # NIF to glTF 2.0 / GLB Transformation Specification
 
-This document details the technical specification for converting Bethesda NetImmerse (`.nif`) 3D mesh files into modern, GPU-ready **glTF 2.0 (`.glb`)** binary files.
+This document details the technical specification for converting Bethesda NetImmerse (`.nif`) 3D
+mesh files into modern, GPU-ready **glTF 2.0 (`.glb`)** binary files.
 
 ---
 
 ## 1. Overview & Objectives
 
-- **Input:** Skyrim `.nif` file (NiHeader, BSTriShape / BSDynamicTriShape / NiTriShape, BSLightingShaderProperty).
+- **Input:** Skyrim `.nif` file (NiHeader, BSTriShape / BSDynamicTriShape / NiTriShape,
+  BSLightingShaderProperty).
 - **Output:** Standalone glTF 2.0 binary file (`.glb`).
-- **Goal:** Convert legacy proprietary 3D geometry into standard PBR-compatible glTF primitives that render zero-copy inside Bevy.
+- **Goal:** Convert legacy proprietary 3D geometry into standard PBR-compatible glTF primitives
+  that render zero-copy inside Bevy.
 
 ---
 
@@ -19,18 +22,22 @@ This document details the technical specification for converting Bethesda NetImm
 | **`NiHeader`**                                   | `asset` metadata        | Copy generator & version tags                                                     |
 | **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`)    |
 | **`BSTriShape` / `BSDynamicTriShape` / `NiTriShape`** | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers; `NiTriShape` is static geometry only (§7.2) |
+| **`NiBillboardNode`**                            | `nodes`                 | As `NiNode`, plus node extras `{"openSkyrim": {"billboard": <mode>}}`: nif.xml's `BillboardMode` name in camelCase (`rotateAboutUp`, ...), or its number |
 | **`BSLightingShaderProperty`**                   | `materials`             | Map Bethesda shader flags to glTF PBR Metallic Roughness properties               |
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
 | **`NiSkinInstance` / `BSDismemberSkinInstance`** | `skins`                 | Map bone indices (`JOINTS_0`) and vertex weights (`WEIGHTS_0`); see §7             |
 
 `BSMultiBoundNode`, `BSOrderedNode`, `NiBillboardNode` and `BSValueNode` are `NiNode`s with a few
 trailing fields, and convert like `NiNode`: their transform and children join the scene, and the
-extra fields are read but not exported. A billboard keeps its authored orientation instead of
-turning to face the camera. Before these node types were parsed, shapes under them lost every
-parent transform and sat at the scene root (#288): a forge's glow, flames and quench water
-floated about 170 units away from the forge.
-There is no converter schema bump: conversions made before this change keep their cached GLBs
-until they are reconverted.
+extra fields other than the billboard mode are read but not exported. A billboard's authored
+mode is exported for the runtime to evaluate. Before these node types were parsed, shapes under
+them lost every parent transform and sat at the scene root (#288): a forge's glow, flames and
+quench water floated about 170 units away from the forge.
+The NIF asset-kind proof includes authored placement, billboard, material and transform-animation
+contracts. Any change to this proof rebuilds **every NIF GLB** on the next normal conversion,
+including static models and models without controllers. It is not a controller-only rebuild.
+The global converter schema is unchanged. Metadata rebuild and asset repair cannot upgrade old
+retained GLBs; both reject an old or missing NIF proof early and request normal conversion.
 
 ---
 
@@ -99,11 +106,149 @@ them, so a NIF naming a texture Bethesda never shipped still publishes and rende
 remaining maps. The dropped paths are recorded per mesh under `pruned_texture_references` in
 `conversion-manifest.json` and do not make the conversion incomplete.
 
+### 4.1 Material animation (`OPEN_SKYRIM_material_animation`)
+
+Skyrim animates hearth flames, lava, steam and glow cards by driving one shader variable from a
+keyframe controller: a float controller on the shader property's `NiObjectNET` controller reference,
+chained to further controllers through `next_controller`. Nothing in glTF animates a material
+variable, so the channels are published on the shape's material as their own extension, beside
+`OPEN_SKYRIM_material` (§4):
+
+```json
+"extensions": {
+  "OPEN_SKYRIM_material_animation": {
+    "channels": [{
+      "variable": "vOffset",
+      "interpolation": "LINEAR" | "QUADRATIC" | "STEP",
+      "times": [0.0, 5.6667],
+      "values": [0.0, 1.0],
+      "tangents": [[1.0, 0.0], [0.0, 1.0]],
+      "loop": "cycle" | "reverse" | "clamp",
+      "frequency": 1.0, "phase": 0.0, "start": 0.0, "stop": 5.6667
+    }]
+  }
+}
+```
+
+* One channel per float controller in the chain, in chain order.
+* `variable` is the controlled shader variable in the camelCase spelling of the nif.xml enums.
+  Effect shaders (`EffectShaderControlledVariable`): `emissiveMultiple`, `falloffStartAngle`,
+  `falloffStopAngle`, `falloffStartOpacity`, `falloffStopOpacity`, `alpha`, `uOffset`, `uScale`,
+  `vOffset`, `vScale`. Lighting shaders (`LightingShaderControlledVariable`) share those names for
+  the variables the enums share and add `refractionStrength`, `environmentMapScale`, `glossiness`
+  and `specularStrength`.
+* `interpolation` is the key type: `LINEAR` (1) and `STEP` (5) keys store `(time, value)`;
+  `QUADRATIC` (2) keys also store a forward and a backward tangent, published as `tangents`.
+* A `uOffset`/`vOffset`/`uScale`/`vScale` channel replaces the matching component of
+  the authored material's `uvOffset`/`uvScale` (§4) at playback; the other, unanimated component
+  keeps its static value from there. Every other channel variable (`alpha`, `emissiveMultiple`,
+  `glossiness`, ...) replaces its own static field the same way, wherever this document or the
+  material contract publishes it.
+* Units and timing, from the controller's `NiTimeController` fields:
+  - `times`, `start` and `stop` are in seconds, as Skyrim's animation clock ticks them.
+  - `phase` is also in seconds; it is added to the point in the cycle after scaling by
+    `frequency`, i.e. the evaluated time is `now * frequency + phase`, wrapped into `[start, stop]`
+    by `loop`.
+  - `loop` is the cycle mode in flags bits 1-2 (0 cycle, 1 reverse, 2 clamp): `cycle` restarts at
+    `start` once playback passes `stop`; `reverse` means ping-pong - playback runs forward to
+    `stop`, then backward to `start`, and repeats; `clamp` holds the value at `stop` (or `start`,
+    running backward) once playback reaches it, instead of restarting.
+* `tangents` (`QUADRATIC` only) is one `[outgoing, incoming]` pair per key, in value units per
+  key interval (the segment parameter `x` runs 0 to 1). The segment from key i to key i+1 is the
+  Hermite curve `v = v_i (2x^3 - 3x^2 + 1) + v_{i+1} (-2x^3 + 3x^2) + t1 (x^3 - 2x^2 + x) +
+  t2 (x^3 - x^2)` with `t1 = tangents[i][0]` and `t2 = tangents[i+1][1]`. The NIF names the two
+  fields the other way round: `outgoing` is the key's `Backward` field and `incoming` its `Forward`
+  field, as NifSkope's evaluator reads them (`src/gl/glcontroller.cpp`). The hearth flames publish
+  `[[1, 0], [0, 1]]`: a steady scroll.
+* Colour controllers (`BSEffectShaderPropertyColorController`,
+  `BSLightingShaderPropertyColorController`,
+  keyed by an `NiPoint3Interpolator` → `NiPosData`) publish `emissiveColor` (effect colour 0,
+  lighting colour 1) or `specularColor` (lighting colour 0) with `"components": 3`. `values` then
+  holds three floats per key, key-major (`[r0, g0, b0, r1, ...]`), in the space the static
+  colour is published in; `tangents` holds one `[outgoing, incoming]` pair per component, in the
+  same order. Each component evaluates like a float channel. `components` is omitted when it is 1.
+* The extension is listed in `extensionsUsed`, never `extensionsRequired`: a consumer that does not
+  play it renders the shape's still frame.
+* A controller with no interpolator, no float data, an unknown variable, an unsupported key type,
+  an unknown cycle mode or non-finite key data is dropped and counted in the mesh stage's
+  `NifParseDiagnostics::animation_skipped_channels` (reason → count). The same counts appear in
+  GLB `asset.extras.openSkyrim.animationSkippedChannels`,
+  `PipelineReport.animation_skipped_channels`,
+  and the per-file and aggregate `nif-audit` JSON. They are non-gating. Animation never fails a
+  conversion. Controller traversal uses visited block indices, with no arbitrary chain-length cap.
+
+---
+
+### 4.2 Authored transforms and billboard metadata
+
+Ordinary static references use the reference placement in place of block zero's local
+transform, so render geometry and physics share one placement frame. The synthetic regression
+`mesh::placement_tests::conversion_places_render_collision_com_and_inertia_in_one_reference_frame`
+checks render vertices, collision, center of mass and inertia under nonidentity root, child
+and reference transforms. It also checks that `.btr` and `.BTO` LOD roots remain authored.
+Child transforms remain authored. Render export and collision extraction share this policy.
+The synthetic regression
+`mesh::placement_tests::parsed_skin_keeps_its_bone_tree_under_a_nonidentity_mesh_root`
+checks that skeletal export retains its bone transforms. The scene root applies the
+Creation-to-runtime rotation once. Billboard nodes retain their authored mode in
+`extras.openSkyrim.billboard`.
+
+Transform tracks resolve through their controller manager's `NiDefaultAVObjectPalette`, whose
+`AVObject` entries identify source blocks. The exporter retains each source block's actual glTF
+node index, including skinned bone bindings. A missing palette or entry retains unique-name
+resolution; duplicate names and conflicting palette pointers remain non-gating notices.
+Malformed palettes and references to unexported objects omit their affected animation.
+
+The `Quaternion` structure in the pinned nif.xml stores `w, x, y, z`; the decoder
+reorders it to glTF's `x, y, z, w`. Translation and scale channels retain the sequence
+stop time with a held endpoint. A cubic trailing hold preserves the preceding segment's
+incoming derivative and sets its outgoing derivative to zero.
+
+Rotation decoding accepts at most 1,000,000 candidate sample slots per source NIF,
+shared across its clips and tracks. Authored times, generated 30 Hz grid points and
+endpoints consume this quota before allocation. This bounds sampled time/pose storage
+to approximately 20 MB, excluding the source key data; it is decoder resource validation.
+The retained vanilla audit's largest published file has 195,654 rotation samples.
+The grid uses integer indices, avoiding accumulated floating-point steps that can stall
+for very large finite durations. A rejected oversized track emits a non-gating notice;
+it consumes no quota and does not discard healthy siblings. Sparse STEP rotations use
+authored times and endpoints without allocating a dense duration-based grid.
+
+NIF producer proof version 6 invalidates every retained NIF GLB on the next normal
+conversion. Metadata rebuild and repair refuse old proofs rather than upgrading retained
+bytes. Asset-only conversion preserves authored material-animation payloads in GLBs but
+declares no dataset capabilities without a database core. An existing database still
+requires a readable, nonempty build identity before capability publication.
+
+Transform controllers publish ordinary glTF animation clips on their target nodes. Unsupported
+or unreadable source tracks retain the static pose and record warnings in the GLB's
+`asset.extras.openSkyrim.animationWarnings`. Normal conversion, cache reuse and metadata rebuild
+replay those diagnostics into `PipelineReport.animation_notices`, separately from gating
+`PipelineReport.warnings`. An unreadable optional track keeps a complete package usable by the
+engine. Duplicate exported node names are ambiguous: their tracks are omitted with a notice,
+while uniquely resolved sibling tracks still export. A manager-only GLB without a buffer keeps
+its static bytes and emits a notice. Diagnostics use only asset filenames; the report supplies
+the package-relative asset prefix. Fresh conversion carries diagnostics directly to the result;
+manifest entries and staging-journal records retain them with source/configuration/output proofs.
+Verified historical entries without diagnostics read their GLB JSON once on a blocking worker;
+normal asynchronous receive performs no GLB metadata read. Invalid generated GLB data remains an
+error. The decoder documents its nif.xml source and deliberately unsupported layouts in
+`nif_animation.rs`.
+
+Each exported shape retains exactly one primitive, including a `BSSubIndexTriShape` with an
+authored segment table. All triangles and bounds remain intact. No per-cell segmentation or
+`lodSegment` payload is produced, and this feature adds no native LOD discovery or inventory.
+
+When terrain baking is disabled, a converted core with ordered plugin inputs still receives
+its current build identity. Inputs are rehashed before stamping; a changed generation is
+rejected. Missing plugins or a missing database do not create an artificial identity.
+
 ---
 
 ## 5. Rust Implementation (`mesh_tools` Builder Architecture)
 
-We use the **`mesh_tools`** crate (`GltfBuilder`), which provides an incredibly clean, ergonomic API for assembling vertices, normals, UVs, and PBR materials into binary `.glb` files.
+We use the **`mesh_tools`** crate (`GltfBuilder`), which provides an incredibly clean, ergonomic
+API for assembling vertices, normals, UVs, and PBR materials into binary `.glb` files.
 
 ```rust
 use mesh_tools::GltfBuilder;
@@ -233,8 +378,8 @@ A cylinder's 16-point rings are inscribed in the true circle (about 2% inside at
 midpoints); like the box and hull arms, the Havok convex radius (a thin shell) is not added.
 
 Collision coverage (sphere, multi-sphere and cylinder shapes) moved the converter to schema 27:
-schema 24 and 26 outputs keep their verified scripts and archive ingestion and regenerate GLBs, textures
-and world data, so no cached GLB keeps the older collision extras.
+schema 24 and 26 outputs keep their verified scripts and archive ingestion and regenerate GLBs,
+textures and world data, so no cached GLB keeps the older collision extras.
 
 ## 7. Skinning support boundary
 

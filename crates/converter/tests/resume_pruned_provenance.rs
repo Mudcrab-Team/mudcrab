@@ -158,6 +158,7 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
             .record(
                 SOURCE,
                 &StagedOutput {
+                    animation_diagnostics: None,
                     schema_version: schema,
                     configuration_hash: if schema == CONVERTER_SCHEMA_VERSION {
                         asset_configuration_hash_for_schema(&config, schema, "nif").unwrap()

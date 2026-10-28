@@ -28,6 +28,9 @@ pub const HASH_ALGORITHM: &str = "mudcrab-ext-hash-v1";
 
 /// Load-door teleport links (`XTEL`).
 pub const DOOR_LINKS: &str = "mudcrab.door_links";
+/// Authored material animation, carried by native glTF extension tags.
+pub const MATERIAL: &str = "mudcrab.material";
+
 /// What one extension wrote. Every list is sorted; a `files` entry ending in `/` covers every file
 /// below that directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -867,8 +870,7 @@ mod tests {
     const PINNED_DOOR_LINKS: &str =
         "5c9f99438d7658c66aafebaa45045f6d553f0d52521309be28b1ef108db20e87";
 
-    const PINNED_MATERIAL: &str =
-        "a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41";
+    const PINNED_GLTF: &str = "523c707654a1a065d03904e38a8a707d5d185aedb882198c13a09ea24b041269";
 
     fn sample_database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
@@ -917,22 +919,22 @@ mod tests {
     fn gltf_hash_matches_the_python_reference() {
         let rock = serde_json::json!({
             "asset": {"version": "2.0"},
-            "extensionsUsed": ["MUDCRAB_material", "OPEN_SKYRIM_material"],
+            "extensionsUsed": ["EXAMPLE_owned_material", "OPEN_SKYRIM_material"],
             "materials": [
                 {"extensions": {"OPEN_SKYRIM_material": {"shaderFlags1": 1},
-                                "MUDCRAB_material": {"uvScale": [1, 2.5], "blendSource": "SRC_ALPHA"}}},
+                                "EXAMPLE_owned_material": {"uvScale": [1, 2.5], "blendSource": "SRC_ALPHA"}}},
                 {"extensions": {"OPEN_SKYRIM_material": {"shaderFlags1": 2}}}
             ]
         });
         let plain = serde_json::json!({"asset": {"version": "2.0"}});
-        let mut hasher = ExtensionHasher::new("mudcrab.material", 1);
+        let mut hasher = ExtensionHasher::new("example.material", 1);
         hasher
-            .add_gltf("MUDCRAB_material", "meshes/rock.glb", &rock)
+            .add_gltf("EXAMPLE_owned_material", "meshes/rock.glb", &rock)
             .unwrap();
         hasher
-            .add_gltf("MUDCRAB_material", "meshes/plain.glb", &plain)
+            .add_gltf("EXAMPLE_owned_material", "meshes/plain.glb", &plain)
             .unwrap();
-        assert_eq!(hasher.finish(), PINNED_MATERIAL);
+        assert_eq!(hasher.finish(), PINNED_GLTF);
     }
 
     #[test]

@@ -384,6 +384,7 @@ async fn texture_semantic_migration_rejects_old_staged_mesh_and_texture_proof() 
             .record(
                 key,
                 &StagedOutput {
+                    animation_diagnostics: None,
                     schema_version: 24,
                     configuration_hash: configuration_hash(&config).unwrap(),
                     source_hash: entry.source_hash.clone(),

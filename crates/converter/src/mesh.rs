@@ -1,6 +1,7 @@
 use crate::collision;
 use crate::material::{
-    NifMaterialDisposition, NifShapeMaterial, build_nif_material_contract, publish_gltf_materials,
+    NifAnimationSkips, NifMaterialDisposition, NifShapeMaterial, build_nif_material_contract,
+    publish_gltf_materials,
 };
 use crate::texture::TextureSemantic;
 use color_eyre::{
@@ -25,6 +26,76 @@ use std::{
     sync::{Arc, Mutex},
 };
 use walkdir::WalkDir;
+
+/// Import input-file bone identity before export assigns glTF indices. Skeleton binding
+/// already uses unique bone names; repeated input names cannot identify a source block.
+/// External skeleton block indices are deliberately never used for an input-file palette.
+fn source_bone_blocks(
+    nif: &NifFile,
+    model: &project_wormhole_nif::model::all::Model,
+) -> BTreeMap<u32, String> {
+    let Some(mesh) = model.skeletal_meshes.first() else {
+        return BTreeMap::new();
+    };
+    let mut names = BTreeMap::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let Ok(node) = block.as_node() else {
+            continue;
+        };
+        let Ok(name) = nif.header.get_string(node.name() as usize) else {
+            continue;
+        };
+        if !mesh.bones.bones.contains_key(name) {
+            continue;
+        }
+        names
+            .entry(name.to_string())
+            .and_modify(|block| *block = None)
+            .or_insert_with(|| u32::try_from(index).ok());
+    }
+    names
+        .into_iter()
+        .filter_map(|(name, block)| block.map(|block| (block, name)))
+        .collect()
+}
+
+fn attach_animation_diagnostics(
+    glb: Vec<u8>,
+    nif_path: &Path,
+    diagnostics: NifParseDiagnostics,
+    source_nodes: &BTreeMap<u32, usize>,
+) -> Result<(Vec<u8>, crate::cache::AnimationDiagnostics)> {
+    let mut animation = crate::cache::AnimationDiagnostics {
+        notices: Vec::new(),
+        skipped_channels: diagnostics.animation_skipped_channels,
+    };
+    let glb = if diagnostics.block_types.contains_key("NiControllerManager") {
+        let (animated, warnings) =
+            crate::nif_animation::append_nif_animations(&glb, nif_path, source_nodes)?;
+        animation.notices = warnings;
+        animated
+    } else {
+        glb
+    };
+    let glb = if animation.is_empty() {
+        glb
+    } else {
+        let mut document = glb_json_from_bytes(&glb)?;
+        if !animation.notices.is_empty() {
+            document["asset"]["extras"]["openSkyrim"]["animationWarnings"] =
+                serde_json::json!(animation.notices);
+        }
+        if !animation.skipped_channels.is_empty() {
+            document["asset"]["extras"]["openSkyrim"]["animationSkippedChannels"] =
+                serde_json::json!(animation.skipped_channels);
+        }
+        rebuild_glb_with_document(&glb, &document)?
+    };
+    Ok((glb, animation))
+}
+
+#[cfg(test)]
+mod placement_tests;
 
 pub struct MeshConverter;
 
@@ -68,6 +139,10 @@ pub struct NifParseDiagnostics {
     pub validated_material_shape_count: usize,
     pub excluded_material_shape_count: usize,
     pub material_exclusions: BTreeMap<String, usize>,
+    /// Shader float controllers dropped instead of published as material
+    /// animation, by reason. A dropped controller costs one still frame and
+    /// never fails the conversion, so the counts are the only trace of it.
+    pub animation_skipped_channels: BTreeMap<String, usize>,
 }
 
 impl MeshConverter {
@@ -111,7 +186,17 @@ impl MeshConverter {
         glb_output_path: &Path,
         skeleton_path: Option<&Path>,
     ) -> Result<()> {
+        Self::convert_nif_with_animation_diagnostics(nif_path, glb_output_path, skeleton_path)
+            .map(|_| ())
+    }
+
+    pub(crate) fn convert_nif_with_animation_diagnostics(
+        nif_path: &Path,
+        glb_output_path: &Path,
+        skeleton_path: Option<&Path>,
+    ) -> Result<crate::cache::AnimationDiagnostics> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
+        let placement = crate::nif_placement::PlacementFrame::from_nif(nif_path, &nif);
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let declares_skin = nif.declares_skin();
         let skeleton = if nif.has_skeleton() {
@@ -174,17 +259,21 @@ impl MeshConverter {
             }
             // An empty scene has no glTF nodes, so no body can be attached to one.
             retain_bodies_with_nodes(&mut collision, &[], false);
-            return write_glb_atomic(
-                output,
-                &embed_collision(empty_scene_glb(&name), &collision)?,
-            );
+            let glb = embed_collision(empty_scene_glb(&name), &collision)?;
+            let (glb, animation) =
+                attach_animation_diagnostics(glb, nif_path, diagnostics, &BTreeMap::new())?;
+            write_glb_atomic(output, &glb)?;
+            return Ok(animation);
         }
         let output = glb_output_path;
-        let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
-            .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?
-            .map_err(|error| {
-                color_eyre::eyre::eyre!("NIF {} GLB export failed: {error}", nif_path.display())
-            })?;
+        let bone_sources = source_bone_blocks(&nif, &model);
+        let (mut glb, mut source_nodes) = catch_unwind(AssertUnwindSafe(|| {
+            model.to_glb_with_source_nodes(name.clone(), &bone_sources)
+        }))
+        .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?
+        .map_err(|error| {
+            color_eyre::eyre::eyre!("NIF {} GLB export failed: {error}", nif_path.display())
+        })?;
         if glb_bounds_from_bytes(&glb).is_err() && !used_static_fallback {
             ensure!(
                 !declares_skin,
@@ -193,21 +282,22 @@ impl MeshConverter {
             );
             let mut static_model = nif_to_static_model(&nif)
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
-            static_model.scene_root_rotation =
-                Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+            placement.place_model(&mut static_model);
             apply_vertex_color_contract(&mut static_model, &nif, &material_contract)?;
             ensure!(
                 !static_model.static_meshes.is_empty(),
                 "NIF contains no supported mesh geometry"
             );
-            glb = catch_unwind(AssertUnwindSafe(|| static_model.to_glb(name)))
-                .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?
-                .map_err(|error| {
-                    color_eyre::eyre::eyre!(
-                        "NIF {} static GLB export failed: {error}",
-                        nif_path.display()
-                    )
-                })?;
+            (glb, source_nodes) = catch_unwind(AssertUnwindSafe(|| {
+                static_model.to_glb_with_source_nodes(name, &BTreeMap::new())
+            }))
+            .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?
+            .map_err(|error| {
+                color_eyre::eyre::eyre!(
+                    "NIF {} static GLB export failed: {error}",
+                    nif_path.display()
+                )
+            })?;
             model = static_model;
         }
         let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
@@ -231,6 +321,8 @@ impl MeshConverter {
             &shape_blocks,
             output,
         )?;
+        let (glb, animation) =
+            attach_animation_diagnostics(glb, nif_path, diagnostics, &source_nodes)?;
         ensure!(
             glb.len() >= 12 && &glb[..4] == b"glTF",
             "NIF exporter produced an invalid GLB header"
@@ -254,7 +346,8 @@ impl MeshConverter {
         if declares_skin {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
-        write_glb_atomic(output, &glb)
+        write_glb_atomic(output, &glb)?;
+        Ok(animation)
     }
 
     /// Add NIF-authored collision to an already converted GLB without changing its render data.
@@ -293,8 +386,12 @@ impl MeshConverter {
     /// node hierarchy. This avoids loading vertex buffers merely to build the
     /// runtime spatial index.
     pub fn glb_bounds(path: &Path) -> Result<shared::Bounds3> {
-        let bytes =
-            fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+        let bytes = fs::read(path).wrap_err_with(|| {
+            format!(
+                "failed to read {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })?;
         glb_bounds_from_bytes(&bytes)
             .wrap_err_with(|| format!("failed to extract bounds from {}", path.display()))
     }
@@ -302,8 +399,12 @@ impl MeshConverter {
     /// Returns every external image URI referenced by a GLB. Embedded images
     /// have no URI and are intentionally omitted.
     pub fn glb_texture_uris(path: &Path) -> Result<Vec<String>> {
-        let bytes =
-            fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+        let bytes = fs::read(path).wrap_err_with(|| {
+            format!(
+                "failed to read {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })?;
         let document = glb_json_from_bytes(&bytes)
             .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
         let mut uris = document
@@ -323,24 +424,7 @@ impl MeshConverter {
     /// textures are mandatory; auxiliary maps remain explicitly optional until
     /// the shader contract requires them.
     pub fn glb_texture_dependencies(path: &Path) -> Result<Vec<TextureDependency>> {
-        let mut file = fs::File::open(path)?;
-        let mut header = [0u8; 20];
-        file.read_exact(&mut header)?;
-        let length = u32::from_le_bytes(header[8..12].try_into().unwrap());
-        let json_length = u32::from_le_bytes(header[12..16].try_into().unwrap());
-        ensure!(
-            &header[..4] == b"glTF"
-                && &header[16..20] == b"JSON"
-                && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2
-                && u64::from(length) == file.metadata()?.len()
-                && u64::from(json_length) + 20 <= u64::from(length),
-            "invalid GLB JSON chunk in {}",
-            path.display()
-        );
-        // Dependency scans need JSON only, not potentially gigabytes of geometry.
-        let document =
-            serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
-                .wrap_err_with(|| format!("failed to inspect textures in {}", path.display()))?;
+        let document = glb_document(path)?;
         Ok(texture_dependencies(&document))
     }
 
@@ -793,32 +877,7 @@ fn remap_texture_info(
 }
 
 fn rebuild_glb_with_document(original: &[u8], document: &serde_json::Value) -> Result<Vec<u8>> {
-    let json_length = u32::from_le_bytes(
-        original
-            .get(12..16)
-            .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB header"))?
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let json_end = 20usize
-        .checked_add(json_length)
-        .ok_or_else(|| color_eyre::eyre::eyre!("GLB JSON range overflow"))?;
-    let binary = original
-        .get(json_end..)
-        .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?;
-    let mut json = serde_json::to_vec(document)?;
-    while !json.len().is_multiple_of(4) {
-        json.push(b' ');
-    }
-    let mut glb = Vec::with_capacity(20 + json.len() + binary.len());
-    glb.extend_from_slice(b"glTF");
-    glb.extend_from_slice(&2u32.to_le_bytes());
-    glb.extend_from_slice(&((20 + json.len() + binary.len()) as u32).to_le_bytes());
-    glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
-    glb.extend_from_slice(b"JSON");
-    glb.extend_from_slice(&json);
-    glb.extend_from_slice(binary);
-    Ok(glb)
+    crate::glb::replace_document(original, document)
 }
 
 /// Keeps only the bodies whose `node` index names, in the exported GLB, the NIF node the body
@@ -1014,25 +1073,8 @@ fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
 }
 
 pub(crate) fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
-    ensure!(
-        bytes.len() >= 20 && &bytes[..4] == b"glTF",
-        "invalid GLB container"
-    );
-    ensure!(
-        u32::from_le_bytes(bytes[4..8].try_into().unwrap()) == 2,
-        "unsupported GLB version"
-    );
-    let declared_length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    ensure!(declared_length == bytes.len(), "GLB length is inconsistent");
-    let json_length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-    ensure!(&bytes[16..20] == b"JSON", "GLB JSON chunk is missing");
-    let json_end = 20usize
-        .checked_add(json_length)
-        .ok_or_else(|| color_eyre::eyre::eyre!("GLB JSON range overflow"))?;
-    let json = bytes
-        .get(20..json_end)
-        .ok_or_else(|| color_eyre::eyre::eyre!("truncated GLB JSON chunk"))?;
-    serde_json::from_slice(json).wrap_err("invalid glTF JSON")
+    let json_end = crate::glb::json_end(bytes)?;
+    serde_json::from_slice(&bytes[20..json_end]).wrap_err("invalid glTF JSON")
 }
 
 /// Checks the bodies against the node names of `glb`, the GLB that is written with them.
@@ -1051,8 +1093,49 @@ fn retain_bodies_for_written_glb(
     Ok(())
 }
 
-/// The `name` of every node in a GLB, in node-index order, so a body's predicted index can be
-/// checked against the scene the exporter actually wrote. A node with no name contributes `""`.
+/// Reads JSON only; geometry buffers can be much larger than the warning/dependency metadata.
+fn glb_document(path: &Path) -> Result<serde_json::Value> {
+    let mut file = fs::File::open(path)?;
+    let mut header = [0u8; 20];
+    file.read_exact(&mut header)?;
+    let length = u32::from_le_bytes(header[8..12].try_into().unwrap());
+    let json_length = u32::from_le_bytes(header[12..16].try_into().unwrap());
+    ensure!(
+        &header[..4] == b"glTF"
+            && &header[16..20] == b"JSON"
+            && u32::from_le_bytes(header[4..8].try_into().unwrap()) == 2
+            && u64::from(length) == file.metadata()?.len()
+            && u64::from(json_length) + 20 <= u64::from(length),
+        "invalid GLB JSON chunk in {}",
+        path.display()
+    );
+    // Dependency scans need JSON only, not potentially gigabytes of geometry.
+    let document =
+        serde_json::from_reader(std::io::BufReader::new(file.take(u64::from(json_length))))
+            .wrap_err_with(|| format!("failed to inspect GLB metadata in {}", path.display()))?;
+    Ok(document)
+}
+
+/// Reads legacy retained diagnostics once when no journal/manifest diagnostics exist.
+pub(crate) fn glb_animation_diagnostics(path: &Path) -> Result<crate::cache::AnimationDiagnostics> {
+    let document = glb_document(path)?;
+    Ok(crate::cache::AnimationDiagnostics {
+        notices: document
+            .pointer("/asset/extras/openSkyrim/animationWarnings")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .wrap_err("invalid animation notices in retained GLB")?
+            .unwrap_or_default(),
+        skipped_channels: document
+            .pointer("/asset/extras/openSkyrim/animationSkippedChannels")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .wrap_err("invalid animation skipped-channel counts in retained GLB")?
+            .unwrap_or_default(),
+    })
+}
+
+/// The node names in writer order, used to validate collision attachment indices.
 fn glb_node_names(glb: &[u8]) -> Result<Vec<String>> {
     Ok(glb_json_from_bytes(glb)?
         .get("nodes")
@@ -1283,7 +1366,14 @@ fn apply_vertex_color_contract(
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
-    let bytes = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    let bytes = fs::read(path).wrap_err_with(|| {
+        format!(
+            "failed to read {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )
+    })?;
+    // The read uses the real path; parse/material diagnostics retain only the asset name.
+    let path = Path::new(path.file_name().unwrap_or_default());
     let (mut data, header) = parse_skyrim_header(&bytes, path)?;
     let block_count = usize::try_from(header.block_count)
         .wrap_err_with(|| format!("NIF block count is out of range in {}", path.display()))?;
@@ -1391,7 +1481,9 @@ fn open_nif_resilient(
         .count();
     diagnostics.max_scene_depth = nif_scene_depth(&blocks);
     let nif = NifFile { header, blocks };
-    let material_contract = build_nif_material_contract(&nif, path)?;
+    let mut animation_skips = NifAnimationSkips::new();
+    let material_contract = build_nif_material_contract(&nif, path, &mut animation_skips)?;
+    diagnostics.animation_skipped_channels = animation_skips;
     diagnostics.material_shape_count = material_contract.len();
     for shape in &material_contract {
         match &shape.disposition {
@@ -1496,7 +1588,8 @@ fn finish_skinned_model(
             nif_path.display()
         ));
     }
-    model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+    let placement = crate::nif_placement::PlacementFrame::from_nif(nif_path, nif);
+    placement.place_model(&mut model);
     model
         .validate()
         .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
@@ -1574,6 +1667,8 @@ pub(crate) fn parse_skyrim_header<'a>(
     bytes: &'a [u8],
     path: &Path,
 ) -> Result<(&'a [u8], NifHeader)> {
+    // Diagnostics can be embedded in GLBs. Never retain a machine's source directory.
+    let path = Path::new(path.file_name().unwrap_or_default());
     let mut cursor = NifCursor::new(bytes, path);
     let file_desc = cursor.line()?;
     ensure!(
@@ -3547,6 +3642,7 @@ mod tests {
                 scale: 1.0,
                 children: Vec::new(),
                 mesh: Some(mesh),
+                billboard_mode: None,
             }
         }
 
@@ -3584,6 +3680,7 @@ mod tests {
                         emissive_multiple: 1.0,
                         double_sided: true,
                         textures: Vec::new(),
+                        animation: Vec::new(),
                     },
                 },
             }
@@ -3709,7 +3806,9 @@ mod tests {
                     )
                     .unwrap()
                     .1;
-                    let contract = build_nif_material_contract(&nif, &input).unwrap();
+                    let mut animation_skips = NifAnimationSkips::new();
+                    let contract =
+                        build_nif_material_contract(&nif, &input, &mut animation_skips).unwrap();
                     assert_eq!(
                         matches!(
                             &contract[0].disposition,
@@ -3746,7 +3845,8 @@ mod tests {
         p.uv_offset.0 = project_wormhole_shared::glam::Vec2::new(0.25, -0.125);
         p.uv_scale.0 = project_wormhole_shared::glam::Vec2::new(2.0, -3.0);
         p.texture_clamp_mode = TexClampMode::WrapSClampT;
-        let contract = build_nif_material_contract(&nif, &input).unwrap();
+        let mut animation_skips = NifAnimationSkips::new();
+        let contract = build_nif_material_contract(&nif, &input, &mut animation_skips).unwrap();
         let NifMaterialDisposition::Validated { material } = &contract[0].disposition else {
             unreachable!()
         };
@@ -3839,6 +3939,34 @@ mod tests {
         #[test]
         fn corrupted_nif_never_panics(bytes in corrupted(static_nif())) {
             inspect_and_convert(&bytes);
+        }
+    }
+
+    #[test]
+    fn nif_read_header_and_block_errors_do_not_disclose_source_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut truncated = static_nif();
+        let (blocks, _) = parse_skyrim_header(&truncated, Path::new("model.nif")).unwrap();
+        let header_length = truncated.len() - blocks.len();
+        truncated.truncate(header_length);
+        for contents in [None, Some(b"invalid signature".to_vec()), Some(truncated)] {
+            let mut errors = Vec::new();
+            for name in ["private-source-a", "private-source-b"] {
+                let parent = directory.path().join(name);
+                fs::create_dir_all(&parent).unwrap();
+                let path = parent.join("model.nif");
+                if let Some(contents) = &contents {
+                    fs::write(&path, contents).unwrap();
+                }
+                let error = format!("{:#}", MeshConverter::inspect_nif(&path).unwrap_err());
+                assert!(!error.contains(name), "{error}");
+                assert!(
+                    !error.contains(&directory.path().to_string_lossy().to_string()),
+                    "{error}"
+                );
+                errors.push(error);
+            }
+            assert_eq!(errors[0], errors[1]);
         }
     }
 }

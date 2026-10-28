@@ -37,6 +37,7 @@ struct Block<'a> {
 }
 
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
+    let placement = crate::nif_placement::PlacementFrame::from_nif(path, nif);
     let bytes = fs::read(path)?;
     let (mut data, header) = crate::mesh::parse_skyrim_header(&bytes, path)?;
     ensure!(
@@ -103,7 +104,7 @@ pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
                 "unsupported collision layer {layer}"
             );
             ensure_body_collides(body_block.bytes)?;
-            let node = target_transform(nif, &blocks, target)?;
+            let node = target_transform(nif, &blocks, target, placement)?;
             let shape = usize::try_from(u32_at(body_block.bytes, 0)?)?;
             let body_transform = if body_block.kind == "bhkRigidBodyT" {
                 let translation = vec3_at(body_block.bytes, 52)? * HAVOK_TO_CREATION;
@@ -349,8 +350,19 @@ fn read_dynamics(bytes: &[u8], frame: Mat4, owned: &[CollisionShape]) -> Result<
     })
 }
 
-fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Result<Mat4> {
-    fn visit(nif: &NifFile, blocks: &[Block<'_>], index: usize, depth: usize) -> Result<Mat4> {
+fn target_transform(
+    nif: &NifFile,
+    blocks: &[Block<'_>],
+    target: usize,
+    placement: crate::nif_placement::PlacementFrame,
+) -> Result<Mat4> {
+    fn visit(
+        nif: &NifFile,
+        blocks: &[Block<'_>],
+        index: usize,
+        depth: usize,
+        placement: crate::nif_placement::PlacementFrame,
+    ) -> Result<Mat4> {
         ensure!(depth < 64, "NIF node hierarchy is too deep");
         let raw_av;
         let av = match nif.blocks.get(index).map(NifBlock::as_node) {
@@ -369,11 +381,15 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
                 &raw_av
             }
         };
-        let local = Mat4::from_scale_rotation_translation(
-            Vec3::splat(av.scale.0),
-            Quat::from_mat3(&av.rotation.0.0),
-            av.translation.0.0,
-        );
+        let local = if placement.replaces_block(index) {
+            Mat4::IDENTITY
+        } else {
+            Mat4::from_scale_rotation_translation(
+                Vec3::splat(av.scale.0),
+                Quat::from_mat3(&av.rotation.0.0),
+                av.translation.0.0,
+            )
+        };
         let mut parent = None;
         for (candidate, block) in nif.blocks.iter().enumerate() {
             if let Ok(node) = block.as_node()
@@ -386,11 +402,11 @@ fn target_transform(nif: &NifFile, blocks: &[Block<'_>], target: usize) -> Resul
             }
         }
         Ok(match parent {
-            Some(parent) => visit(nif, blocks, parent, depth + 1)? * local,
+            Some(parent) => visit(nif, blocks, parent, depth + 1, placement)? * local,
             None => local,
         })
     }
-    visit(nif, blocks, target, 0)
+    visit(nif, blocks, target, 0, placement)
 }
 
 fn extract_shape(
@@ -1275,7 +1291,14 @@ mod tests {
                 bytes: &[],
             })
             .collect::<Vec<_>>();
-        let collision_transform = target_transform(&nif, &raw_blocks, target).unwrap();
+        let collision_transform = target_transform(
+            &nif,
+            &raw_blocks,
+            target,
+            // This test compares to the vendor's unplaced scene, including its root.
+            crate::nif_placement::PlacementFrame::from_nif(Path::new("node-chain.btr"), &nif),
+        )
+        .unwrap();
         let export_transform = gltf_world_transform(&gltf.nodes, exported_index);
         for (collision, exported) in collision_transform
             .to_cols_array()

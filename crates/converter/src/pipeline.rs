@@ -137,6 +137,12 @@ pub struct PipelineReport {
     /// skipped land texture or cell falls back at runtime, and the full list is in `terrain`.
     #[serde(default)]
     pub terrain_warnings: Vec<String>,
+    /// Optional animation loss keeps the authored static model usable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animation_notices: Vec<String>,
+    /// Material channels omitted by reason, including reused output provenance.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub animation_skipped_channels: BTreeMap<String, usize>,
     pub warnings: Vec<String>,
     /// Advisory messages, including successful reader compatibility remaps,
     /// that do not affect completeness.
@@ -1651,7 +1657,12 @@ fn reusable_manifest(
             }
             _ => unreachable!(),
         };
-        let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
+        // A historical combined settings proof cannot attest authored geometry.
+        let settings_match = if kind == "nif"
+            && !manifest.asset_configuration_hashes.contains_key(kind)
+        {
+            false
+        } else if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
             recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
         } else {
             // Older manifests have one combined proof. Require an exact known
@@ -1753,10 +1764,15 @@ struct ConversionBatch<'a> {
 /// How a worker produced a conversion output.
 enum Produced {
     /// A cached output was reused.
-    CacheHit,
+    CacheHit {
+        animation: crate::cache::AnimationDiagnostics,
+    },
     /// Freshly converted; `digest` is the output's (size, SHA-256) when the
     /// converter already computed it, so it need not be read back.
-    Converted { digest: Option<(u64, String)> },
+    Converted {
+        digest: Option<(u64, String)>,
+        animation: crate::cache::AnimationDiagnostics,
+    },
 }
 
 struct GpuTag {
@@ -1950,6 +1966,7 @@ impl ConversionBatch<'_> {
                                 hash,
                                 Ok(Produced::Converted {
                                     digest: Some(digest),
+                                    animation: Default::default(),
                                 }),
                                 false,
                             ),
@@ -1977,7 +1994,10 @@ impl ConversionBatch<'_> {
                                 };
                                 (
                                     hash.replace(&gpu_label, ""),
-                                    result.map(|_| Produced::Converted { digest: None }),
+                                    result.map(|_| Produced::Converted {
+                                        digest: None,
+                                        animation: Default::default(),
+                                    }),
                                     fatal,
                                 )
                             }
@@ -2161,7 +2181,11 @@ impl ConversionBatch<'_> {
                                         hash,
                                         target_rel,
                                         relative.clone(),
-                                        Ok(Produced::CacheHit),
+                                        animation_diagnostics_for_output(
+                                            &target,
+                                            entry.animation_diagnostics.as_ref(),
+                                        )
+                                        .map(|animation| Produced::CacheHit { animation }),
                                         target,
                                         false,
                                     ));
@@ -2180,13 +2204,17 @@ impl ConversionBatch<'_> {
                         // staged bytes (a staging tree copied from a published
                         // pack carries no journal). Any other output is
                         // converted again.
-                        let staged_is_current = !forced
-                            && (staged_outputs.get(&key).is_some_and(|record| {
-                                record.is_current(&target, &hash, &worker_configuration)
-                            }) || previous_entries.get(&key).is_some_and(|entry| {
-                                entry.source_hash == hash
-                                    && entry.output_hash == hash_file(&target).unwrap_or_default()
-                            }));
+                        let staged_record = staged_outputs.get(&key).filter(|record| {
+                            !forced && record.is_current(&target, &hash, &worker_configuration)
+                        });
+                        let previous_record = previous_entries.get(&key).filter(|entry| {
+                            !forced
+                                && staged_record.is_none()
+                                && entry.source_hash == hash
+                                && entry.output_hash == hash_file(&target).unwrap_or_default()
+                        });
+                        let staged_is_current =
+                            staged_record.is_some() || previous_record.is_some();
                         let existing_is_valid = staged_is_current
                             && fs::metadata(&target).is_ok_and(|metadata| metadata.len() > 0)
                             && match source_kind.as_str() {
@@ -2252,8 +2280,19 @@ impl ConversionBatch<'_> {
                             hash.truncate(hash.len() - label.len());
                         }
 
+                        let mut animation = crate::cache::AnimationDiagnostics::default();
                         let (result, fatal) = if existing_is_valid {
-                            (Ok(()), false)
+                            let cached = staged_record
+                                .and_then(|record| record.animation_diagnostics.as_ref())
+                                .or_else(|| {
+                                    previous_record
+                                        .and_then(|entry| entry.animation_diagnostics.as_ref())
+                                });
+                            (
+                                animation_diagnostics_for_output(&target, cached)
+                                    .map(|value| animation = value),
+                                false,
+                            )
                         } else {
                             match remove_invalid_staged_output(&target) {
                                 Err(error) => (Err(error), true),
@@ -2271,11 +2310,14 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => MeshConverter::convert_nif_to_glb_with_skeleton(
-                                            &source,
-                                            &target,
-                                            skeleton.as_deref(),
-                                        ),
+                                        "nif" => {
+                                            MeshConverter::convert_nif_with_animation_diagnostics(
+                                                &source,
+                                                &target,
+                                                skeleton.as_deref(),
+                                            )
+                                            .map(|value| animation = value)
+                                        }
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
@@ -2287,7 +2329,10 @@ impl ConversionBatch<'_> {
                         };
 
                         let result = result
-                            .map(|_| Produced::Converted { digest: None })
+                            .map(|_| Produced::Converted {
+                                digest: None,
+                                animation,
+                            })
                             .wrap_err_with(|| format!("failed to convert {}", relative.display()));
                         let _ = outcome_tx.send((
                             index,
@@ -2331,10 +2376,12 @@ impl ConversionBatch<'_> {
                     if first_error.is_some() {
                         continue;
                     }
-                    let (is_cache_hit, known_digest) = match produced {
-                        Produced::CacheHit => (true, None),
-                        Produced::Converted { digest } => (false, digest),
+                    let (is_cache_hit, known_digest, animation) = match produced {
+                        Produced::CacheHit { animation } => (true, None, animation),
+                        Produced::Converted { digest, animation } => (false, digest, animation),
                     };
+                    record_animation_diagnostics(&animation, &target_rel, self.report);
+                    let animation_diagnostics = extension(&target, &["glb"]).then_some(animation);
                     if !is_cache_hit {
                         let known_size = known_digest.as_ref().map(|(size, _)| *size);
                         let size = match known_size
@@ -2394,6 +2441,7 @@ impl ConversionBatch<'_> {
                         )
                         .await;
                         let entry = CacheEntry {
+                            animation_diagnostics,
                             source_hash: hash,
                             output: target_rel.to_string_lossy().into_owned().replace('\\', "/"),
                             output_size: size,
@@ -2419,7 +2467,8 @@ impl ConversionBatch<'_> {
                             (bytes_completed, bytes_total),
                         )
                         .await;
-                        if let Some(entry) = self.previous.entries.get(&key).cloned() {
+                        if let Some(mut entry) = self.previous.entries.get(&key).cloned() {
+                            entry.animation_diagnostics = animation_diagnostics;
                             // The staged copy holds the published bytes, so the
                             // published entry is its provenance.
                             if let Err(error) = self
@@ -3656,6 +3705,57 @@ fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -
     Ok(())
 }
 
+/// Use provenance diagnostics for current outputs; only legacy verified meshes need a JSON read.
+fn animation_diagnostics_for_output(
+    path: &Path,
+    cached: Option<&crate::cache::AnimationDiagnostics>,
+) -> Result<crate::cache::AnimationDiagnostics> {
+    if !extension(path, &["glb"]) {
+        return Ok(Default::default());
+    }
+    cached
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(|| crate::mesh::glb_animation_diagnostics(path))
+}
+
+pub(crate) fn record_animation_diagnostics(
+    diagnostics: &crate::cache::AnimationDiagnostics,
+    relative: &Path,
+    report: &mut PipelineReport,
+) {
+    report.animation_notices.extend(
+        diagnostics
+            .notices
+            .iter()
+            .map(|notice| format!("{}: {notice}", relative.display())),
+    );
+    for (reason, count) in &diagnostics.skipped_channels {
+        *report
+            .animation_skipped_channels
+            .entry(reason.clone())
+            .or_default() += count;
+        report.animation_notices.push(format!(
+            "{}: omitted {count} material animation channel(s): {reason}",
+            relative.display()
+        ));
+    }
+}
+
+/// Legacy retained meshes have no manifest diagnostics. Metadata rebuild verifies bytes first.
+pub(crate) fn record_mesh_animation_notices(
+    path: &Path,
+    relative: &Path,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    record_animation_diagnostics(
+        &crate::mesh::glb_animation_diagnostics(path)?,
+        relative,
+        report,
+    );
+    Ok(())
+}
+
 /// Whether a path names an output this converter derives without a matching
 /// source file: composed actor bodies and animation clips.
 fn is_derived_output(relative: &str) -> bool {
@@ -4078,6 +4178,7 @@ fn staged_matches_previous_entry(
 /// Provenance for a cache entry whose output is now complete inside staging.
 fn staged_output(entry: &CacheEntry, configuration_hash: &str) -> StagedOutput {
     StagedOutput {
+        animation_diagnostics: entry.animation_diagnostics.clone(),
         schema_version: CONVERTER_SCHEMA_VERSION,
         configuration_hash: configuration_hash.to_owned(),
         source_hash: entry.source_hash.clone(),
@@ -4408,6 +4509,31 @@ async fn compile_lod_chunks_inline(
 ) -> Result<()> {
     if config.no_lod {
         interrupt(cancellation)?;
+        let db_path = staging.join("skyrim_world.db");
+        if !plugins.is_empty() && db_path.is_file() {
+            let current_plugin_hashes = plugins
+                .iter()
+                .map(|plugin| hash_file(plugin))
+                .collect::<Result<Vec<_>>>()?;
+            ensure!(
+                current_plugin_hashes == plugin_hashes,
+                "plugin inputs changed during conversion; refusing to publish a core build from a mixed input generation"
+            );
+            // Disabling terrain baking still leaves a real converted core whose
+            // optional payloads need the current ordered-input freshness anchor.
+            let identity = build_identity(
+                plugin_hashes,
+                &[],
+                &configuration_hash(config)?,
+                &[],
+                &BTreeMap::new(),
+            )?;
+            interrupt(cancellation)?;
+            Connection::open(&db_path)?.execute(
+                "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
+                rusqlite::params![identity],
+            )?;
+        }
         let message = "Terrain LOD compilation disabled by --no-lod";
         report.notices.push(message.to_owned());
         #[cfg(test)]
@@ -5861,6 +5987,243 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn no_lod_stamps_current_core_without_terrain_products() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        let database = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&database).unwrap();
+        database
+            .execute_batch(
+                "INSERT INTO worldspaces(id, editor_id, flags) VALUES (7, 'TestWorld', 0)",
+            )
+            .unwrap();
+        let plugins = [
+            directory.path().join("base.esm"),
+            directory.path().join("override.esp"),
+        ];
+        fs::write(&plugins[0], b"base plugin").unwrap();
+        fs::write(&plugins[1], b"override plugin").unwrap();
+        let mut config = PipelineConfig::new(directory.path().join("Data"), &staging);
+        config.no_lod = true;
+        let _gpu_failure = LodGpuInitOverride::new(true);
+        let mut identities = Vec::new();
+        for iteration in 0..4 {
+            let mut ordered = plugins.to_vec();
+            if iteration == 2 {
+                ordered.reverse();
+            }
+            if iteration == 3 {
+                config.language = "French".into();
+            }
+            let hashes = ordered
+                .iter()
+                .map(|path| hash_file(path).unwrap())
+                .collect::<Vec<_>>();
+            let (tx, _rx) = mpsc::channel(1);
+            let mut report = PipelineReport::default();
+            compile_lod_chunks(
+                &config,
+                &staging,
+                &staging,
+                &ordered,
+                &hashes,
+                &tx,
+                &mut report,
+                None,
+            )
+            .await
+            .unwrap();
+            let identity: String = database
+                .query_row(
+                    "SELECT build_identity FROM lod_build WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                identity,
+                build_identity(
+                    &hashes,
+                    &[],
+                    &configuration_hash(&config).unwrap(),
+                    &[],
+                    &BTreeMap::new()
+                )
+                .unwrap()
+            );
+            identities.push(identity);
+            assert_eq!(report.lod_chunks, 0);
+            assert_eq!(report.lod_cache_hits, 0);
+            assert_eq!(report.lod_gpu_chunks, 0);
+            assert_eq!(report.lod_cpu_fallback_chunks, 0);
+            assert!(report.artifacts.is_empty());
+            assert!(!staging.join("lod-manifest.json").exists());
+            assert_eq!(
+                database
+                    .query_row("SELECT count(*) FROM lod_chunks", [], |row| row
+                        .get::<_, u64>(0))
+                    .unwrap(),
+                0
+            );
+            shared::world_assets::validate_lod_build_contract(&staging, CONVERTER_SCHEMA_VERSION)
+                .unwrap();
+        }
+        assert_eq!(identities[0], identities[1]);
+        assert_ne!(
+            identities[0], identities[2],
+            "plugin priority changes the core generation"
+        );
+        assert_ne!(
+            identities[0], identities[3],
+            "metadata language changes the core generation"
+        );
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            1,
+            "only the existing database is written"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_lod_rejects_changed_ordered_inputs_before_stamping() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&database).unwrap();
+        let prior = "a".repeat(64);
+        database
+            .execute(
+                "INSERT INTO lod_build(id, build_identity) VALUES (1, ?1)",
+                [&prior],
+            )
+            .unwrap();
+        let plugins = [
+            directory.path().join("base.esm"),
+            directory.path().join("override.esp"),
+        ];
+        fs::write(&plugins[0], b"base plugin").unwrap();
+        fs::write(&plugins[1], b"override plugin").unwrap();
+        let hashes = plugins
+            .iter()
+            .map(|path| hash_file(path).unwrap())
+            .collect::<Vec<_>>();
+        let mut config = PipelineConfig::new(directory.path().join("Data"), directory.path());
+        config.no_lod = true;
+        for recorded in [
+            Vec::new(),
+            vec![hashes[0].clone()],
+            vec![hashes[1].clone(), hashes[0].clone()],
+            vec!["b".repeat(64), hashes[1].clone()],
+        ] {
+            let (tx, _rx) = mpsc::channel(1);
+            let mut report = PipelineReport::default();
+            let error = compile_lod_chunks(
+                &config,
+                directory.path(),
+                directory.path(),
+                &plugins,
+                &recorded,
+                &tx,
+                &mut report,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("plugin inputs changed"),
+                "{error:#}"
+            );
+            assert_eq!(
+                database
+                    .query_row(
+                        "SELECT build_identity FROM lod_build WHERE id=1",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                prior
+            );
+            assert!(report.artifacts.is_empty());
+        }
+        let (tx, _rx) = mpsc::channel(1);
+        let cancelled = Cancellation::new();
+        cancelled.cancel();
+        let error = compile_lod_chunks_with_cancel(
+            &config,
+            directory.path(),
+            directory.path(),
+            &plugins,
+            &hashes,
+            &tx,
+            &cancelled,
+            &mut PipelineReport::default(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.downcast_ref::<Interrupted>().is_some());
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT build_identity FROM lod_build WHERE id=1",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            prior
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_lod_missing_database_or_plugins_does_not_create_an_anchor() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let plugin = directory.path().join("base.esm");
+        fs::write(&plugin, b"base plugin").unwrap();
+        let hashes = [hash_file(&plugin).unwrap()];
+        let mut config = PipelineConfig::new(directory.path().join("Data"), &staging);
+        config.no_lod = true;
+        let (tx, _rx) = mpsc::channel(1);
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &staging,
+            &[plugin],
+            &hashes,
+            &tx,
+            &mut PipelineReport::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!staging.exists());
+        fs::create_dir(&staging).unwrap();
+        let database = Connection::open(staging.join("skyrim_world.db")).unwrap();
+        crate::esm::exporter::create_tables(&database).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        compile_lod_chunks(
+            &config,
+            &staging,
+            &staging,
+            &[],
+            &[],
+            &tx,
+            &mut PipelineReport::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            database
+                .query_row("SELECT count(*) FROM lod_build", [], |row| row
+                    .get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(!staging.join("lod-manifest.json").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn no_lod_skips_initialization_with_the_default_gpu_encoder() {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path().join("staging");
@@ -5970,6 +6333,7 @@ mod tests {
                 (
                     "meshes/prior.nif".into(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "native-mesh-proof".into(),
                         output: "meshes/prior.glb".into(),
                         output_hash: "mesh-byte-proof".into(),
@@ -5979,6 +6343,7 @@ mod tests {
                 (
                     "textures/prior.dds".into(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "native-texture-proof".into(),
                         output: "textures/prior.ktx2".into(),
                         output_hash: "texture-byte-proof".into(),
@@ -5988,6 +6353,7 @@ mod tests {
                 (
                     "scripts/prior.pex".into(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "native-script-proof".into(),
                         output: "scripts/prior.luau".into(),
                         output_hash: "script-byte-proof".into(),
@@ -6000,8 +6366,12 @@ mod tests {
             ..Default::default()
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+        // A combined historical proof cannot attest the new authored geometry.
+        // Texture and script proofs remain eligible.
+        let mut eligible = manifest.entries.clone();
+        eligible.remove("meshes/prior.nif");
         assert_eq!(
-            reused.entries, manifest.entries,
+            reused.entries, eligible,
             "metadata-only adapter identity must preserve eligible asset candidates"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
@@ -6292,6 +6662,7 @@ mod tests {
             entries: BTreeMap::from([(
                 "sentinel".to_owned(),
                 CacheEntry {
+                    animation_diagnostics: None,
                     source_hash: "source".to_owned(),
                     output: "sentinel".to_owned(),
                     output_size: 9,
@@ -7132,6 +7503,7 @@ mod tests {
             entries: BTreeMap::from([(
                 "asset".to_owned(),
                 CacheEntry {
+                    animation_diagnostics: None,
                     source_hash: "source".to_owned(),
                     output: "asset".to_owned(),
                     output_size: 4,
@@ -12824,5 +13196,77 @@ mod tests {
             .extension()
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod animation_report_regressions {
+    use super::*;
+
+    #[test]
+    fn retained_animation_loss_is_reported_without_blocking_complete_conversion() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("model.glb");
+        let mut json = serde_json::to_vec(&serde_json::json!({"asset": {"version": "2.0",
+            "extras": {"openSkyrim": {"animationWarnings": ["Open: unsupported transform keys"]}}}})).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let bytes = [
+            b"glTF".as_slice(),
+            &2u32.to_le_bytes(),
+            &((20 + json.len()) as u32).to_le_bytes(),
+            &(json.len() as u32).to_le_bytes(),
+            b"JSON",
+            &json,
+        ]
+        .concat();
+        fs::write(&path, bytes).unwrap();
+        // Historical entries lacking diagnostics replay verified GLB metadata once.
+        for _ in 0..2 {
+            let mut report = PipelineReport::default();
+            record_mesh_animation_notices(&path, Path::new("meshes/model.glb"), &mut report)
+                .unwrap();
+            assert_eq!(
+                report.animation_notices,
+                [format!(
+                    "{}: Open: unsupported transform keys",
+                    Path::new("meshes/model.glb").display()
+                )]
+            );
+            assert!(report.warnings.is_empty());
+            assert!(conversion_is_complete(&report));
+        }
+    }
+
+    #[test]
+    fn cached_animation_diagnostics_need_no_glb_json_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let absent = directory.path().join("not-readable.glb");
+        let diagnostics = crate::cache::AnimationDiagnostics {
+            notices: vec!["Open: unsupported transform keys".into()],
+            skipped_channels: BTreeMap::from([("non-finite key data".into(), 2)]),
+        };
+        assert_eq!(
+            animation_diagnostics_for_output(&absent, Some(&diagnostics)).unwrap(),
+            diagnostics
+        );
+        assert!(animation_diagnostics_for_output(&absent, None).is_err());
+        let entry = CacheEntry {
+            source_hash: "source".into(),
+            output: "meshes/model.glb".into(),
+            output_size: 1,
+            output_hash: "hash".into(),
+            animation_diagnostics: Some(diagnostics.clone()),
+        };
+        let record = staged_output(&entry, "configuration");
+        let mut journal = StagingJournal::open(directory.path()).unwrap();
+        journal.record("meshes/model.nif", &record).unwrap();
+        drop(journal);
+        let resumed = crate::cache::load_staged_outputs(directory.path()).unwrap();
+        assert_eq!(
+            resumed["meshes/model.nif"].animation_diagnostics,
+            Some(diagnostics)
+        );
     }
 }

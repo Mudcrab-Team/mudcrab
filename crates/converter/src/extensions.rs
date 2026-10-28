@@ -16,7 +16,7 @@ use std::path::Path;
 use color_eyre::eyre::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags};
 use shared::extensions::{
-    DOOR_LINKS, ExtensionEntry, ExtensionHasher, ExtensionOwns, core_build_identity,
+    DOOR_LINKS, ExtensionEntry, ExtensionHasher, ExtensionOwns, MATERIAL, core_build_identity,
 };
 use walkdir::WalkDir;
 
@@ -126,10 +126,16 @@ const MAIN_CORE_INDEXES: &[&str] = &[
     "record_overrides_source",
 ];
 
-/// Built-in payload registrations. The ordinary converter currently writes only core output.
-/// A feature adds its descriptors together with its producer, rather than claiming absent data.
+/// Built-in payloads emitted by the authored converter. Each ownership list is sorted.
 pub fn specs() -> Vec<ExtensionSpec> {
-    Vec::new()
+    vec![ExtensionSpec {
+        id: MATERIAL,
+        version: 1,
+        owns: ExtensionOwns {
+            gltf_extensions: vec!["OPEN_SKYRIM_material_animation".into()],
+            ..Default::default()
+        },
+    }]
 }
 
 /// Builds the manifest entries of the finished output folder `output`.
@@ -138,6 +144,12 @@ pub fn specs() -> Vec<ExtensionSpec> {
 /// exists in `skyrim_world.db`. An extension that owns only glTF extensions is listed when an
 /// output mesh contains an owned payload occurrence. If a table is missing the extension is not listed.
 pub fn build_entries(output: &Path) -> Result<Vec<ExtensionEntry>> {
+    // Asset-only conversion has no database core to certify. Keep authored glTF
+    // payloads, but do not declare built-in dataset capabilities for that route.
+    // An existing database still requires a readable, nonempty core identity.
+    if !output.join(DATABASE).try_exists()? {
+        return Ok(Vec::new());
+    }
     build_entries_with_specs(output, specs())
 }
 
@@ -253,7 +265,7 @@ fn build_entries_with_specs(
     };
     color_eyre::eyre::ensure!(
         !built_from.is_empty(),
-        "cannot publish capabilities without a core build identity (lod_build); --no-lod datasets have no freshness anchor"
+        "cannot publish capabilities without a core build identity (lod_build); legacy output without a recorded core identity requires normal reconversion"
     );
     let entries: Vec<_> = pending
         .into_iter()
@@ -403,7 +415,7 @@ fn publication_identity(output: &Path) -> Result<String> {
     };
     color_eyre::eyre::ensure!(
         !current.is_empty(),
-        "{} has no core build identity (lod_build); cannot publish capabilities for --no-lod datasets without a freshness anchor",
+        "{} has no core build identity (lod_build); cannot publish capabilities without a freshness anchor; run normal conversion to record current core inputs",
         output.display()
     );
     Ok(current)
@@ -700,14 +712,17 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_converter_registers_no_optional_payloads() {
-        assert!(specs().is_empty());
+    fn empty_descriptor_list_registers_no_optional_payloads() {
         let directory = output_with_tables(&[]);
         let connection = Connection::open(directory.path().join(DATABASE)).unwrap();
         connection
             .execute_batch("CREATE TABLE extra_payload(value INTEGER);")
             .unwrap();
-        assert!(build_entries(directory.path()).unwrap().is_empty());
+        assert!(
+            build_entries_with_specs(directory.path(), Vec::new())
+                .unwrap()
+                .is_empty()
+        );
         let mut manifest = ConversionManifest::default();
         manifest.extensions.push(ExtensionEntry {
             id: DOOR_LINKS.into(),
@@ -980,8 +995,21 @@ mod tests {
                 .count(),
             0
         );
+        assert!(
+            build_entries_with_specs(directory.path(), Vec::new())
+                .unwrap()
+                .is_empty()
+        );
         assert!(build_entries(directory.path()).unwrap().is_empty());
         refresh_manifest(&mut ConversionManifest::default(), directory.path()).unwrap();
+        fs::create_dir_all(directory.path().join("meshes")).unwrap();
+        fs::write(
+            directory.path().join("meshes/animated.gltf"),
+            br#"{"extensionsUsed":["OPEN_SKYRIM_material_animation"],"materials":[{"extensions":{"OPEN_SKYRIM_material_animation":{"channels":[]}}}]}"#,
+        ).unwrap();
+        // An actual registered payload still requires a readable core identity.
+        assert!(build_entries(directory.path()).is_err());
+        assert!(refresh_manifest(&mut ConversionManifest::default(), directory.path()).is_err());
     }
 
     #[test]
@@ -1067,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_lod_identity_refuses_new_capability_publication() {
+    fn missing_core_identity_refuses_new_capability_publication() {
         let directory = output_with_tables(&[]);
         let entry = custom_entry(
             directory.path(),
@@ -1076,7 +1104,10 @@ mod tests {
             "payload",
         );
         let error = refused(directory.path(), &[entry]);
-        assert!(error.contains("--no-lod") && error.contains("freshness anchor"));
+        assert!(
+            error.contains("freshness anchor") && error.contains("normal conversion"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1125,8 +1156,8 @@ mod tests {
             entry.owns.gltf_extensions = vec![name.into()];
             assert!(refused(directory.path(), std::slice::from_ref(&entry)).contains("core-owned"));
         }
-        entry.owns.gltf_extensions = vec!["OPEN_SKYRIM_material_animation".into()];
-        fs::write(directory.path().join("example.gltf"), br#"{"extensionsUsed":["OPEN_SKYRIM_material_animation"],"extensions":{"OPEN_SKYRIM_material_animation":{"value":1}}}"#).unwrap();
+        entry.owns.gltf_extensions = vec!["EXAMPLE_payload".into()];
+        fs::write(directory.path().join("example.gltf"), br#"{"extensionsUsed":["EXAMPLE_payload"],"extensions":{"EXAMPLE_payload":{"value":1}}}"#).unwrap();
         entry.sha256 = recompute_hash(directory.path(), &entry).unwrap();
         refresh_manifest_with_finalized(
             &mut ConversionManifest::default(),
@@ -1484,8 +1515,8 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn canonical_owned_files_reject_equivalent_dot_aliases(
-            folder in "[a-z][a-z0-9]{0,7}",
-            file in "[a-z][a-z0-9]{0,7}",
+            folder in "folder_[a-z][a-z0-9]{0,7}",
+            file in "file_[a-z][a-z0-9]{0,7}",
         ) {
             let directory = tempfile::tempdir().unwrap();
             fs::create_dir(directory.path().join(&folder)).unwrap();
@@ -1500,5 +1531,61 @@ mod tests {
                 proptest::prop_assert!(owned_files(directory.path(), std::slice::from_ref(&alias)).is_err(), "accepted {}", alias);
             }
         }
+    }
+
+    #[test]
+    fn material_registration_matches_the_authored_animation_producer() {
+        let spec = specs()
+            .into_iter()
+            .find(|spec| spec.id == MATERIAL)
+            .unwrap();
+        assert_eq!(spec.version, 1);
+        assert_eq!(
+            spec.owns,
+            ExtensionOwns {
+                gltf_extensions: vec!["OPEN_SKYRIM_material_animation".into()],
+                ..Default::default()
+            }
+        );
+        let directory = output_with_tables(&[]);
+        with_identity(directory.path(), "material-core");
+        fs::create_dir_all(directory.path().join("meshes")).unwrap();
+        let mesh = directory.path().join("meshes/animated.gltf");
+        fs::write(&mesh, r#"{"asset":{"version":"2.0"},"extensionsUsed":["OPEN_SKYRIM_material_animation"],"materials":[{"extensions":{"OPEN_SKYRIM_material_animation":{"channels":[]}}}]}"#).unwrap();
+        let entries = build_entries(directory.path()).unwrap();
+        let entry = entries.iter().find(|entry| entry.id == MATERIAL).unwrap();
+        assert_eq!(
+            entry.sha256,
+            recompute_hash(directory.path(), entry).unwrap()
+        );
+        fs::write(&mesh, r#"{"asset":{"version":"2.0"},"extensionsUsed":["OPEN_SKYRIM_material","EXAMPLE_unowned_material"]}"#).unwrap();
+        assert!(
+            build_entries(directory.path())
+                .unwrap()
+                .iter()
+                .all(|entry| entry.id != MATERIAL)
+        );
+    }
+}
+
+#[cfg(test)]
+mod material_identity_regressions {
+    use super::*;
+
+    #[test]
+    fn authored_material_occurrence_cannot_publish_without_core_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        // A database core exists, but has no identity: this is not asset-only output.
+        drop(Connection::open(directory.path().join(DATABASE)).unwrap());
+        fs::write(
+            directory.path().join("animated.gltf"),
+            br#"{"extensionsUsed":["OPEN_SKYRIM_material_animation"],"materials":[{"extensions":{"OPEN_SKYRIM_material_animation":{"channels":[]}}}]}"#,
+        ).unwrap();
+        let error = build_entries(directory.path()).unwrap_err();
+        assert!(error.to_string().contains("without a core build identity"));
+        let mut manifest = ConversionManifest::default();
+        let before = manifest.clone();
+        assert!(refresh_manifest(&mut manifest, directory.path()).is_err());
+        assert_eq!(manifest, before);
     }
 }

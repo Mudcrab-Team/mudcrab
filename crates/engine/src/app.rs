@@ -5098,3 +5098,93 @@ mod tests {
         assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 0.0);
     }
 }
+
+#[cfg(test)]
+mod optional_animation_dataset_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_optional_animation_keeps_a_converted_dataset_launchable() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("output");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,esm").unwrap(),
+        )
+        .unwrap();
+        let good = [[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]];
+        let bad = [[0.0, f32::NAN, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]];
+        let controller = |keys| dummy_content::nif::FloatController {
+            flags: 0x48,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            variable: 8,
+            key_type: 1,
+            keys,
+        };
+        let shape = dummy_content::nif::StaticShape {
+            name: "GeneratedAnimatedShape",
+            positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0]; 3],
+            indices: &[[0, 1, 2]],
+            diffuse: dummy_content::layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: dummy_content::layout::GENERATED_NORMAL_PATH,
+        };
+        let source = data.join(dummy_content::layout::GENERATED_MODEL_PATH);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(
+            source,
+            dummy_content::nif::effect_shape_with_controllers(
+                &shape,
+                &[controller(&good), controller(&bad)],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let report = runtime.block_on(async {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let report = converter::AssetPipeline::run_async(
+                converter::PipelineConfig::new(&data, &output),
+                tx,
+            )
+            .await
+            .unwrap();
+            drain.await.unwrap();
+            report
+        });
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(report.warnings.is_empty());
+        assert!(!report.animation_notices.is_empty());
+        assert_eq!(
+            report.animation_skipped_channels.get("non-finite key data"),
+            Some(&1)
+        );
+        let config = EngineConfig {
+            assets_dir: output,
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        let data_extensions = crate::extensions::read_data_extensions(&config.assets_dir).unwrap();
+        let material = data_extensions.get(shared::extensions::MATERIAL).unwrap();
+        assert!(!material.built_from.is_empty());
+        let (_, notices, database_features) = crate::extensions::open_features(data_extensions);
+        assert!(notices.is_empty());
+        crate::world::database::WorldDatabase::open_with(
+            &config.assets_dir.join("skyrim_world.db"),
+            database_features,
+        )
+        .unwrap();
+    }
+}

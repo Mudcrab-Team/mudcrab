@@ -6,10 +6,9 @@ owns whole additional tables, indexes, files or glTF extension names. It must no
 rows, add columns to core tables, or add keys inside a core glTF extension. Promoting payloads
 into core requires an ordinary core change and any applicable schema version change.
 
-This contract provides the generic capability mechanism and compatibility for legacy door-link
-declarations. It registers no production payloads and adds no engine feature beyond that
-compatibility. Core-only output has no `extensions` key. Existing core datasets need no
-reconversion, and this contract does not bump any core schema version.
+The generic capability mechanism preserves legacy door-link compatibility. Producers add
+their own descriptors in the feature that emits the payload. Core-only output has no
+`extensions` key. Capability declarations do not bump the core schema version.
 
 The implementation is `shared::extensions` for declarations, status and hashing,
 `converter::extensions` for descriptors and publication, and `engine::extensions` for runtime
@@ -86,20 +85,30 @@ remain available to their owners.
 
 The recorded base freshness anchor is `lod_build.build_identity`. An absent identity table or
 no row means no recorded identity; schema, value-type and query failures are errors when an
-identity lookup is required. Ordinary core datasets, including `--no-lod` output, still load
-without this anchor under the existing core validation rules. New capability publication
-requires a nonempty identity and fails with an explicit freshness-anchor error when it is
-missing. Legacy compatibility cannot detect staleness without a recorded anchor; it does not
-prove that the payload matches the current core.
+identity lookup is required. Legacy ordinary core datasets, including old `--no-lod` output,
+can still load without this anchor under the existing core validation rules. Current conversion
+publishes an input-verified core identity even with `--no-lod` when an ordered plugin/database
+core exists, so authored material capability publication has a freshness anchor. Asset-only
+conversion without a database retains authored material payloads in GLBs but declares no
+built-in dataset capabilities. An existing database with a missing, malformed or unreadable
+identity still fails capability publication. Both metadata
+rebuild and asset repair refuse retained GLBs with an old or missing NIF asset-kind proof:
+run normal conversion to regenerate every NIF GLB first. Neither route upgrades that proof
+while retaining converted meshes. Packs without retained GLBs still follow each route's
+configuration, source and integrity checks. New capability publication still requires a
+nonempty identity and fails with an explicit freshness-anchor error when it is missing.
+Legacy compatibility cannot detect staleness without a recorded anchor; it does not prove
+that the payload matches the current core.
 
 ## Owned file paths
 
 Every input file path must be canonical and relative to the payload root, using `/` separators.
 Reject absolute paths, any colon (including a drive prefix), backslashes, control characters,
-and empty, `.` or `..` segments, including segments ending in a dot or space. A single trailing `/` is allowed for a directory ownership
-entry; it is not an empty interior segment. Reject noncanonical spellings rather than silently
-normalizing them before validation, overlap detection or hashing. Extension IDs and all declared
-table, index, file and glTF names must also be nonempty and contain no control characters.
+and empty, `.` or `..` segments, including segments ending in a dot or space. A single trailing
+`/` is allowed for a directory ownership entry; it is not an empty interior segment. Reject
+noncanonical spellings rather than silently normalizing them before validation, overlap detection
+or hashing. Extension IDs and all declared table, index, file and glTF names must also be
+nonempty and contain no control characters.
 
 An exact file entry must exist. A directory entry owns every file below that directory; an
 absent or empty directory contributes no files. Directory ownership overlaps any owned file or
@@ -112,10 +121,17 @@ change the host filesystem's path lookup rules. glTF names compare case-sensitiv
 ## Converter API and publication
 
 `ExtensionSpec` describes an extension's ID, version and ownership. The public `specs()` and
-`build_entries(output)` APIs remain available, but the built-in descriptor list is empty and
-`build_entries` emits zero production entries. Finding extra tables, files or glTF values does
-not register a capability. An empty registration list returns without opening the database or
-reading its core identity. A feature must introduce its own producer and declaration contract.
+`build_entries(output)` APIs remain available. The exhaustive built-in list is:
+
+| ID (version 1) | Producer and ownership |
+|---|---|
+| `mudcrab.material` | Authored converter: `OPEN_SKYRIM_material_animation` glTF occurrences only. |
+
+No descriptor claims `OPEN_SKYRIM_material` (core),
+directional snow or space lighting. An animation entry requires both the tag in
+`extensionsUsed` and an actual owned payload occurrence. Publication requires a readable,
+nonempty core build identity; a payload without that identity is rejected. Arbitrary extra
+output does not register a capability. An empty descriptor list still skips database access.
 
 `refresh_manifest(manifest, output)` rebuilds built-in entries and preserves still-valid
 declarations from other finalizers. Each retained entry must have an actual matching content
@@ -128,8 +144,8 @@ metadata rebuild and asset repair refresh declarations after payload finalizatio
 saving the staged manifest. Metadata and repair reports retain refresh warnings.
 
 `refresh_manifest_with_finalized(manifest, output, finalized)` also accepts explicit entries
-from payload finalizers. The generic mechanism can hash and validate these entries even though
-it registers no built-in payloads. With no supplied entries, it behaves like `refresh_manifest`.
+from payload finalizers. The generic mechanism can hash and validate entries supplied by
+separate payload finalizers. With no supplied entries, it behaves like `refresh_manifest`.
 With explicit entries, it publishes the built-in entries plus that supplied set; the caller
 must supply every foreign declaration it intends to publish. This API updates a base manifest;
 an overlay producer remains responsible for serializing its own declarations into its overlay

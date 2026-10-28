@@ -1500,7 +1500,6 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
             // Node subtypes whose extra fields the static scene does not use.
             NifBlock::BSMultiBoundNode(_)
             | NifBlock::BSOrderedNode(_)
-            | NifBlock::NiBillboardNode(_)
             | NifBlock::BSValueNode(_) => {
                 let node = block.as_node()?;
                 model.static_nodes.push(static_node_from_av(
@@ -1514,6 +1513,22 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                         .collect(),
                     None,
                 ));
+            }
+            NifBlock::NiBillboardNode(billboard) => {
+                let node = &billboard.node;
+                let mut scene_node = static_node_from_av(
+                    nif,
+                    block_index,
+                    &node.av,
+                    node.children
+                        .iter()
+                        .copied()
+                        .filter(|child| supported_blocks.contains(child))
+                        .collect(),
+                    None,
+                );
+                scene_node.billboard_mode = Some(billboard.billboard_mode);
+                model.static_nodes.push(scene_node);
             }
             NifBlock::BSTriShape(shape) => {
                 push_modern_static_shape(
@@ -1565,6 +1580,7 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                         scale: shape.scale,
                         children: Vec::new(),
                         mesh: None,
+                        billboard_mode: None,
                     });
                     continue;
                 }
@@ -1598,6 +1614,7 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
                     scale: shape.scale,
                     children: Vec::new(),
                     mesh: Some(mesh_index),
+                    billboard_mode: None,
                 });
             }
             _ => {}
@@ -1837,6 +1854,7 @@ fn static_node_from_av(
         scale: av.scale.0,
         children,
         mesh,
+        billboard_mode: None,
     }
 }
 

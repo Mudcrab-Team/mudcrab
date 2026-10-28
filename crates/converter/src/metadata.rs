@@ -11,8 +11,8 @@ use crate::{
     cache::{
         BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, ConversionManifest,
         DEFAULT_GAIT_RECIPE, body_compose_inputs, can_reuse_meshes_for_producer,
-        configuration_hash, default_gait_inputs, hash_bytes, hash_file,
-        retained_configuration_matches_for_reader,
+        configuration_hash, default_gait_inputs, ensure_current_retained_mesh_proof, hash_bytes,
+        hash_file, retained_configuration_matches_for_reader,
     },
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
     integration::finalize_world_database,
@@ -174,6 +174,8 @@ impl AssetPipeline {
             )?,
             "retained producer configuration does not match rebuild settings"
         );
+        // Preserve specific schema/settings refusals before the current NIF proof.
+        ensure_current_retained_mesh_proof(&config, &manifest)?;
         let plugins = matched_plugins(&source, &config.data_dir)?;
         let staging = staging_path(&config.output_dir);
         fs::create_dir(&staging)?;
@@ -471,6 +473,31 @@ async fn rebuild_into(
         artifacts: retained.keys().map(PathBuf::from).collect(),
         ..Default::default()
     };
+    let animation_by_output: BTreeMap<_, _> = manifest
+        .entries
+        .values()
+        .filter_map(|entry| {
+            entry
+                .animation_diagnostics
+                .as_ref()
+                .map(|diagnostics| (entry.output.as_str(), diagnostics))
+        })
+        .collect();
+    for relative in retained.keys().filter(|name| name.ends_with(".glb")) {
+        if let Some(diagnostics) = animation_by_output.get(relative.as_str()) {
+            crate::pipeline::record_animation_diagnostics(
+                diagnostics,
+                Path::new(relative),
+                &mut report,
+            );
+        } else {
+            crate::pipeline::record_mesh_animation_notices(
+                &staging.join(relative),
+                Path::new(relative),
+                &mut report,
+            )?;
+        }
+    }
     if provenance.record_reader != provenance.retained_asset_record_reader {
         let notice = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
         eprintln!("note: {notice}");
@@ -1192,6 +1219,7 @@ mod tests {
         manifest.entries.insert(
             "scripts/neighbor.pex".into(),
             CacheEntry {
+                animation_diagnostics: None,
                 source_hash: hash_bytes(b"source"),
                 output: neighbor.into(),
                 output_size: bytes.len() as u64,
@@ -1398,6 +1426,7 @@ mod tests {
         manifest.entries.insert(
             "textures/shared.dds".into(),
             CacheEntry {
+                animation_diagnostics: None,
                 source_hash: "source".into(),
                 output: "textures/shared.ktx2".into(),
                 output_size: 16,
@@ -1791,6 +1820,7 @@ mod metadata_schema_controls {
         manifest.entries.insert(
             "meshes/missing.nif".into(),
             crate::cache::CacheEntry {
+                animation_diagnostics: None,
                 source_hash: "synthetic_source".into(),
                 output: "meshes/missing.glb".into(),
                 output_size: 7,

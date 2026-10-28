@@ -133,6 +133,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                 } else {
                     vec![]
                 },
+                animation: Vec::new(),
             };
             NifShapeMaterial {
                 shape_block: index as u32,

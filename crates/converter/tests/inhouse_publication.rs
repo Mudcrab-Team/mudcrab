@@ -605,6 +605,7 @@ fn reader_identity_separates_configuration_proofs() {
     let path = temp.path().join("staged.ktx2");
     fs::write(&path, b"synthetic staged asset").unwrap();
     let staged = converter::cache::StagedOutput {
+        animation_diagnostics: None,
         schema_version: converter::cache::CONVERTER_SCHEMA_VERSION,
         configuration_hash: texture_settings.clone(),
         source_hash: "source".into(),

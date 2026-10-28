@@ -80,7 +80,25 @@ impl Model {
     }
 
     pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
+        self.export_gltf(name, &BTreeMap::new(), &mut BTreeMap::new())
+    }
+
+    /// Export source identity alongside nodes at the point their indices are assigned.
+    /// Bone bindings refer to the input NIF, independently of an external skeleton's indices.
+    fn export_gltf(
+        &self,
+        name: String,
+        bone_sources: &BTreeMap<u32, String>,
+        source_nodes: &mut BTreeMap<u32, usize>,
+    ) -> Result<(gltf::json::Root, Vec<u8>), String> {
         use gltf::json::*;
+
+        let mut source_bones = BTreeMap::new();
+        for (block, name) in bone_sources {
+            if source_bones.insert(name.as_str(), *block).is_some() {
+                return Err(format!("more than one source block binds bone {name:?}"));
+            }
+        }
 
         let mut unresolved = Vec::new();
         for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
@@ -316,6 +334,11 @@ impl Model {
                     )
                 })
                 .collect();
+            source_nodes.extend(
+                node_indices
+                    .iter()
+                    .map(|(block, node)| (*block, node.value())),
+            );
             let child_blocks: HashSet<u32> = self
                 .static_nodes
                 .iter()
@@ -333,7 +356,7 @@ impl Model {
                             .collect()
                     }),
                     extensions: None,
-                    extras: Extras::default(),
+                    extras: node.billboard_mode.map(billboard_extras),
                     matrix: None,
                     mesh: node.mesh.map(|mesh| Index::new(mesh as u32)),
                     name: node.name.clone(),
@@ -402,6 +425,9 @@ impl Model {
                     skin: None,
                     weights: None,
                 });
+                if let Some(block) = source_bones.get(name.as_str()) {
+                    source_nodes.insert(*block, node_index.value());
+                }
                 bone_nodes.insert(name.clone(), node_index);
             }
 
@@ -935,6 +961,9 @@ impl Model {
                 .nodes
                 .push(Index::new(root.nodes.len() as u32));
 
+            if let Some(block) = smesh.source_block {
+                source_nodes.insert(block, root.nodes.len());
+            }
             root.nodes.push(Node {
                 camera: None,
                 children: None,
@@ -1124,7 +1153,18 @@ impl Model {
     }
 
     pub fn to_glb(&self, name: String) -> Result<Vec<u8>, String> {
-        let (mut root, bin_data) = self.to_gltf(name)?;
+        self.to_glb_with_source_nodes(name, &BTreeMap::new())
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Preserve each exported input block's node index without recovering identity from names.
+    pub fn to_glb_with_source_nodes(
+        &self,
+        name: String,
+        bone_sources: &BTreeMap<u32, String>,
+    ) -> Result<(Vec<u8>, BTreeMap<u32, usize>), String> {
+        let mut source_nodes = BTreeMap::new();
+        let (mut root, bin_data) = self.export_gltf(name, bone_sources, &mut source_nodes)?;
 
         root.buffers[0].uri = None;
 
@@ -1154,7 +1194,7 @@ impl Model {
         glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
         glb.extend_from_slice(b"BIN\0");
         glb.extend_from_slice(&bin);
-        Ok(glb)
+        Ok((glb, source_nodes))
     }
 }
 
@@ -1254,6 +1294,30 @@ fn validate_static_scene(nodes: &[StaticSceneNode], mesh_count: usize) -> Result
     Ok(())
 }
 
+/// The node extras that mark a billboard: `{"openSkyrim": {"billboard": <mode>}}`, with the mode
+/// named after nif.xml's `BillboardMode` in camelCase, or its number when nif.xml does not name it.
+fn billboard_extras(mode: u16) -> Box<serde_json::value::RawValue> {
+    let name = match mode {
+        0 => "alwaysFaceCamera",
+        1 => "rotateAboutUp",
+        2 => "rigidFaceCamera",
+        3 => "alwaysFaceCenter",
+        4 => "rigidFaceCenter",
+        5 => "bsRotateAboutUp",
+        9 => "rotateAboutUp2",
+        _ => "",
+    };
+    let billboard = if name.is_empty() {
+        serde_json::json!(mode)
+    } else {
+        serde_json::json!(name)
+    };
+    serde_json::value::to_raw_value(
+        &serde_json::json!({ "openSkyrim": { "billboard": billboard } }),
+    )
+    .expect("a JSON literal serialises")
+}
+
 #[cfg(test)]
 mod static_scene_tests {
     use super::*;
@@ -1267,6 +1331,7 @@ mod static_scene_tests {
             scale: 1.0,
             children,
             mesh: None,
+            billboard_mode: None,
         }
     }
 
@@ -1294,6 +1359,20 @@ mod static_scene_tests {
         )
         .unwrap_err();
         assert!(error.contains("multiple parents"));
+    }
+
+    #[test]
+    fn billboard_extras_name_the_mode_or_carry_its_number() {
+        let extras = |mode| -> serde_json::Value {
+            serde_json::from_str(billboard_extras(mode).get()).unwrap()
+        };
+        assert_eq!(
+            extras(1),
+            serde_json::json!({ "openSkyrim": { "billboard": "rotateAboutUp" } })
+        );
+        assert_eq!(extras(5)["openSkyrim"]["billboard"], "bsRotateAboutUp");
+        assert_eq!(extras(9)["openSkyrim"]["billboard"], "rotateAboutUp2");
+        assert_eq!(extras(12)["openSkyrim"]["billboard"], 12);
     }
 }
 

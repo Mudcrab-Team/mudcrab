@@ -3,8 +3,8 @@ use crate::{
     archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
     asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, configuration_hash, hash_file,
-        link_or_copy,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, configuration_hash,
+        ensure_current_retained_mesh_proof, hash_file, link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
@@ -148,6 +148,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         manifest.configuration_hash == configuration_hash(config)?,
         "repair configuration differs from the original conversion; use the same Data, MO2 instance/profile and encoding settings"
     );
+    ensure_current_retained_mesh_proof(config, &manifest)?;
     check_existing(
         &config.output_dir,
         if apply {
@@ -909,9 +910,15 @@ fn record_output(
     root: &Path,
 ) -> Result<()> {
     let path = checked_destination(root, &output)?;
+    let animation_diagnostics = if output.ends_with(".glb") {
+        Some(crate::mesh::glb_animation_diagnostics(&path)?)
+    } else {
+        None
+    };
     manifest.entries.insert(
         key,
         CacheEntry {
+            animation_diagnostics,
             source_hash,
             output,
             output_size: fs::metadata(&path)?.len(),
