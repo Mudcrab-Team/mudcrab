@@ -654,14 +654,21 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         changed.insert("skyrim_world.db".into());
         changed.insert("integration-report.json".into());
         let grass_path = staged.join("grass_cache.rkyv");
+        let terrain_path = staged.join("cell_cache_preserved.rkyv");
         let grass = write_grass_cache(
             &Connection::open(staged.join("skyrim_world.db"))?,
             &staged,
-            &staged.join("cell_cache_preserved.rkyv"),
+            &terrain_path,
             Some(&config.output_dir.join("grass_cache.rkyv")),
             &grass_path,
         )
-        .wrap_err("failed to rebuild staged grass cache; missing cell_cache_preserved.rkyv requires normal conversion, or metadata rebuild from complete verified assets")?;
+        .wrap_err_with(|| {
+            if terrain_path.try_exists().is_ok_and(|exists| !exists) {
+                "failed to rebuild staged grass cache; missing cell_cache_preserved.rkyv requires normal conversion, or metadata rebuild from complete verified assets"
+            } else {
+                "failed to rebuild staged grass cache"
+            }
+        })?;
         validate_grass_cache(&grass_path)?;
         report.notices.extend(grass.notices());
         report.warnings.extend(grass.warnings());

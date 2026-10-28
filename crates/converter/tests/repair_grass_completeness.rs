@@ -704,6 +704,27 @@ async fn missing_preserved_terrain_aborts_repair_without_changing_published_pack
     grass_cache(&config.output_dir);
 }
 
+/// A present but invalid terrain archive reports its cause without missing-file recovery advice.
+#[tokio::test]
+async fn corrupt_preserved_terrain_reports_validation_failure_without_missing_hint() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = obstruction_fixture(directory.path(), false, false);
+    let initial = publish(&config).await;
+    assert_eq!(initial.skipped, 1, "{initial:?}");
+    restore_obstruction(&config);
+    let terrain = config.output_dir.join("cell_cache_preserved.rkyv");
+    fs::write(&terrain, b"present, but not a terrain archive").unwrap();
+    let before = published_files(&config.output_dir);
+    let error = format!("{:#}", repair_failed(&config, true).unwrap_err());
+    assert!(error.contains("invalid cell cache"), "{error}");
+    assert!(
+        !error.contains("missing cell_cache_preserved.rkyv"),
+        "present corrupt terrain must not be diagnosed as missing: {error}"
+    );
+    assert!(!error.contains("normal conversion"), "{error}");
+    assert_eq!(published_files(&config.output_dir), before);
+}
+
 /// Current-layout retained assets without prior grass do not certify newly omitted grass data.
 #[tokio::test]
 async fn metadata_rebuild_without_prior_grass_retains_loss_completeness() {

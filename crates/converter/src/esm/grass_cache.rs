@@ -961,6 +961,11 @@ fn obstruction_model_path(model: Option<&str>, kind: Option<&str>) -> Option<Str
         return None;
     }
     let path = canonical_asset_path(model?, AssetKind::Mesh, "glb").ok()?;
+    // The records table retains subrecords, not the base header's Is Marker flag.
+    // These path exclusions and the later shared::model_visibility checks are
+    // therefore a heuristic: a header-only marker with otherwise visible mesh
+    // geometry can still obstruct grass. Authoritative filtering needs persisted
+    // header flags and reingestion, rather than another model-path guess.
     (!path.starts_with("meshes/markers/") && !path.starts_with("meshes/effects/")).then_some(path)
 }
 
