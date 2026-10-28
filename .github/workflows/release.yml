@@ -68,7 +68,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$TAG" == *-* ]]; then
+          if [[ "${TAG%%+*}" == *-* ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
