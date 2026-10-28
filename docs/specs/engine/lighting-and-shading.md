@@ -1,5 +1,14 @@
 # Lighting and shading
 
+> **Checkout status.** This page and the pages it imports record the lighting work built in the
+> render-map research snapshot (`c39449b5`), not the engine in this repository. Absent here: the
+> `environment_records` projection, the `EnvironmentState` weather and room resolution, the
+> `environment-audit` binary, and the `--fog-*` preview options. The authored environment tables are
+> read (`world/environment.rs`) but nothing renders from them yet, and distance fog is still Bevy's
+> exponential `DistanceFog` from the sky palette's clear colour. Package versions named below belong
+> to that snapshot; this checkout's are in `crates/shared/src/lib.rs`. Read each implementation page
+> as that snapshot's design record and do not follow its commands here.
+
 This is the current integration plan for Skyrim lighting, material response,
 shadows, fog and image-space processing. The reference is vanilla Skyrim SE/AE;
 recovered native operations are pinned to the copied `SkyrimSE.exe` 1.7.104.0

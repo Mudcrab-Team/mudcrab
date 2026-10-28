@@ -4,7 +4,7 @@ This runtime guide was imported from lighting thread `68505759-f655-46eb-a471-4f
 
 The combined implementation includes lossless authored inputs, field-level interior inheritance, settings provenance, inspected ordinary Lighting response, recovered weather byte transfer and ambient-matrix arithmetic, source-derived distance fog, and optional stable-record HDR/image-space processing. Native light units, final sun scaling, live additive ambient, retail shadow production and complete display parity remain unresolved.
 
-Current converter metadata is **26**, world database schema **9**, and lighting source contract **1**; cell-cache version **3** is unchanged. The refreshed package retains compatible producer-25 native mesh outputs from the source snapshot. Metadata-only rebuilds retain mesh provenance and do not add missing native contracts. Older producer-24 meshes need regeneration for strict native material coverage.
+The source snapshot's converter metadata is **26**, world database schema **9**, and lighting source contract **1**; cell-cache version **3** is unchanged. The refreshed package retains compatible producer-25 native mesh outputs from the source snapshot. Metadata-only rebuilds retain mesh provenance and do not add missing native contracts. Older producer-24 meshes need regeneration for strict native material coverage.
 
 ## What runs
 

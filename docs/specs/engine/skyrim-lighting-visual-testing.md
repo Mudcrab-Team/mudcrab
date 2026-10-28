@@ -6,7 +6,10 @@ The preview uses real converted Skyrim meshes and textures with the production n
 
 ## Launch the prepared scene
 
-From this worktree:
+The launcher script and private binary below belong to the source snapshot and are not part of this
+repository; adjust the paths or build them from that snapshot before following this section.
+
+From the snapshot's worktree:
 
 ```sh
 ./scripts/skyrim-lighting-preview.sh

@@ -1,8 +1,18 @@
 # Distance fog implementation
 
+> **Status: not in this checkout.** This page records the environment and fog implementation built
+> in the render-map research snapshot, not the engine in this repository. Absent here: the
+> `environment_records` projection (converter metadata 26, world schema 9), the `EnvironmentState`
+> weather and room resolution with its day and colour transitions, the `environment-audit` binary,
+> and the `--fog-hour`/`--fog-weather`/`--fog-interior-cell`/`--fog-framebuffer-scale`/`--fog-report`
+> options. This checkout does read the authored environment tables (`world/environment.rs`), but
+> nothing renders from them yet: distance fog is still Bevy's exponential `DistanceFog` from the sky
+> palette's clear colour. Read the page as that snapshot's design record, and do not follow its
+> commands here.
+
 The [lighting and shading hub](lighting-and-shading.md) owns the combined launch policy and remaining acceptance work.
 
-The engine now implements the record resolution and fog arithmetic recovered in the
+The snapshot implements the record resolution and fog arithmetic recovered in the
 [Skyrim design spec](distance-fog.md). It replaces the exponential, single-color approximation.
 This is an implementation of the verified distance-fog paths, with explicit material and color
 pipeline approximations. Exact visual parity remains unverified until matched retail captures
