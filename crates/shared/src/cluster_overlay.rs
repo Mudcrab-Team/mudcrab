@@ -214,11 +214,9 @@ pub struct OverlayMetadata {
     pub settings_id: String,
     /// The resolved build settings the overlay was built with; the only source of `settings_id`.
     pub build_settings: ResolvedBuildSettings,
-    /// Host path of the raw DDS root a terrain build read when the base had no VFS of its own
-    /// (canonical, verified). Not a build setting and not hashed; recorded so a refusal can name
-    /// the exact retry. Provenance only: the overlay keeps no copy of those bytes, and a temporary
-    /// root (the full conversion pipeline's staging VFS) is removed after a successful derive, so
-    /// the path may be missing later and the operator must restore or provide matching sources.
+    /// Legacy recovery location from older overlays, accepted for diagnostic compatibility.
+    /// New publishers omit host paths. The core-bound DDS recipe identifies source bytes;
+    /// an invocation supplies their location through `--terrain-sources` when no core VFS exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terrain_sources: Option<PathBuf>,
     /// The base's core build identity (`lod_build.build_identity`) this overlay was built from.
@@ -244,8 +242,12 @@ impl OverlayMetadata {
     /// The full command that rebuilds this overlay from `base`, reconstructed from the recorded
     /// settings, label and terrain sources.
     pub fn derive_command(&self, base: &Path) -> String {
+        let sources = self.terrain_sources.as_deref().or_else(|| {
+            (self.build_settings.terrain && !base.join("vfs").is_dir())
+                .then_some(Path::new("<raw-dds-root>"))
+        });
         self.build_settings
-            .derive_command(base, &self.label, self.terrain_sources.as_deref())
+            .derive_command(base, &self.label, sources)
     }
 
     /// The sentence a refusal of a stale or foreign overlay ends with. A terrain build whose raw
@@ -254,13 +256,20 @@ impl OverlayMetadata {
     /// conversion pipeline's) is gone after a successful derive.
     pub fn rebuild_hint(&self, base: &Path) -> String {
         let mut hint = format!("rebuild it with {}", self.derive_command(base));
-        if let (true, Some(sources)) = (self.build_settings.terrain, &self.terrain_sources) {
-            hint.push_str(&format!(
-                "; the terrain build read raw sources from {}, which the overlay does not keep: \
-                 restore or provide the matching raw DDS sources there, or pass their folder \
-                 with --terrain-sources",
-                sources.display()
-            ));
+        if self.build_settings.terrain {
+            if let Some(sources) = &self.terrain_sources {
+                hint.push_str(&format!(
+                    "; the terrain build read raw sources from {}, which the overlay does not keep: \
+                     restore or provide the matching raw DDS sources there, or pass their folder \
+                     with --terrain-sources",
+                    sources.display()
+                ));
+            } else if !base.join("vfs").is_dir() {
+                hint.push_str(
+                    "; replace <raw-dds-root> with the matching raw DDS sources; \
+                     their asset keys and hashes must match the base's terrain recipe",
+                );
+            }
         }
         hint
     }
@@ -1176,6 +1185,25 @@ mod tests {
     }
 
     #[test]
+    fn portable_terrain_retry_requires_matching_sources_without_recording_a_host_path() {
+        let scratch = Scratch::new("portable-terrain-retry");
+        let base = make_base(&scratch, "core-a");
+        let overlay = make_overlay(&base, "portable", 7);
+        let mut metadata = read_metadata(&overlay).unwrap();
+        metadata.build_settings.terrain = true;
+        assert!(metadata.terrain_sources.is_none());
+        let command = metadata.derive_command(&base);
+        assert!(
+            command.contains("--terrain-sources '<raw-dds-root>'"),
+            "{command}"
+        );
+        let hint = metadata.rebuild_hint(&base);
+        assert!(hint.contains("matching raw DDS sources"), "{hint}");
+        fs::create_dir(base.join("vfs")).unwrap();
+        assert!(!metadata.derive_command(&base).contains("--terrain-sources"));
+    }
+
+    #[test]
     fn metadata_records_settings_and_reconstructs_the_exact_retry() {
         let scratch = Scratch::new("retry");
         let base = make_base(&scratch, "core-a");
@@ -1218,10 +1246,16 @@ mod tests {
                 && error.contains("restore or provide the matching raw DDS sources"),
             "{error}"
         );
-        // Without recorded terrain sources the hint is the command alone.
+        // Portable metadata requires a matching source root to be supplied explicitly.
         edit_metadata(&overlay, |metadata| metadata.terrain_sources = None);
         let error = format!("{:#}", checked_overlay(&base, &overlay).unwrap_err());
-        assert!(error.ends_with("--terrain --include-trees"), "{error}");
+        let portable = read_metadata(&overlay).unwrap();
+        assert!(error.ends_with(&portable.rebuild_hint(&base)), "{error}");
+        assert!(
+            error.contains("--terrain-sources '<raw-dds-root>'"),
+            "{error}"
+        );
+        assert!(error.contains("matching raw DDS sources"), "{error}");
         // terrain_sources is optional on the wire and absent when unset.
         let text = fs::read_to_string(make_overlay(&base, "plain", 8).join(OVERLAY_METADATA_FILE))
             .unwrap();

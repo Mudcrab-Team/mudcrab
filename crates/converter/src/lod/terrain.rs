@@ -29,7 +29,7 @@ use std::{
 };
 
 /// Exterior cells of 4096 Creation units.
-const CELL_SIZE: f64 = 4096.0;
+const CELL_SIZE: f64 = shared::terrain::CELL_SIZE as f64;
 
 /// LAND's 33x33 field is split into four 17x17 quadrants with shared center
 /// rows/columns. Each LOD quadrant keeps the complete perimeter and one center.
@@ -607,7 +607,7 @@ fn emit_chunk_glb(
         "textures": [{ "source": 0, "sampler": 0, "extensions": { "KHR_texture_basisu": { "source": 0 } } }],
         "materials": [{
             "name": "lod_terrain",
-            "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": 0.92 },
+            "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0], "baseColorTexture": { "index": 0 }, "metallicFactor": 0.0, "roughnessFactor": shared::terrain::ATLAS_ROUGHNESS },
             "doubleSided": true,
         }],
     });
@@ -800,7 +800,8 @@ pub(crate) fn validate_terrain_glb(bytes: &[u8]) -> Result<()> {
             && materials[0]["name"].as_str() == Some("lod_terrain")
             && materials[0]["pbrMetallicRoughness"]["baseColorFactor"]
                 == serde_json::json!([1.0, 1.0, 1.0, 1.0])
-            && materials[0]["pbrMetallicRoughness"]["roughnessFactor"] == 0.92
+            && materials[0]["pbrMetallicRoughness"]["roughnessFactor"]
+                == shared::terrain::ATLAS_ROUGHNESS
             && materials[0]["pbrMetallicRoughness"]["metallicFactor"] == 0.0
             && materials[0]["pbrMetallicRoughness"]["baseColorTexture"]["index"] == 0
             && materials[0]["doubleSided"] == true,
@@ -1245,6 +1246,72 @@ pub fn read_cached_heights(
     cache.cells(cell_ids)
 }
 
+/// Reads `cell_ids` from an immutable aligned cache snapshot already in memory.
+/// Every requested cell must be present and the result is in grid order, as with
+/// [`read_cached_heights`]. Archive alignment and version are validated before access.
+pub fn read_cached_heights_bytes(
+    bytes: &[u8],
+    cell_ids: &HashMap<u32, (i32, i32)>,
+) -> Result<Vec<TerrainCellInput>> {
+    let archived = access_cell_cache(bytes)?;
+    let mut cells = Vec::new();
+    for cell in archived.cells.iter() {
+        let cell_id: u32 = cell.cell_id.into();
+        let Some(&grid) = cell_ids.get(&cell_id) else {
+            continue;
+        };
+        cells.push(terrain_cell_input(cell_id, grid, cell)?);
+    }
+    finish_cell_inputs(cells, cell_ids)
+}
+
+/// Validates a cell-cache archive and its version.
+fn access_cell_cache(bytes: &[u8]) -> Result<&shared::ArchivedCellCache> {
+    let archived = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(bytes)
+        .wrap_err("invalid cell cache")?;
+    color_eyre::eyre::ensure!(
+        archived.version == shared::CELL_CACHE_VERSION,
+        "cell cache version {} is unsupported; expected {}",
+        archived.version,
+        shared::CELL_CACHE_VERSION
+    );
+    Ok(archived)
+}
+
+fn terrain_cell_input(
+    cell_id: u32,
+    (grid_x, grid_y): (i32, i32),
+    cell: &shared::ArchivedCachedLand,
+) -> Result<TerrainCellInput> {
+    Ok(TerrainCellInput {
+        cell_id,
+        grid_x,
+        grid_y,
+        heights: cell.heights.iter().copied().map(Into::into).collect(),
+        vertex_colors: cell.vertex_colors.iter().copied().collect(),
+        layers: cell
+            .layers
+            .iter()
+            .map(rkyv::deserialize::<shared::TerrainLayer, rkyv::rancor::Error>)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+/// Refuses a partial read and puts the cells in grid order.
+fn finish_cell_inputs(
+    mut cells: Vec<TerrainCellInput>,
+    cell_ids: &HashMap<u32, (i32, i32)>,
+) -> Result<Vec<TerrainCellInput>> {
+    color_eyre::eyre::ensure!(
+        cells.len() == cell_ids.len(),
+        "cell cache holds {} of {} requested cells",
+        cells.len(),
+        cell_ids.len()
+    );
+    cells.sort_by_key(|cell| (cell.grid_y, cell.grid_x));
+    Ok(cells)
+}
+
 /// One aligned, validated snapshot reused for every world in this stage.
 pub(crate) struct TerrainCellCache {
     bytes: rkyv::util::AlignedVec,
@@ -1259,14 +1326,7 @@ impl TerrainCellCache {
         let mut bytes = rkyv::util::AlignedVec::with_capacity(len);
         bytes.resize(len, 0);
         file.read_exact(&mut bytes)?;
-        let archived = rkyv::access::<shared::ArchivedCellCache, rkyv::rancor::Error>(&bytes)
-            .wrap_err("invalid cell cache")?;
-        color_eyre::eyre::ensure!(
-            archived.version == shared::CELL_CACHE_VERSION,
-            "cell cache version {} is unsupported; expected {}",
-            archived.version,
-            shared::CELL_CACHE_VERSION
-        );
+        let archived = access_cell_cache(&bytes)?;
         let mut index = HashMap::with_capacity(archived.cells.len());
         for (i, cell) in archived.cells.iter().enumerate() {
             ensure!(
@@ -1276,36 +1336,26 @@ impl TerrainCellCache {
         }
         Ok(Self { bytes, index })
     }
+    /// Hash of the exact immutable bytes read from the cache file.
+    pub(crate) fn hash(&self) -> String {
+        crate::cache::hash_bytes(&self.bytes)
+    }
+
+    pub(crate) fn archived(&self) -> &shared::ArchivedCellCache {
+        // SAFETY: read validates these owned, aligned bytes, which remain immutable.
+        unsafe { rkyv::access_unchecked::<shared::ArchivedCellCache>(&self.bytes) }
+    }
+
     pub fn cells(&self, cell_ids: &HashMap<u32, (i32, i32)>) -> Result<Vec<TerrainCellInput>> {
-        // Safety: owned immutable aligned bytes were validated in `read`.
-        let archived = unsafe { rkyv::access_unchecked::<shared::ArchivedCellCache>(&self.bytes) };
+        let archived = self.archived();
         let mut cells = Vec::new();
-        for (&cell_id, &(grid_x, grid_y)) in cell_ids {
+        for (&cell_id, &grid) in cell_ids {
             let Some(&index) = self.index.get(&cell_id) else {
                 continue;
             };
-            let cell = &archived.cells[index];
-            cells.push(TerrainCellInput {
-                cell_id,
-                grid_x,
-                grid_y,
-                heights: cell.heights.iter().copied().map(Into::into).collect(),
-                vertex_colors: cell.vertex_colors.iter().copied().collect(),
-                layers: cell
-                    .layers
-                    .iter()
-                    .map(rkyv::deserialize::<shared::TerrainLayer, rkyv::rancor::Error>)
-                    .collect::<Result<_, _>>()?,
-            });
+            cells.push(terrain_cell_input(cell_id, grid, &archived.cells[index])?);
         }
-        color_eyre::eyre::ensure!(
-            cells.len() == cell_ids.len(),
-            "cell cache holds {} of {} requested cells",
-            cells.len(),
-            cell_ids.len()
-        );
-        cells.sort_by_key(|cell| (cell.grid_y, cell.grid_x));
-        Ok(cells)
+        finish_cell_inputs(cells, cell_ids)
     }
 }
 
@@ -1417,6 +1467,14 @@ mod tests {
         )
         .unwrap();
         let snapshot = TerrainCellCache::read(&path).unwrap();
+        assert_eq!(
+            (snapshot.bytes.as_ptr() as usize) % std::mem::align_of::<shared::ArchivedCellCache>(),
+            0
+        );
+        assert_eq!(
+            &snapshot.bytes[..],
+            std::fs::read(&path).unwrap().as_slice()
+        );
         std::fs::remove_file(path).unwrap();
         assert_eq!(
             snapshot.cells(&HashMap::from([(1, (0, 0))])).unwrap()[0].heights[0],

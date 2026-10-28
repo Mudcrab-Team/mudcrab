@@ -1,0 +1,51 @@
+# Sources whose text is part of the cluster builder identity (read by build.rs, paths
+# relative to crates/converter). A change in any of them changes CLUSTER_RUST_SOURCES_SHA256 and
+# so the builder identity: payload geometry and encodings, the reject and eligibility rules, the
+# reference recipe (digest, scope, model facts, material keys), the authority, the table writers
+# and the mapping validator. `identity.rs` checks that every module of src/cluster is either
+# listed here or exempt with a reason.
+src/cluster/authority.rs
+src/cluster/builder.rs
+src/cluster/classify.rs
+src/cluster/glb_input.rs
+src/cluster/model.rs
+src/cluster/model_facts.rs
+src/cluster/overrides.rs
+src/cluster/publish.rs
+src/cluster/resolve.rs
+src/cluster/scope.rs
+src/cluster/stage.rs
+src/cluster/terrain_geometry.rs
+src/cluster/terrain_stage.rs
+src/cluster/terrain_sources.rs
+src/cluster/terrain_publish.rs
+src/cluster/terrain_atlas.rs
+src/lod/albedo.rs
+src/lod/terrain.rs
+../shared/src/cluster.rs
+../shared/src/cluster_mapping.rs
+../shared/src/material_depth.rs
+../shared/src/cluster_recipe/authority.rs
+../shared/src/cluster_recipe/classify.rs
+../shared/src/cluster_recipe/mod.rs
+../shared/src/cluster_recipe/model_facts.rs
+../shared/src/cluster_recipe/overrides.rs
+../shared/src/cluster_recipe/resolve.rs
+../shared/src/cluster_recipe/scope.rs
+../shared/src/records.rs
+../meshopt-cluster/src/lib.rs
+../meshopt-cluster/src/ffi.rs
+# Shared material certification and converted metadata define the shading contract.
+src/material.rs
+../shared/src/cluster_material.rs
+# Terrain geometry contracts and the complete CPU atlas encoding path.
+../shared/src/lod.rs
+../shared/src/terrain.rs
+src/texture.rs
+src/texture_ktx2.rs
+src/basis_ktx2_bridge.cpp
+# Durable publication of package bytes.
+src/durability.rs
+
+# Serialized refusal definitions shared with certified readers.
+../shared/src/cluster_recipe/refusal.rs
