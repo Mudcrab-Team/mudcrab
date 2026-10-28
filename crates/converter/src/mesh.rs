@@ -195,6 +195,7 @@ impl MeshConverter {
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
             static_model.scene_root_rotation =
                 Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+            clear_root_transform(&mut static_model);
             apply_vertex_color_contract(&mut static_model, &nif, &material_contract)?;
             ensure!(
                 !static_model.static_meshes.is_empty(),
@@ -263,6 +264,10 @@ impl MeshConverter {
         let (nif, _, _) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let glb = fs::read(glb_path)?;
+        if collision::gltf_node_index(&nif, NIF_ROOT_BLOCK as usize).is_ok_and(|node| node == 0) {
+            ensure_untransformed_root_node(&glb)
+                .wrap_err_with(|| format!("cannot annotate {}", glb_path.display()))?;
+        }
         retain_bodies_for_written_glb(&mut collision, &glb, None)?;
         write_glb_atomic(glb_path, &embed_collision(glb, &collision)?)?;
         Ok(collision)
@@ -881,6 +886,22 @@ fn is_declared_geometry_block(block_type: &str) -> bool {
     )
 }
 
+/// The NIF root block. Skyrim places a model by replacing this node's local transform with the
+/// reference's, so the root's own translation, rotation and scale never reach the world.
+/// `clutter/counterset/countercornerin01.nif` authors a 90 degree root rotation and only lines up
+/// with its neighbouring counter pieces without it.
+pub(crate) const NIF_ROOT_BLOCK: u32 = 0;
+
+pub(crate) fn clear_root_transform(model: &mut project_wormhole_nif::model::all::Model) {
+    for node in &mut model.static_nodes {
+        if node.block_index == NIF_ROOT_BLOCK {
+            node.translation = project_wormhole_shared::glam::Vec3::ZERO;
+            node.rotation = project_wormhole_shared::glam::Mat3::IDENTITY;
+            node.scale = 1.0;
+        }
+    }
+}
+
 /// Returns whether all declared geometry blocks are NiTriShape templates without geometry data.
 fn is_geometry_template(nif: &NifFile) -> bool {
     let mut templates = 0;
@@ -1048,6 +1069,40 @@ fn retain_bodies_for_written_glb(
     let same_order =
         source_order.is_some_and(|order| !order.is_empty() && node_names.starts_with(order));
     retain_bodies_with_nodes(collision, &node_names, !same_order);
+    Ok(())
+}
+
+/// A GLB written before the root-transform rule keeps the NIF root's transform on glTF node 0,
+/// the root block, while collision now starts from an identity root. Annotating such a GLB
+/// would part its collision from its render nodes, so it has to be reconverted instead.
+fn ensure_untransformed_root_node(glb: &[u8]) -> Result<()> {
+    const IDENTITY_MATRIX: [f64; 16] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let document = glb_json_from_bytes(glb)?;
+    let Some(root) = document.get("nodes").and_then(|nodes| nodes.get(0)) else {
+        return Ok(());
+    };
+    let is_identity = |field: &str, identity: &[f64]| {
+        root.get(field).is_none_or(|value| {
+            value.as_array().is_some_and(|values| {
+                values.len() == identity.len()
+                    && values.iter().zip(identity).all(|(value, expected)| {
+                        value
+                            .as_f64()
+                            .is_some_and(|value| (value - expected).abs() <= 1.0e-6)
+                    })
+            })
+        })
+    };
+    ensure!(
+        is_identity("translation", &[0.0; 3])
+            && is_identity("rotation", &[0.0, 0.0, 0.0, 1.0])
+            && is_identity("scale", &[1.0; 3])
+            && is_identity("matrix", &IDENTITY_MATRIX),
+        "its root node keeps the NIF root transform, which collision no longer applies; \
+         reconvert the model instead"
+    );
     Ok(())
 }
 
@@ -1497,6 +1552,7 @@ fn finish_skinned_model(
         ));
     }
     model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+    clear_root_transform(&mut model);
     model
         .validate()
         .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
