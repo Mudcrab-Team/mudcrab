@@ -542,9 +542,15 @@ fn mask_slots(
         .unwrap();
     assert!(apply_index < store_index && store_index < lighting_index);
     // The mask must use the same denominator as colour, including missing-normal layers.
-    assert!(fragment.expressions.iter().any(|(_, expression)| matches!(expression,
-        Expression::Binary { op: naga::BinaryOperator::Divide, right, .. } if *right == arguments[2]
-    )));
+    assert!(
+        fragment
+            .expressions
+            .iter()
+            .any(|(_, expression)| matches!(expression,
+                Expression::Binary { op: naga::BinaryOperator::Divide, right, .. }
+                    if access_path(fragment, *right) == access_path(fragment, arguments[2])
+            ))
+    );
     let (mask_root, path) = access_path(fragment, arguments[1]);
     assert!(path.is_empty());
     let Expression::LocalVariable(mask) = fragment.expressions[mask_root] else {
@@ -944,7 +950,18 @@ fn terrain_fragment_wiring_rejects_diffuse_alpha_as_the_mask() {
                 {
                     *function = diffuse
                 }
-                Statement::Loop { body, .. } => substitute(body, functions, diffuse),
+                Statement::Loop {
+                    body, continuing, ..
+                } => {
+                    substitute(body, functions, diffuse);
+                    substitute(continuing, functions, diffuse);
+                }
+                Statement::Block(body) => substitute(body, functions, diffuse),
+                Statement::Switch { cases, .. } => {
+                    for case in cases {
+                        substitute(&mut case.body, functions, diffuse);
+                    }
+                }
                 Statement::If { accept, reject, .. } => {
                     substitute(accept, functions, diffuse);
                     substitute(reject, functions, diffuse);
