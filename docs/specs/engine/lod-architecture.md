@@ -1,8 +1,32 @@
 # Engine LOD architecture
 
-Native LOD for the Bevy runtime. LOD geometry joins `WORLD_LAYER`, so it
-appears in the water reflection pass by design (`render.rs`,
-`REFLECTION_VIEW_LAYERS`); reflection cost is budgeted, not ignored.
+Native LOD for the Bevy runtime. Current terrain LOD geometry joins
+`WORLD_LAYER`, so it appears in the water reflection pass by design
+(`render.rs`, `REFLECTION_VIEW_LAYERS`); reflection cost is budgeted.
+
+## Hybrid object direction
+
+[Bill's proposal](https://github.com/Mudcrab-Team/mudcrab/issues/203) and
+[Taylor's agreement](https://github.com/Mudcrab-Team/mudcrab/issues/203#issuecomment-6086560142)
+add a cluster-LOD experiment within native LOD. The direction is
+meshoptimizer-based cluster selection with indirect draws, alongside authored
+and automatically generated conventional LOD. It does not select Bevy's
+experimental meshlet renderer.
+
+Keep four responsibilities separate: world residency decides which source
+objects are available; eligibility and state decide which may render;
+geometry detail chooses a representation; draw submission sends its visible
+work to the backend. Cluster detail must reuse native streaming, validation,
+per-object identity, and drawable handoff. It cannot become another world or
+gameplay-state owner. Terrain, small meshes, trees, and unsupported material
+families keep dedicated routes; spatial HLOD remains a later option for
+reducing settlement batches.
+
+The [hybrid object LOD contract](hybrid-object-lod.md) records proposed payload,
+capability, fallback, and acceptance choices. Those choices require review;
+the agreement authorizes prototyping, not a finished renderer or a default
+change. Reflections proceed independently through SSR with planar fallback,
+then SSR with probes and the planar camera disabled, each with its own gates.
 
 ## Tier model
 
@@ -13,8 +37,10 @@ origins anchor chunks; floor division rounds toward negative infinity so a
 position just west of zero lands in cell -1 (GEOM-02). `worldspaces` needs
 origin columns in world database schema 6.
 
-Selection is tier-based first. Projected-size selection is a later option,
-not the initial contract.
+Terrain selection remains tier-based. The proposed object experiment selects
+detail by projected geometric error inside the residency policy; it does not
+replace the terrain tiers, chunk index, or full-detail grid. Block size,
+object draw range, and a cluster's error threshold remain independent.
 
 ## Streaming integration
 
@@ -118,9 +144,13 @@ make geometry beyond that distance invisible. See the
 
 ## Render path
 
-- LOD meshes render with the same GPU preprocessing, indirect draw, and
+- Current terrain LOD meshes render with the same GPU preprocessing, indirect draw, and
   HZB path as full geometry; the existing proof bridge (`render.rs`)
   covers them without special cases.
+- Object cluster selection and its indirect command path are proposed work,
+  separate from that existing bridge. Probe adapter capabilities; provide a
+  bounded Metal path without GPU draw-count support. Buffer overflow must
+  preserve a complete coarse representation, never silently omit geometry.
 - Billboards get a dedicated material (see `billboard-generation.md`).
 - Dynamic proxies are ordinary entities with distance/state systems (see
   `lod-runtime-proxies.md`), spatially bucketed, never full-scene scanned
@@ -149,7 +179,7 @@ Skyrim-compatible asset output remains outside this plan.
 |-------|------------|------------|-----------------|
 | 0 | Approved policies and baseline protocol | None | Remaining handoff failure policy, input/publication mechanics, and measurement protocol resolved; no behavior change |
 | 1 | Generation-safe terrain LOD slice | Phase 0 accepted | Two-cell handoff fixture, terrain ring captures, schema/build validation, and measured budgets pass |
-| 2 | Eligible static object chunks | Phase 1 accepted | Classification, omission trace, rebuild equivalence, handoff, and per-tier budgets pass |
+| 2 | Eligible static objects with authored or generated conventional LOD; opt-in cluster comparison | Phase 1 shared contracts accepted | Classification, identity, omission trace, rebuild equivalence, drawable handoff, and matched-quality category budgets pass |
 | 3 | Object-route tree billboards | Phase 2 accepted | Atlas/mip coverage and matched foliage captures pass |
 | 4 | Dynamic proxies and glow | Phase 2 accepted | Enable-state, epoch, and approved animation tests pass |
 | 5 | Integrated quality and performance proof | Phases 3 and 4 accepted | Repeated target-hardware campaign and signed visual review pass |
@@ -252,8 +282,22 @@ an allowlist. Start with verified fixed `STAT` references. Omit unknown,
 initially disabled, enable-dependent, movable, animated, and unresolved
 large-reference cases with a recorded reason until their later route exists.
 Preserve authored LOD shape metadata before using those NIF blocks as tier
-sources. Compile compatible material batches within the Phase 0 visibility
-unit, and retain provenance and a missing-reference inspector.
+sources. Admit validated automatically generated conventional LODs as an
+additional source, then compare eligible opaque primitives with cluster
+hierarchies from identical resolved inputs. Missing authored variants alone
+must not prevent that experiment; unsupported or invalid derived data keeps
+the verified source route with an explicit diagnostic. Missing source assets
+remain omissions, never silent substitutions.
+
+Compile compatible material batches within the Phase 0 visibility unit, and
+retain provenance and a missing-reference inspector. Retain each object's
+identity beneath batching. A moved, disabled, selected, or material-swapped
+object must leave derived batches without duplicating its gameplay state;
+the mutation escape path proposed in
+[#185](https://github.com/Mudcrab-Team/mudcrab/issues/185) needs its own proof.
+Mixed-ready object groups cannot hide all distant objects because only some
+near replacements are drawable. The [hybrid contract](hybrid-object-lod.md)
+defines the experiment's cut, fallback, and staged acceptance requirements.
 
 Vanilla object LOD (`.bto`, readable through the `BSMultiBoundNode` and
 `BSSubIndexTriShape` reader support) may serve as a validation reference, not a

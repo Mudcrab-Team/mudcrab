@@ -1,7 +1,9 @@
 //! Release-mode performance budgets.
 //!
-//! CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
+//! Original CI calibration: BSA 2.88 ms, ESM 0.099 ms, layout 8.73 ms (seven-sample medians).
 //! CPU budgets retain about tenfold headroom; filesystem layout retains over fivefold.
+//! CI uses `TMPDIR=/dev/shm` so durable fixture writes do not benchmark the
+//! shared runner's disk-flush latency. All generation and file operations still run.
 //!
 //! These tests are ignored by default because they assert wall-clock budgets
 //! with generous headroom. Run them with:
@@ -129,7 +131,7 @@ fn performance_layout_generation_stays_within_budget() {
         layout::prepare_directory(&root, true).unwrap();
         let written =
             layout::generate(&root, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
-        assert_eq!(written.len(), 13);
+        assert_eq!(written.len(), 14);
         let lod_settings = root.join(format!("lodsettings/{}.lod", layout::GENERATED_WORLDSPACE));
         assert!(written.contains(&lod_settings));
         assert!(lod_settings.is_file());

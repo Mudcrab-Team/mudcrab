@@ -24,6 +24,9 @@
 //! `crates/converter/tests/snapshots/` and rename it to `*.snap` once it holds
 //! what the converter is meant to produce.
 
+mod common;
+
+use common::cpu_lod_config;
 use dummy_content::{esm, layout};
 use insta::assert_json_snapshot;
 use rusqlite::{Connection, types::Value as SqlValue};
@@ -152,7 +155,7 @@ async fn convert_generated_data() -> (tempfile::TempDir, PathBuf, converter::Pip
     layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
 
     let output = directory.path().join("modern");
-    let config = converter::PipelineConfig::new(&data, &output);
+    let config = cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)
@@ -194,6 +197,9 @@ fn world_database_tables_match_snapshot() {
         "cells": table_rows(&connection, "cells", "id"),
         "references": table_rows(&connection, "\"references\"", "id"),
         "statics": table_rows(&connection, "statics", "id"),
+        "npcs": table_rows(&connection, "npcs", "id"),
+        "actor_models": table_rows(&connection, "actor_models", "id"),
+        "actor_model_parts": table_rows(&connection, "actor_model_parts", "npc_id, slot"),
         "texture_sets": table_rows(&connection, "texture_sets", "id"),
         "landscape_textures": table_rows(&connection, "landscape_textures", "id"),
         "land": table_rows(&connection, "land", "cell_id"),
@@ -227,7 +233,25 @@ async fn conversion_manifest_matches_snapshot() {
 #[tokio::test]
 async fn pipeline_report_matches_snapshot() {
     let (directory, _, report) = convert_generated_data().await;
-    let report = serde_json::to_value(&report).unwrap();
+    let database_cache_key = report
+        .database_cache_key
+        .as_deref()
+        .expect("a fresh database bundle has a cache identity");
+    assert_eq!(database_cache_key.len(), 64);
+    assert!(
+        database_cache_key
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+    let mut report = serde_json::to_value(&report).unwrap();
+    // Normalize duration values explicitly: an insta map wildcard also
+    // redacts keys, which would hide changes to the measured phase names.
+    for field in ["phase_elapsed_ms", "publication_phase_elapsed_ms"] {
+        for elapsed in report[field].as_object_mut().unwrap().values_mut() {
+            assert!(elapsed.is_u64());
+            *elapsed = Value::from("[elapsed_ms]");
+        }
+    }
 
     assert_no_machine_paths(&report, directory.path());
     assert_json_snapshot!(report, {
@@ -235,6 +259,16 @@ async fn pipeline_report_matches_snapshot() {
         ".elapsed_ms" => "[elapsed_ms]",
         ".lod_elapsed_ms" => "[lod_elapsed_ms]",
         ".publication_elapsed_ms" => "[publication_elapsed_ms]",
+        ".archive_timings.*.source_hash_seconds" => "[seconds]",
+        ".archive_timings.*.extraction_seconds" => "[seconds]",
+        ".archive_timings.*.cache_restore_seconds" => "[seconds]",
+        ".archive_timings.*.cache_link_seconds" => "[seconds]",
+        ".archive_timings.*.sync_seconds" => "[seconds]",
+        ".archive_timings.*.sync_worker_seconds" => "[seconds]",
+        ".archive_timings.*.checkpoint_sync_worker_seconds" => "[seconds]",
+        // The identity includes the executable and platform. Keep its shape
+        // checked above while retaining the cache outcome and work counters.
+        ".database_cache_key" => "[database_cache_key]",
         // Artifacts are appended in the order the parallel conversions finish,
         // which is not stable between runs; sorting keeps the same set of
         // published files readable.

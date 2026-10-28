@@ -1,0 +1,1324 @@
+{
+  "schema_version": 1,
+  "recorded_at_utc": "2026-10-09T21:29:36.290088+00:00",
+  "status": {
+    "functional_validation": "passed",
+    "local_performance_budget": "failed",
+    "ready_to_merge": false,
+    "recommended_pr_state": "draft_pending_required_CI"
+  },
+  "base": {
+    "pull_request": "https://github.com/Mudcrab-Team/mudcrab/pull/167",
+    "branch": "fix/lod-build-performance",
+    "sha": "2983e96f25dd488858feec1f5b0cd22058e20ca1"
+  },
+  "tested_tree": {
+    "head_before_final_fixes": "a89cfac4cdbe832b9374d54acc621c66bd453497",
+    "source_sha256": {
+      "Cargo.lock": "fb79f561067319e0cdd00a86443067823997aba0e18e69e75223774134ab5385",
+      "Cargo.toml": "6cc129de4532862442d72da54ce0f1bd0ce199d30040ef169c3a00ab9d492ce0",
+      "crates/converter/Cargo.toml": "db8e4e029f164dbf8a619d81abb6ed3f7c400ca8f0ce09cd5eb0f5a350f2054d",
+      "crates/converter/build.rs": "7fc181c1ff6fbc6f026ffea4cfcf530014a58290e812023aa67dfb3fddc498b3",
+      "crates/converter/examples/physics_census.rs": "e8a4f76b27d023a4c76ec1d408b1c40449b956595291433193322237e4d034c7",
+      "crates/converter/src/archive/ba2.rs": "dfdf459cee8db26c2c71371e70b0bfd31acc45f3a5feb5f63246d15477d91401",
+      "crates/converter/src/archive/batched.rs": "86f541c7bddcf6de50b047efa757cb0402c79df8479960997e77231316280f42",
+      "crates/converter/src/archive/bsa.rs": "40cdf1bfb1bdcdad9a236fc846bbe9b176fc32a134657767d5a10ef6fad3c912",
+      "crates/converter/src/archive/mod.rs": "88ff4742d05abe58bfef4bd8094392f90833138db183b1d93fd64667e4f09be7",
+      "crates/converter/src/asset_path.rs": "73ade931f0579609c492410285a7d035febbeb69fde6027d15cca7b2a62b0a15",
+      "crates/converter/src/bin/asset-closure-convert.rs": "d03f0adcfd855a05db394ac46ebfda662d2f214cef076f99bb2e0b3459b1fc52",
+      "crates/converter/src/bin/asset-closure-textures.rs": "d6ddf6cc8df873457f4542db27559fa11df629868f83e437c0fc69190e3b535f",
+      "crates/converter/src/bin/asset-closure.rs": "aae5380e6be596fd7ab28ae4657fe2b8c1e238e433aef466938d2a7c85f4176c",
+      "crates/converter/src/bin/collision-annotate.rs": "e2f4acef60ca1c47b3a53ea269c13ca7791df19529c277404d136d93a28ccca0",
+      "crates/converter/src/bin/glb-audit.rs": "23677340a9f158ae300ad31e736670adfee44273dbefc5c9f1350c32008029c0",
+      "crates/converter/src/bin/inspect-lip.rs": "76b3660a2e7ed812e15ac6ba4775235a40e055ce27f5e52559724c9cdf8ccbcc",
+      "crates/converter/src/bin/lip-check.rs": "8375017e5263cea84a4e18f6cc5874b812d7ffa134abace27476e8cffbfcddb3",
+      "crates/converter/src/bin/movement-profile-annotate.rs": "08ff89dc7548a3bea4c214f163e38010992a38a68bcb901c0746cf9de23808d3",
+      "crates/converter/src/bin/nif-audit.rs": "c750e325046e484ea7fd4bb03d51b24907d1bd7bfb8ee14cf08f67bb2df87f3e",
+      "crates/converter/src/bin/runtime-asset-audit.rs": "534aa6cf7a4f4ed06c4c5656b654587d66b09039d91088d1ed080e90ec1c48bf",
+      "crates/converter/src/bin/texture-sync.rs": "728695c7351b88635bcff96012a038c0f56777b370882c5329a2ecd5e47ea64a",
+      "crates/converter/src/cache.rs": "8bb6f207426e9a79971d74a53963907950d9daff993e8bc7db40426c55fa24df",
+      "crates/converter/src/check.rs": "8daeddbfd3f4acce963eb1dc5555ba98005b1b2cc00bacf01f4224e48a25272c",
+      "crates/converter/src/collision.rs": "338401ef7309fbdec51a8bbbdf9f094ca5ac9960952be96f7a33b8c9c7b809d1",
+      "crates/converter/src/config.rs": "e6e01679c995d2507c400c8f712ab995dd7855e5dcfb92369f40b9897b43b6dc",
+      "crates/converter/src/esm/binary.rs": "d3a774518c8290889f2f819222c71415384abb926c318b6cd0a223afe523b34d",
+      "crates/converter/src/esm/cell_cache.rs": "c69693a777d7e611c10ee197b74b8847ff056b8f9e69c509e9153a075c1c9fb8",
+      "crates/converter/src/esm/exporter.rs": "0769c4e9e4753e86d42dd423d5a1623522f8ccb763e98b3f60a789d4a9066ba5",
+      "crates/converter/src/esm/extractors.rs": "3df9d88db6a3e591d0f1f3833bfc50c21b6c8892144e2da4ab2b9e0acacac4a2",
+      "crates/converter/src/esm/load_order.rs": "d99a576a6a89fdb640ac9f2942bb26bae96453f73f0d0f74ecd9db6c4b074057",
+      "crates/converter/src/esm/lodsettings.rs": "4cdec36697a53b224eaf4825c5da5dc7e72d6854ce8007d847057a5e7f7747a3",
+      "crates/converter/src/esm/mmap_reader.rs": "cd61189253fe93850ea70a4d64272ddb1aeb91b35162ca717dda95e52ee45cfb",
+      "crates/converter/src/esm/mod.rs": "5b420c29a06888c571d491bd4e9a643a224d1e5b429e9a76f65b5b58f3366126",
+      "crates/converter/src/esm/records/aact.rs": "c4a85922d0c8802a9b40f153b289dfd14a74fddfca2864548c2f17ca93054399",
+      "crates/converter/src/esm/records/achr.rs": "04dcbff7345e3b84063c7665cb8f2bd12a174de12c3dcf1f8db583b56b2d5beb",
+      "crates/converter/src/esm/records/clfm.rs": "7fd6c822e5a43947693ad50144a66899558aaf3f449bc4c6c08f54ee3d8cd8a9",
+      "crates/converter/src/esm/records/mod.rs": "98c0b882617b196f24e8dc2864222b24e8d9a092b93bc387f516e3396fa71d45",
+      "crates/converter/src/esm/records/record_type/mod.rs": "83e215276a8f158eaddd608159773ca4a029b386607b54e11a0b2c0eb54ac734",
+      "crates/converter/src/esm/records/record_type/vmad.rs": "f607928b9f339f3880b8458fd6887e93022131f28276337cac680e03fc8dfc2d",
+      "crates/converter/src/esm/records/tes4.rs": "d5e2023b37f2242699e078df8e67ccf16a6bf293323966f172ff29442f985c55",
+      "crates/converter/src/esm/records/tree.rs": "92f6ac5cb40d027ded7010231fa770db4e0c904179ae8c48331c102a88f57f57",
+      "crates/converter/src/esm/types.rs": "0813b76c11fd3e449e68d975ff07b36d27b65092d3902a3a1cc83ce474a15deb",
+      "crates/converter/src/integration.rs": "6c26def65dc17b0f748f314798064507f0f23bd967d3e44b85b4ad29a8dfba8a",
+      "crates/converter/src/lib.rs": "14b6d77bbb6e95f4e5bc79ec8e7082d411c84d84b4529e1386d3156a561bb1e7",
+      "crates/converter/src/lip.rs": "6ba608a3d072d2a4e2f9e97da9e70e657db17030cb28c9ad1cff0e0b3dd34e74",
+      "crates/converter/src/lod/albedo.rs": "1048b5acd9d3143edbc3507e43914c69a9a43c8d12ff72e9fdc474f8782a0f36",
+      "crates/converter/src/lod/mod.rs": "4f771009b8ff48e7a12104822e693cf4ff0023c93819c5265b4be1e0b903b29c",
+      "crates/converter/src/lod/reuse.rs": "e1c4564255389e0f5996d4e09b0bb06e9f7c36b2bf1b9885c6312f5114fc706d",
+      "crates/converter/src/lod/terrain.rs": "a157a07701dc9f7ac7a4e3c7909872915d01beae9ab310a6cb7b444b6b1a5d78",
+      "crates/converter/src/main.rs": "08de6b73db8a4ba2de47a6120fc7e65c19434672178634ca7827cc37eb6f765b",
+      "crates/converter/src/material.rs": "c955bb284257b9711fe104259f7816dd3478d84ba356ef46d080ef1763defe40",
+      "crates/converter/src/mesh.rs": "1319ec7ac56ff21ff1707dc4c610f5e9855490e398464042d9a2e4f6e14c79a7",
+      "crates/converter/src/metadata.rs": "596d7da4d26d1e9123d11c784893dd0ccfa1878425bc3767346696731ef3be14",
+      "crates/converter/src/pipeline.rs": "28f3febcd59042ec81bbe9a19919d7f0cff4ef6a670edc0cc5cab12d71745410",
+      "crates/converter/src/progress.rs": "b464bc5febb3bfa06bdfbb068d5203a9e6658800e5f2fce73a4a467b034b864f",
+      "crates/converter/src/script.rs": "b2d1b4eeaf373387052f786385326d66e2a2d92c66168287643800eeada50999",
+      "crates/converter/src/test_strategies.rs": "228e1779fcec2a3721a1df618b373c80d0fb4fb63b320e68bb30e9bf0c042838",
+      "crates/converter/src/texture.rs": "2aff3d4887b66cd7ef123e89aed7a70430feac46a2ac1d12c0e72cf825bdad05",
+      "crates/converter/src/texture_gpu/astc_tables.rs": "c6b732f6611575e314c1540f861ec469cbc82205f7bfde2aea61944935a810cb",
+      "crates/converter/src/texture_gpu/mod.rs": "fc849c9b6c48e1ab9247c61271335a267e698a4402d35f31e6addc8cb723aace",
+      "crates/converter/src/texture_ktx2.rs": "b90905654f4a88914cf0655237162a7291fc3fea2cf99a7a4b5d92b28219dba6",
+      "crates/converter/tests/common/mod.rs": "eb0e6318ee04c30570ed1647ffc363ccc29da99f72ae992c866c5192dd9eb940",
+      "crates/converter/tests/database_identity.rs": "575d879b9c6f55b26fdf90a260077a56ffd6105cd076c0ea6b6f8b6a7a4097db",
+      "crates/converter/tests/fixture_doors.rs": "c8a11a034bb12835e8d846a66b45d1d4f343eed0bd08e121592296d2ea2d68a0",
+      "crates/converter/tests/fixture_interior_pipeline.rs": "801a63ea888b1a72e4e63674e4ee5b17eb6e3622bafeb399dbf1431b7d224dfb",
+      "crates/converter/tests/fixture_lights.rs": "6f174e747c7b583037df38bc98bb69de88d2a9317ed5cb8cee8dcd477b41377a",
+      "crates/converter/tests/fixture_linked_extraction.rs": "57e664a746161515e39273438e6ffdcafa8064554f144b66533c2c00d6690f7f",
+      "crates/converter/tests/fixture_lod_pipeline.rs": "fbf1292c19939434224165334b67abf02ffe796d10cad2ab4cf321cd5b9301ab",
+      "crates/converter/tests/fixture_metadata_rebuild.rs": "89c6555e1e1d6e1bfe1cdda87666934c9e451040d1073612ae364af33eb97c8c",
+      "crates/converter/tests/fixture_player_movement.rs": "2df96485eac133053a45dce91e0ce2c0d7c7f6ed57ca62d7e3b4a2a2af1f7bb7",
+      "crates/converter/tests/fixture_progress_output.rs": "df07a7a1f510ad9a0e9752f711668b370830f086ae57b3b864828952c831fdda",
+      "crates/converter/tests/fixture_round_trip.rs": "9fce28d0ed8ed9bc9541e9225d145c581b8785fc3e5d15bcd48890c1595f21da",
+      "crates/converter/tests/grass_export.rs": "8a78a8d2358132f6496d98d8d4b01808958ac831ca7669724a156cee62936896",
+      "crates/converter/tests/output_check.rs": "196b45a3f18bf72cf32918fc76725faec503ae435fe4d49b5b9d4f01f1186b05",
+      "crates/converter/tests/physics_bodies.rs": "1065e1803eb3e36d41c328d9e0677924dd57ace15b38b9be1495af3435e1573e",
+      "crates/converter/tests/plugin_cache.rs": "88c45918e2f562ad69c1a1e4fddc5525396a21d16c5eec5a8385e1e64cc89ef3",
+      "crates/converter/tests/plugin_discovery.rs": "f1af20fdc6c71af50133ef88c9843bf1760971e22880a6fae06343838688f97e",
+      "crates/converter/tests/plugin_references.rs": "961e056a55630289f520613882fc93284f11e986cc0ce6f4a207497d10a48e82",
+      "crates/converter/tests/resume_pruned_provenance.rs": "8e1513920d0af6160586c7997c229fd41e7c272d90e2220d39e53ecafa41c80e",
+      "crates/converter/tests/resume_staging.rs": "da17d27f7a697064f8cf054491511544209df2056b9826ac090df69065d2b27c",
+      "crates/converter/tests/snapshots.rs": "8c1a7bdf17eb2e31744127919c012a7288d11ecdb182781c41775ca7cbe5fc73",
+      "crates/dummy-content/benches/writers.rs": "7e889d80bd91745b7ea91e2d8c490035f256869b2958a8845db4bb39c7e7064d",
+      "crates/dummy-content/src/ba2.rs": "18ee1f71526620bbc75aa3e2545c8df89e0e61e479e88202b691ff5ff8ce693e",
+      "crates/dummy-content/src/bsa.rs": "026323c0e388b3dd4eb55e75ff253da76235db4653abf188f68f7111a5d34d95",
+      "crates/dummy-content/src/bytes.rs": "3dcea7c9fe50209e025484ea9a97347641b6ad73cedde6679e658a97e7ec914a",
+      "crates/dummy-content/src/dds.rs": "1add4bc8a523f9e352c87a75b67732ae73dcd86276c8b31069d0a33600726998",
+      "crates/dummy-content/src/esm.rs": "71b71642a302e83525307dd6b14bc6606a666a79c843d0a6f3ec78704e868638",
+      "crates/dummy-content/src/layout.rs": "70921b9d84dd09aa1cf3b3b666c896fee10fa4a76bb2492346b0c99178b5c010",
+      "crates/dummy-content/src/lib.rs": "a76625e83e7b687129bb62ca4b27d25b52ae2ca11b18524ce9c5c484ae2d1acb",
+      "crates/dummy-content/src/main.rs": "26adb38771b35758f84c0e53acefc7a63a010ab654985e7dbbfe28a08d9316c9",
+      "crates/dummy-content/src/nif.rs": "373dbcfe7a1b8ee44c78901ce19a0af69fa100fc004dd82c6adb33ccbbe36fbf",
+      "crates/dummy-content/src/path.rs": "7162751dd479778d769b053bafdaa1d711d76f7558da36d02a6752ab32a7de55",
+      "crates/dummy-content/src/pex.rs": "8ff0dbb31db791987693a911909ab35a4843936fdd7de97ca72d25a0849a1ca3",
+      "crates/dummy-content/src/rng.rs": "fe78587bff2b0325d83cd8d42e0955c8fd4926fe047bcd5b757f4236d1802e27",
+      "crates/dummy-content/tests/performance.rs": "5f0457ac65476d3afafda7fe045ddc81a38cd8c0f429b83fe63e4bdf9bac914b",
+      "crates/engine/examples/color_pipeline_probe.rs": "d425c33a264ebe32548786c37d9c6a6ce7e36a348a04061232c9262be1b1d46d",
+      "crates/engine/examples/material_alpha_probe.rs": "6ecb84e2ff91ce07c5a07cfec74dd452dea00db9ecd0b7af56f4c8ae897a3ff2",
+      "crates/engine/examples/material_emission_probe.rs": "882c87ac87f33a22a9a1eb979e433bed7538d2d92801760ef93681e3ceec86b0",
+      "crates/engine/examples/material_normal_probe.rs": "1e63fb3ca79425533bb3f96b14733667fbb67396883247ae530d042238704392",
+      "crates/engine/examples/material_specular_probe.rs": "5201a140b7d5450579ae5dc7b25b65907ddf940df1d4997967b327cd0d5b7f8c",
+      "crates/engine/src/app.rs": "936043ce19309ee6bb51e26e6a55f11fdb26364bb5764fc4930742cd5c721a76",
+      "crates/engine/src/bin/world-inspect.rs": "c0b51beaa82d6cfac4cad364a7ab488c53da4cbc85d7dcb5fb363680a1240d1d",
+      "crates/engine/src/color_pipeline.rs": "083f333e8dc51606fa6fc0bceea42672aee101bee9511446dbdb14dd8a7fae63",
+      "crates/engine/src/config.rs": "1e16cf0a3f66d4ca6b449908e9319b3cdaae169eecf70720d178e692305e115d",
+      "crates/engine/src/lib.rs": "7ec5a14d00de485fc46a94734e3976998cd9f3afc39f1ff0aaa92abef18c5cdf",
+      "crates/engine/src/lights.rs": "478757269d357debcd3e274c8a82a788983445866a5ee92a33de2b5d9b603bd6",
+      "crates/engine/src/main.rs": "2b08e6f194d430cf98e60106e3fe8a1e8a737fa590abdf003d5959100df32358",
+      "crates/engine/src/metrics.rs": "d756d4123157dfcb0ef4afbf2f8d3932c41d2f4a2f1a389e72f823fb2730c065",
+      "crates/engine/src/nif_material.rs": "74902b468902d113a98325a5ef20f710a6b02a30a0eec21f6585b7a4fa6ec7b6",
+      "crates/engine/src/papyrus_runtime.rs": "585329bbae99b7dc6f2072734373fc7f1549caee8f6793f2d683f0bcf95b7e39",
+      "crates/engine/src/physics.rs": "f88c39ef3bd9292e98101e973f457f703c146af543cd3c6514e0fdbc5f50242a",
+      "crates/engine/src/prepass_vertex_alpha.rs": "521b310a83019864f5c0b2934147dec6ab0f359aa3c76970a41d949fe294059a",
+      "crates/engine/src/profiling.rs": "7d3e90e76396bab0408e16e95df00a4fbbb0dae9cb5944c458cc1de667db8246",
+      "crates/engine/src/render.rs": "fd787f317ad1edfaa3ee0bda2dad439ddc68835363c252a88603fa740bfbda21",
+      "crates/engine/src/render_timing.rs": "0450288f4e6428b50fa881088829146a5b7476d80057650493e1c4a3a6b3cc78",
+      "crates/engine/src/renderer_init.rs": "9a328a808397f5fee2899b44723c99ab9b00dbdf7dd1581df550787951a984b0",
+      "crates/engine/src/shots.rs": "be994c583401b8b1455c32c2d2d1338c9253029ddc360d7e00152a580f452a0b",
+      "crates/engine/src/sky.rs": "d707346a6d6ddd09f3aa506ae705b04ff3e7aa67bd21c5a21b33be8c4c36d0be",
+      "crates/engine/src/skyrim_ini.rs": "96fd3f145e6691393b8cc1ac7003f64022785569bfae7ff8c1ad80f6e1a273c9",
+      "crates/engine/src/streaming/lod.rs": "eb7d7bd7baf8ce1e7951c189c38ca95a04fb3f8b4c7e3616558988078d1c8ea7",
+      "crates/engine/src/streaming.rs": "c07e689c814b34ec2ba16e1f0981580f195310da297b9a9ecaa1376ff8236253",
+      "crates/engine/src/world/cache.rs": "94c07e7aba0c559c3bf3beee3a363fd0fde8d976ab28b538e443b068cd5d4e73",
+      "crates/engine/src/world/components.rs": "d4c4b9870d8592c74ec7850c5e1bf00270d54158a535d8c9bdd7f2dde6385368",
+      "crates/engine/src/world/database.rs": "bb77755b2baa0bdde168382817f6bf1c39ce3269c5b06ca18ed77d0070ec7a34",
+      "crates/engine/src/world/mod.rs": "5a00b0af1834e90ad78e90ea633e44c7116d03e940989f3dc86cd4a0d9592ee9",
+      "crates/engine/tests/cli.rs": "5c7e6bf09853abf4e42666395630a99f0e9f0dbe775fc6a36d6e27f6da4c8d8d",
+      "crates/engine/tests/native_ktx2_loads_in_bevy.rs": "04d4c01b2bed9c3f0dad035415b19bb0e675b7fe2e450e5b787a4a7a69dac368",
+      "crates/launcher/src/components.rs": "4675c16265ccc241b5f84404cfbdac08ff77c249d19feccad594b206b68d22fb",
+      "crates/launcher/src/conversion/mod.rs": "371f89f1c4d760bc5ad3694bc96f88f3bef7735392754a3767b90a550712fd6f",
+      "crates/launcher/src/conversion/panel.rs": "b5aee3edbb2ad3d035deafa489ebd2a12084ffb3f129ce3b3e802107498027b2",
+      "crates/launcher/src/conversion/runner.rs": "fc312cb06913a29094bad935547746665c7621d6db627947968aa112c992b432",
+      "crates/launcher/src/conversion/state.rs": "8c1b07a27c9b9204bb1399c8473a5dda85a085a0a975efed686479011f0bfbd5",
+      "crates/launcher/src/conversion/status.rs": "c1496df137723540b83388dca46478e485ea28a7e55bf74b3b07972c8661fcc8",
+      "crates/launcher/src/engine_process.rs": "eac5e92bdd19a7251f543875e6cf334b4655d249ab656bf155766e475c827dcd",
+      "crates/launcher/src/game_detection.rs": "a7992a385aff52fe1e7352fdede336809ff3c708f3354616954cf77fd2870868",
+      "crates/launcher/src/handlers.rs": "cf92dac79c13672254541422eadc27cc672ffc2d5d4659776c5eb5d169ae0de2",
+      "crates/launcher/src/main.rs": "c2c35ca7624d76b83ec696d021d8fc5774280525665a99cd5cc04cbb05842139",
+      "crates/launcher/src/ui.rs": "0f41171943f08debda3508873eefa9106aaafe98c81288bba263cabde98b05f4",
+      "crates/shared/src/asset_lock.rs": "99676923b756f7def04ed0f30ab7a1e662d1f4ce4eb6e246d82c20dcee2bb7e1",
+      "crates/shared/src/collision.rs": "7630aa4733a1e094aafe8e2cc27b37a6538f5dffb23bcf4da5ca8e383d79e60f",
+      "crates/shared/src/coordinates.rs": "7da8c9ebfc9be72fdc408201878cb3c4abf313599241169c5deccb0c168ee423",
+      "crates/shared/src/lib.rs": "691bde5cb1ace0287992aafe75b35ba8b340de80b1fd15cd020c2223ca175050",
+      "crates/shared/src/lod.rs": "bb8d51b79b221a09b720ad7d121cef395db86b23447c565dd28234d2c97f0894",
+      "crates/shared/src/world_assets.rs": "0382c85c671f2c850a8ed7b872f635743c84b7a70009b7ee5de7dbe1dd6b63d9"
+    },
+    "diff_sha256": "cc0f9ab8014e21d5e993ebbb3a8ef77c57d7a671c9bd815dd43b293987fa57c9",
+    "protected_source_manifest": {
+      "path": "/Users/taylor/Projects/mudcrab/modern_assets/conversion-manifest.json",
+      "sha256": "ff5743feff7b2db3dc77fa2cac8b5741191e7e7c3e2069daddbde5f362ee7d09",
+      "matches_original": true
+    },
+    "release_binary_sha256": "1498368764ac676d9ef355af485f2257d0fff4dd60d7984c4e3d46e93705b066"
+  },
+  "source_tree_sha256": "318df0f1f528e073b8c190ab8902b11766668f977753e86aa20a053d0344007b",
+  "host": {
+    "os": "macOS 26.6.2",
+    "architecture": "arm64",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "gpu_adapter": "Apple M1 Pro (Metal)"
+  },
+  "checks": [
+    {
+      "label": "format",
+      "command": [
+        "/Users/taylor/.cargo/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_monotonic_seconds": 0.8441950420000001,
+      "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "workspace-tests",
+      "command": [
+        "/Users/taylor/.cargo/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--profile",
+        "quick",
+        "--workspace",
+        "--no-fail-fast",
+        "--lib",
+        "--bins",
+        "--tests",
+        "--examples",
+        "--",
+        "--test-threads=4"
+      ],
+      "exit_code": 0,
+      "elapsed_monotonic_seconds": 105.408112542,
+      "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/workspace-tests.log",
+      "log_sha256": "cd3df515aabe4c3aae6a49a9ea25ca4314cdc63989c213bc655c3f6060fca85f"
+    },
+    {
+      "label": "workspace-clippy",
+      "command": [
+        "/Users/taylor/.cargo/bin/cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "--profile",
+        "quick",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "linker-messages"
+      ],
+      "exit_code": 0,
+      "elapsed_monotonic_seconds": 13.322517042000001,
+      "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/workspace-clippy.log",
+      "log_sha256": "a4b631b499d08903114a7bf6b90c1dce587b05a00ad46996ca3cd833cd604039"
+    },
+    {
+      "label": "release-build",
+      "command": [
+        "/Users/taylor/.cargo/bin/cargo",
+        "build",
+        "--offline",
+        "--locked",
+        "--release",
+        "-p",
+        "converter",
+        "--bin",
+        "converter"
+      ],
+      "exit_code": 0,
+      "elapsed_monotonic_seconds": 54.71004270900001,
+      "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/release-build.log",
+      "log_sha256": "c83861ee6867fbd7a00864b7d1dc99bb406693fe7eaa773a968b751105726e77"
+    },
+    {
+      "label": "release-budgets",
+      "command": [
+        "/Users/taylor/.cargo/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "--release",
+        "-p",
+        "dummy-content",
+        "--test",
+        "performance",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "elapsed_monotonic_seconds": 23.676193374999997,
+      "log": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/release-budgets.log",
+      "log_sha256": "66ef3712338700844db827a87bb2f1e4ccc90ae3e264af2fcc4ae078c31754eb"
+    }
+  ],
+  "workspace_tests": {
+    "completed_suites": 49,
+    "passed": 1149,
+    "failed": 0,
+    "ignored": 24,
+    "log_sha256": "cd3df515aabe4c3aae6a49a9ea25ca4314cdc63989c213bc655c3f6060fca85f"
+  },
+  "performance_budget_attempts": [
+    {
+      "label": "release-budgets",
+      "exit_code": 101,
+      "passed_tests": 3,
+      "failed_tests": 1,
+      "failed_test": "performance_layout_generation_stays_within_budget",
+      "layout_median_ms": 66.922541,
+      "layout_limit_ms": 50,
+      "observed_medians": [
+        "137.834\u00b5s",
+        "1.34225ms",
+        "1.339667ms",
+        "79.459\u00b5s",
+        "66.922541ms"
+      ],
+      "log": "target/lod-profile/default-readiness/release-budgets.log",
+      "log_sha256": "66ef3712338700844db827a87bb2f1e4ccc90ae3e264af2fcc4ae078c31754eb"
+    },
+    {
+      "label": "release-budgets-repeat",
+      "exit_code": 101,
+      "passed_tests": 3,
+      "failed_tests": 1,
+      "failed_test": "performance_layout_generation_stays_within_budget",
+      "layout_median_ms": 72.392833,
+      "layout_limit_ms": 50,
+      "observed_medians": [
+        "139.125\u00b5s",
+        "1.383541ms",
+        "1.359542ms",
+        "81.708\u00b5s",
+        "72.392833ms"
+      ],
+      "log": "target/lod-profile/default-readiness/release-budgets-repeat.log",
+      "log_sha256": "2397c66b60934f508e098aba47156ee5ee47ba2820f730eb93f077f5a5351a03"
+    }
+  ],
+  "dummy_content_baseline_source_proof": {
+    "base_sha": "2983e96f25dd488858feec1f5b0cd22058e20ca1",
+    "unchanged_tracked_files": {
+      "crates/dummy-content/Cargo.toml": "1d0cfcd9e3115817cb3730858514d2164715c500c58aef7ce2cbc62faa416a6a",
+      "crates/dummy-content/benches/writers.rs": "7e889d80bd91745b7ea91e2d8c490035f256869b2958a8845db4bb39c7e7064d",
+      "crates/dummy-content/src/ba2.rs": "18ee1f71526620bbc75aa3e2545c8df89e0e61e479e88202b691ff5ff8ce693e",
+      "crates/dummy-content/src/bsa.rs": "026323c0e388b3dd4eb55e75ff253da76235db4653abf188f68f7111a5d34d95",
+      "crates/dummy-content/src/bytes.rs": "3dcea7c9fe50209e025484ea9a97347641b6ad73cedde6679e658a97e7ec914a",
+      "crates/dummy-content/src/dds.rs": "1add4bc8a523f9e352c87a75b67732ae73dcd86276c8b31069d0a33600726998",
+      "crates/dummy-content/src/esm.rs": "71b71642a302e83525307dd6b14bc6606a666a79c843d0a6f3ec78704e868638",
+      "crates/dummy-content/src/layout.rs": "70921b9d84dd09aa1cf3b3b666c896fee10fa4a76bb2492346b0c99178b5c010",
+      "crates/dummy-content/src/lib.rs": "a76625e83e7b687129bb62ca4b27d25b52ae2ca11b18524ce9c5c484ae2d1acb",
+      "crates/dummy-content/src/main.rs": "26adb38771b35758f84c0e53acefc7a63a010ab654985e7dbbfe28a08d9316c9",
+      "crates/dummy-content/src/nif.rs": "373dbcfe7a1b8ee44c78901ce19a0af69fa100fc004dd82c6adb33ccbbe36fbf",
+      "crates/dummy-content/src/path.rs": "7162751dd479778d769b053bafdaa1d711d76f7558da36d02a6752ab32a7de55",
+      "crates/dummy-content/src/pex.rs": "8ff0dbb31db791987693a911909ab35a4843936fdd7de97ca72d25a0849a1ca3",
+      "crates/dummy-content/src/rng.rs": "fe78587bff2b0325d83cd8d42e0955c8fd4926fe047bcd5b757f4236d1802e27",
+      "crates/dummy-content/tests/performance.rs": "5f0457ac65476d3afafda7fe045ddc81a38cd8c0f429b83fe63e4bdf9bac914b"
+    },
+    "claim": "Source equivalence; no local baseline performance run was performed."
+  },
+  "native_CLI_default_validation": {
+    "started_at_utc": "2026-10-09T21:25:37.137588+00:00",
+    "passed": true,
+    "bounded": true,
+    "fixture": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+    "expected_chunks": 6,
+    "fixture_manifest": {
+      "worldspace": "GeneratedWorld",
+      "land_cells": [
+        {
+          "grid": [
+            -1,
+            -1
+          ]
+        },
+        {
+          "grid": [
+            0,
+            -1
+          ]
+        },
+        {
+          "grid": [
+            1,
+            -1
+          ]
+        },
+        {
+          "grid": [
+            -1,
+            0
+          ]
+        },
+        {
+          "grid": [
+            0,
+            0
+          ]
+        },
+        {
+          "grid": [
+            1,
+            0
+          ]
+        },
+        {
+          "grid": [
+            -1,
+            1
+          ]
+        },
+        {
+          "grid": [
+            0,
+            1
+          ]
+        },
+        {
+          "grid": [
+            1,
+            1
+          ]
+        }
+      ],
+      "origin": [
+        -4,
+        -4
+      ],
+      "expected_chunks": 6,
+      "tiers": [
+        4,
+        8,
+        16
+      ],
+      "generator_command": [
+        "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/quick/dummy-content",
+        "gen",
+        "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+        "--formats",
+        "dds,nif,esm,lodsettings"
+      ],
+      "generator_sha256": "5ed64278ef573aabd855494c8d343b278bbdd92a925bbb8cc7e9b166e3784254",
+      "source_references": [
+        "crates/dummy-content/src/layout.rs:43-80,201-305,310-340",
+        "crates/dummy-content/src/esm.rs:264-305,596-610"
+      ],
+      "files": {
+        "Skyrim.esm": {
+          "bytes": 12163,
+          "sha256": "6a07f48c4190afadad82492c36da92ad265352c1e3d85f2e79e74615f0a2fb4a"
+        },
+        "lodsettings/GeneratedWorld.lod": {
+          "bytes": 16,
+          "sha256": "c0ba19da5f29781f3e81f2888d869cdd6913ae54355e5245ed41b2a91f44720c"
+        },
+        "meshes/generated.nif": {
+          "bytes": 721,
+          "sha256": "8229f286e43f1c5e233ffd0c5a38b2643d8dce25bb51cb7013464834a9e05a19"
+        },
+        "textures/generated_color.dds": {
+          "bytes": 2892,
+          "sha256": "2b31468a0dc14dd7156457f51bb18c231b4cc21341e5aa0df64a2c5c6a504242"
+        },
+        "textures/generated_color_x8.dds": {
+          "bytes": 5588,
+          "sha256": "27216d9571ee3ed425b0b5c651bf646e530c1fd13b364522a52123eecfab33e6"
+        },
+        "textures/generated_cube.dds": {
+          "bytes": 4324,
+          "sha256": "9d677beebf1dd5c505c870131a86d2aa646703bb2a5527266af8dd0dbc77d5e0"
+        },
+        "textures/generated_normal.dds": {
+          "bytes": 5636,
+          "sha256": "f6747a143f14994e87a9f0aadef1faba0cfde2e887221a8ef512a199021bf8dd"
+        },
+        "textures/generated_volume.dds": {
+          "bytes": 2876,
+          "sha256": "9b11a847fb1be4a2ead28203c7bde90c1d04eb77fd8ded0eacc9a7e1e6c2a73b"
+        }
+      },
+      "purpose": "Bounded CLI default/fallback/retry/reuse/no-LOD behavior; not representative timing or terrain quality coverage"
+    },
+    "converter": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+    "converter_sha256": "1498368764ac676d9ef355af485f2257d0fff4dd60d7984c4e3d46e93705b066",
+    "runner_sha256": "2f3fb1c21c11217062cb1908e25b541672b82a0c7b747526d6fa812ee52f58cb",
+    "fixture_writer_sha256": "9b5b9b82ef805d4c8a93042699f5025bd1950445a8045a70cb91021a2320da53",
+    "auditor_sha256": "c42c36dbeff6a1c84d7ee14f1b999a24adf11e121caa2a8dece580665b736fe0",
+    "runs": [
+      {
+        "label": "default-cold",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+        "passed": true,
+        "expected": {
+          "label": "default-cold",
+          "pack": "default",
+          "hits": 0,
+          "gpu": 6,
+          "fallback": 0
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/conversion-report.json"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:37.147930+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:37.836227+00:00",
+            "monotonic_seconds": 0.6878735,
+            "child_user_seconds": 0.060641999999999995,
+            "child_system_seconds": 0.063068
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:37.847179+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:37.856979+00:00",
+            "monotonic_seconds": 0.009269874999999983,
+            "child_user_seconds": 0.004661000000000005,
+            "child_system_seconds": 0.005438999999999999
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/conversion-report.json",
+              "--expected-hits",
+              "0",
+              "--encoder",
+              "gpu"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:37.867538+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:37.940636+00:00",
+            "monotonic_seconds": 0.07247720800000002,
+            "child_user_seconds": 0.040611999999999995,
+            "child_system_seconds": 0.015035999999999994
+          }
+        ],
+        "report_sha256": "80f328c239de09de6563594faff52cb914e49ccaf1b9d746f42ff6b56277d1c6",
+        "report_scalars": {
+          "complete": true,
+          "converted": 6,
+          "cache_hits": 0,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 0,
+          "lod_gpu_chunks": 6,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 122,
+          "publication_elapsed_ms": 9,
+          "elapsed_ms": 272
+        },
+        "gpu_notices": [
+          "Terrain atlas GPU encoder: Apple M1 Pro (Metal) (quality 2, batch 64 MiB)"
+        ],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+          "sha256": "ee4e11032caa2d5d0742050705db94ad07e9f7bf20664a55eabe65ee58478ac9",
+          "chunks": 6,
+          "proofs": 6,
+          "payload_hash": "d80016a0c613c4f8b4145ce6747283f46d568d485e7d75421bdfc7b23b5a2a28",
+          "proof_hash": "211cf5a87b437c5c05229100fc29b8e9dd7b2e3dabaac521ffa2705157904e45",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": null
+        }
+      },
+      {
+        "label": "default-warm",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+        "passed": true,
+        "expected": {
+          "label": "default-warm",
+          "pack": "default",
+          "hits": 6,
+          "gpu": 0,
+          "fallback": 0,
+          "compare": "default-cold"
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-warm-evidence/conversion-report.json"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:37.951124+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.063731+00:00",
+            "monotonic_seconds": 0.11208879100000002,
+            "child_user_seconds": 0.020695000000000005,
+            "child_system_seconds": 0.04030500000000001
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.074234+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.083124+00:00",
+            "monotonic_seconds": 0.008350458999999977,
+            "child_user_seconds": 0.004481999999999986,
+            "child_system_seconds": 0.003796999999999981
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-default",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-warm-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-warm-evidence/conversion-report.json",
+              "--expected-hits",
+              "6",
+              "--encoder",
+              "gpu",
+              "--compare",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+              "--comparison",
+              "exact"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.093090+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.146716+00:00",
+            "monotonic_seconds": 0.053033208,
+            "child_user_seconds": 0.03776300000000002,
+            "child_system_seconds": 0.01201000000000002
+          }
+        ],
+        "report_sha256": "4158701141a1b67d9956f3b22f0869123aa5553f13d73a7caea2f715ca57811e",
+        "report_scalars": {
+          "complete": true,
+          "converted": 0,
+          "cache_hits": 6,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 6,
+          "lod_gpu_chunks": 0,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 11,
+          "publication_elapsed_ms": 21,
+          "elapsed_ms": 97
+        },
+        "gpu_notices": [],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-warm-evidence/lod-audit.json",
+          "sha256": "9248026bbf26534429ebeeeb4212a65f780b092ad508d01e2afb38ae697869b3",
+          "chunks": 6,
+          "proofs": 6,
+          "payload_hash": "d80016a0c613c4f8b4145ce6747283f46d568d485e7d75421bdfc7b23b5a2a28",
+          "proof_hash": "211cf5a87b437c5c05229100fc29b8e9dd7b2e3dabaac521ffa2705157904e45",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": {
+            "mode": "exact",
+            "passed": true,
+            "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json"
+          }
+        }
+      },
+      {
+        "label": "explicit-gpu-cold",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-explicit-gpu",
+        "passed": true,
+        "expected": {
+          "label": "explicit-gpu-cold",
+          "pack": "explicit-gpu",
+          "hits": 0,
+          "gpu": 6,
+          "fallback": 0,
+          "extra": [
+            "--lod-encoder",
+            "gpu"
+          ],
+          "compare": "default-cold"
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-explicit-gpu",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/explicit-gpu-cold-evidence/conversion-report.json",
+              "--lod-encoder",
+              "gpu"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.157066+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.432203+00:00",
+            "monotonic_seconds": 0.2745839170000002,
+            "child_user_seconds": 0.06130499999999997,
+            "child_system_seconds": 0.051706
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-explicit-gpu",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.442785+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.451785+00:00",
+            "monotonic_seconds": 0.008352291000000012,
+            "child_user_seconds": 0.0045630000000000115,
+            "child_system_seconds": 0.0039959999999999996
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-explicit-gpu",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/explicit-gpu-cold-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/explicit-gpu-cold-evidence/conversion-report.json",
+              "--expected-hits",
+              "0",
+              "--encoder",
+              "gpu",
+              "--compare",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+              "--comparison",
+              "exact"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.461685+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.517894+00:00",
+            "monotonic_seconds": 0.055564165999999915,
+            "child_user_seconds": 0.03950200000000001,
+            "child_system_seconds": 0.012549999999999978
+          }
+        ],
+        "report_sha256": "eb4b0ee772efc4cf7ffad953fe331a4708f2a4496f7d710b751acdcec8c53b6d",
+        "report_scalars": {
+          "complete": true,
+          "converted": 6,
+          "cache_hits": 0,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 0,
+          "lod_gpu_chunks": 6,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 112,
+          "publication_elapsed_ms": 7,
+          "elapsed_ms": 254
+        },
+        "gpu_notices": [
+          "Terrain atlas GPU encoder: Apple M1 Pro (Metal) (quality 2, batch 64 MiB)"
+        ],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/explicit-gpu-cold-evidence/lod-audit.json",
+          "sha256": "f49ed5f24a4af9d1975fc5e5bf88389c3e13c7e6dc5e07802fc426b89076d21d",
+          "chunks": 6,
+          "proofs": 6,
+          "payload_hash": "d80016a0c613c4f8b4145ce6747283f46d568d485e7d75421bdfc7b23b5a2a28",
+          "proof_hash": "211cf5a87b437c5c05229100fc29b8e9dd7b2e3dabaac521ffa2705157904e45",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": {
+            "mode": "exact",
+            "passed": true,
+            "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json"
+          }
+        }
+      },
+      {
+        "label": "unavailable-cold",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+        "passed": true,
+        "expected": {
+          "label": "unavailable-cold",
+          "pack": "fallback",
+          "hits": 0,
+          "gpu": 0,
+          "fallback": 6,
+          "backend": "dx12",
+          "compare": "default-cold",
+          "comparison": "encoder-transition"
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/unavailable-cold-evidence/conversion-report.json"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.528398+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": "dx12"
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.958532+00:00",
+            "monotonic_seconds": 0.42947187499999995,
+            "child_user_seconds": 0.48167599999999994,
+            "child_system_seconds": 0.038599999999999995
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.968524+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:38.977481+00:00",
+            "monotonic_seconds": 0.008281917000000139,
+            "child_user_seconds": 0.004425000000000012,
+            "child_system_seconds": 0.003945000000000032
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/unavailable-cold-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/unavailable-cold-evidence/conversion-report.json",
+              "--expected-hits",
+              "0",
+              "--encoder",
+              "gpu",
+              "--allow-unproven",
+              "--compare",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+              "--comparison",
+              "encoder-transition"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:38.987580+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.042858+00:00",
+            "monotonic_seconds": 0.05451704099999999,
+            "child_user_seconds": 0.03851899999999997,
+            "child_system_seconds": 0.012517
+          }
+        ],
+        "report_sha256": "ec666f153a78507deb391560549cbfa199656ad70d453e642be68957f230bc9d",
+        "report_scalars": {
+          "complete": true,
+          "converted": 6,
+          "cache_hits": 0,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 0,
+          "lod_gpu_chunks": 0,
+          "lod_cpu_fallback_chunks": 6,
+          "lod_elapsed_ms": 270,
+          "publication_elapsed_ms": 8,
+          "elapsed_ms": 415
+        },
+        "gpu_notices": [
+          "Terrain atlas GPU unavailable (no GPU adapter: No suitable graphics adapter found; noop not requested, vulkan not requested, metal not requested, dx12 support not compiled in, gl not requested, webgpu not requested); using CPU encoding"
+        ],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/unavailable-cold-evidence/lod-audit.json",
+          "sha256": "cacc6e37652ea25269e693ee9b8c0038b4daf22bf830f789d7bdf6d78187e31e",
+          "chunks": 6,
+          "proofs": 0,
+          "payload_hash": "707219d3e4e948ce78d47e6c24796ab6f9015538511bec4d54a139cfca70c52d",
+          "proof_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": {
+            "mode": "encoder-transition",
+            "passed": true,
+            "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json"
+          }
+        }
+      },
+      {
+        "label": "healthy-retry",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+        "passed": true,
+        "expected": {
+          "label": "healthy-retry",
+          "pack": "fallback",
+          "hits": 0,
+          "gpu": 6,
+          "fallback": 0,
+          "compare": "default-cold"
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/conversion-report.json"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.053571+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.328899+00:00",
+            "monotonic_seconds": 0.274595583,
+            "child_user_seconds": 0.06172,
+            "child_system_seconds": 0.054456000000000004
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.339610+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.348489+00:00",
+            "monotonic_seconds": 0.008086874999999605,
+            "child_user_seconds": 0.004377000000000075,
+            "child_system_seconds": 0.003697999999999979
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/conversion-report.json",
+              "--expected-hits",
+              "0",
+              "--encoder",
+              "gpu",
+              "--compare",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json",
+              "--comparison",
+              "exact"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.358646+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.412149+00:00",
+            "monotonic_seconds": 0.05267220900000025,
+            "child_user_seconds": 0.03761199999999998,
+            "child_system_seconds": 0.011797000000000002
+          }
+        ],
+        "report_sha256": "ac456978cc35bf0c8a97ca7c5f5a5790a3007e993b91906c37ad5e7245f34c54",
+        "report_scalars": {
+          "complete": true,
+          "converted": 0,
+          "cache_hits": 6,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 0,
+          "lod_gpu_chunks": 6,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 114,
+          "publication_elapsed_ms": 19,
+          "elapsed_ms": 260
+        },
+        "gpu_notices": [
+          "Terrain atlas GPU encoder: Apple M1 Pro (Metal) (quality 2, batch 64 MiB)"
+        ],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/lod-audit.json",
+          "sha256": "324bd7c225bed629bee92a3eca8b92bfb36d0babcd89b2ba77ea297ab37f365f",
+          "chunks": 6,
+          "proofs": 6,
+          "payload_hash": "d80016a0c613c4f8b4145ce6747283f46d568d485e7d75421bdfc7b23b5a2a28",
+          "proof_hash": "211cf5a87b437c5c05229100fc29b8e9dd7b2e3dabaac521ffa2705157904e45",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": {
+            "mode": "exact",
+            "passed": true,
+            "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/default-cold-evidence/lod-audit.json"
+          }
+        }
+      },
+      {
+        "label": "retry-warm",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+        "passed": true,
+        "expected": {
+          "label": "retry-warm",
+          "pack": "fallback",
+          "hits": 6,
+          "gpu": 0,
+          "fallback": 0,
+          "compare": "healthy-retry"
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/retry-warm-evidence/conversion-report.json"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.423084+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.600399+00:00",
+            "monotonic_seconds": 0.17652016599999998,
+            "child_user_seconds": 0.023214999999999986,
+            "child_system_seconds": 0.04438199999999998
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.611697+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.620857+00:00",
+            "monotonic_seconds": 0.00825054199999986,
+            "child_user_seconds": 0.0044880000000000475,
+            "child_system_seconds": 0.003686999999999996
+          },
+          {
+            "phase": "lod-audit",
+            "command": [
+              "/Library/Developer/CommandLineTools/usr/bin/python3",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/scripts/lod-performance/audit_lod_pack.py",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--output",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/retry-warm-evidence/lod-audit.json",
+              "--expected-chunks",
+              "6",
+              "--workers",
+              "1",
+              "--report",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/retry-warm-evidence/conversion-report.json",
+              "--expected-hits",
+              "6",
+              "--encoder",
+              "gpu",
+              "--compare",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/lod-audit.json",
+              "--comparison",
+              "exact"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.630962+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.684209+00:00",
+            "monotonic_seconds": 0.05237879099999976,
+            "child_user_seconds": 0.03753899999999999,
+            "child_system_seconds": 0.011584000000000039
+          }
+        ],
+        "report_sha256": "47e0fc23c159aeee464d3ed12304d8b5ef1f3ccc130a970608339bc2898c23e7",
+        "report_scalars": {
+          "complete": true,
+          "converted": 0,
+          "cache_hits": 6,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 6,
+          "lod_cache_hits": 6,
+          "lod_gpu_chunks": 0,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 13,
+          "publication_elapsed_ms": 23,
+          "elapsed_ms": 162
+        },
+        "gpu_notices": [],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "lod_audit": {
+          "path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/retry-warm-evidence/lod-audit.json",
+          "sha256": "d1f50c0cd8b999d95211e40a2c9595f3d284631d80f818206b8e1362fb9729a9",
+          "chunks": 6,
+          "proofs": 6,
+          "payload_hash": "d80016a0c613c4f8b4145ce6747283f46d568d485e7d75421bdfc7b23b5a2a28",
+          "proof_hash": "211cf5a87b437c5c05229100fc29b8e9dd7b2e3dabaac521ffa2705157904e45",
+          "geometry_hash": "776cbf6512588629b577c09ec1f0b532fccd7fbe9f5b827c4a32471e37fc35ed",
+          "comparison": {
+            "mode": "exact",
+            "passed": true,
+            "previous": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/healthy-retry-evidence/lod-audit.json"
+          }
+        }
+      },
+      {
+        "label": "no-lod",
+        "pack": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+        "passed": true,
+        "expected": {
+          "label": "no-lod",
+          "pack": "fallback",
+          "hits": 0,
+          "gpu": 0,
+          "fallback": 0,
+          "backend": "dx12",
+          "extra": [
+            "--no-lod"
+          ],
+          "no_lod": true
+        },
+        "steps": [
+          {
+            "phase": "conversion",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/Data",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--cpu-jobs",
+              "2",
+              "--io-jobs",
+              "1",
+              "--report-json",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/no-lod-evidence/conversion-report.json",
+              "--no-lod"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.695214+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": "dx12"
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.788906+00:00",
+            "monotonic_seconds": 0.09280224999999964,
+            "child_user_seconds": 0.010774999999999979,
+            "child_system_seconds": 0.03340299999999996
+          },
+          {
+            "phase": "ordinary-check",
+            "command": [
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/conversion-perf-build/release/converter",
+              "check",
+              "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/default-readiness/runs/20261009T212537Z-27c68753/pack-fallback",
+              "--full"
+            ],
+            "state": "passed",
+            "started_at_utc": "2026-10-09T21:25:39.800295+00:00",
+            "recorded_environment": {
+              "WGPU_BACKEND": null
+            },
+            "exit_code": 0,
+            "finished_at_utc": "2026-10-09T21:25:39.809478+00:00",
+            "monotonic_seconds": 0.00822962500000024,
+            "child_user_seconds": 0.004493999999999998,
+            "child_system_seconds": 0.003591000000000011
+          }
+        ],
+        "report_sha256": "3c411bbd364795820f9557e44fd99fd1d902581ddbfec4f0c98a21d9daafabe3",
+        "report_scalars": {
+          "complete": true,
+          "converted": 0,
+          "cache_hits": 6,
+          "skipped": 0,
+          "pruned_texture_references": 0,
+          "lod_chunks": 0,
+          "lod_cache_hits": 0,
+          "lod_gpu_chunks": 0,
+          "lod_cpu_fallback_chunks": 0,
+          "lod_elapsed_ms": 0,
+          "publication_elapsed_ms": 17,
+          "elapsed_ms": 79
+        },
+        "gpu_notices": [],
+        "ordinary_payload_inventory_hash": "5ded966e73ace6d8c4682f226bff2f3da22da275c7118b3a97cf067eb014f1a2",
+        "no_lod_verified": true
+      }
+    ],
+    "limitations": [
+      "Synthetic nine-cell behavior validation, not a performance benchmark.",
+      "GPU absence is requested through WGPU_BACKEND=dx12 on macOS.",
+      "Fallback is intentionally unproven; later healthy GPU runs must retry.",
+      "Default source DDS encoding remains CPU; only terrain atlas selection is tested.",
+      "No-LOD skip is observed through zero counters, absent artifacts and absent initialization/fallback notices."
+    ],
+    "finished_at_utc": "2026-10-09T21:25:39.814443+00:00"
+  },
+  "native_status_sha256": "a7238623e5706f07777028550b312023e97016c2e9649a8d1824f9eb32cc0ae4",
+  "historical_full_pack_receipt": {
+    "path": "docs/research/lod-conversion-implementation-20261009.json",
+    "sha256": "4eca7fc45363222b5c077b0d30530f38828e8e31b15142f42027915f5cfc7f91",
+    "scope": "Earlier pinned source/binaries; not final-tree performance."
+  },
+  "validation_limits": [
+    "Current native behavior validation uses nine synthetic LAND cells and six chunks, not a full real-game conversion or performance benchmark.",
+    "No current native DX12 or Vulkan execution, actual power-loss test, or engine visual acceptance.",
+    "cargo-nextest and cargo-audit are not installed locally; cargo test covers CI library/bin/test/example target groups. Required Linux CI/security audit and human review remain pending.",
+    "The local filesystem fixture-generation budget fails twice; its threshold and flushing behavior were retained. Source equivalence is not a measured baseline or a causal attribution.",
+    "The stacked base does not automatically trigger run_tests.yml; manually dispatch CI or retarget after PR167 merges."
+  ]
+}

@@ -1,11 +1,13 @@
 //! Proposed V92: only accepted current-run mesh artifacts may affect the world audit.
 //! Historical prune records describe omissions; they do not prove mesh provenance.
 
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport,
     cache::{
         CONVERTER_SCHEMA_VERSION, ConversionManifest, StagedOutput, StagingJournal,
-        configuration_hash, configuration_hash_for_schema,
+        asset_configuration_hash_for_schema, configuration_hash, configuration_hash_for_schema,
     },
 };
 use std::{collections::BTreeSet, fs, path::Path};
@@ -107,7 +109,7 @@ async fn v72_historical_prune_record_cannot_certify_a_removed_source() {
             fs::remove_file(data.join("Skyrim - Meshes.bsa")).unwrap();
             fs::create_dir_all(output.join("meshes")).unwrap();
             fs::copy(staging.join(MESH), output.join(MESH)).unwrap();
-            let mut config = PipelineConfig::new(&data, &output);
+            let mut config = common::cpu_lod_config(&data, &output);
             let mut manifest = ConversionManifest {
                 schema_version: schema,
                 complete: true,
@@ -138,7 +140,7 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
         let output = temp.path().join("output");
         let staging = temp.path().join("output.staging-resume");
         generate_data(&data);
-        let mut config = PipelineConfig::new(&data, &output);
+        let mut config = common::cpu_lod_config(&data, &output);
         let first = run(config.clone()).await;
         assert!(first.complete);
         assert_eq!(first.integration.as_ref().unwrap().bounds_updated, 1);
@@ -157,7 +159,12 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
                 SOURCE,
                 &StagedOutput {
                     schema_version: schema,
-                    configuration_hash: configuration_hash_for_schema(&config, schema).unwrap(),
+                    configuration_hash: if schema == CONVERTER_SCHEMA_VERSION {
+                        asset_configuration_hash_for_schema(&config, schema, "nif").unwrap()
+                    } else {
+                        // Historical full journal proofs remain deliberately ineligible.
+                        configuration_hash_for_schema(&config, schema).unwrap()
+                    },
                     source_hash: entry.source_hash.clone(),
                     output_size: entry.output_size,
                     output_hash: entry.output_hash.clone(),
@@ -165,6 +172,9 @@ async fn v72_removed_source_invalidates_previously_verified_pruned_mesh() {
             )
             .unwrap();
         manifest.schema_version = schema;
+        if schema != CONVERTER_SCHEMA_VERSION {
+            manifest.asset_configuration_hashes.clear();
+        }
         manifest.configuration_hash = if schema == CONVERTER_SCHEMA_VERSION {
             configuration_hash(&config).unwrap()
         } else {

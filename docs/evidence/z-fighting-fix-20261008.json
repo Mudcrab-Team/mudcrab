@@ -1,0 +1,91 @@
+{
+  "format": "mudcrab-z-fighting-fix-evidence-v1",
+  "recorded_at_utc": "2026-10-09T03:47:03.258700+00:00",
+  "code_baseline": "39fea880e791f9decd2bd5fd3bacd036c3612ab8",
+  "native_target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "native_numeric_bias_recovered": false,
+  "renderer_policy": {
+    "decal_constant_bias_reversed_z_units": 4,
+    "color_pass": "sorted after opaque/cutout receivers",
+    "preserve_authored_alpha_mode": true,
+    "authored_depth_state": true,
+    "camera_prepass": false,
+    "decal_shadow_casting": false,
+    "depth_disabled_shadow_casting": false
+  },
+  "gpu_regression": {
+    "backend": "Metal",
+    "adapter": "Apple M1 Pro",
+    "views": 9,
+    "samples": 54,
+    "passed": true,
+    "legacy_control_passed": false,
+    "legacy_failing_views": 8,
+    "report_sha256": "6fd3743c733bc969a1e126a0d7c8248eb5f3a6d1f439d0a939d7c2a5055cce29"
+  },
+  "engine_unit_tests": {
+    "passed": 331,
+    "failed": 0,
+    "log_sha256": "a8cf379826c1e071ab24349d7c7295ae3e2ffbcd8825ca6a88fdb1867a961bf3"
+  },
+  "audit_unit_tests": {
+    "passed": 25,
+    "failed": 0,
+    "environment": {
+      "TMPDIR": "/private/tmp"
+    },
+    "log_sha256": "14bde65320ffeb23eff9895ce349624da1ac759327e0d0c77a6c070ab8626017"
+  },
+  "engine_examples_compile": true,
+  "real_asset_startup": {
+    "passed": true,
+    "frames": 327,
+    "renderer_proof_frames": 326,
+    "asset_load_failures": 0,
+    "material_validation_failures": 0,
+    "renderer_validation_failures": 0,
+    "pending_asset_instances_at_exit": 283,
+    "report_sha256": "46cd805ccea452b4dcf1b6fbcc85767e1e430d4639138e68267bf6c73bb554ba",
+    "performance_acceptance": false
+  },
+  "real_hotspot_captures": {
+    "settled": 3,
+    "visual_stability_verified": false,
+    "reason": "Surrounding geometry obscures the selected triangle pair.",
+    "frame_requested": [
+      1280,
+      720
+    ],
+    "actual_frame": [
+      1280,
+      722
+    ]
+  },
+  "broad_python_suite": {
+    "default_mac_environment_passed": false,
+    "failures": 2,
+    "errors": 18,
+    "reason": "Existing tests require a physical temporary root and GNU realpath, absent in the default environment.",
+    "log_sha256": "840e436625185b82eb81f2d9b45f8ea77b7a6ff93f09df877fba8ad62a4796ad"
+  },
+  "source_sha256": {
+    "crates/engine/src/nif_depth.rs": "ee004966ce19b6459d55858158641e24fe92f92ff2564cf20491c4250f595a8f",
+    "crates/engine/src/nif_material.rs": "61cd4a82d981a8fae3886742ab900a1419c4365041cc17d7b7deca68a31b375e",
+    "crates/engine/src/streaming.rs": "af9cf2b9ce9c531847b59532a874d6d61a0daf44732e4d0ff4497fcbe77d8b71",
+    "crates/engine/src/render.rs": "16cbc59237cbd9b1d2e7d60e92a6fa3066066f808b958e473785570e48719519",
+    "crates/engine/src/shaders/terrain.wgsl": "2c2681c310eed271afac36b8c080cd537137de72178da18fca4d55fc82689422",
+    "crates/engine/src/lib.rs": "59d3cce9b57899ddd91518f4223d11dd1ecff1f08890e6a11e5b25adc53e298e",
+    "crates/engine/examples/material_depth_probe.rs": "a8355e9a0950a873a4c882f543c18ae1e549222337b724650466388ba876b51e"
+  },
+  "binary_sha256": "574d0d1dce34b149bd6fc9849b7c760bdcfc4aa54717db20cca29ad8d2405827",
+  "source_assets_modified": false,
+  "whole_game_z_fighting_clear": false,
+  "remaining_candidates": [
+    "duplicate placements",
+    "ordinary shape overlaps",
+    "terrain and road intersections",
+    "full-detail and LOD overlap"
+  ],
+  "private_build_directory": "target/z-fighting/fixed-build",
+  "private_gpu_report_directory": "target/z-fighting/depth-probe-v2"
+}

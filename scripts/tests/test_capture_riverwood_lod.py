@@ -70,23 +70,23 @@ def make_package(package):
     write_json(
         package / "assets/lod-manifest.json",
         {
-            "converter_schema": 24,
-            "world_database_schema": 7,
+            "converter_schema": 28,
+            "world_database_schema": 9,
             "build_identity": identity,
             "chunks": 1,
         },
     )
     write_json(
         package / "assets/conversion-manifest.json",
-        {"schema_version": 24, "complete": True},
+        {"schema_version": 28, "complete": True},
     )
     write_json(
         package / "assets/integration-report.json",
-        {"schema_version": 7, "passed": True},
+        {"schema_version": 9, "passed": True},
     )
     with sqlite3.connect(package / "assets/skyrim_world.db") as database:
         database.execute("CREATE TABLE schema_info(version INTEGER NOT NULL)")
-        database.execute("INSERT INTO schema_info(version) VALUES (7)")
+        database.execute("INSERT INTO schema_info(version) VALUES (9)")
         database.execute(
             "CREATE TABLE lod_build(id INTEGER PRIMARY KEY, build_identity TEXT NOT NULL)"
         )
@@ -296,16 +296,25 @@ class CaptureRiverwoodGateTests(unittest.TestCase):
     def test_nested_output_is_rejected_before_writes(self):
         package = self.root / "package"
         package.mkdir()
-        output = package / "new-capture"
-        result = subprocess.run(
-            ["bash", str(SCRIPT), str(package), str(output)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn("Capture output must be outside the package", result.stderr)
-        self.assertFalse(output.exists())
+        outputs = [
+            package / "new-capture",
+            package / "missing-parent" / "new-capture",
+        ]
+        if sys.platform != "win32":
+            alias = self.root / "package-alias"
+            alias.symlink_to(package, target_is_directory=True)
+            outputs.append(alias / "new-capture")
+        for output in outputs:
+            with self.subTest(output=output):
+                result = subprocess.run(
+                    ["bash", str(SCRIPT), str(package), str(output)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Capture output must be outside the package", result.stderr)
+                self.assertFalse(output.exists())
         self.assertEqual(list(package.iterdir()), [])
 
     def test_valid_postflight_reports_pass(self):

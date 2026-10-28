@@ -1,0 +1,33 @@
+{
+  "name": "travel",
+  "description": "The travel route of the #184 baseline: about 23,800 units on foot at running speed (400 units per second, about 59 seconds) from the Riverwood road start north-east over the hills towards Whiterun, across 8 cell borders (9 cells, grid 4,-12 to 7,-7) in Tamriel. Exterior only. The frame-time goal while travelling is measured on this route and tuned against it; check.json is the held-out route.",
+  "notes": [
+    "Start (19600, -46650) is the start of the Riverwood road, in grid 4,-12.",
+    "The first 6,000 units follow the road's direction (north-east) to about (23900, -42300); a straight line along the road's remaining chunks crosses a river bed that lies below its cell's water level (terrain -421 against water -250 at about (24200, -39500)), where a camera that follows the terrain would be under water, so the later waypoints go around it.",
+    "Chosen from the converted world database (terrain heights and per-cell water heights, read-only): every point of the route is at least 40 units above the cell's water level, and the terrain slope between 16-unit samples is at most about 40 degrees, with short steeper steps.",
+    "The route ends on the hills south-east of Whiterun, about 24,000 units from the city gate. Whiterun itself is a separate worldspace and not part of the route.",
+    "Eye height 120 units above the terrain is about a standing eye in Skyrim units."
+  ],
+  "worldspace": "0x3c",
+  "speed": 400,
+  "eye_height": 120,
+  "loop": false,
+  "start": "world_ready",
+  "waypoints": [
+    [19600, -46650],
+    [23904, -42336],
+    [24864, -41280],
+    [25248, -40512],
+    [26400, -40032],
+    [26880, -39552],
+    [26976, -39072],
+    [29280, -36864],
+    [30048, -35328],
+    [31008, -33504],
+    [31200, -32736],
+    [32256, -31200],
+    [32544, -30432],
+    [32544, -28512],
+    [32160, -28032]
+  ]
+}

@@ -56,6 +56,15 @@ cd mudcrab
 cargo check --workspace
 ```
 
+When Cargo runs inside this workspace, desktop Windows x64 MSVC builds select SQLite's private
+heap through `CFLAGS_x86_64_pc_windows_msvc`. This keeps database allocation
+separate from decoded records without changing SQL or transaction safety. Other
+targets keep their existing allocator. These SQLite-prefixed defines also reach
+other C dependencies built for that Windows target. If you supply your own
+target-specific CFLAGS, retain `-DSQLITE_WIN32_MALLOC=1 -DSQLITE_WIN32_HEAP_CREATE=1`;
+Cargo preserves environment overrides, including
+the higher-priority hyphenated target spelling understood by `cc`.
+
 ### 4. No Game Installed? Generate Synthetic Assets
 ```bash
 cargo run -p dummy-content -- gen Data
@@ -117,7 +126,7 @@ The full path from idea to merge (checking for overlap, claiming an issue, draft
 
 ## ⚖️ License & Legal
 
-By contributing to Mudcrab, you agree that your contributions will be dual-licensed under the **MIT License** and **Apache License (Version 2.0)**.
+By contributing to Mudcrab, you agree that your contributions will be licensed under the **GNU General Public License v3 or later** (`GPL-3.0-or-later`).
 
 ### Legal Disclaimer
 Mudcrab is a clean-room engine reimplementation. **Do NOT upload, distribute, or submit copyrighted game assets** (`.bsa`, `.esm`, `.nif`, `.dds`, etc.) owned by Bethesda Softworks / ZeniMax Media in PRs or issues. All test fixtures must be generated procedurally or extracted dynamically at runtime from the user's legally owned game files.

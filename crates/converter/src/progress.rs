@@ -579,6 +579,11 @@ impl ProgressRenderer {
         if let Some(left) = self.estimate.time_left(elapsed) {
             let _ = write!(line, "  ~{} left", format_clock(left.as_secs_f64()));
         }
+        // LOD counts worlds in completed/total. Its batch message carries the accepted chunk
+        // counts within the current world; show those without inventing a completion estimate.
+        if event.stage == ProgressStage::LodChunks && !event.message.is_empty() {
+            let _ = write!(line, "  {}", event.message);
+        }
         line
     }
 }
@@ -685,6 +690,51 @@ mod tests {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(999), "999 B");
         assert_eq!(format_bytes(24_200_000_000), "24.2 GB");
+    }
+
+    #[test]
+    fn terminal_lod_redraw_shows_latest_batch_without_advancing_world_progress() {
+        let mut renderer = ProgressRenderer::new(true, false);
+        let mut batch = ProgressEvent::new(
+            ProgressStage::LodChunks,
+            1,
+            2,
+            None,
+            "Terrain LOD LargeWorld: 4/4673 chunks (2 reused)",
+        );
+        let overall = format!("[overall {:>3.0}%]", batch.overall() * 100.0);
+        let first = renderer.update(&batch, Duration::ZERO).unwrap();
+        assert!(first.starts_with('\r'));
+        assert!(first.contains(&batch.message));
+        assert!(first.contains(&format!(" 50%  {overall}")), "{first:?}");
+
+        batch.message = "Terrain LOD LargeWorld: 8/4673 chunks (4 reused)".into();
+        assert!(renderer.update(&batch, Duration::from_millis(50)).is_none());
+        let tick = renderer.tick(Duration::from_millis(250)).unwrap();
+        assert!(tick.contains(&batch.message), "{tick:?}");
+        assert!(!tick.contains("4/4673 chunks"), "{tick:?}");
+        assert!(tick.contains(&format!(" 50%  {overall}")), "{tick:?}");
+        assert!(!tick.contains("items/s") && !tick.contains(" left"));
+        assert_eq!(ProgressStage::LodChunks.weight(), 0.0);
+
+        let completed = ProgressEvent::new(
+            ProgressStage::LodChunks,
+            2,
+            2,
+            None,
+            "Compiling terrain LOD chunks",
+        );
+        let final_line = renderer
+            .update(&completed, Duration::from_millis(500))
+            .unwrap();
+        assert!(
+            final_line.contains(&format!("100%  {overall}")),
+            "{final_line:?}"
+        );
+        assert!(!final_line.contains("LargeWorld"), "{final_line:?}");
+        assert!(final_line.chars().count() >= tick.chars().count());
+        assert!(!final_line.contains('\x1b'));
+        assert_eq!(completed.overall(), batch.overall());
     }
 
     #[test]

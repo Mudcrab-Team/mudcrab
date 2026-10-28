@@ -41,6 +41,8 @@ use serde::Serialize;
 /// VMAD Script Property Value Types
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ScriptPropertyValue {
+    /// Native type zero carries no value bytes, including removed properties.
+    None,
     Object(ScriptObjectProperty),
     WString(String),
     Int(i32),
@@ -224,6 +226,7 @@ pub fn parse_script_property(
     };
 
     let (input, value) = match property_type {
+        0 => (input, ScriptPropertyValue::None),
         1 => {
             let (i, obj) = parse_object_property(input, obj_format)?;
             (i, ScriptPropertyValue::Object(obj))
@@ -613,6 +616,7 @@ pub fn remap_primary_form_ids(
                 take_mut(data, &mut cursor, 1)?;
             }
             match property_type {
+                0 => {}
                 1 => remap_object(data, &mut cursor, object_format, &mut remap)?,
                 2 => skip_wstring(data, &mut cursor)?,
                 3 | 4 => {

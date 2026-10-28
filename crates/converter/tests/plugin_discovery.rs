@@ -1,4 +1,6 @@
 //! Exercise automatic plugin discovery through the production conversion path.
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig,
     esm::{EsmParser, load_order::LoadOrder, read_plugins_txt},
@@ -90,7 +92,7 @@ async fn fallback_orders_dependencies_and_ignores_nested_plugins_but_keeps_asset
     fs::write(data.join("Optional/ZMod.esp"), b"invalid duplicate backup").unwrap();
     fs::write(data.join("Optional/Unused.esp"), b"invalid optional plugin").unwrap();
     let output = dir.path().join("modern");
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     assert!(config.plugins_file.is_none());
     assert!(run(config.clone()).await.unwrap().complete);
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -145,7 +147,7 @@ async fn nested_only_plugins_warn_but_asset_conversion_completes_without_databas
     fs::rename(data.join("Skyrim.esm"), nested.join("Skyrim.esm")).unwrap();
     fs::write(nested.join("Backup.esp"), b"invalid ignored plugin").unwrap();
     let output = dir.path().join("modern");
-    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    let report = run(common::cpu_lod_config(&data, &output)).await.unwrap();
     assert!(report.complete, "{report:?}");
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
@@ -186,7 +188,7 @@ async fn nested_only_plugin_notice_reaches_the_progress_channel() {
         }
         notices
     });
-    let report = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+    let report = AssetPipeline::run_async(common::cpu_lod_config(&data, &output), tx)
         .await
         .map_err(|error| format!("{error:?}"))
         .unwrap();
@@ -224,7 +226,7 @@ async fn no_plugins_converts_assets_without_warning_or_database() {
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    let report = run(common::cpu_lod_config(&data, &output)).await.unwrap();
     assert!(report.complete, "{report:?}");
     assert!(report.converted > 0);
     assert_eq!(report.skipped, 0);
@@ -247,7 +249,7 @@ async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
     plugin(&data, "ZLight.esp", &["Skyrim.esm"], 0x200, Some(222.0));
     let output = dir.path().join("modern");
     assert!(
-        run(PipelineConfig::new(&data, &output))
+        run(common::cpu_lod_config(&data, &output))
             .await
             .unwrap()
             .complete
@@ -273,8 +275,81 @@ async fn fallback_keeps_espfe_in_regular_order_without_changing_light_slots() {
     assert!(!order.normal.contains_key("zlight.esp"));
 }
 
+/// Plugin names the published database lists, in load order.
+fn published_plugins(output: &Path) -> Vec<String> {
+    Connection::open(output.join("skyrim_world.db"))
+        .unwrap()
+        .prepare("SELECT name FROM plugins ORDER BY priority")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The published winning `fJumpHeightMin`, which each synthetic plugin may define.
+fn published_jump_height(output: &Path) -> f64 {
+    Connection::open(output.join("skyrim_world.db"))
+        .unwrap()
+        .query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// Automatic discovery skips a plugin with a missing master, its dependents and an unusable
+/// header with bounded notices, and still publishes the usable neighbor's records.
 #[tokio::test]
-async fn fallback_reports_missing_masters_and_cycles_with_plugin_names() {
+async fn fallback_skips_missing_masters_and_unusable_headers_and_publishes_neighbors() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("Data");
+    layout::prepare_directory(&data, false).unwrap();
+    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+    plugin(
+        &data,
+        "Orphan.esp",
+        &["Skyrim.esm", "Absent.esp"],
+        0,
+        Some(999.0),
+    );
+    plugin(
+        &data,
+        "Orphan Patch.esp",
+        &["Skyrim.esm", "Orphan.esp"],
+        0,
+        Some(998.0),
+    );
+    fs::write(data.join("Broken.esp"), b"not a plugin header").unwrap();
+    plugin(&data, "Neighbor.esp", &["Skyrim.esm"], 0, Some(150.0));
+    let output = dir.path().join("modern");
+    let report = run(PipelineConfig::new(&data, &output)).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    let notices = report.notices.join("\n");
+    assert!(
+        notices.contains("skipping Orphan.esp: required master Absent.esp is missing"),
+        "{notices}"
+    );
+    assert!(
+        notices.contains("skipping Orphan Patch.esp: required master Absent.esp"),
+        "{notices}"
+    );
+    assert!(
+        notices.contains("skipping Broken.esp: unusable plugin header"),
+        "{notices}"
+    );
+    let names = published_plugins(&output);
+    assert!(names.contains(&"Neighbor.esp".to_owned()), "{names:?}");
+    for skipped in ["Orphan.esp", "Orphan Patch.esp", "Broken.esp"] {
+        assert!(!names.contains(&skipped.to_owned()), "{names:?}");
+    }
+    assert_eq!(published_jump_height(&output), 150.0);
+}
+
+/// When recovery leaves no usable plugin, automatic discovery still fails with the cause.
+#[tokio::test]
+async fn fallback_fails_clearly_when_no_discovered_plugin_survives() {
     for cycle in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("Data");
@@ -283,7 +358,7 @@ async fn fallback_reports_missing_masters_and_cycles_with_plugin_names() {
         if cycle {
             plugin(&data, "B.esp", &["A.esp"], 0, None);
         }
-        let error = run(PipelineConfig::new(&data, dir.path().join("modern")))
+        let error = run(common::cpu_lod_config(&data, dir.path().join("modern")))
             .await
             .unwrap_err();
         assert!(
@@ -301,9 +376,10 @@ async fn fallback_reports_missing_masters_and_cycles_with_plugin_names() {
     }
 }
 
-/// Regular plugins keep their list order; one listed before its regular master still fails.
+/// Regular plugins keep their list order; one listed before its regular master is skipped,
+/// not moved, and the rest of the selection publishes.
 #[tokio::test]
-async fn explicit_plugin_order_is_preserved_and_not_silently_repaired() {
+async fn explicit_plugin_order_is_preserved_and_inversions_are_skipped_not_repaired() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("Data");
     layout::prepare_directory(&data, false).unwrap();
@@ -314,7 +390,7 @@ async fn explicit_plugin_order_is_preserved_and_not_silently_repaired() {
     let list = dir.path().join("plugins.txt");
     fs::write(&list, "Skyrim.esm\n*Z.esp\n*A.esp\n").unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list.clone());
     assert!(run(config.clone()).await.unwrap().complete);
     let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
@@ -328,10 +404,22 @@ async fn explicit_plugin_order_is_preserved_and_not_silently_repaired() {
         222.0
     );
     drop(conn);
-    // No master file needs Z.esp, so normalization leaves this regular inversion invalid.
+    // No master file needs Z.esp, so normalization keeps Patch.esp before it. Recovery skips
+    // Patch.esp with a warning instead of moving it or stopping the conversion.
     fs::write(&list, "Skyrim.esm\n*Patch.esp\n*Z.esp\n").unwrap();
-    let error = run(config).await.unwrap_err();
-    assert!(error.contains("must precede"), "{error}");
+    let report = run(config).await.unwrap();
+    assert!(report.complete, "{report:?}");
+    assert_eq!(report.skipped_plugins, ["Patch.esp"]);
+    assert!(
+        report.notices.iter().any(
+            |notice| notice.contains("plugins listed before their masters")
+                && notice.contains("first: Patch.esp before Z.esp")
+        ),
+        "{:?}",
+        report.notices
+    );
+    assert!(!published_plugins(&output).contains(&"Patch.esp".to_owned()));
+    assert_eq!(published_jump_height(&output), 100.0);
 }
 
 /// Reproduce #108 with a valid list whose ordinary override must beat a later master.
@@ -349,7 +437,7 @@ async fn explicit_regular_override_beats_a_master_listed_after_it() {
     let list = dir.path().join("plugins.txt");
     fs::write(&list, "Skyrim.esm\n*A.esp\n*B.esm\n").unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     let report = run(config).await.unwrap();
     assert!(report.complete, "{report:?}");
@@ -375,11 +463,11 @@ async fn explicit_regular_override_beats_a_master_listed_after_it() {
     );
 }
 
-/// Dependency hoisting must terminate on cycles and preserve validation failures.
+/// A master listed before its own master is skipped; a selection made only of a cycle and its
+/// dependents has no usable plugins left.
 #[test]
-fn explicit_order_rejects_missing_masters_inversions_and_cycles() {
+fn explicit_master_inversion_is_skipped_and_cycle_only_selection_is_empty() {
     let cases: &[&[(&str, &[&str])]] = &[
-        &[("MissingDependent.esm", &["Absent.esm"])],
         &[("Dependent.esm", &["Base.esm"]), ("Base.esm", &[])],
         &[
             ("A.esp", &["B.esp"]),
@@ -396,14 +484,15 @@ fn explicit_order_rejects_missing_masters_inversions_and_cycles() {
         }
         let path = dir.path().join("plugins.txt");
         fs::write(&path, list).unwrap();
-        let paths = read_plugins_txt(&path, dir.path()).unwrap();
-        let error = format!("{:?}", LoadOrder::read(&paths).err().unwrap());
-        assert!(error.contains("must precede"), "{error}");
-        assert!(
-            error.contains(&plugins[0].0.to_ascii_lowercase()),
-            "{error}"
-        );
-        assert!(error.contains(plugins[0].1[0]), "{error}");
+        let selected = read_plugins_txt(&path, dir.path());
+        if plugins.len() == 3 {
+            let error = format!("{:?}", selected.unwrap_err());
+            assert!(error.contains("no usable active plugins"), "{error}");
+            continue;
+        }
+        let paths = selected.unwrap();
+        let order = LoadOrder::read(&paths).unwrap();
+        assert_eq!(order.names, ["base.esm"]);
     }
 }
 
@@ -517,7 +606,7 @@ async fn explicit_plugin_list_loads_master_files_before_regular_plugins() {
 
     // The regular plugins now follow all masters; ESL-flagged Small.esp is last.
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list.clone());
     let first = run(config.clone()).await.unwrap();
     assert!(first.complete, "{first:?}");
@@ -666,7 +755,7 @@ async fn explicit_master_keeps_its_transitive_regular_prerequisites() {
     )
     .unwrap();
     let output = dir.path().join("modern");
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.plugins_file = Some(list);
     let report = run(config).await.unwrap();
     assert!(report.complete, "{report:?}");
@@ -697,19 +786,37 @@ async fn explicit_master_keeps_its_transitive_regular_prerequisites() {
     assert_eq!(setting, (50.0, "Last.esp".to_string()));
 }
 
+/// Unusable headers identify their source, while malformed framed records preserve a valid neighbor.
 #[test]
-fn header_and_record_errors_include_the_plugin_path() {
+fn header_errors_include_the_plugin_path_and_framed_record_errors_recover_locally() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Broken.esp");
     fs::write(&path, b"TES4").unwrap();
     let error = LoadOrder::read(std::slice::from_ref(&path)).err().unwrap();
     assert!(format!("{error:?}").contains(path.to_str().unwrap()));
     let malformed = record(b"STAT", 0x800, 0, b"DATA\x04\x00\x01".to_vec());
-    fs::write(&path, [record(b"TES4", 0, 0, vec![]), malformed].concat()).unwrap();
-    let error = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap_err();
-    let message = format!("{error:?}");
-    assert!(
-        message.contains(path.to_str().unwrap()) && message.contains("truncated DATA"),
-        "{message}"
-    );
+    fs::write(
+        &path,
+        [
+            record(b"TES4", 0, 0, vec![]),
+            malformed,
+            record(b"STAT", 0x801, 0, sub(b"EDID", b"Neighbor\0")),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let merged = EsmParser::merge_plugins(std::slice::from_ref(&path)).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[&0x801].subrecords[0].1, b"Neighbor\0");
+    let db = dir.path().join("world.db");
+    EsmParser::convert_plugins(&[path], &db).unwrap();
+    let conn = Connection::open(db).unwrap();
+    let ids: Vec<u32> = conn
+        .prepare("SELECT form_id FROM records ORDER BY form_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, [0x801]);
 }

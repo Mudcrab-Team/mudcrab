@@ -2,7 +2,8 @@
 //! file and its content-addressed blob in `.ingestion-cache` are one file, not two copies of its
 //! bytes. Neither ships in the published runtime pack.
 
-use converter::PipelineConfig;
+mod common;
+
 use std::{fs, io::Write};
 
 #[tokio::test]
@@ -35,7 +36,7 @@ async fn staged_vfs_entries_are_one_file_with_their_cache_blobs() {
     std::fs::create_dir_all(&backup).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let failure = converter::AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+    let failure = converter::AssetPipeline::run_async(common::cpu_lod_config(&data, &output), tx)
         .await
         .unwrap_err();
     drain.await.unwrap();

@@ -1,0 +1,85 @@
+{
+  "native_exit": 0,
+  "dimensions": [
+    1920,
+    1080
+  ],
+  "brightness": 1.3799999952316284,
+  "matching_camera": true,
+  "other_grading_unchanged": true,
+  "renderer_ready": true,
+  "pending_work": 0,
+  "png_sha256": "21c20f2b0b4c77d86c923d676a1c84ea78c3dc90d952d6021f3c0e82c5ecb768",
+  "source_head": "c69fbfbd4ba29469cf1d72c0214c46fec7768a50",
+  "source_tree": "9cf3743931d3af3eab38ea0b92f3cb9f28feb3ed",
+  "grade": "snapshot-srgb",
+  "visual_preset": "cool-gray",
+  "before_brightness": 1.15,
+  "approved_brightness": 1.38,
+  "saturation": 1.66,
+  "contrast": 1.5,
+  "tint_amount": 0.56,
+  "tint_rgb": [
+    0.88,
+    0.81,
+    0.72
+  ],
+  "fog_density_scale": 0.25,
+  "fog_far_srgb_u8": [
+    210,
+    222,
+    235
+  ],
+  "exposure_ev100": 9.7,
+  "tonemapping": "TonyMcMapface",
+  "sun_position_degrees": [
+    180,
+    45
+  ],
+  "camera_creation": [
+    21750,
+    -44530,
+    140
+  ],
+  "yaw_degrees": 90,
+  "pitch_degrees": -3,
+  "horizontal_fov_degrees": 72.73435310118231,
+  "vertical_fov_radians": 0.7853981852531433,
+  "water_time_seconds": 1.0,
+  "previews": [
+    {
+      "name": "before",
+      "original_png_sha256": "3ab1a2a0cd16a197e24a865d819affff281e46d039a31f824d08e253edc8bc9a",
+      "original_dimensions": [
+        1920,
+        1080
+      ],
+      "preview_sha256": "1b94b89f820a12d5ef0db33d26e21c285ba9898142b9e502ef0111884b62627d",
+      "preview_dimensions": [
+        960,
+        540
+      ],
+      "preview_bytes": 276054
+    },
+    {
+      "name": "approved",
+      "original_png_sha256": "21c20f2b0b4c77d86c923d676a1c84ea78c3dc90d952d6021f3c0e82c5ecb768",
+      "original_dimensions": [
+        1920,
+        1080
+      ],
+      "preview_sha256": "599499a226ef0cd7e03d69b4476c950a4461a1e9462fab075a107af89c5f85d8",
+      "preview_dimensions": [
+        960,
+        540
+      ],
+      "preview_bytes": 299567
+    }
+  ],
+  "limits": [
+    "JPEG previews resized to 960x540 for review; original 1920x1080 PNG hashes retained.",
+    "Only brightness changed between these two captures.",
+    "Skyrim projection, sunlight, and weather remain uncalibrated; visual approval does not establish retail parity.",
+    "GPU diagnostic queries were disabled for these native Metal captures."
+  ]
+}

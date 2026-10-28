@@ -1,6 +1,8 @@
 //! The interior preset end to end: the `dummy-content gen --with-interior`
 //! `Data/` tree through the real pipeline, and the world database it exports.
 
+mod common;
+
 use dummy_content::{esm, layout};
 use std::path::Path;
 
@@ -45,7 +47,7 @@ async fn generated_interior_plugin_converts_end_to_end() {
     generate_interior_data(&data);
 
     let output = directory.path().join("modern");
-    let config = converter::PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let report = converter::AssetPipeline::run_async(config, tx)

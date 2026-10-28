@@ -1,0 +1,2805 @@
+{
+  "generated_utc": "2026-10-09T05:03:06.644227+00:00",
+  "main_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+  "pr167_revision": "9ef353c1ef24959e21ec231532c14fbe4791c030",
+  "hardware": {
+    "cpu": "Apple M1 Pro",
+    "performance_cores": 8,
+    "efficiency_cores": 2,
+    "ram_bytes": 34359738368
+  },
+  "method_limits": [
+    "Direct fresh chunk compilation on fixed, warm/in-memory published inputs; excludes pipeline publication, fingerprints and unchanged-chunk reuse.",
+    "Opt-level 3 source snapshots with cached dependency/native codec libraries, not a release acceptance run.",
+    "Other worktree builds/engines were preserved; competing load varied.",
+    "Misc extraction sample contains uncompressed small files; no large-texture decompression attribution."
+  ],
+  "historical_full_run": {
+    "command": [
+      "./target/quick/converter",
+      "skyrim_game/Data",
+      "modern_assets",
+      "--texture-encoder",
+      "gpu",
+      "--cpu-jobs",
+      "8",
+      "--io-jobs",
+      "4",
+      "--report-json",
+      "target/setup/skyrim-conversion-report.json"
+    ],
+    "cwd": "/Users/taylor/Projects/mudcrab",
+    "started_at": "2026-10-08T15:55:35.714888+00:00",
+    "finished_at": "2026-10-08T17:21:11.204676+00:00",
+    "report": {
+      "complete": true,
+      "converted": 257867,
+      "cache_hits": 0,
+      "skipped": 0,
+      "lod_chunks": 4673,
+      "lod_elapsed_ms": 1227659,
+      "publication_elapsed_ms": 26154,
+      "elapsed_ms": 2633808,
+      "inputs_by_kind": {
+        "dds": 35663,
+        "nif": 25388,
+        "pex": 15162
+      }
+    },
+    "stages_first_last_events": [
+      {
+        "stage": "discovering",
+        "first_seconds": 0.001660167,
+        "last_seconds": 0.001660167
+      },
+      {
+        "stage": "extracting",
+        "first_seconds": 1.148777417,
+        "last_seconds": 992.0303115
+      },
+      {
+        "stage": "database",
+        "first_seconds": 992.030313417,
+        "last_seconds": 992.030313417
+      },
+      {
+        "stage": "meshes",
+        "first_seconds": 1026.519013167,
+        "last_seconds": 1128.383879375
+      },
+      {
+        "stage": "textures",
+        "first_seconds": 1138.656543,
+        "last_seconds": 1220.852217834
+      },
+      {
+        "stage": "scripts",
+        "first_seconds": 1222.118536667,
+        "last_seconds": 1225.482629667
+      },
+      {
+        "stage": "lod_chunks",
+        "first_seconds": 1225.490399834,
+        "last_seconds": 2451.969877042
+      },
+      {
+        "stage": "validating",
+        "first_seconds": 2465.944925834,
+        "last_seconds": 2475.5018955
+      },
+      {
+        "stage": "publishing",
+        "first_seconds": 2475.623262625,
+        "last_seconds": 2475.623262625
+      },
+      {
+        "stage": "complete",
+        "first_seconds": 2633.809916542,
+        "last_seconds": 2633.809916542
+      }
+    ],
+    "publishing_to_complete_seconds": 158.18665391700006,
+    "post_publication_remainder_seconds": 132.03265391700006,
+    "gpu_log_lines": [
+      "GPU texture encoder: Apple M1 Pro (Metal) (quality 2, batch 256 MiB)",
+      "GPU texture encoder: 10237 textures in 16 batches, 4.2 GB uploaded"
+    ],
+    "limitations": [
+      "Full-run stages are first-event to last-event durations; they omit transitions and Database/Publishing have a single event.",
+      "Previous completed real conversion source and current analysis source may differ; use current bounded probes for attribution.",
+      "No CPU/GPU/physical I/O sampling was captured by this prior full-run report."
+    ]
+  },
+  "lod_probes": {
+    "main-1": {
+      "aggregate_worker_seconds": {
+        "bake": 2.225852873,
+        "discarded_template": 105.970409916,
+        "encode_including_mips": 204.559991709,
+        "glb": 0.041484751,
+        "mips": 0.858506292
+      },
+      "average_cpu_cores": 0.8870759930882968,
+      "cache_load_seconds": 0.200164334,
+      "cells": 256,
+      "chunk_hashes_digest": "a8ad10d7ca3f5c865d91bbb44af0ce97904c10442ece028053aa65e87abe5027",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.764562,
+      "compile_user_seconds": 182.719017,
+      "compile_wall_seconds": 206.840879958,
+      "output_bytes": 43140640,
+      "peak_rss_bytes": 571883520,
+      "textures_load_seconds": 0.096758958,
+      "threads": 1
+    },
+    "main-4": {
+      "aggregate_worker_seconds": {
+        "bake": 2.096298959,
+        "discarded_template": 93.752003207,
+        "encode_including_mips": 199.846916209,
+        "glb": 0.03855504,
+        "mips": 0.812334208
+      },
+      "average_cpu_cores": 3.2484812091772493,
+      "block_label": "tamriel",
+      "cache_load_seconds": 0.907979,
+      "cells": 256,
+      "chunk_hashes_digest": "a8ad10d7ca3f5c865d91bbb44af0ce97904c10442ece028053aa65e87abe5027",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.9137409999999999,
+      "compile_user_seconds": 185.68773099999999,
+      "compile_wall_seconds": 57.442681667,
+      "output_bytes": 43140640,
+      "peak_rss_bytes": 721698816,
+      "textures_load_seconds": 0.093323917,
+      "threads": 4,
+      "worldspace_id": 60
+    },
+    "main-8": {
+      "aggregate_worker_seconds": {
+        "bake": 2.929904126,
+        "discarded_template": 96.359163627,
+        "encode_including_mips": 212.423155417,
+        "glb": 0.042589541,
+        "mips": 1.210484832
+      },
+      "average_cpu_cores": 6.211961814732448,
+      "block_label": "tamriel",
+      "cache_load_seconds": 0.979816125,
+      "cells": 256,
+      "chunk_hashes_digest": "a8ad10d7ca3f5c865d91bbb44af0ce97904c10442ece028053aa65e87abe5027",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.332998,
+      "compile_user_seconds": 187.460523,
+      "compile_wall_seconds": 30.23095225,
+      "output_bytes": 43140640,
+      "peak_rss_bytes": 903970816,
+      "textures_load_seconds": 0.093587709,
+      "threads": 8,
+      "worldspace_id": 60
+    },
+    "pr167-4": {
+      "aggregate_worker_seconds": {
+        "bake": 2.013473209,
+        "discarded_template": 0.0,
+        "encode_including_mips": 76.69359133,
+        "glb": 0.032665375,
+        "mips": 0.245483376
+      },
+      "average_cpu_cores": 3.5465300424904016,
+      "block_label": "tamriel",
+      "cache_load_seconds": 0.081364458,
+      "cells": 256,
+      "chunk_hashes_digest": "b29044e3aba720a9a2db7936af0b199dec053cc0c9ba3c9e597f06da14b550a9",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.19079400000000002,
+      "compile_user_seconds": 78.449095,
+      "compile_wall_seconds": 22.173755208,
+      "output_bytes": 43136608,
+      "peak_rss_bytes": 655900672,
+      "textures_load_seconds": 0.076549625,
+      "threads": 4,
+      "worldspace_id": 60
+    },
+    "main-ocean-4": {
+      "aggregate_worker_seconds": {
+        "bake": 0.427953916,
+        "discarded_template": 0.808656373,
+        "encode_including_mips": 1.460950166,
+        "glb": 0.040776958,
+        "mips": 0.197367829
+      },
+      "average_cpu_cores": 3.3953706468146296,
+      "block_label": "ocean",
+      "cache_load_seconds": 1.13556425,
+      "cells": 256,
+      "chunk_hashes_digest": "9762248df1ef892bfceee85bd05c51ef6d6e60c98363981d2c2247b0d68e99f8",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.030420000000000003,
+      "compile_user_seconds": 1.843199,
+      "compile_wall_seconds": 0.55181575,
+      "output_bytes": 43152276,
+      "peak_rss_bytes": 758448128,
+      "textures_load_seconds": 0.000265792,
+      "threads": 4,
+      "worldspace_id": 67110912
+    },
+    "pr167-ocean-4": {
+      "aggregate_worker_seconds": {
+        "bake": 0.437738581,
+        "discarded_template": 0.0,
+        "encode_including_mips": 0.310676293,
+        "glb": 0.044822666,
+        "mips": 0.131015249
+      },
+      "average_cpu_cores": 3.198756867557998,
+      "block_label": "ocean",
+      "cache_load_seconds": 0.083891292,
+      "cells": 256,
+      "chunk_hashes_digest": "cf204f6d5271262c94f7e293b1fca1afa31aa4b7a01059f81306542132ce3f6f",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.017656999999999992,
+      "compile_user_seconds": 0.719291,
+      "compile_wall_seconds": 0.23038575,
+      "output_bytes": 43148244,
+      "peak_rss_bytes": 615284736,
+      "textures_load_seconds": 0.00027725,
+      "threads": 4,
+      "worldspace_id": 67110912
+    },
+    "main-4-repeat": {
+      "aggregate_worker_seconds": {
+        "bake": 2.022958626,
+        "discarded_template": 90.149790707,
+        "encode_including_mips": 179.241900335,
+        "glb": 0.032544832,
+        "mips": 0.793478545
+      },
+      "average_cpu_cores": 3.5192401148722836,
+      "block_label": "tamriel",
+      "cache_load_seconds": 0.070850667,
+      "cells": 256,
+      "chunk_hashes_digest": "a8ad10d7ca3f5c865d91bbb44af0ce97904c10442ece028053aa65e87abe5027",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.23821199999999998,
+      "compile_user_seconds": 180.43008,
+      "compile_wall_seconds": 51.337301833,
+      "output_bytes": 43140640,
+      "peak_rss_bytes": 719831040,
+      "textures_load_seconds": 0.076894542,
+      "threads": 4,
+      "worldspace_id": 60
+    },
+    "pr167-4-repeat": {
+      "aggregate_worker_seconds": {
+        "bake": 2.018483875,
+        "discarded_template": 0.0,
+        "encode_including_mips": 76.820748211,
+        "glb": 0.030551497,
+        "mips": 0.24699933
+      },
+      "average_cpu_cores": 3.6031147526703386,
+      "block_label": "tamriel",
+      "cache_load_seconds": 0.07818675,
+      "cells": 256,
+      "chunk_hashes_digest": "b29044e3aba720a9a2db7936af0b199dec053cc0c9ba3c9e597f06da14b550a9",
+      "chunks": 21,
+      "compile_input_blocks": 0,
+      "compile_output_blocks": 0,
+      "compile_system_seconds": 0.06399,
+      "compile_user_seconds": 78.73562100000001,
+      "compile_wall_seconds": 21.869858833,
+      "output_bytes": 43136608,
+      "peak_rss_bytes": 674643968,
+      "textures_load_seconds": 0.076543708,
+      "threads": 4,
+      "worldspace_id": 60
+    }
+  },
+  "comparisons": {
+    "main4_mean_seconds": 54.38999175,
+    "pr4_mean_seconds": 22.0218070205,
+    "wall_time_reduction_percent": 59.511288176468604,
+    "cpu_time_reduction_percent": 57.13246353707462,
+    "pr_encode_share_percent": 97.40169621418319,
+    "main8_vs_main1_speedup": 6.8420233093385265
+  },
+  "extraction": {
+    "recorded_at_utc": "2026-10-09T04:55:58.637486+00:00",
+    "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+    "sample_entries": 2048,
+    "runs": [
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 0.597702,
+        "cpu_wall_ratio": 0.05588260155107178,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 950,
+        "major_faults": 142,
+        "minor_faults": 70,
+        "output": "target/lod-profile/extraction-1-1-sync",
+        "phase_thread_seconds": {
+          "close": 0.016458033,
+          "decompress": 0.007958863,
+          "hash": 0.019000417,
+          "mkdir": 0.014386074,
+          "rename": 0.23306399,
+          "sync_all": 10.114325096,
+          "write": 0.283949317
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": true,
+        "system_seconds": 0.56526,
+        "table_seconds": 0.00529875,
+        "user_seconds": 0.032442,
+        "voluntary_context_switches": 8343,
+        "wall_seconds": 10.695672417,
+        "workers": 1,
+        "ordinal": 1,
+        "label": "extraction-1-1-sync",
+        "started_at_utc": "2026-10-09T04:55:20.865416+00:00",
+        "finished_at_utc": "2026-10-09T04:55:31.813611+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-1-1-sync",
+          "2048",
+          "1",
+          "sync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 0.272651,
+        "cpu_wall_ratio": 0.9946265193853876,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 83,
+        "major_faults": 0,
+        "minor_faults": 215,
+        "output": "target/lod-profile/extraction-2-1-nosync",
+        "phase_thread_seconds": {
+          "close": 0.016112744,
+          "decompress": 0.000864727,
+          "hash": 0.011597376,
+          "mkdir": 0.00920165,
+          "rename": 0.120350703,
+          "sync_all": 0.0,
+          "write": 0.113717283
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": false,
+        "system_seconds": 0.254724,
+        "table_seconds": 0.005063417,
+        "user_seconds": 0.017927,
+        "voluntary_context_switches": 1,
+        "wall_seconds": 0.274124,
+        "workers": 1,
+        "ordinal": 2,
+        "label": "extraction-2-1-nosync",
+        "started_at_utc": "2026-10-09T04:55:31.814309+00:00",
+        "finished_at_utc": "2026-10-09T04:55:32.103544+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-2-1-nosync",
+          "2048",
+          "1",
+          "nosync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 0.5735399999999999,
+        "cpu_wall_ratio": 3.613121622490552,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 6604,
+        "major_faults": 0,
+        "minor_faults": 227,
+        "output": "target/lod-profile/extraction-3-4-nosync",
+        "phase_thread_seconds": {
+          "close": 0.032059292,
+          "decompress": 0.001088718,
+          "hash": 0.012141991,
+          "mkdir": 0.035775117,
+          "rename": 0.288366958,
+          "sync_all": 0.0,
+          "write": 0.259787689
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": false,
+        "system_seconds": 0.549986,
+        "table_seconds": 0.002616125,
+        "user_seconds": 0.023554,
+        "voluntary_context_switches": 0,
+        "wall_seconds": 0.158738083,
+        "workers": 4,
+        "ordinal": 3,
+        "label": "extraction-3-4-nosync",
+        "started_at_utc": "2026-10-09T04:55:32.103777+00:00",
+        "finished_at_utc": "2026-10-09T04:55:32.270034+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-3-4-nosync",
+          "2048",
+          "4",
+          "nosync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 1.4282510000000002,
+        "cpu_wall_ratio": 0.13792110090050744,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 18146,
+        "major_faults": 0,
+        "minor_faults": 213,
+        "output": "target/lod-profile/extraction-4-4-sync",
+        "phase_thread_seconds": {
+          "close": 0.073235165,
+          "decompress": 0.010686994,
+          "hash": 0.048701021,
+          "mkdir": 1.312449238,
+          "rename": 6.739221016,
+          "sync_all": 20.897766438,
+          "write": 12.004545782
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": true,
+        "system_seconds": 1.3637730000000001,
+        "table_seconds": 0.002819875,
+        "user_seconds": 0.064478,
+        "voluntary_context_switches": 18845,
+        "wall_seconds": 10.355565542,
+        "workers": 4,
+        "ordinal": 4,
+        "label": "extraction-4-4-sync",
+        "started_at_utc": "2026-10-09T04:55:32.270224+00:00",
+        "finished_at_utc": "2026-10-09T04:55:42.634296+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-4-4-sync",
+          "2048",
+          "4",
+          "sync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 1.481689,
+        "cpu_wall_ratio": 0.19416039528181936,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 38079,
+        "major_faults": 0,
+        "minor_faults": 255,
+        "output": "target/lod-profile/extraction-5-8-sync",
+        "phase_thread_seconds": {
+          "close": 0.041302787,
+          "decompress": 0.00443516,
+          "hash": 0.024602516,
+          "mkdir": 6.189953641,
+          "rename": 16.663938707,
+          "sync_all": 19.412969224,
+          "write": 18.561469318
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": true,
+        "system_seconds": 1.42431,
+        "table_seconds": 0.003005666,
+        "user_seconds": 0.057379,
+        "voluntary_context_switches": 19743,
+        "wall_seconds": 7.631262791,
+        "workers": 8,
+        "ordinal": 5,
+        "label": "extraction-5-8-sync",
+        "started_at_utc": "2026-10-09T04:55:42.634773+00:00",
+        "finished_at_utc": "2026-10-09T04:55:50.276316+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-5-8-sync",
+          "2048",
+          "8",
+          "sync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 0.86657,
+        "cpu_wall_ratio": 4.509486589719305,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 20424,
+        "major_faults": 0,
+        "minor_faults": 266,
+        "output": "target/lod-profile/extraction-6-8-nosync",
+        "phase_thread_seconds": {
+          "close": 0.069821664,
+          "decompress": 0.002337419,
+          "hash": 0.023179646,
+          "mkdir": 0.146125737,
+          "rename": 0.676946781,
+          "sync_all": 0.0,
+          "write": 0.599595279
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": false,
+        "system_seconds": 0.837255,
+        "table_seconds": 0.002710375,
+        "user_seconds": 0.029315,
+        "voluntary_context_switches": 0,
+        "wall_seconds": 0.192166,
+        "workers": 8,
+        "ordinal": 6,
+        "label": "extraction-6-8-nosync",
+        "started_at_utc": "2026-10-09T04:55:50.276683+00:00",
+        "finished_at_utc": "2026-10-09T04:55:50.477336+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-6-8-nosync",
+          "2048",
+          "8",
+          "nosync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 1.056915,
+        "cpu_wall_ratio": 0.13265503130744213,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 18072,
+        "major_faults": 0,
+        "minor_faults": 219,
+        "output": "target/lod-profile/extraction-7-4-sync",
+        "phase_thread_seconds": {
+          "close": 0.033382574,
+          "decompress": 0.003784858,
+          "hash": 0.01851291,
+          "mkdir": 0.874135403,
+          "rename": 4.035769508,
+          "sync_all": 16.875328544,
+          "write": 9.984737056
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": true,
+        "system_seconds": 1.009811,
+        "table_seconds": 0.002813208,
+        "user_seconds": 0.047104,
+        "voluntary_context_switches": 17625,
+        "wall_seconds": 7.96739475,
+        "workers": 4,
+        "ordinal": 7,
+        "label": "extraction-7-4-sync",
+        "started_at_utc": "2026-10-09T04:55:50.477620+00:00",
+        "finished_at_utc": "2026-10-09T04:55:58.453868+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-7-4-sync",
+          "2048",
+          "4",
+          "sync"
+        ]
+      },
+      {
+        "archive_entries": 14031,
+        "compressed_entries": 0,
+        "cpu_seconds": 0.5880690000000001,
+        "cpu_wall_ratio": 3.366802426586599,
+        "decoded_bytes": 2326291,
+        "involuntary_context_switches": 7773,
+        "major_faults": 0,
+        "minor_faults": 241,
+        "output": "target/lod-profile/extraction-8-4-nosync",
+        "phase_thread_seconds": {
+          "close": 0.036852106,
+          "decompress": 0.00144385,
+          "hash": 0.014226626,
+          "mkdir": 0.038764012,
+          "rename": 0.310171969,
+          "sync_all": 0.0,
+          "write": 0.288883255
+        },
+        "sample_entries": 2048,
+        "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+        "stored_bytes": 2326291,
+        "sync_all": false,
+        "system_seconds": 0.563308,
+        "table_seconds": 0.00273075,
+        "user_seconds": 0.024761000000000002,
+        "voluntary_context_switches": 52,
+        "wall_seconds": 0.174666917,
+        "workers": 4,
+        "ordinal": 8,
+        "label": "extraction-8-4-nosync",
+        "started_at_utc": "2026-10-09T04:55:58.454421+00:00",
+        "finished_at_utc": "2026-10-09T04:55:58.637190+00:00",
+        "command": [
+          "target/lod-profile/extraction_probe",
+          "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+          "target/lod-profile/extraction-8-4-nosync",
+          "2048",
+          "4",
+          "nosync"
+        ]
+      }
+    ],
+    "all_sample_digests_identical": true,
+    "sample_output_sha256": "eeb7f27a7cb013123d3b3e46345f467fb1f722799330876c738cf9bca6e7e15a",
+    "probe_provenance": "target/lod-profile/extraction_probe_provenance.json",
+    "limitations": [
+      "Sequential repeated experiment using same first 2048 archive entries. Results do not represent complete archive throughput.",
+      "Same host and output filesystem as requested conversion workspace; fresh path for every run.",
+      "Phase seconds sum instrumented elapsed times across workers, not critical-path stage time.",
+      "Competing load varied: before snapshot shows unrelated rustc at 14.8 percent CPU and no Mudcrab engine; after snapshot shows engine-preacquire-poll at 118.5 percent CPU, running for the last 27 seconds. Neither was modified."
+    ],
+    "by_worker": {
+      "1": {
+        "sync_runs": 1,
+        "nosync_runs": 1,
+        "mean_sync_wall_seconds": 10.695672417,
+        "mean_nosync_wall_seconds": 0.274124,
+        "sync_over_nosync_wall_ratio": 39.01764317243292,
+        "mean_sync_cpu_wall_ratio": 0.05588260155107178,
+        "mean_nosync_cpu_wall_ratio": 0.9946265193853876,
+        "mean_sync_cumulative_fsync_thread_seconds": 10.114325096
+      },
+      "4": {
+        "sync_runs": 2,
+        "nosync_runs": 2,
+        "mean_sync_wall_seconds": 9.161480146,
+        "mean_nosync_wall_seconds": 0.1667025,
+        "sync_over_nosync_wall_ratio": 54.957065107001995,
+        "mean_sync_cpu_wall_ratio": 0.13528806610397479,
+        "mean_nosync_cpu_wall_ratio": 3.4899620245385754,
+        "mean_sync_cumulative_fsync_thread_seconds": 18.886547491
+      },
+      "8": {
+        "sync_runs": 1,
+        "nosync_runs": 1,
+        "mean_sync_wall_seconds": 7.631262791,
+        "mean_nosync_wall_seconds": 0.192166,
+        "sync_over_nosync_wall_ratio": 39.711826186734385,
+        "mean_sync_cpu_wall_ratio": 0.19416039528181936,
+        "mean_nosync_cpu_wall_ratio": 4.509486589719305,
+        "mean_sync_cumulative_fsync_thread_seconds": 19.412969224
+      }
+    },
+    "host_snapshots": [
+      "target/lod-profile/extraction-host-before.txt",
+      "target/lod-profile/extraction-host-after.txt"
+    ],
+    "single_worker_sync_share_of_wall_percent": 94.56464915589608
+  },
+  "archive_inventory": {
+    "manifest_schema": 24,
+    "archives": 93,
+    "archive_entries": 181654,
+    "archive_decoded_bytes": 30625862485,
+    "converted_entries": 76213,
+    "handled_archive_extensions": [
+      ".dds",
+      ".lod",
+      ".nif",
+      ".pex"
+    ],
+    "file_types": [
+      {
+        "extension": ".fuz",
+        "files": 75408,
+        "bytes": 1801946900,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".dds",
+        "files": 35665,
+        "bytes": 23570221569,
+        "consumed_by_current_converter": true
+      },
+      {
+        "extension": ".nif",
+        "files": 25433,
+        "bytes": 2786187011,
+        "consumed_by_current_converter": true
+      },
+      {
+        "extension": ".pex",
+        "files": 15169,
+        "bytes": 19045574,
+        "consumed_by_current_converter": true
+      },
+      {
+        "extension": ".btr",
+        "files": 9791,
+        "bytes": 177185507,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".hkx",
+        "files": 7705,
+        "bytes": 110653779,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".wav",
+        "files": 6250,
+        "bytes": 1495768270,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".txt",
+        "files": 1266,
+        "bytes": 6110845,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".bto",
+        "files": 1109,
+        "bytes": 221292924,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".strings",
+        "files": 720,
+        "bytes": 13902957,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".ilstrings",
+        "files": 720,
+        "bytes": 35421145,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".dlstrings",
+        "files": 720,
+        "bytes": 38214880,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".tri",
+        "files": 569,
+        "bytes": 40058702,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".btt",
+        "files": 391,
+        "bytes": 1419036,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".xwm",
+        "files": 269,
+        "bytes": 126151852,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".png",
+        "files": 255,
+        "bytes": 27795196,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".hkt",
+        "files": 58,
+        "bytes": 172047,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".swf",
+        "files": 53,
+        "bytes": 24449480,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".tga",
+        "files": 19,
+        "bytes": 55706410,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".lod",
+        "files": 14,
+        "bytes": 224,
+        "consumed_by_current_converter": true
+      },
+      {
+        "extension": ".hkc",
+        "files": 13,
+        "bytes": 47292,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".seq",
+        "files": 13,
+        "bytes": 1776,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".hkb",
+        "files": 12,
+        "bytes": 2443386,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".hkp",
+        "files": 11,
+        "bytes": 223769,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".lst",
+        "files": 11,
+        "bytes": 4076,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".gfx",
+        "files": 6,
+        "bytes": 420017,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".psd",
+        "files": 1,
+        "bytes": 3167502,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".xlsx",
+        "files": 1,
+        "bytes": 52917,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".csv",
+        "files": 1,
+        "bytes": 29314,
+        "consumed_by_current_converter": false
+      },
+      {
+        "extension": ".fxp",
+        "files": 1,
+        "bytes": 67768128,
+        "consumed_by_current_converter": false
+      }
+    ],
+    "unused_entries": 105373,
+    "unused_bytes": 4250408107,
+    "unique_ingestion_blobs": 163701,
+    "unique_ingestion_blob_bytes": 26990388476,
+    "per_archive": [
+      {
+        "name": "_resourcepack.bsa",
+        "entries": 463,
+        "decoded_bytes": 916488209,
+        "source_sha256": "22527a90587773e35f9e54ffc86a0bb26c7fea523b6254152e121e0ced949619"
+      },
+      {
+        "name": "ccafdsse001-dwesanctuary.bsa",
+        "entries": 51,
+        "decoded_bytes": 4755073,
+        "source_sha256": "78bdede332052c59ff6d24970dc29157fee4c33beae2a08825c261d2f84b108a"
+      },
+      {
+        "name": "ccasvsse001-almsivi.bsa",
+        "entries": 574,
+        "decoded_bytes": 524017957,
+        "source_sha256": "e88d8490a3664b57015d42d010f936070d05bf532c2e62216a4cf5069ed77bda"
+      },
+      {
+        "name": "ccbgssse001-fish.bsa",
+        "entries": 744,
+        "decoded_bytes": 377635491,
+        "source_sha256": "b865e8187bac934042ba0051121e6f8ba0cb9fef919a81f72b97dbb012dad7dc"
+      },
+      {
+        "name": "ccbgssse002-exoticarrows.bsa",
+        "entries": 71,
+        "decoded_bytes": 69799434,
+        "source_sha256": "1f8cb4a850aae9f332254483db642c522a63ca1d833a0b98703cdfbdf36e10ce"
+      },
+      {
+        "name": "ccbgssse003-zombies.bsa",
+        "entries": 60,
+        "decoded_bytes": 112485255,
+        "source_sha256": "f78569941b15826df63e859e640722000039531088d9e5f8d028a8b99de34d8d"
+      },
+      {
+        "name": "ccbgssse004-ruinsedge.bsa",
+        "entries": 39,
+        "decoded_bytes": 40098987,
+        "source_sha256": "2e82ce4d8a4266463e44064a92b176282dd7884ce17e2c7a3a85b134ae2ede1d"
+      },
+      {
+        "name": "ccbgssse005-goldbrand.bsa",
+        "entries": 54,
+        "decoded_bytes": 11228585,
+        "source_sha256": "17cb6f832d48f5cee3ed94913c0ed8cb3849211baa929099396ad18701b0895d"
+      },
+      {
+        "name": "ccbgssse006-stendarshammer.bsa",
+        "entries": 34,
+        "decoded_bytes": 33734520,
+        "source_sha256": "23eaa9b25be19b382e3f419ba3dcb907b7bf5a3541a322b03701ca634d0c343d"
+      },
+      {
+        "name": "ccbgssse007-chrysamere.bsa",
+        "entries": 39,
+        "decoded_bytes": 4890776,
+        "source_sha256": "39d4a34c01f0cc9810376e6f48c00a9b8f6e3f355efa2143effc74503151d00b"
+      },
+      {
+        "name": "ccbgssse008-wraithguard.bsa",
+        "entries": 59,
+        "decoded_bytes": 37747370,
+        "source_sha256": "1030e8c207c819e23a72f484a0dd4ac4319b88c2013840d1e51291ae129f7ce7"
+      },
+      {
+        "name": "ccbgssse010-petdwarvenarmoredmudcrab.bsa",
+        "entries": 36,
+        "decoded_bytes": 45195523,
+        "source_sha256": "2e2a22a12d00ef4156d19fa3db9292421115af21d913ea575fa51d8631e52fbb"
+      },
+      {
+        "name": "ccbgssse011-hrsarmrelvn.bsa",
+        "entries": 33,
+        "decoded_bytes": 15946278,
+        "source_sha256": "d18778e2ef3e36ab757229a9b3dc9bf9fc84ce96fc216c2f6210ed99fd0657af"
+      },
+      {
+        "name": "ccbgssse012-hrsarmrstl.bsa",
+        "entries": 33,
+        "decoded_bytes": 12636991,
+        "source_sha256": "223910024e332626c910e777918193278171a892f0d13a7d66770cff3c12cfd2"
+      },
+      {
+        "name": "ccbgssse013-dawnfang.bsa",
+        "entries": 141,
+        "decoded_bytes": 28617853,
+        "source_sha256": "e7e230b6c6c7df21f2986a6d2172402cd368d90cfc69b4618a513a1159518804"
+      },
+      {
+        "name": "ccbgssse014-spellpack01.bsa",
+        "entries": 76,
+        "decoded_bytes": 22245783,
+        "source_sha256": "05ddf84e0b9b6b1cad16d519f114b9c935d90cfd67c3d9dfc80f3e9418b8eec0"
+      },
+      {
+        "name": "ccbgssse016-umbra.bsa",
+        "entries": 50,
+        "decoded_bytes": 10281280,
+        "source_sha256": "5da09074c338d21d6eea999726acd4a749a333cba4ea5b28a597ff9d8c26b382"
+      },
+      {
+        "name": "ccbgssse018-shadowrend.bsa",
+        "entries": 73,
+        "decoded_bytes": 73372311,
+        "source_sha256": "efd6c62fa04ec6b3480663e87d5f9896b128ea2d3dd24bd8e4b040b46290d99b"
+      },
+      {
+        "name": "ccbgssse019-staffofsheogorath.bsa",
+        "entries": 48,
+        "decoded_bytes": 11884517,
+        "source_sha256": "d342ea4e2963c26bdade9be5b03c7e643a88fabbde8590289f13e91d08a6a20d"
+      },
+      {
+        "name": "ccbgssse020-graycowl.bsa",
+        "entries": 65,
+        "decoded_bytes": 15059446,
+        "source_sha256": "caac36db614bc2144c4be50e5b786a2ccb93ff75903ed7e4a897305b75a0e9ce"
+      },
+      {
+        "name": "ccbgssse021-lordsmail.bsa",
+        "entries": 59,
+        "decoded_bytes": 45869764,
+        "source_sha256": "b3c2e34e9df1a2423507e48cea1ca7af420875e9ecbedc46f905899bbdcafb68"
+      },
+      {
+        "name": "ccbgssse025-advdsgs.bsa",
+        "entries": 645,
+        "decoded_bytes": 1092847425,
+        "source_sha256": "7cbc4cb0e167236628a236059c4886ce0e089b661b3a612f012728a75fd468a3"
+      },
+      {
+        "name": "ccbgssse031-advcyrus.bsa",
+        "entries": 172,
+        "decoded_bytes": 145472727,
+        "source_sha256": "b15ca5b941ab1354b6bd31ac217abf3cf598a6060f07026647a304111b4ac56c"
+      },
+      {
+        "name": "ccbgssse034-mntuni.bsa",
+        "entries": 76,
+        "decoded_bytes": 76549549,
+        "source_sha256": "f367bff623e5364a05feafdd1ec0245eac049544edc03c3cafd2604bf04f4071"
+      },
+      {
+        "name": "ccbgssse035-petnhound.bsa",
+        "entries": 75,
+        "decoded_bytes": 41637432,
+        "source_sha256": "c16ecba5b3b9e9aa81ed73599dcb6d2dc408a05f6bb1ec5ef10aca26f3b59a84"
+      },
+      {
+        "name": "ccbgssse036-petbwolf.bsa",
+        "entries": 78,
+        "decoded_bytes": 17941978,
+        "source_sha256": "72129fd007859b99819cfaac4bccd7b7e04f329577bfacca4e571d703748028d"
+      },
+      {
+        "name": "ccbgssse037-curios.bsa",
+        "entries": 218,
+        "decoded_bytes": 111731012,
+        "source_sha256": "1e4fd1fcd41d842515e8bd676fd1eaabb93b3960a2009a08f8f51db09a17ac79"
+      },
+      {
+        "name": "ccbgssse038-bowofshadows.bsa",
+        "entries": 41,
+        "decoded_bytes": 7054268,
+        "source_sha256": "73825fdf2f888ee71e0220c3abd5b1d59aedb81832e62bbbf55554725c276b4e"
+      },
+      {
+        "name": "ccbgssse040-advobgobs.bsa",
+        "entries": 176,
+        "decoded_bytes": 77415854,
+        "source_sha256": "71747e4256f481e6f4758b08515778b69886594670e66bc17a33b8969d6dc9f4"
+      },
+      {
+        "name": "ccbgssse041-netchleather.bsa",
+        "entries": 145,
+        "decoded_bytes": 122108124,
+        "source_sha256": "4928007f755c41b6278ec36f2c6da4b88ef11e3f83e24bcd0a658767acbc262a"
+      },
+      {
+        "name": "ccbgssse043-crosselv.bsa",
+        "entries": 35,
+        "decoded_bytes": 34050274,
+        "source_sha256": "c0197bba6c4ff514c2926adc5d50f7758efc03f838116bd1008aa1abf7dee135"
+      },
+      {
+        "name": "ccbgssse045-hasedoki.bsa",
+        "entries": 41,
+        "decoded_bytes": 6468642,
+        "source_sha256": "a0b551f37c1ac033b74385b6755604385cd37f044433416940829d439dcffca6"
+      },
+      {
+        "name": "ccbgssse050-ba_daedric.bsa",
+        "entries": 74,
+        "decoded_bytes": 26516349,
+        "source_sha256": "485433a86d4f44517c92f1e148fe72cdba5e5c1af5b06250c446241c58a3b925"
+      },
+      {
+        "name": "ccbgssse051-ba_daedricmail.bsa",
+        "entries": 97,
+        "decoded_bytes": 47647119,
+        "source_sha256": "765a711c61e25b8560585abb0d4abe2b413c0d81cfc3fe3ef09362dcbbd1ac93"
+      },
+      {
+        "name": "ccbgssse052-ba_iron.bsa",
+        "entries": 91,
+        "decoded_bytes": 41060213,
+        "source_sha256": "355c78f30d50b3cba7d475807906eb6b486602d39f43983f534f75552c7af20e"
+      },
+      {
+        "name": "ccbgssse053-ba_leather.bsa",
+        "entries": 104,
+        "decoded_bytes": 35797415,
+        "source_sha256": "fce70e32759acd0b591c002b87351b1bd2f0d6418a961083d6f71d073d8f3e67"
+      },
+      {
+        "name": "ccbgssse054-ba_orcish.bsa",
+        "entries": 93,
+        "decoded_bytes": 43443692,
+        "source_sha256": "8cca01dded34259eb43c0973d6f599bc86e53c0e2c5804fdc68df00b518a960d"
+      },
+      {
+        "name": "ccbgssse055-ba_orcishscaled.bsa",
+        "entries": 101,
+        "decoded_bytes": 43776972,
+        "source_sha256": "36e2483ca946774a9d1a3b357ae411a45fb4bcf52f65323232db17a5a6db9b31"
+      },
+      {
+        "name": "ccbgssse056-ba_silver.bsa",
+        "entries": 95,
+        "decoded_bytes": 48148815,
+        "source_sha256": "0f61ff0046c1de6baa737929a5848ec97fcf07ae231dadd8fbd192592a78c2d7"
+      },
+      {
+        "name": "ccbgssse057-ba_stalhrim.bsa",
+        "entries": 70,
+        "decoded_bytes": 29319099,
+        "source_sha256": "0150912fd4d3d38b3c4f99588eb6e1683f55a52c4cacafa8c07635996964348f"
+      },
+      {
+        "name": "ccbgssse058-ba_steel.bsa",
+        "entries": 103,
+        "decoded_bytes": 50762298,
+        "source_sha256": "6ecfda633e2ac10896d7961d4232e9e6015cad5ab0486d7365eb4d69dcb5b319"
+      },
+      {
+        "name": "ccbgssse059-ba_dragonplate.bsa",
+        "entries": 105,
+        "decoded_bytes": 55382063,
+        "source_sha256": "e3308349fc61c753a63619949e4a8628de14ad59dd800b915b8f89df800a43f7"
+      },
+      {
+        "name": "ccbgssse060-ba_dragonscale.bsa",
+        "entries": 98,
+        "decoded_bytes": 40381579,
+        "source_sha256": "331cf0086ddffc68a1419cf848ed65758749390ebf2539611cf3c396c7a917ab"
+      },
+      {
+        "name": "ccbgssse061-ba_dwarven.bsa",
+        "entries": 75,
+        "decoded_bytes": 39405978,
+        "source_sha256": "6840cc59a8e5139443ce3d47db44df0480b694371ca49d6849ef997b0252fa21"
+      },
+      {
+        "name": "ccbgssse062-ba_dwarvenmail.bsa",
+        "entries": 90,
+        "decoded_bytes": 32988008,
+        "source_sha256": "a34d5242488a79e747223bf7d69a9a5a2e2d523210d596bfb070bdbc77875ca1"
+      },
+      {
+        "name": "ccbgssse063-ba_ebony.bsa",
+        "entries": 109,
+        "decoded_bytes": 47718226,
+        "source_sha256": "0f8291b2119d9d1dcfba66e0374412d2934f40c532b52beef59a679649f4b859"
+      },
+      {
+        "name": "ccbgssse064-ba_elven.bsa",
+        "entries": 86,
+        "decoded_bytes": 45837422,
+        "source_sha256": "7c49bb477320ce9014f607adc9f144cb74b1f4efe265d65af13daa3cffd7431f"
+      },
+      {
+        "name": "ccbgssse066-staves.bsa",
+        "entries": 63,
+        "decoded_bytes": 47136022,
+        "source_sha256": "3a2c1fa914446260cee9cd97a36ec2622dfaade5a16d575a1149fe056bbbc797"
+      },
+      {
+        "name": "ccbgssse067-daedinv.bsa",
+        "entries": 629,
+        "decoded_bytes": 386578755,
+        "source_sha256": "f95c368a5e8d062f1d6eaf7f945c718711c7e0ddd619a20bc79e32183bea20a3"
+      },
+      {
+        "name": "ccbgssse068-bloodfall.bsa",
+        "entries": 35,
+        "decoded_bytes": 11538765,
+        "source_sha256": "e23c4f0d4a23a949a3991d8152cd12bb5637ae517fb2ee3883d32b0519acc776"
+      },
+      {
+        "name": "ccbgssse069-contest.bsa",
+        "entries": 56,
+        "decoded_bytes": 42847885,
+        "source_sha256": "6c3215cac6409164f1c71aa3c3a4e67efd4ae40ed92ba37d106655524d41a6f0"
+      },
+      {
+        "name": "cccbhsse001-gaunt.bsa",
+        "entries": 130,
+        "decoded_bytes": 68160169,
+        "source_sha256": "8bdba5bbec8048f50fc76b81aed66287f207d7a9092ea37b80c4cfc81621c03f"
+      },
+      {
+        "name": "ccedhsse001-norjewel.bsa",
+        "entries": 61,
+        "decoded_bytes": 9709288,
+        "source_sha256": "393b86484fdcc75fe39ee6844aeebcfdd3c17b2c92af3d1c22bbcacb1dc73a48"
+      },
+      {
+        "name": "ccedhsse002-splkntset.bsa",
+        "entries": 178,
+        "decoded_bytes": 89093223,
+        "source_sha256": "6ee2537c8469a2004024e6918327e0d4277187035027d499ddb4fb150152a3a8"
+      },
+      {
+        "name": "ccedhsse003-redguard.bsa",
+        "entries": 138,
+        "decoded_bytes": 86289436,
+        "source_sha256": "f0eb2e0b675c6d96a73237b7a977dc5cc20fe6a12525374fb796d9197a411006"
+      },
+      {
+        "name": "cceejsse001-hstead.bsa",
+        "entries": 103,
+        "decoded_bytes": 28506741,
+        "source_sha256": "0d69da7cd0c6c1c3915df77c27e72b8dced31e2cf1b780149a4b3bea73995a2a"
+      },
+      {
+        "name": "cceejsse002-tower.bsa",
+        "entries": 114,
+        "decoded_bytes": 66121703,
+        "source_sha256": "b4252ade8f000a8b031767d538f9ce5fd5f0f061aa4d8dd90ec04d3d35ff062b"
+      },
+      {
+        "name": "cceejsse003-hollow.bsa",
+        "entries": 89,
+        "decoded_bytes": 28525719,
+        "source_sha256": "cca72871aa961435898456384b811092b1cd341b15a2a3ba2ae00e6f7ff19255"
+      },
+      {
+        "name": "cceejsse004-hall.bsa",
+        "entries": 112,
+        "decoded_bytes": 59585723,
+        "source_sha256": "899e457c0072975db81d5eb0bbc917774fcd5c3f5e1b3a409d0edbd880032831"
+      },
+      {
+        "name": "cceejsse005-cave.bsa",
+        "entries": 123,
+        "decoded_bytes": 29771530,
+        "source_sha256": "138b22b73391118793e93340654684816aa1a9d4973417e0ae44c6738c55a732"
+      },
+      {
+        "name": "ccffbsse001-imperialdragon.bsa",
+        "entries": 215,
+        "decoded_bytes": 177902029,
+        "source_sha256": "4eb7a57f4b463cfe0b163f351242f7bf3968e71b63e19483635498580d5e28c1"
+      },
+      {
+        "name": "ccffbsse002-crossbowpack.bsa",
+        "entries": 61,
+        "decoded_bytes": 91828448,
+        "source_sha256": "8131e2c7271682f43b907a78143437cd5d4bf051c1a9c9d0576d228c52b5b7e0"
+      },
+      {
+        "name": "ccfsvsse001-backpacks.bsa",
+        "entries": 106,
+        "decoded_bytes": 57211522,
+        "source_sha256": "d9b2786da5d7ae5f8a58eb9a738f4adb9517e87779afa1928877e00c79d52815"
+      },
+      {
+        "name": "cckrtsse001_altar.bsa",
+        "entries": 1011,
+        "decoded_bytes": 132268285,
+        "source_sha256": "d30cf5f0d5beb296bbe78ca650e2a6ec92441e0322b9ca42961869c84539e869"
+      },
+      {
+        "name": "ccmtysse001-knightsofthenine.bsa",
+        "entries": 136,
+        "decoded_bytes": 80675891,
+        "source_sha256": "e5a3473ec902f941e93a1e8bac3cc42e8f7e0a78c158549938a12fbe0bd4b271"
+      },
+      {
+        "name": "ccmtysse002-ve.bsa",
+        "entries": 231,
+        "decoded_bytes": 118014782,
+        "source_sha256": "2ad77f9aa93883647bc6985c1b354ea38ca20dd0f8deda73d1a78ee4935be760"
+      },
+      {
+        "name": "ccpewsse002-armsofchaos.bsa",
+        "entries": 65,
+        "decoded_bytes": 31137397,
+        "source_sha256": "f0a16485ed37e52b6f2e5adbd5c0a21b2234376c891b859c227351620b82771b"
+      },
+      {
+        "name": "ccqdrsse001-survivalmode.bsa",
+        "entries": 86,
+        "decoded_bytes": 12830975,
+        "source_sha256": "d951bdc12270e121924702c61e80c05936982d049ed664e169e0f897d5669112"
+      },
+      {
+        "name": "ccqdrsse002-firewood.bsa",
+        "entries": 37,
+        "decoded_bytes": 441159,
+        "source_sha256": "93286f0c850dba106e6969b06f133cbce35326ef51629ba461b1ba30e8a260e8"
+      },
+      {
+        "name": "ccrmssse001-necrohouse.bsa",
+        "entries": 88,
+        "decoded_bytes": 51195265,
+        "source_sha256": "1bd672862439dbb36a96d1a76089efb43061b587eabc510108c48fb1d97492c3"
+      },
+      {
+        "name": "cctwbsse001-puzzledungeon.bsa",
+        "entries": 305,
+        "decoded_bytes": 362173647,
+        "source_sha256": "a0fdb9f2fa388fc27dae5f103c926c7cff045513a0ca2efe5825ccf337e540b2"
+      },
+      {
+        "name": "ccvsvsse001-winter.bsa",
+        "entries": 79,
+        "decoded_bytes": 42534791,
+        "source_sha256": "d802bf9f377ab10692bc74cd996865e1b5778ef5400e21d7cca9510ef51b7131"
+      },
+      {
+        "name": "ccvsvsse002-pets.bsa",
+        "entries": 139,
+        "decoded_bytes": 102737393,
+        "source_sha256": "8cddef9a455e51a0fe7b3a8bbc793f296f34ce32d7ab46940a382999eec7832e"
+      },
+      {
+        "name": "ccvsvsse003-necroarts.bsa",
+        "entries": 382,
+        "decoded_bytes": 169835460,
+        "source_sha256": "89b87fbefdd93714393d69da362ee211bd8a22b6f647f027867b99e593dfabfd"
+      },
+      {
+        "name": "ccvsvsse004-beafarmer.bsa",
+        "entries": 182,
+        "decoded_bytes": 18252308,
+        "source_sha256": "cba7dc555fd2636da3b6bcd6eb95c041b1241f6ed85c820238d4b550c872e3ce"
+      },
+      {
+        "name": "marketplacetextures.bsa",
+        "entries": 136,
+        "decoded_bytes": 3219388,
+        "source_sha256": "5d5f4d8dc4210424c30694d2a0e7549e4dbeefab916405a2162646228b309d94"
+      },
+      {
+        "name": "skyrim - animations.bsa",
+        "entries": 8979,
+        "decoded_bytes": 120947522,
+        "source_sha256": "f2e1bf18f6498d637998808a06ecf17220d17d123eceddbb796eced8b68dc68a"
+      },
+      {
+        "name": "skyrim - interface.bsa",
+        "entries": 415,
+        "decoded_bytes": 106906402,
+        "source_sha256": "e3d0c8d13d76ddb5cf9fc4cffe916475b708ea6cac2a46956442a558f14324de"
+      },
+      {
+        "name": "skyrim - meshes0.bsa",
+        "entries": 19443,
+        "decoded_bytes": 2097128288,
+        "source_sha256": "f3de11a1fcbd8b3e9582d5981be815c2c5f160f5be21044479e318de8a5183e9"
+      },
+      {
+        "name": "skyrim - meshes1.bsa",
+        "entries": 14242,
+        "decoded_bytes": 543908148,
+        "source_sha256": "d0e4a62fac342271c27aba5338296ddfe06de790448ebe6e9cf6df7460a4f7c0"
+      },
+      {
+        "name": "skyrim - misc.bsa",
+        "entries": 14031,
+        "decoded_bytes": 17091115,
+        "source_sha256": "30957adeb1a109c8b8079a5791c2a24c1fdd1d01957e9338480f4d8e03d9d23f"
+      },
+      {
+        "name": "skyrim - shaders.bsa",
+        "entries": 1,
+        "decoded_bytes": 67768128,
+        "source_sha256": "fd1ba630f443353ed21ed4ca0380968f9c7091c8434518ea3cc79bc6d38c18e7"
+      },
+      {
+        "name": "skyrim - sounds.bsa",
+        "entries": 6198,
+        "decoded_bytes": 1538270454,
+        "source_sha256": "c18244acb9500db0d6e695ca27e9fd535483c9c1a0ec0d9fa7800a00231fc3b4"
+      },
+      {
+        "name": "skyrim - textures0.bsa",
+        "entries": 5891,
+        "decoded_bytes": 2093640480,
+        "source_sha256": "4484f81348998b641ce2b3adb47376923d2f801cc0c7b341bb350bf3fb80c5f2"
+      },
+      {
+        "name": "skyrim - textures1.bsa",
+        "entries": 887,
+        "decoded_bytes": 2096482040,
+        "source_sha256": "2a525f8486dedd9a0b1c02a09c3129121b5858497f0076809059844f24d985cf"
+      },
+      {
+        "name": "skyrim - textures2.bsa",
+        "entries": 997,
+        "decoded_bytes": 2094426648,
+        "source_sha256": "8572e6d210a3458484659dba25bb72ff498f2f23b49d456af75cfb1079d59130"
+      },
+      {
+        "name": "skyrim - textures3.bsa",
+        "entries": 1777,
+        "decoded_bytes": 2094033712,
+        "source_sha256": "3d32b888215dfa9b67255f3567852cb8cd62282d4603a126888eb0d894a6e2fb"
+      },
+      {
+        "name": "skyrim - textures4.bsa",
+        "entries": 1166,
+        "decoded_bytes": 2097043168,
+        "source_sha256": "a681fc3a5e2f09b01fd5bc12faad4730d314eb401824811832b35d4860e8ca81"
+      },
+      {
+        "name": "skyrim - textures5.bsa",
+        "entries": 5222,
+        "decoded_bytes": 2097079181,
+        "source_sha256": "bf177540927cb4a7dd5b9c92136fe3d8ced67ce34d43283426faa07316f9ac9c"
+      },
+      {
+        "name": "skyrim - textures6.bsa",
+        "entries": 8938,
+        "decoded_bytes": 2097096608,
+        "source_sha256": "de3906f51bbd05dddee714622aa44701971e8de6f413f5eadcaf874a8baa50e2"
+      },
+      {
+        "name": "skyrim - textures7.bsa",
+        "entries": 6855,
+        "decoded_bytes": 2094630432,
+        "source_sha256": "e4dfca85b0c46db84b8b3e5be648326607d248332648e87661e80a975fc3af97"
+      },
+      {
+        "name": "skyrim - textures8.bsa",
+        "entries": 219,
+        "decoded_bytes": 385885624,
+        "source_sha256": "472343d30ee25f04fd05aeccfd7c800ef25c9faa1fbe435c9fa88fcd0f43be70"
+      },
+      {
+        "name": "skyrim - voices_en0.bsa",
+        "entries": 75408,
+        "decoded_bytes": 1801946900,
+        "source_sha256": "c1fae184fd37f30709283344424822a3db550a68e70ca84292d3d688f1c4c2e3"
+      }
+    ]
+  },
+  "material_statistics": {
+    "analysis_seconds": 1.841352166,
+    "cache_load_seconds": 0.139308084,
+    "identity_definition": "SHA256 of consumed vertex colors and canonical layers/weights, excluding cell ID, grid and heights. Whole-atlas key also includes tier and member count; members use compiler grid sort order. Duplicate counts are candidates, not measured speedups.",
+    "representative_blocks": [
+      {
+        "candidate_repeated_cell_tile_sample_pixels_all_tiers": 0,
+        "candidate_reused_whole_atlas_pixels": 0,
+        "cells": 256,
+        "chunk_distribution": {
+          "16": 1,
+          "4": 16,
+          "8": 4
+        },
+        "chunks": 21,
+        "constant_height_cells": 0,
+        "constant_white_chunks": 0,
+        "duplicate_atlas_chunks_beyond_first": 0,
+        "duplicate_material_cells_beyond_first": 0,
+        "largest_material_groups": [
+          {
+            "cells": 1,
+            "sample_cell_id": 38553,
+            "sample_grid": [
+              2,
+              -7
+            ],
+            "sample_layers": 15,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 39693,
+            "sample_grid": [
+              0,
+              -11
+            ],
+            "sample_layers": 17,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38361,
+            "sample_grid": [
+              8,
+              -1
+            ],
+            "sample_layers": 22,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 39726,
+            "sample_grid": [
+              0,
+              -12
+            ],
+            "sample_layers": 18,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38368,
+            "sample_grid": [
+              1,
+              -1
+            ],
+            "sample_layers": 24,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38581,
+            "sample_grid": [
+              5,
+              -8
+            ],
+            "sample_layers": 23,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38697,
+            "sample_grid": [
+              13,
+              -12
+            ],
+            "sample_layers": 14,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38585,
+            "sample_grid": [
+              1,
+              -8
+            ],
+            "sample_layers": 12,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38727,
+            "sample_grid": [
+              14,
+              -13
+            ],
+            "sample_layers": 10,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 38449,
+            "sample_grid": [
+              13,
+              -4
+            ],
+            "sample_layers": 24,
+            "sample_vclr_bytes": 3267
+          }
+        ],
+        "layer_count_distribution": {
+          "10": 17,
+          "11": 12,
+          "12": 12,
+          "13": 12,
+          "14": 19,
+          "15": 12,
+          "16": 9,
+          "17": 11,
+          "18": 9,
+          "19": 8,
+          "20": 11,
+          "21": 27,
+          "22": 24,
+          "23": 25,
+          "24": 28,
+          "4": 1,
+          "6": 1,
+          "7": 1,
+          "8": 6,
+          "9": 11
+        },
+        "material_group_size_distribution": {
+          "1": 256
+        },
+        "no_layers": 0,
+        "no_layers_and_no_vclr": 0,
+        "nonempty_only_null_base_layers_no_vclr": 0,
+        "only_null_base_layers_no_vclr_including_empty": 0,
+        "overlay_count_distribution": {
+          "0": 1,
+          "10": 19,
+          "11": 12,
+          "12": 9,
+          "13": 11,
+          "14": 9,
+          "15": 8,
+          "16": 11,
+          "17": 27,
+          "18": 24,
+          "19": 25,
+          "2": 1,
+          "20": 28,
+          "3": 1,
+          "4": 6,
+          "5": 11,
+          "6": 17,
+          "7": 12,
+          "8": 12,
+          "9": 12
+        },
+        "total_allocated_atlas_pixels": 22020096,
+        "total_layers": 4419,
+        "unique_allocated_atlas_pixels": 22020096,
+        "unique_atlas_material_inputs_including_tier_and_cell_count": 21,
+        "unique_material_inputs": 256,
+        "without_vclr": 0,
+        "world": "Tamriel land256",
+        "zero_texture_layers": 30
+      },
+      {
+        "candidate_repeated_cell_tile_sample_pixels_all_tiers": 21934080,
+        "candidate_reused_whole_atlas_pixels": 18874368,
+        "cells": 256,
+        "chunk_distribution": {
+          "16": 1,
+          "4": 16,
+          "8": 4
+        },
+        "chunks": 21,
+        "constant_height_cells": 198,
+        "constant_white_chunks": 21,
+        "duplicate_atlas_chunks_beyond_first": 18,
+        "duplicate_material_cells_beyond_first": 255,
+        "largest_material_groups": [
+          {
+            "cells": 256,
+            "sample_cell_id": 67294547,
+            "sample_grid": [
+              111,
+              111
+            ],
+            "sample_layers": 0,
+            "sample_vclr_bytes": 0
+          }
+        ],
+        "layer_count_distribution": {
+          "0": 256
+        },
+        "material_group_size_distribution": {
+          "256": 1
+        },
+        "no_layers": 256,
+        "no_layers_and_no_vclr": 256,
+        "nonempty_only_null_base_layers_no_vclr": 0,
+        "only_null_base_layers_no_vclr_including_empty": 256,
+        "overlay_count_distribution": {
+          "0": 256
+        },
+        "total_allocated_atlas_pixels": 22020096,
+        "total_layers": 0,
+        "unique_allocated_atlas_pixels": 3145728,
+        "unique_atlas_material_inputs_including_tier_and_cell_count": 3,
+        "unique_material_inputs": 1,
+        "without_vclr": 256,
+        "world": "Solstheim ocean256",
+        "zero_texture_layers": 0
+      }
+    ],
+    "worlds": [
+      {
+        "candidate_repeated_cell_tile_sample_pixels_all_tiers": 267423744,
+        "candidate_reused_whole_atlas_pixels": 200343552,
+        "cells": 11186,
+        "chunk_distribution": {
+          "16": 56,
+          "4": 744,
+          "8": 208
+        },
+        "chunks": 1008,
+        "constant_height_cells": 0,
+        "constant_white_chunks": 231,
+        "duplicate_atlas_chunks_beyond_first": 213,
+        "duplicate_material_cells_beyond_first": 3109,
+        "largest_material_groups": [
+          {
+            "cells": 2861,
+            "sample_cell_id": 5953,
+            "sample_grid": [
+              -33,
+              50
+            ],
+            "sample_layers": 0,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 195,
+            "sample_cell_id": 28526,
+            "sample_grid": [
+              -45,
+              18
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 33,
+            "sample_cell_id": 6263,
+            "sample_grid": [
+              -33,
+              40
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 11,
+            "sample_cell_id": 14449,
+            "sample_grid": [
+              6,
+              41
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 7,
+            "sample_cell_id": 6271,
+            "sample_grid": [
+              -41,
+              40
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 5,
+            "sample_cell_id": 30200,
+            "sample_grid": [
+              -56,
+              -2
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 3,
+            "sample_cell_id": 30594,
+            "sample_grid": [
+              -47,
+              -15
+            ],
+            "sample_layers": 2,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 2,
+            "sample_cell_id": 45921,
+            "sample_grid": [
+              48,
+              18
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 40102,
+            "sample_grid": [
+              -13,
+              -23
+            ],
+            "sample_layers": 14,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 40325,
+            "sample_grid": [
+              -5,
+              -30
+            ],
+            "sample_layers": 11,
+            "sample_vclr_bytes": 3267
+          }
+        ],
+        "layer_count_distribution": {
+          "0": 2862,
+          "10": 243,
+          "11": 263,
+          "12": 445,
+          "13": 295,
+          "14": 412,
+          "15": 378,
+          "16": 442,
+          "17": 423,
+          "18": 429,
+          "19": 520,
+          "2": 99,
+          "20": 526,
+          "21": 486,
+          "22": 471,
+          "23": 389,
+          "24": 268,
+          "3": 31,
+          "4": 402,
+          "5": 191,
+          "6": 256,
+          "7": 269,
+          "8": 842,
+          "9": 244
+        },
+        "material_group_size_distribution": {
+          "1": 8069,
+          "11": 1,
+          "195": 1,
+          "2": 1,
+          "2861": 1,
+          "3": 1,
+          "33": 1,
+          "5": 1,
+          "7": 1
+        },
+        "no_layers": 2862,
+        "no_layers_and_no_vclr": 2861,
+        "nonempty_only_null_base_layers_no_vclr": 0,
+        "only_null_base_layers_no_vclr_including_empty": 2861,
+        "overlay_count_distribution": {
+          "0": 3147,
+          "1": 272,
+          "10": 411,
+          "11": 379,
+          "12": 442,
+          "13": 423,
+          "14": 429,
+          "15": 520,
+          "16": 526,
+          "17": 486,
+          "18": 471,
+          "19": 389,
+          "2": 373,
+          "20": 268,
+          "3": 300,
+          "4": 851,
+          "5": 248,
+          "6": 247,
+          "7": 262,
+          "8": 447,
+          "9": 295
+        },
+        "total_allocated_atlas_pixels": 1021181952,
+        "total_layers": 119473,
+        "unique_allocated_atlas_pixels": 820838400,
+        "unique_atlas_material_inputs_including_tier_and_cell_count": 795,
+        "unique_material_inputs": 8077,
+        "without_vclr": 5525,
+        "world": "Tamriel",
+        "zero_texture_layers": 3117
+      },
+      {
+        "candidate_repeated_cell_tile_sample_pixels_all_tiers": 2827087872,
+        "candidate_reused_whole_atlas_pixels": 2711945216,
+        "cells": 34383,
+        "chunk_distribution": {
+          "16": 144,
+          "4": 2236,
+          "8": 576
+        },
+        "chunks": 2956,
+        "constant_height_cells": 14651,
+        "constant_white_chunks": 2729,
+        "duplicate_atlas_chunks_beyond_first": 2654,
+        "duplicate_material_cells_beyond_first": 32867,
+        "largest_material_groups": [
+          {
+            "cells": 32727,
+            "sample_cell_id": 67149829,
+            "sample_grid": [
+              -1,
+              63
+            ],
+            "sample_layers": 0,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 137,
+            "sample_cell_id": 67152761,
+            "sample_grid": [
+              -19,
+              2
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 6,
+            "sample_cell_id": 67169786,
+            "sample_grid": [
+              29,
+              14
+            ],
+            "sample_layers": 0,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67170133,
+            "sample_grid": [
+              12,
+              4
+            ],
+            "sample_layers": 16,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67171269,
+            "sample_grid": [
+              0,
+              0
+            ],
+            "sample_layers": 10,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67171301,
+            "sample_grid": [
+              1,
+              -1
+            ],
+            "sample_layers": 11,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67152759,
+            "sample_grid": [
+              -17,
+              2
+            ],
+            "sample_layers": 6,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67154000,
+            "sample_grid": [
+              -16,
+              -4
+            ],
+            "sample_layers": 4,
+            "sample_vclr_bytes": 0
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67169468,
+            "sample_grid": [
+              17,
+              24
+            ],
+            "sample_layers": 15,
+            "sample_vclr_bytes": 3267
+          },
+          {
+            "cells": 1,
+            "sample_cell_id": 67169799,
+            "sample_grid": [
+              16,
+              14
+            ],
+            "sample_layers": 22,
+            "sample_vclr_bytes": 3267
+          }
+        ],
+        "layer_count_distribution": {
+          "0": 32734,
+          "10": 16,
+          "11": 40,
+          "12": 244,
+          "13": 64,
+          "14": 89,
+          "15": 45,
+          "16": 62,
+          "17": 44,
+          "18": 33,
+          "19": 30,
+          "2": 100,
+          "20": 35,
+          "21": 26,
+          "22": 27,
+          "23": 27,
+          "24": 12,
+          "3": 4,
+          "4": 253,
+          "5": 102,
+          "6": 182,
+          "7": 110,
+          "8": 93,
+          "9": 11
+        },
+        "material_group_size_distribution": {
+          "1": 1513,
+          "137": 1,
+          "32727": 1,
+          "6": 1
+        },
+        "no_layers": 32734,
+        "no_layers_and_no_vclr": 32727,
+        "nonempty_only_null_base_layers_no_vclr": 0,
+        "only_null_base_layers_no_vclr_including_empty": 32727,
+        "overlay_count_distribution": {
+          "0": 32873,
+          "1": 169,
+          "10": 89,
+          "11": 45,
+          "12": 62,
+          "13": 44,
+          "14": 33,
+          "15": 30,
+          "16": 35,
+          "17": 26,
+          "18": 27,
+          "19": 27,
+          "2": 208,
+          "20": 12,
+          "3": 188,
+          "4": 115,
+          "5": 28,
+          "6": 24,
+          "7": 40,
+          "8": 243,
+          "9": 65
+        },
+        "total_allocated_atlas_pixels": 3018194944,
+        "total_layers": 16373,
+        "unique_allocated_atlas_pixels": 306249728,
+        "unique_atlas_material_inputs_including_tier_and_cell_count": 302,
+        "unique_material_inputs": 1516,
+        "without_vclr": 33458,
+        "world": "DLC2SolstheimWorld",
+        "zero_texture_layers": 1583
+      }
+    ]
+  },
+  "source_provenance": {
+    "prepared_at_utc": "2026-10-09T04:47:02.171210+00:00",
+    "pack": "/Users/taylor/Projects/mudcrab/modern_assets",
+    "source_manifest": "/Users/taylor/Projects/mudcrab/modern_assets/lod-manifest.json",
+    "vfs": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/vfs",
+    "files": 66,
+    "bytes": 72011152,
+    "sources": [
+      {
+        "path": "textures/dlc01/landscape/glowingforestdirt01.dds",
+        "sha256": "ecf19f0a5b2935293be5e5547f15cf83838bd730d5c5b091390a15301f05bb76",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/ec/ecf19f0a5b2935293be5e5547f15cf83838bd730d5c5b091390a15301f05bb76"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairnbones01.dds",
+        "sha256": "4605fd07800027ceeb252139b8aef78086da9c041ea9ec3c18c4f815723aa842",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/46/4605fd07800027ceeb252139b8aef78086da9c041ea9ec3c18c4f815723aa842"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairndirt01.dds",
+        "sha256": "eab75a37ae6f80103634cf1a11b91d77a051c4bbd001180b6a640731740d0c49",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/ea/eab75a37ae6f80103634cf1a11b91d77a051c4bbd001180b6a640731740d0c49"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairndirt02.dds",
+        "sha256": "503f857a7f7c743eacc161b37d3a07894ea0aa4d8bdd604c27e3c5fedef0101a",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/50/503f857a7f7c743eacc161b37d3a07894ea0aa4d8bdd604c27e3c5fedef0101a"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairndirt03.dds",
+        "sha256": "c55a0ac49edd9597cfb347e58bedb29ecd69147e8f4a89f2cd86a1c71b903d1a",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/c5/c55a0ac49edd9597cfb347e58bedb29ecd69147e8f4a89f2cd86a1c71b903d1a"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairndirt05.dds",
+        "sha256": "142925715e1af17383dcf295156b3d441bfce033595ae71e4d83cd5cfac8bc15",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/14/142925715e1af17383dcf295156b3d441bfce033595ae71e4d83cd5cfac8bc15"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairndirt06.dds",
+        "sha256": "15fea85a43aae2f74a8f4577179fa9e8b805e8f2ec4712cbb58c53d4f6678091",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/15/15fea85a43aae2f74a8f4577179fa9e8b805e8f2ec4712cbb58c53d4f6678091"
+      },
+      {
+        "path": "textures/dlc01/landscape/soulcairnrock01.dds",
+        "sha256": "222be4e5539d538a171dab1763ee1d82e3364cda501ac1d0c593d9fdce3620a7",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/22/222be4e5539d538a171dab1763ee1d82e3364cda501ac1d0c593d9fdce3620a7"
+      },
+      {
+        "path": "textures/dlc01/landscape/winterforestdirt01.dds",
+        "sha256": "d82550aebcbae699e68f7369ff31b382ec7a0cbb120f5c6baa6e2ab05dbd1da3",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/d8/d82550aebcbae699e68f7369ff31b382ec7a0cbb120f5c6baa6e2ab05dbd1da3"
+      },
+      {
+        "path": "textures/dlc01/landscape/winterforestleaves01.dds",
+        "sha256": "40e26a9bdce8be83471758d1d5d0a1c8e39aa7945de29b3e944722dbf72aa4ec",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/40/40e26a9bdce8be83471758d1d5d0a1c8e39aa7945de29b3e944722dbf72aa4ec"
+      },
+      {
+        "path": "textures/dlc01/landscape/winterforestleaves02.dds",
+        "sha256": "5e79a02efd0b79f61272f4a4439d5c4c68687ad093f5cd038f5ad95cd9738400",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/5e/5e79a02efd0b79f61272f4a4439d5c4c68687ad093f5cd038f5ad95cd9738400"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_01.dds",
+        "sha256": "f2d25a3dae41298c4bc0f309c1e1b6bbe74cce6b0822f18393fa923d49c4738c",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/f2/f2d25a3dae41298c4bc0f309c1e1b6bbe74cce6b0822f18393fa923d49c4738c"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_03.dds",
+        "sha256": "9501647afe4553b7a1c3ff5df408cca124c1156ddf2411a92d55431943243606",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/95/9501647afe4553b7a1c3ff5df408cca124c1156ddf2411a92d55431943243606"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_04.dds",
+        "sha256": "5d6d2e174d0f0a56fae26ef6098833859f4e6d5a73932cc649de360b3530e237",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/5d/5d6d2e174d0f0a56fae26ef6098833859f4e6d5a73932cc649de360b3530e237"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_05.dds",
+        "sha256": "b04f3742474547caadc5048573a6c31e353d6c65942cfc604858f4796787f04b",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/b0/b04f3742474547caadc5048573a6c31e353d6c65942cfc604858f4796787f04b"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_rocks_01_d.dds",
+        "sha256": "534521e1327fd1f606503247563079fc4a0e6061f79e339b5346fb6bf32c47ff",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/53/534521e1327fd1f606503247563079fc4a0e6061f79e339b5346fb6bf32c47ff"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_tundra_01.dds",
+        "sha256": "03d64f892ac6268373b78cc21a423f1b23fff8570df0727d706ab5b00477743b",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/03/03d64f892ac6268373b78cc21a423f1b23fff8570df0727d706ab5b00477743b"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_tundra_02.dds",
+        "sha256": "6f152eb531071f09a5dba5eca2c8d855cc2c98df0d823f44e87328626548ba6f",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/6f/6f152eb531071f09a5dba5eca2c8d855cc2c98df0d823f44e87328626548ba6f"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_tundra_03.dds",
+        "sha256": "cc5c4b38cedb1dfcfb16854339fa0de3d1f5332dd11bfa924669e33614acb6f8",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/cc/cc5c4b38cedb1dfcfb16854339fa0de3d1f5332dd11bfa924669e33614acb6f8"
+      },
+      {
+        "path": "textures/dlc02/landscape/volcanic_ash_tundra_04.dds",
+        "sha256": "6f1ebec01df3048369f408e7fe25bcd79a207cac164bcd5f517872b70a7d88d0",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/6f/6f1ebec01df3048369f408e7fe25bcd79a207cac164bcd5f517872b70a7d88d0"
+      },
+      {
+        "path": "textures/dungeons/mines/minefloordirt01.dds",
+        "sha256": "e3e3c3055fd7ac59787e09907d674f7bc6bb42128f22dcb4daee7e6902ebc942",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/e3/e3e3c3055fd7ac59787e09907d674f7bc6bb42128f22dcb4daee7e6902ebc942"
+      },
+      {
+        "path": "textures/landscape/cavebaseground01.dds",
+        "sha256": "4f4ee57c1d722675f46f5f458316598e8070144f9224827eb365d72f779844ba",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/4f/4f4ee57c1d722675f46f5f458316598e8070144f9224827eb365d72f779844ba"
+      },
+      {
+        "path": "textures/landscape/coastbeach01.dds",
+        "sha256": "a76f2afa179b46c00094d3680bf1f87432073ba0d10d51031e01fdc54fe13ac3",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/a7/a76f2afa179b46c00094d3680bf1f87432073ba0d10d51031e01fdc54fe13ac3"
+      },
+      {
+        "path": "textures/landscape/coastbeach02.dds",
+        "sha256": "e197d996afc0c341ce71c04291308cf3726c36dbdfa0f0a977c5b8f677a90952",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/e1/e197d996afc0c341ce71c04291308cf3726c36dbdfa0f0a977c5b8f677a90952"
+      },
+      {
+        "path": "textures/landscape/coastbeachgrass01.dds",
+        "sha256": "94b6bb62c6ef9ac87ddad95118d24126a4e92ddea2c7fa6dc65c4f94287137f8",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/94/94b6bb62c6ef9ac87ddad95118d24126a4e92ddea2c7fa6dc65c4f94287137f8"
+      },
+      {
+        "path": "textures/landscape/coastoceanfloor01.dds",
+        "sha256": "8c2012be4fcf6195d7ca2bd97f70c16924bf997128f736e07c9e9efea9d28f60",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/8c/8c2012be4fcf6195d7ca2bd97f70c16924bf997128f736e07c9e9efea9d28f60"
+      },
+      {
+        "path": "textures/landscape/dirt01.dds",
+        "sha256": "e86cdee0d6baf68136b8d92fd6bbb0f6f5205397b4f0b8390832193c47f26f76",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/e8/e86cdee0d6baf68136b8d92fd6bbb0f6f5205397b4f0b8390832193c47f26f76"
+      },
+      {
+        "path": "textures/landscape/dirt02.dds",
+        "sha256": "705fdea6192f55cf2b3369482dab0985bb5dd538c9dc0d9143e636612ad5da5c",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/70/705fdea6192f55cf2b3369482dab0985bb5dd538c9dc0d9143e636612ad5da5c"
+      },
+      {
+        "path": "textures/landscape/dirtpath01.dds",
+        "sha256": "0401c3f10ab967a05f3168223e6c4dec9ea55f9e5bc0b767358df47b51813ea6",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/04/0401c3f10ab967a05f3168223e6c4dec9ea55f9e5bc0b767358df47b51813ea6"
+      },
+      {
+        "path": "textures/landscape/dirtsnowpath01.dds",
+        "sha256": "3c683cf6b449eca2919b68061d53383fd4f1652968d97c0965c7d5043ac4d960",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/3c/3c683cf6b449eca2919b68061d53383fd4f1652968d97c0965c7d5043ac4d960"
+      },
+      {
+        "path": "textures/landscape/fallforestdirt01.dds",
+        "sha256": "397e2104c0af409280dd28b0e34c1af62dae3f69ce869dc212e5972a1e0ccdf5",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/39/397e2104c0af409280dd28b0e34c1af62dae3f69ce869dc212e5972a1e0ccdf5"
+      },
+      {
+        "path": "textures/landscape/fallforestgrass01.dds",
+        "sha256": "7391c71448a6ab2da8d45eabe1633da113516e74af909b4f451eb4e186743261",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/73/7391c71448a6ab2da8d45eabe1633da113516e74af909b4f451eb4e186743261"
+      },
+      {
+        "path": "textures/landscape/fallforestleaves01.dds",
+        "sha256": "7648878858f3a477ce53c72e8e439314fe42b3adf48ac7e0c7ee41bee5af44f0",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/76/7648878858f3a477ce53c72e8e439314fe42b3adf48ac7e0c7ee41bee5af44f0"
+      },
+      {
+        "path": "textures/landscape/fallforestrocks01.dds",
+        "sha256": "396b54cbbec81400765b5fb8131c3ff2baa41897814e7a96c122f831f27482c4",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/39/396b54cbbec81400765b5fb8131c3ff2baa41897814e7a96c122f831f27482c4"
+      },
+      {
+        "path": "textures/landscape/fielddirtgrass01.dds",
+        "sha256": "59995e50baedec48090eaf57572b441858cc55e5d02faaabfab98f15d1c5d0ca",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/59/59995e50baedec48090eaf57572b441858cc55e5d02faaabfab98f15d1c5d0ca"
+      },
+      {
+        "path": "textures/landscape/fieldgrass01.dds",
+        "sha256": "73572a65f045ccc229bf731b23c62b28b74f864bfb6d523b56a48834c8785c46",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/73/73572a65f045ccc229bf731b23c62b28b74f864bfb6d523b56a48834c8785c46"
+      },
+      {
+        "path": "textures/landscape/fieldgrass02.dds",
+        "sha256": "c445f3d7142fd55c1b3fca50cdfb2f7997a705e42a8d3b24bd426160dc276fbd",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/c4/c445f3d7142fd55c1b3fca50cdfb2f7997a705e42a8d3b24bd426160dc276fbd"
+      },
+      {
+        "path": "textures/landscape/frozenmarshdirtslopes01.dds",
+        "sha256": "17913fad61c49ca857f2201a77f20a86638292b29072d2256348bf05d7d2af18",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/17/17913fad61c49ca857f2201a77f20a86638292b29072d2256348bf05d7d2af18"
+      },
+      {
+        "path": "textures/landscape/frozenmarshgrass01.dds",
+        "sha256": "7335bc7e503aff72da8a3a2fe9b4dcb3e7185f6553c770533995cd1d9b588fde",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/73/7335bc7e503aff72da8a3a2fe9b4dcb3e7185f6553c770533995cd1d9b588fde"
+      },
+      {
+        "path": "textures/landscape/frozenmarshice01.dds",
+        "sha256": "8d367cad631b819e5556571a49d7486885c9083f7878ec56ad7033be2adb5e2e",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/8d/8d367cad631b819e5556571a49d7486885c9083f7878ec56ad7033be2adb5e2e"
+      },
+      {
+        "path": "textures/landscape/frozenmarshlichen01.dds",
+        "sha256": "ea70a36d9f2d2ada20d1b620f8f5e6c0ee06f70b14d96209366a2cf30772a404",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/ea/ea70a36d9f2d2ada20d1b620f8f5e6c0ee06f70b14d96209366a2cf30772a404"
+      },
+      {
+        "path": "textures/landscape/grasssnow01.dds",
+        "sha256": "6ad994ff48441ed5754e99364032e41bd5515e6406b3b1d003d88ddd56e011c4",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/6a/6ad994ff48441ed5754e99364032e41bd5515e6406b3b1d003d88ddd56e011c4"
+      },
+      {
+        "path": "textures/landscape/mineralpoolterrace.dds",
+        "sha256": "e90323ac50ee79ff448443d5b9d56c82d33273b3c8578f5320de238b03dabd2b",
+        "bytes": 5592544,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/e9/e90323ac50ee79ff448443d5b9d56c82d33273b3c8578f5320de238b03dabd2b"
+      },
+      {
+        "path": "textures/landscape/pineforest01.dds",
+        "sha256": "14fcce36341b78f6afbef5069e348e6220b4099b0859f6250eee85b07f8a9a79",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/14/14fcce36341b78f6afbef5069e348e6220b4099b0859f6250eee85b07f8a9a79"
+      },
+      {
+        "path": "textures/landscape/pineforest02.dds",
+        "sha256": "595c383cb9bb738b7362253ed3897ef21a92ec0e8c829bb2f28c5b2351e1ae36",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/59/595c383cb9bb738b7362253ed3897ef21a92ec0e8c829bb2f28c5b2351e1ae36"
+      },
+      {
+        "path": "textures/landscape/pineforest03.dds",
+        "sha256": "6b6ec216aa01a0572ad942ab9fd6bbdea839c16d89b3382abcdff64ea302988b",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/6b/6b6ec216aa01a0572ad942ab9fd6bbdea839c16d89b3382abcdff64ea302988b"
+      },
+      {
+        "path": "textures/landscape/reachdirt01.dds",
+        "sha256": "35528751b06eeb2167f04b31ec34d5b7bb0cde85e8498bf145938c45282ecca6",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/35/35528751b06eeb2167f04b31ec34d5b7bb0cde85e8498bf145938c45282ecca6"
+      },
+      {
+        "path": "textures/landscape/reachgrass01.dds",
+        "sha256": "0f73bf0a5ee9c6d0268148909416868a144d99af8511792a6060967d137718b7",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/0f/0f73bf0a5ee9c6d0268148909416868a144d99af8511792a6060967d137718b7"
+      },
+      {
+        "path": "textures/landscape/reachmoss01.dds",
+        "sha256": "20f75777ab80c40cffd20a99d3e53e74868c35c4b014c12f58a5a3b50f7f44c2",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/20/20f75777ab80c40cffd20a99d3e53e74868c35c4b014c12f58a5a3b50f7f44c2"
+      },
+      {
+        "path": "textures/landscape/reachmossyrocks01.dds",
+        "sha256": "78eaccb3ef9fe4f3f15442e228ad79efd1c6d9a6efb0961dc199225559756bf0",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/78/78eaccb3ef9fe4f3f15442e228ad79efd1c6d9a6efb0961dc199225559756bf0"
+      },
+      {
+        "path": "textures/landscape/riverbededge.dds",
+        "sha256": "16b59fbbbce8292596c027212f1fba5461c0ec053f5207861a8577df7b9c5fd7",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/16/16b59fbbbce8292596c027212f1fba5461c0ec053f5207861a8577df7b9c5fd7"
+      },
+      {
+        "path": "textures/landscape/riverbottom.dds",
+        "sha256": "fb2af1c3664983b392084f956bdaa1f6fd5af8061f67c5c44eca0d9083c95cd5",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/fb/fb2af1c3664983b392084f956bdaa1f6fd5af8061f67c5c44eca0d9083c95cd5"
+      },
+      {
+        "path": "textures/landscape/rivermud.dds",
+        "sha256": "27dc539d529a84dac0d0cb5ec8f06e2d5a45ff3edb8c4dd74d5b1a8925906a7d",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/27/27dc539d529a84dac0d0cb5ec8f06e2d5a45ff3edb8c4dd74d5b1a8925906a7d"
+      },
+      {
+        "path": "textures/landscape/rocks01.dds",
+        "sha256": "19a677c2ae7cf3ccb61118928ab2bdad89655fc0913cd9827004c09049eac880",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/19/19a677c2ae7cf3ccb61118928ab2bdad89655fc0913cd9827004c09049eac880"
+      },
+      {
+        "path": "textures/landscape/snow01landscape.dds",
+        "sha256": "f65215e8d72695cb108b79b7edc7c0562b4427ace785b05ac476cd64f4551b6e",
+        "bytes": 2796336,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/f6/f65215e8d72695cb108b79b7edc7c0562b4427ace785b05ac476cd64f4551b6e"
+      },
+      {
+        "path": "textures/landscape/snow02landscape.dds",
+        "sha256": "05982065f8e252d2b0d2fba21c0f5a0c50f590285b891fbd6f9e9e7c64263063",
+        "bytes": 2796336,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/05/05982065f8e252d2b0d2fba21c0f5a0c50f590285b891fbd6f9e9e7c64263063"
+      },
+      {
+        "path": "textures/landscape/snowrocks01.dds",
+        "sha256": "73ec60339ce6f6f551c81852924aa8af7e12e8e7d5756cc4af63c6453310e833",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/73/73ec60339ce6f6f551c81852924aa8af7e12e8e7d5756cc4af63c6453310e833"
+      },
+      {
+        "path": "textures/landscape/snowstone01.dds",
+        "sha256": "76817506bdcced92b03d900080d95ee4ee3e18c2adc35dc21af53f6607a417d0",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/76/76817506bdcced92b03d900080d95ee4ee3e18c2adc35dc21af53f6607a417d0"
+      },
+      {
+        "path": "textures/landscape/tundra01.dds",
+        "sha256": "6151471781bb6d29d62d9ed49abd4eb6066833addf8976e1a3df67d941f4c3a1",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/61/6151471781bb6d29d62d9ed49abd4eb6066833addf8976e1a3df67d941f4c3a1"
+      },
+      {
+        "path": "textures/landscape/tundra02.dds",
+        "sha256": "946b0676f826942426addb3060697aa5aed4427f239ac78250b2dd50400637cd",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/94/946b0676f826942426addb3060697aa5aed4427f239ac78250b2dd50400637cd"
+      },
+      {
+        "path": "textures/landscape/tundrarocks01.dds",
+        "sha256": "088c9a1cefed31eab1f315ee336ca5f08e9631d72b9f48628ddc9d26b2f83bcc",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/08/088c9a1cefed31eab1f315ee336ca5f08e9631d72b9f48628ddc9d26b2f83bcc"
+      },
+      {
+        "path": "textures/landscape/volcanictundradirt01.dds",
+        "sha256": "0daa298df27110d39153f2ba6048d586468b5d8374cf6892b6b958a42c4e956c",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/0d/0daa298df27110d39153f2ba6048d586468b5d8374cf6892b6b958a42c4e956c"
+      },
+      {
+        "path": "textures/landscape/volcanictundradirt02.dds",
+        "sha256": "020d6477c3c2754a4207e847452270fccf9d8d7f21eea6afb42becad4ffe84b3",
+        "bytes": 699184,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/02/020d6477c3c2754a4207e847452270fccf9d8d7f21eea6afb42becad4ffe84b3"
+      },
+      {
+        "path": "textures/landscape/volcanictundragravel01.dds",
+        "sha256": "4d72f7728fa9aedfca05c6241b9f36503c7eaf46666ef91ca7db4bf2e660f7e3",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/4d/4d72f7728fa9aedfca05c6241b9f36503c7eaf46666ef91ca7db4bf2e660f7e3"
+      },
+      {
+        "path": "textures/landscape/volcanictundraminerals01.dds",
+        "sha256": "19029669db8a1da535890f6c3f5d5d0a86623f321679abd346e5161189b9c65a",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/19/19029669db8a1da535890f6c3f5d5d0a86623f321679abd346e5161189b9c65a"
+      },
+      {
+        "path": "textures/landscape/volcanictundrarocks01.dds",
+        "sha256": "b0d2fc6deb0f60b21420ffe345018b3413d33efe1766a48dcb5a4122345c0831",
+        "bytes": 1398240,
+        "source_blob": "/Users/taylor/Projects/mudcrab/modern_assets.assets-cache/.ingestion-cache/sha256/b0/b0d2fc6deb0f60b21420ffe345018b3413d33efe1766a48dcb5a4122345c0831"
+      }
+    ]
+  },
+  "main_probe_provenance": {
+    "prepared_at_utc": "2026-10-09T04:56:27.442833+00:00",
+    "variant": "Current-worktree direct terrain compilation; excludes pipeline publication",
+    "worktree_revision": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+    "source_sha256": {
+      "crates/converter/src/lod/albedo.rs": "5f8f83a5e42781e2983446d5a6894c639cd6477fbf036f7dd04a9b983addea34",
+      "crates/converter/src/lod/terrain.rs": "f123f29af9685064d29f480c1eec027db00158833a527986b4ce1369a2b7ea53",
+      "crates/converter/src/texture.rs": "d329e37a0aa134610c18e36626872a2075f0bdb2357066f60e9593a0ad5dff0a"
+    },
+    "instrumented_sha256": {
+      "main.rs": "d00f64af274d32301db7d94d4c10157a9895272cfcf5386ae4ac0508d6bd484f",
+      "lod/albedo.rs": "44fafa408f06aadb1328f8f780f2b6e093a2858609867eead9e6f0fd81bbf7cd",
+      "lod/terrain.rs": "e25c53f73c907fee11b5c09ccea609a0100a2eb88c302814bd9bb45f60416a91",
+      "texture.rs": "68fa1c2a752964a24d0c069ff5c91a0159211ef9edaebf0690d8498355e4da28"
+    },
+    "cached_converter_fingerprint": "/Users/taylor/Projects/mudcrab/target/quick/.fingerprint/converter-bb041d4014e83f84/lib-converter.json",
+    "externs": {
+      "converter": "/Users/taylor/Projects/mudcrab/target/quick/deps/libconverter-bb041d4014e83f84.rlib",
+      "rusqlite": "/Users/taylor/Projects/mudcrab/target/quick/deps/librusqlite-8f8d5dfeb542453b.rlib",
+      "lz4_flex": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblz4_flex-da87a74493a4083e.rlib",
+      "ddsfile": "/Users/taylor/Projects/mudcrab/target/quick/deps/libddsfile-39cc018f062349f5.rlib",
+      "project_wormhole_esm": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_esm-7ce6c71c895eef92.rlib",
+      "tokio": "/Users/taylor/Projects/mudcrab/target/quick/deps/libtokio-3629fa3638482365.rlib",
+      "shared": "/Users/taylor/Projects/mudcrab/target/quick/deps/libshared-44bc7f1e0fa92879.rlib",
+      "crossbeam_channel": "/Users/taylor/Projects/mudcrab/target/quick/deps/libcrossbeam_channel-97f512952337ef80.rlib",
+      "zstd": "/Users/taylor/Projects/mudcrab/target/quick/deps/libzstd-7feebfb185677b58.rlib",
+      "intel_tex_2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libintel_tex_2-b50e8ee25a393564.rlib",
+      "basis_universal": "/Users/taylor/Projects/mudcrab/target/quick/deps/libbasis_universal-ca9078c6b0c09c3d.rlib",
+      "serde_json": "/Users/taylor/Projects/mudcrab/target/quick/deps/libserde_json-6634c1e305a9d583.rlib",
+      "tempfile": "/Users/taylor/Projects/mudcrab/target/quick/deps/libtempfile-7787d8e1c7e991af.rlib",
+      "sha2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libsha2-06654a9829536137.rlib",
+      "flate2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libflate2-929f64d439de3068.rlib",
+      "memmap2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmemmap2-388e9ec9439cd9b2.rlib",
+      "rayon": "/Users/taylor/Projects/mudcrab/target/quick/deps/librayon-bc03c704bf20a633.rlib",
+      "project_wormhole_nif": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_nif-5fb4112e2d608805.rlib",
+      "serde": "/Users/taylor/Projects/mudcrab/target/quick/deps/libserde-861b9d6d9f4396df.rlib",
+      "rkyv": "/Users/taylor/Projects/mudcrab/target/quick/deps/librkyv-ee7bc7947b055eab.rlib",
+      "mesh_tools": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmesh_tools-ff845aa51d46d989.rlib",
+      "walkdir": "/Users/taylor/Projects/mudcrab/target/quick/deps/libwalkdir-35416042d5a38b3a.rlib",
+      "image_dds": "/Users/taylor/Projects/mudcrab/target/quick/deps/libimage_dds-a385e463ca6c4425.rlib",
+      "ktx2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libktx2-f62592d936e9d5b4.rlib",
+      "color_eyre": "/Users/taylor/Projects/mudcrab/target/quick/deps/libcolor_eyre-99114ca905e9fd27.rlib",
+      "nom_derive": "/Users/taylor/Projects/mudcrab/target/quick/deps/libnom_derive-06bcdc7251c8f71b.rlib",
+      "mlua": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmlua-81781ad077b4957a.rlib",
+      "wgpu": "/Users/taylor/Projects/mudcrab/target/quick/deps/libwgpu-ca65f6a21d9ec795.rlib",
+      "project_wormhole_shared": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_shared-cf18601845c5a0c0.rlib",
+      "nom": "/Users/taylor/Projects/mudcrab/target/quick/deps/libnom-bc79c89c90e923cc.rlib",
+      "libc": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblibc-1a0c1caaa2bbf213.rlib"
+    },
+    "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "binary_sha256": "21a05eba7cb2acf3e1a802ae8fa7baf114acdc30a99fac2e6087daf9e2468060",
+    "input_provenance": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/source-provenance.json",
+    "workloads": {
+      "tamriel": {
+        "worldspace_id": 60,
+        "origin": [
+          -96,
+          -96
+        ],
+        "min_x": 0,
+        "min_y": "-cells_side"
+      },
+      "ocean": {
+        "worldspace_id": 67110912,
+        "origin": [
+          -64,
+          -64
+        ],
+        "min_x": 96,
+        "min_y": 96
+      }
+    }
+  },
+  "main1_historical_probe_provenance": {
+    "source_head": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+    "source_hashes": {
+      "crates/converter/src/lod/albedo.rs": "5f8f83a5e42781e2983446d5a6894c639cd6477fbf036f7dd04a9b983addea34",
+      "crates/converter/src/lod/terrain.rs": "f123f29af9685064d29f480c1eec027db00158833a527986b4ce1369a2b7ea53",
+      "crates/converter/src/texture.rs": "d329e37a0aa134610c18e36626872a2075f0bdb2357066f60e9593a0ad5dff0a",
+      "crates/converter/src/basis_ktx2_bridge.cpp": "c787e62658b538d14e6db1005eec2655e2d1a062ecf45da78dd211993d28f262"
+    },
+    "instrumented_hashes": {
+      "lod/albedo.rs": "44fafa408f06aadb1328f8f780f2b6e093a2858609867eead9e6f0fd81bbf7cd",
+      "lod/terrain.rs": "e25c53f73c907fee11b5c09ccea609a0100a2eb88c302814bd9bb45f60416a91",
+      "texture.rs": "68fa1c2a752964a24d0c069ff5c91a0159211ef9edaebf0690d8498355e4da28",
+      "main.rs": "43157d26a948da9d204e14cccd68ad068563839b65be9899631133347e5da17c",
+      "lod-probe": "7f25c45117b3c1ca66bb47fea79228857a1f12187a952118428e1050be359aec"
+    },
+    "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "method": "Exact current Rust LOD/texture modules with phase timers; opt-level=3, cached quick dependency/native codec libraries; representative warm-input microprofile, not release acceptance; no publication."
+  },
+  "pr167_probe_provenance": {
+    "prepared_at_utc": "2026-10-09T04:56:41.151367+00:00",
+    "variant": "PR167 direct terrain compilation; excludes pipeline chunk reuse and publication",
+    "revision": "9ef353c1ef24959e21ec231532c14fbe4791c030",
+    "baseline_harness_sha256": "3781a174d40a9d8aa159ab97dc28fc30b530073011f94d0dd27c4013d9e68eeb",
+    "source_sha256": {
+      "crates/converter/src/lod/albedo.rs": "f0fdb18b9f205932dd9a094e03a80f95fbfac20dd5e1afead6ad043cb0dc2362",
+      "crates/converter/src/lod/terrain.rs": "7a8868a3437fef384a176bbfb3b60b5c85a68c116b4669e742902023ae38c9c4",
+      "crates/converter/src/lod/mod.rs": "4f771009b8ff48e7a12104822e693cf4ff0023c93819c5265b4be1e0b903b29c",
+      "crates/converter/src/texture.rs": "4b7be73b25a9f084372ddf075f27ba626bab33fd7096e978db774f3d7eac0303",
+      "crates/converter/src/texture_ktx2.rs": "b90905654f4a88914cf0655237162a7291fc3fea2cf99a7a4b5d92b28219dba6",
+      "crates/converter/src/basis_ktx2_bridge.cpp": "41f13dca8e892207c3870f5010fe3a1753559de80973cb5e1c0e74fd57cbcd9f"
+    },
+    "instrumented_sha256": {
+      "texture_ktx2.rs": "b90905654f4a88914cf0655237162a7291fc3fea2cf99a7a4b5d92b28219dba6",
+      "basis_block_bridge.cpp": "c6ef263ff6d28a49dc318ea00f143e3d5bfe17572ed00dbb61bc1f847b3fab01",
+      "main.rs": "19f9b7495307de4b063852734d07e524af29f0b9139cadf67d7fc207a4471788",
+      "texture.rs": "4b7be73b25a9f084372ddf075f27ba626bab33fd7096e978db774f3d7eac0303",
+      "lod/terrain.rs": "a39a5a1582495eb3755b5d30e7380110ee89b37aeffc371e85a444cd3bf8614f",
+      "lod/mod.rs": "f09ef351724edf5da4d6827645e649caf15beb12e266cfdc8322ec4820534296",
+      "lod/albedo.rs": "b5dcd4a4aff00a869c7ce7b18c75a5d6b77b01540f7cdf9d5cf50128f4416268"
+    },
+    "cached_converter_fingerprint": "/Users/taylor/Projects/mudcrab/target/quick/.fingerprint/converter-bb041d4014e83f84/lib-converter.json",
+    "externs": {
+      "converter": "/Users/taylor/Projects/mudcrab/target/quick/deps/libconverter-bb041d4014e83f84.rlib",
+      "rusqlite": "/Users/taylor/Projects/mudcrab/target/quick/deps/librusqlite-8f8d5dfeb542453b.rlib",
+      "lz4_flex": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblz4_flex-da87a74493a4083e.rlib",
+      "ddsfile": "/Users/taylor/Projects/mudcrab/target/quick/deps/libddsfile-39cc018f062349f5.rlib",
+      "project_wormhole_esm": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_esm-7ce6c71c895eef92.rlib",
+      "tokio": "/Users/taylor/Projects/mudcrab/target/quick/deps/libtokio-3629fa3638482365.rlib",
+      "shared": "/Users/taylor/Projects/mudcrab/target/quick/deps/libshared-44bc7f1e0fa92879.rlib",
+      "crossbeam_channel": "/Users/taylor/Projects/mudcrab/target/quick/deps/libcrossbeam_channel-97f512952337ef80.rlib",
+      "zstd": "/Users/taylor/Projects/mudcrab/target/quick/deps/libzstd-7feebfb185677b58.rlib",
+      "intel_tex_2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libintel_tex_2-b50e8ee25a393564.rlib",
+      "basis_universal": "/Users/taylor/Projects/mudcrab/target/quick/deps/libbasis_universal-ca9078c6b0c09c3d.rlib",
+      "serde_json": "/Users/taylor/Projects/mudcrab/target/quick/deps/libserde_json-6634c1e305a9d583.rlib",
+      "tempfile": "/Users/taylor/Projects/mudcrab/target/quick/deps/libtempfile-7787d8e1c7e991af.rlib",
+      "sha2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libsha2-06654a9829536137.rlib",
+      "flate2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libflate2-929f64d439de3068.rlib",
+      "memmap2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmemmap2-388e9ec9439cd9b2.rlib",
+      "rayon": "/Users/taylor/Projects/mudcrab/target/quick/deps/librayon-bc03c704bf20a633.rlib",
+      "project_wormhole_nif": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_nif-5fb4112e2d608805.rlib",
+      "serde": "/Users/taylor/Projects/mudcrab/target/quick/deps/libserde-861b9d6d9f4396df.rlib",
+      "rkyv": "/Users/taylor/Projects/mudcrab/target/quick/deps/librkyv-ee7bc7947b055eab.rlib",
+      "mesh_tools": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmesh_tools-ff845aa51d46d989.rlib",
+      "walkdir": "/Users/taylor/Projects/mudcrab/target/quick/deps/libwalkdir-35416042d5a38b3a.rlib",
+      "image_dds": "/Users/taylor/Projects/mudcrab/target/quick/deps/libimage_dds-a385e463ca6c4425.rlib",
+      "ktx2": "/Users/taylor/Projects/mudcrab/target/quick/deps/libktx2-f62592d936e9d5b4.rlib",
+      "color_eyre": "/Users/taylor/Projects/mudcrab/target/quick/deps/libcolor_eyre-99114ca905e9fd27.rlib",
+      "nom_derive": "/Users/taylor/Projects/mudcrab/target/quick/deps/libnom_derive-06bcdc7251c8f71b.rlib",
+      "mlua": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmlua-81781ad077b4957a.rlib",
+      "wgpu": "/Users/taylor/Projects/mudcrab/target/quick/deps/libwgpu-ca65f6a21d9ec795.rlib",
+      "project_wormhole_shared": "/Users/taylor/Projects/mudcrab/target/quick/deps/libproject_wormhole_shared-cf18601845c5a0c0.rlib",
+      "nom": "/Users/taylor/Projects/mudcrab/target/quick/deps/libnom-bc79c89c90e923cc.rlib",
+      "libc": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblibc-1a0c1caaa2bbf213.rlib"
+    },
+    "cpp_command": [
+      "clang++",
+      "-std=c++14",
+      "-O3",
+      "-c",
+      "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/pr167/basis_block_bridge.cpp",
+      "-o",
+      "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/pr167/basis_block_bridge.o"
+    ],
+    "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "binary_sha256": "4082e32e79933aaf2f14f954fa2fff0a6c15993539c671a80401c2d0affc3d3b",
+    "input_provenance": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/source-provenance.json",
+    "phase_timing": "encode_including_mips includes mip time; discarded_template is zero",
+    "workloads": {
+      "tamriel": {
+        "worldspace_id": 60,
+        "origin": [
+          -96,
+          -96
+        ],
+        "min_x": 0,
+        "min_y": "-cells_side"
+      },
+      "ocean": {
+        "worldspace_id": 67110912,
+        "origin": [
+          -64,
+          -64
+        ],
+        "min_x": 96,
+        "min_y": 96
+      }
+    }
+  },
+  "extraction_probe_provenance": {
+    "commit": "c39449b5a8b6a62c7c3c43bb60164e8ba6911839",
+    "source_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/crates/converter/src/archive/bsa.rs",
+    "source_sha256": "40cdf1bfb1bdcdad9a236fc846bbe9b176fc32a134657767d5a10ef6fad3c912",
+    "copy_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/extraction_bsa_current.rs",
+    "copy_sha256": "40cdf1bfb1bdcdad9a236fc846bbe9b176fc32a134657767d5a10ef6fad3c912",
+    "probe_path": "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/extraction_probe.rs",
+    "probe_sha256": "56764e45adb17ffc95bde85fa91dfb9a3c0e076ff4fef4e9268ef9cacaef122b",
+    "binary_sha256": "492ace40aa26a8db4d57a0940906158a0c96fa5ab9be96691348f5f93562b085",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "build_command": [
+      "rustc",
+      "--edition=2024",
+      "-O",
+      "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/extraction_probe.rs",
+      "-L",
+      "dependency=/Users/taylor/Projects/mudcrab/target/quick/deps",
+      "-o",
+      "/Users/taylor/.t3/worktrees/mudcrab/t3-6400376b/target/lod-profile/extraction_probe",
+      "--extern",
+      "color_eyre=/Users/taylor/Projects/mudcrab/target/quick/deps/libcolor_eyre-99114ca905e9fd27.rlib",
+      "--extern",
+      "flate2=/Users/taylor/Projects/mudcrab/target/quick/deps/libflate2-b4f0545859143217.rlib",
+      "--extern",
+      "lz4_flex=/Users/taylor/Projects/mudcrab/target/quick/deps/liblz4_flex-da87a74493a4083e.rlib",
+      "--extern",
+      "rayon=/Users/taylor/Projects/mudcrab/target/quick/deps/librayon-bc03c704bf20a633.rlib",
+      "--extern",
+      "sha2=/Users/taylor/Projects/mudcrab/target/quick/deps/libsha2-06654a9829536137.rlib",
+      "--extern",
+      "libc=/Users/taylor/Projects/mudcrab/target/quick/deps/liblibc-0b35de9ce91c0d68.rlib",
+      "--extern",
+      "memmap2=/Users/taylor/Projects/mudcrab/target/quick/deps/libmemmap2-388e9ec9439cd9b2.rlib",
+      "--extern",
+      "serde_json=/Users/taylor/Projects/mudcrab/target/quick/deps/libserde_json-6634c1e305a9d583.rlib"
+    ],
+    "dependencies": {
+      "color_eyre": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/libcolor_eyre-99114ca905e9fd27.rlib",
+        "sha256": "d8f299281d5cb212c3437c0614c446dedd5a22858ecd8898fea66bb92c5f34a8"
+      },
+      "flate2": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/libflate2-b4f0545859143217.rlib",
+        "sha256": "4403e485be0b94a35b80c85fa69dda0fdded8b83986a0a51b55b8fa077936ef4"
+      },
+      "lz4_flex": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblz4_flex-da87a74493a4083e.rlib",
+        "sha256": "9b457b1d7c72225976c6a0a322481139845c0ced3ae2bffd5e0856168d08d0a3"
+      },
+      "rayon": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/librayon-bc03c704bf20a633.rlib",
+        "sha256": "5928654ca401eff75d524ca589fe194e1a62042f6bab1ed12153c74ea1b757b3"
+      },
+      "sha2": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/libsha2-06654a9829536137.rlib",
+        "sha256": "b420b2b884a90190e4d18a8acf1f41cf1d681e02e1d3592fee6af44fb22272eb"
+      },
+      "libc": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/liblibc-0b35de9ce91c0d68.rlib",
+        "sha256": "9369e8ead28f97f683b6e8ae3db8f5e7b278189aeb6688c65fd0192e9a88073c"
+      },
+      "memmap2": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/libmemmap2-388e9ec9439cd9b2.rlib",
+        "sha256": "f36af03825198d479784e9c55da8517f06d480d1389dcfa4f62644ddb5b8bfa4"
+      },
+      "serde_json": {
+        "path": "/Users/taylor/Projects/mudcrab/target/quick/deps/libserde_json-6634c1e305a9d583.rlib",
+        "sha256": "a51c3a08910f80d5a3f9ebcf0d1f49debe82c8b599cb1d53aeb9654957fd02a8"
+      }
+    },
+    "timing_notes": [
+      "Source archive bytes mapped; parsing outside timed sample. First pass may include input page faults.",
+      "Phase seconds sum per-entry durations across workers, so cumulative thread wait time can exceed wall time.",
+      "Competing engine process must remain active; results are sample timings, not isolated whole-machine maxima.",
+      "No cache persistence/restore, source archive hashing, journal, or publication is included."
+    ],
+    "archive_path": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa",
+    "archive_sha256": "30957adeb1a109c8b8079a5791c2a24c1fdd1d01957e9338480f4d8e03d9d23f",
+    "archive_bytes": 17658991,
+    "comparison_plan": [
+      {
+        "workers": 1,
+        "mode": "sync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      },
+      {
+        "workers": 1,
+        "mode": "nosync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      },
+      {
+        "workers": 4,
+        "mode": "sync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      },
+      {
+        "workers": 4,
+        "mode": "nosync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      },
+      {
+        "workers": 8,
+        "mode": "sync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      },
+      {
+        "workers": 8,
+        "mode": "nosync",
+        "sample_limit": 2048,
+        "source": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Misc.bsa"
+      }
+    ],
+    "known_limitations": [
+      "A separate engine already consumed about 400 percent CPU before this experiment; it must remain active.",
+      "sync_all here means Rust File::sync_all, not F_FULLFSYNC; compare current implementation exactly.",
+      "nosync output is disposable, not a proposed durability policy. Any production change requires a staging/cache durability contract.",
+      "Small .pex sample primarily measures per-file overhead and cannot model 23.6GB texture write throughput."
+    ]
+  },
+  "evidence_hashes": {
+    "target/lod-profile/main-1.sample.txt": "b43b0df3c4dc4f9ec4625d4b0631b58721ee5e0efe0f0d842ae4eca1c2b388d9",
+    "target/lod-profile/sleep-evidence.log": "5d05ef2ae88be2e26520b72c3cd62c2d247512362008a525aba04f1b08d09ae2",
+    "target/lod-profile/material_stats.rs": "072fcfc24cf360a626d64f01ff2e097139f99a724eeec78f3a969a871f3ebe5e",
+    "target/lod-profile/pipeline-findings.json": "a6b179a37cc8386a26dd4975628a298d9dc4099ef41a29958bc57e84b5ee0c14"
+  },
+  "verification": {
+    "main_chunk_digests_identical_1_4_8_and_repeat": true,
+    "pr_chunk_digests_identical_repeats": true,
+    "all_extraction_digests_identical": true
+  }
+}

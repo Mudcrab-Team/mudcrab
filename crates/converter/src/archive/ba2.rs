@@ -68,9 +68,69 @@ struct Dx10Chunk {
     end_mip: u16,
 }
 
+#[derive(Debug)]
 enum Record {
     General(GeneralRecord),
     Dx10(Dx10Record),
+}
+
+/// Payload decoding is deferred so extraction can schedule it on the CPU pool
+/// before handing a bounded batch to the I/O workers.
+#[derive(Debug)]
+pub(crate) struct Ba2RawEntry<'a> {
+    pub name: String,
+    bytes: &'a [u8],
+    record: Record,
+    compression: Compression,
+}
+
+impl Ba2RawEntry<'_> {
+    pub fn decoded_size(&self) -> usize {
+        match &self.record {
+            Record::General(record) => record.unpacked_size as usize,
+            Record::Dx10(record) => {
+                build_dds_header(record).len()
+                    + record
+                        .chunks
+                        .iter()
+                        .map(|chunk| chunk.unpacked_size as usize)
+                        .sum::<usize>()
+            }
+        }
+    }
+
+    pub fn decompress(self) -> Result<Vec<u8>> {
+        match self.record {
+            Record::General(record) => extract_chunk(
+                self.bytes,
+                record.offset,
+                record.packed_size,
+                record.unpacked_size,
+                self.compression,
+                &self.name,
+            ),
+            Record::Dx10(record) => extract_dx10(self.bytes, record, self.compression, &self.name),
+        }
+    }
+}
+
+pub(crate) fn iter_raw_entries(bytes: &[u8]) -> Result<Vec<Ba2RawEntry<'_>>> {
+    let header = parse_header(bytes)?;
+    let records = match header.kind {
+        ArchiveKind::General => parse_general_records(bytes, header)?,
+        ArchiveKind::Dx10 => parse_dx10_records(bytes, header)?,
+    };
+    let names = parse_names(bytes, header.names_offset, header.file_count)?;
+    Ok(records
+        .into_iter()
+        .zip(names)
+        .map(|(record, name)| Ba2RawEntry {
+            name,
+            bytes,
+            record,
+            compression: header.compression,
+        })
+        .collect())
 }
 
 #[cfg(test)]

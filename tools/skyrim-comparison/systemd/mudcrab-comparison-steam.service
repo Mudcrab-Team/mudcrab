@@ -1,0 +1,9 @@
+[Unit]
+Description=Steam for the Mudcrab comparison display
+After=mudcrab-comparison-display.service
+Requires=mudcrab-comparison-display.service
+[Service]
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=gamescope-0
+ExecStart=/run/current-system/sw/bin/python3 /home/taylor/Games/MudcrabComparison/bin/launch-headless-steam.py
+KillMode=control-group

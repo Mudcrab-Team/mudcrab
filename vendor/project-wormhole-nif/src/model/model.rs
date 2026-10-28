@@ -55,8 +55,49 @@ impl Model {
         Ok(())
     }
 
-    pub fn to_gltf(&self, name: String) -> (gltf::json::Root, Vec<u8>) {
+    /// The rig all skeletal meshes of this model are weighted against.
+    ///
+    /// The exporter writes one bone tree shared by every skin, so meshes that
+    /// carry different trees cannot be represented and are rejected instead of
+    /// silently dropping one of them.
+    fn shared_bone_tree(&self) -> Result<Option<&super::all::BoneTree>, String> {
+        let Some(first) = self.skeletal_meshes.first() else {
+            return Ok(None);
+        };
+
+        for (index, mesh) in self.skeletal_meshes.iter().enumerate().skip(1) {
+            if mesh.bones != first.bones {
+                return Err(format!(
+                    "skeletal mesh {} ({}) has a bone tree that differs from skeletal mesh 0 ({})",
+                    index,
+                    mesh.name.as_deref().unwrap_or("<unnamed>"),
+                    first.name.as_deref().unwrap_or("<unnamed>"),
+                ));
+            }
+        }
+
+        Ok(Some(&first.bones))
+    }
+
+    pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
         use gltf::json::*;
+
+        let mut unresolved = Vec::new();
+        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
+            for joint in &smesh.skin {
+                if !smesh.bones.bones.contains_key(joint.as_str()) {
+                    unresolved.push(format!("{joint}:{index}"));
+                }
+            }
+        }
+        if !unresolved.is_empty() {
+            unresolved.sort();
+            unresolved.dedup();
+            return Err(format!(
+                "skin joints could not be resolved against the bone tree: {}",
+                unresolved.join(", ")
+            ));
+        }
 
         let mut root = gltf::json::Root::default();
 
@@ -317,8 +358,11 @@ impl Model {
             );
         }
 
-        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
-            for (name, bone) in &smesh.bones.bones {
+        let shared_bones = self.shared_bone_tree()?;
+        let mut bone_nodes: BTreeMap<String, Index<Node>> = BTreeMap::new();
+
+        if let Some(bones) = shared_bones {
+            for (name, bone) in &bones.bones {
                 let t = bone.transform.get_translation();
                 let r = bone.transform.get_rotation();
                 let s = bone.transform.get_scale();
@@ -343,6 +387,7 @@ impl Model {
                     None
                 };
 
+                let node_index = Index::new(root.nodes.len() as u32);
                 root.nodes.push(Node {
                     camera: None,
                     children: None,
@@ -350,65 +395,63 @@ impl Model {
                     extras: Extras::default(),
                     matrix: None,
                     mesh: None,
-                    name: Some(format!("{}:{}", name, index)),
+                    name: Some(name.clone()),
                     rotation,
                     scale,
                     translation,
                     skin: None,
                     weights: None,
                 });
+                bone_nodes.insert(name.clone(), node_index);
             }
 
-            for (name, bone) in &smesh.bones.bones {
-                for bone_child in bone.children.iter() {
-                    let parent_target = format!("{}:{}", name, index);
+            let mut parented: HashSet<&str> = HashSet::new();
+            for (name, bone) in &bones.bones {
+                let Some(&parent) = bone_nodes.get(name.as_str()) else {
+                    return Err(format!(
+                        "bone {name} is missing from the exported node tree"
+                    ));
+                };
 
-                    debug!("Parent: {} Child: {}", parent_target, bone_child);
-                    if let Some(parent) = root.nodes.iter().position(|x| {
-                        x.name
-                            .as_ref()
-                            .is_some_and(|s| s.to_string() == format!("{}:{}", name, index))
-                    }) {
-                        let child = root
-                            .nodes
-                            .iter()
-                            .position(|x| {
-                                x.name.as_ref().is_some_and(|s| {
-                                    s.to_string() == format!("{}:{}", bone_child, index)
-                                })
-                            })
-                            .unwrap();
-
-                        if root.nodes[parent].children.is_none() {
-                            root.nodes[parent].children = Some(Vec::new());
-                        }
-
-                        root.nodes[parent]
-                            .children
-                            .as_mut()
-                            .unwrap()
-                            .push(Index::new(child as u32));
-                    } else {
-                        panic!("Bone {} not found", name);
+                let mut children = Vec::new();
+                let mut sorted_children: Vec<&String> = bone.children.iter().collect();
+                sorted_children.sort();
+                for child in sorted_children {
+                    let Some(&child_index) = bone_nodes.get(child.as_str()) else {
+                        return Err(format!("bone {name} references missing child bone {child}"));
+                    };
+                    children.push(child_index);
+                    if !parented.insert(child.as_str()) {
+                        return Err(format!(
+                            "bone {name} references child {child}, which already has another parent"
+                        ));
                     }
                 }
+
+                if !children.is_empty() {
+                    root.nodes[parent.value()].children = Some(children);
+                }
             }
 
-            let mut joints = Vec::new();
+            for name in bones.bones.keys() {
+                if !parented.contains(name.as_str()) {
+                    root.scenes[0].nodes.push(bone_nodes[name]);
+                }
+            }
+        }
 
-            //debug!("Skin: {:?}", smesh.skin);
+        for (index, smesh) in self.skeletal_meshes.iter().enumerate() {
+            let mut joints = Vec::new();
+            let mut mesh_weights = None;
+            let mut mesh_extras = Extras::default();
 
             for joint in &smesh.skin {
-                if let Some(bone) = root.nodes.iter().position(|x| {
-                    x.name
-                        .as_ref()
-                        .is_some_and(|s| s.to_string() == format!("{}:{}", joint, index))
-                }) {
-                    joints.push(Index::new(bone as u32));
-                    //warn!("Joint {}:{} found", joint, index);
-                } else {
-                    panic!("Joint {}:{} not found", joint, index);
-                }
+                let Some(&node) = bone_nodes.get(joint.as_str()) else {
+                    return Err(format!(
+                        "skin joint {joint} of skeletal mesh {index} is missing from the exported node tree"
+                    ));
+                };
+                joints.push(node);
             }
 
             let inverse_bind_matrices = Some(Index::new(root.accessors.len() as u32));
@@ -765,6 +808,129 @@ impl Model {
                 panic!("SkeletalMesh must have weights and joints")
             }
 
+            if !smesh.morph_targets.is_empty() {
+                let vertex_count = smesh.mesh.as_ref().unwrap().positions.len();
+                let mut targets = Vec::with_capacity(smesh.morph_targets.len());
+
+                for target in &smesh.morph_targets {
+                    if target.positions.len() != vertex_count
+                        || target.normals.len() != vertex_count
+                    {
+                        return Err(format!(
+                            "morph target {:?} of skeletal mesh {index} has {} positions and {} normals, expected {vertex_count} each",
+                            target.name,
+                            target.positions.len(),
+                            target.normals.len()
+                        ));
+                    }
+
+                    let (min, max) = vec3_min_max(&target.positions);
+                    let positions_bytes = vec3_as_bytes(&target.positions);
+
+                    let positions_accessor = Index::new(root.accessors.len() as u32);
+                    root.accessors.push(Accessor {
+                        buffer_view: Some(Index::new(root.buffer_views.len() as u32)),
+                        byte_offset: None,
+                        count: USize64(target.positions.len() as u64),
+                        component_type: validation::Checked::Valid(GenericComponentType(
+                            accessor::ComponentType::F32,
+                        )),
+                        extensions: None,
+                        extras: Extras::default(),
+                        type_: validation::Checked::Valid(accessor::Type::Vec3),
+                        min: Some(Value::Array(vec![min.x.into(), min.y.into(), min.z.into()])),
+                        max: Some(Value::Array(vec![max.x.into(), max.y.into(), max.z.into()])),
+                        name: Some(format!(
+                            "MORPH_POSITIONS | MESH:{} | {}",
+                            root.meshes.len(),
+                            target.name
+                        )),
+                        normalized: false,
+                        sparse: None,
+                    });
+
+                    root.buffer_views.push(View {
+                        buffer: Index::new(0),
+                        byte_length: USize64(positions_bytes.len() as u64),
+                        byte_offset: Some(USize64(bin_data.len() as u64)),
+                        byte_stride: None,
+                        extensions: None,
+                        extras: Extras::default(),
+                        name: None,
+                        target: None,
+                    });
+
+                    bin_data.extend_from_slice(&positions_bytes);
+
+                    if bin_data.len() % 4 != 0 {
+                        let padding = 4 - (bin_data.len() % 4);
+                        bin_data.extend_from_slice(&vec![0; padding]);
+                    }
+
+                    let normals_bytes = vec3_as_bytes(&target.normals);
+
+                    let normals_accessor = Index::new(root.accessors.len() as u32);
+                    root.accessors.push(Accessor {
+                        buffer_view: Some(Index::new(root.buffer_views.len() as u32)),
+                        byte_offset: None,
+                        count: USize64(target.normals.len() as u64),
+                        component_type: validation::Checked::Valid(GenericComponentType(
+                            accessor::ComponentType::F32,
+                        )),
+                        extensions: None,
+                        extras: Extras::default(),
+                        type_: validation::Checked::Valid(accessor::Type::Vec3),
+                        min: None,
+                        max: None,
+                        name: Some(format!(
+                            "MORPH_NORMALS | MESH:{} | {}",
+                            root.meshes.len(),
+                            target.name
+                        )),
+                        normalized: false,
+                        sparse: None,
+                    });
+
+                    root.buffer_views.push(View {
+                        buffer: Index::new(0),
+                        byte_length: USize64(normals_bytes.len() as u64),
+                        byte_offset: Some(USize64(bin_data.len() as u64)),
+                        byte_stride: None,
+                        extensions: None,
+                        extras: Extras::default(),
+                        name: None,
+                        target: None,
+                    });
+
+                    bin_data.extend_from_slice(&normals_bytes);
+
+                    if bin_data.len() % 4 != 0 {
+                        let padding = 4 - (bin_data.len() % 4);
+                        bin_data.extend_from_slice(&vec![0; padding]);
+                    }
+
+                    targets.push(mesh::MorphTarget {
+                        positions: Some(positions_accessor),
+                        normals: Some(normals_accessor),
+                        tangents: None,
+                    });
+                }
+
+                mesh_weights = Some(vec![0.0; smesh.morph_targets.len()]);
+                let target_names: Vec<&str> = smesh
+                    .morph_targets
+                    .iter()
+                    .map(|target| target.name.as_str())
+                    .collect();
+                mesh_extras = Some(
+                    serde_json::value::to_raw_value(
+                        &serde_json::json!({ "targetNames": target_names }),
+                    )
+                    .expect("morph target names must serialize as JSON"),
+                );
+                primitives.targets = Some(targets);
+            }
+
             root.scenes[0]
                 .nodes
                 .push(Index::new(root.nodes.len() as u32));
@@ -786,10 +952,10 @@ impl Model {
 
             root.meshes.push(Mesh {
                 extensions: None,
-                extras: Extras::default(),
+                extras: mesh_extras,
                 name: smesh.name.clone(),
                 primitives: vec![primitives],
-                weights: None,
+                weights: mesh_weights,
             });
         }
 
@@ -808,6 +974,9 @@ impl Model {
                 textures.insert(glow);
             }
         }
+
+        let mut textures: Vec<&String> = textures.into_iter().collect();
+        textures.sort();
 
         for texture in textures {
             root.textures.push(Texture {
@@ -951,11 +1120,11 @@ impl Model {
 
         root.buffers[0].byte_length = USize64(bin_data.len() as u64);
 
-        (root, bin_data)
+        Ok((root, bin_data))
     }
 
-    pub fn to_glb(&self, name: String) -> Vec<u8> {
-        let (mut root, bin_data) = self.to_gltf(name);
+    pub fn to_glb(&self, name: String) -> Result<Vec<u8>, String> {
+        let (mut root, bin_data) = self.to_gltf(name)?;
 
         root.buffers[0].uri = None;
 
@@ -985,7 +1154,7 @@ impl Model {
         glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
         glb.extend_from_slice(b"BIN\0");
         glb.extend_from_slice(&bin);
-        glb
+        Ok(glb)
     }
 }
 
@@ -1001,6 +1170,26 @@ impl Default for Model {
             scene_root_rotation: None,
         }
     }
+}
+
+fn vec3_min_max(values: &[glam::Vec3]) -> (glam::Vec3, glam::Vec3) {
+    let Some((first, rest)) = values.split_first() else {
+        return (glam::Vec3::ZERO, glam::Vec3::ZERO);
+    };
+
+    rest.iter().fold((*first, *first), |(min, max), value| {
+        (min.min(*value), max.max(*value))
+    })
+}
+
+fn vec3_as_bytes(values: &[glam::Vec3]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 12);
+    for value in values {
+        bytes.extend(value.x.to_le_bytes().as_slice());
+        bytes.extend(value.y.to_le_bytes().as_slice());
+        bytes.extend(value.z.to_le_bytes().as_slice());
+    }
+    bytes
 }
 
 fn validate_static_scene(nodes: &[StaticSceneNode], mesh_count: usize) -> Result<(), String> {
@@ -1105,6 +1294,141 @@ mod static_scene_tests {
         )
         .unwrap_err();
         assert!(error.contains("multiple parents"));
+    }
+}
+
+#[cfg(test)]
+mod shared_skeleton_tests {
+    use super::*;
+    use crate::dev::*;
+    use crate::model::all::{BoneData, BoneTransform, BoneTree, SkeletalMesh, StaticMesh};
+    use std::collections::BTreeSet;
+
+    fn bone(children: &[&str]) -> BoneData {
+        BoneData {
+            transform: BoneTransform::default(),
+            children: children.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    fn bone_tree() -> BoneTree {
+        let mut bones = BoneTree::new();
+        bones.add_bone("Root", bone(&["Bone0", "Bone1"])).unwrap();
+        bones.add_bone("Bone0", bone(&["Bone2"])).unwrap();
+        bones.add_bone("Bone1", bone(&[])).unwrap();
+        bones.add_bone("Bone2", bone(&[])).unwrap();
+        bones
+    }
+
+    fn mesh(name: &str, bones: BoneTree, skin: &[&str]) -> SkeletalMesh {
+        SkeletalMesh {
+            name: Some(name.to_owned()),
+            source_block: None,
+            mesh: Some(StaticMesh {
+                name: Some(name.to_owned()),
+                positions: vec![glam::Vec3::ZERO, glam::Vec3::X],
+                normals: Vec::new(),
+                uvs: Vec::new(),
+                triangles: Vec::new(),
+                colors: Vec::new(),
+            }),
+            weights: vec![glam::Vec4::new(1.0, 0.0, 0.0, 0.0); 2],
+            joints: vec![glam::u8::U8Vec4::ZERO; 2],
+            bones,
+            skin: skin.iter().map(|joint| (*joint).to_owned()).collect(),
+            inverse_bind_matrices: vec![BSMatrix4(glam::Mat4::IDENTITY); skin.len()],
+            morph_targets: Vec::new(),
+        }
+    }
+
+    fn model(meshes: Vec<SkeletalMesh>) -> Model {
+        let material_indices = vec![0; meshes.len()];
+        Model {
+            name: Some("shared".to_owned()),
+            static_meshes: Vec::new(),
+            static_nodes: Vec::new(),
+            skeletal_meshes: meshes,
+            materials: Vec::new(),
+            material_indices,
+            scene_root_rotation: None,
+        }
+    }
+
+    #[test]
+    fn shared_bone_tree_is_emitted_once_and_reachable_from_the_scene() {
+        let (root, _) = model(vec![
+            mesh("body", bone_tree(), &["Root", "Bone0", "Bone2"]),
+            mesh("hands", bone_tree(), &["Root", "Bone1"]),
+        ])
+        .to_gltf("shared".to_owned())
+        .unwrap();
+
+        assert_eq!(
+            root.nodes.len(),
+            6,
+            "four bones plus one node per skinned mesh"
+        );
+
+        let mut bone_nodes = BTreeMap::new();
+        for (index, node) in root.nodes.iter().enumerate() {
+            if let Some(name) = &node.name {
+                if ["Root", "Bone0", "Bone1", "Bone2"].contains(&name.as_str()) {
+                    bone_nodes.insert(name.clone(), index);
+                }
+            }
+        }
+        for name in ["Root", "Bone0", "Bone1", "Bone2"] {
+            assert_eq!(
+                root.nodes
+                    .iter()
+                    .filter(|node| node.name.as_deref() == Some(name))
+                    .count(),
+                1,
+                "bone {name} must be exported exactly once with its plain name"
+            );
+        }
+        assert_eq!(bone_nodes.len(), 4, "one node per distinct bone name");
+
+        let mut reachable = BTreeSet::new();
+        let mut stack: Vec<usize> = root.scenes[0]
+            .nodes
+            .iter()
+            .map(|node| node.value())
+            .collect();
+        while let Some(index) = stack.pop() {
+            if reachable.insert(index) {
+                if let Some(children) = &root.nodes[index].children {
+                    stack.extend(children.iter().map(|node| node.value()));
+                }
+            }
+        }
+        assert_eq!(
+            reachable.len(),
+            root.nodes.len(),
+            "every node, bones included, must be reachable from the scene"
+        );
+
+        assert_eq!(root.skins[0].joints[0], root.skins[1].joints[0]);
+        assert_eq!(root.skins[0].joints[0].value(), bone_nodes["Root"]);
+        assert_eq!(root.skins[0].joints[1].value(), bone_nodes["Bone0"]);
+        assert_eq!(root.skins[0].joints[2].value(), bone_nodes["Bone2"]);
+        assert_eq!(root.skins[1].joints[1].value(), bone_nodes["Bone1"]);
+    }
+
+    #[test]
+    fn meshes_with_different_bone_trees_are_rejected() {
+        let mut other = BoneTree::new();
+        other.add_bone("Root", bone(&[])).unwrap();
+
+        let error = model(vec![
+            mesh("body", bone_tree(), &["Root"]),
+            mesh("hands", other, &["Root"]),
+        ])
+        .to_gltf("shared".to_owned())
+        .unwrap_err();
+
+        assert!(error.contains("skeletal mesh 1"), "{error}");
+        assert!(error.contains("hands"), "{error}");
     }
 }
 
@@ -1984,3 +2308,171 @@ impl Default for SkeletalMesh {
         }
     }
 }*/
+
+#[cfg(test)]
+mod morph_target_tests {
+    use super::*;
+    use crate::dev::*;
+    use crate::model::all::{
+        BoneData, BoneTransform, BoneTree, MorphTarget, SkeletalMesh, StaticMesh,
+    };
+
+    fn skeletal_model(morph_targets: Vec<MorphTarget>) -> Model {
+        let mut bones = BoneTree::new();
+        bones
+            .add_bone(
+                "Root",
+                BoneData {
+                    transform: BoneTransform::default(),
+                    children: HashSet::new(),
+                },
+            )
+            .unwrap();
+
+        let mut mesh = StaticMesh::default();
+        mesh.name = Some("triangle".to_owned());
+        mesh.positions = vec![
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(1.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 1.0, 0.0),
+        ];
+        mesh.normals = vec![glam::Vec3::Z; 3];
+        mesh.uvs = vec![glam::Vec2::ZERO; 3];
+        mesh.triangles = vec![glam::u16::U16Vec3::new(0, 1, 2)];
+
+        let mut skeletal = SkeletalMesh::default();
+        skeletal.name = Some("triangle".to_owned());
+        skeletal.source_block = Some(0);
+        skeletal.mesh = Some(mesh);
+        skeletal.weights = vec![glam::Vec4::new(1.0, 0.0, 0.0, 0.0); 3];
+        skeletal.joints = vec![glam::u8::U8Vec4::ZERO; 3];
+        skeletal.bones = bones;
+        skeletal.skin = vec!["Root".to_owned()];
+        skeletal.inverse_bind_matrices = vec![BSMatrix4(glam::Mat4::IDENTITY)];
+        skeletal.morph_targets = morph_targets;
+
+        Model {
+            name: Some("morph".to_owned()),
+            static_meshes: Vec::new(),
+            static_nodes: Vec::new(),
+            skeletal_meshes: vec![skeletal],
+            materials: vec![Material {
+                diffuse: None,
+                normal: None,
+                glow: None,
+                specular: None,
+            }],
+            material_indices: vec![0],
+            scene_root_rotation: None,
+        }
+    }
+
+    fn thin_target() -> MorphTarget {
+        MorphTarget {
+            name: "thin".to_owned(),
+            positions: vec![
+                glam::Vec3::new(1.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 2.0, 0.0),
+                glam::Vec3::new(0.0, 0.0, 3.0),
+            ],
+            normals: vec![
+                glam::Vec3::new(0.1, 0.0, 0.0),
+                glam::Vec3::new(0.0, 0.2, 0.0),
+                glam::Vec3::new(0.0, 0.0, 0.3),
+            ],
+        }
+    }
+
+    #[test]
+    fn skeletal_mesh_writes_named_morph_target() {
+        let bytes = skeletal_model(vec![thin_target()])
+            .to_glb("morph".to_owned())
+            .unwrap();
+        let (document, buffers, _) = gltf::import_slice(&bytes).unwrap();
+
+        let mesh = document.meshes().next().unwrap();
+        assert_eq!(mesh.weights(), Some(&[0.0f32][..]));
+        let extras: serde_json::Value =
+            serde_json::from_str(mesh.extras().as_ref().unwrap().get()).unwrap();
+        assert_eq!(extras, serde_json::json!({ "targetNames": ["thin"] }));
+
+        let primitive = mesh.primitives().next().unwrap();
+        let target = primitive.morph_targets().next().unwrap();
+        let positions_accessor = target.positions().unwrap();
+        assert!(positions_accessor.min().is_some());
+        assert!(positions_accessor.max().is_some());
+        assert!(target.normals().unwrap().min().is_none());
+
+        let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+        let (positions, normals, tangents) = reader.read_morph_targets().next().unwrap();
+        assert!(tangents.is_none());
+        let positions: Vec<[f32; 3]> = positions.unwrap().collect();
+        let normals: Vec<[f32; 3]> = normals.unwrap().collect();
+        assert_eq!(
+            positions,
+            vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]
+        );
+        assert_eq!(
+            normals,
+            vec![[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]]
+        );
+    }
+
+    #[test]
+    fn empty_morph_targets_emit_no_morph_data() {
+        let bytes = skeletal_model(Vec::new())
+            .to_glb("morph".to_owned())
+            .unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+
+        let mesh = &json["meshes"][0];
+        assert!(mesh.get("targets").is_none());
+        assert!(mesh.get("weights").is_none());
+        assert!(mesh.get("extras").is_none());
+        assert!(mesh["primitives"][0].get("targets").is_none());
+        assert_eq!(json["accessors"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn malformed_morph_targets_return_errors_from_both_writers() {
+        for (field, target, expected_lengths) in [
+            (
+                "positions",
+                MorphTarget {
+                    positions: vec![],
+                    ..thin_target()
+                },
+                "0 positions and 3 normals, expected 3 each",
+            ),
+            (
+                "normals",
+                MorphTarget {
+                    normals: vec![],
+                    ..thin_target()
+                },
+                "3 positions and 0 normals, expected 3 each",
+            ),
+        ] {
+            let model = skeletal_model(vec![target]);
+            let gltf_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.to_gltf("morph".to_owned())
+            }));
+            assert!(
+                gltf_result.is_ok(),
+                "to_gltf panicked for malformed {field}"
+            );
+            let error = gltf_result.unwrap().unwrap_err();
+            assert!(error.contains("morph target \"thin\" of skeletal mesh 0"));
+            assert!(error.contains(expected_lengths));
+
+            let glb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.to_glb("morph".to_owned())
+            }));
+            assert!(glb_result.is_ok(), "to_glb panicked for malformed {field}");
+            let error = glb_result.unwrap().unwrap_err();
+            assert!(error.contains("morph target \"thin\" of skeletal mesh 0"));
+            assert!(error.contains(expected_lengths));
+        }
+    }
+}

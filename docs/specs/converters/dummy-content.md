@@ -66,6 +66,7 @@ The `esm` format has to be included for either.
 | `textures/generated_color_x8.dds` | Uncompressed `X8R8G8B8` texture, 32×32, 6 mips. |
 | `textures/generated_cube.dds` | BC1 cube map, 32×32, 6 mips, six faces. |
 | `textures/generated_volume.dds` | BC1 volume texture, 16×16×16, 5 mips. |
+| `textures/landscape/dirt02.dds` | BC1 texture, 64×64, 7 mips; stand-in for Skyrim's default land texture, which terrain LOD paints on quadrants with no base texture. |
 | `meshes/generated.nif` | Skyrim SE `20.2.0.7` static quad with a lighting shader and texture set. |
 | `Skyrim - Misc.bsa` | SSE `v105` BSA (24-byte folder records) with zlib payloads. |
 | `Skyrim - Meshes.bsa` | SSE `v105` BSA containing the generated NIF. |
@@ -102,7 +103,10 @@ Supported writers:
   (`esm::PRESET_INTERIOR`, `esm::plugin_with_interior`), or with a `LIGH` base record whose
   `DATA` is the 48-byte layout `Skyrim.esm` uses, an `FNAM` fade and one reference carrying an
   `XRDS` radius override (`esm::PRESET_LIGHT`, `esm::plugin_with_lights`). Exports into
-  `skyrim_world.db` (schema 5, `shared::WORLD_DATABASE_SCHEMA_VERSION`) and `cell_cache.rkyv`.
+  `skyrim_world.db` (the current `shared::WORLD_DATABASE_SCHEMA_VERSION`) and `cell_cache.rkyv`.
+  `esm::texture_set(form_id, slots)` generates a standalone TXST record to append to a plugin;
+  the eight optional array entries name physical TX00 through TX07 slots independently of
+  converter column order. Omitted entries produce no corresponding subrecord.
 - `layout`: the `Data/` tree above, with atomic publication and symlink refusal. `layout::generate`
   writes the default tree and `layout::write_plugin` publishes a caller-built `Skyrim.esm` —
   the interior preset included — through the same writer and the same constants
@@ -130,6 +134,8 @@ client would consume; the [ADRs](../../adr/README.md) record the reasoning:
   load-order remap rewrites them into load-order numbering like each reference's own FormID,
   so the door links survive any load-order slot. The single-plugin `dummy-content gen` case
   occupies index 0, where these values are unchanged. Nothing consumes `XTEL` yet.
+- `XESP` is a four-byte parent FormID, one flags byte and three unused bytes.
+  The exporter projects byte 4 only, preserving the unused bytes in canonical payloads.
 - A light reference's `XRDS` is a single little-endian `f32` rather than a FormID, so the
   load-order remap leaves it alone and a reader gets the value as written. The base record's
   `DATA` puts the radius at bytes 4..8 (`u32`), the colour at 8..11, the flags at 12..16 (`u32`)

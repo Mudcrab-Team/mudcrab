@@ -2,6 +2,7 @@
 name = "dummy-content"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
@@ -11,6 +12,8 @@ miniz_oxide = "0.8"
 
 [dev-dependencies]
 criterion = "0.7"
+nom-derive.workspace = true
+project-wormhole-nif.workspace = true
 tempfile = "3.20"
 
 [[bench]]

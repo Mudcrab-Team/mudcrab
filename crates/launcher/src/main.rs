@@ -9,6 +9,7 @@ mod conversion;
 mod engine_process;
 mod game_detection;
 mod handlers;
+mod mo2_settings;
 mod ui;
 
 use bevy::{prelude::*, window::WindowResolution};
@@ -52,6 +53,7 @@ pub enum LauncherSet {
 pub struct LauncherPlugin;
 
 impl Plugin for LauncherPlugin {
+    /// Configures launcher system ordering, UI setup, MO2 settings, and engine launch handling.
     fn build(&self, app: &mut App) {
         app.configure_sets(
             Update,
@@ -76,6 +78,7 @@ impl Plugin for LauncherPlugin {
         )
         .add_systems(Update, watch_engine_process)
         .add_systems(OnEnter(LauncherState::LaunchingEngine), launch_engine);
+        mo2_settings::install(app);
     }
 }
 

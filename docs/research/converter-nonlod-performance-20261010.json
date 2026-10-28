@@ -1,0 +1,619 @@
+{
+  "schema_version": 1,
+  "benchmark_source_commit": "54a4780bf462623a3ca04d29ab12b9f44b8670fd",
+  "benchmark_source_files_sha256": "7831233e81b4f56be58d3eca5b3046c1cd6e57db92e98437f04f978b694dc09d",
+  "benchmark_converter_sha256": "84e2db7e7eeb0fde5837bd32f00d9b6ca121fc45ae47aa725e92ec6413774eb8",
+  "local_summary_sha256": "3105cbaf9576bd96dad3037d5571ef691e4d8cd28b874fd610500f32a775abfc",
+  "native_environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu": "Apple M1 Pro",
+    "ram_bytes": 34359738368,
+    "cpu_jobs": 8,
+    "io_jobs": 4,
+    "record_reader": "inhouse",
+    "texture_encoder": "gpu",
+    "gpu_quality": 2,
+    "generated_lod": false
+  },
+  "qualification": "Historical observations before integrating PR204 head7dcf1344; uncontrolled source caches and differing sampled host load. No controlled speedup or current-head pack parity is claimed. Retail inputs and raw private evidence are excluded.",
+  "pipelines": {
+    "previous": {
+      "cold": {
+        "run": {
+          "started_at": "2026-10-09T21:38:40.397755+00:00",
+          "finished_at": "2026-10-09T21:46:52.119512+00:00",
+          "wall_seconds": 491.7207748889923,
+          "monotonic_seconds": 491.68688641600005,
+          "user_seconds": 348.014084,
+          "system_seconds": 235.686871,
+          "max_resident_set_bytes": 14758707200,
+          "binary_sha256": "74b340b9b9eda427370e0f680d351ce7e587ad21969560d3fa6cb3da40f28290"
+        },
+        "pipeline_seconds": 490.741,
+        "phase_exclusive_seconds": {
+          "archive_ingestion_and_loose_overlay": 175.864,
+          "artifact_validation": 4.251,
+          "asset_discovery_and_setup": 1.51,
+          "conversion_initialization": 0.0,
+          "database_artifacts_and_release": 0.526,
+          "database_asset_integration": 5.224,
+          "database_conversion": 44.169,
+          "database_validation": 7.756,
+          "ingestion_cache_persistence": 23.586,
+          "ingestion_cache_pruning": 0.068,
+          "input_discovery_and_plugin_hashes": 0.272,
+          "manifest_serialization": 0.06,
+          "meshes_and_texture_semantics": 114.203,
+          "published_manifest_reload": 0.054,
+          "run_setup": 0.001,
+          "runtime_publication": 26.562,
+          "runtime_support": 0.0,
+          "scripts": 3.921,
+          "staging_cleanup": 16.882,
+          "terrain_caches": 2.587,
+          "textures_aliases_and_reference_repair": 63.221
+        },
+        "publication": {
+          "outer_elapsed_ms": 26562,
+          "nested_exclusive_elapsed_ms": {
+            "backup_setup": 0,
+            "destination_lock_validation": 0,
+            "destination_policy_validation": 0,
+            "ownership_recovery": 0,
+            "pack_swap": 0,
+            "runtime_pack_linking": 26561,
+            "runtime_pack_preparation": 0
+          },
+          "nested_sum_ms": 26561,
+          "unassigned_ms": 1,
+          "reconciled": true,
+          "method": "Publication timers are detail within runtime_publication; never add them again."
+        },
+        "archives": {
+          "archives": 93,
+          "entries": 76521,
+          "logical_source_bytes": 26383892386,
+          "selection_counts": {
+            "runtime_english_v1": 93
+          },
+          "restored_archives": 0,
+          "sync_calls": 76521,
+          "exclusive_seconds": {
+            "source_hash_seconds": 12.947299039,
+            "cache_restore_seconds": 0.0,
+            "extraction_seconds": 11.042480247,
+            "sync_seconds": 119.43770546500001,
+            "cache_link_seconds": 32.40082563
+          },
+          "worker_sync_seconds_excluded": 944.225666048,
+          "archive_operation_sum_seconds": 175.828310381,
+          "overlay_and_boundary_seconds": 0.03568961900001
+        },
+        "retention": {
+          "passed": true,
+          "coverage": {
+            "runtime_records": 1240167,
+            "source_records": 1240167,
+            "retained_source_payload_bytes": 561261840,
+            "runtime_records_without_source": 0,
+            "source_records_without_runtime": 0,
+            "localized_statuses": {
+              "missing": 5,
+              "null_id": 12758,
+              "resolved": 96632
+            },
+            "terrain_source_rows": 52364,
+            "terrain_source_cells": 52362
+          }
+        },
+        "selected_competing_processes_sampled": true,
+        "sampling_errors": 0
+      },
+      "warm": {
+        "run": {
+          "started_at": "2026-10-09T21:48:43.358655+00:00",
+          "finished_at": "2026-10-09T21:53:01.798017+00:00",
+          "wall_seconds": 258.4386148452759,
+          "monotonic_seconds": 258.43773808300006,
+          "user_seconds": 126.500631,
+          "system_seconds": 452.237131,
+          "max_resident_set_bytes": 15100198912,
+          "binary_sha256": "74b340b9b9eda427370e0f680d351ce7e587ad21969560d3fa6cb3da40f28290"
+        },
+        "pipeline_seconds": 257.542,
+        "phase_exclusive_seconds": {
+          "archive_ingestion_and_loose_overlay": 59.746,
+          "artifact_validation": 5.286,
+          "asset_discovery_and_setup": 1.064,
+          "conversion_initialization": 0.0,
+          "database_artifacts_and_release": 0.582,
+          "database_asset_integration": 5.643,
+          "database_conversion": 54.295,
+          "database_validation": 8.668,
+          "ingestion_cache_persistence": 1.932,
+          "ingestion_cache_pruning": 0.111,
+          "input_discovery_and_plugin_hashes": 0.284,
+          "manifest_serialization": 0.065,
+          "meshes_and_texture_semantics": 16.632,
+          "published_manifest_reload": 0.054,
+          "run_setup": 0.058,
+          "runtime_publication": 46.279,
+          "runtime_support": 0.0,
+          "scripts": 5.052,
+          "staging_cleanup": 19.657,
+          "terrain_caches": 2.486,
+          "textures_aliases_and_reference_repair": 29.62
+        },
+        "publication": {
+          "outer_elapsed_ms": 46279,
+          "nested_exclusive_elapsed_ms": {
+            "backup_setup": 0,
+            "destination_lock_validation": 0,
+            "destination_policy_validation": 0,
+            "next_generated_artifact_sealing": 4935,
+            "next_manifest_hash": 28,
+            "ownership_record_cleanup": 0,
+            "ownership_record_file_creation": 0,
+            "ownership_record_publication": 0,
+            "ownership_record_serialization": 1,
+            "ownership_record_setup": 0,
+            "ownership_record_sync": 9,
+            "ownership_record_write": 0,
+            "ownership_recovery": 0,
+            "pack_swap": 1,
+            "previous_generated_artifact_sealing": 5100,
+            "previous_manifest_hash": 29,
+            "previous_pack_cleanup": 5330,
+            "previous_pack_policy_validation": 0,
+            "previous_pack_rename": 0,
+            "runtime_pack_linking": 30839,
+            "runtime_pack_preparation": 0
+          },
+          "nested_sum_ms": 46272,
+          "unassigned_ms": 7,
+          "reconciled": true,
+          "method": "Publication timers are detail within runtime_publication; never add them again."
+        },
+        "archives": {
+          "archives": 93,
+          "entries": 76521,
+          "logical_source_bytes": 26383892386,
+          "selection_counts": {
+            "runtime_english_v1": 93
+          },
+          "restored_archives": 93,
+          "sync_calls": 0,
+          "exclusive_seconds": {
+            "source_hash_seconds": 13.077305415,
+            "cache_restore_seconds": 46.63897654099999,
+            "extraction_seconds": 0.0,
+            "sync_seconds": 0.0,
+            "cache_link_seconds": 0.0
+          },
+          "worker_sync_seconds_excluded": 0.0,
+          "archive_operation_sum_seconds": 59.71628195599999,
+          "overlay_and_boundary_seconds": 0.02971804400001332
+        },
+        "retention": {
+          "passed": true,
+          "coverage": {
+            "runtime_records": 1240167,
+            "source_records": 1240167,
+            "retained_source_payload_bytes": 561261840,
+            "runtime_records_without_source": 0,
+            "source_records_without_runtime": 0,
+            "localized_statuses": {
+              "missing": 5,
+              "null_id": 12758,
+              "resolved": 96632
+            },
+            "terrain_source_rows": 52364,
+            "terrain_source_cells": 52362
+          }
+        },
+        "selected_competing_processes_sampled": true,
+        "sampling_errors": 0
+      }
+    },
+    "next": {
+      "cold": {
+        "run": {
+          "started_at": "2026-10-10T05:58:43.043793+00:00",
+          "finished_at": "2026-10-10T06:05:04.775418+00:00",
+          "wall_seconds": 381.7308337688446,
+          "monotonic_seconds": 381.729084333,
+          "user_seconds": 362.99193,
+          "system_seconds": 313.081234,
+          "max_resident_set_bytes": 14127251456,
+          "binary_sha256": "84e2db7e7eeb0fde5837bd32f00d9b6ca121fc45ae47aa725e92ec6413774eb8"
+        },
+        "pipeline_seconds": 380.442,
+        "phase_exclusive_seconds": {
+          "archive_ingestion_and_loose_overlay": 42.72,
+          "artifact_validation": 4.207,
+          "asset_discovery_and_setup": 0.834,
+          "conversion_initialization": 0.0,
+          "database_artifacts_and_release": 0.523,
+          "database_asset_integration": 4.614,
+          "database_cache_identity": 0.38,
+          "database_cache_input_recheck": 0.384,
+          "database_cache_lookup": 0.0,
+          "database_cache_persistence": 2.033,
+          "database_conversion": 52.472,
+          "database_validation": 8.372,
+          "ingestion_cache_persistence": 26.941,
+          "ingestion_cache_pruning": 0.097,
+          "input_discovery_and_plugin_hashes": 0.295,
+          "manifest_serialization": 0.064,
+          "meshes_and_texture_semantics": 110.657,
+          "published_manifest_reload": 0.062,
+          "run_setup": 0.001,
+          "runtime_publication": 28.745,
+          "runtime_support": 0.0,
+          "scripts": 3.267,
+          "staging_cleanup": 21.729,
+          "terrain_caches": 2.44,
+          "textures_aliases_and_reference_repair": 69.526
+        },
+        "publication": {
+          "outer_elapsed_ms": 28745,
+          "nested_exclusive_elapsed_ms": {
+            "backup_setup": 0,
+            "destination_lock_validation": 0,
+            "destination_policy_validation": 0,
+            "ownership_recovery": 0,
+            "pack_swap": 0,
+            "runtime_pack_linking": 28743,
+            "runtime_pack_preparation": 0
+          },
+          "nested_sum_ms": 28743,
+          "unassigned_ms": 2,
+          "reconciled": true,
+          "method": "Publication timers are detail within runtime_publication; never add them again."
+        },
+        "archives": {
+          "archives": 93,
+          "entries": 76521,
+          "logical_source_bytes": 26383892386,
+          "selection_counts": {
+            "runtime_english_v1": 93
+          },
+          "restored_archives": 0,
+          "sync_calls": 61570,
+          "exclusive_seconds": {
+            "source_hash_seconds": 13.318426710999999,
+            "cache_restore_seconds": 0.0,
+            "extraction_seconds": 24.411345002000004,
+            "sync_seconds": 4.962297629999998,
+            "cache_link_seconds": 0.0
+          },
+          "worker_sync_seconds_excluded": 29.164781109999993,
+          "archive_operation_sum_seconds": 42.692069343,
+          "overlay_and_boundary_seconds": 0.02793065699999886,
+          "raw_write_metrics": {
+            "selected_files": 76521,
+            "selected_bytes": 26383892386,
+            "unique_payloads": 62055,
+            "payload_writes": 61570,
+            "payload_bytes_written": 22775099219,
+            "payload_reuses": 14951,
+            "physical_copy_writes": 0,
+            "physical_copy_bytes_written": 0
+          },
+          "physical_payload_writes": 61570,
+          "physical_payload_bytes_written": 22775099219,
+          "unique_payloads_scope": "Summed per-archive unique hashes, not globally unique hashes.",
+          "raw_write_counter_scope": "Fresh ingestion counts canonical writes and separate spill or fallback copies. Cache-hit restoration does not instrument fallback copy writes; zero hit counters do not prove every restoration path was a hard link.",
+          "sync_calls_match_physical_writes": true
+        },
+        "retention": {
+          "passed": true,
+          "coverage": {
+            "runtime_records": 1240167,
+            "source_records": 1240167,
+            "retained_source_payload_bytes": 561261840,
+            "runtime_records_without_source": 0,
+            "source_records_without_runtime": 0,
+            "localized_statuses": {
+              "missing": 5,
+              "null_id": 12758,
+              "resolved": 96632
+            },
+            "terrain_source_rows": 52364,
+            "terrain_source_cells": 52362
+          }
+        },
+        "selected_competing_processes_sampled": true,
+        "sampling_errors": 0,
+        "database_cache": {
+          "hit": false,
+          "key": "a949453f2c809897ec7d2a31c96f5ec85ef6c28c69dde0abdaa4741d8e5bee68",
+          "files_restored": 0,
+          "runtime_records_built": 1240167,
+          "current_exclusive_seconds": {
+            "database_artifacts_and_release": 0.523,
+            "database_asset_integration": 4.614,
+            "database_cache_identity": 0.38,
+            "database_cache_input_recheck": 0.384,
+            "database_cache_lookup": 0.0,
+            "database_cache_persistence": 2.033,
+            "database_conversion": 52.472,
+            "database_validation": 8.372,
+            "terrain_caches": 2.44
+          }
+        }
+      },
+      "warm": {
+        "run": {
+          "started_at": "2026-10-10T06:08:40.773680+00:00",
+          "finished_at": "2026-10-10T06:11:46.911919+00:00",
+          "wall_seconds": 186.1373839378357,
+          "monotonic_seconds": 186.136857,
+          "user_seconds": 86.07245,
+          "system_seconds": 420.18209,
+          "max_resident_set_bytes": 565592064,
+          "binary_sha256": "84e2db7e7eeb0fde5837bd32f00d9b6ca121fc45ae47aa725e92ec6413774eb8"
+        },
+        "pipeline_seconds": 185.565,
+        "phase_exclusive_seconds": {
+          "archive_ingestion_and_loose_overlay": 56.457,
+          "artifact_validation": 4.869,
+          "asset_discovery_and_setup": 0.804,
+          "conversion_initialization": 0.0,
+          "database_artifacts_and_release": 0.0,
+          "database_asset_integration": 6.425,
+          "database_cache_identity": 0.336,
+          "database_cache_lookup": 3.648,
+          "database_cache_restore_input_recheck": 0.281,
+          "database_conversion": 0.0,
+          "database_validation": 2.302,
+          "ingestion_cache_persistence": 1.619,
+          "ingestion_cache_pruning": 0.093,
+          "input_discovery_and_plugin_hashes": 0.266,
+          "manifest_serialization": 0.057,
+          "meshes_and_texture_semantics": 14.259,
+          "published_manifest_reload": 0.054,
+          "run_setup": 0.055,
+          "runtime_publication": 44.763,
+          "runtime_support": 0.0,
+          "scripts": 4.388,
+          "staging_cleanup": 16.976,
+          "terrain_caches": 0.0,
+          "textures_aliases_and_reference_repair": 27.878
+        },
+        "publication": {
+          "outer_elapsed_ms": 44763,
+          "nested_exclusive_elapsed_ms": {
+            "backup_setup": 0,
+            "destination_lock_validation": 0,
+            "destination_policy_validation": 0,
+            "next_generated_artifact_sealing": 4747,
+            "next_manifest_hash": 27,
+            "ownership_record_cleanup": 0,
+            "ownership_record_file_creation": 0,
+            "ownership_record_publication": 0,
+            "ownership_record_serialization": 1,
+            "ownership_record_setup": 0,
+            "ownership_record_sync": 5,
+            "ownership_record_write": 0,
+            "ownership_recovery": 0,
+            "pack_swap": 0,
+            "previous_generated_artifact_sealing": 5149,
+            "previous_manifest_hash": 26,
+            "previous_pack_cleanup": 5222,
+            "previous_pack_policy_validation": 0,
+            "previous_pack_rename": 0,
+            "runtime_pack_linking": 29579,
+            "runtime_pack_preparation": 0
+          },
+          "nested_sum_ms": 44756,
+          "unassigned_ms": 7,
+          "reconciled": true,
+          "method": "Publication timers are detail within runtime_publication; never add them again."
+        },
+        "archives": {
+          "archives": 93,
+          "entries": 76521,
+          "logical_source_bytes": 26383892386,
+          "selection_counts": {
+            "runtime_english_v1": 93
+          },
+          "restored_archives": 93,
+          "sync_calls": 0,
+          "exclusive_seconds": {
+            "source_hash_seconds": 12.534801328999997,
+            "cache_restore_seconds": 43.893560168,
+            "extraction_seconds": 0.0,
+            "sync_seconds": 0.0,
+            "cache_link_seconds": 0.0
+          },
+          "worker_sync_seconds_excluded": 0.0,
+          "archive_operation_sum_seconds": 56.428361497,
+          "overlay_and_boundary_seconds": 0.028638503000003368,
+          "raw_write_metrics": {
+            "selected_files": 76521,
+            "selected_bytes": 26383892386,
+            "unique_payloads": 62055,
+            "payload_writes": 0,
+            "payload_bytes_written": 0,
+            "payload_reuses": 0,
+            "physical_copy_writes": 0,
+            "physical_copy_bytes_written": 0
+          },
+          "physical_payload_writes": 0,
+          "physical_payload_bytes_written": 0,
+          "unique_payloads_scope": "Summed per-archive unique hashes, not globally unique hashes.",
+          "raw_write_counter_scope": "Fresh ingestion counts canonical writes and separate spill or fallback copies. Cache-hit restoration does not instrument fallback copy writes; zero hit counters do not prove every restoration path was a hard link.",
+          "sync_calls_match_physical_writes": true
+        },
+        "retention": {
+          "passed": true,
+          "coverage": {
+            "runtime_records": 1240167,
+            "source_records": 1240167,
+            "retained_source_payload_bytes": 561261840,
+            "runtime_records_without_source": 0,
+            "source_records_without_runtime": 0,
+            "localized_statuses": {
+              "missing": 5,
+              "null_id": 12758,
+              "resolved": 96632
+            },
+            "terrain_source_rows": 52364,
+            "terrain_source_cells": 52362
+          }
+        },
+        "selected_competing_processes_sampled": false,
+        "sampling_errors": 0,
+        "database_cache": {
+          "hit": true,
+          "key": "a949453f2c809897ec7d2a31c96f5ec85ef6c28c69dde0abdaa4741d8e5bee68",
+          "files_restored": 6,
+          "runtime_records_built": 0,
+          "current_exclusive_seconds": {
+            "database_artifacts_and_release": 0.0,
+            "database_asset_integration": 6.425,
+            "database_cache_identity": 0.336,
+            "database_cache_lookup": 3.648,
+            "database_cache_restore_input_recheck": 0.281,
+            "database_conversion": 0.0,
+            "database_validation": 2.302,
+            "terrain_caches": 0.0
+          }
+        }
+      }
+    }
+  },
+  "comparisons": {
+    "previous_warm_next_cold": {
+      "logical_tables": 27,
+      "mismatched_tables": [],
+      "canonical_runtime_outputs": 76213,
+      "nontexture_mismatch_count": 0,
+      "missing_or_added_runtime_paths": 0,
+      "database_equal": true,
+      "core_contracts_equal": true,
+      "integration_metrics_equal": true,
+      "canonical_nontexture_assets_equal": true,
+      "passed": true
+    },
+    "next_cold_next_warm": {
+      "database_equal": true,
+      "manifest_equal": true,
+      "integration_metrics_equal": true,
+      "core_contracts_equal": true,
+      "passed": true
+    }
+  },
+  "functional_tests": {
+    "passed": 497,
+    "failed": 0,
+    "ignored": 11,
+    "filtered": 1,
+    "completed_suites": 8,
+    "scope": "Selected converter library, CLI and integration suite.",
+    "filtered_reason": "One fixture excluded on case-insensitive APFS."
+  },
+  "gates": {
+    "source_and_binary_provenance_validated": true,
+    "full_source_manifests_match_build": true,
+    "selected_functional_suite": true,
+    "cold_previous_parity_passed": true,
+    "cold_previous_database_equal": true,
+    "cold_previous_core_contracts_equal": true,
+    "cold_previous_integration_equal": true,
+    "cold_previous_nontexture_equal": true,
+    "cold_previous_archive_hashes_equal": true,
+    "next_cold_warm_parity_passed": true,
+    "next_cold_warm_manifest_equal": true,
+    "next_cold_warm_database_equal": true,
+    "next_cold_warm_core_contracts_equal": true,
+    "next_cold_warm_integration_equal": true,
+    "next_cold_database_cache_miss": true,
+    "next_cold_runtime_records_built": true,
+    "next_warm_database_cache_hit": true,
+    "next_warm_zero_runtime_records_built": true,
+    "next_warm_zero_conversion_and_terrain": true,
+    "next_warm_profile_marks_cache_restore": true,
+    "cold_previous_raw_selected_entries_equal": true,
+    "next_cold_warm_raw_selected_entries_equal": true,
+    "next_cold_raw_entries_match_snapshot": true,
+    "next_cold_raw_logical_bytes_match_snapshot": true,
+    "next_cold_raw_entries_accounted": true,
+    "next_cold_raw_dedup_observed": true,
+    "next_cold_raw_writes_match_global_hash_count": true,
+    "next_cold_raw_written_bytes_match_global_hash_bytes": true,
+    "next_cold_sync_matches_physical_writes": true,
+    "next_warm_raw_entries_match_snapshot": true,
+    "next_warm_raw_logical_bytes_match_snapshot": true,
+    "next_warm_all_archives_restored": true,
+    "next_warm_zero_fresh_raw_write_counters": true,
+    "next_warm_zero_fresh_raw_written_byte_counters": true,
+    "next_warm_zero_instrumented_raw_flushes": true,
+    "previous_full-changed-cold_exit_zero": true,
+    "previous_full-changed-warm_exit_zero": true,
+    "previous_check-full_exit_zero": true,
+    "previous_check-full-warm_exit_zero": true,
+    "previous_cold_complete": true,
+    "previous_cold_manifest_complete": true,
+    "previous_cold_phase_reconciliation": true,
+    "previous_cold_publication_reconciliation": true,
+    "previous_cold_retention": true,
+    "previous_cold_integration_passed": true,
+    "previous_warm_complete": true,
+    "previous_warm_manifest_complete": true,
+    "previous_warm_phase_reconciliation": true,
+    "previous_warm_publication_reconciliation": true,
+    "previous_warm_retention": true,
+    "previous_warm_integration_passed": true,
+    "next_full-changed-cold_exit_zero": true,
+    "next_full-changed-warm_exit_zero": true,
+    "next_check-full_exit_zero": true,
+    "next_check-full-warm_exit_zero": true,
+    "next_cold_complete": true,
+    "next_cold_manifest_complete": true,
+    "next_cold_phase_reconciliation": true,
+    "next_cold_publication_reconciliation": true,
+    "next_cold_retention": true,
+    "next_cold_integration_passed": true,
+    "next_warm_complete": true,
+    "next_warm_manifest_complete": true,
+    "next_warm_phase_reconciliation": true,
+    "next_warm_publication_reconciliation": true,
+    "next_warm_retention": true,
+    "next_warm_integration_passed": true,
+    "previous_warm_next_cold_texture_inventory_equal": true,
+    "previous_warm_next_cold_texture_source_hashes_equal": true,
+    "previous_warm_next_cold_texture_byte_hashes_and_sizes_equal": true,
+    "next_cold_next_warm_texture_inventory_equal": true,
+    "next_cold_next_warm_texture_source_hashes_equal": true,
+    "next_cold_next_warm_texture_byte_hashes_and_sizes_equal": true,
+    "next_cold_extras_passed": true,
+    "next_cold_extras_alias_paths_equal": true,
+    "next_cold_extras_alias_source_identities_equal": true,
+    "next_cold_extras_runtime_support_equal": true,
+    "next_warm_extras_passed": true,
+    "next_warm_extras_alias_paths_equal": true,
+    "next_warm_extras_alias_source_identities_equal": true,
+    "next_warm_extras_runtime_support_equal": true
+  },
+  "all_gates_passed": true,
+  "storage": {
+    "pack": {
+      "regular_files": 80220,
+      "logical_bytes": 20703562024,
+      "distinct_inodes": 76222,
+      "unique_inode_logical_bytes": 16495180329,
+      "allocated_bytes_reported_by_stat": 16687116288
+    },
+    "asset_cache": {
+      "regular_files": 61578,
+      "logical_bytes": 25778407885,
+      "distinct_inodes": 61578,
+      "unique_inode_logical_bytes": 25778407885,
+      "allocated_bytes_reported_by_stat": 25928167424
+    },
+    "qualification": "Unique inode bytes account for hard links. stat allocation does not measure distinct APFS clone blocks across files."
+  }
+}

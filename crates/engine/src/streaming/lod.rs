@@ -1,9 +1,11 @@
 use super::{
-    RenderOrigin, StreamingCommitBudget, StreamingMetrics, TerrainCoverage, TerrainSurfaceReady,
+    ActiveSpace, MergedTerrainCoverage, RenderOrigin, StreamingCommitBudget, StreamingMetrics,
+    StreamingWorld, TerrainCoverage, TerrainSurfaceReady, requests,
 };
 use crate::{
     config::{EngineConfig, TerrainLodDistances},
     profiling::ProfilingState,
+    swap_bridge::SwapWaiting,
     world::{
         components::{CELL_SIZE, StreamingCamera},
         database::{LodChunkMetadata, LodChunkQuery, WorldDatabase},
@@ -34,6 +36,11 @@ const LOD_CHUNK_MAX_RETRIES: u8 = 3;
 const LOD_CHUNK_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 const LOD_CHUNK_RETRY_MAX_DELAY: Duration = Duration::from_secs(4);
 
+#[path = "terrain_batching.rs"]
+pub(crate) mod terrain_batching;
+
+pub(crate) use terrain_batching::LodTerrainBatch;
+
 /// A far plane that keeps every cell within `reach_cells` of the camera's cell.
 fn lod_camera_far(reach_cells: i32) -> f32 {
     CELL_SIZE * (reach_cells as f32 + 0.5) * std::f32::consts::SQRT_2
@@ -43,6 +50,8 @@ fn lod_camera_far(reach_cells: i32) -> f32 {
 pub(super) struct LodStreaming {
     generation: u64,
     center: Option<IVec2>,
+    /// The worldspace `center` belongs to; a door into another worldspace moves the centre too.
+    worldspace_id: Option<u32>,
     requested_queries: HashSet<LodTier>,
     pending_queries: HashSet<LodTier>,
     query_retries: HashMap<LodTier, (u8, Option<Instant>)>,
@@ -51,8 +60,20 @@ pub(super) struct LodStreaming {
     queued_retry_chunks: HashSet<ChunkKey>,
     build_identity: Option<String>,
     pub(super) visibility_dirty: bool,
+    submission_dirty: bool,
+    // Exact generational source IDs replaced after the previous selector pass. Both removal
+    // streams consume this set once on the next pass, even if one stream has no matching event.
+    replaced_source_quadrants: HashSet<Entity>,
+    visibility_revision: u64,
+    terrain_batch_commit_used: bool,
     visibility_camera_grid: Option<IVec2>,
     visibility_stream_radius: Option<i32>,
+    terrain_batch_prepared_chunks: u64,
+    terrain_batch_activated_chunks: u64,
+    terrain_batch_fallback_chunks: u64,
+    terrain_batch_pending_cpu_chunks: usize,
+    terrain_batch_completion_report: Option<(u64, u64, u64)>,
+    terrain_batch_controls_warned: bool,
 }
 
 impl LodStreaming {
@@ -96,6 +117,7 @@ impl LodStreaming {
         self.pending_queries.clear();
         self.query_retries.clear();
         self.center = Some(center);
+        self.worldspace_id = Some(worldspace_id);
         self.pending_chunks.retain_mut(|(generation, metadata, _)| {
             let keep = metadata.key.worldspace_id == worldspace_id
                 && chunk_within_radius(
@@ -154,7 +176,7 @@ impl LodChunkStatus {
 }
 
 #[derive(Component)]
-pub(super) struct LodChunkRoot {
+pub(crate) struct LodChunkRoot {
     key: ChunkKey,
     generation: u64,
     origin: LodOrigin,
@@ -170,7 +192,7 @@ pub(super) struct LodChunkGridOrigin {
 #[derive(Component)]
 pub(super) struct PendingLodChunk {
     metadata: LodChunkMetadata,
-    asset: Handle<WorldAsset>,
+    asset: Option<Handle<WorldAsset>>,
     scene_spawned: bool,
     hash_task: Option<Task<Result<(), LodChunkFailure>>>,
     hash_verified: bool,
@@ -214,10 +236,56 @@ pub(super) fn mark_lod_world_instance_ready(
     }
 }
 
+/// The worldspace whose distant terrain should be streamed, or `None` for none at all: a negative
+/// stream radius turns LOD off, and an interior has no distant terrain. Otherwise LOD follows the
+/// exterior the player is in, which a door may have changed from the configured one.
+fn lod_worldspace(stream_radius: i32, space: Option<&ActiveSpace>, configured: u32) -> Option<u32> {
+    if stream_radius < 0 || space.is_some_and(|space| space.interior.is_some()) {
+        return None;
+    }
+    Some(space.map_or(configured, |space| space.exterior_worldspace(configured)))
+}
+
+/// Whether a resident chunk stays: it must belong to the streamed worldspace and lie within its
+/// tier's unload radius of the camera's cell.
+fn keep_resident_chunk(
+    key: ChunkKey,
+    origin: LodOrigin,
+    worldspace_id: u32,
+    center: (i64, i64),
+    distances: &TerrainLodDistances,
+) -> bool {
+    key.worldspace_id == worldspace_id
+        && chunk_within_radius(
+            key,
+            origin,
+            center,
+            query_unload_radius(distances.reach_cells(key.tier)),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn scene_pending(world: &World, entity: Entity) -> bool {
+    world.get::<PendingLodChunk>(entity).is_some()
+}
+
+#[cfg(test)]
+pub(super) fn pending_fixture(metadata: LodChunkMetadata) -> PendingLodChunk {
+    PendingLodChunk {
+        metadata,
+        asset: None,
+        scene_spawned: false,
+        hash_task: None,
+        hash_verified: false,
+        started: Instant::now(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_lod_chunks(
     mut commands: Commands,
     config: Res<EngineConfig>,
+    space: Option<Res<ActiveSpace>>,
     database: Res<WorldDatabase>,
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
@@ -225,21 +293,25 @@ pub(super) fn plan_lod_chunks(
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
+    mut previous_distances: Local<Option<crate::config::TerrainLodDistances>>,
 ) {
     let started = Instant::now();
     let Ok(camera) = camera.single() else {
         return;
     };
-    if config.stream_radius < 0 {
+    let Some(worldspace_id) =
+        lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id)
+    else {
         if streaming.center.take().is_some() {
             streaming.generation = streaming.generation.wrapping_add(1);
         }
+        streaming.worldspace_id = None;
         streaming.requested_queries.clear();
         streaming.pending_queries.clear();
         streaming.query_retries.clear();
         streaming.pending_chunks.clear();
         streaming.queued_retry_chunks.clear();
-        let previous_chunks = streaming.chunks.len();
         streaming.chunks.retain(|key, status| {
             if let Some(root) = status.root() {
                 commands.entity(root).try_despawn();
@@ -247,25 +319,38 @@ pub(super) fn plan_lod_chunks(
             profiler.event(format!("{key:?}"), "unloaded", None);
             false
         });
-        if streaming.chunks.len() != previous_chunks {
-            streaming.visibility_dirty = true;
-        }
         update_counts(&streaming, &mut metrics, &mut profiler);
         profiler.record_elapsed("lod/plan", started);
         return;
-    }
+    };
 
     let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    if streaming.center != Some(center) {
-        streaming.move_center(center, config.worldspace_id, &config.terrain_lod);
+    let distances_changed = previous_distances.as_ref() != Some(&config.terrain_lod);
+    *previous_distances = Some(config.terrain_lod);
+    if distances_changed {
+        // Resident patches keep their chunks when a distance changes, so no load or removal event
+        // would otherwise re-select their tier while the camera stands still.
+        streaming.visibility_dirty = true;
+    }
+    if streaming.center != Some(center)
+        || streaming.worldspace_id != Some(worldspace_id)
+        || distances_changed
+    {
+        streaming.move_center(center, worldspace_id, &config.terrain_lod);
     }
     let generation = streaming.generation;
     for tier in LodTier::ALL {
+        if runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.cell_requests_allowed())
+        {
+            break;
+        }
         if !streaming.query_ready(tier, Instant::now()) {
             continue;
         }
         let query = query_for(
-            config.worldspace_id,
+            worldspace_id,
             tier,
             center,
             query_unload_radius(config.terrain_lod.reach_cells(tier)),
@@ -286,13 +371,13 @@ pub(super) fn plan_lod_chunks(
     metrics.pending_lod_queries = streaming.pending_queries.len();
 
     let center64 = (i64::from(center.x), i64::from(center.y));
-    let previous_chunks = streaming.chunks.len();
     streaming.chunks.retain(|key, status| {
-        let keep = chunk_within_radius(
+        let keep = keep_resident_chunk(
             *key,
             status.origin(),
+            worldspace_id,
             center64,
-            query_unload_radius(config.terrain_lod.reach_cells(key.tier)),
+            &config.terrain_lod,
         );
         if !keep {
             if let Some(root) = status.root() {
@@ -302,9 +387,6 @@ pub(super) fn plan_lod_chunks(
         }
         keep
     });
-    if streaming.chunks.len() != previous_chunks {
-        streaming.visibility_dirty = true;
-    }
     let generation = streaming.generation;
     streaming
         .pending_chunks
@@ -316,12 +398,18 @@ pub(super) fn plan_lod_chunks(
     enqueue_due_lod_retries(&mut streaming, Instant::now());
     budget.reserve_for_lod(
         streaming.has_queued_chunks(),
-        config.max_cell_commits_per_frame,
+        runtime
+            .as_ref()
+            .and_then(|runtime| runtime.decision)
+            .map_or(config.max_cell_commits_per_frame, |decision| {
+                decision.budgets.max_cell_commits
+            }),
     );
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/plan", started);
 }
 
+/// Collect LOD query results and request current chunks within the shared commit budget.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_lod_chunks(
     mut commands: Commands,
@@ -330,10 +418,12 @@ pub(super) fn collect_lod_chunks(
     asset_server: Res<AssetServer>,
     origin: Res<RenderOrigin>,
     mut camera_projection: Query<&mut Projection, With<StreamingCamera>>,
+    mut full_streaming: ResMut<StreamingWorld>,
     mut streaming: ResMut<LodStreaming>,
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
 ) {
     let started = Instant::now();
     for _ in 0..LOD_RESPONSE_SCAN_LIMIT {
@@ -348,9 +438,10 @@ pub(super) fn collect_lod_chunks(
             .total_lod_query_micros
             .saturating_add(response.query_micros);
         metrics.max_lod_query_micros = metrics.max_lod_query_micros.max(response.query_micros);
-        profiler.record_micros("lod/db_queue_wait", response.queue_wait_micros);
-        profiler.record_micros("lod/db_query", response.query_micros);
-        profiler.record_micros("lod/db_request_total", response.total_request_micros);
+        profiler.record_completed_latency_micros("lod/db_queue_wait", response.queue_wait_micros);
+        profiler.record_completed_latency_micros("lod/db_query", response.query_micros);
+        profiler
+            .record_completed_latency_micros("lod/db_request_total", response.total_request_micros);
 
         if !is_current_query(&streaming, response.generation) {
             metrics.stale_lod_query_responses = metrics.stale_lod_query_responses.saturating_add(1);
@@ -387,7 +478,29 @@ pub(super) fn collect_lod_chunks(
         }
     }
 
+    if config.prioritize_streaming
+        && let Some(center) = streaming.center
+    {
+        streaming
+            .pending_chunks
+            .make_contiguous()
+            .sort_by_key(|(_, metadata, _)| {
+                let min = chunk_min_grid(metadata.key, metadata.origin);
+                let side = i64::from(metadata.key.tier.side_cells());
+                let dx = min.0 + side / 2 - i64::from(center.x);
+                let dy = min.1 + side / 2 - i64::from(center.y);
+                (
+                    i128::from(dx) * i128::from(dx) + i128::from(dy) * i128::from(dy),
+                    metadata.key.tier,
+                    metadata.key.anchor.y,
+                    metadata.key.anchor.x,
+                )
+            });
+    }
     while budget.remaining > 0 {
+        if budget.elapsed_limit_reached(runtime.as_deref()) {
+            break;
+        }
         let Some((generation, metadata, retry_attempt)) = streaming.pending_chunks.pop_front()
         else {
             break;
@@ -457,13 +570,50 @@ pub(super) fn collect_lod_chunks(
         let key = metadata.key;
         let chunk_origin = metadata.origin;
         let min_grid = chunk_min_grid(key, metadata.origin);
-        let scene_path = GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone());
-        // Bevy's load request restarts an asset whose cached load state is Failed.
-        let asset = asset_server.load(scene_path);
-        let expected_hash = metadata.content_hash.clone();
-        let hash_path = config.assets_dir.join(&metadata.payload_path);
-        let hash_task =
-            IoTaskPool::get().spawn(async move { verify_payload_hash(hash_path, expected_hash) });
+        let schedule_scenes = requests::enabled(&config);
+        let asset = if schedule_scenes {
+            None
+        } else {
+            let scene_path = GltfAssetLabel::Scene(0).from_asset(metadata.payload_path.clone());
+            // Bevy's load request restarts an asset whose cached load state is Failed.
+            let handle = asset_server.load(scene_path);
+            profiler.observe_scene(handle.id(), &asset_server);
+            Some(handle)
+        };
+        let hash_task = if schedule_scenes {
+            None
+        } else {
+            let expected_hash = metadata.content_hash.clone();
+            let hash_path = config.assets_dir.join(&metadata.payload_path);
+            Some(
+                IoTaskPool::get()
+                    .spawn(async move { verify_payload_hash(hash_path, expected_hash) }),
+            )
+        };
+        let request = schedule_scenes.then(|| {
+            use bevy::math::DVec3;
+            let sequence = full_streaming.next_model_sequence;
+            full_streaming.next_model_sequence = sequence.saturating_add(1);
+            let side = f64::from(metadata.key.tier.side_cells()) * f64::from(CELL_SIZE);
+            requests::SceneRequest {
+                path: metadata.payload_path.clone(),
+                cell: None,
+                coarse_terrain: true,
+                retry_cleanup: None,
+                content_identity: Some(metadata.content_hash.clone()),
+                sequence,
+                center: DVec3::new(
+                    min_grid.0 as f64 * f64::from(CELL_SIZE) + side * 0.5,
+                    0.0,
+                    -(min_grid.1 as f64 * f64::from(CELL_SIZE) + side * 0.5),
+                ),
+                radius: Some(side * std::f64::consts::SQRT_2 * 0.5),
+                collision_candidate: false,
+                handle: None,
+                started: Instant::now(),
+                allow_retry: retry_count > 0,
+            }
+        });
         let local_grid_x = min_grid.0 - i64::from(origin.0.x);
         let local_grid_y = min_grid.1 - i64::from(origin.0.y);
         let root = commands
@@ -482,7 +632,6 @@ pub(super) fn collect_lod_chunks(
                     grid_x: min_grid.0,
                     grid_y: min_grid.1,
                 },
-                WorldAssetRoot(asset.clone()),
                 Transform::from_xyz(
                     local_grid_x as f32 * CELL_SIZE,
                     0.0,
@@ -491,14 +640,20 @@ pub(super) fn collect_lod_chunks(
                 Visibility::Hidden,
                 PendingLodChunk {
                     metadata,
-                    asset,
+                    asset: asset.clone(),
                     scene_spawned: false,
-                    hash_task: Some(hash_task),
+                    hash_task,
                     hash_verified: false,
                     started: Instant::now(),
                 },
             ))
             .id();
+        if let Some(handle) = asset {
+            commands.entity(root).insert(WorldAssetRoot(handle));
+        }
+        if let Some(request) = request {
+            commands.entity(root).insert(request);
+        }
         streaming.chunks.insert(
             key,
             LodChunkStatus::Loading {
@@ -517,6 +672,23 @@ pub(super) fn collect_lod_chunks(
     profiler.record_elapsed("lod/collect", started);
 }
 
+/// Start the existing integrity check only after this chunk's shared scene job is admitted.
+pub(super) fn start_admitted_chunk(world: &mut World, entity: Entity, handle: Handle<WorldAsset>) {
+    let assets = world.resource::<EngineConfig>().assets_dir.clone();
+    let Some(mut pending) = world.get_mut::<PendingLodChunk>(entity) else {
+        return;
+    };
+    if pending.asset.is_some() {
+        return;
+    }
+    let path = assets.join(&pending.metadata.payload_path);
+    let expected_hash = pending.metadata.content_hash.clone();
+    pending.asset = Some(handle);
+    pending.hash_task =
+        Some(IoTaskPool::get().spawn(async move { verify_payload_hash(path, expected_hash) }));
+}
+
+/// Validate loaded LOD chunks and record completion latency or schedule retries for failures.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn track_lod_readiness(
     mut commands: Commands,
@@ -533,15 +705,19 @@ pub(super) fn track_lod_readiness(
 ) {
     let started = Instant::now();
     for (entity, root, mut pending) in &mut pending_chunks {
-        let load_failure = asset_server.get_load_states(pending.asset.id()).and_then(
-            |(load, _, recursive)| match (load, recursive) {
-                (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
-                (_, RecursiveDependencyLoadState::Failed(error)) => {
-                    Some(classify_asset_load_failure(&error))
-                }
-                _ => None,
-            },
-        );
+        let Some(asset) = pending.asset.clone() else {
+            continue;
+        };
+        let load_failure =
+            asset_server
+                .get_load_states(asset.id())
+                .and_then(|(load, _, recursive)| match (load, recursive) {
+                    (LoadState::Failed(error), _) => Some(classify_asset_load_failure(&error)),
+                    (_, RecursiveDependencyLoadState::Failed(error)) => {
+                        Some(classify_asset_load_failure(&error))
+                    }
+                    _ => None,
+                });
         if let Some(failure) = load_failure {
             fail_chunk(
                 (entity, root),
@@ -581,8 +757,8 @@ pub(super) fn track_lod_readiness(
         }
 
         if !pending.scene_spawned
-            || !asset_server.is_loaded_with_dependencies(pending.asset.id())
-            || world_assets.get(&pending.asset).is_none()
+            || !asset_server.is_loaded_with_dependencies(asset.id())
+            || world_assets.get(&asset).is_none()
         {
             continue;
         }
@@ -614,9 +790,6 @@ pub(super) fn track_lod_readiness(
                 .entity(*patch)
                 .insert((*coverage, TerrainSurfaceReady, Visibility::Hidden));
         }
-        if !patches.is_empty() {
-            streaming.visibility_dirty = true;
-        }
         commands.entity(entity).insert(Visibility::Inherited);
         commands.entity(entity).remove::<PendingLodChunk>();
         if let Some(LodChunkStatus::Loading {
@@ -641,11 +814,329 @@ pub(super) fn track_lod_readiness(
             .saturating_add(patches.len() as u64);
         profiler.increment("lod/chunks_ready", 1);
         profiler.increment("lod/terrain_patches_ready", patches.len() as u64);
-        profiler.record_elapsed("lod/chunk_ready", pending.started);
+        profiler.record_completed_latency_elapsed("lod/chunk_ready", pending.started);
         profiler.event(format!("{:?}", root.key), "ready", None);
+        commands
+            .entity(entity)
+            .insert(terrain_batching::PendingLodTerrainBatching {
+                source: asset,
+                patches,
+            });
     }
     update_counts(&streaming, &mut metrics, &mut profiler);
     profiler.record_elapsed("lod/readiness", started);
+}
+
+/// A merged terrain cell the render world has confirmed drawn.
+type DrawnMergedTerrain = (
+    With<super::TerrainPatch>,
+    With<TerrainSurfaceReady>,
+    Without<SwapWaiting>,
+);
+
+/// Batching shares the streaming commit budget. Until its turn, a ready chunk keeps drawing its
+/// original quadrant meshes. One chunk is the smallest atomic conversion and can exceed the time
+/// allowance; its actual work is charged and reported before the frame's budget is finalized.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn batch_ready_lod_chunks(
+    mut commands: Commands,
+    config: Res<EngineConfig>,
+    mut budget: ResMut<StreamingCommitBudget>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    preparation: terrain_batching::LodBatchPreparation,
+    activation: terrain_batching::LodBatchActivation,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    mesh_handles: Query<&Mesh3d>,
+    pending: Query<(
+        Entity,
+        &LodChunkRoot,
+        &terrain_batching::PendingLodTerrainBatching,
+    )>,
+    mut streaming: ResMut<LodStreaming>,
+    mut profiler: ResMut<ProfilingState>,
+) {
+    streaming.terrain_batch_commit_used = false;
+    let pending_cpu = pending.iter().len();
+    let pending_gpu = activation.pending_count();
+    // Derived batches retain source scene assets and allocate additional meshes outside the
+    // scene-admission ledger. While request controls are enabled, the original hierarchy stays
+    // active and no batch is activated; default-mode batching is unchanged.
+    if requests::enabled(&config) {
+        if pending_cpu != 0 && !streaming.terrain_batch_controls_warned {
+            warn!(
+                "terrain LOD batching disabled with streaming admission/control limits; original meshes remain active until generated retained-byte reservations are supported"
+            );
+            streaming.terrain_batch_controls_warned = true;
+        }
+        for (entity, _, _) in &pending {
+            commands
+                .entity(entity)
+                .remove::<terrain_batching::PendingLodTerrainBatching>();
+        }
+        record_terrain_batch_progress(&mut streaming, &mut profiler, 0, pending_gpu);
+        return;
+    }
+    record_terrain_batch_progress(&mut streaming, &mut profiler, pending_cpu, pending_gpu);
+    if !preparation.has_render_backend() {
+        for (entity, _, _) in &pending {
+            commands
+                .entity(entity)
+                .remove::<terrain_batching::PendingLodTerrainBatching>();
+        }
+        return;
+    }
+    if !terrain_batch_budget_available(&budget, config.max_commit_micros_per_frame) {
+        return;
+    }
+    // The generation and key ordering gives a stable oldest-first cadence for arrived chunks.
+    let Some((entity, root, queued)) = pending
+        .iter()
+        .min_by_key(|(_, root, _)| (root.generation, root.key))
+    else {
+        return;
+    };
+    let started = Instant::now();
+    match preparation.prepare(
+        entity,
+        &queued.patches,
+        &children,
+        &names,
+        &mesh_handles,
+        &meshes,
+    ) {
+        Ok(batches) => {
+            streaming.terrain_batch_prepared_chunks += 1;
+            profiler.increment("lod/terrain_batch_chunks_prepared", 1);
+            profiler.increment("lod/terrain_batches_created", batches.len() as u64);
+            terrain_batching::install(
+                entity,
+                queued.source.clone(),
+                batches,
+                &children,
+                &mut commands,
+                &mut meshes,
+                preparation.upload_readiness(),
+            );
+            streaming.submission_dirty = true;
+        }
+        Err(reason) => {
+            streaming.terrain_batch_fallback_chunks += 1;
+            debug!(?root.key, %reason, "terrain LOD keeps its original scene hierarchy");
+            profiler.increment("lod/terrain_batch_fallback_chunks", 1);
+        }
+    }
+    commands
+        .entity(entity)
+        .remove::<terrain_batching::PendingLodTerrainBatching>();
+    budget.remaining -= 1;
+    budget.commits = budget.commits.saturating_add(1);
+    streaming.terrain_batch_commit_used = true;
+    profiler.increment("lod/terrain_batch_chunks_committed", 1);
+    profiler.record_elapsed("lod/terrain_batch_commit", started);
+}
+
+fn record_terrain_batch_progress(
+    streaming: &mut LodStreaming,
+    profiler: &mut ProfilingState,
+    pending_cpu: usize,
+    pending_gpu: usize,
+) {
+    streaming.terrain_batch_pending_cpu_chunks = pending_cpu;
+    profiler.set_gauge("lod/pending_terrain_batch_chunks", pending_cpu as f64);
+    profiler.set_gauge(
+        "lod/pending_initial_terrain_upload_chunks",
+        pending_gpu as f64,
+    );
+    let report = (
+        streaming.terrain_batch_prepared_chunks,
+        streaming.terrain_batch_activated_chunks,
+        streaming.terrain_batch_fallback_chunks,
+    );
+    if pending_cpu == 0
+        && pending_gpu == 0
+        && report.0 != 0
+        && streaming.terrain_batch_completion_report != Some(report)
+    {
+        streaming.terrain_batch_completion_report = Some(report);
+        info!(
+            prepared_chunks = report.0,
+            activated_chunks = report.1,
+            fallback_chunks = report.2,
+            "terrain LOD batching queue drained; current initial replacements are GPU-ready"
+        );
+        profiler.event(
+            "terrain LOD batching",
+            "initial_uploads_drained",
+            Some(report.1 as f64),
+        );
+    }
+}
+
+fn terrain_batch_budget_available(budget: &StreamingCommitBudget, max_micros: u64) -> bool {
+    budget.remaining != 0 && budget.frame_started.elapsed().as_micros() < u128::from(max_micros)
+}
+
+/// One terrain patch that is ready to draw, as the index remembers it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct IndexedPatch {
+    key: (IVec2, u8),
+    /// `None` for a full-detail patch, which hides the LOD tiers of its quadrant.
+    tier: Option<LodTier>,
+}
+
+/// The ready patches of one grid cell quadrant.
+#[derive(Default)]
+struct QuadrantPatches {
+    /// Ready full-detail patches; one is enough to hand the quadrant over to full detail.
+    full_detail_ready: usize,
+    /// Ready LOD patches of the quadrant, one per tier in practice.
+    lod: Vec<(LodTier, Entity)>,
+    /// The tier last applied to the `lod` patches' visibility.
+    selected: Option<LodTier>,
+    /// How many of the `lod` patches that selection draws.
+    visible: usize,
+}
+
+impl QuadrantPatches {
+    fn is_empty(&self) -> bool {
+        self.full_detail_ready == 0 && self.lod.is_empty()
+    }
+}
+
+/// Ready terrain patches grouped by grid cell quadrant, kept up to date from component additions
+/// and removals instead of being rebuilt from every patch entity.
+///
+/// A far terrain ring holds tens of thousands of LOD patch entities, and the camera crossing a
+/// cell used to scan all of them twice and rebuild two hash maps (about 12 ms, up to 40 ms, on the
+/// frame of the crossing). Here a crossing only recomputes the selected tier of each quadrant and
+/// writes the visibility of the quadrants whose selection changed, which is a ring of patches
+/// around the tier boundaries. Batched coverage is reselected from the full index map on each
+/// refresh, so a refresh visits every held quadrant even though it writes only the changed ones.
+///
+/// This system owns the `Visibility` of ready LOD patches: a patch that something else shows or
+/// hides is not corrected until its quadrant's selection changes or a patch in it comes or goes.
+/// A patch enters the index only through `Added<TerrainSurfaceReady>` (a patch is never given
+/// coverage after readiness), and leaves it through the removal messages, which Bevy keeps for
+/// about two updates, so the system must run every `Update`, not behind a run condition.
+#[derive(Default)]
+pub(super) struct TerrainLodIndex {
+    patches: HashMap<Entity, IndexedPatch>,
+    quadrants: HashMap<(IVec2, u8), QuadrantPatches>,
+    /// Quadrants whose patches changed since their visibility was last applied.
+    changed: HashSet<(IVec2, u8)>,
+    ready_lod_patches: usize,
+    visible_lod_patches: usize,
+}
+
+impl TerrainLodIndex {
+    /// Records a ready patch, moving it when the entity was already indexed under another key.
+    fn insert(&mut self, entity: Entity, patch: IndexedPatch) {
+        if let Some(known) = self.patches.get(&entity) {
+            if *known == patch {
+                return;
+            }
+            self.remove(entity, true);
+        }
+        let quadrant = self.quadrants.entry(patch.key).or_default();
+        match patch.tier {
+            None => quadrant.full_detail_ready += 1,
+            Some(tier) => {
+                quadrant.lod.push((tier, entity));
+                self.ready_lod_patches += 1;
+            }
+        }
+        self.patches.insert(entity, patch);
+        self.changed.insert(patch.key);
+    }
+
+    /// Forgets a patch that is no longer ready or no longer exists. `invalidate` stays false for
+    /// sources a batch just replaced: the transfer set vouches for those removals, so their
+    /// quadrant must not be treated as externally changed and the visibility revision must not
+    /// move. The ready and visible tallies still track the departure either way, because the
+    /// replacement pass may skip applying that quadrant for the rest of the frame. A quiet
+    /// removal that empties its quadrant drops the quadrant too: nothing would mark it changed,
+    /// and the batch-only selection answers the same key from the replacement's retained tiers.
+    fn remove(&mut self, entity: Entity, invalidate: bool) -> Option<IndexedPatch> {
+        let patch = self.patches.remove(&entity)?;
+        let mut drop_quadrant = false;
+        if let Some(quadrant) = self.quadrants.get_mut(&patch.key) {
+            match patch.tier {
+                None => quadrant.full_detail_ready = quadrant.full_detail_ready.saturating_sub(1),
+                Some(_) => {
+                    if let Some(position) = quadrant.lod.iter().position(|(_, e)| *e == entity) {
+                        quadrant.lod.swap_remove(position);
+                        self.ready_lod_patches = self.ready_lod_patches.saturating_sub(1);
+                        if quadrant.selected == patch.tier {
+                            quadrant.visible = quadrant.visible.saturating_sub(1);
+                            self.visible_lod_patches = self.visible_lod_patches.saturating_sub(1);
+                        }
+                    }
+                }
+            }
+            drop_quadrant = !invalidate && quadrant.is_empty();
+        }
+        if drop_quadrant {
+            self.quadrants.remove(&patch.key);
+        }
+        if invalidate {
+            self.changed.insert(patch.key);
+        }
+        Some(patch)
+    }
+}
+
+type LodPatchFilter = (With<TerrainCoverage>, Without<super::TerrainPatch>);
+
+/// Picks the tier a quadrant draws and, when that changed (or `apply` asks), writes the patches'
+/// visibility. Returns false once the quadrant holds no patches and can be dropped.
+#[allow(clippy::too_many_arguments)]
+fn apply_quadrant_selection(
+    key: (IVec2, u8),
+    quadrant: &mut QuadrantPatches,
+    camera_grid: IVec2,
+    apply: bool,
+    distances: &TerrainLodDistances,
+    batch_available: &HashMap<(IVec2, u8), u8, bevy::platform::hash::FixedHasher>,
+    merged_full: &HashSet<(IVec2, u8)>,
+    patch_visibility: &mut Query<&mut Visibility, LodPatchFilter>,
+    visible_total: &mut usize,
+) -> bool {
+    // The index's ready tiers and any retained batch's member tiers share one availability byte.
+    let available = quadrant
+        .lod
+        .iter()
+        .fold(0u8, |bits, (tier, _)| bits | *tier as u8)
+        | batch_available.get(&key).copied().unwrap_or(0);
+    let selected = select_terrain_lod_tier(
+        chebyshev_grid_distance(key.0, camera_grid),
+        quadrant.full_detail_ready > 0 || merged_full.contains(&key),
+        available,
+        distances,
+    );
+    if apply || selected != quadrant.selected {
+        for (tier, entity) in &quadrant.lod {
+            let next = if Some(*tier) == selected {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if let Ok(mut visibility) = patch_visibility.get_mut(*entity)
+                && *visibility != next
+            {
+                *visibility = next;
+            }
+        }
+        quadrant.selected = selected;
+    }
+    let visible = quadrant
+        .lod
+        .iter()
+        .filter(|(tier, _)| Some(*tier) == selected)
+        .count();
+    *visible_total = (*visible_total + visible).saturating_sub(quadrant.visible);
+    quadrant.visible = visible;
+    !quadrant.is_empty()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -655,96 +1146,262 @@ pub(super) fn update_terrain_lod_visibility(
     camera: Query<&Transform, With<StreamingCamera>>,
     mut removed_coverage: RemovedComponents<TerrainCoverage>,
     mut removed_readiness: RemovedComponents<TerrainSurfaceReady>,
+    mut removed_merged: RemovedComponents<MergedTerrainCoverage>,
+    mut drawn_swaps: RemovedComponents<SwapWaiting>,
     mut streaming: ParamSet<(Res<LodStreaming>, ResMut<LodStreaming>)>,
-    full_detail: Query<&TerrainCoverage, (With<super::TerrainPatch>, With<TerrainSurfaceReady>)>,
-    mut lod_patches: Query<
-        (
-            &TerrainCoverage,
-            Option<&TerrainSurfaceReady>,
-            &mut Visibility,
-        ),
-        Without<super::TerrainPatch>,
+    ready_patches: Query<
+        (Entity, &TerrainCoverage, Has<super::TerrainPatch>),
+        Added<TerrainSurfaceReady>,
     >,
+    // A merged cell covers its grid once it is surface-ready *and* the render world has confirmed
+    // it drawn (the swap bridge removed its `SwapWaiting`): its arrays are validated
+    // before any cell commits, so it is surface-ready the frame it spawns, and hiding the tiles on
+    // that alone left the grid with neither drawn until the merged mesh reached the GPU.
+    merged_full_detail: Query<&MergedTerrainCoverage, DrawnMergedTerrain>,
+    mut patch_visibility: Query<&mut Visibility, LodPatchFilter>,
+    mut index: Local<TerrainLodIndex>,
+    mut batches: terrain_batching::LodBatchVisibility,
+    mut budget: Option<ResMut<StreamingCommitBudget>>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     let started = Instant::now();
+    let replaced_sources = std::mem::take(&mut streaming.p1().replaced_source_quadrants);
+    // Drain both readers completely before expiring the transfer set. Removals the transfer set
+    // vouches for leave the index quietly; any other coverage/readiness removal is a real
+    // semantic invalidation, and absent events cannot leak tracking.
+    let mut real_removals = false;
+    for entity in removed_coverage.read().chain(removed_readiness.read()) {
+        let expected = replaced_sources.contains(&entity);
+        if !expected {
+            real_removals = true;
+        }
+        // A patch that stays alive without readiness no longer draws. A replaced source is
+        // already being despawned by its batch, so only real departures hide it here.
+        if let Some(patch) = index.remove(entity, !expected)
+            && !expected
+            && patch.tier.is_some()
+            && let Ok(mut visibility) = patch_visibility.get_mut(entity)
+            && *visibility != Visibility::Hidden
+        {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    for (entity, coverage, full_detail) in &ready_patches {
+        let tier = match (full_detail, coverage.tier) {
+            (true, _) => None,
+            (false, Some(tier)) => Some(tier),
+            // Not a LOD patch of any tier: nothing selects it.
+            (false, None) => continue,
+        };
+        index.insert(
+            entity,
+            IndexedPatch {
+                key: (coverage.grid, coverage.quadrant),
+                tier,
+            },
+        );
+    }
+    let batches_removed = batches.removed();
     let Ok(camera) = camera.single() else {
+        if real_removals || batches_removed {
+            streaming.p1().visibility_dirty = true;
+        }
         return;
     };
     let camera_grid = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
-    let coverage_removed = removed_coverage.read().count() != 0;
-    let readiness_removed = removed_readiness.read().count() != 0;
-    let refresh = {
+    let upload_completed = batches.upload_completed();
+    let merged_removed = removed_merged.read().count() != 0;
+    // Every surface the bridge confirms drawn leaves the waiting set; only a merged cell's
+    // completion changes what this pass decides. Read in full, so no event is left for next frame.
+    let merged_drawn = drawn_swaps
+        .read()
+        .filter(|entity| merged_full_detail.contains(*entity))
+        .count()
+        != 0;
+    let merged_changed = merged_removed || merged_drawn;
+    let (force_apply, camera_moved, radius_changed) = {
         let state = streaming.p0();
-        state.visibility_dirty
-            || coverage_removed
-            || readiness_removed
-            || state.visibility_camera_grid != Some(camera_grid)
-            || state.visibility_stream_radius != Some(config.stream_radius)
+        (
+            state.visibility_dirty,
+            state.visibility_camera_grid != Some(camera_grid),
+            state.visibility_stream_radius != Some(config.stream_radius),
+        )
     };
-    if !refresh {
-        return;
-    }
+    // The index's own change set joins the semantic event flags: a patch that just became ready
+    // or departed is exactly what a refresh exists to apply.
+    let refresh = force_apply
+        || real_removals
+        || batches_removed
+        || camera_moved
+        || radius_changed
+        || merged_changed
+        || !index.changed.is_empty();
+    let submission_dirty = streaming.p0().submission_dirty;
     {
         let mut state = streaming.p1();
+        state.submission_dirty = false;
+        // A dirty flag can only exist when it forced this refresh, or it was set while no camera
+        // could run selection; either way it is consumed now that a pass is possible.
         state.visibility_dirty = false;
+    }
+    if refresh {
+        let mut state = streaming.p1();
         state.visibility_camera_grid = Some(camera_grid);
         state.visibility_stream_radius = Some(config.stream_radius);
+        state.visibility_revision = state.visibility_revision.wrapping_add(1);
+    }
+    if refresh {
+        // Retained batches keep drawing their members' tiers until finalize; for quadrants the
+        // index no longer holds, their member masks are the only availability left.
+        let mut batch_available: HashMap<(IVec2, u8), u8, bevy::platform::hash::FixedHasher> =
+            HashMap::with_hasher(bevy::platform::hash::FixedHasher);
+        let mut batch_ready_patches = 0usize;
+        for coverage in batches.coverage() {
+            if let Some(tier) = coverage.tier {
+                *batch_available
+                    .entry((coverage.grid, coverage.quadrant))
+                    .or_default() |= tier as u8;
+                batch_ready_patches += 1;
+            }
+        }
+
+        // Every quadrant a drawn merged cell covers is full detail, whether or not it holds LOD
+        // patches of its own.
+        let merged_full: HashSet<(IVec2, u8)> = merged_full_detail
+            .iter()
+            .flat_map(|coverage| (0..4u8).map(move |quadrant| (coverage.grid, quadrant)))
+            .collect();
+        let index = &mut *index;
+        let changed = std::mem::take(&mut index.changed);
+        let mut visible_patches = index.visible_lod_patches;
+        // A crossing recomputes every quadrant's selection but writes only the quadrants whose
+        // selection changed, matching the index's external-mutation contract; an explicit
+        // refresh (visibility_dirty) or a radius change corrects every patch unconditionally. A
+        // batch removal also recomputes every quadrant (a held quadrant's tier bits may have
+        // come from the removed batch) but still writes only the ones whose selection moved. A
+        // merged cell's confirmed draw or removal can cover or uncover any quadrant, so it
+        // recomputes every quadrant too.
+        let apply_all = force_apply || radius_changed || merged_changed;
+        if camera_moved || radius_changed || force_apply || batches_removed || merged_changed {
+            index.quadrants.retain(|key, quadrant| {
+                apply_quadrant_selection(
+                    *key,
+                    quadrant,
+                    camera_grid,
+                    apply_all || changed.contains(key),
+                    &config.terrain_lod,
+                    &batch_available,
+                    &merged_full,
+                    &mut patch_visibility,
+                    &mut visible_patches,
+                )
+            });
+        } else {
+            for key in changed {
+                let Some(quadrant) = index.quadrants.get_mut(&key) else {
+                    continue;
+                };
+                if !apply_quadrant_selection(
+                    key,
+                    quadrant,
+                    camera_grid,
+                    true,
+                    &config.terrain_lod,
+                    &batch_available,
+                    &merged_full,
+                    &mut patch_visibility,
+                    &mut visible_patches,
+                ) {
+                    index.quadrants.remove(&key);
+                }
+            }
+        }
+        index.visible_lod_patches = visible_patches;
+
+        // The batch selector takes the index's answer for every quadrant it still holds, plus a
+        // fresh selection from retained member tiers alone for batch-only quadrants whose
+        // sources were already finalized away.
+        let mut selected: HashMap<(IVec2, u8), Option<LodTier>, bevy::platform::hash::FixedHasher> =
+            HashMap::with_hasher(bevy::platform::hash::FixedHasher);
+        selected.extend(
+            index
+                .quadrants
+                .iter()
+                .map(|(key, quadrant)| (*key, quadrant.selected)),
+        );
+        for (&key, &available) in &batch_available {
+            selected.entry(key).or_insert_with(|| {
+                // A drawn merged cell's mesh draws over any retained batch of its quadrant.
+                if merged_full.contains(&key) {
+                    return None;
+                }
+                select_terrain_lod_tier(
+                    chebyshev_grid_distance(key.0, camera_grid),
+                    false,
+                    available,
+                    &config.terrain_lod,
+                )
+            });
+        }
+
+        let (batched_quadrants, _, changed_batches) = batches.update(&selected);
+        let visible_total = visible_patches + batched_quadrants;
+        let ready_lod_patches = index.ready_lod_patches + batch_ready_patches;
+        profiler.increment("lod/terrain_batches_updated", changed_batches as u64);
+        profiler.increment("lod/selection_refreshes", 1);
+        metrics.visible_lod_terrain_patches = visible_total;
+        profiler.set_gauge("lod/ready_terrain_patches", ready_lod_patches as f64);
+        profiler.set_gauge("lod/visible_terrain_patches", visible_total as f64);
+        profiler.record_elapsed("lod/visibility", started);
+    } else if upload_completed {
+        let upload_started = Instant::now();
+        batches.finish_uploads();
+        profiler.record_elapsed("lod/terrain_batch_upload_activation", upload_started);
     }
 
-    let full_ready: HashSet<_> = full_detail
-        .iter()
-        .map(|coverage| (coverage.grid, coverage.quadrant))
-        .collect();
-    let mut available = HashMap::<(IVec2, u8), HashSet<LodTier>>::new();
-    let mut ready_patches = 0usize;
-    for (coverage, ready, _) in &mut lod_patches {
-        if let (Some(tier), Some(_)) = (coverage.tier, ready) {
-            available
-                .entry((coverage.grid, coverage.quadrant))
-                .or_default()
-                .insert(tier);
-            ready_patches += 1;
+    // Initial hierarchy transfer is a shared-budget commit AFTER current semantic masks have
+    // superseded any stale immutable IDs. CPU preparation and transfer share one slot per frame.
+    let mut activated = false;
+    if let Some(budget) = budget.as_deref_mut() {
+        let mut state = streaming.p1();
+        if !state.terrain_batch_commit_used
+            && terrain_batch_budget_available(budget, config.max_commit_micros_per_frame)
+        {
+            let activation_started = Instant::now();
+            if batches.finalize_one(&mut state.replaced_source_quadrants) {
+                state.terrain_batch_commit_used = true;
+                state.terrain_batch_activated_chunks += 1;
+                budget.remaining -= 1;
+                budget.commits = budget.commits.saturating_add(1);
+                profiler.increment("lod/terrain_batch_chunks_activated", 1);
+                profiler.record_elapsed("lod/terrain_batch_activation", activation_started);
+                activated = true;
+            } else {
+                profiler.record_elapsed("lod/terrain_batch_gpu_poll", activation_started);
+            }
+            let pending_gpu = batches.pending_count();
+            let pending_cpu = state.terrain_batch_pending_cpu_chunks;
+            record_terrain_batch_progress(&mut state, &mut profiler, pending_cpu, pending_gpu);
         }
     }
-    let selected_tiers: HashMap<_, _> = available
-        .iter()
-        .map(|(&(grid, quadrant), candidates)| {
-            let distance = chebyshev_grid_distance(grid, camera_grid);
-            (
-                (grid, quadrant),
-                select_terrain_lod_tier(
-                    distance,
-                    full_ready.contains(&(grid, quadrant)),
-                    candidates,
-                    &config.terrain_lod,
-                ),
-            )
-        })
-        .collect();
-    let mut visible_patches = 0usize;
-    for (coverage, ready, mut visibility) in &mut lod_patches {
-        let selected = coverage.tier.is_some_and(|tier| {
-            ready.is_some()
-                && selected_tiers.get(&(coverage.grid, coverage.quadrant)) == Some(&Some(tier))
-        });
-        let next = if selected {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if selected {
-            visible_patches += 1;
-        }
-        if *visibility != next {
-            *visibility = next;
-        }
+    if refresh || submission_dirty || upload_completed || activated {
+        let inventory_started = Instant::now();
+        let (retained_quadrants, generated_batches, batched_quadrants, visible_batches) =
+            batches.counts();
+        profiler.set_gauge("lod/batched_terrain_quadrants", retained_quadrants as f64);
+        profiler.set_gauge("lod/resident_terrain_batches", generated_batches as f64);
+        profiler.set_gauge("lod/visible_terrain_batches", visible_batches as f64);
+        profiler.set_gauge(
+            "lod/pending_terrain_selection_uploads",
+            batches.pending_selection_uploads() as f64,
+        );
+        profiler.set_gauge(
+            "lod/batched_selected_triangles",
+            (batched_quadrants * TERRAIN_QUADRANT_INDEX_COUNT / 3) as f64,
+        );
+        profiler.record_elapsed("lod/terrain_batch_inventory", inventory_started);
     }
-    metrics.visible_lod_terrain_patches = visible_patches;
-    profiler.set_gauge("lod/ready_terrain_patches", ready_patches as f64);
-    profiler.set_gauge("lod/visible_terrain_patches", visible_patches as f64);
-    profiler.record_elapsed("lod/visibility", started);
 }
 
 fn fail_chunk(
@@ -967,15 +1624,15 @@ fn validate_lod_quadrant_mesh(mesh: &Mesh) -> Result<(), String> {
 fn select_terrain_lod_tier(
     grid_distance: i32,
     full_detail_ready: bool,
-    available: &HashSet<LodTier>,
+    available: u8,
     distances: &TerrainLodDistances,
 ) -> Option<LodTier> {
     if full_detail_ready {
         return None;
     }
-    LodTier::ALL
-        .into_iter()
-        .find(|tier| grid_distance <= distances.reach_cells(*tier) && available.contains(tier))
+    LodTier::ALL.into_iter().find(|tier| {
+        grid_distance <= distances.reach_cells(*tier) && available & (*tier as u8) != 0
+    })
 }
 
 fn chebyshev_grid_distance(left: IVec2, right: IVec2) -> i32 {
@@ -1227,6 +1884,155 @@ mod tests {
         query_unload_radius(side_reach().reach_cells(tier))
     }
 
+    fn tier_mask(tiers: impl IntoIterator<Item = LodTier>) -> u8 {
+        tiers.into_iter().fold(0, |mask, tier| mask | tier as u8)
+    }
+
+    /// The pre-bitmask selection rule is the oracle for every legal ready set.
+    fn reference_tier_selection(
+        distance: i32,
+        full_ready: bool,
+        available: &HashSet<LodTier>,
+        distances: &TerrainLodDistances,
+    ) -> Option<LodTier> {
+        if full_ready {
+            None
+        } else {
+            LodTier::ALL
+                .into_iter()
+                .find(|tier| distance <= distances.reach_cells(*tier) && available.contains(tier))
+        }
+    }
+
+    #[test]
+    fn ready_tier_bitmask_matches_all_subsets_and_reach_boundaries() {
+        let configurations = [
+            side_reach(),
+            TerrainLodDistances::default(),
+            TerrainLodDistances {
+                block_level0_distance: 20.0 * CELL_SIZE,
+                block_level1_distance: 5.0 * CELL_SIZE,
+                block_maximum_distance: 10.0 * CELL_SIZE,
+                split_distance_mult: 1.0,
+            },
+        ];
+        for subset in 0u8..8 {
+            let reference: HashSet<_> = LodTier::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, tier)| (subset & (1 << index) != 0).then_some(tier))
+                .collect();
+            let available = tier_mask(reference.iter().copied());
+            assert_eq!(
+                available,
+                tier_mask(reference.iter().copied().chain(reference.iter().copied())),
+                "duplicate source coverage must not change the ready set"
+            );
+            for distances in &configurations {
+                let mut boundaries = vec![0, i32::MAX];
+                for tier in LodTier::ALL {
+                    let reach = distances.reach_cells(tier);
+                    boundaries.extend([reach.saturating_sub(1), reach, reach.saturating_add(1)]);
+                }
+                for distance in boundaries {
+                    for full_ready in [false, true] {
+                        assert_eq!(
+                            select_terrain_lod_tier(distance, full_ready, available, distances),
+                            reference_tier_selection(distance, full_ready, &reference, distances),
+                            "subset {subset:03b}, distance {distance}, full ready {full_ready}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ready_tier_bitmask_preserves_negative_rebased_quadrant_coverage() {
+        let distances = side_reach();
+        let center = IVec2::new(-32, -16);
+        for subset in 0u8..8 {
+            let reference: HashSet<_> = LodTier::ALL
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, tier)| (subset & (1 << index) != 0).then_some(tier))
+                .collect();
+            let mut world = World::new();
+            world.insert_resource(EngineConfig {
+                terrain_lod: distances,
+                ..default()
+            });
+            world.insert_resource(RenderOrigin(center));
+            world.insert_resource(StreamingMetrics::default());
+            world.insert_resource(ProfilingState::default());
+            world.insert_resource(LodStreaming::default());
+            world.spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ));
+            let mut patches = Vec::new();
+            let mut expected_visible = 0;
+            for (index, distance) in [0, 4, 5, 8, 9, 16, 17].into_iter().enumerate() {
+                let grid = center + IVec2::new(distance, 0);
+                let quadrant = (index % 4) as u8;
+                let full_ready = index % 2 == 0;
+                if full_ready {
+                    world.spawn((
+                        super::super::TerrainPatch,
+                        TerrainCoverage {
+                            grid,
+                            quadrant,
+                            tier: None,
+                        },
+                        TerrainSurfaceReady,
+                    ));
+                }
+                let expected =
+                    reference_tier_selection(distance, full_ready, &reference, &distances);
+                expected_visible += usize::from(expected.is_some());
+                for tier in LodTier::ALL {
+                    let mut entity = world.spawn((
+                        TerrainCoverage {
+                            grid,
+                            quadrant,
+                            tier: Some(tier),
+                        },
+                        Visibility::Inherited,
+                    ));
+                    let ready = reference.contains(&tier);
+                    if ready {
+                        entity.insert(TerrainSurfaceReady);
+                    }
+                    // The index owns ready patches only. Coverage arrives together with
+                    // readiness in production and the chunk root hides everything until then,
+                    // so a never-ready patch keeps the visibility it spawned with.
+                    let expected_visibility = if ready && expected != Some(tier) {
+                        Visibility::Hidden
+                    } else {
+                        Visibility::Inherited
+                    };
+                    patches.push((entity.id(), expected_visibility));
+                }
+            }
+            world
+                .run_system_once(update_terrain_lod_visibility)
+                .unwrap();
+            for (entity, expected_visibility) in patches {
+                assert_eq!(
+                    *world.get::<Visibility>(entity).unwrap(),
+                    expected_visibility,
+                    "subset {subset:03b} changed rebased negative-grid coverage"
+                );
+            }
+            assert_eq!(
+                world
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                expected_visible
+            );
+        }
+    }
+
     /// `SkyrimPrefs.ini` distances move each tier's reach, not the chunk sizes.
     /// The defaults are Skyrim's own, so level 4 reaches 12 cells, not 4.
     #[test]
@@ -1238,23 +2044,20 @@ mod tests {
         );
         let short = side_reach();
         assert_eq!(LodTier::ALL.map(|tier| short.reach_cells(tier)), [4, 8, 16]);
-        let available = HashSet::from(LodTier::ALL);
+        let available = tier_mask(LodTier::ALL);
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &skyrim),
+            select_terrain_lod_tier(12, false, available, &skyrim),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &short),
+            select_terrain_lod_tier(12, false, available, &short),
             Some(LodTier::Tier16)
         );
         assert_eq!(
-            select_terrain_lod_tier(91, false, &available, &skyrim),
+            select_terrain_lod_tier(91, false, available, &skyrim),
             Some(LodTier::Tier16)
         );
-        assert_eq!(
-            select_terrain_lod_tier(92, false, &available, &skyrim),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(92, false, available, &skyrim), None);
         assert_eq!(query_unload_radius(skyrim.reach_cells(LodTier::Tier4)), 14);
         assert!(lod_camera_far(skyrim.max_reach_cells()) > lod_camera_far(16));
         let unbounded = TerrainLodDistances {
@@ -1385,6 +2188,60 @@ mod tests {
     }
 
     #[test]
+    fn lod_follows_the_active_exterior_and_stops_in_an_interior() {
+        assert_eq!(lod_worldspace(3, None, 60), Some(60));
+        assert_eq!(lod_worldspace(-1, None, 60), None, "LOD turned off");
+        let configured = ActiveSpace::default();
+        assert_eq!(lod_worldspace(3, Some(&configured), 60), Some(60));
+        let other = ActiveSpace {
+            worldspace_id: Some(61),
+            interior: None,
+        };
+        assert_eq!(lod_worldspace(3, Some(&other), 60), Some(61));
+        let inside = ActiveSpace {
+            worldspace_id: None,
+            interior: Some(7),
+        };
+        assert_eq!(lod_worldspace(3, Some(&inside), 60), None);
+    }
+
+    #[test]
+    fn resident_chunks_of_another_worldspace_are_dropped() {
+        let metadata = retry_test_metadata();
+        let distances = TerrainLodDistances::default();
+        let at = |worldspace_id| {
+            keep_resident_chunk(
+                metadata.key,
+                metadata.origin,
+                worldspace_id,
+                (0, 0),
+                &distances,
+            )
+        };
+        assert!(at(metadata.key.worldspace_id));
+        assert!(!at(metadata.key.worldspace_id.wrapping_add(1)));
+    }
+
+    #[test]
+    fn a_worldspace_change_moves_the_centre_even_on_the_same_grid() {
+        let metadata = retry_test_metadata();
+        let mut streaming = LodStreaming {
+            generation: 3,
+            center: Some(IVec2::ZERO),
+            worldspace_id: Some(metadata.key.worldspace_id),
+            pending_chunks: VecDeque::from([(3, metadata.clone(), None)]),
+            ..default()
+        };
+        let other = metadata.key.worldspace_id.wrapping_add(1);
+        streaming.move_center(IVec2::ZERO, other, &TerrainLodDistances::default());
+        assert_eq!(streaming.worldspace_id, Some(other));
+        assert!(
+            streaming.pending_chunks.is_empty(),
+            "queued chunks of the old worldspace are dropped"
+        );
+    }
+
+    #[test]
     fn movement_retains_in_range_queued_metadata_but_discards_teleport_work() {
         let metadata = retry_test_metadata();
         let mut streaming = LodStreaming {
@@ -1499,6 +2356,146 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_shared_commit_budget_stops_lod_commits_but_drains_query_responses() {
+        use crate::{
+            streaming::{
+                admission::SceneAdmission,
+                runtime::{StreamingRuntime, update_streaming_control},
+            },
+            streaming_preparation::StreamingPreparationBridge,
+        };
+        use bevy::asset::{AssetApp, AssetPlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lod-collector.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        drop(connection);
+        let first = retry_test_metadata();
+        let mut second = first.clone();
+        second.key.anchor.x = 1;
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                file_path: directory.path().to_string_lossy().into_owned(),
+                ..default()
+            },
+        ))
+        .init_asset::<WorldAsset>()
+        .insert_resource(EngineConfig {
+            assets_dir: directory.path().into(),
+            headless: true,
+            max_streaming_backlog: 256,
+            streaming_memory_mib: 64,
+            max_commit_micros_per_frame: 1_000,
+            ..default()
+        })
+        .insert_resource(WorldDatabase::open(&path).unwrap())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(LodStreaming {
+            generation: 7,
+            center: Some(IVec2::ZERO),
+            pending_queries: HashSet::from([LodTier::Tier4]),
+            pending_chunks: VecDeque::from([(7, first, None), (7, second, None)]),
+            ..default()
+        })
+        .insert_resource(StreamingCommitBudget {
+            frame_started: Instant::now() - Duration::from_secs(1),
+            remaining: 3,
+            commits: 1,
+            ..default()
+        })
+        .init_resource::<StreamingWorld>()
+        .init_resource::<StreamingMetrics>()
+        .init_resource::<SceneAdmission>()
+        .init_resource::<StreamingPreparationBridge>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingRuntime>();
+        update_streaming_control(app.world_mut());
+        assert_eq!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .decision
+                .unwrap()
+                .budgets
+                .max_commit_micros,
+            1_000
+        );
+        app.world()
+            .resource::<WorldDatabase>()
+            .request_lod_chunks(
+                7,
+                LodChunkQuery {
+                    worldspace_id: 0x3c,
+                    tier: LodTier::Tier4,
+                    bounds_min: [0.0, 0.0],
+                    bounds_max: [10.0, 10.0],
+                },
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+            if app
+                .world()
+                .resource::<StreamingMetrics>()
+                .lod_query_responses
+                == 1
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "LOD query response was not reconciled"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let streaming = app.world().resource::<LodStreaming>();
+        assert!(!streaming.pending_queries.contains(&LodTier::Tier4));
+        assert_eq!(streaming.pending_chunks.len(), 2);
+        assert!(streaming.chunks.is_empty());
+        assert_eq!(app.world().resource::<StreamingCommitBudget>().remaining, 3);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            0
+        );
+
+        // An expired clock still allows the first total commit of a frame.
+        app.world_mut()
+            .resource_mut::<StreamingCommitBudget>()
+            .commits = 0;
+        app.world_mut().run_system_once(collect_lod_chunks).unwrap();
+        assert_eq!(
+            app.world().resource::<LodStreaming>().pending_chunks.len(),
+            1
+        );
+        let budget = app.world().resource::<StreamingCommitBudget>();
+        assert_eq!((budget.remaining, budget.commits), (2, 1));
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_chunks_requested,
+            1
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&requests::SceneRequest>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn lod_asset_failures_separate_missing_payloads_from_transient_io() {
         let missing = AssetLoadError::AssetReaderError(AssetReaderError::NotFound(PathBuf::from(
             "missing.glb",
@@ -1599,37 +2596,31 @@ mod tests {
     #[test]
     fn tier_handoff_is_per_quadrant_and_falls_back_to_ready_coarser_data() {
         let defaults = side_reach();
-        let available = HashSet::from([LodTier::Tier4, LodTier::Tier8, LodTier::Tier16]);
+        let available = tier_mask(LodTier::ALL);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &available, &defaults),
+            select_terrain_lod_tier(2, false, available, &defaults),
             Some(LodTier::Tier4)
         );
         assert_eq!(
-            select_terrain_lod_tier(6, false, &available, &defaults),
+            select_terrain_lod_tier(6, false, available, &defaults),
             Some(LodTier::Tier8)
         );
         assert_eq!(
-            select_terrain_lod_tier(12, false, &available, &defaults),
+            select_terrain_lod_tier(12, false, available, &defaults),
             Some(LodTier::Tier16)
         );
-        assert_eq!(
-            select_terrain_lod_tier(2, true, &available, &defaults),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(2, true, available, &defaults), None);
 
-        let coarse_only = HashSet::from([LodTier::Tier16]);
+        let coarse_only = tier_mask([LodTier::Tier16]);
         assert_eq!(
-            select_terrain_lod_tier(2, false, &coarse_only, &defaults),
+            select_terrain_lod_tier(2, false, coarse_only, &defaults),
             Some(LodTier::Tier16)
         );
         assert_eq!(
-            select_terrain_lod_tier(17, false, &coarse_only, &defaults),
+            select_terrain_lod_tier(17, false, coarse_only, &defaults),
             None
         );
-        assert_eq!(
-            select_terrain_lod_tier(2, false, &HashSet::new(), &defaults),
-            None
-        );
+        assert_eq!(select_terrain_lod_tier(2, false, 0, &defaults), None);
     }
 
     #[test]
@@ -1708,6 +2699,342 @@ mod tests {
             21_999,
             "removing a patch refreshes visibility metrics"
         );
+    }
+
+    #[test]
+    fn stationary_camera_reselects_resident_tiers_when_lod_distances_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lod-distances.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER NOT NULL);
+                 INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        drop(connection);
+        let mut config = EngineConfig {
+            headless: true,
+            ..default()
+        };
+        // Cell reach 4 for the fine tier and 8 for the coarse one, so a patch six cells away
+        // selects the coarse tier until the fine tier's distance is raised.
+        config.terrain_lod = TerrainLodDistances {
+            block_level0_distance: 4.0 * CELL_SIZE,
+            block_level1_distance: 8.0 * CELL_SIZE,
+            block_maximum_distance: 16.0 * CELL_SIZE,
+            split_distance_mult: 1.0,
+        };
+        let mut app = App::new();
+        app.insert_resource(config)
+            .insert_resource(WorldDatabase::open(&path).unwrap())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(LodStreaming::default())
+            .insert_resource(StreamingCommitBudget::default())
+            .insert_resource(StreamingMetrics::default())
+            .insert_resource(ProfilingState::default())
+            .add_systems(
+                Update,
+                (plan_lod_chunks, update_terrain_lod_visibility).chain(),
+            );
+        let camera = Transform::from_xyz(CELL_SIZE * 0.5, 0.0, CELL_SIZE * 0.5);
+        let center = streaming_center(false, IVec2::ZERO, &camera);
+        let grid = center + IVec2::new(6, 0);
+        let world = app.world_mut();
+        world.spawn((StreamingCamera, camera));
+        // Both tiers are resident for the same quadrant, and neither the camera nor any readiness
+        // or removal event changes after the first frame.
+        let fine = world
+            .spawn((
+                TerrainCoverage {
+                    grid,
+                    quadrant: 0,
+                    tier: Some(LodTier::Tier4),
+                },
+                TerrainSurfaceReady,
+                Visibility::Hidden,
+            ))
+            .id();
+        let coarse = world
+            .spawn((
+                TerrainCoverage {
+                    grid,
+                    quadrant: 0,
+                    tier: Some(LodTier::Tier8),
+                },
+                TerrainSurfaceReady,
+                Visibility::Hidden,
+            ))
+            .id();
+        let visibility =
+            |app: &App, entity: Entity| *app.world().get::<Visibility>(entity).unwrap();
+
+        app.update();
+        assert_eq!(visibility(&app, fine), Visibility::Hidden);
+        assert_eq!(
+            visibility(&app, coarse),
+            Visibility::Inherited,
+            "six cells is past the fine tier's reach, so the coarse tier draws"
+        );
+
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .terrain_lod
+            .block_level0_distance = 6.0 * CELL_SIZE;
+        app.update();
+        assert_eq!(
+            visibility(&app, fine),
+            Visibility::Inherited,
+            "raising the fine tier's distance re-selects it on the next frame"
+        );
+        assert_eq!(visibility(&app, coarse), Visibility::Hidden);
+    }
+
+    #[test]
+    fn terrain_lod_cell_crossing_only_writes_quadrants_whose_selection_changes() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(StreamingMetrics::default())
+            .insert_resource(ProfilingState::default())
+            .insert_resource(LodStreaming::default())
+            .add_systems(Update, update_terrain_lod_visibility);
+        let world = app.world_mut();
+        let camera = world
+            .spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ))
+            .id();
+        // Tier 16 reaches 91 cells with the default distances: cell 91 draws, cell 92 does not
+        // until the camera crosses one cell east.
+        let patches: HashMap<i32, Entity> = (-3..=95)
+            .map(|x| {
+                let patch = world
+                    .spawn((
+                        TerrainCoverage {
+                            grid: IVec2::new(x, 0),
+                            quadrant: 0,
+                            tier: Some(LodTier::Tier16),
+                        },
+                        TerrainSurfaceReady,
+                        Visibility::Hidden,
+                    ))
+                    .id();
+                (x, patch)
+            })
+            .collect();
+        let visibility = |app: &App, x: i32| *app.world().get::<Visibility>(patches[&x]).unwrap();
+
+        app.update();
+        assert_eq!(visibility(&app, 91), Visibility::Inherited);
+        assert_eq!(visibility(&app, 92), Visibility::Hidden);
+        let visible_before = app
+            .world()
+            .resource::<StreamingMetrics>()
+            .visible_lod_terrain_patches;
+
+        // A quadrant whose tier does not change keeps whatever visibility it has: the crossing
+        // does not rescan or rewrite it.
+        app.world_mut()
+            .entity_mut(patches[&5])
+            .insert(Visibility::Hidden);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x += CELL_SIZE;
+        app.update();
+        assert_eq!(visibility(&app, 92), Visibility::Inherited);
+        assert_eq!(
+            visibility(&app, 5),
+            Visibility::Hidden,
+            "an unchanged selection is not rewritten on a crossing"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            visible_before + 1,
+            "cell 92 enters the reach"
+        );
+    }
+
+    #[test]
+    fn terrain_lod_index_follows_removals_and_returns_on_scheduled_updates() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(StreamingMetrics::default())
+            .insert_resource(ProfilingState::default())
+            .insert_resource(LodStreaming::default())
+            .add_systems(Update, update_terrain_lod_visibility);
+        let world = app.world_mut();
+        world.spawn((
+            StreamingCamera,
+            Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+        ));
+        let spawn = |world: &mut World, tier| {
+            world
+                .spawn((
+                    TerrainCoverage {
+                        grid: IVec2::new(3, 0),
+                        quadrant: 0,
+                        tier: Some(tier),
+                    },
+                    TerrainSurfaceReady,
+                    Visibility::Hidden,
+                ))
+                .id()
+        };
+        let fine = spawn(world, LodTier::Tier4);
+        let coarse = spawn(world, LodTier::Tier8);
+        let visible = |app: &App, entity| *app.world().get::<Visibility>(entity).unwrap();
+
+        app.update();
+        assert_eq!(visible(&app, fine), Visibility::Inherited);
+        assert_eq!(visible(&app, coarse), Visibility::Hidden);
+
+        // The finer tier goes away: the coarser one covers the quadrant.
+        app.world_mut().entity_mut(fine).despawn();
+        app.update();
+        assert_eq!(visible(&app, coarse), Visibility::Inherited);
+
+        // A live patch that loses readiness stops drawing and the quadrant has nothing left.
+        app.world_mut()
+            .entity_mut(coarse)
+            .remove::<TerrainSurfaceReady>();
+        app.update();
+        assert_eq!(visible(&app, coarse), Visibility::Hidden);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            0
+        );
+
+        // Readiness returns: the patch is indexed again and draws.
+        app.world_mut()
+            .entity_mut(coarse)
+            .insert(TerrainSurfaceReady);
+        app.update();
+        assert_eq!(visible(&app, coarse), Visibility::Inherited);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            1
+        );
+    }
+
+    #[test]
+    fn terrain_lod_index_drops_patches_when_their_chunk_root_is_despawned() {
+        let mut app = App::new();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(StreamingMetrics::default())
+            .insert_resource(ProfilingState::default())
+            .insert_resource(LodStreaming::default())
+            .add_systems(Update, update_terrain_lod_visibility);
+        let world = app.world_mut();
+        world.spawn((
+            StreamingCamera,
+            Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+        ));
+        let root = world.spawn(Visibility::Inherited).id();
+        for quadrant in 0..4 {
+            world.spawn((
+                ChildOf(root),
+                TerrainCoverage {
+                    grid: IVec2::new(3, 0),
+                    quadrant,
+                    tier: Some(LodTier::Tier4),
+                },
+                TerrainSurfaceReady,
+                Visibility::Hidden,
+            ));
+        }
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            4
+        );
+        // Production retires a chunk by despawning its root; the patches go with it.
+        app.world_mut().entity_mut(root).despawn();
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            0
+        );
+    }
+
+    #[test]
+    fn terrain_lod_index_quiet_removal_drops_an_emptied_quadrant() {
+        let mut index = TerrainLodIndex::default();
+        let entity = Entity::from_raw_u32(1).unwrap();
+        let key = (IVec2::new(-2, 3), 2);
+        index.insert(
+            entity,
+            IndexedPatch {
+                key,
+                tier: Some(LodTier::Tier4),
+            },
+        );
+        assert_eq!(index.ready_lod_patches, 1);
+        {
+            let quadrant = index.quadrants.get_mut(&key).unwrap();
+            quadrant.selected = Some(LodTier::Tier4);
+            quadrant.visible = 1;
+        }
+        index.visible_lod_patches = 1;
+        index.changed.clear();
+
+        // A batch-replaced source leaves quietly: tallies drop, the revision's changed set
+        // stays empty, and the emptied quadrant is forgotten so a stationary camera cannot
+        // accumulate ghost quadrants across a long startup.
+        assert_eq!(
+            index.remove(entity, false).map(|patch| patch.key),
+            Some(key)
+        );
+        assert!(
+            index.quadrants.is_empty(),
+            "a quiet removal must not leave an empty quadrant behind"
+        );
+        assert!(index.patches.is_empty());
+        assert!(index.changed.is_empty());
+        assert_eq!(index.ready_lod_patches, 0);
+        assert_eq!(index.visible_lod_patches, 0);
+
+        // A quadrant that still holds a neighbour keeps its entry through a quiet removal.
+        let held = Entity::from_raw_u32(2).unwrap();
+        index.insert(
+            held,
+            IndexedPatch {
+                key,
+                tier: Some(LodTier::Tier8),
+            },
+        );
+        assert!(index.quadrants.contains_key(&key));
+        assert!(index.remove(held, false).is_some());
+        assert!(index.quadrants.is_empty());
+
+        // Real removals still mark the emptied quadrant changed for the rebuild pass.
+        let real = Entity::from_raw_u32(3).unwrap();
+        index.insert(
+            real,
+            IndexedPatch {
+                key,
+                tier: Some(LodTier::Tier4),
+            },
+        );
+        index.changed.clear();
+        assert!(index.remove(real, true).is_some());
+        assert!(index.changed.contains(&key));
     }
 
     #[test]

@@ -9,8 +9,12 @@ struct WaterSettings {
     wave_scale_speed_strength: vec4<f32>,
     flow_direction: vec4<f32>,
     // x = Fresnel Amount (Schlick F0), y = Reflectivity Amount (WATR DNAM, per-water; falls back
-    // to Skyrim's DefaultWater 0.10 / 0.8 when a water has no decoded colours). z/w unused.
+    // to Skyrim's DefaultWater 0.10 / 0.8 when a water has no decoded colours).
+    // z = interactive reflection multiplier, w unused.
     fresnel_reflectivity: vec4<f32>,
+    // rgb = the water's Reflection Color (linear): what it reflects where the reflection image has
+    // no coverage (alpha 0). Vanilla fades the reflection to this colour as reflectivity drops.
+    reflection_color: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterSettings;
@@ -37,7 +41,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = normalize(vec3<f32>(-dx, 1.0, -dz));
     let viewport_uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
     let reflection_uv = clamp(vec2<f32>(viewport_uv.x, 1.0 - viewport_uv.y), vec2<f32>(0.0), vec2<f32>(1.0));
-    let reflection_color = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
+    let reflection_sample = textureSample(water_reflection, water_reflection_sampler, reflection_uv);
+    let reflection_color = vec4<f32>(
+        mix(water.reflection_color.rgb, reflection_sample.rgb, reflection_sample.a),
+        1.0,
+    );
     // Schlick with F0 = this water's WATR "Fresnel Amount" (DNAM; DefaultWater is 0.10 after
     // Update.esm).
     let water_fresnel_f0 = water.fresnel_reflectivity.x;
@@ -49,7 +57,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // it is blended in after lighting rather than lit a second time as albedo, which washed the
     // water out to white.
     out.color = apply_pbr_lighting(pbr_input);
-    let reflected = fresnel * water.fresnel_reflectivity.y;
+    let reflected = fresnel * water.fresnel_reflectivity.y * water.fresnel_reflectivity.z;
     out.color = vec4<f32>(mix(out.color.rgb, reflection_color.rgb, reflected), max(out.color.a, fresnel));
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

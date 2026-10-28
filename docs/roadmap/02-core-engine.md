@@ -15,7 +15,7 @@
 
 ### 2.2 Multi-Threaded Cell & Spatial Streaming
 
-- Asynchronous background frustum queries against `skyrim_world.db` using the **Hybrid Spatial Query Module** (normalized exterior R-Tree + $O(1)$ interior `cell_id` lookups).
+- Asynchronous background frustum queries against `skyrim_world.db` using the **Hybrid Spatial Query Module** (normalized exterior R-Tree and indexed interior `cell_id` lookups).
 - Zero-CPU heightmap loading via `mmap` zero-copy `rkyv` buffers (`cell_cache.rkyv`).
 - Dynamic sub-millisecond cell load/unload pipeline across interior/exterior boundaries with zero loading screens.
 
@@ -92,5 +92,9 @@ Final release verdicts and their evidence package are documented in
 
 ## Compatibility
 
-Phase 2 requires database schema version 4, converter manifest schema 14, and cell cache version 3.
-Older or incomplete assets are rejected and must be reconverted through the launcher or converter CLI.
+Phase 2 required database schema version 4, converter manifest schema 14, and cell cache version 3
+when it shipped. The runtime now accepts world database schemas 3 through 9
+(`shared::WORLD_DATABASE_SCHEMA_VERSION` is 9), complete converter packages of schemas 15 through
+28, and cell cache version 3.
+Unsupported or incomplete packages are rejected and must be reconverted through the launcher or converter CLI.
+Older world database schemas within the supported range remain accepted.

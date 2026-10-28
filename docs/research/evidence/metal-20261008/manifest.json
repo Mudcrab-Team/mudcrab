@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "source_bundle": "Local 2026-10-08-fixes profiling archive; original capture paths remain provenance, not public links.",
+  "files": {
+    "before.png": {
+      "bytes": 10725392,
+      "sha256": "90a293c30ec2da780206043a5c69563ca94beeeecc099056d5096bb9d557717d"
+    },
+    "production-binary.json": {
+      "bytes": 555,
+      "sha256": "8a1b3e6c73bcb7b2434eba28626e6bdbbe16749858f68f21944c9b6b84ee7757"
+    },
+    "correctness-v4.json": {
+      "bytes": 304,
+      "sha256": "92546e33cb7adb977a174f1d01d699e905415de98902e63f3bbcc5607459bf76"
+    },
+    "final-native-summary.json": {
+      "bytes": 124813,
+      "sha256": "e30ceb84388d2a7f0d8e7bbb89d6954f50b42c1e5d6cc00a62b7e617bb14e821"
+    },
+    "after.png": {
+      "bytes": 10728072,
+      "sha256": "31cb6a906641594d30f970478b9734c3e3d1b7c09bda512a146c5c48c015955e"
+    },
+    "terrain-visual-isolation.json": {
+      "bytes": 1432,
+      "sha256": "56ea8ad2318ffb42f3029ff64d90631e61a6aa5217608fd1c64c5720131f4080"
+    },
+    "dashboard.html": {
+      "bytes": 241922,
+      "sha256": "7eb384dc0f8ba28ad6c08e350d606c0f8b0fd6b2c36c2c7d26cc1a35ce36700e"
+    },
+    "dashboard-preview-final.json": {
+      "bytes": 1685,
+      "sha256": "c5feb97e718ba9e7719468441b3eb62c3a66b4571ff265bf0108e4d54bc1b82a"
+    },
+    "README.md": {
+      "bytes": 3783,
+      "sha256": "6793f776f6ee023f982b2fbea0e4cb36ccbc7b944afa03d7a6db693976c9921e"
+    },
+    "ordinary-v4-comparison.json": {
+      "bytes": 73576,
+      "sha256": "f96df063b119f069d88f31ee0400c247063f15abfb7e661c71b850d7174e2c68"
+    },
+    "final-results-v4.json": {
+      "bytes": 232381,
+      "sha256": "36884eda13b3707ee4a9f82d84b4860f835a46ebb8b1aa32b1bda4c9ca834b84"
+    },
+    "runs/fixes-final-v4-3/run.json": {
+      "bytes": 13762,
+      "sha256": "9a94325d6d30dcc0887480549a7f7f916f0ff75e7aaa12f8d7ebb88b2bc46d41"
+    },
+    "runs/fixes-final-v4-3/visual-validation.json": {
+      "bytes": 234,
+      "sha256": "dfef85741b90934f236d3c443b326efca87d988080469c39e0790deea5199496"
+    },
+    "runs/fixes-final-v4-2/run.json": {
+      "bytes": 13872,
+      "sha256": "bf45d63c77baed8fa7c5ac1574ec28fb22687c360c2a86aa9a3ef2b2198b36d7"
+    },
+    "runs/fixes-final-v4-2/visual-validation.json": {
+      "bytes": 235,
+      "sha256": "3e8e7ea7171aaa157bdc1724acb4dc1a679927ea35a8eff984a54df73e5c6f8a"
+    },
+    "runs/fixes-moving-v4-16mib-1/run.json": {
+      "bytes": 29999,
+      "sha256": "77ac300273e7602f1291bd3bf0f0b2ce63492b6cbb3d12e526d9bf857ce16c0c"
+    },
+    "runs/fixes-baseline-7/run.json": {
+      "bytes": 14447,
+      "sha256": "1385470f822cc4cb7f793e4efc5d42668f67a2b1fd6f74aee83bddc41a7b9a1e"
+    },
+    "runs/fixes-baseline-7/visual-validation.json": {
+      "bytes": 410,
+      "sha256": "e93784cfd016345c8b74f8df1cd681542c350ecf25ae1636d096a2c1213cc482"
+    },
+    "runs/fixes-drawcounts-v4-1/draw-count-analysis.json": {
+      "bytes": 38460,
+      "sha256": "8e66c363f9e1dac8ca16f991d784b96655413fdb19264028f1d1b4eaf1d61e7c"
+    },
+    "runs/fixes-drawcounts-v4-1/run.json": {
+      "bytes": 10096,
+      "sha256": "5fa4694f9bbb6bf826f5a57f39544ae9147931ce8883033f3b6d7f9a001b1a4f"
+    },
+    "runs/fixes-drawcounts-v4-1/visual-validation.json": {
+      "bytes": 576,
+      "sha256": "3c7a2e64f0962a073f56a200617d94286bcbcbc8bdebe89daa15257064eec5b9"
+    },
+    "runs/fixes-ordinary-baseline-2/run.json": {
+      "bytes": 22618,
+      "sha256": "177a7515da40a82a59fda39ce9fa286ada3f0b7be392b622b90310979af74f62"
+    },
+    "runs/fixes-final-v4-1/symbolication-verification.json": {
+      "bytes": 2122,
+      "sha256": "ec824b8aef04dce72f103e62ca688925dc784ddbf5897d322a769dc955b482f0"
+    },
+    "runs/fixes-final-v4-1/run.json": {
+      "bytes": 13788,
+      "sha256": "16e46d7c3213cd91b7ba35dae2134f38b92da4cb32f9d9ca561fc82924994bf4"
+    },
+    "runs/fixes-final-v4-1/visual-validation.json": {
+      "bytes": 410,
+      "sha256": "ccde15fb3c4d16a9cb82b329dca82cd45e4bbdded564145037ac28b5f6152cb3"
+    },
+    "runs/fixes-ordinary-final-v4-1/symbolication-verification.json": {
+      "bytes": 2124,
+      "sha256": "cf5e6e55e71afe35d0a61b7304995dc63784051d99bcb86ff95bd4105944d859"
+    },
+    "runs/fixes-ordinary-final-v4-1/run.json": {
+      "bytes": 22538,
+      "sha256": "022df98cfbed14132c1a30c0e6173ae201b2e6e2ea9efcf35dcc7af108235959"
+    }
+  },
+  "capture_scopes": {
+    "static": "Fresh baseline7 n=1 and image-checked finalV4 n=3; raisedcamera,3200x1802Immediate.",
+    "ordinary": "Freshbaseline2 and finalV4 onecaptureeach,3200x1800Fifo; HUD and CPU share guarded clocks; no matched screenshot pair.",
+    "moving": "FinalV4 16MiB,120s; counter-only quality; no before timing comparator.",
+    "draw_counts": "Separate instrumented static capture; 468render schedules;3transparentgizmovariants remain unwrapped."
+  },
+  "not_published": [
+    "Skyrim source or converted assets",
+    "Engine binaries",
+    "Native Samply profiles and symbolicated full exports",
+    "Complete logs or historical profile folders"
+  ],
+  "dashboard_original_source_sha256": "1d438088fc3fbf2c5cc5b858764aedc4be1d6f207b8fbee2c8d87b9dd07c8eda"
+}

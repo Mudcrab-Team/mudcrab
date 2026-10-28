@@ -6,6 +6,8 @@
 //! origins with floor division toward negative infinity, so a position just
 //! west of zero lands in cell -1 (GEOM-02).
 
+pub mod object;
+
 /// A fixed spatial LOD tier: the side length of a chunk in exterior cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]

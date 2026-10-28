@@ -1,15 +1,31 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 204
 expression: snapshot
 ---
 {
+  "actor_model_parts": [],
+  "actor_models": [
+    {
+      "head_model": null,
+      "head_source": null,
+      "id": 7,
+      "race_id": 10,
+      "resolution": "unresolved",
+      "sex": "male",
+      "skin_armo_id": null,
+      "skin_tone_b": null,
+      "skin_tone_g": null,
+      "skin_tone_r": null,
+      "weight": null
+    }
+  ],
   "cells": [
     {
       "data": {
         "encoded_bytes": 56
       },
       "flags": 0,
+      "full_name": null,
       "grid_x": 0,
       "grid_y": 0,
       "id": 16,
@@ -21,6 +37,7 @@ expression: snapshot
         "encoded_bytes": 84
       },
       "flags": 0,
+      "full_name": "Generated Interior",
       "grid_x": null,
       "grid_y": null,
       "id": 65536,
@@ -147,6 +164,16 @@ expression: snapshot
       "texture_set_id": 2
     }
   ],
+  "npcs": [
+    {
+      "class_id": null,
+      "editor_id": "Player",
+      "flags": 0,
+      "full_name": null,
+      "id": 7,
+      "race_id": 10
+    }
+  ],
   "references": [
     {
       "base_form_id": 3,
@@ -154,6 +181,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 60
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
@@ -177,6 +205,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 104
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
@@ -200,6 +229,7 @@ expression: snapshot
       "data": {
         "encoded_bytes": 104
       },
+      "emittance_id": null,
       "enable_parent_flags": null,
       "enable_parent_id": null,
       "header_flags": 0,
@@ -229,6 +259,7 @@ expression: snapshot
       "bounds_valid": 0,
       "editor_id": "GeneratedStatic",
       "flags": 0,
+      "full_name": null,
       "id": 3,
       "model_path": "meshes/generated.nif"
     },
@@ -242,6 +273,7 @@ expression: snapshot
       "bounds_valid": 0,
       "editor_id": "AutoLoadDoor01",
       "flags": 0,
+      "full_name": null,
       "id": 5,
       "model_path": "meshes/generated.nif"
     },
@@ -255,6 +287,7 @@ expression: snapshot
       "bounds_valid": 0,
       "editor_id": "GeneratedDoor01",
       "flags": 0,
+      "full_name": null,
       "id": 6,
       "model_path": "meshes/generated.nif"
     }
@@ -277,6 +310,7 @@ expression: snapshot
     {
       "editor_id": "GeneratedWorld",
       "flags": 0,
+      "full_name": null,
       "id": 1,
       "lod_origin_x": null,
       "lod_origin_y": null,

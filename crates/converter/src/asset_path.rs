@@ -12,6 +12,9 @@ pub enum AssetKind {
     Mesh,
     Script,
     LodSettings,
+    /// A source clip or skeleton the animation pass decodes; it has no published output of
+    /// its own, but it is staged beside the meshes it deforms.
+    Animation,
 }
 
 impl AssetKind {
@@ -21,6 +24,7 @@ impl AssetKind {
             Self::Mesh => "meshes",
             Self::Script => "scripts",
             Self::LodSettings => "lodsettings",
+            Self::Animation => "meshes",
         }
     }
 
@@ -30,6 +34,7 @@ impl AssetKind {
             Self::Mesh => &["nif", "glb"],
             Self::Script => &["pex", "luau"],
             Self::LodSettings => &["lod"],
+            Self::Animation => &["hkx"],
         }
     }
 }
@@ -118,6 +123,13 @@ impl AssetSourceIndex {
     pub fn overrides(&self) -> &[AssetOverride] {
         &self.overrides
     }
+}
+
+/// Authoring resources are not runtime assets, even when their extension is NIF/DDS/PEX.
+pub(crate) fn is_authoring_resource(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|part| part.eq_ignore_ascii_case("calientetools"))
 }
 
 /// Canonicalizes a Bethesda asset path into a lowercase, root-relative key.
@@ -245,7 +257,7 @@ fn is_within(path: &Path, root: &Path) -> bool {
 
 /// Strip converter-owned sampler/transfer aliases back to the converted source.
 /// Alias ordering is transfer first, sampler second; only known suffixes are reserved.
-pub(crate) fn runtime_texture_source(runtime_key: &str) -> Option<String> {
+pub fn runtime_texture_source(runtime_key: &str) -> Option<String> {
     let mut stem = runtime_key.strip_suffix(".ktx2")?;
     for suffix in [".opensky-wrap0", ".opensky-wrap1", ".opensky-wrap2"] {
         if let Some(source) = stem.strip_suffix(suffix) {
@@ -321,10 +333,34 @@ mod tests {
                 .starts_with(modded)
         );
 
-        if !cfg!(windows) {
-            fs::write(base.join("Landscape/ROCK.dds"), b"collision").unwrap();
-            assert!(AssetSourceIndex::build(&[base], AssetKind::Texture).is_err());
+        let collision = base.join("Landscape/ROCK.dds");
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&collision)
+        {
+            Ok(_) => {
+                fs::write(collision, b"collision").unwrap();
+                assert!(
+                    AssetSourceIndex::build(std::slice::from_ref(&base), AssetKind::Texture)
+                        .is_err()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert!(
+                    AssetSourceIndex::build(std::slice::from_ref(&base), AssetKind::Texture)
+                        .is_ok()
+                );
+            }
+            Err(error) => panic!("create case-collision fixture: {error}"),
         }
+
+        // Also create distinct files on case-insensitive volumes: canonicalization
+        // strips the redundant textures prefix and lowercases the asset path.
+        fs::create_dir_all(base.join("textures/landscape")).unwrap();
+        fs::write(base.join("textures/landscape/rock.dds"), b"collision").unwrap();
+        let error = AssetSourceIndex::build(&[base], AssetKind::Texture).unwrap_err();
+        assert!(error.to_string().contains("normalized asset collision"));
     }
 
     #[test]

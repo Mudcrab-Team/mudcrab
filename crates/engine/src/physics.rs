@@ -2,6 +2,7 @@
 //! All units are Creation units.
 
 use bevy::{
+    ecs::system::{SystemId, SystemParam},
     input::mouse::MouseMotion,
     prelude::*,
     window::{CursorGrabMode, CursorOptions},
@@ -12,9 +13,11 @@ use color_eyre::{
     eyre::{WrapErr, ensure},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use shared::collision::CollisionBody;
 use std::path::Path;
 
 use crate::{
+    console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
     profiling::ProfilingState,
     streaming::{StreamingMetrics, TerrainCollider},
     world::components::StreamingCamera,
@@ -31,6 +34,18 @@ pub const GROUP_WORLD: Group = Group::GROUP_1;
 pub const GROUP_PLAYER: Group = Group::GROUP_2;
 /// Collision groups: dynamic debug tankards (V17).
 pub const GROUP_TANKARD: Group = Group::GROUP_3;
+/// Collision groups: placed dynamic clutter from authored physics data (#104 phase a).
+pub const GROUP_CLUTTER: Group = Group::GROUP_4;
+/// Rapier's default linear speed cap is 400 units/s, which clips free fall under 900 units/s^2
+/// gravity after 0.44 s. Authored clutter limits (about 7000 units/s) are enforced per body by
+/// [`clamp_dynamic_clutter_velocities`], so the global cap only has to stay out of the way. The cap
+/// is global, so debug tankards fall faster too; they and clutter both use continuous collision.
+pub const MAX_LINEAR_SPEED: f32 = 20_000.0;
+/// Live-cap on simultaneous dynamic clutter bodies, like [`MAX_LIVE_TANKARDS`]. The cap bounds
+/// the contact-pair cost a cell arrival can create; bodies over it keep no collider at all
+/// for as long as their cell stays resident (a refusal is not retried); they are considered again
+/// when their cell loads next, if earlier bodies have unloaded by then.
+pub const MAX_LIVE_DYNAMIC_CLUTTER: usize = 256;
 
 /// Provisional movement tuning, centralized (V10, V11, V12).
 #[derive(Debug, Clone, Resource)]
@@ -225,15 +240,211 @@ pub struct FixtureArena;
 
 /// Groups every collider belongs to / collides with (V17).
 pub fn world_collision_groups() -> CollisionGroups {
-    CollisionGroups::new(GROUP_WORLD, GROUP_PLAYER | GROUP_TANKARD)
+    CollisionGroups::new(GROUP_WORLD, GROUP_PLAYER | GROUP_TANKARD | GROUP_CLUTTER)
 }
 
 pub fn player_collision_groups() -> CollisionGroups {
-    CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD | GROUP_TANKARD)
+    CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD | GROUP_TANKARD | GROUP_CLUTTER)
 }
 
 pub fn tankard_collision_groups() -> CollisionGroups {
-    CollisionGroups::new(GROUP_TANKARD, GROUP_WORLD | GROUP_PLAYER | GROUP_TANKARD)
+    CollisionGroups::new(
+        GROUP_TANKARD,
+        GROUP_WORLD | GROUP_PLAYER | GROUP_TANKARD | GROUP_CLUTTER,
+    )
+}
+
+/// Placed dynamic clutter collides with the world, the player, tankards and other clutter.
+pub fn clutter_collision_groups() -> CollisionGroups {
+    CollisionGroups::new(
+        GROUP_CLUTTER,
+        GROUP_WORLD | GROUP_PLAYER | GROUP_TANKARD | GROUP_CLUTTER,
+    )
+}
+
+/// A placed reference simulated as a dynamic Rapier body from its authored physics data (#104
+/// phase a).
+///
+/// The object's stable ID is the [`crate::world::components::FormId`] already on the reference
+/// entity. The resting pose is not persisted (#90), and the body despawns with its cell.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct DynamicClutter {
+    /// Authored cap on linear speed, Creation units/s.
+    pub max_linear_velocity: f32,
+    /// Authored cap on angular speed, rad/s.
+    pub max_angular_velocity: f32,
+}
+
+/// Mass properties for an authored body, or `None` when the mass or tensor is unusable (the
+/// caller then falls back to collider density).
+///
+/// The tensor must be finite, symmetric and positive definite, the centre of mass finite and the
+/// mass finite and above zero. Havok values come in the shape frame already (the converter bakes
+/// the node and rigid-body transforms), in Creation units and kg x Creation units squared.
+pub fn mass_properties_from_body(body: &CollisionBody) -> Option<MassProperties> {
+    if !body.mass.is_finite() || body.mass <= 0.0 {
+        return None;
+    }
+    if !body
+        .inertia
+        .iter()
+        .chain(&body.center_of_mass)
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let i = body.inertia.map(f64::from);
+    // Row-major 3x3. Sylvester's criterion on the leading minors plus a symmetry check.
+    let symmetric = |a: f64, b: f64| (a - b).abs() <= 1e-4 * (a.abs() + b.abs()).max(1e-12);
+    if !(symmetric(i[1], i[3]) && symmetric(i[2], i[6]) && symmetric(i[5], i[7])) {
+        return None;
+    }
+    let minor2 = i[0] * i[4] - i[1] * i[3];
+    let det = i[0] * (i[4] * i[8] - i[5] * i[7]) - i[1] * (i[3] * i[8] - i[5] * i[6])
+        + i[2] * (i[3] * i[7] - i[4] * i[6]);
+    if !(i[0] > 0.0 && minor2 > 0.0 && det > 0.0) {
+        return None;
+    }
+    // Bevy's Mat3 is column-major; the tensor is symmetric, so rows and columns agree.
+    let matrix = Mat3::from_cols_array(&body.inertia);
+    Some(MassProperties::from_rapier(
+        bevy_rapier3d::rapier::dynamics::MassProperties::with_inertia_matrix(
+            Vec3::from_array(body.center_of_mass),
+            body.mass,
+            matrix,
+        ),
+    ))
+}
+
+/// Make `entity` a dynamic Rapier body from authored physics data (#104 phase a).
+///
+/// `parts` are the body's collider shapes and their translations in the entity's frame, already
+/// built by the caller (a hull for a non-convex body). `mass` is the authored tensor; when it is
+/// `None` (unusable values) collider density supplies the mass instead. `scale` is the
+/// reference's uniform scale: Rapier scales the colliders from the `GlobalTransform` but not
+/// [`AdditionalMassProperties`], so the authored centre of mass is scaled by it and the inertia by
+/// its square, keeping them in step with the scaled shapes (the authored mass stays as it is). An
+/// unusable scale falls back to collider density. Every collider carries
+/// zero mass when the authored tensor is used, because collider mass is *added* to
+/// [`AdditionalMassProperties`] rather than replacing it.
+///
+/// The body sits on the reference entity itself, which is a descendant of the cell root: it moves
+/// with the root and despawns with the cell.
+/// The character controller does not push dynamic bodies yet (`apply_impulse_to_dynamic_bodies`
+/// is false), so the player collides with clutter but cannot shove it in phase (a).
+pub fn spawn_dynamic_clutter<'a>(
+    commands: &mut Commands,
+    entity: Entity,
+    body: &CollisionBody,
+    parts: impl IntoIterator<Item = (Vec3, &'a Collider)>,
+    mass: Option<MassProperties>,
+    scale: f32,
+) {
+    let finite_or = |value: f32, default: f32| {
+        if value.is_finite() && value >= 0.0 {
+            value
+        } else {
+            default
+        }
+    };
+    let mut entity_commands = commands.entity(entity);
+    entity_commands.insert((
+        RigidBody::Dynamic,
+        DynamicClutter {
+            max_linear_velocity: body.max_linear_velocity,
+            max_angular_velocity: body.max_angular_velocity,
+        },
+        Damping {
+            linear_damping: finite_or(body.linear_damping, 0.0),
+            angular_damping: finite_or(body.angular_damping, 0.0),
+        },
+        Velocity::zero(),
+        // Asleep until something touches it: each model becomes ready on its own, so the shelf or
+        // terrain under a body may still be loading (or its collider disabled) on the first step,
+        // and an awake body would fall through it. A contact, a grab or a set velocity wakes it.
+        Sleeping {
+            sleeping: true,
+            ..default()
+        },
+        // The raised global speed cap lets a fast body cover more than a floor's thickness in
+        // one 60 Hz step, so clutter gets continuous collision detection against the world.
+        Ccd::enabled(),
+    ));
+    let collider_mass = match mass {
+        Some(mut properties) if scale.is_finite() && scale > 0.0 => {
+            properties.local_center_of_mass *= scale;
+            properties.principal_inertia *= scale * scale;
+            entity_commands.insert(AdditionalMassProperties::MassProperties(properties));
+            ColliderMassProperties::Mass(0.0)
+        }
+        _ => ColliderMassProperties::Density(0.001),
+    };
+    // The Havok deactivator type is not mapped in phase (a): past the asleep start, Rapier's
+    // default sleeping applies.
+    let friction = Friction::coefficient(finite_or(body.friction, 0.5));
+    let restitution = Restitution::coefficient(finite_or(body.restitution, 0.0));
+    let parts: Vec<(Vec3, &Collider)> = parts.into_iter().collect();
+    if let [(translation, collider)] = parts.as_slice()
+        && *translation == Vec3::ZERO
+    {
+        commands.entity(entity).insert((
+            (*collider).clone(),
+            collider_mass,
+            friction,
+            restitution,
+            clutter_collision_groups(),
+        ));
+        return;
+    }
+    for (translation, collider) in parts {
+        commands.spawn((
+            (*collider).clone(),
+            collider_mass,
+            friction,
+            restitution,
+            clutter_collision_groups(),
+            Transform::from_translation(translation),
+            ChildOf(entity),
+        ));
+    }
+}
+
+/// Clamp each dynamic clutter body to its authored max linear and angular speed.
+///
+/// Rapier has one global linear cap and no per-body or angular cap. Running after the Rapier
+/// writeback means the corrected [`Velocity`] reaches the body at the next step. Clamps are
+/// counted in `StreamingMetrics::dynamic_clutter_clamped`.
+pub fn clamp_dynamic_clutter_velocities(
+    mut bodies: Query<(&DynamicClutter, &mut Velocity)>,
+    metrics: Option<ResMut<StreamingMetrics>>,
+) {
+    let mut clamped = 0u64;
+    for (limits, mut velocity) in &mut bodies {
+        let mut capped = *velocity;
+        let linear = capped.linear.length();
+        if limits.max_linear_velocity.is_finite()
+            && limits.max_linear_velocity > 0.0
+            && linear > limits.max_linear_velocity
+        {
+            capped.linear *= limits.max_linear_velocity / linear;
+        }
+        let angular = capped.angular.length();
+        if limits.max_angular_velocity.is_finite()
+            && limits.max_angular_velocity > 0.0
+            && angular > limits.max_angular_velocity
+        {
+            capped.angular *= limits.max_angular_velocity / angular;
+        }
+        if capped != *velocity {
+            *velocity = capped;
+            clamped += 1;
+        }
+    }
+    if clamped > 0
+        && let Some(mut metrics) = metrics
+    {
+        metrics.dynamic_clutter_clamped = metrics.dynamic_clutter_clamped.saturating_add(clamped);
+    }
 }
 
 /// Compound cup + handle collider for the debug tankard (R8, V15).
@@ -264,7 +475,11 @@ impl Plugin for PhysicsCorePlugin {
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_resource::<MovementTuning>()
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default().in_fixed_schedule())
-        .add_systems(Startup, (configure_physics_gravity, report_movement_tuning));
+        .add_systems(Startup, (configure_physics_gravity, report_movement_tuning))
+        .add_systems(
+            FixedUpdate,
+            clamp_dynamic_clutter_velocities.after(PhysicsSet::Writeback),
+        );
     }
 }
 
@@ -287,9 +502,17 @@ fn report_movement_tuning(tuning: Res<MovementTuning>) {
 fn configure_physics_gravity(
     tuning: Res<MovementTuning>,
     mut configs: Query<&mut RapierConfiguration>,
+    mut simulations: Query<&mut RapierContextSimulation>,
 ) {
     for mut config in &mut configs {
         config.gravity = Vect::new(0.0, -tuning.gravity, 0.0);
+    }
+    // Raise Rapier's global linear cap (default 400 units/s) so falling clutter is not clipped;
+    // the authored per-body limits are enforced by `clamp_dynamic_clutter_velocities`.
+    for mut simulation in &mut simulations {
+        simulation
+            .integration_parameters
+            .normalized_max_linear_velocity = MAX_LINEAR_SPEED;
     }
 }
 
@@ -311,30 +534,51 @@ impl Plugin for PhysicsFixturePlugin {
 /// Mouse and movement systems shared by Riverwood and the regression fixture.
 pub struct PlayerControlsPlugin;
 
+/// Complete camera/player update, before streaming reads or rebases their render positions.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PlayerControlsSystems;
+
 impl Plugin for PlayerControlsPlugin {
     fn build(&self, app: &mut App) {
+        register_move_mode_effect(app.world_mut());
         app.add_plugins(PhysicsCorePlugin)
             .init_resource::<MoveMode>()
             .init_resource::<WalkIntent>()
             .init_resource::<SprintLatch>()
             .init_resource::<LookIntent>()
             .init_resource::<WalkEntryStatus>()
+            .init_resource::<WalkSpawnHold>()
             .init_resource::<CursorCapture>()
+            .add_message::<TeleportPlayer>()
+            .add_console_command(toggle_collision_command())
             .add_systems(
                 Update,
                 (
                     cursor_lifecycle_system,
+                    apply_teleport_player,
                     look_input_system,
-                    noclip_flight_system,
-                    walk_intent_system,
-                    toggle_mode_system,
+                    noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
+                    // Nothing walks during a door crossing: the landing has no collision yet.
+                    walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
+                    toggle_mode_system.run_if(console_closed),
                     walk_camera_follow_system,
                     sprint_fov_system,
                     overlay_system,
                 )
-                    .chain(),
+                    .chain()
+                    .after(crate::settings_ui::SettingsUiSet)
+                    .in_set(PlayerControlsSystems),
             )
-            .add_systems(FixedUpdate, walk_movement_system);
+            .add_systems(
+                FixedUpdate,
+                // Both hold release and movement pause while the destination is unloaded or
+                // gameplay input belongs to the console/settings menu.
+                (release_walk_spawn_hold, walk_movement_system)
+                    .chain()
+                    .run_if(crate::door_crossing::no_door_crossing)
+                    .run_if(console_closed)
+                    .before(PhysicsSet::SyncBackend),
+            );
     }
 }
 
@@ -352,17 +596,23 @@ impl Plugin for WorldPlayerPlugin {
                 .disabled(),
             )
             .init_resource::<HeldTankard>()
+            .add_console_command(toggle_collision_geometry_command())
             .add_systems(PostStartup, setup_world_player)
             .add_systems(
                 Update,
-                (
-                    toggle_collision_debug_system,
-                    update_collision_debug_visibility,
-                )
-                    .chain()
+                update_collision_debug_visibility
+                    .after(crate::settings_ui::SettingsUiSet)
                     .before(overlay_system),
             )
-            .add_systems(Update, (world_tankard_input, move_held_tankard).chain());
+            .add_systems(
+                Update,
+                (
+                    world_tankard_input.run_if(console_closed),
+                    move_held_tankard,
+                )
+                    .chain()
+                    .after(crate::settings_ui::SettingsUiSet),
+            );
     }
 }
 
@@ -405,6 +655,9 @@ fn spawn_debug_tankard(commands: &mut Commands, visuals: &TankardVisuals, positi
             tankard_collision_groups(),
             ColliderMassProperties::Density(0.001),
             Velocity::zero(),
+            // The raised global speed cap (`MAX_LINEAR_SPEED`) no longer clips a falling tankard
+            // at 400 units/s, so it gets continuous collision detection like clutter does.
+            Ccd::enabled(),
             Transform::from_translation(position),
             Visibility::default(),
         ))
@@ -571,6 +824,7 @@ fn validate_physics_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn movement_tuning_preserves_spec_speed_ordering() {
@@ -694,6 +948,140 @@ mod tests {
     }
 
     #[test]
+    fn clutter_group_collides_with_world_player_tankards_and_clutter() {
+        let clutter = clutter_collision_groups();
+        for group in [GROUP_WORLD, GROUP_PLAYER, GROUP_TANKARD, GROUP_CLUTTER] {
+            assert!(clutter.filters.contains(group));
+        }
+        assert!(world_collision_groups().filters.contains(GROUP_CLUTTER));
+        assert!(player_collision_groups().filters.contains(GROUP_CLUTTER));
+        assert!(tankard_collision_groups().filters.contains(GROUP_CLUTTER));
+        assert_eq!(clutter.memberships, GROUP_CLUTTER);
+    }
+
+    fn test_body(mass: f32, inertia: [f32; 9]) -> CollisionBody {
+        CollisionBody {
+            node: 0,
+            target: String::new(),
+            shapes: vec![0],
+            kind: shared::collision::BodyKind::Dynamic,
+            havok: shared::collision::HavokBodyInfo {
+                motion_system: 3,
+                quality_type: 4,
+                deactivator_type: 1,
+                collision_layer: 4,
+            },
+            mass,
+            inertia,
+            center_of_mass: [0.0, 2.0, 0.0],
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            friction: 0.5,
+            restitution: 0.0,
+            max_linear_velocity: 100.0,
+            max_angular_velocity: 5.0,
+            convex: true,
+        }
+    }
+
+    #[test]
+    fn mass_properties_follow_the_authored_tensor_and_reject_unusable_ones() {
+        let good = mass_properties_from_body(&test_body(
+            2.0,
+            [3.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 5.0],
+        ))
+        .expect("positive definite tensor");
+        assert!((good.mass - 2.0).abs() < 1.0e-6);
+        assert!((good.local_center_of_mass.y - 2.0).abs() < 1.0e-6);
+        let mut principal = [
+            good.principal_inertia.x,
+            good.principal_inertia.y,
+            good.principal_inertia.z,
+        ];
+        principal.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (got, want) in principal.iter().zip([3.0, 4.0, 5.0]) {
+            assert!((got - want).abs() < 1.0e-4, "{principal:?}");
+        }
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        assert!(mass_properties_from_body(&test_body(0.0, identity)).is_none());
+        assert!(mass_properties_from_body(&test_body(f32::NAN, identity)).is_none());
+        assert!(mass_properties_from_body(&test_body(1.0, [0.0; 9])).is_none());
+        // Not positive definite: a negative principal moment.
+        assert!(
+            mass_properties_from_body(&test_body(
+                1.0,
+                [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0]
+            ))
+            .is_none()
+        );
+        // Not symmetric.
+        assert!(
+            mass_properties_from_body(&test_body(
+                1.0,
+                [1.0, 0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn clamp_caps_authored_max_velocity_and_counts_it() {
+        let mut world = World::new();
+        world.init_resource::<StreamingMetrics>();
+        let limits = DynamicClutter {
+            max_linear_velocity: 100.0,
+            max_angular_velocity: 5.0,
+        };
+        let fast = world
+            .spawn((
+                limits,
+                Velocity {
+                    linear: Vec3::new(300.0, 400.0, 0.0),
+                    angular: Vec3::new(0.0, 20.0, 0.0),
+                },
+            ))
+            .id();
+        let slow = world
+            .spawn((
+                limits,
+                Velocity {
+                    linear: Vec3::new(10.0, 0.0, 0.0),
+                    angular: Vec3::new(0.0, 1.0, 0.0),
+                },
+            ))
+            .id();
+        world
+            .run_system_once(clamp_dynamic_clutter_velocities)
+            .unwrap();
+        let fast = *world.get::<Velocity>(fast).unwrap();
+        assert!((fast.linear.length() - 100.0).abs() < 1.0e-3);
+        assert!((fast.angular.length() - 5.0).abs() < 1.0e-3);
+        // Direction is kept.
+        assert!((fast.linear.normalize() - Vec3::new(0.6, 0.8, 0.0)).length() < 1.0e-4);
+        let slow = *world.get::<Velocity>(slow).unwrap();
+        assert_eq!(slow.linear, Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(
+            world.resource::<StreamingMetrics>().dynamic_clutter_clamped,
+            1
+        );
+    }
+
+    #[test]
+    fn physics_core_raises_the_global_linear_speed_cap() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, PhysicsCorePlugin));
+        app.update();
+        let mut query = app.world_mut().query::<&RapierContextSimulation>();
+        let simulation = query.single(app.world()).expect("rapier context");
+        assert_eq!(
+            simulation
+                .integration_parameters
+                .normalized_max_linear_velocity,
+            MAX_LINEAR_SPEED
+        );
+    }
+
+    #[test]
     fn physics_core_uses_fixed_sixty_hertz_step() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, PhysicsCorePlugin));
@@ -710,6 +1098,368 @@ mod tests {
         assert_eq!(
             app.world().resource::<Time<Fixed>>().timestep(),
             std::time::Duration::from_secs_f64(1.0 / 60.0)
+        );
+    }
+}
+
+/// Placed dynamic clutter from authored physics data (#104 phase a), on the fixture arena.
+#[cfg(test)]
+mod clutter_tests {
+    use super::headless;
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    use shared::collision::{BodyKind, HavokBodyInfo};
+
+    fn authored_body(mass: f32, inertia: [f32; 9], center_of_mass: [f32; 3]) -> CollisionBody {
+        CollisionBody {
+            node: 1,
+            target: "Clutter01".to_owned(),
+            shapes: vec![0],
+            kind: BodyKind::Dynamic,
+            havok: HavokBodyInfo {
+                motion_system: 3,
+                quality_type: 4,
+                deactivator_type: 1,
+                collision_layer: 4,
+            },
+            mass,
+            inertia,
+            center_of_mass,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.6,
+            restitution: 0.3,
+            max_linear_velocity: 7_000.0,
+            max_angular_velocity: 31.0,
+            convex: true,
+        }
+    }
+
+    /// A 20-unit box whose collider sits 10 units above its reference origin, as the converter
+    /// writes a NIF box shape.
+    fn box_body() -> CollisionBody {
+        authored_body(
+            2.0,
+            [30.0, 0.0, 0.0, 0.0, 40.0, 0.0, 0.0, 0.0, 50.0],
+            [0.0, 10.0, 0.0],
+        )
+    }
+
+    /// A 100-unit square platform, heavy enough that a tankard does not move it.
+    fn platform_body() -> CollisionBody {
+        authored_body(
+            200.0,
+            [20_000.0, 0.0, 0.0, 0.0, 20_000.0, 0.0, 0.0, 0.0, 20_000.0],
+            [0.0, 10.0, 0.0],
+        )
+    }
+
+    /// Spawn a placed clutter reference (optionally under a cell root) with one authored collider.
+    fn spawn_clutter(
+        app: &mut App,
+        body: CollisionBody,
+        collider: Collider,
+        center: Vec3,
+        position: Vec3,
+        velocity: Vec3,
+        parent: Option<Entity>,
+    ) -> Entity {
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                let mut entity = commands.spawn(Transform::from_translation(position));
+                if let Some(parent) = parent {
+                    entity.insert(ChildOf(parent));
+                }
+                let entity = entity.id();
+                let mass = mass_properties_from_body(&body);
+                spawn_dynamic_clutter(
+                    &mut commands,
+                    entity,
+                    &body,
+                    [(center, &collider)],
+                    mass,
+                    1.0,
+                );
+                commands.entity(entity).insert(Velocity {
+                    linear: velocity,
+                    angular: Vec3::ZERO,
+                });
+                entity
+            })
+            .unwrap()
+    }
+
+    /// Clutter starts asleep, so it stays where it was placed (its support may still be loading);
+    /// once woken it falls and settles on the floor.
+    #[test]
+    fn dynamic_clutter_body_falls_and_settles_on_the_fixture_arena() {
+        let mut app = headless::fixture_app();
+        let entity = spawn_clutter(
+            &mut app,
+            box_body(),
+            Collider::cuboid(10.0, 10.0, 10.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(-300.0, 400.0, 400.0),
+            Vec3::ZERO,
+            None,
+        );
+        for _ in 0..60 {
+            app.update();
+        }
+        let y = app.world().get::<Transform>(entity).unwrap().translation.y;
+        assert!((y - 400.0).abs() < 1.0e-3, "asleep clutter moved to {y}");
+        app.world_mut()
+            .get_mut::<Sleeping>(entity)
+            .expect("clutter carries Sleeping")
+            .sleeping = false;
+        for _ in 0..600 {
+            app.update();
+        }
+        let y = app.world().get::<Transform>(entity).unwrap().translation.y;
+        // The collider's centre is 10 above the reference origin and the floor top is y = 0.
+        assert!(y.abs() < 3.0, "clutter rests at {y}");
+        let velocity = app.world().get::<Velocity>(entity).unwrap();
+        assert!(
+            velocity.linear.length() < 5.0,
+            "clutter still moving: {velocity:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_clutter_body_takes_the_authored_mass_tensor_and_surface_values() {
+        let mut app = headless::fixture_app();
+        let entity = spawn_clutter(
+            &mut app,
+            box_body(),
+            Collider::cuboid(10.0, 10.0, 10.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            Vec3::new(-300.0, 500.0, 400.0),
+            Vec3::ZERO,
+            None,
+        );
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().expect("rapier context");
+                let handle = context.entity2body()[&entity];
+                let body = context.rigidbody_set.bodies.get(handle).expect("body");
+                let props = body.mass_properties().local_mprops;
+                assert!((props.mass() - 2.0).abs() < 1.0e-3, "mass {}", props.mass());
+                let inertia = props.principal_inertia();
+                let mut sorted = [inertia.x, inertia.y, inertia.z];
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                for (got, want) in sorted.iter().zip([30.0, 40.0, 50.0]) {
+                    assert!((got - want).abs() < 0.01, "inertia {sorted:?}");
+                }
+                assert!((props.local_com.y - 10.0).abs() < 1.0e-3);
+                assert!((body.linear_damping() - 0.1).abs() < 1.0e-6);
+                assert!((body.angular_damping() - 0.05).abs() < 1.0e-6);
+            })
+            .unwrap();
+        // The surface values sit on the colliders: the body entity itself for a single centred
+        // shape, otherwise its collider children.
+        let world = app.world_mut();
+        let mut colliders = world.query::<(Entity, Option<&ChildOf>, &Friction, &Restitution)>();
+        let surfaces: Vec<(f32, f32)> = colliders
+            .iter(world)
+            .filter(|(collider, parent, _, _)| {
+                *collider == entity || parent.is_some_and(|parent| parent.parent() == entity)
+            })
+            .map(|(_, _, friction, restitution)| (friction.coefficient, restitution.coefficient))
+            .collect();
+        assert!(!surfaces.is_empty(), "the body has colliders");
+        for (friction, restitution) in surfaces {
+            assert_eq!(friction, 0.6);
+            assert_eq!(restitution, 0.3);
+        }
+    }
+
+    /// A reference placed at scale 2 keeps its authored mass; the centre of mass moves with the
+    /// scaled shape and the inertia grows with the square of the scale.
+    #[test]
+    fn a_scaled_reference_scales_the_authored_centre_of_mass_and_inertia() {
+        let mut app = headless::fixture_app();
+        let entity = app
+            .world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                let entity = commands
+                    .spawn(
+                        Transform::from_translation(Vec3::new(-300.0, 500.0, 400.0))
+                            .with_scale(Vec3::splat(2.0)),
+                    )
+                    .id();
+                let body = box_body();
+                let mass = mass_properties_from_body(&body);
+                let collider = Collider::cuboid(10.0, 10.0, 10.0);
+                spawn_dynamic_clutter(
+                    &mut commands,
+                    entity,
+                    &body,
+                    [(Vec3::new(0.0, 10.0, 0.0), &collider)],
+                    mass,
+                    2.0,
+                );
+                entity
+            })
+            .unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().expect("rapier context");
+                let handle = context.entity2body()[&entity];
+                let body = context.rigidbody_set.bodies.get(handle).expect("body");
+                let props = body.mass_properties().local_mprops;
+                assert!((props.mass() - 2.0).abs() < 1.0e-3, "mass {}", props.mass());
+                let inertia = props.principal_inertia();
+                let mut sorted = [inertia.x, inertia.y, inertia.z];
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                for (got, want) in sorted.iter().zip([120.0, 160.0, 200.0]) {
+                    assert!((got - want).abs() < 0.05, "inertia {sorted:?}");
+                }
+                assert!((props.local_com.y - 20.0).abs() < 1.0e-3);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dynamic_clutter_body_collides_with_a_tankard() {
+        let mut app = headless::fixture_app();
+        let base = Vec3::new(-300.0, 0.0, 400.0);
+        let platform = spawn_clutter(
+            &mut app,
+            platform_body(),
+            Collider::cuboid(50.0, 10.0, 50.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            base,
+            Vec3::ZERO,
+            None,
+        );
+        let tankard = app
+            .world_mut()
+            .spawn((
+                DebugTankard,
+                RigidBody::Dynamic,
+                debug_tankard_collider(),
+                tankard_collision_groups(),
+                ColliderMassProperties::Density(0.001),
+                Velocity::zero(),
+                Transform::from_translation(base + Vec3::Y * 300.0),
+            ))
+            .id();
+        for _ in 0..400 {
+            app.update();
+        }
+        let platform_top = app
+            .world()
+            .get::<Transform>(platform)
+            .unwrap()
+            .translation
+            .y
+            + 20.0;
+        let tankard_y = app.world().get::<Transform>(tankard).unwrap().translation.y;
+        // A tankard that fell through the clutter would rest on the floor, about 14-18 above it.
+        assert!(
+            tankard_y > platform_top + 10.0,
+            "tankard {tankard_y} passed through the clutter top {platform_top}"
+        );
+    }
+
+    #[test]
+    fn a_falling_tankard_knocks_over_a_light_clutter_body() {
+        let mut app = headless::fixture_app();
+        let base = Vec3::new(-300.0, 0.0, 400.0);
+        // A tall light body (1 kg) balanced on one end; the tankard drops onto its top corner.
+        let mut light = authored_body(
+            1.0,
+            [400.0, 0.0, 0.0, 0.0, 400.0, 0.0, 0.0, 0.0, 400.0],
+            [0.0, 40.0, 0.0],
+        );
+        light.restitution = 0.0;
+        let clutter = spawn_clutter(
+            &mut app,
+            light,
+            Collider::cuboid(5.0, 40.0, 5.0),
+            Vec3::new(0.0, 40.0, 0.0),
+            base,
+            Vec3::ZERO,
+            None,
+        );
+        for _ in 0..30 {
+            app.update();
+        }
+        // Control: left alone for as long as the tankard gets below, the body stays standing, so
+        // the rotation the assertion sees comes from the tankard, not from solver jitter.
+        let settled = app.world().get::<Transform>(clutter).unwrap().rotation;
+        for _ in 0..240 {
+            app.update();
+        }
+        let before = app.world().get::<Transform>(clutter).unwrap().rotation;
+        assert!(
+            settled.angle_between(before) < 0.05,
+            "the body tipped over on its own (rotation changed {})",
+            settled.angle_between(before)
+        );
+        app.world_mut().spawn((
+            DebugTankard,
+            RigidBody::Dynamic,
+            debug_tankard_collider(),
+            tankard_collision_groups(),
+            ColliderMassProperties::Density(0.01),
+            Velocity {
+                linear: Vec3::new(120.0, -50.0, 0.0),
+                angular: Vec3::ZERO,
+            },
+            Transform::from_translation(base + Vec3::new(-40.0, 70.0, 0.0)),
+        ));
+        for _ in 0..240 {
+            app.update();
+        }
+        let after = app.world().get::<Transform>(clutter).unwrap().rotation;
+        assert!(
+            before.angle_between(after) > 0.2,
+            "the tankard did not move the clutter body (rotation changed {})",
+            before.angle_between(after)
+        );
+    }
+
+    #[test]
+    fn dynamic_clutter_body_collides_with_the_player_capsule() {
+        let mut app = headless::fixture_app();
+        let base = Vec3::new(-300.0, 0.0, 400.0);
+        let platform = spawn_clutter(
+            &mut app,
+            platform_body(),
+            Collider::cuboid(50.0, 10.0, 50.0),
+            Vec3::new(0.0, 10.0, 0.0),
+            base,
+            Vec3::ZERO,
+            None,
+        );
+        for _ in 0..120 {
+            app.update();
+        }
+        let top = app
+            .world()
+            .get::<Transform>(platform)
+            .unwrap()
+            .translation
+            .y
+            + 20.0;
+        headless::place_player(&mut app, base + Vec3::Y * (top + 150.0));
+        for _ in 0..240 {
+            app.update();
+        }
+        let (pose, grounded) = headless::player_pose(&mut app);
+        let tuning = MovementTuning::default();
+        let rest = top + tuning.capsule_half_height() + tuning.capsule_radius;
+        assert!(grounded, "player not grounded at {pose:?}");
+        assert!(
+            pose.y > rest - 4.0,
+            "player {pose:?} sank through the clutter (rest {rest})"
         );
     }
 }
@@ -734,6 +1484,115 @@ pub struct WalkEntryStatus {
     pub blocked_reason: Option<String>,
 }
 
+/// Bounded startup and destination protection while world collision reaches Rapier. A failed
+/// load must leave debug flight available rather than freeze the player forever.
+#[derive(Debug, Default, Resource)]
+pub struct WalkSpawnHold {
+    active: bool,
+    elapsed: f32,
+    sampled_ground_y: Option<f32>,
+    destination: bool,
+}
+
+/// Validated local terrain height for the initial interactive player pose.
+#[derive(Debug, Default, Resource)]
+pub struct WalkSpawnGroundHeight(pub Option<f32>);
+
+const WALK_SPAWN_TIMEOUT_SECONDS: f32 = 30.0;
+const WALK_SPAWN_MAX_PROBE_DISTANCE: f32 = 65_536.0;
+const WALK_SPAWN_SURFACE_TOLERANCE: f32 = 64.0;
+
+/// Read actual Rapier collision, not render/streaming completion counters. Run
+/// before movement; colliders enabled by Update reach Rapier on a later tick.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn release_walk_spawn_hold(
+    mut hold: ResMut<WalkSpawnHold>,
+    mut mode: ResMut<MoveMode>,
+    tuning: Res<MovementTuning>,
+    context: ReadRapierContext,
+    mut status: ResMut<WalkEntryStatus>,
+    mut player: Query<(Entity, &mut Transform, &Collider), With<PlayerBody>>,
+    mut reset: MotionReset,
+    mut commands: Commands,
+) {
+    if !hold.active || *mode != MoveMode::Walk {
+        return;
+    }
+    hold.elapsed += PHYSICS_TIMESTEP;
+    let Ok((entity, mut body, collider)) = player.single_mut() else {
+        return;
+    };
+    let probe_distance =
+        walk_spawn_probe_distance(body.translation.y, hold.sampled_ground_y, &tuning);
+    let placement = context.single().ok().and_then(|context| {
+        context
+            .cast_ray(
+                body.translation,
+                Vec3::NEG_Y,
+                probe_distance,
+                true,
+                QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
+            )
+            .filter(|hit| {
+                hold.sampled_ground_y
+                    .filter(|ground_y| ground_y.is_finite())
+                    .is_none_or(|ground_y| {
+                        // A loaded bridge or platform above the terrain is valid support too.
+                        body.translation.y - hit.1 >= ground_y - WALK_SPAWN_SURFACE_TOLERANCE
+                    })
+            })
+            .map(|_| {
+                try_enter_walk(
+                    &context,
+                    &tuning,
+                    body.translation + Vec3::Y * tuning.eye_height,
+                    collider,
+                )
+            })
+    });
+    let result = match placement {
+        Some(result) => result,
+        None if hold.elapsed >= WALK_SPAWN_TIMEOUT_SECONDS => Err(if hold.destination {
+            "WALK destination collision unavailable after 30 seconds; use V or tcl to retry WALK"
+                .into()
+        } else {
+            "startup world collision unavailable after 30 seconds; use V or tcl to retry WALK"
+                .into()
+        }),
+        None => return,
+    };
+    match result {
+        Ok(position) => {
+            body.translation = position;
+            status.blocked_reason = None;
+        }
+        Err(reason) => {
+            commands.entity(entity).insert(RigidBodyDisabled);
+            *mode = MoveMode::Noclip;
+            warn!("WALK collision fallback: {reason}");
+            status.blocked_reason = Some(reason);
+        }
+    }
+    *hold = WalkSpawnHold::default();
+    reset.clear_input();
+}
+
+fn walk_spawn_probe_distance(
+    body_y: f32,
+    sampled_ground_y: Option<f32>,
+    tuning: &MovementTuning,
+) -> f32 {
+    let fallback = tuning.capsule_standing_height * 2.0;
+    let Some(ground_y) = sampled_ground_y.filter(|height| height.is_finite()) else {
+        return fallback;
+    };
+    let distance_to_ground = body_y - ground_y;
+    if !distance_to_ground.is_finite() {
+        return 0.0;
+    }
+    (distance_to_ground + WALK_SPAWN_SURFACE_TOLERANCE).clamp(0.0, WALK_SPAWN_MAX_PROBE_DISTANCE)
+}
+
 /// Marker for the player body entity (V9).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PlayerBody;
@@ -751,7 +1610,7 @@ pub struct WalkIntent {
 
 /// WALK sprint toggle; cleared whenever movement or controls stop.
 #[derive(Debug, Clone, Copy, Default, Resource)]
-struct SprintLatch(bool);
+pub(crate) struct SprintLatch(pub(crate) bool);
 
 /// Live walk state: horizontal velocity + vertical velocity (V10, V11).
 #[derive(Debug, Clone, Copy, Default, Component)]
@@ -805,6 +1664,9 @@ pub fn integrate_walk(
     dt: f32,
     grounded: bool,
 ) {
+    // Rapier's ground probe can remain true for several steps after takeoff.
+    // Upward jump velocity must survive that proximity signal until ascent ends.
+    let grounded = grounded && !(state.jump_active && state.vertical_velocity > 0.0);
     state.grounded = grounded;
     let wish = intent.wish_dir * intent.target_speed;
     let current = state.horizontal_velocity;
@@ -840,6 +1702,7 @@ pub fn integrate_walk(
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
+    hold: Option<Res<WalkSpawnHold>>,
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
     mut player: Query<(
@@ -854,6 +1717,12 @@ pub fn walk_movement_system(
     let Ok((mut controller, mut state, output)) = player.single_mut() else {
         return;
     };
+    if hold.as_ref().is_some_and(|hold| hold.active) {
+        *state = WalkState::default();
+        intent.jump_pressed = false;
+        controller.translation = Some(Vec3::ZERO);
+        return;
+    }
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
     intent.jump_pressed = false;
@@ -897,7 +1766,10 @@ pub fn try_enter_walk(
             candidate,
             Quat::IDENTITY,
             shape,
-            QueryFilter::default().groups(CollisionGroups::new(GROUP_PLAYER, GROUP_WORLD)),
+            QueryFilter::default().groups(CollisionGroups::new(
+                GROUP_PLAYER,
+                GROUP_WORLD | GROUP_CLUTTER,
+            )),
             |_| {
                 overlapping = true;
                 false
@@ -909,6 +1781,30 @@ pub fn try_enter_walk(
         candidate.y += WALK_ENTRY_STEP_HEIGHT;
     }
     Err("no free capsule placement nearby".to_owned())
+}
+
+/// The pending-input state a pause drops, optional so the console works in partial apps.
+#[derive(SystemParam)]
+pub(crate) struct MotionReset<'w, 's> {
+    intent: Option<ResMut<'w, WalkIntent>>,
+    sprint: Option<ResMut<'w, SprintLatch>>,
+    controllers: Query<'w, 's, &'static mut KinematicCharacterController>,
+}
+
+impl MotionReset<'_, '_> {
+    /// Drops pending input only: walk intent, the sprint latch and the queued controller
+    /// translation. Velocity and jump state stay, so a pause resumes the motion where it stopped.
+    pub(crate) fn clear_input(&mut self) {
+        if let Some(intent) = self.intent.as_deref_mut() {
+            *intent = WalkIntent::default();
+        }
+        if let Some(sprint) = self.sprint.as_deref_mut() {
+            sprint.0 = false;
+        }
+        for mut controller in &mut self.controllers {
+            controller.translation = None;
+        }
+    }
 }
 
 /// Clear stale velocities + jump state on every toggle (V14).
@@ -925,6 +1821,98 @@ fn clear_motion_state(
     }
     for mut controller in controllers {
         controller.translation = None;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Teleport: a one-shot placement of the player, used by load-door crossings.
+// ---------------------------------------------------------------------------
+
+/// Moves the player to `position` facing `yaw`.
+///
+/// `position` is where the player's FEET end up, in RENDER space (the same space as the player's
+/// `Transform`, relative to the current render origin, not Creation or world coordinates). The
+/// body's `Transform` goes one capsule half-extent above it and the camera one eye height above
+/// the body, as in [`walk_camera_follow_system`]. The sender converts and rebases first.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct TeleportPlayer {
+    pub position: Vec3,
+    /// Known destination terrain height in render space, when the sender sampled it.
+    pub sampled_ground_y: Option<f32>,
+    /// Heading in radians about +Y, as `Quat::from_euler(EulerRot::YXZ, yaw, ..)`.
+    pub yaw: f32,
+}
+
+/// How far the body's origin (the capsule centre) sits above the feet.
+pub fn body_height_above_feet(tuning: &MovementTuning) -> f32 {
+    tuning.capsule_half_height() + tuning.capsule_radius
+}
+
+/// Where the body goes and where the camera goes for feet at `feet`, in the feet's space.
+pub fn body_and_camera_for_feet(tuning: &MovementTuning, feet: Vec3) -> (Vec3, Vec3) {
+    let body = feet + Vec3::Y * body_height_above_feet(tuning);
+    (body, body + Vec3::Y * tuning.eye_height)
+}
+
+type TeleportBodyQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut Transform,
+        Option<&'static mut WalkState>,
+        Option<&'static mut KinematicCharacterController>,
+        Option<&'static mut Velocity>,
+    ),
+    (With<PlayerBody>, Without<StreamingCamera>),
+>;
+
+/// Applies [`TeleportPlayer`]: places the body, zeroes its velocity and walk state, and holds WALK
+/// until bounded destination collision is available. In NOCLIP the body stays disabled and only
+/// the camera moves.
+#[allow(clippy::too_many_arguments)]
+fn apply_teleport_player(
+    mut teleports: MessageReader<TeleportPlayer>,
+    mut hold: ResMut<WalkSpawnHold>,
+    mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
+    mut look: ResMut<LookIntent>,
+    mut intent: ResMut<WalkIntent>,
+    mut body: TeleportBodyQuery,
+    mut camera: Query<&mut Transform, (With<StreamingCamera>, Without<PlayerBody>)>,
+) {
+    let Some(teleport) = teleports.read().last().copied() else {
+        return;
+    };
+    *hold = WalkSpawnHold::default();
+    if *mode == MoveMode::Walk {
+        hold.active = true;
+        hold.sampled_ground_y = teleport
+            .sampled_ground_y
+            .filter(|height| height.is_finite());
+        hold.destination = true;
+    }
+    look.yaw = teleport.yaw;
+    *intent = WalkIntent::default();
+    let rotation = Quat::from_euler(EulerRot::YXZ, teleport.yaw, 0.0, 0.0);
+    let (body_position, camera_position) = body_and_camera_for_feet(&tuning, teleport.position);
+    if *mode == MoveMode::Walk
+        && let Ok((mut transform, state, controller, velocity)) = body.single_mut()
+    {
+        transform.translation = body_position;
+        transform.rotation = rotation;
+        if let Some(mut state) = state {
+            *state = WalkState::default();
+        }
+        if let Some(mut controller) = controller {
+            controller.translation = None;
+        }
+        if let Some(mut velocity) = velocity {
+            *velocity = Velocity::zero();
+        }
+    }
+    if let Ok(mut view) = camera.single_mut() {
+        view.translation = camera_position;
+        view.rotation = Quat::from_euler(EulerRot::YXZ, teleport.yaw, look.pitch, 0.0);
     }
 }
 
@@ -1087,6 +2075,11 @@ pub(crate) mod headless {
     use bevy::time::TimeUpdateStrategy;
 
     pub(crate) fn fixture_app() -> App {
+        fixture_app_with(|_| {})
+    }
+
+    /// The fixture app, with `extra` run on it before plugins finish (to add more plugins).
+    pub(crate) fn fixture_app_with(extra: impl FnOnce(&mut App)) -> App {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1099,6 +2092,7 @@ pub(crate) mod headless {
         app.init_resource::<ProfilingState>()
             .init_resource::<StreamingMetrics>();
         app.add_plugins(PhysicsFixturePlugin);
+        extra(&mut app);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
         ));
@@ -1138,6 +2132,584 @@ pub(crate) mod headless {
             transform.translation,
             state.grounded || output.map(|o| o.grounded).unwrap_or(false),
         )
+    }
+}
+
+#[cfg(test)]
+mod world_startup_tests {
+    use super::*;
+    use bevy::{mesh::MeshPlugin, time::TimeUpdateStrategy};
+
+    fn world_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            bevy::input::InputPlugin,
+            AssetPlugin::default(),
+            MeshPlugin,
+            MaterialPlugin::<StandardMaterial>::default(),
+        ))
+        .init_resource::<ProfilingState>()
+        .init_resource::<StreamingMetrics>()
+        // Rapier's debug-render system validates Gizmos even when disabled.
+        .add_plugins(bevy::gizmos::GizmoPlugin)
+        .add_plugins((WorldPlayerPlugin, crate::console::ConsolePlugin))
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn((
+                StreamingCamera,
+                Transform::from_translation(Vec3::new(0.0, 200.0, 0.0))
+                    .with_rotation(Quat::from_euler(EulerRot::YXZ, 0.7, -0.2, 0.0)),
+            ));
+        })
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
+        ));
+        app.finish();
+        app.update();
+        app
+    }
+
+    fn body(app: &mut App) -> Entity {
+        app.world_mut()
+            .query_filtered::<Entity, With<PlayerBody>>()
+            .single(app.world())
+            .unwrap()
+    }
+
+    fn tick(app: &mut App, count: usize) {
+        for _ in 0..count {
+            app.update();
+        }
+    }
+
+    fn floor(app: &mut App, disabled: bool) -> Entity {
+        let mut entity = app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(1000.0, 10.0, 1000.0),
+            Transform::from_xyz(0.0, -10.0, 0.0),
+            world_collision_groups(),
+        ));
+        if disabled {
+            entity.insert(ColliderDisabled);
+        }
+        entity.id()
+    }
+
+    fn assert_mode(app: &mut App, expected: MoveMode) {
+        assert_eq!(*app.world().resource::<MoveMode>(), expected);
+        let entity = body(app);
+        assert_eq!(
+            app.world().get::<RigidBodyDisabled>(entity).is_some(),
+            expected == MoveMode::Noclip
+        );
+    }
+
+    #[test]
+    fn world_starts_in_walk_with_active_body_and_copied_view() {
+        let mut app = world_app();
+        assert_mode(&mut app, MoveMode::Walk);
+        let entity = body(&mut app);
+        let transform = app.world().get::<Transform>(entity).unwrap();
+        let tuning = app.world().resource::<MovementTuning>();
+        assert!((transform.translation.y - (200.0 - tuning.eye_height)).abs() < 0.001);
+        let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        assert!((yaw - 0.7).abs() < 0.001);
+        assert!(pitch.abs() < 0.001);
+        let look = app.world().resource::<LookIntent>();
+        assert!((look.yaw - 0.7).abs() < 0.001 && (look.pitch + 0.2).abs() < 0.001);
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<Entity, (With<StreamingCamera>, With<ControlledCamera>)>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        let text = app
+            .world_mut()
+            .query_filtered::<&Text, With<NoclipOverlay>>()
+            .single(app.world())
+            .unwrap();
+        assert!(text.0.starts_with("NOCLIP: OFF"));
+        assert!(text.0.contains("waiting for WALK collision"));
+    }
+
+    #[test]
+    fn hold_waits_for_enabled_rapier_collision_then_grounds() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        let start = app.world().get::<Transform>(entity).unwrap().translation;
+        let ground = floor(&mut app, true);
+        {
+            let mut state = app.world_mut().get_mut::<WalkState>(entity).unwrap();
+            state.vertical_velocity = -900.0;
+            state.horizontal_velocity = Vec3::X * 300.0;
+        }
+        tick(&mut app, 20);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(
+            app.world().get::<Transform>(entity).unwrap().translation,
+            start
+        );
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 120);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+        let (pose, grounded) = headless::player_pose(&mut app);
+        assert!(grounded, "{pose:?}");
+        let view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        assert!((view.translation.y - pose.y - MovementTuning::default().eye_height).abs() < 0.01);
+        let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
+        assert!((yaw - 0.7).abs() < 0.001 && (pitch + 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn distant_world_floor_does_not_release_startup_hold() {
+        let mut app = world_app();
+        let ground = floor(&mut app, false);
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y = -10_000.0;
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+    }
+
+    #[test]
+    fn sampled_elevated_start_probe_releases_only_after_rapier_collision() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        let authored_rotation = app.world().get::<Transform>(entity).unwrap().rotation;
+        let camera = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap()
+            .rotation;
+        let authored_camera_y = 5_000.0;
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = authored_camera_y - MovementTuning::default().eye_height;
+        app.world_mut()
+            .resource_mut::<WalkSpawnHold>()
+            .sampled_ground_y = Some(0.0);
+        let ground = floor(&mut app, true);
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            (walk_spawn_probe_distance(
+                authored_camera_y - MovementTuning::default().eye_height,
+                Some(0.0),
+                &MovementTuning::default(),
+            ) - MovementTuning::default().capsule_standing_height * 2.0)
+                > 4_000.0
+        );
+
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 2);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+        let body_transform = app.world().get::<Transform>(entity).unwrap();
+        assert!(
+            (body_transform.translation.y + MovementTuning::default().eye_height
+                - authored_camera_y)
+                .abs()
+                < 1.0
+        );
+        assert!(body_transform.rotation.dot(authored_rotation).abs() > 0.999_99);
+        let current_camera_rotation = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap()
+            .rotation;
+        assert!(current_camera_rotation.dot(camera).abs() > 0.999_99);
+    }
+
+    #[test]
+    fn sampled_elevated_start_rejects_floor_far_below_local_surface() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 5_000.0;
+        app.world_mut()
+            .resource_mut::<WalkSpawnHold>()
+            .sampled_ground_y = Some(0.0);
+        let ground = floor(&mut app, false);
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y = -10_000.0;
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+    }
+
+    #[test]
+    fn sampled_elevated_start_accepts_loaded_platform_above_terrain() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = 5_000.0;
+        app.world_mut()
+            .resource_mut::<WalkSpawnHold>()
+            .sampled_ground_y = Some(0.0);
+        let platform = floor(&mut app, true);
+        app.world_mut()
+            .get_mut::<Transform>(platform)
+            .unwrap()
+            .translation
+            .y = 990.0;
+        tick(&mut app, 5);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        app.world_mut()
+            .entity_mut(platform)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 2);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+    }
+
+    #[test]
+    fn sampled_probe_keeps_tolerance_below_sample_and_stays_bounded() {
+        let tuning = MovementTuning::default();
+        assert_eq!(walk_spawn_probe_distance(-8.0, Some(0.0), &tuning), 56.0);
+        assert_eq!(walk_spawn_probe_distance(-64.0, Some(0.0), &tuning), 0.0);
+        assert_eq!(walk_spawn_probe_distance(-80.0, Some(0.0), &tuning), 0.0);
+        assert_eq!(
+            walk_spawn_probe_distance(100_000.0, Some(0.0), &tuning),
+            65_536.0
+        );
+        assert_eq!(
+            walk_spawn_probe_distance(100.0, Some(f32::NAN), &tuning),
+            tuning.capsule_standing_height * 2.0
+        );
+        assert_eq!(walk_spawn_probe_distance(f32::NAN, Some(0.0), &tuning), 0.0);
+    }
+
+    #[test]
+    fn sampled_start_below_sample_releases_on_loaded_lower_surface() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation
+            .y = -10.0;
+        app.world_mut()
+            .resource_mut::<WalkSpawnHold>()
+            .sampled_ground_y = Some(0.0);
+        let ground = floor(&mut app, false);
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y = -50.0;
+        tick(&mut app, 10);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(
+            app.world().get::<Transform>(entity).unwrap().translation.y
+                >= -40.0 + body_height_above_feet(&MovementTuning::default()) - 2.0
+        );
+    }
+
+    #[test]
+    fn startup_overlap_uses_existing_failed_placement_fallback() {
+        let mut app = world_app();
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(1000.0, 1000.0, 1000.0),
+            Transform::default(),
+            world_collision_groups(),
+        ));
+        tick(&mut app, 5);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_deref(),
+            Some("no free capsule placement nearby")
+        );
+    }
+
+    #[test]
+    fn missing_collision_times_out_safely_even_with_pending_streaming() {
+        let mut app = world_app();
+        app.world_mut()
+            .resource_mut::<StreamingMetrics>()
+            .loading_cells = 1;
+        tick(&mut app, 10);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = WALK_SPAWN_TIMEOUT_SECONDS;
+        tick(&mut app, 2);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_ref()
+                .unwrap()
+                .contains("startup world collision unavailable")
+        );
+    }
+
+    #[test]
+    fn hold_also_times_out_without_streaming_metrics() {
+        let mut app = world_app();
+        app.world_mut().remove_resource::<StreamingMetrics>();
+        tick(&mut app, 5);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = WALK_SPAWN_TIMEOUT_SECONDS;
+        tick(&mut app, 2);
+        assert_mode(&mut app, MoveMode::Noclip);
+    }
+
+    #[test]
+    fn explicit_walk_teleport_rearms_destination_hold() {
+        let mut app = world_app();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(20.0, 300.0, 40.0),
+            sampled_ground_y: None,
+            yaw: 1.0,
+        });
+        app.update();
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert!(app.world().resource::<WalkSpawnHold>().elapsed <= PHYSICS_TIMESTEP);
+        assert!(app.world().resource::<WalkSpawnHold>().destination);
+    }
+
+    fn send_state(app: &mut App, state: bevy::input::ButtonState) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: KeyCode::KeyV,
+                logical_key: bevy::input::keyboard::Key::Character("v".into()),
+                state,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+    }
+
+    #[test]
+    fn v_cancels_hold_and_round_trips_without_rearming_it() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut app = world_app();
+        app.insert_resource(CursorCapture::Captured);
+        send_state(&mut app, Pressed);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        send_state(&mut app, Released);
+        send_state(&mut app, Pressed);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        let entity = body(&mut app);
+        let state = app.world().get::<WalkState>(entity).unwrap();
+        assert_eq!(state.horizontal_velocity, Vec3::ZERO);
+        assert_eq!(state.vertical_velocity, 0.0);
+        assert!(!app.world().resource::<SprintLatch>().0);
+    }
+
+    #[test]
+    fn tcl_cancels_hold_and_round_trips() {
+        let mut app = world_app();
+        let entity = body(&mut app);
+        app.world_mut()
+            .get_mut::<WalkState>(entity)
+            .unwrap()
+            .vertical_velocity = -900.0;
+        app.world_mut().resource_mut::<SprintLatch>().0 = true;
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_eq!(
+            app.world()
+                .get::<WalkState>(entity)
+                .unwrap()
+                .vertical_velocity,
+            0.0
+        );
+        assert!(!app.world().resource::<SprintLatch>().0);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    #[test]
+    fn startup_hold_and_walk_pause_with_console_and_door_crossing_guards() {
+        let mut app = world_app();
+        let elapsed = WALK_SPAWN_TIMEOUT_SECONDS - PHYSICS_TIMESTEP * 0.5;
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = elapsed;
+        app.insert_resource(crate::console::ConsoleState {
+            open: true,
+            ..default()
+        });
+        tick(&mut app, 1);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
+
+        app.insert_resource(crate::console::ConsoleState::default());
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        tick(&mut app, 1);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
+
+        app.insert_resource(crate::door_crossing::DoorCrossing::default());
+        tick(&mut app, 1);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    #[test]
+    fn tcl_cancels_a_walk_destination_hold() {
+        let mut app = world_app();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    #[test]
+    fn walk_teleport_waits_for_destination_rapier_collision_then_grounds() {
+        let mut app = world_app();
+        let ground = floor(&mut app, true);
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 10);
+        let entity = body(&mut app);
+        let held_at = app.world().get::<Transform>(entity).unwrap().translation;
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert!(app.world().resource::<WalkSpawnHold>().destination);
+        assert_eq!(
+            held_at,
+            body_and_camera_for_feet(&MovementTuning::default(), Vec3::new(0.0, 16.0, 0.0),).0
+        );
+
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 120);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Walk);
+        assert!(headless::player_pose(&mut app).1);
+    }
+
+    #[test]
+    fn repeated_walk_teleport_replaces_sample_and_restarts_timeout() {
+        let mut app = world_app();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = 12.0;
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(100.0, 516.0, 100.0),
+            sampled_ground_y: Some(500.0),
+            yaw: 0.5,
+        });
+        tick(&mut app, 1);
+        let hold = app.world().resource::<WalkSpawnHold>();
+        assert!(hold.active && hold.destination);
+        assert_eq!(hold.sampled_ground_y, Some(500.0));
+        assert!(hold.elapsed <= PHYSICS_TIMESTEP);
+        assert_mode(&mut app, MoveMode::Walk);
+    }
+
+    #[test]
+    fn noclip_teleport_does_not_arm_destination_hold() {
+        let mut app = world_app();
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Noclip);
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert_mode(&mut app, MoveMode::Noclip);
+    }
+
+    #[test]
+    fn destination_hold_times_out_to_visible_noclip_fallback() {
+        let mut app = world_app();
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        app.world_mut().resource_mut::<WalkSpawnHold>().elapsed = WALK_SPAWN_TIMEOUT_SECONDS;
+        tick(&mut app, 2);
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            app.world()
+                .resource::<WalkEntryStatus>()
+                .blocked_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("destination collision unavailable"))
+        );
+    }
+
+    #[test]
+    fn destination_hold_is_paused_during_door_crossing_and_recovery_clears_it() {
+        let mut app = world_app();
+        app.insert_resource(crate::door_crossing::DoorCrossing::recovery_for_test());
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        let elapsed = app.world().resource::<WalkSpawnHold>().elapsed;
+        tick(&mut app, 5);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert_eq!(app.world().resource::<WalkSpawnHold>().elapsed, elapsed);
+
+        crate::console::execute_line(app.world_mut(), "tcl");
+        assert_mode(&mut app, MoveMode::Noclip);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
     }
 }
 
@@ -1351,6 +2923,13 @@ mod simulation_tests {
         };
         assert_eq!(start.len(), 3);
         assert!(start.iter().all(|y| *y > 200.0));
+        let continuous = app
+            .world_mut()
+            .query_filtered::<&Ccd, With<DebugTankard>>()
+            .iter(app.world())
+            .filter(|ccd| ccd.enabled)
+            .count();
+        assert_eq!(continuous, 3, "every tankard has continuous collision");
         for _ in 0..600 {
             app.update();
         }
@@ -1415,6 +2994,71 @@ mod simulation_tests {
                 .any(|t| (t.translation.x - spawn.x) > 100.0)
         };
         assert!(moved, "walk capsule did not advance under run intent");
+    }
+
+    #[test]
+    fn jump_ascent_survives_ground_probe_and_lands_on_descent() {
+        let tuning = MovementTuning::default();
+        let mut state = WalkState::default();
+        integrate_walk(
+            &mut state,
+            &WalkIntent {
+                jump_pressed: true,
+                ..default()
+            },
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        for step in 1..=10 {
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &tuning,
+                PHYSICS_TIMESTEP,
+                true,
+            );
+            assert!(state.jump_active);
+            assert!(!state.grounded);
+            assert!(
+                (state.vertical_velocity
+                    - (tuning.jump_launch - tuning.gravity * PHYSICS_TIMESTEP * step as f32))
+                    .abs()
+                    < 0.01
+            );
+        }
+        // A new press cannot relaunch while the ground probe overlaps ascent.
+        let before = state.vertical_velocity;
+        integrate_walk(
+            &mut state,
+            &WalkIntent {
+                jump_pressed: true,
+                ..default()
+            },
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        assert!(state.vertical_velocity < before);
+        while state.vertical_velocity > 0.0 {
+            integrate_walk(
+                &mut state,
+                &WalkIntent::default(),
+                &tuning,
+                PHYSICS_TIMESTEP,
+                false,
+            );
+        }
+        integrate_walk(
+            &mut state,
+            &WalkIntent::default(),
+            &tuning,
+            PHYSICS_TIMESTEP,
+            true,
+        );
+        assert!(state.grounded);
+        assert!(!state.jump_active);
+        assert_eq!(state.vertical_velocity, 0.0);
     }
 
     #[test]
@@ -1533,22 +3177,18 @@ pub fn noclip_displacement(
 
 fn noclip_overlay_text(mode: MoveMode, status: &WalkEntryStatus) -> String {
     let base = match mode {
-        MoveMode::Noclip => "NOCLIP: ON  [V]",
-        MoveMode::Walk => "NOCLIP: OFF  [V]",
+        MoveMode::Noclip => "NOCLIP: ON",
+        MoveMode::Walk => "NOCLIP: OFF",
     };
     match &status.blocked_reason {
-        Some(reason) => format!("{base}  [T] tankard  [E] grab/drop  WALK blocked: {reason}"),
-        None => format!("{base}  [T] tankard  [E] grab/drop"),
+        Some(reason) => format!("{base}  WALK blocked: {reason}"),
+        None => base.to_owned(),
     }
 }
 
-fn toggle_collision_debug_system(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut debug: ResMut<DebugRenderContext>,
-) {
-    if keyboard.just_pressed(KeyCode::F3) {
-        debug.enabled = !debug.enabled;
-    }
+/// Flip the Rapier collider outlines for the `tcg` command.
+fn flip_collision_debug(debug: &mut DebugRenderContext) {
+    debug.enabled = !debug.enabled;
 }
 
 /// Keep a collider when any part of its world-space AABB reaches the camera's
@@ -1601,12 +3241,20 @@ fn setup_fixture_player(
     let Ok((camera, view)) = camera.single() else {
         return;
     };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+    setup_controlled_player(
+        &mut commands,
+        &tuning,
+        &mut look,
+        camera,
+        view,
+        MoveMode::Noclip,
+    );
 }
 
 fn setup_world_player(
     mut commands: Commands,
     tuning: Res<MovementTuning>,
+    ground_height: Option<Res<WalkSpawnGroundHeight>>,
     mut look: ResMut<LookIntent>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1615,7 +3263,20 @@ fn setup_world_player(
     let Ok((camera, view)) = camera.single() else {
         return;
     };
-    setup_controlled_player(&mut commands, &tuning, &mut look, camera, view);
+    setup_controlled_player(
+        &mut commands,
+        &tuning,
+        &mut look,
+        camera,
+        view,
+        MoveMode::Walk,
+    );
+    commands.insert_resource(WalkSpawnHold {
+        active: true,
+        elapsed: 0.0,
+        sampled_ground_y: ground_height.as_deref().and_then(|height| height.0),
+        destination: false,
+    });
     commands.insert_resource(tankard_visuals(&mut meshes, &mut materials));
 }
 
@@ -1625,22 +3286,36 @@ fn setup_controlled_player(
     look: &mut LookIntent,
     camera: Entity,
     view: &Transform,
+    initial_mode: MoveMode,
 ) {
     let (yaw, pitch, _) = view.rotation.to_euler(EulerRot::YXZ);
     *look = LookIntent { yaw, pitch };
     let body = commands
         .spawn((
             player_controller_bundle(tuning),
-            Transform::from_translation(view.translation - Vec3::Y * tuning.eye_height),
+            Transform {
+                translation: view.translation - Vec3::Y * tuning.eye_height,
+                rotation: if initial_mode == MoveMode::Walk {
+                    Quat::from_rotation_y(yaw)
+                } else {
+                    Quat::IDENTITY
+                },
+                ..default()
+            },
         ))
         .id();
-    // Noclip starts ON with the capsule disabled (V5, V8).
-    commands.entity(body).insert(RigidBodyDisabled);
+    commands.insert_resource(initial_mode);
+    if initial_mode == MoveMode::Noclip {
+        commands.entity(body).insert(RigidBodyDisabled);
+    }
     commands.entity(camera).insert(ControlledCamera);
     commands.spawn((
         Name::new("Noclip overlay"),
         NoclipOverlay,
-        Text::new("NOCLIP: ON  [V]    [T] tankard  [E] grab/drop"),
+        Text::new(noclip_overlay_text(
+            initial_mode,
+            &WalkEntryStatus::default(),
+        )),
         TextFont::from_font_size(18.0),
         TextColor(Color::WHITE),
         Node {
@@ -1652,7 +3327,25 @@ fn setup_controlled_player(
     ));
 }
 
-/// Riverwood test objects stay in world coordinates and are never children of a streamed cell.
+type PickupFilter = Or<(With<DebugTankard>, With<DynamicClutter>)>;
+
+/// Resolve a compound collider child to the authored dynamic-body root.
+fn pickup_root(
+    mut entity: Entity,
+    parents: &Query<&ChildOf>,
+    objects: &Query<(), PickupFilter>,
+) -> Option<Entity> {
+    loop {
+        if objects.get(entity).is_ok() {
+            return Some(entity);
+        }
+        entity = parents.get(entity).ok()?.parent();
+    }
+}
+
+/// T spawns a test tankard; E grabs or drops a tankard or authored dynamic clutter,
+/// only while the cursor is captured. Debug tankards stay in world coordinates and are never
+/// children of a streamed cell; authored bodies keep their streamed-cell parent.
 #[allow(clippy::too_many_arguments)]
 fn world_tankard_input(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -1660,6 +3353,8 @@ fn world_tankard_input(
     camera: Query<&Transform, (With<StreamingCamera>, With<ControlledCamera>)>,
     terrain: Query<(), With<TerrainCollider>>,
     tankards: Query<(), With<DebugTankard>>,
+    interactables: Query<(), PickupFilter>,
+    parents: Query<&ChildOf>,
     player: Query<Entity, With<PlayerBody>>,
     visuals: Option<Res<TankardVisuals>>,
     mut held: ResMut<HeldTankard>,
@@ -1697,11 +3392,17 @@ fn world_tankard_input(
         return;
     }
     if let Some(entity) = held.0.take() {
-        if tankards.get(entity).is_ok() {
+        if interactables.get(entity).is_ok() {
             commands
                 .entity(entity)
                 .remove::<(RigidBodyDisabled, ColliderDisabled)>();
-            commands.entity(entity).insert(Velocity::zero());
+            commands.entity(entity).insert((
+                Velocity::zero(),
+                Sleeping {
+                    sleeping: false,
+                    ..default()
+                },
+            ));
         }
         return;
     }
@@ -1710,14 +3411,16 @@ fn world_tankard_input(
     } else {
         QueryFilter::default()
     };
-    if let Some((entity, _)) = context.cast_ray(
-        camera.translation,
-        camera.forward().as_vec3(),
-        240.0,
-        true,
-        filter,
-    ) && tankards.get(entity).is_ok()
-    {
+    let selected = context
+        .cast_ray(
+            camera.translation,
+            camera.forward().as_vec3(),
+            240.0,
+            true,
+            filter,
+        )
+        .and_then(|(entity, _)| pickup_root(entity, &parents, &interactables));
+    if let Some(entity) = selected {
         commands
             .entity(entity)
             .insert((RigidBodyDisabled, ColliderDisabled, Velocity::zero()));
@@ -1734,16 +3437,34 @@ fn move_held_tankard(
             With<StreamingCamera>,
             With<ControlledCamera>,
             Without<DebugTankard>,
+            Without<DynamicClutter>,
         ),
     >,
-    mut tankards: Query<&mut Transform, (With<DebugTankard>, Without<StreamingCamera>)>,
+    mut tankards: Query<
+        (&mut Transform, Option<&ChildOf>),
+        (
+            Or<(With<DebugTankard>, With<DynamicClutter>)>,
+            Without<StreamingCamera>,
+        ),
+    >,
+    parents: Query<&GlobalTransform>,
 ) {
     let Some(entity) = held.0 else { return };
-    let (Ok(camera), Ok(mut tankard)) = (camera.single(), tankards.get_mut(entity)) else {
+    let (Ok(camera), Ok((mut tankard, parent))) = (camera.single(), tankards.get_mut(entity))
+    else {
         held.0 = None;
         return;
     };
-    tankard.translation = camera.translation + camera.forward().as_vec3() * 110.0;
+    let position = camera.translation + camera.forward().as_vec3() * 110.0;
+    tankard.translation = match parent {
+        Some(parent) => {
+            let Ok(transform) = parents.get(parent.parent()) else {
+                return;
+            };
+            transform.affine().inverse().transform_point3(position)
+        }
+        None => position,
+    };
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1757,16 +3478,33 @@ fn cursor_lifecycle_system(
     mut sprint: ResMut<SprintLatch>,
     mut states: Query<&mut WalkState>,
     mut controllers: Query<&mut KinematicCharacterController>,
+    console: Option<Res<ConsoleState>>,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
 ) {
-    // Focus loss or Escape releases; click recaptures (V6).
+    // Focus loss or F3 releases; click recaptures (V6). The console and settings menu own capture
+    // while open and on their closing frame; the cursor options below still follow that state.
     let focused = windows.iter().all(|window| window.focused);
-    if !focused || keyboard.just_pressed(KeyCode::Escape) {
-        if *capture == CursorCapture::Captured {
-            *capture = CursorCapture::Released;
-            clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+    let reporting_capture = console
+        .as_ref()
+        .is_some_and(|console| console.capture_suppressed);
+    let console_owns_capture = console
+        .is_some_and(|console| console.open || console.closing || console.capture_suppressed)
+        || menu.is_some_and(|menu| menu.blocks_gameplay());
+    if reporting_capture {
+        *capture = CursorCapture::Released;
+        clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+    }
+    if !console_owns_capture {
+        if !focused || keyboard.just_pressed(KeyCode::F3) {
+            if *capture == CursorCapture::Captured {
+                *capture = CursorCapture::Released;
+                clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+            }
+        } else if mouse_buttons.just_pressed(MouseButton::Left)
+            && *capture == CursorCapture::Released
+        {
+            *capture = CursorCapture::Captured;
         }
-    } else if mouse_buttons.just_pressed(MouseButton::Left) && *capture == CursorCapture::Released {
-        *capture = CursorCapture::Captured;
     }
     let (grab_mode, visible) = match *capture {
         CursorCapture::Captured => (CursorGrabMode::Locked, false),
@@ -1866,11 +3604,33 @@ fn walk_intent_system(
     intent.jump_pressed |= keyboard.just_pressed(KeyCode::Space);
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// One-shot id of the NOCLIP/WALK switch, shared by the V key and the `tcl` command.
+#[derive(Resource, Clone, Copy)]
+struct MoveModeEffect(SystemId);
+
+fn register_move_mode_effect(world: &mut World) {
+    let id = world.register_system(toggle_move_mode_effect);
+    world.insert_resource(MoveModeEffect(id));
+}
+
+/// V, only while the cursor is captured.
 fn toggle_mode_system(
     keyboard: Res<ButtonInput<KeyCode>>,
     capture: Res<CursorCapture>,
+    effect: Res<MoveModeEffect>,
+    mut commands: Commands,
+) {
+    if keyboard.just_pressed(KeyCode::KeyV) && *capture == CursorCapture::Captured {
+        commands.run_system(effect.0);
+    }
+}
+
+/// Switch between NOCLIP and WALK, entering WALK only at a collision-free spot.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn toggle_move_mode_effect(
+    mut hold: ResMut<WalkSpawnHold>,
     tuning: Res<MovementTuning>,
+    mut crossing: Option<ResMut<crate::door_crossing::DoorCrossing>>,
     context: ReadRapierContext,
     mut mode: ResMut<MoveMode>,
     mut status: ResMut<WalkEntryStatus>,
@@ -1886,7 +3646,22 @@ fn toggle_mode_system(
     mut controllers: Query<&mut KinematicCharacterController>,
     mut commands: Commands,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyV) || *capture != CursorCapture::Captured {
+    // A reason from an earlier attempt must not outlive it: if this attempt stops early
+    // (no camera, player or physics context), the caller reports "no player" instead.
+    status.blocked_reason = None;
+    if let Some(crossing) = crossing.as_mut().filter(|crossing| crossing.is_active()) {
+        if crossing.needs_recovery() {
+            let Ok((entity, _, _)) = player.single() else {
+                return;
+            };
+            commands.entity(entity).insert(RigidBodyDisabled);
+            *mode = MoveMode::Noclip;
+            *hold = WalkSpawnHold::default();
+            clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
+            crossing.finish_recovery();
+            return;
+        }
+        status.blocked_reason = Some("door crossing in progress".to_owned());
         return;
     }
     match *mode {
@@ -1920,13 +3695,94 @@ fn toggle_mode_system(
             *mode = MoveMode::Noclip;
         }
     }
+    *hold = WalkSpawnHold::default();
     clear_motion_state(&mut intent, &mut sprint, &mut states, &mut controllers);
 }
 
+// ---------------------------------------------------------------------------
+// Console commands for the debug keys, under Skyrim's names. Each runs the same
+// effect as its key. The `T` (tankard) and `E` (grab) keys have no console
+// command: Skyrim has neither.
+// ---------------------------------------------------------------------------
+
+fn no_args(args: &[&str], usage: &str) -> Result<(), String> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("usage: {usage}"))
+    }
+}
+
+/// Skyrim's `ToggleCollision` / `tcl`; the `V` key runs the same effect.
+fn toggle_collision_command() -> ConsoleCommand {
+    ConsoleCommand {
+        name: "ToggleCollision",
+        short: Some("tcl"),
+        usage: "ToggleCollision",
+        help: "toggle noclip flight and walking (key V)",
+        handler: Box::new(|world, args| {
+            no_args(args, "ToggleCollision")?;
+            if !world.contains_resource::<MoveMode>() {
+                return Err("noclip is not available in this run".to_owned());
+            }
+            let before = *world.resource::<MoveMode>();
+            let recovering = world
+                .get_resource::<crate::door_crossing::DoorCrossing>()
+                .is_some_and(|crossing| crossing.needs_recovery());
+            let Some(effect) = world.get_resource::<MoveModeEffect>().map(|e| e.0) else {
+                return Err("noclip is not available in this run".to_owned());
+            };
+            world.run_system(effect).map_err(|e| e.to_string())?;
+            let after = *world.resource::<MoveMode>();
+            let recovered = recovering
+                && world
+                    .get_resource::<crate::door_crossing::DoorCrossing>()
+                    .is_some_and(|crossing| !crossing.is_active());
+            if after == before && !recovered {
+                let reason = world
+                    .get_resource::<WalkEntryStatus>()
+                    .and_then(|status| status.blocked_reason.clone());
+                return Err(match reason {
+                    Some(reason) => format!("cannot walk here: {reason}"),
+                    None => "no player to move in this run".to_owned(),
+                });
+            }
+            Ok(match after {
+                MoveMode::Noclip => "noclip ON".to_owned(),
+                MoveMode::Walk => "noclip OFF (walking)".to_owned(),
+            })
+        }),
+    }
+}
+
+/// Skyrim's `ToggleCollisionGeometry` / `tcg`; also available in the Graphics settings tab.
+fn toggle_collision_geometry_command() -> ConsoleCommand {
+    ConsoleCommand {
+        name: "ToggleCollisionGeometry",
+        short: Some("tcg"),
+        usage: "ToggleCollisionGeometry",
+        help: "toggle the collision outlines (also in Graphics settings)",
+        handler: Box::new(|world, args| {
+            no_args(args, "ToggleCollisionGeometry")?;
+            let Some(mut debug) = world.get_resource_mut::<DebugRenderContext>() else {
+                return Err("collision outlines are not available in this run".to_owned());
+            };
+            flip_collision_debug(&mut debug);
+            Ok(format!(
+                "collision outlines {}",
+                if debug.enabled { "ON" } else { "OFF" }
+            ))
+        }),
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Bevy system parameters are supplied independently.
 fn overlay_system(
     mode: Res<MoveMode>,
+    hold: Option<Res<WalkSpawnHold>>,
     status: Res<WalkEntryStatus>,
     sprint: Res<SprintLatch>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
     collision_debug: Option<Res<DebugRenderContext>>,
     player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
     mut overlay: Query<&mut Text, With<NoclipOverlay>>,
@@ -1935,19 +3791,25 @@ fn overlay_system(
         return;
     };
     let mut label = noclip_overlay_text(*mode, &status);
+    if hold.as_ref().is_some_and(|hold| hold.active) {
+        label.push_str("  waiting for WALK collision");
+    }
     if *mode == MoveMode::Walk {
         let speed = actual_walk_speed(player.single().ok().flatten());
         let sprint_status = if sprint.0 { "ON" } else { "OFF" };
-        label.push_str(&format!(
-            "  SPRINT: {sprint_status}  [ALT]  SPEED: {speed:.0} u/s"
-        ));
+        label.push_str(&format!("  SPRINT: {sprint_status}  SPEED: {speed:.0} u/s"));
     }
     if let Some(debug) = collision_debug {
         label.push_str(if debug.enabled {
-            "  COLLISION: ON  [F3]"
+            "  COLLISION: ON"
         } else {
-            "  COLLISION: OFF  [F3]"
+            "  COLLISION: OFF"
         });
+    }
+    if crossing.is_some_and(|crossing| crossing.needs_recovery()) {
+        label.push_str(
+            "\nDoor crossing failed. Movement paused. Press V or use tcl to recover in noclip.",
+        );
     }
     **text = label;
 }
@@ -1975,6 +3837,7 @@ fn sprint_fov_system(
     time: Res<Time>,
     player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
     mut camera: Query<&mut Projection, (With<StreamingCamera>, With<ControlledCamera>)>,
+    settings: Option<Res<crate::settings::RenderingSettings>>,
 ) {
     let Ok(mut projection) = camera.single_mut() else {
         return;
@@ -1982,7 +3845,11 @@ fn sprint_fov_system(
     let Projection::Perspective(perspective) = &mut *projection else {
         return;
     };
-    let base_fov = PerspectiveProjection::default().fov;
+    let base_fov = settings
+        .as_deref()
+        .map_or(PerspectiveProjection::default().fov, |settings| {
+            settings.fov_degrees.to_radians()
+        });
     let moving = actual_walk_speed(player.single().ok().flatten()) > 1.0;
     let target_fov = if *mode == MoveMode::Walk && sprint.0 && moving {
         base_fov + SPRINT_FOV_BONUS_DEGREES.to_radians()
@@ -1996,6 +3863,109 @@ fn sprint_fov_system(
 mod noclip_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn authored_compound_clutter_grab_uses_parent_space_and_wakes_on_drop() {
+        let mut app = headless::fixture_app();
+        app.init_resource::<HeldTankard>();
+        app.insert_resource(CursorCapture::Captured);
+        let parent = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(500.0, 0.0, 0.0),
+                GlobalTransform::default(),
+            ))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                DynamicClutter {
+                    max_linear_velocity: 2000.0,
+                    max_angular_velocity: 20.0,
+                },
+                RigidBody::Dynamic,
+                Velocity::zero(),
+                Sleeping {
+                    sleeping: true,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 200.0, -160.0),
+                GlobalTransform::default(),
+                ChildOf(parent),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Collider::cuboid(10.0, 10.0, 10.0),
+            clutter_collision_groups(),
+            Transform::default(),
+            GlobalTransform::default(),
+            ChildOf(body),
+        ));
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<ControlledCamera>>()
+            .single(app.world())
+            .unwrap();
+        *app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
+        app.update();
+        app.insert_resource(CursorCapture::Captured);
+        *app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap() = Transform::from_xyz(500.0, 200.0, 0.0);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, Some(body));
+        assert!(app.world().entity(body).contains::<RigidBodyDisabled>());
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .unwrap()
+            .translation
+            .x += 40.0;
+        app.world_mut().run_system_once(move_held_tankard).unwrap();
+        let position = app
+            .world()
+            .entity(body)
+            .get::<Transform>()
+            .unwrap()
+            .translation;
+        assert!(
+            position.abs_diff_eq(Vec3::new(40.0, 200.0, -110.0), 0.01),
+            "{position:?}"
+        );
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyE);
+            keys.clear();
+            keys.press(KeyCode::KeyE);
+        }
+        app.world_mut()
+            .run_system_once(world_tankard_input)
+            .unwrap();
+        assert_eq!(app.world().resource::<HeldTankard>().0, None);
+        assert!(!app.world().entity(body).contains::<RigidBodyDisabled>());
+        assert!(!app.world().entity(body).get::<Sleeping>().unwrap().sleeping);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .entity(body)
+                .get::<Transform>()
+                .unwrap()
+                .translation
+                .y
+                < position.y
+        );
+    }
 
     #[test]
     fn sprint_fov_interpolation_is_exponential_and_returns_to_base() {
@@ -2165,16 +4135,10 @@ mod noclip_tests {
     }
 
     #[test]
-    fn overlay_reports_mode_with_key_hint_and_block_reason() {
+    fn overlay_reports_mode_and_block_reason_without_control_hints() {
         let status = WalkEntryStatus::default();
-        assert_eq!(
-            noclip_overlay_text(MoveMode::Noclip, &status),
-            "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop"
-        );
-        assert_eq!(
-            noclip_overlay_text(MoveMode::Walk, &status),
-            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop"
-        );
+        assert_eq!(noclip_overlay_text(MoveMode::Noclip, &status), "NOCLIP: ON");
+        assert_eq!(noclip_overlay_text(MoveMode::Walk, &status), "NOCLIP: OFF");
         let blocked = WalkEntryStatus {
             blocked_reason: Some("no free capsule placement nearby".to_owned()),
         };
@@ -2285,6 +4249,13 @@ mod gate_tests {
             );
         app.update();
         app.insert_resource(CursorCapture::Captured);
+        // The Riverwood test tankards already exist; the one T spawns is the one not listed here.
+        let existing: Vec<Entity> = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<DebugTankard>>();
+            query.iter(app.world()).collect()
+        };
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyT);
@@ -2328,7 +4299,7 @@ mod gate_tests {
                 .query_filtered::<(Entity, &Transform), With<DebugTankard>>();
             query
                 .iter(app.world())
-                .find(|(_, pose)| pose.translation.z < -100.0)
+                .find(|(entity, _)| !existing.contains(entity))
                 .map(|(entity, pose)| (entity, pose.translation))
                 .expect("spawned tankard above terrain")
         };
@@ -2552,10 +4523,7 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(
-            text.as_str(),
-            "NOCLIP: OFF  [V]  [T] tankard  [E] grab/drop  SPRINT: OFF  [ALT]  SPEED: 0 u/s"
-        );
+        assert_eq!(text.as_str(), "NOCLIP: OFF  SPRINT: OFF  SPEED: 0 u/s");
         app.insert_resource(MoveMode::Noclip);
         for _ in 0..5 {
             app.update();
@@ -2564,7 +4532,26 @@ mod gate_tests {
             .world_mut()
             .query_filtered::<&Text, With<NoclipOverlay>>();
         let text = query.single(app.world()).expect("overlay").clone();
-        assert_eq!(text.as_str(), "NOCLIP: ON  [V]  [T] tankard  [E] grab/drop");
+        assert_eq!(text.as_str(), "NOCLIP: ON");
+    }
+
+    #[test]
+    fn a_failed_crossing_holds_the_walking_body_and_shows_how_to_recover() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(0.0, 5_000.0, 0.0);
+        headless::place_player(&mut app, start);
+        app.insert_resource(crate::door_crossing::DoorCrossing::recovery_for_test());
+        for _ in 0..60 {
+            app.update();
+        }
+        let (held, _) = headless::player_pose(&mut app);
+        assert!((held - start).length() < 1.0, "unguarded fall: {held}");
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Text, With<NoclipOverlay>>();
+        let text = query.single(app.world()).unwrap();
+        assert!(text.contains("Movement paused"));
+        assert!(text.contains("Press V or use tcl to recover in noclip"));
     }
 
     #[test]
@@ -2652,5 +4639,595 @@ mod gate_tests {
                 "rebase injected tankard velocity: {before:?} -> {after:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod console_tests {
+    use super::headless;
+    use super::*;
+    use crate::console::{ConsolePlugin, execute_line};
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn console_fixture() -> App {
+        let mut app = headless::fixture_app_with(|app| {
+            // `ToggleCollision`/`tcl` comes in with `PlayerControlsPlugin` through the fixture.
+            app.add_plugins(ConsolePlugin)
+                .add_console_command(toggle_collision_geometry_command())
+                .insert_resource(DebugRenderContext::default());
+        });
+        app.update();
+        app
+    }
+
+    fn scrollback(app: &App) -> String {
+        app.world().resource::<ConsoleState>().scrollback.join("\n")
+    }
+
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+    }
+
+    /// Send a key press the way winit does; `InputPlugin` turns it into `ButtonInput` on update.
+    fn send_key(app: &mut App, key_code: KeyCode) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code,
+                logical_key: bevy::input::keyboard::Key::Character("x".into()),
+                state: bevy::input::ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+    }
+
+    fn mode(app: &App) -> MoveMode {
+        *app.world().resource::<MoveMode>()
+    }
+
+    #[test]
+    fn help_lists_every_physics_command() {
+        let mut app = console_fixture();
+        execute_line(app.world_mut(), "Help");
+        let text = scrollback(&app);
+        for line in [
+            "Help [text] - ",
+            "ClearConsole - ",
+            "ToggleCollision [tcl] - toggle noclip flight and walking (key V)",
+            "ToggleCollisionGeometry [tcg] - toggle the collision outlines (also in Graphics settings)",
+        ] {
+            assert!(text.contains(line), "Help is missing {line}: {text}");
+        }
+        // The filter finds a command by its short form and by its description.
+        execute_line(app.world_mut(), "ClearConsole");
+        execute_line(app.world_mut(), "help TCG");
+        let text = scrollback(&app);
+        assert!(text.contains("ToggleCollisionGeometry [tcg]"), "{text}");
+        assert!(!text.contains("ToggleCollision [tcl]"), "{text}");
+        execute_line(app.world_mut(), "ClearConsole");
+        execute_line(app.world_mut(), "help outlines");
+        let text = scrollback(&app);
+        assert!(text.contains("ToggleCollisionGeometry [tcg]"), "{text}");
+        assert!(!text.contains("ToggleCollision [tcl]"), "{text}");
+    }
+
+    #[test]
+    fn tcl_twice_flips_and_flips_back() {
+        let mut app = console_fixture();
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        execute_line(app.world_mut(), "tcl");
+        assert_eq!(mode(&app), MoveMode::Walk, "{}", scrollback(&app));
+        execute_line(app.world_mut(), "TCL");
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        execute_line(app.world_mut(), "togglecollision");
+        assert_eq!(mode(&app), MoveMode::Walk);
+    }
+
+    #[test]
+    fn crossing_blocks_both_mode_switch_entry_points_in_both_modes() {
+        for initial in [MoveMode::Noclip, MoveMode::Walk] {
+            let mut app = console_fixture();
+            app.insert_resource(initial);
+            app.insert_resource(CursorCapture::Captured);
+            app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+            press(&mut app, KeyCode::KeyV);
+            app.world_mut().run_system_once(toggle_mode_system).unwrap();
+            assert_eq!(mode(&app), initial, "V must preserve mode during crossing");
+            execute_line(app.world_mut(), "tcl");
+            assert_eq!(
+                mode(&app),
+                initial,
+                "tcl must preserve mode during crossing"
+            );
+            assert!(scrollback(&app).contains("door crossing in progress"));
+            app.insert_resource(crate::door_crossing::DoorCrossing::default());
+            execute_line(app.world_mut(), "tcl");
+            assert_ne!(mode(&app), initial, "switching resumes after crossing");
+        }
+    }
+
+    #[test]
+    fn failed_crossing_recovery_uses_noclip_from_both_modes_and_entry_points() {
+        for initial in [MoveMode::Noclip, MoveMode::Walk] {
+            for keyed in [false, true] {
+                let mut app = console_fixture();
+                app.insert_resource(initial);
+                app.insert_resource(CursorCapture::Captured);
+                app.insert_resource(crate::door_crossing::DoorCrossing::recovery_for_test());
+                app.world_mut().resource_mut::<WalkSpawnHold>().active = true;
+                if keyed {
+                    press(&mut app, KeyCode::KeyV);
+                    app.world_mut().run_system_once(toggle_mode_system).unwrap();
+                } else {
+                    execute_line(app.world_mut(), "tcl");
+                    assert!(scrollback(&app).contains("noclip ON"));
+                }
+                assert_eq!(mode(&app), MoveMode::Noclip);
+                assert!(!app.world().resource::<WalkSpawnHold>().active);
+                assert!(
+                    !app.world()
+                        .resource::<crate::door_crossing::DoorCrossing>()
+                        .is_active()
+                );
+                let mut players = app
+                    .world_mut()
+                    .query_filtered::<&RigidBodyDisabled, With<PlayerBody>>();
+                assert_eq!(players.iter(app.world()).count(), 1);
+                assert!(
+                    app.world_mut()
+                        .run_system_once(crate::door_crossing::no_door_crossing)
+                        .unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tcl_without_a_player_does_not_repeat_an_old_block_reason() {
+        let mut app = console_fixture();
+        app.world_mut()
+            .resource_mut::<WalkEntryStatus>()
+            .blocked_reason = Some("no free capsule placement nearby".to_owned());
+        let players: Vec<Entity> = app
+            .world_mut()
+            .query_filtered::<Entity, With<PlayerBody>>()
+            .iter(app.world())
+            .collect();
+        assert!(!players.is_empty(), "the fixture spawns a player");
+        for player in players {
+            app.world_mut().despawn(player);
+        }
+        execute_line(app.world_mut(), "tcl");
+        let text = scrollback(&app);
+        assert!(text.contains("no player to move in this run"), "{text}");
+        assert!(!text.contains("cannot walk here"), "{text}");
+        assert_eq!(mode(&app), MoveMode::Noclip);
+    }
+
+    #[test]
+    fn key_and_command_agree_on_move_mode() {
+        let mut keyed = console_fixture();
+        keyed.insert_resource(CursorCapture::Captured);
+        press(&mut keyed, KeyCode::KeyV);
+        keyed
+            .world_mut()
+            .run_system_once(toggle_mode_system)
+            .unwrap();
+        let mut commanded = console_fixture();
+        // The removed `v` alias is unknown; `tcl` runs the key's effect.
+        execute_line(commanded.world_mut(), "v");
+        assert!(scrollback(&commanded).contains("unknown command \"v\""));
+        assert_eq!(mode(&commanded), MoveMode::Noclip);
+        execute_line(commanded.world_mut(), "tcl");
+        assert_eq!(mode(&keyed), MoveMode::Walk);
+        assert_eq!(mode(&keyed), mode(&commanded));
+        execute_line(commanded.world_mut(), "ToggleCollision");
+        assert_eq!(mode(&commanded), MoveMode::Noclip);
+    }
+
+    #[test]
+    fn command_toggles_collision_outlines() {
+        let mut commanded = console_fixture();
+        let before = commanded.world().resource::<DebugRenderContext>().enabled;
+        // F3 releases the mouse; Skyrim's `tcg` controls collision outlines.
+        execute_line(commanded.world_mut(), "f3");
+        assert!(scrollback(&commanded).contains("unknown command \"f3\""));
+        assert_eq!(
+            commanded.world().resource::<DebugRenderContext>().enabled,
+            before
+        );
+        execute_line(commanded.world_mut(), "tcg");
+        assert_ne!(
+            commanded.world().resource::<DebugRenderContext>().enabled,
+            before
+        );
+        execute_line(commanded.world_mut(), "ToggleCollisionGeometry");
+        assert_eq!(
+            commanded.world().resource::<DebugRenderContext>().enabled,
+            before
+        );
+    }
+
+    #[test]
+    fn tankard_and_grab_have_no_console_command() {
+        let mut app = console_fixture();
+        for line in ["tankard", "grab", "t", "e"] {
+            execute_line(app.world_mut(), line);
+        }
+        let text = scrollback(&app);
+        for line in ["tankard", "grab", "t", "e"] {
+            assert!(
+                text.contains(&format!("unknown command \"{line}\"")),
+                "unknown missing for {line}: {text}"
+            );
+            assert!(
+                !text.contains(&format!("unknown command \"{line}\", did you mean")),
+                "unexpected suggestion for {line}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_console_blocks_the_debug_keys_look_and_recapture() {
+        let mut app = console_fixture();
+        // Open the console the way a player does, from a captured cursor.
+        app.insert_resource(CursorCapture::Captured);
+        send_key(&mut app, KeyCode::Backquote);
+        app.update();
+        assert!(app.world().resource::<ConsoleState>().open);
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        let camera_before = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&Transform, With<ControlledCamera>>();
+            *query.single(app.world()).unwrap()
+        };
+        // V, a movement key, a click and a mouse move while open.
+        send_key(&mut app, KeyCode::KeyV);
+        send_key(&mut app, KeyCode::KeyW);
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseButtonInput {
+                button: MouseButton::Left,
+                state: bevy::input::ButtonState::Pressed,
+                window: Entity::PLACEHOLDER,
+            });
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(40.0, 10.0),
+        });
+        app.update();
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert_eq!(app.world().resource::<LookIntent>().yaw, 0.0);
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Transform, With<ControlledCamera>>();
+        assert_eq!(
+            query.single(app.world()).unwrap().translation,
+            camera_before.translation
+        );
+        // F3 is inert too.
+        let before = app.world().resource::<DebugRenderContext>().enabled;
+        send_key(&mut app, KeyCode::F3);
+        app.update();
+        assert_eq!(app.world().resource::<DebugRenderContext>().enabled, before);
+    }
+
+    /// Type a character into the console the way winit delivers it, then run one frame.
+    fn type_text(app: &mut App, key_code: KeyCode, c: &str) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code,
+                logical_key: bevy::input::keyboard::Key::Character(c.into()),
+                state: bevy::input::ButtonState::Pressed,
+                text: Some(c.into()),
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+    }
+
+    #[test]
+    fn typed_tcl_runs_through_the_schedule() {
+        // Drives the real path: the line is typed, Enter is pressed and the exclusive
+        // dispatch system runs the handler, which runs the move-mode effect as a system.
+        let mut app = console_fixture();
+        app.insert_resource(CursorCapture::Captured);
+        send_key(&mut app, KeyCode::Backquote);
+        app.update();
+        assert!(app.world().resource::<ConsoleState>().open);
+        for (code, c) in [
+            (KeyCode::KeyT, "t"),
+            (KeyCode::KeyC, "c"),
+            (KeyCode::KeyL, "l"),
+        ] {
+            type_text(&mut app, code, c);
+        }
+        assert_eq!(app.world().resource::<ConsoleState>().buffer, "tcl");
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: KeyCode::Enter,
+                logical_key: bevy::input::keyboard::Key::Enter,
+                state: bevy::input::ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+        app.update();
+        assert_eq!(mode(&app), MoveMode::Walk, "{}", scrollback(&app));
+        assert!(app.world().resource::<ConsoleState>().buffer.is_empty());
+    }
+
+    #[test]
+    fn keys_still_work_through_the_schedule_with_the_console_closed() {
+        let mut app = console_fixture();
+        // The real schedule reads the capture state, so the cursor must be captured.
+        app.insert_resource(CursorCapture::Captured);
+        let before = app.world().resource::<DebugRenderContext>().enabled;
+        send_key(&mut app, KeyCode::KeyV);
+        app.update();
+        assert_eq!(mode(&app), MoveMode::Walk, "{}", scrollback(&app));
+        send_key(&mut app, KeyCode::F3);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert_eq!(app.world().resource::<DebugRenderContext>().enabled, before);
+    }
+
+    fn send_state(app: &mut App, key_code: KeyCode, state: bevy::input::ButtonState) {
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code,
+                logical_key: bevy::input::keyboard::Key::Character("x".into()),
+                state,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        app.update();
+    }
+
+    #[test]
+    fn keys_in_the_closing_frame_do_not_reach_the_game() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut app = console_fixture();
+        app.insert_resource(CursorCapture::Captured);
+        send_state(&mut app, KeyCode::Backquote, Pressed);
+        send_state(&mut app, KeyCode::Backquote, Released);
+        assert!(app.world().resource::<ConsoleState>().open);
+        // V and the closing backtick land in the same update.
+        send_key(&mut app, KeyCode::KeyV);
+        send_key(&mut app, KeyCode::Backquote);
+        app.update();
+        assert!(!app.world().resource::<ConsoleState>().open);
+        // The capture that movement and look read stays released for the closing frame, so they
+        // ignore that frame's keys and mouse motion (this checks the gate, not a moving body).
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert_eq!(mode(&app), MoveMode::Noclip, "{}", scrollback(&app));
+        // One update later the capture is back and V works again.
+        send_state(&mut app, KeyCode::KeyV, Released);
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Captured
+        );
+        send_state(&mut app, KeyCode::Backquote, Released);
+        send_state(&mut app, KeyCode::KeyV, Pressed);
+        assert_eq!(mode(&app), MoveMode::Walk);
+    }
+
+    #[test]
+    fn bug_report_capture_keeps_input_blocked_after_console_dismissal() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut app = console_fixture();
+        app.insert_resource(CursorCapture::Captured);
+        send_state(&mut app, KeyCode::Backquote, Pressed);
+        send_state(&mut app, KeyCode::Backquote, Released);
+        app.world_mut()
+            .resource_mut::<ConsoleState>()
+            .capture_suppressed = true;
+        send_state(&mut app, KeyCode::Backquote, Pressed);
+        send_state(&mut app, KeyCode::Backquote, Released);
+        assert!(!app.world().resource::<ConsoleState>().open);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        let camera_before = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<&Transform, With<ControlledCamera>>();
+            *query.single(app.world()).unwrap()
+        };
+        send_key(&mut app, KeyCode::KeyW);
+        send_key(&mut app, KeyCode::KeyV);
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseButtonInput {
+                button: MouseButton::Left,
+                state: Pressed,
+                window: Entity::PLACEHOLDER,
+            });
+        app.world_mut().write_message(MouseMotion {
+            delta: Vec2::new(40.0, 10.0),
+        });
+        app.update();
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Released
+        );
+        assert_eq!(mode(&app), MoveMode::Noclip);
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&Transform, With<ControlledCamera>>();
+        assert_eq!(*query.single(app.world()).unwrap(), camera_before);
+        send_state(&mut app, KeyCode::KeyW, Released);
+        send_state(&mut app, KeyCode::KeyV, Released);
+        app.world_mut()
+            .resource_mut::<ConsoleState>()
+            .capture_suppressed = false;
+        app.update();
+        assert_eq!(
+            *app.world().resource::<CursorCapture>(),
+            CursorCapture::Captured
+        );
+        assert!(!app.world().resource::<ConsoleState>().open);
+    }
+
+    #[test]
+    fn opening_clears_held_motion() {
+        let mut app = console_fixture();
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: 300.0,
+            jump_pressed: true,
+        });
+        send_key(&mut app, KeyCode::Backquote);
+        app.update();
+        let intent = *app.world().resource::<WalkIntent>();
+        assert_eq!(intent.wish_dir, Vec3::ZERO);
+        assert_eq!(intent.target_speed, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod teleport_tests {
+    use super::*;
+
+    #[test]
+    fn noclip_flight_pauses_during_a_door_crossing_and_resumes_afterward() {
+        let mut app = headless::fixture_app();
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(CursorCapture::Captured);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        let camera_position = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<&Transform, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap()
+                .translation
+        };
+        let start = camera_position(&mut app);
+        app.world_mut()
+            .write_message(bevy::input::keyboard::KeyboardInput {
+                key_code: KeyCode::KeyW,
+                logical_key: bevy::input::keyboard::Key::Character("w".into()),
+                state: bevy::input::ButtonState::Pressed,
+                text: None,
+                repeat: false,
+                window: Entity::PLACEHOLDER,
+            });
+        for _ in 0..360 {
+            app.update();
+        }
+        assert_eq!(camera_position(&mut app), start);
+        app.insert_resource(crate::door_crossing::DoorCrossing::default());
+        for _ in 0..360 {
+            app.update();
+        }
+        assert!((camera_position(&mut app) - start).length() > 4096.0);
+    }
+
+    /// A WALK body over nothing does not fall, or walk, while a door crossing holds the screen
+    /// black, and falls again once the crossing is over.
+    #[test]
+    fn walking_pauses_during_a_door_crossing() {
+        let mut app = headless::fixture_app();
+        let start = Vec3::new(0.0, 5_000.0, 0.0);
+        headless::place_player(&mut app, start);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        {
+            let mut intent = app.world_mut().resource_mut::<WalkIntent>();
+            intent.wish_dir = Vec3::NEG_Z;
+            intent.target_speed = 300.0;
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+        let (held, _) = headless::player_pose(&mut app);
+        assert!(
+            (held - start).length() < 1.0,
+            "moved during the crossing: {held}"
+        );
+        app.insert_resource(crate::door_crossing::DoorCrossing::default());
+        for _ in 0..30 {
+            app.update();
+        }
+        let (after, _) = headless::player_pose(&mut app);
+        assert!(
+            after.y < start.y - 10.0,
+            "did not fall after the crossing: {after}"
+        );
+    }
+
+    #[test]
+    fn teleport_player_moves_the_body_and_zeroes_its_velocity() {
+        let mut app = headless::fixture_app();
+        headless::place_player(&mut app, Vec3::new(0.0, 500.0, 0.0));
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&mut WalkState, With<PlayerBody>>();
+        {
+            let mut state = query.single_mut(app.world_mut()).unwrap();
+            state.vertical_velocity = -900.0;
+            state.horizontal_velocity = Vec3::new(300.0, 0.0, 0.0);
+            state.grounded = true;
+        }
+        let target = Vec3::new(40_000.0, 900.0, -2_000.0);
+        app.world_mut().write_message(TeleportPlayer {
+            position: target,
+            sampled_ground_y: None,
+            yaw: 1.0,
+        });
+        app.update();
+        let state = *query.single(app.world()).unwrap();
+        assert_eq!(state.vertical_velocity, 0.0);
+        assert_eq!(state.horizontal_velocity, Vec3::ZERO);
+        assert!(!state.grounded);
+        let mut body = app
+            .world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>();
+        let at = body.single(app.world()).unwrap().translation;
+        // One physics tick of gravity may already have moved it; it is where it was sent.
+        assert!((at.x - target.x).abs() < 1.0 && (at.z - target.z).abs() < 1.0);
+        let tuning = MovementTuning::default();
+        // The target is the feet: the body's origin is a capsule half-extent above them.
+        assert!((at.y - (target.y + body_height_above_feet(&tuning))).abs() < 20.0);
+        let look = app.world().resource::<LookIntent>();
+        assert_eq!(look.yaw, 1.0);
+    }
+
+    #[test]
+    fn teleport_puts_the_feet_at_the_target_and_the_camera_at_eye_height() {
+        let tuning = MovementTuning::default();
+        let feet = Vec3::new(10.0, 300.0, -20.0);
+        let (body, camera) = body_and_camera_for_feet(&tuning, feet);
+        // The capsule's lowest point is the feet.
+        let lowest = body.y - tuning.capsule_half_height() - tuning.capsule_radius;
+        assert!((lowest - feet.y).abs() < 1e-3);
+        assert!((camera.y - body.y - tuning.eye_height).abs() < 1e-3);
+        // Noclip moves only the camera, to the same place the walk follow would put it.
+        let mut app = headless::fixture_app();
+        app.insert_resource(MoveMode::Noclip);
+        app.world_mut().write_message(TeleportPlayer {
+            position: feet,
+            sampled_ground_y: None,
+            yaw: 0.0,
+        });
+        app.update();
+        let mut view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let at = view.single(app.world()).unwrap().translation;
+        assert!((at - camera).length() < 1e-3);
     }
 }

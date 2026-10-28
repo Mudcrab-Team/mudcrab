@@ -15,9 +15,20 @@ block, and shape.
 
 CLI `--no-lod` skips this compiler in both normal conversion and metadata rebuilds.
 It publishes full-detail terrain/world data with empty LOD tables and no LOD manifest
-or generated chunks. Default conversion still compiles LOD; previous chunks are not
-reused. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
+or generated chunks. Default conversion builds LOD and reuses unchanged chunks only
+when current input fingerprints and prior payloads verify. See [pipeline operation and recovery](pipeline.md#7-command-line-progress-interruption-and-resuming)
 for same-output locking, read-only installations and unowned backups.
+
+New CLI runs and `PipelineConfig::new` use GPU encoding for generated terrain
+atlases. `--lod-encoder cpu` selects CPU encoding. Ordinary source textures use
+the independent `--texture-encoder` setting, which still defaults to CPU.
+Deserializing a legacy config without `lod_texture_encoder` preserves CPU LOD
+encoding rather than changing its output recipe.
+
+The implemented compiler produces terrain LOD. Object source selection below
+describes Phase 2 work; the optional cluster experiment in
+[hybrid object LOD](../engine/hybrid-object-lod.md) is a proposed extension,
+not an implemented output or a new default.
 
 ## Inputs
 
@@ -50,6 +61,12 @@ current exporter passes only each block's base `BSTriShape` to the generic
 mesh path. Those per-level counts and segment ranges are lost. Preserve and
 validate them before using these blocks as tier-specific sources. Missing
 source means omit-with-reason, never silent near-match substitution (RULE-05).
+Verified automatically generated conventional LOD and cluster hierarchies are
+also candidate sources under the hybrid experiment. Missing an authored
+variant does not imply missing source geometry. Generate both candidates
+from the same resolved primitive and preserve its source GLB as the usable
+fallback; reject invalid derived data with a reason. This does not authorize
+an unreviewed full-detail substitution in distant batches.
 The first static pass admits only verified, unconditionally enabled fixed
 `STAT` references. `statics` is a model catalog, not an eligibility flag;
 unknown, initially disabled, XESP-controlled, movable, animated, and
@@ -88,23 +105,31 @@ content hashes of inputs, rule set, settings, and compiler version
 publish only after every referenced payload validates. The `lod` reshape
 ships with a world DB version bump.
 
-The combined implementation uses converter schema 24 and world schema 7. World schema 5
+The combined implementation uses converter schema 27 and world schema 9. World schema 5
 belongs to grass data; LOD tables were introduced in schema 6. Only verified current
-producer 24 meshes may be reused during normal conversion. Producer 23 was shared by
+producer 27 meshes may be reused during normal conversion. Producer 26 combined corrected TXST
+columns, texture semantics and one-byte XESP flags and left GLBs unchanged from the compatible
+producer 24; producer 27 adds collision shapes and layers to the GLB collision data, so no earlier
+producer's meshes remain reusable.
+Producer 23 was shared by
 the source-surface exporter before and after rigid-body dynamics changed the GLB payload;
-its number cannot prove the current mesh contract. All earlier producers through 23
+its number cannot prove the current mesh contract. All earlier producers (12–24 and 26)
 regenerate GLBs and textures, retaining only verified scripts/archive ingestion.
-Numeric ordering grants no reuse.
+Numeric ordering grants no reuse. Separate #194/#196 candidates both used 25/8
+for different contracts; the combined producer allocates 26/9 and rejects those
+ambiguous candidate identities for asset or metadata reuse.
 Configuration proof includes encoder selection and GPU quality, while batch size only
 changes scheduling. Metadata-only retained bytes preserve explicit original producer,
-configuration, manifest and output hashes; they are never certified as current 24 bytes.
+configuration, manifest and output hashes; their retained textures and meshes are not certified as
+current-producer bytes. A subsequent normal conversion regenerates every earlier-producer
+texture and GLB.
 Grass-only schema-5 worlds remain readable without LOD tables.
 
 When combining these branches, resolve the cache and metadata gates deliberately:
 the numeric ordering alone does not prove that a lighting mesh is compatible
-with the LOD branch. A combined producer must use a new converter identity
-above 23, and a combined grass/LOD database must use a new world identity above
-6; update runtime, launcher, manifests and capture gates together. Existing
+with the LOD branch. Every independent output-contract change must allocate a fresh
+producer/database identity and resolve explicit compatibility gates; update runtime,
+launcher, manifests and capture gates together. Existing
 native evidence below describes its original producer and is historical.
 Main's converter schema 16 identifies collision-aware assets; retained assets
 keep their producer schema/configuration during metadata-only rebuilds.
@@ -114,6 +139,49 @@ Database bounds and R-tree XY bounds are world-space Creation units: translate
 the chunk-local X/Y extent by `(origin + anchor * tier_side_cells) * 4096`; Z
 is unchanged. Never index chunk-local coordinates as world-space bounds.
 
+### Proposed object sidecars
+
+Keep the terrain GLB and spatial-index contract. The hybrid experiment adds
+an optional, independently versioned cluster sidecar beside a model GLB.
+Resolved world data and model GLBs remain authoritative; sidecars are derived
+render data. Their presence cannot change reference eligibility, world
+residency, gameplay ownership, or terrain compilation.
+
+The sidecar contract must identify source GLB bytes, consumed material and
+texture inputs, primitive/attribute layout, compiler and meshoptimizer
+revision, settings, hierarchy/error convention, payload version and output
+checksum. Preserve stable source primitive/material identities, index and
+attribute mappings, conservative geometry and error bounds, group replacement
+links, and a complete fallback cut. Grouped simplification may recluster its
+output; validators cannot assume every cluster has an independent tree
+parent. Validate complete group replacement without overlap or missing
+coverage, valid indices, finite errors, acyclic links, and preserved locked
+borders. Conservative bounds do not prove silhouette or material quality.
+
+Review the serialized ABI before runtime consumption: integer widths,
+endianness, alignment, lengths, allocation limits, and unknown-version
+handling need independent golden fixtures and malformed-payload checks.
+Do not serialize meshoptimizer's in-memory demo structures as an implicit
+stable format. Actual filenames, version values, and any database migration
+are assigned in the implementation change; this proposal allocates none.
+
+Bill's approximately 128-triangle clusters and grouped halving are starting
+parameters, not compatibility requirements. Compare them with generated
+conventional LOD at matched quality using the same source inputs. Record
+conversion time, cache reuse, payload size, memory, attributes, border behavior,
+and silhouette/material error. His small converter spike and linear estimates
+are research evidence, not measurements of this compiler stage.
+
+Integrate optional outputs into the existing immutable-input, hash, staging,
+lock, and publication boundary. Missing, stale, corrupt, or unsupported
+sidecars must leave verified source/conventional rendering available and
+record why the cluster route is unavailable. A build requesting sidecars
+cannot report that category complete after invalid output; its strict/error
+policy must be explicit. Reuse requires exact consumed-input, algorithm,
+settings, format, and output proof. Removing inputs or disabling generation
+removes owned obsolete sidecars. Identical clean and incremental experiments
+must agree without changing retained model bytes or producer provenance.
+
 ## Incremental builds
 
 Reference moves propagate to every affected tier, world copy, and variant
@@ -122,9 +190,42 @@ material contracts are unchanged (BUILD-02). Partial builds must equal
 clean builds semantically or be marked unsafe (BUILD-04); a dry-run impact
 report precedes expensive regeneration (BUILD-05).
 Resumes reconstruct the effective VFS and regenerate the world database,
-cell cache, integration report, and entire LOD generation. Journal-verified
-textures and scripts remain reusable; omitted worlds/chunks and removed
-settings cannot survive in staged metadata or payloads.
+cell cache, integration report, origins, chunk index and build identity. Chunk payloads
+may be reused from the prior published package, held under the existing asset lock.
+`lod-manifest.json` records an explicit terrain compiler revision and per-chunk input
+fingerprints. Fingerprints cover cell IDs/grids, exact height/VCLR/layer/opacity data,
+winning diffuse paths and DDS hashes, origin, tier, tiling and producer identity.
+Reuse also checks the old index against current source-derived bounds/cells and
+verifies the payload hash and GLB/KTX2 structure. Missing legacy proof, damaged
+payloads or changed consumed inputs rebuild the affected chunks. Unrelated plugin
+edits can preserve payloads, while the final identity still includes current ordered
+plugin hashes and settings. `--invalidate-cache` also bypasses LOD reuse.
+
+Every stage reads and validates one aligned cell-cache snapshot. Diffuse images
+share decoded authored mips and prepared tier images across worlds and FormIDs;
+source bytes are rechecked before publication. Chunks prepare geometry and
+atlas pixels in parallel, then encode one bounded batch of atlases. Each supplied mip is encoded
+once; a bounded atlas-local cache encodes identical 4x4 RGBA blocks once using
+the same upstream UASTC level-2 routine and transcode hints. The KTX2 writer is
+shared with the GPU path, and the level table uses the encoded base metadata.
+The default GPU path submits those same authored RGBA mips to the GPU UASTC
+encoder. The explicit CPU recipe preserves the existing fingerprints; the GPU
+recipe adds its encoder version and quality. GPU fallback chunks remain valid
+published payloads but omit reusable input proof, so a later GPU run retries
+them. Explicit CPU selection produces the CPU recipe and its reuse proof
+instead. Changing the LOD encoder does not invalidate ordinary meshes or textures.
+GLB assembly runs in parallel after atlas encoding, followed by serialized
+database publication.
+The terrain compiler revision changes when this output recipe changes. Only one
+CPU-worker-sized batch of payloads is retained at a time. World indexing is
+transactional: a later content failure removes earlier batch payloads and rolls
+back that whole world. Cancellation, source mutation and publication/database
+errors remain fatal. Progress messages expose chunk counts within a world, and
+`PipelineReport.lod_cache_hits` records verified reuse (default zero in old reports).
+
+Journal-verified ordinary assets remain reusable; omitted worlds/chunks and removed
+settings cannot survive in staged metadata or payloads. Compiler revisions belong
+to LOD build/fingerprint identity; ordinary producer 24 bytes retain their provenance.
 
 ## Regression invariants
 
@@ -136,7 +237,7 @@ settings cannot survive in staged metadata or payloads.
 - LOD-V3: resumed output after an origin change equals a clean build's chunk
   keys/hashes; removing the winning sidecar removes old chunks, R-tree rows,
   payloads, and manifest. Full-detail conversion remains usable.
-- LOD-V4: `--reuse-assets DIR` requires complete source producer 15, 16, 19, 20, 21, 22, 23 or 24;
+- LOD-V4: `--reuse-assets DIR` requires complete source producer 15, 16, 19 through 24, 26 or 27;
   retained bytes match manifest hashes; source DB plugin order/checksums
   match originals before rebuild. New disjoint output only; source unchanged.
   Retained meshes/textures/scripts reflect source package, not later Data
@@ -146,6 +247,15 @@ settings cannot survive in staged metadata or payloads.
   stale generated outputs. `metadata-rebuild.json` retains source schema,
   manifest/configuration hash and copied asset hashes. Fresh archive/loose
   settings resolution; no VFS/archive-cache inheritance.
+  Supported `derived_outputs` proofs retain composed bodies and generated gait
+  clips with their original recipe/input identity and final output size/hash.
+  No raw VFS is required to copy proven derived bytes. Missing, unreadable or invalid
+  individual derived proofs/files and unproven strays are omitted locally with
+  one counted, bounded notice, leaving verified neighboring assets unchanged.
+  Derived copy/hash failures follow the same omission path; failed partial-copy
+  cleanup is counted in that notice without aborting the rebuild.
+  Historical unproven derived bytes are never promoted into producer proofs;
+  normal conversion regenerates these optional outputs.
 - LOD-V5: pruned GLB manifest/journal hashes and sizes describe final bytes.
   Legacy pre-prune hash accepted only with matching raw NIF hash, exact
   regenerated original hash/size, exact recorded prune set, and exact
@@ -156,18 +266,19 @@ settings cannot survive in staged metadata or payloads.
   including ESL index; preserve inversion flags and reference header flags.
 - LOD-V7: metadata-only migration preserves the original mesh cache contract
   in `retained_mesh_schema_version`, including repeated rebuilds. Normal
-  conversion regenerates retained older-contract GLBs but still reuses
-  compatible textures/scripts. Runtime metadata schema is independent.
+  conversion regenerates incompatible retained GLBs and all old textures;
+  unchanged scripts remain reuse candidates (no earlier producer's GLBs, since producer 27 changed
+  the GLB collision data). Runtime metadata schema is independent.
   Preserve the exact source manifest beside the derived provenance report;
   rebuilding metadata does not assert a newer asset producer.
   Markerless metadata-only sources cannot become GLB cache hits and are
   rejected by metadata reuse; recover from verified original assets or an
   independently audited provenance migration, never infer a current producer.
   Preserve `retained_asset_configuration_hash` independently of rebuilt
-  metadata settings. Explicit reuse accepts the native schema-16 projection
+  metadata settings. Explicit reuse accepts the historical schema-15 fixed-Zstd-6 configuration or native schema-16 projection
   with fixed `texture_zstd_level=6` only when every other setting matches;
-  normal conversion reuses schema-16 meshes when source, bytes and actual
-  configuration match; schema 12-15 mesh contracts still invalidate. Equal schema
+  normal conversion regenerates schema-12–24 and schema-26 meshes (producer-24 meshes were
+  compatible with producer 26 only). Equal schema
   numbers do not establish equal producer contracts. Repeated rebuilds keep
   the original retained configuration hash and verify it again. Missing
   producer configuration in metadata-only output rejects metadata reuse and
@@ -226,3 +337,17 @@ LOD-B11|2026-09-30|native schema-16 config included Zstd settings absent in LOD 
 LOD-B12|2026-09-30|changed malformed source could leave its old staged output published outside the manifest|LOD-V8
 LOD-B13|2026-09-30|coarse quadrant edges omitted intermediate full terrain heights and opened visible cracks|LOD-V10
 LOD-B14|2026-09-30|globally generated atlas mips outgrew tile gutters and could sample adjacent or unused tiles|LOD-V11
+
+## Owned blocking compilation
+
+Terrain compilation runs on Tokio's blocking pool with owned configuration,
+paths, plugin proofs and report state. The async caller can drain progress or
+request cancellation on a current-thread runtime during a world transaction.
+Normal conversion retains its runtime output and repair leases in the worker;
+metadata rebuild retains both its source read lease and destination write lease.
+Dropping the caller signals cancellation without releasing those leases while
+the worker still runs. Cancellation also interrupts a full progress-channel
+wait. Transactions still check cancellation between bounded batches, roll back
+an unfinished world, and refuse publication of an interrupted or mixed-input
+build. The worker may finish its current batch before it stops; cancellation
+does not terminate an in-flight GPU dispatch or Rayon task.

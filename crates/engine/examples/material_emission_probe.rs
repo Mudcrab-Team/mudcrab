@@ -21,7 +21,7 @@ use converter::{
     texture::{TextureConverter, TextureEncoding},
 };
 use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
-use engine::color_pipeline::SceneColorPipeline;
+use engine::color_pipeline::{SceneColorPipeline, SkyrimCinematicPostPlugin};
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -93,6 +93,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                 uv_offset: [0.0; 2],
                 uv_scale: [1.0; 2],
                 texture_clamp_mode: 3,
+                tint_color: None,
                 shader_family: NifShaderFamily::Lighting,
                 lighting_shader_type: Some(LightingShaderType::Default),
                 shader_block: index as u32,
@@ -223,6 +224,7 @@ fn main() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>(),
     )
+    .add_plugins(SkyrimCinematicPostPlugin)
     .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
         Duration::from_millis(16),
     ));

@@ -5,6 +5,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Record frontend used to generate the runtime database and terrain cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordReader {
+    /// Hand-written record reader, available through an explicit choice.
+    Legacy,
+    /// MudCrab's default schema-driven Rust decoder.
+    #[default]
+    Inhouse,
+}
+
 /// Which encoder turns DDS textures into UASTC KTX2.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +33,19 @@ pub enum TextureEncoder {
     },
 }
 
+/// Which texture entry 0 of the land texture table stands for (#215): the quadrant base of a
+/// cell with no BTXT.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainDefaultTexture {
+    /// A generated white diffuse, with no normal map.
+    #[default]
+    White,
+    /// `[Landscape] sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture` of a Skyrim.ini
+    /// (`terrain_ini`), or the built-in Dirt02 paths without one.
+    SkyrimIni,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub data_dir: PathBuf,
@@ -32,7 +56,26 @@ pub struct PipelineConfig {
     /// alongside the output directory; the runtime pack no longer contains it.
     #[serde(skip)]
     pub cache_dir: Option<PathBuf>,
+    /// Explicit player selection; absent uses MO2 when configured, else automatic discovery.
     pub plugins_file: Option<PathBuf>,
+    /// Resolve this MO2 profile over physical Data; incompatible with plugins_file.
+    #[serde(default)]
+    pub mo2: Option<mo2::Selection>,
+    /// Defaults to the in-house reader when older serialized configurations omit it.
+    #[serde(default)]
+    pub record_reader: RecordReader,
+    /// Ordered schema JSON add-ons for the in-house reader.
+    #[serde(default)]
+    pub schema_addons: Vec<PathBuf>,
+    /// A run freezes schema bytes before creating or recovering output.
+    #[serde(skip)]
+    pub(crate) runtime_schemas: Option<std::sync::Arc<crate::records::addons::RuntimeSchemas>>,
+    /// Explicit Creation list; absent uses Skyrim.ccc beside Data with the built-in fallback.
+    #[serde(default)]
+    pub skyrim_ccc_file: Option<PathBuf>,
+    /// Explicit General sTestFile settings; no ambient profile is read.
+    #[serde(default)]
+    pub skyrim_ini_file: Option<PathBuf>,
     /// Explicit per-worldspace LOD origins for custom worlds, keyed by
     /// worldspace editor id: `[grid_x, grid_y]`. Installed worlds read
     /// `lodsettings/<WorldspaceEDID>.lod` instead; a world with neither gets
@@ -43,12 +86,38 @@ pub struct PipelineConfig {
     /// are unchanged; generated database/LOD outputs are rebuilt on every run.
     #[serde(default)]
     pub no_lod: bool,
+    /// Build the merged-terrain outputs (#215) after the world database and the land textures:
+    /// the land texture arrays, one merged mesh per exterior cell and the terrain chunk files.
+    /// Off by default, because the engine half that reads them has not landed, and converted
+    /// asset bytes are unchanged either way; generated terrain outputs are rebuilt every run.
+    #[serde(default)]
+    pub merged_terrain: bool,
+    /// Where entry 0 of the land texture table comes from; `white` unless a user selects the
+    /// game's own default.
+    #[serde(default)]
+    pub terrain_default_texture: TerrainDefaultTexture,
+    /// The `Skyrim.ini` a `skyrim_ini` default texture is read from. `None` uses the built-in
+    /// `textures/landscape/Dirt02.dds` and `Dirt02_N.dds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain_ini: Option<PathBuf>,
+    /// Passed to the land texture array builder
+    /// (`terrain_arrays::ArrayOptions::allow_downscale`): a land texture larger than the largest
+    /// size class is downscaled into it, and the report labels every one, instead of stopping the
+    /// merged-terrain build.
+    #[serde(default)]
+    pub terrain_allow_downscale: bool,
     pub cpu_jobs: usize,
     pub io_jobs: usize,
     pub enable_ba2: bool,
     pub fail_fast: bool,
     pub invalidate_cache: bool,
     pub verify_cache: bool,
+    /// Include archive entries beyond the runtime inputs and English string banks.
+    #[serde(default)]
+    pub extract_all_archive_files: bool,
+    /// Use durable batch packs, additionally flush derived payloads, or skip extraction flushes.
+    #[serde(default)]
+    pub ingestion_sync: crate::archive::IngestionSync,
     /// Quality for the UASTC fallback path (uncompressed/legacy sources).
     /// Named `texture_etc1s_quality` in serialized configs for compatibility;
     /// it never selected ETC1S encoding, which the Bevy runtime rejects.
@@ -60,7 +129,22 @@ pub struct PipelineConfig {
     pub texture_zstd_level: i32,
     #[serde(default)]
     pub texture_encoder: TextureEncoder,
+    /// Encoder for generated terrain atlases. New configs use GPU encoding;
+    /// an omitted serialized field retains the legacy CPU recipe.
+    #[serde(default)]
+    pub lod_texture_encoder: TextureEncoder,
     pub script_abi_version: u32,
+    /// Language of the string tables localized plugins' names are read from, as in Skyrim's
+    /// `sLanguage`: `Strings/<plugin>_<language>.STRINGS`.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+/// The language Skyrim's own `sLanguage` defaults to.
+pub const DEFAULT_LANGUAGE: &str = "english";
+
+fn default_language() -> String {
+    DEFAULT_LANGUAGE.to_owned()
 }
 
 fn default_texture_zstd_level() -> i32 {
@@ -68,6 +152,28 @@ fn default_texture_zstd_level() -> i32 {
 }
 
 impl PipelineConfig {
+    /// Read all configured add-ons once, rejecting the batch before output work begins.
+    pub(crate) fn freeze_schema_addons(&mut self) -> color_eyre::Result<()> {
+        self.runtime_schemas = Some(std::sync::Arc::new(
+            crate::records::addons::RuntimeSchemas::load(&self.schema_addons)
+                .map_err(color_eyre::eyre::Error::msg)?,
+        ));
+        Ok(())
+    }
+
+    /// Use the frozen run schema, or load a temporary snapshot for settings inspection.
+    pub(crate) fn schemas(
+        &self,
+    ) -> color_eyre::Result<std::sync::Arc<crate::records::addons::RuntimeSchemas>> {
+        if let Some(schemas) = &self.runtime_schemas {
+            return Ok(schemas.clone());
+        }
+        Ok(std::sync::Arc::new(
+            crate::records::addons::RuntimeSchemas::load(&self.schema_addons)
+                .map_err(color_eyre::eyre::Error::msg)?,
+        ))
+    }
+
     /// A configuration with the default settings for converting `data_dir` into `output_dir`.
     pub fn new(data_dir: impl Into<PathBuf>, output_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -76,19 +182,36 @@ impl PipelineConfig {
             resume_staging: None,
             cache_dir: None,
             plugins_file: None,
+            mo2: None,
+            record_reader: RecordReader::default(),
+            schema_addons: Vec::new(),
+            runtime_schemas: None,
+            skyrim_ccc_file: None,
+            skyrim_ini_file: None,
             lod_origins: BTreeMap::new(),
             no_lod: false,
+            merged_terrain: false,
+            terrain_default_texture: TerrainDefaultTexture::default(),
+            terrain_ini: None,
+            terrain_allow_downscale: false,
             cpu_jobs: std::thread::available_parallelism().map_or(1, usize::from),
             io_jobs: 2,
             enable_ba2: true,
             fail_fast: false,
             invalidate_cache: false,
             verify_cache: true,
+            extract_all_archive_files: false,
+            ingestion_sync: crate::archive::IngestionSync::Archive,
             texture_fallback_quality: 192,
             texture_uastc_level: 2,
             texture_zstd_level: default_texture_zstd_level(),
             texture_encoder: TextureEncoder::Cpu,
+            lod_texture_encoder: TextureEncoder::Gpu {
+                quality: crate::texture_gpu::DEFAULT_QUALITY,
+                batch_mb: crate::texture_gpu::DEFAULT_BATCH_MB,
+            },
             script_abi_version: 1,
+            language: default_language(),
         }
     }
 
@@ -109,12 +232,43 @@ impl PipelineConfig {
     /// Checks that the directories and settings can be used for a run.
     pub(crate) fn validate(&self) -> color_eyre::Result<()> {
         color_eyre::eyre::ensure!(
+            self.schema_addons.is_empty() || self.record_reader == RecordReader::Inhouse,
+            "schema add-ons require --record-reader inhouse"
+        );
+        // The merged-terrain settings only mean something to a merged-terrain build, and the
+        // Skyrim.ini only to the skyrim-ini default. Checked here so a programmatic config is held to
+        // the same rules as the command line.
+        let terrain_default = TerrainDefaultTexture::default();
+        color_eyre::eyre::ensure!(
+            self.merged_terrain
+                || (self.terrain_default_texture == terrain_default
+                    && self.terrain_ini.is_none()
+                    && !self.terrain_allow_downscale),
+            "merged terrain settings require merged_terrain"
+        );
+        if let Some(ini) = &self.terrain_ini {
+            color_eyre::eyre::ensure!(
+                self.merged_terrain
+                    && self.terrain_default_texture == TerrainDefaultTexture::SkyrimIni,
+                "terrain_ini requires merged_terrain and the skyrim-ini default texture"
+            );
+            color_eyre::eyre::ensure!(
+                ini.is_file(),
+                "terrain_ini is not a readable file: {}",
+                ini.display()
+            );
+        }
+        color_eyre::eyre::ensure!(
             self.data_dir.is_dir(),
             "Skyrim Data directory does not exist: {}",
             self.data_dir.display()
         );
         color_eyre::eyre::ensure!(self.cpu_jobs > 0, "cpu_jobs must be greater than zero");
         color_eyre::eyre::ensure!(self.io_jobs > 0, "io_jobs must be greater than zero");
+        color_eyre::eyre::ensure!(
+            self.ingestion_sync != crate::archive::IngestionSync::None || self.verify_cache,
+            "ingestion_sync=none requires verify_cache"
+        );
         color_eyre::eyre::ensure!(
             (1..=255).contains(&self.texture_fallback_quality),
             "texture_fallback_quality must be between 1 and 255"
@@ -123,21 +277,47 @@ impl PipelineConfig {
             self.texture_uastc_level <= 4,
             "texture_uastc_level must be between 0 and 4"
         );
-        if let TextureEncoder::Gpu { quality, batch_mb } = self.texture_encoder {
-            color_eyre::eyre::ensure!(quality <= 8, "GPU quality must be between 0 and 8");
-            color_eyre::eyre::ensure!(
-                (1..=4096).contains(&batch_mb),
-                "GPU batch size must be between 1 and 4096 MiB"
-            );
+        for encoder in [self.texture_encoder, self.lod_texture_encoder] {
+            if let TextureEncoder::Gpu { quality, batch_mb } = encoder {
+                color_eyre::eyre::ensure!(quality <= 8, "GPU quality must be between 0 and 8");
+                color_eyre::eyre::ensure!(
+                    (1..=4096).contains(&batch_mb),
+                    "GPU batch size must be between 1 and 4096 MiB"
+                );
+            }
         }
         color_eyre::eyre::ensure!(
             (0..=22).contains(&self.texture_zstd_level),
             "texture_zstd_level must be between 0 and 22"
         );
+        // Part of a file name: `Strings/<plugin>_<language>.STRINGS`.
+        color_eyre::eyre::ensure!(
+            !self.language.is_empty()
+                && self
+                    .language
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_'),
+            "language must be a name such as english, made of letters, digits and underscores"
+        );
         // Compared as resolved folders, not as spelled: the output is replaced
         // on publish, staging is deleted after it, and the cache is pruned, so
         // none of them may be, hold, or sit inside the game data.
         let data = std::fs::canonicalize(&self.data_dir)?;
+        let mut sources = vec![data.clone()];
+        if let Some(selection) = &self.mo2 {
+            color_eyre::eyre::ensure!(
+                self.plugins_file.is_none(),
+                "MO2 selection cannot be combined with plugins_file"
+            );
+            let instance = mo2::Instance::open(&selection.instance_path)?;
+            instance.profile_dir(&selection.profile)?;
+            sources.extend(
+                instance
+                    .source_roots()
+                    .iter()
+                    .map(|path| path.to_path_buf()),
+            );
+        }
         let mut written = vec![
             ("output directory", self.output_dir.clone()),
             ("ingestion cache directory", self.ingestion_cache_dir()),
@@ -147,12 +327,14 @@ impl PipelineConfig {
         }
         for (role, path) in written {
             let resolved = resolve_path(&path)?;
-            color_eyre::eyre::ensure!(
-                !(resolved.starts_with(&data) || data.starts_with(&resolved)),
-                "the {role} {} overlaps the Skyrim Data directory {}; choose a folder outside it that does not contain it",
-                path.display(),
-                self.data_dir.display()
-            );
+            for source in &sources {
+                color_eyre::eyre::ensure!(
+                    !(resolved.starts_with(source) || source.starts_with(&resolved)),
+                    "the {role} {} overlaps the Skyrim Data directory or MO2 source {}; choose a folder outside it that does not contain it",
+                    path.display(),
+                    source.display()
+                );
+            }
         }
         check_output_dir(&self.output_dir)?;
         if let Some(staging) = &self.resume_staging {
@@ -292,10 +474,14 @@ fn resolve_path(path: &Path) -> std::io::Result<PathBuf> {
     loop {
         match std::fs::canonicalize(existing) {
             Ok(resolved) => {
-                return Ok(missing
-                    .iter()
-                    .rev()
-                    .fold(resolved, |resolved, part| resolved.join(part)));
+                return Ok(missing.iter().rev().fold(resolved, |mut resolved, part| {
+                    if *part == std::ffi::OsStr::new("..") {
+                        resolved.pop();
+                    } else if *part != std::ffi::OsStr::new(".") {
+                        resolved.push(part);
+                    }
+                    resolved
+                }));
             }
             Err(error) => match (existing.parent(), existing.file_name()) {
                 (Some(parent), Some(name)) => {
@@ -347,6 +533,121 @@ fn parent_or_cwd(path: &Path) -> &Path {
 mod tests {
     use super::*;
 
+    /// A language is part of a string table's file name, so only letters, digits and underscores
+    /// are accepted.
+    #[test]
+    fn language_must_be_usable_in_a_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(&data, dir.path().join("pack"));
+        assert_eq!(config.language, "english");
+        for language in ["german", "chinese_traditional"] {
+            config.language = language.into();
+            config.validate().unwrap();
+        }
+        for language in ["", "../english", "en glish", "english.strings"] {
+            config.language = language.into();
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("language must be"), "{language:?}: {error}");
+        }
+    }
+
+    /// The merged-terrain settings are accepted only with the option, the ini only with the
+    /// skyrim-ini default, and the ini must be a file that exists.
+    #[test]
+    fn terrain_settings_need_the_merged_terrain_option_and_an_existing_ini() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let ini = dir.path().join("Skyrim.ini");
+        std::fs::write(&ini, "[Landscape]\n").unwrap();
+        let mut config = PipelineConfig::new(&data, dir.path().join("pack"));
+        config.validate().unwrap();
+
+        config.terrain_allow_downscale = true;
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("require merged_terrain"), "{error}");
+        config.terrain_allow_downscale = false;
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        assert!(config.validate().is_err());
+        config.terrain_default_texture = TerrainDefaultTexture::White;
+
+        // An ini needs the option and the skyrim-ini default; white with an ini is refused.
+        config.terrain_ini = Some(ini.clone());
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("merged_terrain"), "{error}");
+        config.merged_terrain = true;
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("skyrim-ini default texture"), "{error}");
+
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        config.validate().unwrap();
+        config.terrain_ini = Some(dir.path().join("Missing.ini"));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("not a readable file"), "{error}");
+        config.terrain_ini = Some(dir.path().to_path_buf());
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("not a readable file"), "{error}");
+    }
+
+    /// New and older unstamped configurations use in-house while explicit legacy stays selected.
+    #[test]
+    fn record_reader_defaults_to_inhouse_and_preserves_serialized_choices() {
+        let config = PipelineConfig::new("Data", "pack");
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert_eq!(RecordReader::default(), RecordReader::Inhouse);
+
+        let mut serialized = serde_json::to_value(&config).unwrap();
+        serialized.as_object_mut().unwrap().remove("record_reader");
+        let unstamped: PipelineConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(unstamped.record_reader, RecordReader::Inhouse);
+
+        serialized["record_reader"] = serde_json::json!("legacy");
+        let legacy: PipelineConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(legacy.record_reader, RecordReader::Legacy);
+    }
+
+    /// Older serialized configs keep default selection inputs and explicit LOD origins.
+    #[test]
+    fn new_configs_default_to_gpu_lod_and_round_trip_the_selected_recipe() {
+        let config = PipelineConfig::new("Data", "modern_assets");
+        let expected = TextureEncoder::Gpu {
+            quality: crate::texture_gpu::DEFAULT_QUALITY,
+            batch_mb: crate::texture_gpu::DEFAULT_BATCH_MB,
+        };
+        assert_eq!(config.lod_texture_encoder, expected);
+        assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(TextureEncoder::default(), TextureEncoder::Cpu);
+        let restored: PipelineConfig =
+            serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+        assert_eq!(restored.lod_texture_encoder, expected);
+        assert_eq!(restored.texture_encoder, TextureEncoder::Cpu);
+    }
+
+    #[test]
+    fn missing_lod_encoder_keeps_cpu_even_when_source_texture_encoding_is_gpu() {
+        let mut config = PipelineConfig::new("Data", "modern_assets");
+        config.texture_encoder = TextureEncoder::Gpu {
+            quality: 3,
+            batch_mb: 16,
+        };
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("lod_texture_encoder");
+        let restored: PipelineConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.lod_texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(restored.texture_encoder, config.texture_encoder);
+
+        config.lod_texture_encoder = TextureEncoder::Cpu;
+        let explicit_cpu: PipelineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(explicit_cpu.lod_texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(explicit_cpu.texture_encoder, config.texture_encoder);
+    }
+
     #[test]
     fn config_v90_accepts_legacy_configs_without_inventing_lod_origins() {
         let mut legacy = serde_json::json!({
@@ -365,15 +666,67 @@ mod tests {
             "script_abi_version": 1
         });
         let config: PipelineConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(config.skyrim_ccc_file.is_none());
+        assert!(config.skyrim_ini_file.is_none());
+        assert!(config.mo2.is_none());
+        assert_eq!(config.record_reader, RecordReader::Inhouse);
+        assert!(config.schema_addons.is_empty());
         assert!(config.lod_origins.is_empty());
         assert!(!config.no_lod);
+        assert!(!config.extract_all_archive_files);
+        assert_eq!(
+            config.ingestion_sync,
+            crate::archive::IngestionSync::PerFile
+        );
         assert_eq!(config.texture_encoder, TextureEncoder::Cpu);
+        assert_eq!(config.lod_texture_encoder, TextureEncoder::Cpu);
         assert_eq!(config.data_dir, PathBuf::from("Data"));
         assert_eq!(config.cpu_jobs, 2);
 
         legacy["lod_origins"] = serde_json::json!({"GeneratedWorld": [-4, 12]});
         let explicit: PipelineConfig = serde_json::from_value(legacy).unwrap();
         assert_eq!(explicit.lod_origins["GeneratedWorld"], [-4, 12]);
+    }
+
+    /// Mixed source selection is rejected before opening an MO2 instance or starting output work.
+    #[test]
+    fn mo2_and_player_selection_are_rejected_before_instance_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let output = directory.path().join("pack");
+        let mut config = PipelineConfig::new(data, &output);
+        config.plugins_file = Some(directory.path().join("plugins.txt"));
+        config.mo2 = Some(mo2::Selection {
+            instance_path: directory.path().join("absent-instance"),
+            profile: "Absent".into(),
+        });
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("MO2 selection cannot be combined with plugins_file")
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn no_ingestion_sync_requires_cache_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        std::fs::create_dir(&data).unwrap();
+        let mut config = PipelineConfig::new(data, directory.path().join("output"));
+        config.ingestion_sync = crate::archive::IngestionSync::None;
+        config.validate().unwrap();
+        config.verify_cache = false;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires verify_cache")
+        );
     }
 
     #[test]

@@ -1,0 +1,1367 @@
+{
+  "alignment": "explicit_render_clock_bounds",
+  "requested_render_elapsed_window_seconds": [
+    24.100423208,
+    34.100423208
+  ],
+  "selected_complete_schedules": 468,
+  "selected_render_frames": [
+    1153,
+    1620
+  ],
+  "selected_interval_seconds": [
+    24.122463375,
+    34.096578333
+  ],
+  "selected_frame_gaps": [],
+  "capture_dropped_frame_samples": 0,
+  "capture_coverage_complete": false,
+  "phases": {
+    "opaque": {
+      "coverage": {
+        "phase": "opaque",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 80028,
+          "mean_per_completed_render_frame": 171.0,
+          "minimum": 171,
+          "p50": 171,
+          "p95": 171,
+          "maximum": 171
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 80028,
+          "mean_per_completed_render_frame": 171.0,
+          "minimum": 171,
+          "p50": 171,
+          "p95": 171,
+          "maximum": 171
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 80028,
+          "mean_per_completed_render_frame": 171.0,
+          "minimum": 171,
+          "p50": 171,
+          "p95": 171,
+          "maximum": 171
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 264420,
+          "mean_per_completed_render_frame": 565.0,
+          "minimum": 565,
+          "p50": 565,
+          "p95": 565,
+          "maximum": 565
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 264420,
+          "mean_per_completed_render_frame": 565.0,
+          "minimum": 565,
+          "p50": 565,
+          "p95": 565,
+          "maximum": 565
+        },
+        "fixed_indexed_api_calls": {
+          "total": 80028,
+          "mean_per_completed_render_frame": 171.0,
+          "minimum": 171,
+          "p50": 171,
+          "p95": 171,
+          "maximum": 171
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "alpha_mask": {
+      "coverage": {
+        "phase": "alpha_mask",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 16848,
+          "mean_per_completed_render_frame": 36.0,
+          "minimum": 36,
+          "p50": 36,
+          "p95": 36,
+          "maximum": 36
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 16848,
+          "mean_per_completed_render_frame": 36.0,
+          "minimum": 36,
+          "p50": 36,
+          "p95": 36,
+          "maximum": 36
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 16848,
+          "mean_per_completed_render_frame": 36.0,
+          "minimum": 36,
+          "p50": 36,
+          "p95": 36,
+          "maximum": 36
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 121212,
+          "mean_per_completed_render_frame": 259.0,
+          "minimum": 259,
+          "p50": 259,
+          "p95": 259,
+          "maximum": 259
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 121212,
+          "mean_per_completed_render_frame": 259.0,
+          "minimum": 259,
+          "p50": 259,
+          "p95": 259,
+          "maximum": 259
+        },
+        "fixed_indexed_api_calls": {
+          "total": 16848,
+          "mean_per_completed_render_frame": 36.0,
+          "minimum": 36,
+          "p50": 36,
+          "p95": 36,
+          "maximum": 36
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "transparent": {
+      "coverage": {
+        "phase": "transparent",
+        "registry_present": true,
+        "registered_draw_variants": 4,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 3,
+        "coverage_complete": false
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 9360,
+          "mean_per_completed_render_frame": 20.0,
+          "minimum": 20,
+          "p50": 20,
+          "p95": 20,
+          "maximum": 20
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 9360,
+          "mean_per_completed_render_frame": 20.0,
+          "minimum": 20,
+          "p50": 20,
+          "p95": 20,
+          "maximum": 20
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 9360,
+          "mean_per_completed_render_frame": 20.0,
+          "minimum": 20,
+          "p50": 20,
+          "p95": 20,
+          "maximum": 20
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 10296,
+          "mean_per_completed_render_frame": 22.0,
+          "minimum": 22,
+          "p50": 22,
+          "p95": 22,
+          "maximum": 22
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 10296,
+          "mean_per_completed_render_frame": 22.0,
+          "minimum": 22,
+          "p50": 22,
+          "p95": 22,
+          "maximum": 22
+        },
+        "fixed_indexed_api_calls": {
+          "total": 9360,
+          "mean_per_completed_render_frame": 20.0,
+          "minimum": 20,
+          "p50": 20,
+          "p95": 20,
+          "maximum": 20
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "transmissive": {
+      "coverage": {
+        "phase": "transmissive",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "opaque_prepass": {
+      "coverage": {
+        "phase": "opaque_prepass",
+        "registry_present": true,
+        "registered_draw_variants": 2,
+        "wrapped_draw_variants": 2,
+        "expected_draw_variants": 2,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 7488,
+          "mean_per_completed_render_frame": 16.0,
+          "minimum": 16,
+          "p50": 16,
+          "p95": 16,
+          "maximum": 16
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 7488,
+          "mean_per_completed_render_frame": 16.0,
+          "minimum": 16,
+          "p50": 16,
+          "p95": 16,
+          "maximum": 16
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 7488,
+          "mean_per_completed_render_frame": 16.0,
+          "minimum": 16,
+          "p50": 16,
+          "p95": 16,
+          "maximum": 16
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 497016,
+          "mean_per_completed_render_frame": 1062.0,
+          "minimum": 1062,
+          "p50": 1062,
+          "p95": 1062,
+          "maximum": 1062
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 497016,
+          "mean_per_completed_render_frame": 1062.0,
+          "minimum": 1062,
+          "p50": 1062,
+          "p95": 1062,
+          "maximum": 1062
+        },
+        "fixed_indexed_api_calls": {
+          "total": 7488,
+          "mean_per_completed_render_frame": 16.0,
+          "minimum": 16,
+          "p50": 16,
+          "p95": 16,
+          "maximum": 16
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "alpha_mask_prepass": {
+      "coverage": {
+        "phase": "alpha_mask_prepass",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 32760,
+          "mean_per_completed_render_frame": 70.0,
+          "minimum": 70,
+          "p50": 70,
+          "p95": 70,
+          "maximum": 70
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 32760,
+          "mean_per_completed_render_frame": 70.0,
+          "minimum": 70,
+          "p50": 70,
+          "p95": 70,
+          "maximum": 70
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 32760,
+          "mean_per_completed_render_frame": 70.0,
+          "minimum": 70,
+          "p50": 70,
+          "p95": 70,
+          "maximum": 70
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 234936,
+          "mean_per_completed_render_frame": 502.0,
+          "minimum": 502,
+          "p50": 502,
+          "p95": 502,
+          "maximum": 502
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 234936,
+          "mean_per_completed_render_frame": 502.0,
+          "minimum": 502,
+          "p50": 502,
+          "p95": 502,
+          "maximum": 502
+        },
+        "fixed_indexed_api_calls": {
+          "total": 32760,
+          "mean_per_completed_render_frame": 70.0,
+          "minimum": 70,
+          "p50": 70,
+          "p95": 70,
+          "maximum": 70
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "opaque_deferred": {
+      "coverage": {
+        "phase": "opaque_deferred",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "alpha_mask_deferred": {
+      "coverage": {
+        "phase": "alpha_mask_deferred",
+        "registry_present": true,
+        "registered_draw_variants": 1,
+        "wrapped_draw_variants": 1,
+        "expected_draw_variants": 1,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    },
+    "shadow": {
+      "coverage": {
+        "phase": "shadow",
+        "registry_present": true,
+        "registered_draw_variants": 2,
+        "wrapped_draw_variants": 2,
+        "expected_draw_variants": 2,
+        "unwrapped_draw_variants": 0,
+        "coverage_complete": true
+      },
+      "steady_frame_metrics": {
+        "leaf_mesh_commands_reached": {
+          "total": 6552,
+          "mean_per_completed_render_frame": 14.0,
+          "minimum": 14,
+          "p50": 14,
+          "p95": 14,
+          "maximum": 14
+        },
+        "leaf_mesh_commands_skipped": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "leaf_mesh_command_failures": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "issued_api_calls": {
+          "total": 6552,
+          "mean_per_completed_render_frame": 14.0,
+          "minimum": 14,
+          "p50": 14,
+          "p95": 14,
+          "maximum": 14
+        },
+        "direct_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "direct_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_indirect_api_calls": {
+          "total": 6552,
+          "mean_per_completed_render_frame": 14.0,
+          "minimum": 14,
+          "p50": 14,
+          "p95": 14,
+          "maximum": 14
+        },
+        "fixed_indexed_argument_slots": {
+          "total": 206388,
+          "mean_per_completed_render_frame": 441.0,
+          "minimum": 441,
+          "p50": 441,
+          "p95": 441,
+          "maximum": 441
+        },
+        "fixed_non_indexed_argument_slots": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "empty_fixed_indirect_ranges": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_indirect_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "dynamic_argument_slot_upper_bound": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "unclassified_successes": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        },
+        "fixed_argument_slots_total": {
+          "total": 206388,
+          "mean_per_completed_render_frame": 441.0,
+          "minimum": 441,
+          "p50": 441,
+          "p95": 441,
+          "maximum": 441
+        },
+        "fixed_indexed_api_calls": {
+          "total": 6552,
+          "mean_per_completed_render_frame": 14.0,
+          "minimum": 14,
+          "p50": 14,
+          "p95": 14,
+          "maximum": 14
+        },
+        "fixed_non_indexed_api_calls": {
+          "total": 0,
+          "mean_per_completed_render_frame": 0.0,
+          "minimum": 0,
+          "p50": 0,
+          "p95": 0,
+          "maximum": 0
+        }
+      },
+      "fixed_api_split_derivation": "by elimination when every selected frame has one argument kind and no empty ranges; null otherwise",
+      "unavailable_splits": [
+        "dynamic_indexed_api_calls",
+        "dynamic_non_indexed_api_calls",
+        "dynamic_indexed_argument_slot_upper_bound",
+        "dynamic_non_indexed_argument_slot_upper_bound"
+      ]
+    }
+  },
+  "caveats": [
+    "Counts describe mesh API calls and argument slots, including zero-instance records; non-mesh render nodes are excluded.",
+    "Indirect API-call splits were not captured. Fixed call splits are deduced only for single-kind, nonempty frames; dynamic splits remain unavailable and GPU-counted ranges are upper bounds.",
+    "The render sequence and plugin-build elapsed clock are independent of the benchmark main-frame counter.",
+    "The count capture adds CPU overhead and must remain separate from matched timing runs.",
+    "Draw registry coverage is incomplete; inspect each phase's coverage record."
+  ],
+  "capture": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/profile/draw-submission.json",
+  "benchmark_context": {
+    "path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-drawcounts-v4-1/report.json",
+    "measured_frames": 469,
+    "main_warmup_frames": 1200,
+    "measured_seconds": 10.007092792
+  }
+}

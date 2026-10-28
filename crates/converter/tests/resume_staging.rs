@@ -6,11 +6,14 @@
 //! it. Reuse is then observable as the marker surviving the run; reconversion
 //! replaces it with the bytes a fresh run produces.
 
+mod common;
+
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport,
     cache::{
-        CONVERTER_SCHEMA_VERSION, StagedOutput, StagingJournal, configuration_hash, hash_bytes,
-        hash_file, load_staged_outputs,
+        CONVERTER_SCHEMA_VERSION, StagedOutput, StagingJournal,
+        asset_configuration_hash_for_schema, configuration_hash, hash_bytes, hash_file,
+        load_staged_outputs,
     },
 };
 use std::{fs, path::PathBuf};
@@ -41,7 +44,7 @@ impl Fixture {
         let staging = output.with_extension(format!("staging-{}-1", std::process::id()));
         fs::create_dir_all(data.join("scripts")).unwrap();
         fs::create_dir_all(&staging).unwrap();
-        let config = PipelineConfig::new(&data, &output);
+        let config = common::cpu_lod_config(&data, &output);
         Self {
             _temp: temp,
             data,
@@ -63,11 +66,16 @@ impl Fixture {
     }
 
     /// The record a previous run would have written for the staged output: the
-    /// current source, schema and configuration, and the marker's own bytes.
+    /// current source, schema and script ABI settings, and the marker's own bytes.
     fn marker_record(&self) -> StagedOutput {
         StagedOutput {
             schema_version: CONVERTER_SCHEMA_VERSION,
-            configuration_hash: configuration_hash(&self.config).unwrap(),
+            configuration_hash: asset_configuration_hash_for_schema(
+                &self.config,
+                CONVERTER_SCHEMA_VERSION,
+                "pex",
+            )
+            .unwrap(),
             source_hash: hash_bytes(&fs::read(self.data.join("scripts/one.pex")).unwrap()),
             output_size: MARKER.len() as u64,
             output_hash: hash_bytes(MARKER),
@@ -163,17 +171,28 @@ async fn reconverts_a_staged_output_written_under_an_older_schema() {
     );
 }
 
+/// A changed script ABI rejects otherwise matching staged script provenance.
 #[tokio::test]
 async fn reconverts_a_staged_output_written_under_a_different_configuration() {
     let fixture = Fixture::new();
     fixture.write_source("One");
     fixture.stage_marker();
     let mut other = fixture.config.clone();
-    other.texture_fallback_quality = fixture.config.texture_fallback_quality / 2;
+    other.script_abi_version += 1;
     let stale = StagedOutput {
-        configuration_hash: configuration_hash(&other).unwrap(),
+        configuration_hash: asset_configuration_hash_for_schema(
+            &other,
+            CONVERTER_SCHEMA_VERSION,
+            "pex",
+        )
+        .unwrap(),
         ..fixture.marker_record()
     };
+    assert_ne!(
+        stale.configuration_hash,
+        fixture.marker_record().configuration_hash,
+        "the rejection must be caused by different script settings"
+    );
     fixture.write_record(&stale);
 
     let report = fixture.run(fixture.resumed_config()).await;
@@ -184,6 +203,40 @@ async fn reconverts_a_staged_output_written_under_a_different_configuration() {
         fixture.published_script(),
         expected,
         "a staged output from another configuration was certified instead of converted"
+    );
+}
+
+/// A matching old full journal key does not become a current script settings proof.
+#[tokio::test]
+async fn reconverts_a_staged_output_with_matching_legacy_full_configuration() {
+    let mut fixture = Fixture::new();
+    fixture.config.record_reader = converter::config::RecordReader::Legacy;
+    fixture.config.no_lod = true;
+    fixture.write_source("One");
+    fixture.stage_marker();
+    assert_eq!(
+        fixture.config.record_reader,
+        converter::config::RecordReader::Legacy
+    );
+    let current = fixture.marker_record();
+    let legacy = StagedOutput {
+        configuration_hash: configuration_hash(&fixture.config).unwrap(),
+        ..current.clone()
+    };
+    assert_ne!(legacy.configuration_hash, current.configuration_hash);
+    fixture.write_record(&legacy);
+    let report = fixture.run(fixture.resumed_config()).await;
+    let expected = fresh_conversion(&fixture.config).await;
+
+    assert!(report.complete);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.converted, 1);
+    assert_eq!(report.cache_hits, 0);
+    assert_ne!(expected, MARKER);
+    assert_eq!(
+        fixture.published_script(),
+        expected,
+        "a legacy full key was silently upgraded to script settings provenance"
     );
 }
 
@@ -274,14 +327,19 @@ async fn changed_malformed_nif_does_not_publish_the_previous_staged_glb() {
     let staged_glb = staging.join("meshes/one.glb");
     converter::mesh::MeshConverter::convert_nif_to_glb(&source, &staged_glb).unwrap();
     let output_bytes = fs::read(&staged_glb).unwrap();
-    let config = PipelineConfig::new(&data, &output);
+    let config = common::cpu_lod_config(&data, &output);
     let mut journal = StagingJournal::open(&staging).unwrap();
     journal
         .record(
             "meshes/one.nif",
             &StagedOutput {
                 schema_version: CONVERTER_SCHEMA_VERSION,
-                configuration_hash: configuration_hash(&config).unwrap(),
+                configuration_hash: asset_configuration_hash_for_schema(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    "nif",
+                )
+                .unwrap(),
                 source_hash: hash_bytes(&valid_nif),
                 output_size: output_bytes.len() as u64,
                 output_hash: hash_bytes(&output_bytes),
@@ -314,7 +372,7 @@ async fn fails_even_without_fail_fast_when_invalid_staged_output_cannot_be_remov
     fs::create_dir_all(data.join("meshes")).unwrap();
     fs::create_dir_all(staging.join("meshes/one.glb")).unwrap();
     fs::write(data.join("meshes/one.nif"), b"malformed NIF bytes").unwrap();
-    let mut config = PipelineConfig::new(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
     config.resume_staging = Some(staging);
     config.fail_fast = false;
 
@@ -381,7 +439,7 @@ async fn records_provenance_for_every_output_it_stages() {
         assert_eq!(record.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(
             record.configuration_hash,
-            configuration_hash(&config).unwrap()
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, "pex").unwrap()
         );
         assert_eq!(
             record.source_hash,

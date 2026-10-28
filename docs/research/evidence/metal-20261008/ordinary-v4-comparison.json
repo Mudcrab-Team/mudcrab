@@ -1,0 +1,1701 @@
+{
+  "status": "valid comparable HUD observations",
+  "issues": [],
+  "baseline": {
+    "run_folder": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-baseline-2",
+    "label": "fixes-ordinary-baseline-2",
+    "binary": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine",
+    "binary_sha256": "f958d582568d5c19a6e0515adf442a3ea18c6c89f9b332f7d5465850cdedac37",
+    "source_snapshot": {
+      "commit": "f40ca1df770eab4ace83b335b6b38168bd83af60",
+      "dirty_worktree": true,
+      "snapshot_utc": "2026-10-09T02:02:56.907820+00:00",
+      "snapshot_matches_binary_not_proven": true
+    },
+    "production_provenance": {
+      "status": "not applicable",
+      "issues": []
+    },
+    "quality_validation_basis": "Explicit native temporary-control logs and recorded command/environment.",
+    "cpu_analysis": {
+      "analysis_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-baseline-2/cpu-analysis.json",
+      "analysis_sha256": "02c7d6ccc31635f73a36a52f54edfee6a63f89ce5b75992dec190901f000387a",
+      "window": {
+        "start_profile_ms": 30129.725830078125,
+        "end_profile_ms": 87725.90625,
+        "duration_seconds": 57.59618041992187,
+        "start_utc": "2026-10-09T02:03:27.106470+00:00",
+        "end_utc": "2026-10-09T02:04:24.702650+00:00",
+        "boundary_evidence": {
+          "warmup": {
+            "file": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-baseline-2/engine.stderr.log",
+            "line": 155,
+            "text": "2026-10-09T02:03:22.895362Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+          },
+          "end_override_utc": "2026-10-09T02:04:24.702650Z"
+        }
+      },
+      "same_as_hud_clock": true,
+      "verified_render_crop": {
+        "end_utc": "2026-10-09T02:04:24.702650Z",
+        "proof_line": "2026-10-09T02:04:24.702650Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0",
+        "policy": "Last cumulative zero-missing periodic proof before owned SIGINT; excludes teardown and unproven tail."
+      },
+      "verified_warmup_clock": {
+        "method": "Capture start plus30seconds, expressed through logged render-frame1200 boundary plus4.211108seconds.",
+        "capture_start_utc": "2026-10-09T02:02:57.106470Z",
+        "steady_start_utc": "2026-10-09T02:03:27.106470Z",
+        "logged_render_frame1200_utc": "2026-10-09T02:03:22.895362Z",
+        "settle_seconds": 4.211108,
+        "same_as_hud_clock": true,
+        "loading_queue_cutoff_observed": false
+      },
+      "totals": {
+        "thread_count": 60,
+        "cpu_ms": 111527.8630000003,
+        "cpu_ms_per_second": 1936.3760267933335,
+        "cpu_core_equivalents": 1.9363760267933334,
+        "cpu_at_blocked_leaf_observations_ms": 56616.33500000011,
+        "cpu_at_other_leaf_observations_ms": 54911.527999999955,
+        "unattributed_cpu_ms": 0,
+        "start_boundary_cpu_uncertainty_upper_ms": 1.363,
+        "end_boundary_omitted_cpu_uncertainty_upper_ms": 1.9079999999999997,
+        "symbol_resolution": {
+          "resolved_leaf_cpu_ms": 100238.00099999424,
+          "unresolved_leaf_cpu_ms": 11289.862000000046
+        }
+      },
+      "exclusive_observation_groups": [
+        {
+          "group": "recognized_blocking_endpoint",
+          "cpu_ms": 56616.334999993334,
+          "cpu_ms_per_second": 982.9876666684372,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "other_or_unresolved_endpoint",
+          "cpu_ms": 23612.942000000014,
+          "cpu_ms_per_second": 409.9740959876666,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "Apple_Metal_driver_leaf",
+          "cpu_ms": 11282.675000000012,
+          "cpu_ms_per_second": 195.89276437674087,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "directional_shadow_visibility_culling",
+          "cpu_ms": 6684.803999999974,
+          "cpu_ms_per_second": 116.06332140885813,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "camera_visibility_culling",
+          "cpu_ms": 5198.213000000019,
+          "cpu_ms_per_second": 90.25273832571743,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "other_render_command_encoding",
+          "cpu_ms": 4486.518999999995,
+          "cpu_ms_per_second": 77.89612032064818,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "wgpu_indirect_draw_validation",
+          "cpu_ms": 3646.3749999999977,
+          "cpu_ms_per_second": 63.309319705144155,
+          "approximate_cpu_ms_per_frame": null
+        }
+      ],
+      "recording": {
+        "interval_ms": 1.0,
+        "CPU_delta_unit": "\u00b5s",
+        "profile_format_version": 49
+      },
+      "methods": {
+        "cpu": "Sum threadCPUDelta using meta units for samples in [start,end); ignore each thread first delta. Do not multiply by sample weight. CPU is measured per interval; stack attribution is an endpoint estimate, especially misleading at a blocking leaf.",
+        "inclusive": "Each function receives interval CPU once per sampled stack; recursion does not multiply flat function totals. Inclusive values overlap.",
+        "self": "Deepest physical symbol receives interval CPU; blocked-observation self attribution is reported separately and is not syscall execution cost.",
+        "active_observation_legacy_key": "active_observation_self_top30 contains endpoints not recognized by the native wait classifier. It is not proof that every listed function was executing throughout its CPU interval.",
+        "wall_weights": "Nominal sampling residence uses weight*interval. Clipped values model each row over [time-weight*interval,time]; raw selected weights also retained. These are sampling estimates, not measured call durations.",
+        "zero_CPU_residence": "For zero-CPU rows, intersect [previous serialized sample time,current time] with crop. Samply reuses/compresses an unchanged stack when OS thread CPU has not advanced. This proves zero reported CPU over the interval, subject to timer resolution.",
+        "symbols": "Exact sampled RVA to sidecar known_addresses; match library debug name plus Mach-O UUID. Rank physical symbols using library UUID plus physical symbol RVA, keeping same-named distinct symbols separate. Sidecar deduplicates debug frame arrays by physical function RVA, so retain outer representative source locations without assigning CPU to inline frames. Unresolved libraries/addresses retain module and hex location.",
+        "observation_groups": "Assign each attributed CPU interval once: recognized native blocking endpoint; camera-culling ancestry; directional-shadow-culling ancestry; indirect-draw-validation ancestry; Apple driver leaf; other render-command ancestry; other/unresolved. Groups are exclusive endpoint estimates, not exact function execution cost. Future::poll is never treated as a native blocking syscall.",
+        "limits": "Line-table debug/LTO and sampling can omit or merge functions; representative sidecar source lines are not per-sample line execution cost. Blocking CPU attribution includes work earlier in the interval. CPU delta can cross crop boundaries; start included and end omitted upper uncertainty recorded. Stack residence is per thread and cannot be added to frame time. CPU sampling does not measure GPU pass execution."
+      },
+      "limits": [
+        "CPU deltas at blocking endpoints are kept separate from nonblocking endpoint groups.",
+        "No ordinary per-frame CPU denominator is supplied; compare core equivalents or CPU ms per second.",
+        "Sampling loss is not exposed by this producer; resolved and unresolved leaf CPU are retained."
+      ]
+    },
+    "engine_command": [
+      "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-riverwood/bin/engine",
+      "--assets",
+      "/Users/taylor/Projects/mudcrab/modern_assets",
+      "--worldspace",
+      "0x3c",
+      "--grid-x",
+      "5",
+      "--grid-y",
+      "-12",
+      "--stream-radius",
+      "2",
+      "--run-label",
+      "fixes-ordinary-baseline-2",
+      "--profile-output",
+      "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-baseline-2/profile",
+      "--profile-scenario",
+      "interactive-riverwood",
+      "--profile-run-id",
+      "fixes-ordinary-baseline-2",
+      "--profile-commit",
+      "f40ca1df770eab4ace83b335b6b38168bd83af60",
+      "--profile-dirty-worktree"
+    ],
+    "instrumentation_mode": "ordinary game; standard HUD and Samply",
+    "environment": {
+      "MUDCRAB_PROFILE_ALWAYS_ON_TOP": "1",
+      "MTL_HUD_ENABLED": "1",
+      "MTL_HUD_LOG_ENABLED": "1",
+      "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+    },
+    "capture_stop": {
+      "duration_seconds": 90.0,
+      "capture_elapsed_seconds": 90.012986333,
+      "capture_started_utc": "2026-10-09T02:02:57.106470+00:00",
+      "capture_ended_utc": "2026-10-09T02:04:27.119006+00:00",
+      "engine_sigint_utc": "2026-10-09T02:04:27.238751+00:00",
+      "duration_stop_verified": true,
+      "requested_duration_completed": true,
+      "profiler_exit_code": 1,
+      "engine_reported_exit_code": 130,
+      "profile_written": true,
+      "profile_validation": {
+        "valid": true,
+        "engine_threads": 60,
+        "engine_samples": 680900
+      },
+      "samply_capture_succeeded": true,
+      "expected_interruption": true,
+      "expected_interruption_note": "Controller verified the owned engine and sent SIGINT after the requested duration. Engine exit 130 and Samply exit 1/130 can follow that request; actual exit codes are retained.",
+      "error": null,
+      "engine_disappeared_utc": null,
+      "full_requested_duration_recorded": true,
+      "matching_owned_sigint_recorded": true,
+      "legacy_helper_metadata": false,
+      "legacy_note": null
+    },
+    "analysis_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-baseline-2/hud-analysis/hud-analysis.json",
+    "analysis_sha256": "0cae4f1a7ff007582d44c151e7cb6f4d2196cd3d99f6814488b02eff5a4ecd7f",
+    "input_log_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-baseline-2/engine.stderr.log",
+    "input_log_sha256": "11aba0ab895ed92fdb54fd75548ca9b1e20dd9be4352f79647b1705a4a190b3f",
+    "input_matches_analysis_hash": true,
+    "interval_provenance": {
+      "capture_start_utc": "2026-10-09T02:02:57.106470Z",
+      "steady_start_utc": "2026-10-09T02:03:27.106470Z",
+      "steady_end_utc": "2026-10-09T02:04:24.702650Z",
+      "selected_window_seconds": 57.59618,
+      "start_seconds_after_capture": 30.0,
+      "first_selected_batch_utc": "2026-10-09T02:03:27.226000Z",
+      "last_selected_batch_utc": "2026-10-09T02:04:24.284000Z",
+      "batch_timestamp_span_seconds": 57.058,
+      "selection": "Whole HUD batches whose UTC emission timestamps are inside the steady window",
+      "timing_alignment": "Bins and CSV timestamps use exact HUD batch emission time, not per-frame time. Within a bin, batch means are weighted by raw pair count. Batch data refer to preceding presents; no engine frame IDs or exact per-frame timestamps are inferred.",
+      "start_basis": "saved 30-second suggestion; loading needs verification",
+      "saved_suggested_start_utc": "2026-10-09T02:03:27.106470+00:00",
+      "loading_verification_required": true,
+      "conservative_endpoint_proof": {
+        "utc": "2026-10-09T02:04:24.702650Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 4200,
+          "warmup_plus_five": 65,
+          "present_frames": 4200,
+          "missing_frames": 0,
+          "measured_present_frames": 4135,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:04:24.702650Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0"
+      },
+      "cpu_render_frame_1200_proof": {
+        "utc": "2026-10-09T02:03:22.895362Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 1200,
+          "warmup_plus_five": 65,
+          "present_frames": 1200,
+          "missing_frames": 0,
+          "measured_present_frames": 1135,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:03:22.895362Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+      },
+      "cpu_suggested_start_utc": "2026-10-09T02:03:24.895362Z"
+    },
+    "normalization": {
+      "validation_status": "valid",
+      "invalid_reason": null,
+      "raw_pair_count_selected": 5578,
+      "verified_doublet_observation_count": 2788,
+      "hud_batch_count_selected": 114,
+      "phase_chosen": 1,
+      "phase_choice_ambiguous": false,
+      "trim_counts": {
+        "start_raw_pairs": 1,
+        "end_raw_pairs": 1
+      },
+      "trimmed_boundary_records": {
+        "start": [
+          {
+            "source_line": 164,
+            "batch_index": 56,
+            "batch_log_time_utc": "2026-10-09T02:03:27.226000Z",
+            "hud_header": 1408,
+            "graphics_memory_raw": "1600.88",
+            "process_memory_raw": "3889.13",
+            "raw_pair_index_in_batch": 0,
+            "present_interval_ms": 16.67,
+            "hud_command_buffer_gpu_time_ms": 17.55,
+            "in_steady_window": true,
+            "normalization_role": "trimmed_boundary_start"
+          }
+        ],
+        "end": [
+          {
+            "source_line": 286,
+            "batch_index": 169,
+            "batch_log_time_utc": "2026-10-09T02:04:24.284000Z",
+            "hud_header": 4172,
+            "graphics_memory_raw": "1600.88",
+            "process_memory_raw": "3894.58",
+            "raw_pair_index_in_batch": 49,
+            "present_interval_ms": 25.0,
+            "hud_command_buffer_gpu_time_ms": 17.74,
+            "in_steady_window": true,
+            "normalization_role": "trimmed_boundary_end"
+          }
+        ]
+      },
+      "doublet_phase_validation": [
+        {
+          "phase": 0,
+          "trim_start_raw_pairs": 0,
+          "trim_end_raw_pairs": 0,
+          "comparisons": 2789,
+          "matches": 4,
+          "mismatches": 2785,
+          "valid": false,
+          "mismatch_examples": [
+            {
+              "selected_raw_pair_indexes": [
+                0,
+                1
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  16.67,
+                  17.55
+                ],
+                [
+                  25.0,
+                  17.92
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                2,
+                3
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  25.0,
+                  17.92
+                ],
+                [
+                  16.67,
+                  17.65
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                4,
+                5
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  16.67,
+                  17.65
+                ],
+                [
+                  25.0,
+                  17.69
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                6,
+                7
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  25.0,
+                  17.69
+                ],
+                [
+                  16.67,
+                  17.71
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                8,
+                9
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  16.67,
+                  17.71
+                ],
+                [
+                  25.0,
+                  17.83
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                10,
+                11
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  25.0,
+                  17.83
+                ],
+                [
+                  16.67,
+                  17.47
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                12,
+                13
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  16.67,
+                  17.47
+                ],
+                [
+                  25.0,
+                  17.96
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                14,
+                15
+              ],
+              "source_lines": [
+                164,
+                164
+              ],
+              "values": [
+                [
+                  25.0,
+                  17.96
+                ],
+                [
+                  16.67,
+                  17.61
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "phase": 1,
+          "trim_start_raw_pairs": 1,
+          "trim_end_raw_pairs": 1,
+          "comparisons": 2788,
+          "matches": 2788,
+          "mismatches": 0,
+          "valid": true,
+          "mismatch_examples": []
+        }
+      ],
+      "exact_pattern_proof": {
+        "valid": true,
+        "method": "One contiguous phase across the whole selected raw stream; exact interval/GPU-value equality for every complete adjacent pair",
+        "comparisons": 2788,
+        "mismatches": 0,
+        "interior_raw_pairs_dropped": 0,
+        "maximum_boundary_trim_raw_pairs_per_edge": 1
+      },
+      "consecutive_identical_run_sizes": {
+        "1": 2,
+        "2": 2780,
+        "4": 4
+      },
+      "doublet_handling": "Validate both contiguous phases, report up to one trimmed boundary record per edge, then take the first record of each exact pair; four equal interior records retain two observations"
+    },
+    "raw_metrics": {
+      "presented_frame_interval_ms": {
+        "count": 5578,
+        "mean": 20.64085873072786,
+        "p50": 16.67,
+        "p95": 25.0,
+        "p99": 25.0,
+        "minimum": 8.33,
+        "maximum": 33.33
+      },
+      "presented_fps_from_mean_interval": 48.447596732557884,
+      "hud_command_buffer_gpu_time_ms": {
+        "count": 5578,
+        "mean": 17.72222839727501,
+        "p50": 17.71,
+        "p95": 18.07,
+        "p99": 18.23,
+        "minimum": 17.21,
+        "maximum": 18.64
+      }
+    },
+    "metrics": {
+      "presented_frame_interval_ms": {
+        "count": 2788,
+        "mean": 20.640789096126255,
+        "p50": 16.67,
+        "p95": 25.0,
+        "p99": 25.0,
+        "minimum": 8.33,
+        "maximum": 33.33
+      },
+      "presented_fps_from_mean_interval": 48.44776017733131,
+      "hud_command_buffer_gpu_time_ms": {
+        "count": 2788,
+        "mean": 17.722256097560976,
+        "p50": 17.71,
+        "p95": 18.07,
+        "p99": 18.23,
+        "minimum": 17.21,
+        "maximum": 18.64
+      }
+    },
+    "native_evidence": {
+      "physical_windows": [
+        {
+          "utc": "2026-10-09T02:02:57.873862Z",
+          "width": 3200,
+          "height": 1800,
+          "scale_factor": 2.0,
+          "requested_present_mode": "AutoVsync",
+          "line": "2026-10-09T02:02:57.873862Z  INFO engine::app: native profiling physical window width=3200 height=1800 scale_factor=2.0 present_mode=AutoVsync window_level=AlwaysOnTop focused=true always_on_top=true freeze_camera=false"
+        }
+      ],
+      "surface_configurations": [
+        {
+          "utc": "2026-10-09T02:02:57.896576Z",
+          "resolved_present_mode": "Fifo",
+          "extent": [
+            3200,
+            1800,
+            1
+          ],
+          "line": "2026-10-09T02:02:57.896576Z DEBUG wgpu_hal::metal::surface: build swapchain SurfaceConfiguration { maximum_frame_latency: 2, present_mode: Fifo, composite_alpha_mode: Opaque, format: Bgra8UnormSrgb, extent: (3200, 1800, 1), usage: TextureUses(COLOR_TARGET), view_formats: [] }"
+        }
+      ],
+      "applied_controls": [
+        {
+          "utc": "2026-10-09T02:02:57.637331Z",
+          "values": {
+            "no_shadows": false,
+            "no_reflections": false,
+            "no_render_diagnostics": false,
+            "freeze_camera": false
+          },
+          "line": "2026-10-09T02:02:57.637331Z  INFO engine::app: native profiling controls controls=NativeProfilingControls { physical_resolution: None, present_mode: None, no_shadows: false, no_reflections: false, no_render_diagnostics: false, always_on_top: true, freeze_camera: false }"
+        }
+      ],
+      "drawable_proofs": [
+        {
+          "utc": "2026-10-09T02:03:04.594879Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 300,
+            "warmup_plus_five": 65,
+            "present_frames": 300,
+            "missing_frames": 0,
+            "measured_present_frames": 235,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:04.594879Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=65 present_frames=300 missing_frames=0 measured_present_frames=235 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:10.645082Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 600,
+            "warmup_plus_five": 65,
+            "present_frames": 600,
+            "missing_frames": 0,
+            "measured_present_frames": 535,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:10.645082Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=65 present_frames=600 missing_frames=0 measured_present_frames=535 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:16.744319Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 900,
+            "warmup_plus_five": 65,
+            "present_frames": 900,
+            "missing_frames": 0,
+            "measured_present_frames": 835,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:16.744319Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=65 present_frames=900 missing_frames=0 measured_present_frames=835 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:22.895362Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1200,
+            "warmup_plus_five": 65,
+            "present_frames": 1200,
+            "missing_frames": 0,
+            "measured_present_frames": 1135,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:22.895362Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:28.944932Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1500,
+            "warmup_plus_five": 65,
+            "present_frames": 1500,
+            "missing_frames": 0,
+            "measured_present_frames": 1435,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:28.944932Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=65 present_frames=1500 missing_frames=0 measured_present_frames=1435 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:35.169128Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1800,
+            "warmup_plus_five": 65,
+            "present_frames": 1800,
+            "missing_frames": 0,
+            "measured_present_frames": 1735,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:35.169128Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=1800 warmup_plus_five=65 present_frames=1800 missing_frames=0 measured_present_frames=1735 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:41.268961Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2100,
+            "warmup_plus_five": 65,
+            "present_frames": 2100,
+            "missing_frames": 0,
+            "measured_present_frames": 2035,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:41.268961Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2100 warmup_plus_five=65 present_frames=2100 missing_frames=0 measured_present_frames=2035 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:47.394348Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2400,
+            "warmup_plus_five": 65,
+            "present_frames": 2400,
+            "missing_frames": 0,
+            "measured_present_frames": 2335,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:47.394348Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2400 warmup_plus_five=65 present_frames=2400 missing_frames=0 measured_present_frames=2335 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:53.569049Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2700,
+            "warmup_plus_five": 65,
+            "present_frames": 2700,
+            "missing_frames": 0,
+            "measured_present_frames": 2635,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:53.569049Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=2700 warmup_plus_five=65 present_frames=2700 missing_frames=0 measured_present_frames=2635 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:03:59.704653Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3000,
+            "warmup_plus_five": 65,
+            "present_frames": 3000,
+            "missing_frames": 0,
+            "measured_present_frames": 2935,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:03:59.704653Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3000 warmup_plus_five=65 present_frames=3000 missing_frames=0 measured_present_frames=2935 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:04:05.867112Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3300,
+            "warmup_plus_five": 65,
+            "present_frames": 3300,
+            "missing_frames": 0,
+            "measured_present_frames": 3235,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:04:05.867112Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3300 warmup_plus_five=65 present_frames=3300 missing_frames=0 measured_present_frames=3235 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:04:12.087291Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3600,
+            "warmup_plus_five": 65,
+            "present_frames": 3600,
+            "missing_frames": 0,
+            "measured_present_frames": 3535,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:04:12.087291Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3600 warmup_plus_five=65 present_frames=3600 missing_frames=0 measured_present_frames=3535 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:04:18.428163Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3900,
+            "warmup_plus_five": 65,
+            "present_frames": 3900,
+            "missing_frames": 0,
+            "measured_present_frames": 3835,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:04:18.428163Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=3900 warmup_plus_five=65 present_frames=3900 missing_frames=0 measured_present_frames=3835 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:04:24.702650Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 4200,
+            "warmup_plus_five": 65,
+            "present_frames": 4200,
+            "missing_frames": 0,
+            "measured_present_frames": 4135,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:04:24.702650Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:04:27.383868Z",
+          "values": {
+            "final_summary": true,
+            "render_frames": 4325,
+            "warmup_plus_five": 65,
+            "present_frames": 4324,
+            "missing_frames": 1,
+            "measured_present_frames": 4259,
+            "measured_missing_frames": 1
+          },
+          "line": "2026-10-09T02:04:27.383868Z  INFO engine::app: native profiling primary drawable proof final_summary=true render_frames=4325 warmup_plus_five=65 present_frames=4324 missing_frames=1 measured_present_frames=4259 measured_missing_frames=1"
+        }
+      ],
+      "last_zero_missing_periodic_proof": {
+        "utc": "2026-10-09T02:04:24.702650Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 4200,
+          "warmup_plus_five": 65,
+          "present_frames": 4200,
+          "missing_frames": 0,
+          "measured_present_frames": 4135,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:04:24.702650Z  INFO engine::app: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0"
+      },
+      "engine_reported_exit_code_from_stderr": 130
+    },
+    "metric_limits": [
+      "HUD header semantics are not validated as engine frame IDs",
+      "Doublet observations are not independently matched to engine frames",
+      "Standard HUD GPU time uses command-buffer execution timestamps, may include idle and overlap, and is not active GPU time",
+      "GPU duration cannot be added to CPU duration, inverted into FPS, or interpreted as GPU utilization",
+      "HUD values are rounded to two decimal places",
+      "Selection by emission time can include a short preceding batch interval at the lower cutoff",
+      "The ordinary drawable proof's 65-frame warmup is not a loading cutoff; the saved suggested 30-second HUD start still needs loading verification",
+      "Contiguous doublet validation does not validate HUD counter semantics or match observations to engine frames"
+    ],
+    "issues": []
+  },
+  "final": {
+    "run_folder": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-final-v4-1",
+    "label": "fixes-ordinary-final-v4-1",
+    "binary": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+    "binary_sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+    "source_snapshot": {
+      "commit": "f40ca1df770eab4ace83b335b6b38168bd83af60",
+      "dirty_worktree": true,
+      "snapshot_utc": "2026-10-09T02:09:55.306875+00:00",
+      "snapshot_matches_binary_not_proven": true
+    },
+    "production_provenance": {
+      "status": "verified pinned production evidence",
+      "checks": {
+        "captured_binary_sha_matches_pinned_v4": true,
+        "binary_unchanged_during_capture": true,
+        "receipt_sha_matches_captured_binary": true,
+        "receipt_archive_matches_captured_path": true,
+        "receipt_temporary_controls_absent": true,
+        "native_surface_fifo_3200x1800": true,
+        "current_source_matches_reviewed_v4_hashes": true,
+        "no_scenario_or_quality_ablation_flags": true
+      },
+      "issues": [],
+      "receipt_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/production-binary.json",
+      "receipt_sha256": "8a1b3e6c73bcb7b2434eba28626e6bdbbe16749858f68f21944c9b6b84ee7757",
+      "receipt": {
+        "path": "/Users/taylor/Projects/mudcrab/target/release/engine",
+        "archived_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+        "sha256": "298342a422c9b43907b6f78125baa9f59ab6b2011a8486137ffb33bb0b93816e",
+        "bytes": 118240824,
+        "archived_utc": "2026-10-09T01:54:27.220875+00:00",
+        "profile": "release thin LTO, 1 codegen unit, debug=1",
+        "build_log": "release-v4-final.log",
+        "temporary_controls_present": false,
+        "drawable_acquisition_evidence": "enabled only for requested --profile-output bundles"
+      },
+      "current_source_tree": "/Users/taylor/Projects/mudcrab",
+      "current_source_sha256": {
+        "crates/engine/src/app.rs": "3702009c6c242b5fc1010049915bdb1392ab74c2355bb747b6c10614b464e407",
+        "crates/engine/src/render.rs": "462e56dbeb34b4d660db58861f1d2e890fa4f579bd236a06dc3830ff364b4c5f",
+        "crates/engine/src/profiling.rs": "0c75cc5e3344997fc40641206f21b9bf7bf82a627edf5f9aa929e0ffb05e1f5b",
+        "crates/engine/src/lib.rs": "3c34a7e8059416a5038977bd003409442c4c258d65c1801a4eb49f84a5623bae",
+        "crates/engine/src/mesh_preparation_retry.rs": "0828ea84f973b0bc02a6fe6bcadade775464fb03d9ea0a398af5fc3b0255381f",
+        "crates/engine/src/terrain_upload.rs": "436e3f6e1f7dcc603c81dbaaeeb9859e2f6996d24b797b710af0a6132bda28b6",
+        "crates/engine/src/streaming/terrain_batching.rs": "c913119322f34693eafc5d8d5f67430b61e930300ee9d25c65f66b75e9d375b3",
+        "crates/engine/src/visibility_optimization.rs": "b302be8c7dda1a786b0945f99af2a579f8c0a0fb175f3e5b86ed284116d90bda"
+      },
+      "current_source_checked_utc": "2026-10-09T02:20:07.213876Z",
+      "binary_hash_basis": "Captured run hash and unchanged flag matched to the archived production receipt; no new binary hashing performed.",
+      "quality_basis": "Reviewed production source and receipt, recorded command/environment, and actual native surface; temporary control logs are absent.",
+      "binary_source_identity_independently_proven": false,
+      "source_identity_limit": "Run metadata retains snapshot_matches_binary_not_proven; current source hashes and the owner receipt do not independently reconstruct binary/source identity.",
+      "always_on_top": {
+        "requested_environment_value": "1",
+        "effective_state_proven": false,
+        "note": "Production source does not read this temporary-control environment variable. No effective AlwaysOnTop state is asserted."
+      },
+      "physical_window_metadata": "No physical window log exists for production V4; actual render pixels come from SurfaceConfiguration extent. Scale factor and window position are not asserted."
+    },
+    "quality_validation_basis": "Reviewed production source and receipt, recorded command/environment, and actual native surface; temporary control logs are absent.",
+    "cpu_analysis": {
+      "analysis_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-final-v4-1/cpu-analysis.json",
+      "analysis_sha256": "b945a907393a760c039611f7beaf3461b0a66921aa7421f3e820a7f871ad30e2",
+      "window": {
+        "start_profile_ms": 30124.804931640625,
+        "end_profile_ms": 88198.82006835938,
+        "duration_seconds": 58.07401513671875,
+        "start_utc": "2026-10-09T02:10:25.501713+00:00",
+        "end_utc": "2026-10-09T02:11:23.575728+00:00",
+        "boundary_evidence": {
+          "warmup": {
+            "file": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-final-v4-1/engine.stderr.log",
+            "line": 175,
+            "text": "2026-10-09T02:10:18.534170Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+          },
+          "end_override_utc": "2026-10-09T02:11:23.575728Z"
+        }
+      },
+      "same_as_hud_clock": true,
+      "verified_render_crop": {
+        "end_utc": "2026-10-09T02:11:23.575728Z",
+        "proof_line": "2026-10-09T02:11:23.575728Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5100 warmup_plus_five=65 present_frames=5100 missing_frames=0 measured_present_frames=5035 measured_missing_frames=0",
+        "policy": "Last cumulative zero-missing periodic proof before owned SIGINT; excludes teardown and unproven tail."
+      },
+      "verified_warmup_clock": {
+        "method": "Capture start plus 30 seconds, expressed through logged render frame 1200 plus 6.967543 seconds.",
+        "capture_start_utc": "2026-10-09T02:09:55.501713Z",
+        "steady_start_utc": "2026-10-09T02:10:25.501713Z",
+        "logged_render_frame1200_utc": "2026-10-09T02:10:18.534170Z",
+        "settle_seconds": 6.967543,
+        "same_as_hud_clock": true,
+        "loading_queue_cutoff_observed": false
+      },
+      "totals": {
+        "thread_count": 61,
+        "cpu_ms": 94618.13500000065,
+        "cpu_ms_per_second": 1629.2680087169651,
+        "cpu_core_equivalents": 1.629268008716965,
+        "cpu_at_blocked_leaf_observations_ms": 61876.29900000009,
+        "cpu_at_other_leaf_observations_ms": 32741.83600000003,
+        "unattributed_cpu_ms": 0,
+        "start_boundary_cpu_uncertainty_upper_ms": 3.4840000000000004,
+        "end_boundary_omitted_cpu_uncertainty_upper_ms": 1.026,
+        "symbol_resolution": {
+          "resolved_leaf_cpu_ms": 82751.30499999254,
+          "unresolved_leaf_cpu_ms": 11866.82999999994
+        }
+      },
+      "exclusive_observation_groups": [
+        {
+          "group": "recognized_blocking_endpoint",
+          "cpu_ms": 61876.298999996456,
+          "cpu_ms_per_second": 1065.4730666430814,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "other_or_unresolved_endpoint",
+          "cpu_ms": 21469.851000000275,
+          "cpu_ms_per_second": 369.69806460696094,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "Apple_Metal_driver_leaf",
+          "cpu_ms": 3952.3299999999936,
+          "cpu_ms_per_second": 68.05677187457,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "other_render_command_encoding",
+          "cpu_ms": 3801.6430000000014,
+          "cpu_ms_per_second": 65.4620313586053,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "wgpu_indirect_draw_validation",
+          "cpu_ms": 1555.1209999999967,
+          "cpu_ms_per_second": 26.778258681424155,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "directional_shadow_visibility_culling",
+          "cpu_ms": 1497.3599999999983,
+          "cpu_ms_per_second": 25.783648615906618,
+          "approximate_cpu_ms_per_frame": null
+        },
+        {
+          "group": "camera_visibility_culling",
+          "cpu_ms": 465.5310000000002,
+          "cpu_ms_per_second": 8.01616693634907,
+          "approximate_cpu_ms_per_frame": null
+        }
+      ],
+      "recording": {
+        "interval_ms": 1.0,
+        "CPU_delta_unit": "\u00b5s",
+        "profile_format_version": 49
+      },
+      "methods": {
+        "cpu": "Sum threadCPUDelta using meta units for samples in [start,end); ignore each thread first delta. Do not multiply by sample weight. CPU is measured per interval; stack attribution is an endpoint estimate, especially misleading at a blocking leaf.",
+        "inclusive": "Each function receives interval CPU once per sampled stack; recursion does not multiply flat function totals. Inclusive values overlap.",
+        "self": "Deepest physical symbol receives interval CPU; blocked-observation self attribution is reported separately and is not syscall execution cost.",
+        "active_observation_legacy_key": "active_observation_self_top30 contains endpoints not recognized by the native wait classifier. It is not proof that every listed function was executing throughout its CPU interval.",
+        "wall_weights": "Nominal sampling residence uses weight*interval. Clipped values model each row over [time-weight*interval,time]; raw selected weights also retained. These are sampling estimates, not measured call durations.",
+        "zero_CPU_residence": "For zero-CPU rows, intersect [previous serialized sample time,current time] with crop. Samply reuses/compresses an unchanged stack when OS thread CPU has not advanced. This proves zero reported CPU over the interval, subject to timer resolution.",
+        "symbols": "Exact sampled RVA to sidecar known_addresses; match library debug name plus Mach-O UUID. Rank physical symbols using library UUID plus physical symbol RVA, keeping same-named distinct symbols separate. Sidecar deduplicates debug frame arrays by physical function RVA, so retain outer representative source locations without assigning CPU to inline frames. Unresolved libraries/addresses retain module and hex location.",
+        "observation_groups": "Assign each attributed CPU interval once: recognized native blocking endpoint; camera-culling ancestry; directional-shadow-culling ancestry; indirect-draw-validation ancestry; Apple driver leaf; other render-command ancestry; other/unresolved. Groups are exclusive endpoint estimates, not exact function execution cost. Future::poll is never treated as a native blocking syscall.",
+        "limits": "Line-table debug/LTO and sampling can omit or merge functions; representative sidecar source lines are not per-sample line execution cost. Blocking CPU attribution includes work earlier in the interval. CPU delta can cross crop boundaries; start included and end omitted upper uncertainty recorded. Stack residence is per thread and cannot be added to frame time. CPU sampling does not measure GPU pass execution."
+      },
+      "limits": [
+        "CPU deltas at blocking endpoints are kept separate from nonblocking endpoint groups.",
+        "No ordinary per-frame CPU denominator is supplied; compare core equivalents or CPU ms per second.",
+        "Sampling loss is not exposed by this producer; resolved and unresolved leaf CPU are retained."
+      ]
+    },
+    "engine_command": [
+      "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/bin/engine-production-v4",
+      "--assets",
+      "/Users/taylor/Projects/mudcrab/modern_assets",
+      "--worldspace",
+      "0x3c",
+      "--grid-x",
+      "5",
+      "--grid-y",
+      "-12",
+      "--stream-radius",
+      "2",
+      "--run-label",
+      "fixes-ordinary-final-v4-1",
+      "--profile-output",
+      "/Users/taylor/Projects/mudcrab/target/setup/profiling/runs/fixes-ordinary-final-v4-1/profile",
+      "--profile-scenario",
+      "interactive-riverwood",
+      "--profile-run-id",
+      "fixes-ordinary-final-v4-1",
+      "--profile-commit",
+      "f40ca1df770eab4ace83b335b6b38168bd83af60",
+      "--profile-dirty-worktree"
+    ],
+    "instrumentation_mode": "ordinary game; standard HUD and Samply",
+    "environment": {
+      "MUDCRAB_PROFILE_ALWAYS_ON_TOP": "1",
+      "MTL_HUD_ENABLED": "1",
+      "MTL_HUD_LOG_ENABLED": "1",
+      "RUST_LOG": "info,bevy_render::renderer=debug,wgpu_hal::metal::surface=debug"
+    },
+    "capture_stop": {
+      "duration_seconds": 90.0,
+      "capture_elapsed_seconds": 90.154781792,
+      "capture_started_utc": "2026-10-09T02:09:55.501713+00:00",
+      "capture_ended_utc": "2026-10-09T02:11:25.656039+00:00",
+      "engine_sigint_utc": "2026-10-09T02:11:25.778919+00:00",
+      "duration_stop_verified": true,
+      "requested_duration_completed": true,
+      "profiler_exit_code": 1,
+      "engine_reported_exit_code": 130,
+      "profile_written": true,
+      "profile_validation": {
+        "valid": true,
+        "engine_threads": 61,
+        "engine_samples": 749093
+      },
+      "samply_capture_succeeded": true,
+      "expected_interruption": true,
+      "expected_interruption_note": "Controller verified the owned engine and sent SIGINT after the requested duration. Engine exit 130 and Samply exit 1/130 can follow that request; actual exit codes are retained.",
+      "error": null,
+      "engine_disappeared_utc": null,
+      "full_requested_duration_recorded": true,
+      "matching_owned_sigint_recorded": true,
+      "legacy_helper_metadata": false,
+      "legacy_note": null
+    },
+    "analysis_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-final-v4-1/hud-analysis/hud-analysis.json",
+    "analysis_sha256": "e5f2b8471d60aa025e9f33d655013945a950206748aff100f5a0c3f772d3dc2d",
+    "input_log_path": "/Users/taylor/Projects/mudcrab-profiles/2026-10-08-fixes/runs/fixes-ordinary-final-v4-1/engine.stderr.log",
+    "input_log_sha256": "fb7a1cb6bb9c76f9ae7ee4e4709b5988b0e481f5745daa9e477ea8bdafa7d258",
+    "input_matches_analysis_hash": true,
+    "interval_provenance": {
+      "capture_start_utc": "2026-10-09T02:09:55.501713Z",
+      "steady_start_utc": "2026-10-09T02:10:25.501713Z",
+      "steady_end_utc": "2026-10-09T02:11:23.575728Z",
+      "selected_window_seconds": 58.074015,
+      "start_seconds_after_capture": 30.0,
+      "first_selected_batch_utc": "2026-10-09T02:10:25.958000Z",
+      "last_selected_batch_utc": "2026-10-09T02:11:23.141000Z",
+      "batch_timestamp_span_seconds": 57.183,
+      "selection": "Whole HUD batches whose UTC emission timestamps are inside the steady window",
+      "timing_alignment": "Bins and CSV timestamps use exact HUD batch emission time, not per-frame time. Within a bin, batch means are weighted by raw pair count. Batch data refer to preceding presents; no engine frame IDs or exact per-frame timestamps are inferred.",
+      "start_basis": "saved 30-second suggestion; loading needs verification",
+      "saved_suggested_start_utc": "2026-10-09T02:10:25.501713+00:00",
+      "loading_verification_required": true,
+      "conservative_endpoint_proof": {
+        "utc": "2026-10-09T02:11:23.575728Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 5100,
+          "warmup_plus_five": 65,
+          "present_frames": 5100,
+          "missing_frames": 0,
+          "measured_present_frames": 5035,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:11:23.575728Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5100 warmup_plus_five=65 present_frames=5100 missing_frames=0 measured_present_frames=5035 measured_missing_frames=0"
+      },
+      "cpu_render_frame_1200_proof": {
+        "utc": "2026-10-09T02:10:18.534170Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 1200,
+          "warmup_plus_five": 65,
+          "present_frames": 1200,
+          "missing_frames": 0,
+          "measured_present_frames": 1135,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:10:18.534170Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+      },
+      "cpu_suggested_start_utc": "2026-10-09T02:10:20.534170Z"
+    },
+    "normalization": {
+      "validation_status": "valid",
+      "invalid_reason": null,
+      "raw_pair_count_selected": 6921,
+      "verified_doublet_observation_count": 3460,
+      "hud_batch_count_selected": 114,
+      "phase_chosen": 1,
+      "phase_choice_ambiguous": false,
+      "trim_counts": {
+        "start_raw_pairs": 1,
+        "end_raw_pairs": 0
+      },
+      "trimmed_boundary_records": {
+        "start": [
+          {
+            "source_line": 191,
+            "batch_index": 56,
+            "batch_log_time_utc": "2026-10-09T02:10:25.958000Z",
+            "hud_header": 1637,
+            "graphics_memory_raw": "1867.75",
+            "process_memory_raw": "4537.53",
+            "raw_pair_index_in_batch": 0,
+            "present_interval_ms": 16.67,
+            "hud_command_buffer_gpu_time_ms": 15.77,
+            "in_steady_window": true,
+            "normalization_role": "trimmed_boundary_start"
+          }
+        ],
+        "end": []
+      },
+      "doublet_phase_validation": [
+        {
+          "phase": 0,
+          "trim_start_raw_pairs": 0,
+          "trim_end_raw_pairs": 1,
+          "comparisons": 3460,
+          "matches": 61,
+          "mismatches": 3399,
+          "valid": false,
+          "mismatch_examples": [
+            {
+              "selected_raw_pair_indexes": [
+                0,
+                1
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.77
+                ],
+                [
+                  16.67,
+                  16.28
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                2,
+                3
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  16.28
+                ],
+                [
+                  16.67,
+                  15.78
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                4,
+                5
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.78
+                ],
+                [
+                  16.67,
+                  15.83
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                6,
+                7
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.83
+                ],
+                [
+                  16.67,
+                  15.65
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                8,
+                9
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.65
+                ],
+                [
+                  16.67,
+                  15.98
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                10,
+                11
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.98
+                ],
+                [
+                  16.67,
+                  15.78
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                12,
+                13
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.78
+                ],
+                [
+                  16.67,
+                  15.83
+                ]
+              ]
+            },
+            {
+              "selected_raw_pair_indexes": [
+                14,
+                15
+              ],
+              "source_lines": [
+                191,
+                191
+              ],
+              "values": [
+                [
+                  16.67,
+                  15.83
+                ],
+                [
+                  16.67,
+                  15.74
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "phase": 1,
+          "trim_start_raw_pairs": 1,
+          "trim_end_raw_pairs": 0,
+          "comparisons": 3460,
+          "matches": 3460,
+          "mismatches": 0,
+          "valid": true,
+          "mismatch_examples": []
+        }
+      ],
+      "exact_pattern_proof": {
+        "valid": true,
+        "method": "One contiguous phase across the whole selected raw stream; exact interval/GPU-value equality for every complete adjacent pair",
+        "comparisons": 3460,
+        "mismatches": 0,
+        "interior_raw_pairs_dropped": 0,
+        "maximum_boundary_trim_raw_pairs_per_edge": 1
+      },
+      "consecutive_identical_run_sizes": {
+        "1": 1,
+        "2": 3340,
+        "4": 57,
+        "6": 2
+      },
+      "doublet_handling": "Validate both contiguous phases, report up to one trimmed boundary record per edge, then take the first record of each exact pair; four equal interior records retain two observations"
+    },
+    "raw_metrics": {
+      "presented_frame_interval_ms": {
+        "count": 6921,
+        "mean": 16.67481433318885,
+        "p50": 16.67,
+        "p95": 16.67,
+        "p99": 16.67,
+        "minimum": 16.67,
+        "maximum": 25.0
+      },
+      "presented_fps_from_mean_interval": 59.970682732559254,
+      "hud_command_buffer_gpu_time_ms": {
+        "count": 6921,
+        "mean": 15.859452391272937,
+        "p50": 15.84,
+        "p95": 16.14,
+        "p99": 16.27,
+        "minimum": 15.37,
+        "maximum": 16.49
+      }
+    },
+    "metrics": {
+      "presented_frame_interval_ms": {
+        "count": 3460,
+        "mean": 16.674815028901737,
+        "p50": 16.67,
+        "p95": 16.67,
+        "p99": 16.67,
+        "minimum": 16.67,
+        "maximum": 25.0
+      },
+      "presented_fps_from_mean_interval": 59.97068023043993,
+      "hud_command_buffer_gpu_time_ms": {
+        "count": 3460,
+        "mean": 15.859465317919074,
+        "p50": 15.84,
+        "p95": 16.14,
+        "p99": 16.27,
+        "minimum": 15.37,
+        "maximum": 16.49
+      }
+    },
+    "native_evidence": {
+      "physical_windows": [],
+      "surface_configurations": [
+        {
+          "utc": "2026-10-09T02:09:56.532970Z",
+          "resolved_present_mode": "Fifo",
+          "extent": [
+            3200,
+            1800,
+            1
+          ],
+          "line": "2026-10-09T02:09:56.532970Z DEBUG wgpu_hal::metal::surface: build swapchain SurfaceConfiguration { maximum_frame_latency: 2, present_mode: Fifo, composite_alpha_mode: Opaque, format: Bgra8UnormSrgb, extent: (3200, 1800, 1), usage: TextureUses(COLOR_TARGET), view_formats: [] }"
+        }
+      ],
+      "applied_controls": [],
+      "drawable_proofs": [
+        {
+          "utc": "2026-10-09T02:10:03.078003Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 300,
+            "warmup_plus_five": 65,
+            "present_frames": 300,
+            "missing_frames": 0,
+            "measured_present_frames": 235,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:03.078003Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=300 warmup_plus_five=65 present_frames=300 missing_frames=0 measured_present_frames=235 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:08.534315Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 600,
+            "warmup_plus_five": 65,
+            "present_frames": 600,
+            "missing_frames": 0,
+            "measured_present_frames": 535,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:08.534315Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=600 warmup_plus_five=65 present_frames=600 missing_frames=0 measured_present_frames=535 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:13.534295Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 900,
+            "warmup_plus_five": 65,
+            "present_frames": 900,
+            "missing_frames": 0,
+            "measured_present_frames": 835,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:13.534295Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=900 warmup_plus_five=65 present_frames=900 missing_frames=0 measured_present_frames=835 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:18.534170Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1200,
+            "warmup_plus_five": 65,
+            "present_frames": 1200,
+            "missing_frames": 0,
+            "measured_present_frames": 1135,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:18.534170Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1200 warmup_plus_five=65 present_frames=1200 missing_frames=0 measured_present_frames=1135 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:23.534167Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1500,
+            "warmup_plus_five": 65,
+            "present_frames": 1500,
+            "missing_frames": 0,
+            "measured_present_frames": 1435,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:23.534167Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1500 warmup_plus_five=65 present_frames=1500 missing_frames=0 measured_present_frames=1435 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:28.559429Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 1800,
+            "warmup_plus_five": 65,
+            "present_frames": 1800,
+            "missing_frames": 0,
+            "measured_present_frames": 1735,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:28.559429Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=1800 warmup_plus_five=65 present_frames=1800 missing_frames=0 measured_present_frames=1735 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:33.559057Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2100,
+            "warmup_plus_five": 65,
+            "present_frames": 2100,
+            "missing_frames": 0,
+            "measured_present_frames": 2035,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:33.559057Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2100 warmup_plus_five=65 present_frames=2100 missing_frames=0 measured_present_frames=2035 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:38.559083Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2400,
+            "warmup_plus_five": 65,
+            "present_frames": 2400,
+            "missing_frames": 0,
+            "measured_present_frames": 2335,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:38.559083Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2400 warmup_plus_five=65 present_frames=2400 missing_frames=0 measured_present_frames=2335 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:43.559046Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 2700,
+            "warmup_plus_five": 65,
+            "present_frames": 2700,
+            "missing_frames": 0,
+            "measured_present_frames": 2635,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:43.559046Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=2700 warmup_plus_five=65 present_frames=2700 missing_frames=0 measured_present_frames=2635 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:48.559096Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3000,
+            "warmup_plus_five": 65,
+            "present_frames": 3000,
+            "missing_frames": 0,
+            "measured_present_frames": 2935,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:48.559096Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3000 warmup_plus_five=65 present_frames=3000 missing_frames=0 measured_present_frames=2935 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:53.559041Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3300,
+            "warmup_plus_five": 65,
+            "present_frames": 3300,
+            "missing_frames": 0,
+            "measured_present_frames": 3235,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:53.559041Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3300 warmup_plus_five=65 present_frames=3300 missing_frames=0 measured_present_frames=3235 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:10:58.559082Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3600,
+            "warmup_plus_five": 65,
+            "present_frames": 3600,
+            "missing_frames": 0,
+            "measured_present_frames": 3535,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:10:58.559082Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3600 warmup_plus_five=65 present_frames=3600 missing_frames=0 measured_present_frames=3535 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:03.575712Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 3900,
+            "warmup_plus_five": 65,
+            "present_frames": 3900,
+            "missing_frames": 0,
+            "measured_present_frames": 3835,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:11:03.575712Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=3900 warmup_plus_five=65 present_frames=3900 missing_frames=0 measured_present_frames=3835 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:08.575730Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 4200,
+            "warmup_plus_five": 65,
+            "present_frames": 4200,
+            "missing_frames": 0,
+            "measured_present_frames": 4135,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:11:08.575730Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4200 warmup_plus_five=65 present_frames=4200 missing_frames=0 measured_present_frames=4135 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:13.575731Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 4500,
+            "warmup_plus_five": 65,
+            "present_frames": 4500,
+            "missing_frames": 0,
+            "measured_present_frames": 4435,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:11:13.575731Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4500 warmup_plus_five=65 present_frames=4500 missing_frames=0 measured_present_frames=4435 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:18.575624Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 4800,
+            "warmup_plus_five": 65,
+            "present_frames": 4800,
+            "missing_frames": 0,
+            "measured_present_frames": 4735,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:11:18.575624Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=4800 warmup_plus_five=65 present_frames=4800 missing_frames=0 measured_present_frames=4735 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:23.575728Z",
+          "values": {
+            "final_summary": false,
+            "render_frames": 5100,
+            "warmup_plus_five": 65,
+            "present_frames": 5100,
+            "missing_frames": 0,
+            "measured_present_frames": 5035,
+            "measured_missing_frames": 0
+          },
+          "line": "2026-10-09T02:11:23.575728Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5100 warmup_plus_five=65 present_frames=5100 missing_frames=0 measured_present_frames=5035 measured_missing_frames=0"
+        },
+        {
+          "utc": "2026-10-09T02:11:25.941849Z",
+          "values": {
+            "final_summary": true,
+            "render_frames": 5233,
+            "warmup_plus_five": 65,
+            "present_frames": 5232,
+            "missing_frames": 1,
+            "measured_present_frames": 5167,
+            "measured_missing_frames": 1
+          },
+          "line": "2026-10-09T02:11:25.941849Z  INFO engine::profiling: native profiling primary drawable proof final_summary=true render_frames=5233 warmup_plus_five=65 present_frames=5232 missing_frames=1 measured_present_frames=5167 measured_missing_frames=1"
+        }
+      ],
+      "last_zero_missing_periodic_proof": {
+        "utc": "2026-10-09T02:11:23.575728Z",
+        "values": {
+          "final_summary": false,
+          "render_frames": 5100,
+          "warmup_plus_five": 65,
+          "present_frames": 5100,
+          "missing_frames": 0,
+          "measured_present_frames": 5035,
+          "measured_missing_frames": 0
+        },
+        "line": "2026-10-09T02:11:23.575728Z  INFO engine::profiling: native profiling primary drawable proof final_summary=false render_frames=5100 warmup_plus_five=65 present_frames=5100 missing_frames=0 measured_present_frames=5035 measured_missing_frames=0"
+      },
+      "engine_reported_exit_code_from_stderr": 130
+    },
+    "metric_limits": [
+      "HUD header semantics are not validated as engine frame IDs",
+      "Doublet observations are not independently matched to engine frames",
+      "Standard HUD GPU time uses command-buffer execution timestamps, may include idle and overlap, and is not active GPU time",
+      "GPU duration cannot be added to CPU duration, inverted into FPS, or interpreted as GPU utilization",
+      "HUD values are rounded to two decimal places",
+      "Selection by emission time can include a short preceding batch interval at the lower cutoff",
+      "The ordinary drawable proof's 65-frame warmup is not a loading cutoff; the saved suggested 30-second HUD start still needs loading verification",
+      "Contiguous doublet validation does not validate HUD counter semantics or match observations to engine frames"
+    ],
+    "issues": []
+  },
+  "changes": [
+    {
+      "metric": "Mean present interval",
+      "unit": "ms",
+      "baseline": 20.640789096126255,
+      "final": 16.674815028901737,
+      "absolute_change": -3.9659740672245185,
+      "percent_change": -19.214256047840873
+    },
+    {
+      "metric": "Median present interval",
+      "unit": "ms",
+      "baseline": 16.67,
+      "final": 16.67,
+      "absolute_change": 0.0,
+      "percent_change": 0.0
+    },
+    {
+      "metric": "P95 present interval",
+      "unit": "ms",
+      "baseline": 25.0,
+      "final": 16.67,
+      "absolute_change": -8.329999999999998,
+      "percent_change": -33.31999999999999
+    },
+    {
+      "metric": "P99 present interval",
+      "unit": "ms",
+      "baseline": 25.0,
+      "final": 16.67,
+      "absolute_change": -8.329999999999998,
+      "percent_change": -33.31999999999999
+    },
+    {
+      "metric": "Presented FPS from mean interval",
+      "unit": "FPS",
+      "baseline": 48.44776017733131,
+      "final": 59.97068023043993,
+      "absolute_change": 11.52292005310862,
+      "percent_change": 23.784216258773895
+    },
+    {
+      "metric": "Mean command-buffer GPU time",
+      "unit": "ms",
+      "baseline": 17.722256097560976,
+      "final": 15.859465317919074,
+      "absolute_change": -1.8627907796419017,
+      "percent_change": -10.511025060168656
+    },
+    {
+      "metric": "Median command-buffer GPU time",
+      "unit": "ms",
+      "baseline": 17.71,
+      "final": 15.84,
+      "absolute_change": -1.870000000000001,
+      "percent_change": -10.559006211180133
+    },
+    {
+      "metric": "P95 command-buffer GPU time",
+      "unit": "ms",
+      "baseline": 18.07,
+      "final": 16.14,
+      "absolute_change": -1.9299999999999997,
+      "percent_change": -10.680686220254564
+    },
+    {
+      "metric": "P99 command-buffer GPU time",
+      "unit": "ms",
+      "baseline": 18.23,
+      "final": 16.27,
+      "absolute_change": -1.9600000000000009,
+      "percent_change": -10.751508502468464
+    },
+    {
+      "metric": "Sampled CPU core equivalents",
+      "unit": "cores",
+      "baseline": 1.9363760267933334,
+      "final": 1.629268008716965,
+      "absolute_change": -0.30710801807636834,
+      "percent_change": -15.859937007428437
+    }
+  ],
+  "caveats": [
+    "HUD values are rounded. One exact adjacent doublet is retained per observation; equal observations are never globally deduplicated.",
+    "HUD header counters are not validated as engine frame IDs, and these observations are not independently matched to engine frames.",
+    "Windows select complete HUD batches by emission time, not exact per-frame timestamps. The first batch can refer to presents just before the start cutoff.",
+    "The selected start is capture plus 30 seconds for both HUD and saved CPU analyses. Loading queues are not observed in ordinary captures; neither 30 seconds nor the drawable warmup proves loading complete.",
+    "Production V4 has no temporary-control or physical-window log. The comparison uses its actual Fifo 3200x1800 render surface and pinned production source/receipt evidence. Effective AlwaysOnTop state, window position and production scale factor are not asserted.",
+    "Run source snapshots explicitly do not prove binary/source identity independently. The final source hashes and production receipt are retained as owner provenance, with that limit.",
+    "Standard HUD GPU duration measures command-buffer execution timestamps and may include idle or overlap. It is not active GPU time or utilization and cannot be added to CPU time or inverted into FPS.",
+    "This is one ordinary baseline/final observation, with Fifo behavior recorded separately from the renderer's CPU cost. It does not establish repeatability or isolate GPU work."
+  ]
+}

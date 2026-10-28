@@ -982,8 +982,6 @@ dependencies = [
 [[package]]
 name = "bevy_image"
 version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37bc41f69a0c6ade2e7961602517545b39ab8e42bc8c4a729bd24ffee3bcd904"
 dependencies = [
  "basis-universal",
  "bevy_app",
@@ -1002,11 +1000,11 @@ dependencies = [
  "image 0.25.10",
  "ktx2",
  "rectangle-pack",
- "ruzstd",
  "serde",
  "thiserror 2.0.18",
  "tracing",
  "wgpu-types",
+ "zstd",
 ]
 
 [[package]]
@@ -2348,10 +2346,12 @@ dependencies = [
  "insta",
  "intel_tex_2",
  "ktx2",
+ "log",
  "lz4_flex",
  "memmap2",
  "mesh-tools",
  "mlua",
+ "mo2",
  "nom 8.0.0",
  "nom-derive",
  "project-wormhole-esm",
@@ -2362,6 +2362,7 @@ dependencies = [
  "rkyv",
  "rusqlite",
  "ruzstd",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
@@ -2370,6 +2371,7 @@ dependencies = [
  "tokio",
  "walkdir",
  "wgpu",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 
@@ -2772,6 +2774,8 @@ dependencies = [
  "ddsfile",
  "lz4_flex",
  "miniz_oxide",
+ "nom-derive",
+ "project-wormhole-nif",
  "tempfile",
 ]
 
@@ -2837,9 +2841,15 @@ dependencies = [
  "converter",
  "crossbeam-channel",
  "ddsfile",
+ "dummy-content",
+ "gltf",
+ "image 0.25.10",
  "ktx2",
+ "libc",
  "memmap2",
  "mlua",
+ "naga_oil",
+ "regex",
  "rkyv",
  "rusqlite",
  "serde",
@@ -2847,8 +2857,13 @@ dependencies = [
  "sha2",
  "shared",
  "tempfile",
+ "time",
+ "tracing",
+ "url",
+ "uuid",
  "wgpu",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
@@ -4119,9 +4134,11 @@ dependencies = [
  "bevy",
  "converter",
  "crossbeam-channel",
+ "mo2",
  "rusqlite",
  "serde_json",
  "shared",
+ "tempfile",
  "tokio",
  "winreg",
 ]
@@ -4426,6 +4443,17 @@ dependencies = [
  "luajit-src",
  "luau0-src",
  "pkg-config",
+]
+
+[[package]]
+name = "mo2"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "serde",
+ "shared",
+ "tempfile",
+ "walkdir",
 ]
 
 [[package]]
@@ -6142,9 +6170,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.3"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
@@ -6262,6 +6290,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest",
+ "sha2-asm",
+]
+
+[[package]]
+name = "sha2-asm"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b845214d6175804686b2bd482bcffe96651bb2d1200742b712003504a2dac1ab"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -6939,6 +6977,12 @@ name = "twox-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
+
+[[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
 
 [[package]]
 name = "typeid"
@@ -8051,6 +8095,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zip"
+version = "9.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+dependencies = [
+ "crc32fast",
+ "indexmap",
+ "memchr",
+ "nix",
+ "typed-path",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8058,27 +8115,27 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zstd"
-version = "0.13.3"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "7.3.0"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

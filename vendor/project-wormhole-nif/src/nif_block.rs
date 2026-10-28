@@ -55,6 +55,7 @@ pub enum NifBlock {
     BSWaterShaderProperty(BSWaterShaderProperty),
     BSWindModifier(BSWindModifier),
     BSXFlags(BSXFlags),
+    BsDismemberSkinInstance(BsDismemberSkinInstance),
     NiAlphaProperty(NiAlphaProperty),
     NiBillboardNode(NiBillboardNode),
     NiBinaryExtraData(NiBinaryExtraData),
@@ -109,6 +110,7 @@ pub enum NifBlock {
     NiPoint3Interpolator(NiPoint3Interpolator),
     NiPointLight(NiPointLight),
     NiPosData(NiPosData),
+    NiSkinData(NiSkinData),
     NiSkinInstance(NiSkinInstance),
     NiSkinPartition(NiSkinPartition),
     NiStringExtraData(NiStringExtraData),
@@ -194,6 +196,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::BSWaterShaderProperty(_) => write!(f, "BSWaterShaderProperty"),
             NifBlock::BSWindModifier(_) => write!(f, "BSWindModifier"),
             NifBlock::BSXFlags(_) => write!(f, "BSXFlags"),
+            NifBlock::BsDismemberSkinInstance(_) => write!(f, "BsDismemberSkinInstance"),
             NifBlock::NiAlphaProperty(_) => write!(f, "NiAlphaProperty"),
             NifBlock::NiBillboardNode(_) => write!(f, "NiBillboardNode"),
             NifBlock::NiBinaryExtraData(_) => write!(f, "NiBinaryExtraData"),
@@ -254,6 +257,7 @@ impl std::fmt::Debug for NifBlock {
             NifBlock::NiPoint3Interpolator(_) => write!(f, "NiPoint3Interpolator"),
             NifBlock::NiPointLight(_) => write!(f, "NiPointLight"),
             NifBlock::NiPosData(_) => write!(f, "NiPosData"),
+            NifBlock::NiSkinData(_) => write!(f, "NiSkinData"),
             NifBlock::NiSkinInstance(_) => write!(f, "NiSkinInstance"),
             NifBlock::NiSkinPartition(_) => write!(f, "NiSkinPartition"),
             NifBlock::NiStringExtraData(_) => write!(f, "NiStringExtraData"),
@@ -289,6 +293,19 @@ fn take_lod_shape_trailing_word(i: &[u8]) -> &[u8] {
 }
 
 impl NifBlock {
+    /// Parses a named block using the legacy skin-partition layout for Bethesda versions below 100.
+    pub fn parse_with_version(
+        i: &[u8],
+        block_type: String,
+        bethesda_version: u32,
+    ) -> IResult<&[u8], Self> {
+        if block_type == "NiSkinPartition" && bethesda_version < 100 {
+            let (i, result) = NiSkinPartition::parse_legacy(i)?;
+            return Ok((i, NifBlock::NiSkinPartition(result)));
+        }
+        Self::parse(i, block_type)
+    }
+
     pub fn parse(i: &[u8], block_type: String) -> IResult<&[u8], Self> {
         match block_type.as_str() {
             "NiNode" => {
@@ -354,6 +371,30 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundNode(result)))
             }
 
+            "BSOrderedNode" => {
+                let (i, result) = BSOrderedNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing BSOrderedNode", i.len());
+                }
+                Ok((i, NifBlock::BSOrderedNode(result)))
+            }
+
+            "NiBillboardNode" => {
+                let (i, result) = NiBillboardNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing NiBillboardNode", i.len());
+                }
+                Ok((i, NifBlock::NiBillboardNode(result)))
+            }
+
+            "BSValueNode" => {
+                let (i, result) = BSValueNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing BSValueNode", i.len());
+                }
+                Ok((i, NifBlock::BSValueNode(result)))
+            }
+
             "BSMultiBound" => {
                 let (i, result) = BSMultiBound::parse(i)?;
                 if !i.is_empty() {
@@ -378,9 +419,28 @@ impl NifBlock {
                 Ok((i, NifBlock::BSMultiBoundOBB(result)))
             }
 
-            "NiSkinInstance" | "BSDismemberSkinInstance" => {
+            "NiSkinInstance" => {
                 let (i, result) = NiSkinInstance::parse(i)?;
                 Ok((i, NifBlock::NiSkinInstance(result)))
+            }
+
+            "BSDismemberSkinInstance" => {
+                let (i, result) = BsDismemberSkinInstance::parse(i)?;
+                if i.len() > 0 {
+                    warn!(
+                        "{} bytes left over after parsing BSDismemberSkinInstance",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BsDismemberSkinInstance(result)))
+            }
+
+            "NiSkinData" => {
+                let (i, result) = NiSkinData::parse(i)?;
+                if i.len() > 0 {
+                    warn!("{} bytes left over after parsing NiSkinData", i.len());
+                }
+                Ok((i, NifBlock::NiSkinData(result)))
             }
 
             "NiSkinPartition" => {
@@ -582,6 +642,9 @@ impl NifBlock {
         match self {
             NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Ok(node),
             NifBlock::BSMultiBoundNode(block) => Ok(&block.node),
+            NifBlock::BSOrderedNode(block) => Ok(&block.node),
+            NifBlock::NiBillboardNode(block) => Ok(&block.node),
+            NifBlock::BSValueNode(block) => Ok(&block.node),
             _ => Err("Block is not a NiNode".to_string()),
         }
     }
@@ -748,6 +811,124 @@ pub struct BSLightingShaderProperty {
     pub specular_strength: f32,
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
+    /// The fields nif.xml appends for `shader_type`.
+    #[nom(Parse = "{ |i| LightingShaderTypeData::parse_for(i, shader_type) }")]
+    pub type_data: LightingShaderTypeData,
+}
+
+/// The type-specific tail of a [`BSLightingShaderProperty`], selected by its `shader_type`
+/// (nif.xml `cond="Shader Type == n"`). Skyrim LE (BSVER 83) and SE (BSVER 100) store the same
+/// layout; the Fallout 4 and 76 variants of these fields are not read. Types with no fields of
+/// their own, and values nif.xml does not name, carry [`LightingShaderTypeData::None`].
+#[derive(Debug, Default)]
+pub enum LightingShaderTypeData {
+    #[default]
+    None,
+    /// Type 1.
+    EnvironmentMap { env_map_scale: f32 },
+    /// Type 5: the colour the game replaces with the actor's skin tone.
+    SkinTint { skin_tint_color: BSVec3 },
+    /// Type 6: on FaceGen hair, brows and beards, the NPC's hair colour.
+    HairTint { hair_tint_color: BSVec3 },
+    /// Type 7.
+    ParallaxOcc { max_passes: f32, scale: f32 },
+    /// Type 11.
+    MultiLayerParallax {
+        inner_layer_thickness: f32,
+        refraction_scale: f32,
+        inner_layer_texture_scale: BSVec2,
+        env_map_strength: f32,
+    },
+    /// Type 14.
+    SparkleSnow { sparkle_parameters: BSVec4 },
+    /// Type 16.
+    EyeEnvmap {
+        eye_cubemap_scale: f32,
+        left_eye_reflection_center: BSVec3,
+        right_eye_reflection_center: BSVec3,
+    },
+}
+
+impl LightingShaderTypeData {
+    pub fn parse_for(i: &[u8], shader_type: u32) -> IResult<&[u8], Self> {
+        fn vec2(i: &[u8]) -> IResult<&[u8], BSVec2> {
+            let (i, x) = le_f32(i)?;
+            let (i, y) = le_f32(i)?;
+            Ok((i, BSVec2(glam::Vec2::new(x, y))))
+        }
+        fn vec3(i: &[u8]) -> IResult<&[u8], BSVec3> {
+            let (i, x) = le_f32(i)?;
+            let (i, y) = le_f32(i)?;
+            let (i, z) = le_f32(i)?;
+            Ok((i, BSVec3(glam::Vec3::new(x, y, z))))
+        }
+        fn vec4(i: &[u8]) -> IResult<&[u8], BSVec4> {
+            let (i, xyz) = vec3(i)?;
+            let (i, w) = le_f32(i)?;
+            Ok((i, BSVec4(xyz.0.extend(w))))
+        }
+        match shader_type {
+            1 => {
+                let (i, env_map_scale) = le_f32(i)?;
+                Ok((i, Self::EnvironmentMap { env_map_scale }))
+            }
+            5 => {
+                let (i, skin_tint_color) = vec3(i)?;
+                Ok((i, Self::SkinTint { skin_tint_color }))
+            }
+            6 => {
+                let (i, hair_tint_color) = vec3(i)?;
+                Ok((i, Self::HairTint { hair_tint_color }))
+            }
+            7 => {
+                let (i, max_passes) = le_f32(i)?;
+                let (i, scale) = le_f32(i)?;
+                Ok((i, Self::ParallaxOcc { max_passes, scale }))
+            }
+            11 => {
+                let (i, inner_layer_thickness) = le_f32(i)?;
+                let (i, refraction_scale) = le_f32(i)?;
+                let (i, inner_layer_texture_scale) = vec2(i)?;
+                let (i, env_map_strength) = le_f32(i)?;
+                Ok((
+                    i,
+                    Self::MultiLayerParallax {
+                        inner_layer_thickness,
+                        refraction_scale,
+                        inner_layer_texture_scale,
+                        env_map_strength,
+                    },
+                ))
+            }
+            14 => {
+                let (i, sparkle_parameters) = vec4(i)?;
+                Ok((i, Self::SparkleSnow { sparkle_parameters }))
+            }
+            16 => {
+                let (i, eye_cubemap_scale) = le_f32(i)?;
+                let (i, left_eye_reflection_center) = vec3(i)?;
+                let (i, right_eye_reflection_center) = vec3(i)?;
+                Ok((
+                    i,
+                    Self::EyeEnvmap {
+                        eye_cubemap_scale,
+                        left_eye_reflection_center,
+                        right_eye_reflection_center,
+                    },
+                ))
+            }
+            _ => Ok((i, Self::None)),
+        }
+    }
+
+    /// The tint colour of a skin-tint or hair-tint shader.
+    pub fn tint_color(&self) -> Option<BSVec3> {
+        match self {
+            Self::SkinTint { skin_tint_color } => Some(BSVec3(skin_tint_color.0)),
+            Self::HairTint { hair_tint_color } => Some(BSVec3(hair_tint_color.0)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, NomLE)]
@@ -870,9 +1051,37 @@ pub struct BSMultiBoundOBB {
 pub struct BSNiAlphaPropertyTestRefController {
     // TODO
 }
-#[derive(Debug)]
+/// A node whose children draw in their listed order, used for layered effects such as fire.
+///
+/// It is an `NiNode` with two extra fields, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do.
+#[derive(Debug, Clone)]
 pub struct BSOrderedNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    /// Bounding sphere (centre and radius) used to sort the node against other transparencies.
+    pub alpha_sort_bound: [f32; 4],
+    /// Whether `alpha_sort_bound` stays fixed instead of following the node.
+    pub static_bound: u8,
+}
+
+impl Parse<&[u8]> for BSOrderedNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, x) = le_f32(i)?;
+        let (i, y) = le_f32(i)?;
+        let (i, z) = le_f32(i)?;
+        let (i, radius) = le_f32(i)?;
+        let (i, static_bound) = le_u8(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                alpha_sort_bound: [x, y, z, radius],
+                static_bound,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct BSPSysInheritVelocityModifier {
@@ -925,9 +1134,32 @@ pub struct BSTreeNode {
     // TODO
 }
 
-#[derive(Debug)]
+/// A node carrying an integer for the game's own use, such as an add-on attach point.
+///
+/// It is an `NiNode` with two extra fields, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do.
+#[derive(Debug, Clone)]
 pub struct BSValueNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    pub value: i32,
+    pub value_node_flags: u8,
+}
+
+impl Parse<&[u8]> for BSValueNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, value) = le_i32(i)?;
+        let (i, value_node_flags) = le_u8(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                value,
+                value_node_flags,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct BSWaterShaderProperty {
@@ -943,9 +1175,30 @@ pub struct BSXFlags {
     pub integer_data: u32,
 }
 
-#[derive(Debug)]
+/// A node the game turns to face the camera, used for glows and flame cards.
+///
+/// It is an `NiNode` with one extra field, so its children join the scene
+/// hierarchy exactly as an `NiNode`'s do. The facing itself is not converted:
+/// the children keep the node's authored orientation.
+#[derive(Debug, Clone)]
 pub struct NiBillboardNode {
-    // TODO
+    /// The node fields the scene hierarchy consumes.
+    pub node: NiNode,
+    pub billboard_mode: u16,
+}
+
+impl Parse<&[u8]> for NiBillboardNode {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        let (i, node) = NiNode::parse(i)?;
+        let (i, billboard_mode) = le_u16(i)?;
+        Ok((
+            i,
+            Self {
+                node,
+                billboard_mode,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct NiBinaryExtraData {
@@ -1638,13 +1891,20 @@ pub struct NiAVObject {
 }
 
 impl Parse<&[u8]> for NiAVObject {
+    /// Parses counted extra-data references first, falling back to a compact object with a valid transform.
     fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
-        if let Ok((rest, av)) = parse_compact_av_object(i) {
-            if valid_av_transform(&av) {
-                return Ok((rest, av));
+        // Skyrim stores an extra-data count followed by references. A shifted
+        // compact interpretation can still look like a finite transform.
+        parse_counted_av_object(i).or_else(|_| {
+            let (rest, av) = parse_compact_av_object(i)?;
+            if !valid_av_transform(&av) {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::Verify,
+                )));
             }
-        }
-        parse_counted_av_object(i)
+            Ok((rest, av))
+        })
     }
 }
 
@@ -1802,6 +2062,89 @@ mod material_property_tests {
         assert_eq!(property.shader_flags_1.raw(), 0x8240_0302);
         assert_eq!(property.alpha, 1.0);
         assert_eq!(property.glossiness, 80.0);
+    }
+
+    fn lighting_property_bytes(shader_type: u32, tail: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&shader_type.to_le_bytes());
+        push_property(&mut bytes, u32::MAX, &[], u32::MAX);
+        bytes.extend_from_slice(&0x8244_030bu32.to_le_bytes());
+        bytes.extend_from_slice(&0x0000_8021u32.to_le_bytes());
+        push_f32(&mut bytes, &[0.0, 0.0, 1.0, 1.0]);
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        push_f32(&mut bytes, &[0.0, 0.0, 0.0, 1.0]);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        push_f32(&mut bytes, &[1.0, 0.0, 70.0, 1.0, 1.0, 1.0, 1.8, 0.3, 2.0]);
+        push_f32(&mut bytes, tail);
+        bytes
+    }
+
+    #[test]
+    fn lighting_property_reads_the_tail_of_its_shader_type() {
+        let tint = [0.439_215_7, 0.462_745_1, 0.345_098_05];
+        let bytes = lighting_property_bytes(6, &tint);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(property.tint_color_for_test(), Some(tint));
+
+        let bytes = lighting_property_bytes(5, &[0.8, 0.6, 0.5]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(property.tint_color_for_test(), Some([0.8, 0.6, 0.5]));
+
+        let eye = [1.3, -2.4, 7.6, 3.8, 2.4, 7.6, 3.8];
+        let bytes = lighting_property_bytes(16, &eye);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        let LightingShaderTypeData::EyeEnvmap {
+            eye_cubemap_scale,
+            right_eye_reflection_center,
+            ..
+        } = property.type_data
+        else {
+            panic!("expected eye data, got {:?}", property.type_data);
+        };
+        assert_eq!(eye_cubemap_scale, 1.3);
+        assert_eq!(right_eye_reflection_center.0, Vec3::new(2.4, 7.6, 3.8));
+
+        let bytes = lighting_property_bytes(11, &[5.0, 0.25, 2.0, 3.0, 1.0]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert!(matches!(
+            property.type_data,
+            LightingShaderTypeData::MultiLayerParallax { refraction_scale, .. } if refraction_scale == 0.25
+        ));
+
+        for (shader_type, tail) in [
+            (1, &[0.5][..]),
+            (7, &[4.0, 1.0]),
+            (14, &[1.0, 2.0, 3.0, 4.0]),
+        ] {
+            let bytes = lighting_property_bytes(shader_type, tail);
+            let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+            assert!(remaining.is_empty(), "type {shader_type}");
+            assert!(
+                property.type_data.tint_color().is_none(),
+                "type {shader_type}"
+            );
+            assert!(!matches!(property.type_data, LightingShaderTypeData::None));
+        }
+
+        let bytes = lighting_property_bytes(4, &[]);
+        let (remaining, property) = BSLightingShaderProperty::parse(&bytes).unwrap();
+        assert!(remaining.is_empty());
+        assert!(matches!(property.type_data, LightingShaderTypeData::None));
+
+        let bytes = lighting_property_bytes(6, &tint[..2]);
+        assert!(BSLightingShaderProperty::parse(&bytes).is_err());
+    }
+
+    impl BSLightingShaderProperty {
+        fn tint_color_for_test(&self) -> Option<[f32; 3]> {
+            self.type_data
+                .tint_color()
+                .map(|colour| colour.0.to_array())
+        }
     }
 
     #[test]

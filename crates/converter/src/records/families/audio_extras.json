@@ -1,0 +1,1372 @@
+{
+  "version": 1,
+  "sources": {
+    "audio-xedit-tes5": {
+      "title": "xEdit SSE audio and miscellaneous record format facts",
+      "revision": "xedit-4.1.5f",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas",
+      "use": "Manual fact inventory: field widths, order, primitive types, link targets, flags. Common 1291 color and 1317 variable debris layout. No definition parser or source translation."
+    }
+  },
+  "definitions": {},
+  "records": [
+    {
+      "signature": "SOUN",
+      "source": "audio-xedit-tes5:12595",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FNAM",
+          "name": "legacy_filename",
+          "kind": "bytes"
+        },
+        {
+          "signature": "SNDD",
+          "name": "legacy_sound_data",
+          "kind": "bytes"
+        },
+        {
+          "signature": "SDSC",
+          "name": "descriptor",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SNDR",
+      "source": "audio-xedit-tes5:10046",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "descriptor_kind",
+          "kind": "u32",
+          "enum": {
+            "519001098": "standard"
+          }
+        },
+        {
+          "signature": "GNAM",
+          "name": "category",
+          "kind": "form_id",
+          "targets": [
+            "*"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "alternate_for",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "sound_files",
+          "kind": "zstring",
+          "repeat": true
+        },
+        {
+          "signature": "ONAM",
+          "name": "output_model",
+          "kind": "form_id",
+          "targets": [
+            "SOPM"
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "subtitle",
+          "kind": "lstring"
+        },
+        {
+          "definition": "pending_conditions"
+        },
+        {
+          "signature": "LNAM",
+          "name": "playback",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "unknown_start",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 1
+            },
+            {
+              "name": "loop_mode",
+              "kind": "u8",
+              "offset": 1,
+              "enum": {
+                "0": "none",
+                "8": "loop",
+                "16": "envelope_fast",
+                "32": "envelope_slow"
+              }
+            },
+            {
+              "name": "unknown_middle",
+              "kind": "bytes",
+              "offset": 2,
+              "size": 1
+            },
+            {
+              "name": "rumble_send",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "variation",
+          "kind": "struct",
+          "size": 6,
+          "members": [
+            {
+              "name": "frequency_shift",
+              "kind": "i8",
+              "offset": 0
+            },
+            {
+              "name": "frequency_variance",
+              "kind": "i8",
+              "offset": 1
+            },
+            {
+              "name": "priority",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "volume_variance",
+              "kind": "u8",
+              "offset": 3
+            },
+            {
+              "name": "attenuation_hundredths_db",
+              "kind": "u16",
+              "offset": 4
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SOPM",
+      "source": "audio-xedit-tes5:10106",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "NAM1",
+          "name": "output_flags",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "flags",
+              "kind": "u8",
+              "offset": 0,
+              "flags": {
+                "1": "attenuates_with_distance",
+                "2": "allows_rumble"
+              }
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 1,
+              "size": 2
+            },
+            {
+              "name": "reverb_send_percent",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "legacy_flags",
+          "kind": "bytes"
+        },
+        {
+          "signature": "MNAM",
+          "name": "output_kind",
+          "kind": "u32",
+          "enum": {
+            "0": "hrtf",
+            "1": "speaker_output"
+          }
+        },
+        {
+          "signature": "CNAM",
+          "name": "legacy_color",
+          "kind": "bytes"
+        },
+        {
+          "signature": "SNAM",
+          "name": "legacy_sound",
+          "kind": "bytes"
+        },
+        {
+          "signature": "ONAM",
+          "name": "speaker_channels",
+          "kind": "array",
+          "count": {
+            "kind": "fixed",
+            "value": 3,
+            "stride": 8
+          },
+          "members": [
+            {
+              "name": "left",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "right",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "center",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "low_frequency",
+              "kind": "u8",
+              "offset": 3
+            },
+            {
+              "name": "rear_left",
+              "kind": "u8",
+              "offset": 4
+            },
+            {
+              "name": "rear_right",
+              "kind": "u8",
+              "offset": 5
+            },
+            {
+              "name": "back_left",
+              "kind": "u8",
+              "offset": 6
+            },
+            {
+              "name": "back_right",
+              "kind": "u8",
+              "offset": 7
+            }
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "attenuation",
+          "kind": "struct",
+          "size": 20,
+          "members": [
+            {
+              "name": "unknown_prefix",
+              "kind": "bytes",
+              "offset": 0,
+              "size": 4
+            },
+            {
+              "name": "minimum_distance",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "maximum_distance",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "curve",
+              "kind": "array",
+              "offset": 12,
+              "count": {
+                "kind": "fixed",
+                "value": 5,
+                "stride": 1
+              },
+              "members": [
+                {
+                  "name": "value",
+                  "kind": "u8",
+                  "offset": 0
+                }
+              ],
+              "size": 5
+            },
+            {
+              "name": "unknown_tail",
+              "kind": "bytes",
+              "offset": 17,
+              "size": 3
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "SNCT",
+      "source": "audio-xedit-tes5:10094",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "display_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "mute_underwater",
+            "2": "show_on_menu"
+          }
+        },
+        {
+          "signature": "PNAM",
+          "name": "parent",
+          "kind": "form_id",
+          "targets": [
+            "SNCT"
+          ]
+        },
+        {
+          "signature": "VNAM",
+          "name": "volume_fraction_65535",
+          "kind": "u16"
+        },
+        {
+          "signature": "UNAM",
+          "name": "menu_fraction_65535",
+          "kind": "u16"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MUSC",
+      "source": "audio-xedit-tes5:9543",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FNAM",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "one_selection",
+            "2": "abrupt_transition",
+            "4": "cycle_tracks",
+            "8": "maintain_order",
+            "16": "unknown_bit4",
+            "32": "duck_current_track",
+            "64": "does_not_queue"
+          }
+        },
+        {
+          "signature": "PNAM",
+          "name": "priority_ducking",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "priority",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "ducking_hundredths_db",
+              "kind": "u16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "WNAM",
+          "name": "fade_duration",
+          "kind": "f32"
+        },
+        {
+          "signature": "TNAM",
+          "name": "tracks",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "track",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "MUST"
+              ]
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "MUST",
+      "source": "audio-xedit-tes5:9649",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "track_kind",
+          "kind": "u32",
+          "enum": {
+            "603355331": "palette",
+            "1859641416": "single",
+            "2712257749": "silent"
+          }
+        },
+        {
+          "signature": "FLTV",
+          "name": "duration",
+          "kind": "f32"
+        },
+        {
+          "signature": "DNAM",
+          "name": "fade_out",
+          "kind": "f32"
+        },
+        {
+          "signature": "ANAM",
+          "name": "track_filename",
+          "kind": "zstring"
+        },
+        {
+          "signature": "BNAM",
+          "name": "finale_filename",
+          "kind": "zstring"
+        },
+        {
+          "signature": "LNAM",
+          "name": "loop",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "begin",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "end",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "count",
+              "kind": "u32",
+              "offset": 8
+            }
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "cue_points",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "time",
+              "kind": "f32",
+              "offset": 0
+            }
+          ]
+        },
+        {
+          "signature": "CITC",
+          "name": "condition_count",
+          "kind": "u32"
+        },
+        {
+          "definition": "pending_conditions"
+        },
+        {
+          "signature": "SNAM",
+          "name": "palette_tracks",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "track",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "MUST"
+              ]
+            }
+          ]
+        }
+      ],
+      "allow_unordered": true
+    },
+    {
+      "signature": "ASPC",
+      "source": "audio-xedit-tes5:7592",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "SNAM",
+          "name": "ambient_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "RDAT",
+          "name": "interior_region",
+          "kind": "form_id",
+          "targets": [
+            "REGN"
+          ]
+        },
+        {
+          "signature": "BNAM",
+          "name": "reverb",
+          "kind": "form_id",
+          "targets": [
+            "REVB"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "REVB",
+      "source": "audio-xedit-tes5:10181",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "reverb",
+          "kind": "struct",
+          "size": 14,
+          "members": [
+            {
+              "name": "decay_time_ms",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "high_frequency_reference_hz",
+              "kind": "u16",
+              "offset": 2
+            },
+            {
+              "name": "room_filter",
+              "kind": "i8",
+              "offset": 4
+            },
+            {
+              "name": "high_frequency_room_filter",
+              "kind": "i8",
+              "offset": 5
+            },
+            {
+              "name": "reflections",
+              "kind": "i8",
+              "offset": 6
+            },
+            {
+              "name": "reverb_amplitude",
+              "kind": "i8",
+              "offset": 7
+            },
+            {
+              "name": "high_frequency_decay_percent",
+              "kind": "u8",
+              "offset": 8
+            },
+            {
+              "name": "scaled_reflection_delay",
+              "kind": "u8",
+              "offset": 9
+            },
+            {
+              "name": "reverb_delay_ms",
+              "kind": "u8",
+              "offset": 10
+            },
+            {
+              "name": "diffusion_percent",
+              "kind": "u8",
+              "offset": 11
+            },
+            {
+              "name": "density_percent",
+              "kind": "u8",
+              "offset": 12
+            },
+            {
+              "name": "unknown",
+              "kind": "bytes",
+              "offset": 13,
+              "size": 1
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "FSTP",
+      "source": "audio-xedit-tes5:9562",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DATA",
+          "name": "impact_set",
+          "kind": "form_id",
+          "targets": [
+            "IPDS"
+          ]
+        },
+        {
+          "signature": "ANAM",
+          "name": "animation_tag",
+          "kind": "zstring"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "FSTS",
+      "source": "audio-xedit-tes5:9568",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "XCNT",
+          "name": "set_counts",
+          "kind": "struct",
+          "size": 20,
+          "members": [
+            {
+              "name": "walk_forward",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "run_forward",
+              "kind": "u32",
+              "offset": 4
+            },
+            {
+              "name": "walk_alternate",
+              "kind": "u32",
+              "offset": 8
+            },
+            {
+              "name": "run_alternate",
+              "kind": "u32",
+              "offset": 12
+            },
+            {
+              "name": "walk_alternate2",
+              "kind": "u32",
+              "offset": 16
+            }
+          ]
+        },
+        {
+          "signature": "DATA",
+          "name": "footsteps",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "footstep",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "FSTP"
+              ]
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "DOBJ",
+      "source": "audio-xedit-tes5:9508",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DNAM",
+          "name": "default_objects",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 8
+          },
+          "members": [
+            {
+              "name": "use_code",
+              "kind": "u32",
+              "offset": 0
+            },
+            {
+              "name": "object",
+              "kind": "form_id",
+              "offset": 4,
+              "targets": [
+                "*"
+              ]
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "DEBR",
+      "source": "audio-xedit-tes5:8274",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "name": "models",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "DATA",
+              "name": "debris_model",
+              "kind": "bytes",
+              "decider": "audio_debris_data"
+            },
+            {
+              "definition": "model_information",
+              "signature": "MODT"
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ADDN",
+      "source": "audio-xedit-tes5:8648",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "signature": "DATA",
+          "name": "node_index",
+          "kind": "i32"
+        },
+        {
+          "signature": "SNAM",
+          "name": "sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "DNAM",
+          "name": "addon",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "particle_cap",
+              "kind": "u16",
+              "offset": 0
+            },
+            {
+              "name": "flags",
+              "kind": "u16",
+              "offset": 2,
+              "enum": {
+                "1": "unknown_1",
+                "3": "always_loaded"
+              }
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "AVIF",
+      "source": "audio-xedit-tes5:8667",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "display_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "ANAM",
+          "name": "abbreviation",
+          "kind": "zstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "unknown_actor_value_data",
+          "kind": "bytes"
+        },
+        {
+          "signature": "AVSK",
+          "name": "skill",
+          "kind": "struct",
+          "size": 16,
+          "members": [
+            {
+              "name": "use_multiplier",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "offset_multiplier",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "improve_multiplier",
+              "kind": "f32",
+              "offset": 8
+            },
+            {
+              "name": "improve_offset",
+              "kind": "f32",
+              "offset": 12
+            }
+          ]
+        },
+        {
+          "name": "perk_tree",
+          "kind": "group",
+          "repeat": true,
+          "fields": [
+            {
+              "signature": "PNAM",
+              "name": "perk",
+              "kind": "form_id",
+              "targets": [
+                "PERK"
+              ]
+            },
+            {
+              "signature": "FNAM",
+              "name": "unknown_node_data",
+              "kind": "bytes"
+            },
+            {
+              "signature": "XNAM",
+              "name": "grid_x",
+              "kind": "u32"
+            },
+            {
+              "signature": "YNAM",
+              "name": "grid_y",
+              "kind": "u32"
+            },
+            {
+              "signature": "HNAM",
+              "name": "horizontal_position",
+              "kind": "f32"
+            },
+            {
+              "signature": "VNAM",
+              "name": "vertical_position",
+              "kind": "f32"
+            },
+            {
+              "signature": "SNAM",
+              "name": "associated_skill",
+              "kind": "form_id",
+              "targets": [
+                "AVIF"
+              ]
+            },
+            {
+              "signature": "CNAM",
+              "name": "connection_indices",
+              "kind": "u32",
+              "repeat": true
+            },
+            {
+              "signature": "INAM",
+              "name": "node_index",
+              "kind": "u32"
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "CLFM",
+      "source": "audio-xedit-tes5:10168",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "FULL",
+          "name": "display_name",
+          "kind": "lstring"
+        },
+        {
+          "signature": "CNAM",
+          "name": "color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "alpha",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "playable",
+          "kind": "u32",
+          "enum": {
+            "0": "false",
+            "1": "true"
+          }
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "COLL",
+      "source": "audio-xedit-tes5:10148",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "dlstrings"
+        },
+        {
+          "signature": "BNAM",
+          "name": "index",
+          "kind": "u32"
+        },
+        {
+          "signature": "FNAM",
+          "name": "debug_color",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "red",
+              "kind": "u8",
+              "offset": 0
+            },
+            {
+              "name": "green",
+              "kind": "u8",
+              "offset": 1
+            },
+            {
+              "name": "blue",
+              "kind": "u8",
+              "offset": 2
+            },
+            {
+              "name": "unused",
+              "kind": "u8",
+              "offset": 3
+            }
+          ]
+        },
+        {
+          "signature": "GNAM",
+          "name": "flags",
+          "kind": "u32",
+          "flags": {
+            "1": "trigger_volume",
+            "2": "sensor",
+            "4": "navmesh_obstacle"
+          }
+        },
+        {
+          "signature": "MNAM",
+          "name": "layer_name",
+          "kind": "zstring"
+        },
+        {
+          "signature": "INTV",
+          "name": "interactable_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "CNAM",
+          "name": "collides_with",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "layer",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "COLL"
+              ]
+            }
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "ANIO",
+      "source": "audio-xedit-tes5:6213",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "signature": "BNAM",
+          "name": "unload_event",
+          "kind": "zstring"
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "TACT",
+      "source": "audio-xedit-tes5:5366",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "definition": "vmad",
+          "signature": "VMAD"
+        },
+        {
+          "definition": "bounds",
+          "signature": "OBND"
+        },
+        {
+          "signature": "FULL",
+          "name": "display_name",
+          "kind": "lstring"
+        },
+        {
+          "definition": "model"
+        },
+        {
+          "definition": "destructible"
+        },
+        {
+          "signature": "KSIZ",
+          "name": "keyword_count",
+          "kind": "u32"
+        },
+        {
+          "signature": "KWDA",
+          "name": "keywords",
+          "kind": "array",
+          "count": {
+            "kind": "remaining",
+            "stride": 4
+          },
+          "members": [
+            {
+              "name": "keyword",
+              "kind": "form_id",
+              "offset": 0,
+              "targets": [
+                "KYWD"
+              ]
+            }
+          ]
+        },
+        {
+          "signature": "PNAM",
+          "name": "unknown_pnam",
+          "kind": "bytes"
+        },
+        {
+          "signature": "SNAM",
+          "name": "looping_sound",
+          "kind": "form_id",
+          "targets": [
+            "SNDR"
+          ]
+        },
+        {
+          "signature": "FNAM",
+          "name": "unknown_fnam",
+          "kind": "bytes"
+        },
+        {
+          "signature": "VNAM",
+          "name": "voice_type",
+          "kind": "form_id",
+          "targets": [
+            "VTYP"
+          ]
+        }
+      ],
+      "allow_unordered": false
+    },
+    {
+      "signature": "LSCR",
+      "source": "audio-xedit-tes5:10501",
+      "fields": [
+        {
+          "signature": "EDID",
+          "name": "editor_id",
+          "kind": "zstring"
+        },
+        {
+          "name": "icon",
+          "kind": "group",
+          "fields": [
+            {
+              "signature": "ICON",
+              "name": "large_icon",
+              "kind": "zstring"
+            },
+            {
+              "signature": "MICO",
+              "name": "small_icon",
+              "kind": "zstring"
+            }
+          ]
+        },
+        {
+          "signature": "DESC",
+          "name": "description",
+          "kind": "lstring",
+          "string_table": "strings"
+        },
+        {
+          "definition": "pending_conditions"
+        },
+        {
+          "signature": "NNAM",
+          "name": "loading_model",
+          "kind": "form_id",
+          "targets": [
+            "STAT"
+          ]
+        },
+        {
+          "signature": "SNAM",
+          "name": "initial_scale",
+          "kind": "f32"
+        },
+        {
+          "signature": "RNAM",
+          "name": "initial_rotation_degrees",
+          "kind": "struct",
+          "size": 6,
+          "members": [
+            {
+              "name": "x",
+              "kind": "i16",
+              "offset": 0
+            },
+            {
+              "name": "y",
+              "kind": "i16",
+              "offset": 2
+            },
+            {
+              "name": "z",
+              "kind": "i16",
+              "offset": 4
+            }
+          ]
+        },
+        {
+          "signature": "ONAM",
+          "name": "rotation_constraints_degrees",
+          "kind": "struct",
+          "size": 4,
+          "members": [
+            {
+              "name": "minimum",
+              "kind": "i16",
+              "offset": 0
+            },
+            {
+              "name": "maximum",
+              "kind": "i16",
+              "offset": 2
+            }
+          ]
+        },
+        {
+          "signature": "XNAM",
+          "name": "translation",
+          "kind": "struct",
+          "size": 12,
+          "members": [
+            {
+              "name": "x",
+              "kind": "f32",
+              "offset": 0
+            },
+            {
+              "name": "y",
+              "kind": "f32",
+              "offset": 4
+            },
+            {
+              "name": "z",
+              "kind": "f32",
+              "offset": 8
+            }
+          ]
+        },
+        {
+          "signature": "MOD2",
+          "name": "camera_path",
+          "kind": "zstring"
+        }
+      ],
+      "allow_unordered": false
+    }
+  ]
+}
