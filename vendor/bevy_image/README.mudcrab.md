@@ -13,12 +13,16 @@ crate only by a comment naming the advisories and by the optional `zstd` require
 ## Why
 
 Bevy 0.19 requires `zstd ^0.13.3`, which cannot resolve the fixes for `RUSTSEC-2026-0391`,
-`RUSTSEC-2026-0398`, `RUSTSEC-2026-0403` and `RUSTSEC-2026-0410`. `RUSTSEC-2026-0403` reaches
-Bevy's KTX2 decoder through `zstd_safe::DCtx::decompress_stream`, so ignoring it was not an
-option. The widened requirement resolves `zstd 0.14.3`, `zstd-safe 8.2.0` and
-`zstd-sys 2.1.2+zstd.1.5.7` for the engine while preserving Bevy's KTX2 support. No `cargo audit`
-exceptions are added. `crates/converter` uses the same `zstd 0.14` line, so one fixed decoder
-serves both.
+`RUSTSEC-2026-0398`, `RUSTSEC-2026-0403` and `RUSTSEC-2026-0410`. The widened requirement
+resolves `zstd 0.14.3`, `zstd-safe 8.2.0` and `zstd-sys 2.1.2+zstd.1.5.7` for the engine while
+preserving Bevy's KTX2 support, and adds no `cargo audit` exceptions. `crates/converter` uses the
+same `zstd 0.14` line, so one fixed decoder serves both.
+
+None of the four is reachable here: -0391 needs `Encoder::with_context` or `Decoder::with_context`,
+which nothing calls; -0398 needs the `seekable` feature; -0410 is `wasm32`-only and no wasm target
+is built; and -0403 affects the streaming *write* decoder, while this crate's only call is
+`zstd::decode_all`, which the advisory lists as unaffected. Patching is still preferred over
+adding audit ignores, because it removes the affected versions from the graph outright.
 
 ## Updating or removing this copy
 
