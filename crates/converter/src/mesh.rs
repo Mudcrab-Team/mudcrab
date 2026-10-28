@@ -3733,6 +3733,61 @@ mod tests {
         }
     }
 
+    /// `weapons/iron/irondagger.nif` carries its blood overlays as shapes with the `Hidden` flag
+    /// set; `dlc2smelter.nif` hides a whole node. Neither draws in Skyrim.
+    #[test]
+    fn hidden_shapes_and_shapes_under_hidden_nodes_are_excluded() {
+        use nom_derive::Parse;
+        use project_wormhole_nif::{legacy::NiTriShape, nif_block::NiAVObjectFlags};
+        use project_wormhole_shared::glam::{Mat3, Vec3};
+        let flags = |hidden: bool| {
+            NiAVObjectFlags::parse(&(0x0008_000E_u32 | u32::from(hidden)).to_le_bytes())
+                .unwrap()
+                .1
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let cases = [false, true].into_iter().flat_map(|node| {
+            [false, true]
+                .into_iter()
+                .flat_map(move |shape| [(node, shape, false), (node, shape, true)])
+        });
+        for (node_hidden, shape_hidden, legacy) in cases {
+            let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+            let (NifBlock::NiNode(node) | NifBlock::BSFadeNode(node)) = &mut nif.blocks[0] else {
+                unreachable!()
+            };
+            node.set_flags(flags(node_hidden));
+            let NifBlock::BSTriShape(shape) = &mut nif.blocks[1] else {
+                unreachable!()
+            };
+            shape.av.flags = flags(shape_hidden);
+            if legacy {
+                // The same shape as a legacy NiTriShape, whose own flags the parser keeps too.
+                nif.blocks[1] = NifBlock::NiTriShape(NiTriShape {
+                    name: shape.av.object.name,
+                    flags: flags(shape_hidden),
+                    translation: Vec3::ZERO,
+                    rotation: Mat3::IDENTITY,
+                    scale: 1.0,
+                    data: u32::MAX,
+                    shader_property: shape.shader_property,
+                    alpha_property: shape.alpha_property,
+                });
+            }
+            let contract = build_nif_material_contract(&nif, &input).unwrap();
+            let hidden = node_hidden || shape_hidden;
+            match &contract[0].disposition {
+                NifMaterialDisposition::Excluded { reason } => {
+                    assert!(hidden, "legacy={legacy}");
+                    assert_eq!(reason, "hidden NiAVObject");
+                }
+                NifMaterialDisposition::Validated { .. } => assert!(!hidden, "legacy={legacy}"),
+            }
+        }
+    }
+
     #[test]
     fn v15_source_uv_fields_survive_nif_contract() {
         use project_wormhole_nif::nif_enum::TexClampMode;

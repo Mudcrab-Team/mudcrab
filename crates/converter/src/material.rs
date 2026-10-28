@@ -2,7 +2,10 @@ use crate::asset_path::{AssetKind, canonical_asset_path};
 use color_eyre::{Result, eyre::ensure};
 use project_wormhole_nif::{
     bs::prelude::{BSShaderTextureSet, BSTriShape},
-    nif_block::{BSEffectShaderProperty, BSLightingShaderProperty, NiAlphaProperty, NifBlock},
+    nif_block::{
+        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObjectFlags, NiAlphaProperty,
+        NifBlock,
+    },
     nif_file::NifFile,
 };
 use serde::{Deserialize, Serialize};
@@ -179,6 +182,7 @@ pub struct NifShapeMaterial {
 
 pub fn build_nif_material_contract(nif: &NifFile, source: &Path) -> Result<Vec<NifShapeMaterial>> {
     let mut contract = Vec::new();
+    let hidden = hidden_blocks(&nif.blocks);
     for (index, block) in nif.blocks.iter().enumerate() {
         let shape = modern_shape(block);
         let legacy = match block {
@@ -205,14 +209,20 @@ pub fn build_nif_material_contract(nif: &NifFile, source: &Path) -> Result<Vec<N
             .get_string(name_index as usize)
             .ok()
             .map(str::to_owned);
-        let disposition = build_shape_material(
-            nif,
-            source,
-            shape_block,
-            shape_name.as_deref(),
-            shader_property,
-            alpha_property,
-        )?;
+        let disposition = if hidden.contains(&index) {
+            NifMaterialDisposition::Excluded {
+                reason: "hidden NiAVObject".to_owned(),
+            }
+        } else {
+            build_shape_material(
+                nif,
+                source,
+                shape_block,
+                shape_name.as_deref(),
+                shader_property,
+                alpha_property,
+            )?
+        };
         contract.push(NifShapeMaterial {
             shape_block,
             shape_name,
@@ -222,6 +232,45 @@ pub fn build_nif_material_contract(nif: &NifFile, source: &Path) -> Result<Vec<N
         });
     }
     Ok(contract)
+}
+
+/// Blocks Skyrim does not draw: every `NiAVObject` whose `Hidden` flag (bit 0) is set, and
+/// everything below a hidden node. Weapons carry their blood overlays this way until the game
+/// unhides them, and effects keep emitter and baked particle geometry hidden for good.
+fn hidden_blocks(blocks: &[NifBlock]) -> BTreeSet<usize> {
+    let mut hidden = BTreeSet::new();
+    let mut pending = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| av_flags(block).is_some_and(NiAVObjectFlags::hidden))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    while let Some(index) = pending.pop() {
+        if !hidden.insert(index) {
+            continue;
+        }
+        let children = match &blocks[index] {
+            NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => &node.children,
+            NifBlock::BSMultiBoundNode(block) => &block.node.children,
+            _ => continue,
+        };
+        pending.extend(
+            children
+                .iter()
+                .filter_map(|child| usize::try_from(*child).ok())
+                .filter(|child| *child < blocks.len()),
+        );
+    }
+    hidden
+}
+
+fn av_flags(block: &NifBlock) -> Option<&NiAVObjectFlags> {
+    match block {
+        NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => Some(&node.av.flags),
+        NifBlock::BSMultiBoundNode(block) => Some(&block.node.av.flags),
+        NifBlock::NiTriShape(shape) => Some(&shape.flags),
+        _ => modern_shape(block).map(|shape| &shape.av.flags),
+    }
 }
 
 /// Replaces the legacy exporter's order-based materials with deterministic

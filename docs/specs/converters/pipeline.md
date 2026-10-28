@@ -346,7 +346,7 @@ that affect that kind's bytes:
 
 | Kind | Settings proof | Source proof |
 | :--- | :--- | :--- |
-| NIF -> GLB | Mesh producer contract | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
+| NIF -> GLB | Mesh producer contract and current mesh output contracts | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
 | DDS -> KTX2 | Texture producer, fallback quality, UASTC level, Zstd level and CPU/GPU encoder quality | DDS bytes, resolved `TextureEncoding` from the freshly rebuilt database and accepted GLBs, plus the applicable GPU encoding label |
 | PEX -> Luau | Script ABI | PEX bytes; known producer eligibility is checked separately |
 
@@ -385,6 +385,17 @@ the published output to exist with its recorded size and SHA-256.
 Staging journal entries carry the same per-kind settings proof and also require
 the current producer contract and matching source/output bytes; older journal
 entries carrying a full configuration hash do not acquire a new proof implicitly.
+
+A converter change to mesh bytes that does not advance the producer appends a
+name to `MESH_OUTPUT_CONTRACTS` (`crates/converter/src/cache.rs`). The current
+producer's mesh settings proof includes the list, so a normal conversion and a
+resumed staging run rebuild meshes an earlier converter of the same producer
+wrote, while textures and scripts stay reusable. Every producer-27 manifest
+records per-kind proofs, which arrived with producer 26, so the combined fallback
+below never decides current-producer meshes. The list is cleared when the
+producer advances. `--reuse-assets` still retains the source
+package's mesh bytes and its recorded mesh proof, so a later normal conversion
+of that package rebuilds them.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

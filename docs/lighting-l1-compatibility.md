@@ -17,6 +17,7 @@ Target: unmodded Skyrim SE. [Phase #131](https://github.com/Mudcrab-Team/mudcrab
 | NIF landscape / landscape LOD / cloud | Generic material projection with source classification | Specialized NIF shader paths; do not confuse these with the separate LAND renderer |
 | Effect shader | Source values, UVs and alpha property preserved in generic projection; greyscale-to-palette colour and alpha drawn unlit through the palette ([#289](specs/engine/color-pipeline.md#effect-palette-289)) | Particle/falloff/refraction/animation semantics, lighting influence and additive blending. Fire-refraction surfaces are explicitly excluded, not rendered as opaque cards |
 | Declared editor marker | Exact `EditorMarker` shape plus BSX editor flag excluded with recorded reason | Not runtime geometry; ordinary shapes without both conditions remain visible |
+| Hidden NIF object | Shapes with the `NiAVObject` `Hidden` flag, or under a hidden node, excluded with recorded reason (weapon blood overlays, emitter and baked particle geometry) | Runtime unhiding, such as blood appearing on a weapon after a hit |
 | LAND terrain | Existing layer renderer participates in common output-domain probe; #102 sampler defaults integrated | Independent native terrain-normal direction proof, layer/material semantics and retail comparisons |
 | Sky / fog / water / reflections | Common HDR composition, synchronized linear reflection exposure, one output transform | Authored state/units and full-scene comparisons belong to later phases |
 
