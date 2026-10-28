@@ -119,15 +119,47 @@ fn quantize(value: f32, span: f32) -> u16 {
         .clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
-// Apply texture suitability and the type cap at both the candidate and jittered
-// position. The cache retains each texture's GNAM order; native Skyrim selection is not
-// reproduced by this deterministic placement algorithm.
-/// Apply the texture threshold and species cap to sampled layer coverage.
+/// Encode the attributed FasterNGIO luminance/range law; 255 remains unit brightness.
+fn brightness(range: f32, random: f32, luminance: f32) -> u8 {
+    let range = range.clamp(0.0, 1.0);
+    // Independently expressed formula from panthuncia/FasterNGIO
+    // (GPL v3), 5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40, EmitBlade:
+    // https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h
+    // u is our unchanged channel 9; s=2u-1 lies in [-1,1). This REPLACES
+    // 1-r*u, rather than applying Color Range a second time. RNG is MudCrab's.
+    let signed = random * 2.0 - 1.0;
+    ((luminance * (1.0 - range + signed * range)).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Sample the renderer's fixed [a,b,c,b,d,c] triangles at the encoded final root.
+fn root_luminance(field: Option<&[f32]>, position: [u16; 2]) -> f32 {
+    let Some(field) = field.filter(|field| field.len() == 33 * 33) else {
+        return 1.0;
+    };
+    let [px, py] = position.map(|v| f32::from(v) / f32::from(u16::MAX) * 32.0);
+    let ix = (px as usize).min(31);
+    let iy = (py as usize).min(31);
+    let tx = px - ix as f32;
+    let ty = py - iy as f32;
+    let a = field[iy * 33 + ix];
+    let b = field[iy * 33 + ix + 1];
+    let c = field[(iy + 1) * 33 + ix];
+    let d = field[(iy + 1) * 33 + ix + 1];
+    if tx + ty <= 1.0 {
+        a + tx * (b - a) + ty * (c - a)
+    } else {
+        d + (1.0 - tx) * (c - d) + (1.0 - ty) * (b - d)
+    }
+}
+
+/// Apply texture suitability and the type cap at both the candidate and jittered
+/// position. The cache retains each texture's GNAM order; native Skyrim selection is not
+/// reproduced by this deterministic placement algorithm.
 fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfig) -> f32 {
     let types = layer
         .grass_ids
         .len()
-        .min(config.grass_max_types_per_texture);
+        .min(config.effective_grass_species_cap());
     if types == 0 || layer.weights.len() != GRASS_BLEND_SIDE * GRASS_BLEND_SIDE {
         return 0.0;
     }
@@ -155,6 +187,7 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
         cell.heights.len(),
         |index| f32::from(cell.heights[index]),
         cell.water_height.as_ref().map(|height| f32::from(*height)),
+        None,
     )
 }
 
@@ -169,9 +202,10 @@ pub(super) fn generate_on_terrain(
         cache,
         cell_id,
         config,
-        terrain.0.heights.len(),
-        |index| terrain.0.heights[index],
+        terrain.heights().len(),
+        |index| terrain.heights()[index],
         terrain.0.water_height,
+        terrain.luminance(),
     )
 }
 
@@ -183,6 +217,7 @@ fn generate_field(
     height_count: usize,
     height_at: impl Fn(usize) -> f32,
     water: Option<f32>,
+    luminance: Option<&[f32]>,
 ) -> GeneratedGrass {
     let started = Instant::now();
     let mut result = GeneratedGrass {
@@ -229,7 +264,7 @@ fn generate_field(
             for id in layer
                 .grass_ids
                 .iter()
-                .take(config.grass_max_types_per_texture)
+                .take(config.effective_grass_species_cap())
             {
                 *weights.entry((*id).into()).or_default() += per_type;
             }
@@ -317,7 +352,7 @@ fn generate_field(
                 layer
                     .grass_ids
                     .iter()
-                    .take(config.grass_max_types_per_texture)
+                    .take(config.effective_grass_species_cap())
                     .any(|grass| u32::from(*grass) == id)
             })
             .map(|layer| layer_weight(layer, (jx * 2.0).fract(), (jy * 2.0).fract(), config))
@@ -355,7 +390,7 @@ fn generate_field(
                     layer
                         .grass_ids
                         .iter()
-                        .take(config.grass_max_types_per_texture)
+                        .take(config.effective_grass_species_cap())
                         .filter_map(|id| cache.species((*id).into()))
                         .filter(|rule| {
                             jslope >= f32::from(rule.min_slope)
@@ -380,12 +415,13 @@ fn generate_field(
         // iMinGrassSize controls candidate density. The reference precache permits
         // nearby clumps; a second minimum-distance gate would thin density again.
         let height_range: f32 = species.height_range.into();
-        // Runtime-only variation: cached species rules and placement are unchanged.
+        // Runtime-only brightness: the cache format and species rules are unchanged.
         let color_range = f32::from(species.color_range).clamp(0.0, 1.0);
+        let position_xy = [quantize(px, GRASS_CELL_SIZE), quantize(py, GRASS_CELL_SIZE)];
         instances.entry(id).or_default().push(GrassInstance {
             position: [
-                quantize(px, GRASS_CELL_SIZE),
-                quantize(py, GRASS_CELL_SIZE),
+                position_xy[0],
+                position_xy[1],
                 quantize(jh - height_min, height_span),
             ],
             rotation: (hash(cell_id, slot, 7) & 255) as u8,
@@ -393,7 +429,11 @@ fn generate_field(
                 .clamp(0.0, 2.0)
                 * 127.5)
                 .round() as u8,
-            color: ((1.0 - unit(hash(cell_id, slot, 9)) * color_range) * 255.0).round() as u8,
+            color: brightness(
+                color_range,
+                unit(hash(cell_id, slot, 9)),
+                root_luminance(luminance, position_xy),
+            ),
             normal: jnormal,
             slot,
         });
@@ -493,8 +533,8 @@ mod tests {
     }
 
     #[test]
-    /// LReachGrass01's authored first two links win the cap despite descending FormIDs.
-    fn reach_gnam_order_selects_first_two_species() {
+    /// LReachGrass01 admits its first N+1 resolved links despite descending FormIDs.
+    fn reach_gnam_order_selects_default_three_and_cap_edges() {
         // Literal official IDs: ReachGrass02, ReachGrass01, TundraGrass03.
         let order = vec![342275, 341137, 175315];
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -524,10 +564,11 @@ mod tests {
         let config = EngineConfig::default();
         assert_eq!(config.grass_max_types_per_texture, 2);
         for (cap, expected) in [
-            (1, vec![342275]),
-            (2, vec![341137, 342275]),
+            (2, vec![175315, 341137, 342275]),
+            (0, vec![342275]),
+            (1, vec![341137, 342275]),
             (3, vec![175315, 341137, 342275]),
-            (0, vec![]),
+            (usize::MAX, vec![175315, 341137, 342275]),
         ] {
             let generated = generate(
                 &cache,
@@ -559,8 +600,8 @@ mod tests {
         let mut reference = None;
         for (range, lower) in [
             (0.0, 1.0),
-            (0.03, 0.97),
-            (0.3, 0.7),
+            (0.03, 0.94),
+            (0.3, 0.4),
             (1.0, 0.0),
             (-1.0, 1.0),
             (2.0, 0.0),
@@ -606,6 +647,158 @@ mod tests {
                 );
             } else {
                 reference = Some(placement);
+            }
+        }
+    }
+
+    #[test]
+    /// Literal scalar inputs distinguish the replacement formula from multiplying the old range.
+    fn vclr_formula_known_inputs() {
+        assert_eq!(
+            brightness(0.2, 0.0, 1.0),
+            153,
+            "signed range lower endpoint"
+        );
+        assert_eq!(brightness(0.2, 0.25, 0.5), 89);
+        assert_eq!(brightness(0.0, 0.75, 1.0), 255);
+        assert_eq!(brightness(0.8, 0.0, 0.5), 0);
+        assert_eq!(brightness(0.0, 0.25, 0.299), 76);
+        assert_eq!(brightness(0.0, 0.25, 0.587), 150);
+        assert_eq!(brightness(0.0, 0.25, 0.114), 29);
+        assert_eq!(brightness(0.2, 0.5, 1.0), 204);
+        assert_eq!(brightness(0.0, 0.25, 0.5), 128);
+        assert_eq!(brightness(0.2, 0.75, 0.0), 0);
+    }
+
+    #[test]
+    /// A single nonplanar corner distinguishes fixed triangles from bilinear/checkerboard fields.
+    fn vclr_samples_fixed_triangles_and_white_fallback() {
+        let mut field = vec![0.0; 33 * 33];
+        field[34] = 1.0;
+        let lower = [quantize(32.0, 4096.0); 2];
+        let upper = [quantize(96.0, 4096.0); 2];
+        assert_eq!(root_luminance(Some(&field), lower), 0.0);
+        assert!((root_luminance(Some(&field), upper) - 0.5).abs() < 0.0001);
+        field.fill(0.0);
+        field[35] = 1.0;
+        // The adjacent square has opposite parity: a checkerboard diagonal must also fail here.
+        let odd_lower = [quantize(160.0, 4096.0), quantize(32.0, 4096.0)];
+        let odd_upper = [quantize(224.0, 4096.0), quantize(96.0, 4096.0)];
+        assert_eq!(root_luminance(Some(&field), odd_lower), 0.0);
+        assert!((root_luminance(Some(&field), odd_upper) - 0.5).abs() < 0.0001);
+        field[1088] = 0.25;
+        assert_eq!(root_luminance(Some(&field), [u16::MAX; 2]), 0.25);
+        assert_eq!(root_luminance(None, lower), 1.0);
+        assert_eq!(root_luminance(Some(&field[..12]), lower), 1.0);
+    }
+
+    #[test]
+    /// Committed LAND tint samples final encoded jittered roots without changing placement.
+    fn vclr_committed_surface_samples_encoded_jittered_roots() {
+        let mut rule = species(7);
+        rule.color_range = 0.0;
+        rule.position_range = 64.0;
+        let cache = mapped(vec![rule], fixture(vec![layer(9, vec![7], 1.0)]));
+        let snapshot = crate::world::cache::TerrainSnapshot {
+            cell_id: 42,
+            width: 33,
+            height: 33,
+            heights: vec![120.0; 1089],
+            normals: vec![0; 3267],
+            // A linear gray ramp yields byte round(encoded_x * 224 / 65535),
+            // independently of the sampled triangle and brightness implementation.
+            vertex_colors: (0..1089).flat_map(|i| [(i % 33 * 7) as u8; 3]).collect(),
+            layers: vec![],
+            water_height: Some(20.0),
+            water_type_form_id: None,
+        };
+        let config = EngineConfig::default();
+        let plain = generate(&cache, 42, &config);
+        let enabled =
+            generate_on_terrain(&cache, 42, &config, &GrassTerrain::from_snapshot(&snapshot));
+        assert_eq!(
+            plain.batches[0].instances.len(),
+            enabled.batches[0].instances.len()
+        );
+        let mut jitter_matters = false;
+        let mut quantization_matters = false;
+        for (old, new) in plain.batches[0]
+            .instances
+            .iter()
+            .zip(enabled.batches[0].instances.iter())
+        {
+            assert_eq!(old.color, 255);
+            let expected_byte = (f64::from(new.position[0]) * 224.0 / 65535.0).round() as u8;
+            assert_eq!(new.color, expected_byte, "slot {} encoded root", new.slot);
+            let candidate_x = candidate(42, new.slot)[0];
+            jitter_matters |= (candidate_x * 224.0).round() as u8 != expected_byte;
+            let raw_x = candidate_x * 4096.0 + (unit(hash(42, new.slot, 5)) - 0.5) * 64.0;
+            quantization_matters |=
+                (f64::from(raw_x) * 224.0 / 4096.0).round() as u8 != expected_byte;
+            let mut expected = *old;
+            expected.color = expected_byte;
+            assert_eq!(*new, expected);
+        }
+        assert!(jitter_matters, "fixture must reject pre-jitter sampling");
+        assert!(
+            quantization_matters,
+            "fixture must reject pre-quantization sampling"
+        );
+    }
+
+    #[test]
+    /// Real LAND colours exercise literal luminance/Color Range cases, including white fallback.
+    fn adopted_d_vclr_formula_on_committed_white_absent_and_coloured_land() {
+        let config = EngineConfig::default();
+        for (rgb, range, luminance) in [
+            (Some([255, 255, 255]), 0.2, 1.0_f64),
+            (None, 0.2, 1.0),
+            (Some([255, 0, 0]), 0.0, 0.299),
+            (Some([0, 255, 0]), 0.0, 0.587),
+            (Some([0, 0, 255]), 0.0, 0.114),
+            (Some([128, 128, 128]), 0.2, 128.0 / 255.0),
+            (Some([64, 128, 192]), 0.8, 116.16 / 255.0),
+            (Some([0, 0, 0]), 0.2, 0.0),
+            (Some([255, 255, 255]), 0.0, 1.0),
+        ] {
+            let mut rule = species(7);
+            rule.color_range = range;
+            let cache = mapped(vec![rule], fixture(vec![layer(9, vec![7], 1.0)]));
+            let snapshot = crate::world::cache::TerrainSnapshot {
+                cell_id: 42,
+                width: 33,
+                height: 33,
+                heights: vec![120.0; 1089],
+                normals: vec![0; 3267],
+                vertex_colors: rgb.map_or_else(Vec::new, |rgb| rgb.repeat(1089)),
+                layers: vec![],
+                water_height: Some(20.0),
+                water_type_form_id: None,
+            };
+            let generated =
+                generate_on_terrain(&cache, 42, &config, &GrassTerrain::from_snapshot(&snapshot));
+            assert_eq!(generated.batches[0].instances.len(), 41944);
+            for instance in generated.batches[0].instances.iter() {
+                // An independently expanded double-precision expression pins the law.
+                let u = f64::from(unit(hash(42, instance.slot, 9)));
+                let r = f64::from(range);
+                let expected = (255.0 * (luminance * (1.0 - 2.0 * r + 2.0 * u * r)).clamp(0.0, 1.0))
+                    .round() as u8;
+                assert!(
+                    instance.color.abs_diff(expected) <= 1,
+                    "rgb={rgb:?} range={range} slot={}: actual={} expected={expected}",
+                    instance.slot,
+                    instance.color
+                );
+                if range == 0.0 {
+                    assert_eq!(instance.color, expected);
+                }
+            }
+            if rgb.is_none() {
+                assert_eq!(
+                    generated.batches[0].instances,
+                    generate(&cache, 42, &config).batches[0].instances
+                );
             }
         }
     }
@@ -689,7 +882,7 @@ mod tests {
         let cache = mapped(rules, fixture(vec![painted]));
         let config = EngineConfig {
             grass_texture_threshold: 0.5,
-            grass_max_types_per_texture: 1,
+            grass_max_types_per_texture: 0,
             ..EngineConfig::default()
         };
         let generated = generate(&cache, 42, &config);
@@ -710,15 +903,17 @@ mod tests {
             },
         );
         assert_eq!(uncapped.batches.len(), 3);
-        let disabled = generate(
+        let two = generate(
             &cache,
             42,
             &EngineConfig {
-                grass_max_types_per_texture: 0,
+                grass_max_types_per_texture: 1,
                 ..config
             },
         );
-        assert!(disabled.batches.is_empty());
+        assert_eq!(two.batches.len(), 2);
+        assert_eq!(two.batches[0].grass_id, 7);
+        assert_eq!(two.batches[1].grass_id, 11);
     }
 
     #[test]

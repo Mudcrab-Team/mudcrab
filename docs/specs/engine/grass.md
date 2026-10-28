@@ -17,9 +17,10 @@ run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow normalized 17x17
 blend grids, species rules and 32-unit exclusion bits directly from a validated
 immutable memory mapping. Committed cells retain an immutable shared copy of
 their post-weld 33x33 height field, so grass roots, slope and water decisions use
-the same surface as the rendered terrain. This adds about 4.3 KiB to each
-committed exterior terrain root while grass is enabled; retained copies in the
-generated pool count toward its budget. The mapping is reference-counted so
+the same surface as the rendered terrain. When LAND VCLR is present, the same
+allocation also retains 33x33 scalar luminance samples. Heights add 4356 bytes
+per committed exterior root while grass is enabled; colours add another 4356
+bytes. The full retained surface counts toward the generated pool's budget. The mapping is reference-counted so
 pending workers retain it safely. Converted assets must not be rewritten while
 the engine is running.
 
@@ -30,25 +31,29 @@ Candidates follow a cell-shifted R2 sequence, seeded with cell ID and slot index
 Every accepted instance retains its original slot index and batches retain slot
 order. Effective blend weight is shared among a texture's nominated species;
 weights for repeated species accumulate across layers. The INI type cap selects
-the first N species in each cached layer's winning LTEX GNAM occurrence order
-(default `iMaxGrassTypesPerTexure=2`), and the texture threshold rejects blend
+the first **N+1 resolved species** in each cached layer's winning LTEX GNAM
+occurrence order. The configured `iMaxGrassTypesPerTexure` remains the raw
+INI-equivalent N (default 2, effective count 3); zero admits one species, and
+programmatic maximum values saturate without overflow. The texture threshold rejects blend
 weights below its value. Both apply again after jitter. The converter preserves
 first occurrences and filters unresolved/deleted links without reordering survivors;
 the runtime never sorts the per-layer list by FormID. Only the global rule table
 and output batches use FormID order for lookup and deterministic organization.
 For example, LReachGrass01 nominates ReachGrass02, ReachGrass01, TundraGrass03;
-the default cap admits ReachGrass02 and ReachGrass01. The version gate rejects
-pre-marker producers and requests reconversion: v5 sorted lists cannot recover
-GNAM priority, and v6 masks can still contain header-flagged markers. See the
+the default setting admits all three. The version gate rejects pre-marker
+producers and requests reconversion: v5 sorted lists cannot recover GNAM priority,
+and v6 masks can still contain header-flagged markers. See the
 [cache contract](../converters/grass-cache.md).
-This first-N cap remains MudCrab policy, not a claim of Skyrim's selection algorithm.
-A [public replacement implementation](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L117)
-instead admits three resolved entries for INI value two. Its per-texture list is
-reused across spatial patches, without a random species subset for each quadrant.
-That precise native-boundary claim remains unverified here; MudCrab retains its
-documented exact cap, including zero admitting no species. The replacement also
-uses thresholded per-species patches rather than MudCrab's opacity-weighted,
-shared-slot competition, so changing only the cap does not establish placement parity.
+The N+1 boundary follows the vanilla-compatible placement in
+[panthuncia/FasterNGIO](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L105-L128):
+three resolved entries for INI two, one for zero. This attributed public evidence
+establishes that replacement's behavior, not proof from Skyrim's binary. Its
+per-texture list is reused across spatial patches, without a random subset for
+each quadrant. Its thresholded per-species patches differ from MudCrab's
+opacity-weighted shared-slot competition; the boundary alone does not establish
+placement parity. The converter already removes unresolved/deleted links while
+preserving first occurrences. An admitted rule with no usable model still
+consumes its prefix place; the cap does not backfill from later GNAM entries.
 Species that fail slope
 or water rules cannot compete. Each eligible species scores its blended weight
 and density through a deterministic exponential race; the highest score wins.
@@ -61,12 +66,41 @@ leaves the cell is rejected instead of being clamped into an artificial edge row
 Exclusion is checked only at the final position. Slope and water
 rules and the selected species' painted texture support are rechecked after
 jitter. Height range supplies variation around unit scale, clamped to 0..2.
-Colour Range supplies darken-only brightness `b = 1 - r*u`, with record range
-`r` clamped to `[0,1]` and deterministic random channel `u` in `[0,1)`.
-Brightness is stored as `round(255*b)` and decoded as `byte/255`, so it never
-exceeds 1; rounding changes the ideal lower bound by at most `0.5/255`.
-Zero range is exactly 1. Scale keeps its separate 0..2 encoding.
-These variation equations are MudCrab policy. Slope is evaluated
+Colour Range and terrain VCLR jointly supply darken-only brightness:
+
+```text
+r = clamp(Color Range, 0, 1)
+u = deterministic random channel 9 in [0,1)
+s = 2*u - 1
+L = .299*(R/255) + .587*(G/255) + .114*(B/255)
+b = clamp(L * (1-r+s*r), 0, 1)
+byte = round(255*b)
+```
+
+Absent VCLR is white (`L=1`). The same formula applies to every instance,
+including white and near-white terrain, independently of GRAS lighting flags.
+On white/absent VCLR the continuous pre-clamp support is `[1-2r,1)`;
+the lower tail clamps at zero, and byte rounding can reach 255. This replaces
+the former `1-r*u` law with support `[1-r,1]`: white terrain also becomes darker
+for nonzero Colour Range. Zero range is neutral only on white/absent VCLR;
+otherwise it retains terrain luminance. Brightness decodes as `byte/255`, so
+**255 is exactly 1.0** and no instance brightens above 1. Scale keeps its
+separate 0..2 encoding. The formula is independently expressed from
+[FasterNGIO's EmitBlade](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L157-L166),
+with the same pinned author's [GPL v3 reference](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/LICENSE).
+MudCrab is GPL-3.0-or-later and can use its GPL v3 option consistently with
+that reference. No C++ scaffolding is copied; RNG and its signed mapping remain
+MudCrab policy, without a claim of exact native distribution.
+
+Luminance interpolates the committed LAND colours using the renderer's fixed
+`[a,b,c,b,d,c]` triangles at the final encoded, post-jitter XY root. This differs
+from the reference's alternating diagonals. There is no gamma conversion or
+direct RGB hue multiplication. The immutable surface retains colours once per
+commit, includes them in equality and pool accounting, and regenerates on a
+colour-only terrain replacement. A speculative cache surface has no colours;
+it cannot attach as a match to a committed coloured surface.
+
+Slope is evaluated
 in degrees from the rendered terrain triangle's geometric normal. Height uses
 the terrain mesh's anti-diagonal triangles, including after position jitter;
 bilinear height interpolation can bury grass on a nonplanar quad. The spacing option controls the
@@ -134,14 +168,10 @@ MudCrab's blade-normal branch does not yet implement that behavior. Flag masks
 are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
 the audited official grasses use `0x06`, leaving Vertex Lighting off.
 
-Instance brightness is `round(255 * (1 - u * ColorRange))`, with `u` in `[0,1)`:
-255 is neutral and 128 is approximately half brightness. LAND VCLR is decoded for
-terrain but is absent from the grass cache and does not affect these instances.
-The public replacement's [colour formula](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L173)
-uses scalar LAND-colour luminance and, on white terrain, a wider `[1-2r,1]`
-darkening factor before clamping. These are documented compatibility differences;
-field layouts and darken-only authoring guidance do not prove an exact native
-distribution or a direct RGB LAND tint. Wave Period drives the current scrolling
+The existing shader byte decode remains `byte/255`; 128 is approximately half
+brightness. LAND VCLR was already decoded for terrain and remains absent from
+the serialized grass cache. Grass now consumes the committed terrain snapshot,
+so no converter, shader, cache schema or pack rebuild is needed. Wave Period drives the current scrolling
 wind model, but its exact native timing and waveform remain unverified.
 
 The color pass receives the existing directional shadows using Bevy's prepared
@@ -159,11 +189,11 @@ experiment and back-light sweep favored k=0 in all five sampled biomes. The
 combination of one-sided lighting, shadow reception, darken-only range and an
 unproven vertex-space conversion closed about 79% of the measured mean-RGB gap.
 These are empirical design evidence, not claims about Skyrim's internal shader
-or exact Colour Range distribution. This implementation uses the first three
-changes only: authored vertex RGB remains numerically unchanged, with no extra
-sRGB conversion, LAND tint, ambient retuning or weather changes. Runtime instance
-brightness changes require no converted grass-cache/schema update. Instance
-size, placement/counts and generation-budget accounting remain unchanged.
+or exact Colour Range distribution. The current implementation retains one-sided lighting and shadows, and adds the
+attributed luminance/range law above. Authored vertex RGB remains numerically
+unchanged, with no extra sRGB conversion, ambient retuning or weather changes.
+Instance size remains 16 bytes. The N+1 prefix can change species competition
+and instance counts; retained colour samples also increase CPU pool accounting.
 Grass enables 4x MSAA on the world camera, including while interactive renderer
 preferences change. The saved MSAA preference still applies to reflections and
 runs without grass. Both fragment passes use `sample_index` to discard samples
@@ -178,13 +208,13 @@ rebases. Distance fades retain a deterministic prefix of candidate slots.
 
 The runtime keeps resident and recently generated cells in a byte-budgeted LRU
 pool, accounting for generated arrays, batch metadata and retained source height
-fields. Resident desired
+and luminance fields. Resident desired
 cells stay pinned; a result that cannot fit is discarded with a diagnostic
 instead of exceeding the pool budget. Rejections are retried after the desired
 cell set changes. Generation is prefetched one cell ahead in the player's
 direction of travel, while rendering still waits for a committed cell root.
 Prefetched results are reused only when their surface matches the committed
-field. Reloaded cells with changed welds regenerate grass; pending results from
+field. Reloaded cells with changed welds or colours regenerate grass; pending results from
 retired cell roots cannot be attached to a new root.
 Species batches are admitted under the upload count budget, and GPU buffer
 preparation applies its own admission limit when meshes become ready.
@@ -261,7 +291,7 @@ that file; every other value is an explicit **MudCrab default**.
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
 | `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Species cap per texture; INI spelling retained |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Raw N; effective species cap N+1 (zero admits one); INI spelling retained |
 | `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
 | `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |

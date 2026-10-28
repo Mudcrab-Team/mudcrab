@@ -28,14 +28,30 @@ use std::{
 pub(crate) struct GrassTerrain(Arc<GrassSurface>);
 
 struct GrassSurface {
-    heights: Box<[f32]>,
+    /// One 33x33 height plane, followed by an optional 33x33 VCLR luminance plane.
+    /// The retained colour plane participates in surface equality and pool accounting.
+    samples: Box<[f32]>,
     water_height: Option<f32>,
 }
 
 impl GrassTerrain {
     /// Retain the committed field once, without copying it during per-frame grass streaming.
     pub(crate) fn from_snapshot(terrain: &TerrainSnapshot) -> Self {
-        Self::new(terrain.heights.clone(), terrain.water_height)
+        // Streaming validates complete terrain before publishing this component.
+        // Keep malformed programmatic fields unusable rather than interpreting a second
+        // height plane as colour. Empty/malformed colours use the white fallback.
+        if terrain.heights.len() != 33 * 33 {
+            return Self::new(Vec::new(), terrain.water_height);
+        }
+        let mut samples = terrain.heights.clone();
+        if terrain.vertex_colors.len() == 33 * 33 * 3 {
+            samples.extend(terrain.vertex_colors.as_chunks::<3>().0.iter().map(|rgb| {
+                0.299 * (f32::from(rgb[0]) / 255.0)
+                    + 0.587 * (f32::from(rgb[1]) / 255.0)
+                    + 0.114 * (f32::from(rgb[2]) / 255.0)
+            }));
+        }
+        Self::new(samples, terrain.water_height)
     }
 
     /// Build a worker-owned speculative surface before terrain has committed.
@@ -49,30 +65,44 @@ impl GrassTerrain {
         )
     }
 
-    /// Own a fixed-size field; its allocation can be accounted independently of sharing.
-    fn new(heights: Vec<f32>, water_height: Option<f32>) -> Self {
+    /// Own the height and optional luminance planes in one accounted allocation.
+    fn new(samples: Vec<f32>, water_height: Option<f32>) -> Self {
         Self(Arc::new(GrassSurface {
-            heights: heights.into_boxed_slice(),
+            samples: samples.into_boxed_slice(),
             water_height,
         }))
+    }
+
+    /// Expose only the height plane to placement, including the original invalid-field check.
+    fn heights(&self) -> &[f32] {
+        if self.0.samples.len() == 2 * 33 * 33 {
+            &self.0.samples[..33 * 33]
+        } else {
+            &self.0.samples
+        }
+    }
+
+    /// Missing speculative or committed colours have the same white fallback as terrain.
+    fn luminance(&self) -> Option<&[f32]> {
+        (self.0.samples.len() == 2 * 33 * 33).then(|| &self.0.samples[33 * 33..])
     }
 
     /// Use pointer equality normally, and compare exact field bits once on a new root/source.
     fn same_surface(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
             || (self.0.water_height.map(f32::to_bits) == other.0.water_height.map(f32::to_bits)
-                && self.0.heights.len() == other.0.heights.len()
+                && self.0.samples.len() == other.0.samples.len()
                 && self
                     .0
-                    .heights
+                    .samples
                     .iter()
-                    .zip(other.0.heights.iter())
+                    .zip(other.0.samples.iter())
                     .all(|(left, right)| left.to_bits() == right.to_bits()))
     }
 
     /// Conservatively charge the full retained source even when its root shares the allocation.
     fn bytes(&self) -> usize {
-        std::mem::size_of_val(self.0.heights.as_ref())
+        std::mem::size_of_val(self.0.samples.as_ref())
             + std::mem::size_of::<GrassSurface>()
             + 2 * std::mem::size_of::<usize>()
     }
@@ -506,6 +536,74 @@ pub(crate) fn add_cpu_streaming_test_system(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// Colour-only changes invalidate pooled/prefetched surfaces and charge the extra plane.
+    fn vclr_surface_identity_and_budget_include_the_colour_plane() {
+        let mut snapshot = TerrainSnapshot {
+            cell_id: 42,
+            width: 33,
+            height: 33,
+            heights: vec![0.0; 1089],
+            normals: vec![0; 3267],
+            vertex_colors: vec![255; 3267],
+            layers: vec![],
+            water_height: None,
+            water_type_form_id: None,
+        };
+        let plain = GrassTerrain::new(snapshot.heights.clone(), snapshot.water_height);
+        assert!(plain.same_surface(&GrassTerrain::new(vec![0.0; 1089], None)));
+        assert_eq!(
+            plain.bytes(),
+            1089 * 4 + std::mem::size_of::<GrassSurface>() + 2 * std::mem::size_of::<usize>()
+        );
+        let white = GrassTerrain::from_snapshot(&snapshot);
+        assert!(
+            !plain.same_surface(&white),
+            "white speculative data cannot promote as a coloured field"
+        );
+        assert_eq!(white.bytes() - plain.bytes(), 4356);
+        snapshot.vertex_colors[0] = 0;
+        let changed = GrassTerrain::from_snapshot(&snapshot);
+        assert!(!white.same_surface(&changed));
+        snapshot.vertex_colors.clear();
+        let absent = GrassTerrain::from_snapshot(&snapshot);
+        assert!(plain.same_surface(&absent));
+        assert!(absent.luminance().is_none());
+    }
+
+    #[test]
+    /// Streaming regenerates colour-only replacements before marking grass ready.
+    fn tint_colour_only_recommit_replaces_cached_brightness() {
+        let (mut app, _directory) = surface_streaming_app();
+        let root = surface_root(&mut app, 0.0, None);
+        settle_surface_streaming(&mut app);
+        let original = app
+            .world_mut()
+            .query::<&GrassBatch>()
+            .single(app.world())
+            .unwrap()
+            .instances
+            .clone();
+        app.world_mut().despawn(root);
+        app.update();
+        let root = surface_root(&mut app, 0.0, None);
+        let mut samples = vec![0.0; 1089];
+        samples.extend(vec![0.0; 1089]);
+        app.world_mut()
+            .entity_mut(root)
+            .insert(GrassTerrain::new(samples, None));
+        settle_surface_streaming(&mut app);
+        let batch = app
+            .world_mut()
+            .query::<&GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        assert!(!Arc::ptr_eq(&original, &batch.instances));
+        assert!(original.iter().any(|instance| instance.color != 0));
+        assert!(batch.instances.iter().all(|instance| instance.color == 0));
+        assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 2);
+    }
 
     /// Build an empty generated result with a chosen allocation budget for pool tests.
     fn result(bytes: usize) -> GeneratedGrass {

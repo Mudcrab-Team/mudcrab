@@ -180,7 +180,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if config.grass {
         let (start, end) = config.effective_grass_fade();
         eprintln!(
-            "grass settings: spacing={}, radius={}, terrain radius={}, fade={} ({}..{}), types/texture={}, texture threshold={}",
+            "grass settings: spacing={}, radius={}, terrain radius={}, fade={} ({}..{}), INI types/texture={}, effective species/texture={}, texture threshold={}",
             config.grass_min_spacing,
             config.effective_grass_radius(),
             config.stream_radius,
@@ -188,6 +188,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             start,
             end,
             config.grass_max_types_per_texture,
+            config.effective_grass_species_cap(),
             config.grass_texture_threshold
         );
     }
