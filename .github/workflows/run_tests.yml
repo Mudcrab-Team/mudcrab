@@ -200,7 +200,16 @@ jobs:
       # scripts-only change does not trigger. Run the audit on its own so a new
       # launcher flag cannot wait for the next Rust change to turn main red.
       - name: Audit the flags scripts pass to the engine
-        run: cargo test -p engine --lib config::tests::the_script
+        run: |
+          set -euo pipefail
+          output="$(cargo test -p engine --lib config::tests::the_script 2>&1)"
+          printf '%s\n' "$output"
+          # `cargo test` exits 0 when the filter matches nothing, so a renamed or
+          # removed audit test would leave this job green with nothing run.
+          if ! grep -qE 'test result: ok\. [1-9][0-9]* passed' <<<"$output"; then
+            echo "::error::the script-flag audit tests did not run; the filter config::tests::the_script matched no passing test"
+            exit 1
+          fi
 
   native_profiling:
     needs: [orchestrate]
