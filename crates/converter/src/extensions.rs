@@ -126,7 +126,8 @@ const MAIN_CORE_INDEXES: &[&str] = &[
     "record_overrides_source",
 ];
 
-/// Built-in payloads emitted by the authored converter. Each ownership list is sorted.
+/// Built-in payloads emitted by the retained producers. Each ownership list is sorted.
+/// Cluster finalizers declare their payloads separately in overlay.json.
 pub fn specs() -> Vec<ExtensionSpec> {
     vec![ExtensionSpec {
         id: MATERIAL,
@@ -1000,14 +1001,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // An unused glTF producer does not need a database. Actual payload
+        // publication must still validate the identity instead of blessing it.
         assert!(build_entries(directory.path()).unwrap().is_empty());
-        refresh_manifest(&mut ConversionManifest::default(), directory.path()).unwrap();
-        fs::create_dir_all(directory.path().join("meshes")).unwrap();
-        fs::write(
-            directory.path().join("meshes/animated.gltf"),
-            br#"{"extensionsUsed":["OPEN_SKYRIM_material_animation"],"materials":[{"extensions":{"OPEN_SKYRIM_material_animation":{"channels":[]}}}]}"#,
-        ).unwrap();
-        // An actual registered payload still requires a readable core identity.
+        fs::create_dir(directory.path().join("meshes")).unwrap();
+        fs::write(directory.path().join("meshes/animated.gltf"),
+            br#"{"asset":{"version":"2.0"},"extensionsUsed":["OPEN_SKYRIM_material_animation"],"materials":[{"extensions":{"OPEN_SKYRIM_material_animation":{"channels":[]}}}]}"#).unwrap();
         assert!(build_entries(directory.path()).is_err());
         assert!(refresh_manifest(&mut ConversionManifest::default(), directory.path()).is_err());
     }

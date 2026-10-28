@@ -164,9 +164,9 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
         names.push(decode_name(&tail[..end]));
         name_cursor = checked_end(name_cursor, end + 1, "filename")?;
     }
-    // Some distributed archives (e.g. MarketplaceTextures.bsa) pad the filename
-    // table with trailing zero bytes beyond the declared file names. The header
-    // length remains the table bound, so only all-zero slack is accepted here.
+    // Shipped archives may pad the table past the last name (MarketplaceTextures.bsa declares
+    // 2272 bytes and uses 2263, followed by nine NULs); the check below accepts all-zero slack
+    // and rejects anything else. This one only keeps that slice in bounds.
     ensure!(
         name_cursor <= filename_table.len(),
         "BSA filename table length mismatch: header={}, records={name_cursor}",
@@ -318,6 +318,37 @@ mod tests {
         .unwrap()
     }
 
+    fn fixture_with_name_table_padding(padding: &[u8]) -> Vec<u8> {
+        let folder = b"scripts\0";
+        let name = [b"hello.pex\0".as_slice(), padding].concat();
+        let payload = b"PEX";
+        let folder_table_end = HEADER_SIZE + FILE_RECORD_SIZE;
+        let names_start = folder_table_end + 1 + folder.len() + FILE_RECORD_SIZE;
+        let payload_offset = names_start + name.len();
+        let mut bytes = vec![0u8; payload_offset];
+        bytes[..4].copy_from_slice(b"BSA\0");
+        bytes[4..8].copy_from_slice(&104u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+        bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(folder.len() as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
+        bytes[36..44].copy_from_slice(&folder_hash(b"scripts").to_le_bytes());
+        let mut cursor = folder_table_end;
+        bytes[cursor] = folder.len() as u8;
+        cursor += 1;
+        bytes[cursor..cursor + folder.len()].copy_from_slice(folder);
+        cursor += folder.len();
+        bytes[cursor..cursor + 8].copy_from_slice(&file_hash(b"hello.pex").to_le_bytes());
+        bytes[cursor + 8..cursor + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes[cursor + 12..cursor + 16].copy_from_slice(&(payload_offset as u32).to_le_bytes());
+        cursor += 16;
+        bytes[cursor..cursor + name.len()].copy_from_slice(&name);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
     /// A one-file v104 archive with raw name bytes and the given stored hashes,
     /// so names outside ASCII and wrong hashes can be written.
     fn raw_archive(folder: &[u8], file: &[u8], folder_hash: u64, file_hash: u64) -> Vec<u8> {
@@ -344,6 +375,25 @@ mod tests {
         bytes.push(0);
         bytes.extend_from_slice(b"PEX");
         bytes
+    }
+
+    #[test]
+    fn accepts_zero_padding_after_the_last_filename() {
+        let bytes = fixture_with_name_table_padding(&[0; 9]);
+        let entries = iter_raw_entries(&bytes).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "scripts/hello.pex");
+        assert_eq!(entries[0].payload, b"PEX");
+    }
+
+    #[test]
+    fn rejects_non_zero_bytes_after_the_last_filename() {
+        let bytes = fixture_with_name_table_padding(b"extra\0");
+        let error = iter_raw_entries(&bytes).unwrap_err().to_string();
+        assert!(
+            error.contains("trailing bytes"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

@@ -27,6 +27,14 @@ published folders whose `clusters-<settings-id>` name differs from the hash of
 their recorded build settings. Staging metadata is written before the final rename;
 a `.staging-*` directory cannot be selected as a published overlay.
 
+Terrain source identity is the base-bound recipe of canonical DDS asset keys and
+content hashes. A raw source folder is supplied for the current invocation; new
+`overlay.json` files never record its host path. When the base has no `vfs`, a
+rebuild hint requires `--terrain-sources '<raw-dds-root>'`: replace that placeholder
+with matching sources. Moving the folder does not change source identity, and
+changed or missing source bytes refuse derivation. Older optional recovery-path
+fields remain readable for diagnostic compatibility.
+
 ## Integrity and dependencies
 
 `sha256` uses `mudcrab-ext-hash-v1` over declared tables, indexes and file bytes.

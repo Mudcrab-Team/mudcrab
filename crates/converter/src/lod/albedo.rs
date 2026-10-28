@@ -39,7 +39,7 @@ const GUTTER: usize = 2;
 const WEIGHT_SIDE: usize = 17;
 const QUADRANT_ORIGINS: [(usize, usize); 4] = [(0, 0), (16, 0), (0, 16), (16, 16)];
 
-fn diffuse_catalog(connection: &Connection) -> Result<BTreeMap<u32, String>> {
+pub(crate) fn diffuse_catalog(connection: &Connection) -> Result<BTreeMap<u32, String>> {
     connection.prepare(
         "SELECT l.id, t.diffuse_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id \
          WHERE t.diffuse_path IS NOT NULL AND t.diffuse_path <> '' ORDER BY l.id"
@@ -498,20 +498,32 @@ pub(crate) struct EncodedTerrainAtlas {
 }
 
 impl TerrainAtlas {
-    pub fn bake(
-        tier: LodTier,
-        cells: &[&TerrainCellInput],
-        textures: &TerrainTextures,
-    ) -> Result<Self> {
-        ensure!(!cells.is_empty(), "cannot bake empty terrain atlas");
-        let tile_side = 512 / tier.side_cells() as usize;
-        let tile_count = cells.len() * 4;
+    /// The same bounded layout used for baking and validating a terrain atlas.
+    pub(crate) fn size_for_cells(tier: LodTier, cell_count: usize) -> Result<usize> {
+        let side = tier.side_cells() as usize;
+        ensure!(
+            cell_count > 0 && cell_count <= side * side,
+            "invalid terrain atlas cell count"
+        );
+        let tile_side = 512 / side;
+        let tile_count = cell_count * 4;
         let mut tiles_axis = 1usize;
         while tiles_axis * tiles_axis < tile_count {
             tiles_axis *= 2;
         }
         let size = tiles_axis * tile_side;
         ensure!(size <= 1024, "terrain atlas exceeds chunk coverage");
+        Ok(size)
+    }
+
+    pub fn bake(
+        tier: LodTier,
+        cells: &[&TerrainCellInput],
+        textures: &TerrainTextures,
+    ) -> Result<Self> {
+        let tile_side = 512 / tier.side_cells() as usize;
+        let size = Self::size_for_cells(tier, cells.len())?;
+        let tiles_axis = size / tile_side;
         let mut atlas = Self {
             size,
             tile_side,

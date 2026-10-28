@@ -823,7 +823,19 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v2" | "runtime-english-v2"
+            "all-v1"
+                | "converter-inputs-v3"
+                | "runtime-english-v3"
+                | "converter-inputs-v4"
+                | "runtime-english-v4"
+                | "cluster-english-v2"
+                | "cluster-inputs-v2"
+                | "converter-inputs-v1"
+                | "runtime-english-v1"
+                | "converter-inputs-v2"
+                | "runtime-english-v2"
+                | "cluster-english-v1"
+                | "cluster-inputs-v1"
         ),
         "unknown ingestion recipe"
     );
@@ -1151,6 +1163,12 @@ pub(crate) fn prune_stale_reader_packs(
             ArchiveSelection::ConverterInputsV1.recipe(),
             "runtime-english-v1",
             "converter-inputs-v1",
+            "runtime-english-v2",
+            "converter-inputs-v2",
+            "cluster-english-v1",
+            "cluster-inputs-v1",
+            ArchiveSelection::ClusterEnglishV1.recipe(),
+            ArchiveSelection::ClusterInputsV1.recipe(),
             ArchiveSelection::All.recipe(),
         ] {
             let recipe_dir = source_dir.join(recipe);
@@ -1173,7 +1191,15 @@ pub(crate) fn prune_stale_reader_packs(
                 else {
                     continue;
                 };
-                let retired_recipe = matches!(recipe, "runtime-english-v1" | "converter-inputs-v1");
+                let retired_recipe = matches!(
+                    recipe,
+                    "runtime-english-v1"
+                        | "converter-inputs-v1"
+                        | "runtime-english-v2"
+                        | "converter-inputs-v2"
+                        | "cluster-english-v1"
+                        | "cluster-inputs-v1"
+                );
                 if reader_version == 0
                     || (retired_recipe && reader_version <= super::BSA_READER_VERSION)
                 {
@@ -1235,6 +1261,8 @@ fn restore_pack_inventory(
         for recipe in BTreeSet::from([
             selection.recipe(),
             ArchiveSelection::ConverterInputsV1.recipe(),
+            ArchiveSelection::ClusterEnglishV1.recipe(),
+            ArchiveSelection::ClusterInputsV1.recipe(),
             ArchiveSelection::All.recipe(),
         ]) {
             if !selection.accepts_recipe(recipe) {

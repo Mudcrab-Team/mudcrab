@@ -5,6 +5,7 @@ use crate::{
         RawIngestionSession, prune_stale_reader_packs,
     },
     asset_path::{AssetKind, canonical_asset_path, normalize_separators, resolve_asset_uri},
+    baked_sources,
     cache::{
         BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, CacheEntry,
         ConversionManifest, DEFAULT_GAIT_RECIPE, DerivedOutput, IngestionJournal,
@@ -69,6 +70,9 @@ use walkdir::WalkDir;
 mod database_cache;
 
 #[cfg(test)]
+#[path = "pipeline/overlay_tests.rs"]
+mod overlay_tests;
+#[cfg(test)]
 #[path = "pipeline/rv_b_tests.rs"]
 mod rv_b_tests;
 
@@ -125,6 +129,10 @@ pub struct PipelineReport {
     pub database_runtime_records_built: u64,
     #[serde(default)]
     pub lod_warnings: Vec<String>,
+    /// Functional results of the derived cluster stage: counts, bytes and notices.
+    /// `None` unless an overlay was derived (`--lod-mode auto|cluster`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster: Option<crate::cluster::StageReport>,
     /// The merged terrain (#215) this run built, when `merged_terrain` is on: the land texture
     /// arrays, one merged mesh per exterior cell, the chunk files, and every cell or texture
     /// left out with its reason. `None` when the option is off or no world database was built.
@@ -332,11 +340,29 @@ impl AssetPipeline {
 
     /// Freeze configuration inputs before staging and honor cancellation at publication.
     pub async fn run_async_with_cancel(
-        mut config: PipelineConfig,
+        config: PipelineConfig,
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
+        Self::run_with_post_publish(
+            config,
+            progress_tx,
+            cancellation,
+            crate::cluster::PostPublish::REAL,
+        )
+        .await
+    }
+
+    /// The conversion with its post-publish overlay step injectable (tests only substitute the
+    /// environment: the adapter probe and a CPU-only entry into the real derivation).
+    pub(crate) async fn run_with_post_publish(
+        mut config: PipelineConfig,
+        progress_tx: Sender<ProgressEvent>,
+        cancellation: Cancellation,
+        post_publish: crate::cluster::PostPublish,
+    ) -> Result<PipelineReport, PipelineFailure> {
         config.validate()?;
+        crate::cluster::validate_request(&config)?;
         config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
         config.output_dir =
@@ -370,6 +396,9 @@ impl AssetPipeline {
         let ownership = Arc::new(crate::repair::OutputOwnership::acquire(&config.output_dir)?);
         config.output_dir = ownership.output().to_path_buf();
         recover_interrupted_publication(&config.output_dir)?;
+        // After recovery: it can restore a last-good base together with its `derived/`. The guard
+        // deletes nothing; the old overlays go with the old base when publication succeeds.
+        config.protect_derived()?;
         let started = Instant::now();
         send(
             &progress_tx,
@@ -393,9 +422,32 @@ impl AssetPipeline {
         fs::create_dir_all(staging.join("vfs"))
             .wrap_err_with(|| format!("failed to create {}", staging.join("vfs").display()))?;
         if config.resume_staging.is_some() {
+            // A killed run leaves its writers' temporaries behind, and a stale one makes the
+            // writer refuse to publish (`write_glb_atomic`, the texture writer) or is simply
+            // never cleaned up. Clear them before this run treats the folder as its own.
+            let removed = remove_stale_temporary_files(&staging).wrap_err_with(|| {
+                format!(
+                    "failed to remove stale temporary files from {}",
+                    staging.display()
+                )
+            })?;
+            if removed > 0 {
+                send_notice(
+                    &progress_tx,
+                    ProgressStage::Discovering,
+                    None,
+                    &format!(
+                        "removed {removed} stale temporary file(s) left by an interrupted run"
+                    ),
+                )
+                .await;
+            }
             invalidate_staged_generated_outputs(&staging)?;
         }
 
+        // The one adapter probe of this run, asked before any LOD work; the overlay derivation
+        // after publication receives it instead of probing again.
+        let early_probe = (post_publish.probe)(&config);
         // A run that stops keeps its staging folder, whether it failed or was interrupted: the
         // folder is everything the run has done so far, and the caller reports the command that
         // resumes from it. Only a successful publish removes it, once the runtime pack is out.
@@ -444,6 +496,21 @@ impl AssetPipeline {
         report.artifacts.push(PathBuf::from(
             shared::streaming_costs::STREAMING_COST_FILE_NAME,
         ));
+        // A later cleanup/detach failure must never offer the published pack's hard-linked
+        // staging files for conversion resume. The marker is outside the published base.
+        fs::write(staging.join(".base-published"), b"base already published\n").map_err(
+            |error| PipelineFailure {
+                error: color_eyre::Report::from(error).wrap_err(
+                    crate::cluster::overlay_failure_context(
+                        &config,
+                        &config.output_dir,
+                        Some(&staging.join("vfs")),
+                    ),
+                ),
+                staging: None,
+                cancelled: cancellation.is_cancelled(),
+            },
+        )?;
         report.publication_elapsed_ms = publication_started.elapsed().as_millis();
         report
             .phase_elapsed_ms
@@ -477,6 +544,87 @@ impl AssetPipeline {
         // so removing it frees only names. Kept, a resumed folder would be offered for resume
         // again (`find_resumable_staging`) while holding a full copy's worth of disk. The output is
         // already published, so a folder that cannot or must not be removed is only a warning.
+        // The base is published and valid, with no cluster tables or payloads. Release its
+        // exclusive writer lock so the overlay derivation takes its own shared lock on it (the
+        // repair ownership stays held to the end), then derive from the raw terrain DDS of
+        // staging/vfs. A terrain derive moves them out first into a folder of their own, so the
+        // staging folder (a resume candidate) is removed whatever the derive does.
+        drop(output_lock);
+        let staged_vfs = staging.join("vfs");
+        if crate::cluster::derive_requested(&config) {
+            send(
+                &progress_tx,
+                ProgressStage::Publishing,
+                1,
+                1,
+                None,
+                "Deriving cluster overlay",
+            )
+            .await;
+        }
+        let detached =
+            crate::cluster::detach_terrain_sources(&config, &config.output_dir, &staging);
+        let (overlay, raw_sources) = match detached {
+            // Not movable: the retry names the raw DDS where they still are, in staging.
+            Err(error) => (
+                Err(error.wrap_err(crate::cluster::overlay_failure_context(
+                    &config,
+                    &config.output_dir,
+                    Some(&staged_vfs),
+                ))),
+                None,
+            ),
+            Ok(raw) => {
+                let raw_vfs = raw.as_ref().map(|sources| sources.vfs());
+                let overlay =
+                    if crate::cluster::derive_requested(&config) && cancellation.is_cancelled() {
+                        Err(color_eyre::Report::from(Interrupted::new()).wrap_err(
+                            crate::cluster::overlay_failure_context(
+                                &config,
+                                &config.output_dir,
+                                raw_vfs.as_deref(),
+                            ),
+                        ))
+                    } else {
+                        crate::cluster::derive_after_publish(
+                            &config,
+                            &config.output_dir,
+                            raw_vfs.as_deref(),
+                            early_probe,
+                            &post_publish,
+                        )
+                    };
+                (overlay, raw)
+            }
+        };
+        match overlay {
+            Ok(overlay) => {
+                overlay.record(&mut report);
+                // The derive consumed the raw terrain textures.
+                if let Some(raw) = raw_sources {
+                    raw.remove();
+                }
+            }
+            Err(error) => {
+                // The base stays published and valid, so this is not a resumable conversion.
+                // A detached raw-source folder is the failure's only keepsake; staging is kept
+                // only when the raw terrain DDS could not be moved out of it.
+                if raw_sources.is_some()
+                    || !crate::cluster::staging_needed_for_retry(
+                        &config,
+                        &config.output_dir,
+                        Some(&staged_vfs),
+                    )
+                {
+                    remove_staging(&staging, &config.data_dir);
+                }
+                return Err(PipelineFailure {
+                    error,
+                    staging: None,
+                    cancelled: cancellation.is_cancelled(),
+                });
+            }
+        }
         let cleanup_started = Instant::now();
         remove_staging(&staging, &config.data_dir);
         report.phase_elapsed_ms.insert(
@@ -503,6 +651,7 @@ impl AssetPipeline {
     /// Rebuilds MO2 input selection on resume and records conversion results in the staging manifest.
     /// Preserves usable outputs through texture repair, alias publication, pruning, and artifact
     /// verification, and returns the report for pack publication.
+    #[allow(clippy::too_many_arguments)]
     async fn run_into(
         config: &PipelineConfig,
         staging: &Path,
@@ -536,6 +685,8 @@ impl AssetPipeline {
         };
         let mut ingestion_journal = IngestionJournal::open(staging)?;
         let mut manifest = ConversionManifest {
+            // Resolve the package selector only after the world database is final.
+            geometry: Default::default(),
             schema_version: CONVERTER_SCHEMA_VERSION,
             retained_mesh_schema_version: None,
             retained_asset_configuration_hash: None,
@@ -545,6 +696,8 @@ impl AssetPipeline {
             record_data_complete: Some(true),
             configuration_hash: expected_configuration.clone(),
             schema_addons: config.schemas()?.identities().to_vec(),
+            // Filled in right before the manifest is saved, when the output is final.
+            extensions: Vec::new(),
             asset_configuration_hashes: ["nif", "dds", "pex"]
                 .into_iter()
                 .map(|kind| {
@@ -565,7 +718,6 @@ impl AssetPipeline {
             archives: Default::default(),
             entries: Default::default(),
             derived_outputs: Default::default(),
-            extensions: Vec::new(),
         };
         report.phase_elapsed_ms.insert(
             "conversion_initialization".into(),
@@ -750,6 +902,7 @@ impl AssetPipeline {
 
         let raw_ingestion_session =
             Arc::new(RawIngestionSession::new(&staging.join(".ingestion-cache")));
+        let mut extracted_archive_sources = Vec::new();
         for (index, archive) in enabled_archives.iter().enumerate() {
             interrupt(cancellation)?;
             send(
@@ -789,6 +942,12 @@ impl AssetPipeline {
             // that the in-house reader may select, so it extracts the converter-input superset.
             extraction_options.selection = if config.extract_all_archive_files {
                 IngestionSelection::All
+            } else if crate::cluster::cluster_only(config) {
+                if crate::esm::inhouse::is_english(&config.language) {
+                    IngestionSelection::ClusterEnglishV1
+                } else {
+                    IngestionSelection::ClusterInputsV1
+                }
             } else if crate::esm::inhouse::is_english(&config.language) {
                 IngestionSelection::RuntimeEnglishV1
             } else {
@@ -888,6 +1047,8 @@ impl AssetPipeline {
 
             match result {
                 Ok(outcome) => {
+                    extracted_archive_sources
+                        .push((archive.clone(), outcome.cache_entry.source_hash.clone()));
                     report
                         .archive_timings
                         .insert(archive_key.clone(), outcome.timings);
@@ -917,7 +1078,17 @@ impl AssetPipeline {
         }
 
         if config.mo2.is_none() {
-            overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+            let loose_files: Vec<_> = files
+                .iter()
+                .filter(|path| {
+                    !crate::cluster::cluster_only(config)
+                        || !path
+                            .strip_prefix(&config.data_dir)
+                            .is_ok_and(baked_sources::is_baked_geometry_input)
+                })
+                .cloned()
+                .collect();
+            overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &loose_files)?;
         }
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
@@ -1186,6 +1357,11 @@ impl AssetPipeline {
                 (AssetKind::Mesh, "nif")
             } else if extension(source, &["pex"]) {
                 (AssetKind::Script, "pex")
+            } else if extension(source, &["hkx"]) {
+                if !crate::archive::is_animation_input(Path::new(relative)) {
+                    continue;
+                }
+                (AssetKind::Animation, "hkx")
             } else {
                 continue;
             };
@@ -1202,7 +1378,11 @@ impl AssetPipeline {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if crate::asset_path::is_authoring_resource(&relative) {
+            if crate::cluster::cluster_only(config)
+                && baked_sources::is_baked_geometry_input(Path::new(&relative))
+            {
+                false
+            } else if crate::asset_path::is_authoring_resource(&relative) {
                 manifest.excluded_inputs.insert(
                     relative,
                     "BodySlide/Outfit Studio authoring resource, not runtime data".into(),
@@ -1212,8 +1392,8 @@ impl AssetPipeline {
                 true
             }
         });
-        let source_paths = vfs_files;
-        let vfs_files: Vec<_> = source_paths.keys().cloned().collect();
+        let mut source_paths = vfs_files;
+        let mut vfs_files: Vec<_> = source_paths.keys().cloned().collect();
         if config.mo2.is_some() {
             prune_removed_mo2_outputs(staging, &vfs_files)?;
             if plugins.is_empty() {
@@ -1229,9 +1409,40 @@ impl AssetPipeline {
                 }
             }
         }
+        if crate::cluster::cluster_only(config) {
+            // An old pruned GLB no longer names its missing DDS. Restore current sources
+            // named by its prune audit before reuse decides whether to reconvert that mesh.
+            let mut revived = BTreeSet::new();
+            for (key, entry) in &previous.entries {
+                if key.ends_with(".nif")
+                    && source_paths.contains_key(&vfs_root.join(key))
+                    && let Some(references) = previous.pruned_texture_references.get(&entry.output)
+                {
+                    revived.extend(
+                        references
+                            .iter()
+                            .filter_map(|reference| texture_reference_source_key(reference))
+                            .map(PathBuf::from)
+                            .filter(|path| baked_sources::is_baked_geometry_input(path)),
+                    );
+                }
+            }
+            for path in restore_shared_lod_textures(
+                config,
+                staging,
+                &extracted_archive_sources,
+                &resolved_files,
+                &files,
+                &revived,
+            )? {
+                if source_paths.insert(path.clone(), path.clone()).is_none() {
+                    vfs_files.push(path);
+                }
+            }
+        }
         // Canonical source texture keys, used to tell a failed publication from absent game data
         // and to detect a pruned texture whose source is back in the installed data.
-        let source_textures = texture_source_keys(staging, &vfs_files);
+        let mut source_textures = texture_source_keys(staging, &vfs_files);
         let restored_meshes = restored_mesh_outputs(previous, &source_textures);
         remove_orphan_staged_assets(staging, &vfs_files)?;
         report.phase_elapsed_ms.insert(
@@ -1306,6 +1517,45 @@ impl AssetPipeline {
             }
         }
         let texture_semantics = collect_texture_semantics(staging, &source_textures)?;
+        if crate::cluster::cluster_only(config) {
+            // A mod can use a native LOD texture in a near mesh, TXST or LAND. Such a
+            // DDS is a shared source. Extract only those
+            // excluded texture paths that surviving runtime consumers actually name.
+            let mut shared_lod_textures: BTreeSet<PathBuf> = texture_semantics
+                .keys()
+                .filter_map(|key| texture_reference_source_key(key))
+                .map(PathBuf::from)
+                .filter(|path| baked_sources::is_baked_geometry_input(path))
+                .collect();
+            let database = staging.join("skyrim_world.db");
+            if database.is_file() {
+                shared_lod_textures.extend(
+                    crate::lod::albedo::terrain_diffuse_paths(&Connection::open(database)?)?
+                        .into_iter()
+                        .filter(|path| baked_sources::is_baked_geometry_input(path)),
+                );
+            }
+            shared_lod_textures.extend(
+                crate::terrain_pipeline::configured_default_sources(config)?
+                    .into_iter()
+                    .filter(|path| baked_sources::is_baked_geometry_input(path)),
+            );
+            if !shared_lod_textures.is_empty() {
+                for path in restore_shared_lod_textures(
+                    config,
+                    staging,
+                    &extracted_archive_sources,
+                    &resolved_files,
+                    &files,
+                    &shared_lod_textures,
+                )? {
+                    if source_paths.insert(path.clone(), path.clone()).is_none() {
+                        vfs_files.push(path);
+                    }
+                }
+                source_textures = texture_source_keys(staging, &vfs_files);
+            }
+        }
         report.phase_elapsed_ms.insert(
             "meshes_and_texture_semantics".into(),
             meshes_started.elapsed().as_millis(),
@@ -1617,10 +1867,13 @@ impl AssetPipeline {
         .await;
         interrupt(cancellation)?;
         let manifest_save_started = Instant::now();
+        manifest.geometry = crate::cluster::geometry_manifest(config, staging)?;
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
         report.inputs_by_kind = manifest.inputs_by_kind.clone();
-        crate::extensions::refresh_manifest(&mut manifest, staging)?;
+        // The database and meshes are final here: list the extensions with their content hashes.
+        // The base never carries cluster data: those extensions live in a derived overlay.
+        crate::extensions::refresh_manifest_with_finalized(&mut manifest, staging, &[])?;
         manifest.save(&staging.join("conversion-manifest.json"))?;
         report
             .artifacts
@@ -1657,7 +1910,7 @@ fn reusable_manifest(
             }
             _ => unreachable!(),
         };
-        // A historical combined settings proof cannot attest authored geometry.
+        // A historical combined settings proof cannot attest authored transform clips.
         let settings_match = if kind == "nif"
             && !manifest.asset_configuration_hashes.contains_key(kind)
         {
@@ -3194,6 +3447,22 @@ pub(crate) fn collect_texture_semantics(
         }
     }
 
+    for (path, uses) in collect_database_texture_semantics(staging)? {
+        semantics.entry(path).or_default().extend(uses);
+    }
+
+    for (path, texture_semantics) in &semantics {
+        TextureEncoding::from_semantics(texture_semantics)
+            .wrap_err_with(|| format!("incompatible texture uses for {path}"))?;
+    }
+    Ok(semantics)
+}
+
+/// Texture references authored in records, independent of generated geometry.
+pub(crate) fn collect_database_texture_semantics(
+    staging: &Path,
+) -> Result<BTreeMap<String, BTreeSet<TextureSemantic>>> {
+    let mut semantics = BTreeMap::<String, BTreeSet<TextureSemantic>>::new();
     let database = staging.join("skyrim_world.db");
     if database.is_file() {
         let connection =
@@ -3235,10 +3504,6 @@ pub(crate) fn collect_texture_semantics(
         }
     }
 
-    for (path, texture_semantics) in &semantics {
-        TextureEncoding::from_semantics(texture_semantics)
-            .wrap_err_with(|| format!("incompatible texture uses for {path}"))?;
-    }
     Ok(semantics)
 }
 
@@ -3570,10 +3835,44 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
         // A reused archive entry links its `vfs` file to the cache blob, so this override has to
         // replace the path rather than write through it: copying over the link would truncate the
         // file every other name shares, the blob and the previous output included.
+        //
+        // Written beside the destination and renamed, so a kill mid-copy cannot leave a torn file
+        // under the real name for a resumed run to accept. The fallible copy comes first, so a
+        // failed one leaves the previous file in place.
+        let temporary = destination.with_file_name(format!(
+            ".{}.{}.partial",
+            destination
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            std::process::id()
+        ));
+        if let Err(error) = fs::copy(source, &temporary) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error).wrap_err_with(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    source.display(),
+                    temporary.display()
+                )
+            });
+        }
+        // Flushed before the rename, like the converter's other writers, so a crash right after
+        // it cannot leave a torn file under the real name.
+        // Opened for writing: on Windows a flush needs write access.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .and_then(|file| file.sync_all())
+            .wrap_err_with(|| format!("failed to flush {}", temporary.display()))?;
         if destination.exists() {
             fs::remove_file(&destination)?;
         }
-        fs::copy(source, destination)?;
+        fs::rename(&temporary, &destination)
+            .inspect_err(|_| {
+                let _ = fs::remove_file(&temporary);
+            })
+            .wrap_err_with(|| format!("failed to publish {}", destination.display()))?;
     }
     Ok(())
 }
@@ -3667,6 +3966,68 @@ fn plugin_paths_with_diagnostics(
             .unwrap_or("empty selection"),
     );
     Ok(plugins)
+}
+
+/// Restores only candidate LOD textures needed by retained consumers, preserving archive
+/// priority and winning loose/MO2 overrides. Raw source presence feeds normal asset proofs.
+fn restore_shared_lod_textures(
+    config: &PipelineConfig,
+    staging: &Path,
+    archives: &[(PathBuf, String)],
+    resolved_files: &BTreeMap<String, PathBuf>,
+    files: &[PathBuf],
+    wanted: &BTreeSet<PathBuf>,
+) -> Result<Vec<PathBuf>> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let vfs = staging.join("vfs");
+    for (archive, expected_hash) in archives {
+        ArchiveExtractor::extract_paths(archive, &vfs, wanted)?;
+        ensure!(
+            hash_file(archive)? == *expected_hash,
+            "archive inputs changed while restoring shared LOD textures: {}",
+            archive.display()
+        );
+    }
+    if config.mo2.is_some() {
+        let winning = resolved_files
+            .iter()
+            .filter_map(|(key, path)| {
+                let key = canonical_asset_path(key, AssetKind::Texture, "dds").ok()?;
+                wanted
+                    .contains(Path::new(&key))
+                    .then(|| (key, path.clone()))
+            })
+            .collect();
+        stage_mo2_lod_inputs(&vfs, &winning)?;
+    } else {
+        let loose = files
+            .iter()
+            .filter(|path| {
+                extension(path, &["dds"])
+                    && path
+                        .strip_prefix(&config.data_dir)
+                        .ok()
+                        .and_then(|relative| {
+                            canonical_asset_path(
+                                &relative.to_string_lossy(),
+                                AssetKind::Texture,
+                                "dds",
+                            )
+                            .ok()
+                        })
+                        .is_some_and(|key| wanted.contains(Path::new(&key)))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        overlay_loose_assets(&config.data_dir, &vfs, &loose)?;
+    }
+    Ok(wanted
+        .iter()
+        .map(|relative| vfs.join(relative))
+        .filter(|path| path.is_file())
+        .collect())
 }
 
 /// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
@@ -3996,6 +4357,9 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
         crate::esm::inhouse::DATABASE_PROFILE_FILE,
         "integration-report.json",
         "lod-manifest.json",
+        "cluster-manifest.json",
+        "cluster-report.json",
+        "cluster-terrain-manifest.json",
         "metadata-rebuild.json",
         "metadata-source-conversion-manifest.json",
     ] {
@@ -4009,9 +4373,11 @@ fn invalidate_staged_generated_outputs(staging: &Path) -> Result<()> {
             }
         }
     }
-    let lod_dir = staging.join("lod");
-    if lod_dir.exists() {
-        fs::remove_dir_all(&lod_dir)?;
+    for generated in ["lod", "clusters"] {
+        let directory = staging.join(generated);
+        if directory.exists() {
+            fs::remove_dir_all(&directory)?;
+        }
     }
     // The merged terrain (#215) lives entirely under `terrain`: the arrays, the table and the
     // chunk files. It is rebuilt from the current records, so a resume with the option off
@@ -4173,6 +4539,71 @@ fn staged_matches_previous_entry(
             })
         })
     })
+}
+
+/// The temporary names the converter's own writers use while publishing a file: each appends a
+/// suffix carrying the writing process's id to the real name and renames the file over its
+/// destination, so a run killed between the two leaves the temporary behind. The numeric
+/// process-id segment is what tells a leftover from a real file that merely ends in `.partial`.
+///
+/// One entry per writer:
+/// - `archive::atomic_write`: `.<name>.<pid>.partial`
+/// - `ConversionManifest::save` and the report writer: `<name>.json.<pid>.partial`
+/// - `write_glb_atomic`: `<name>.<extension>.<pid>.partial`
+/// - the texture writer: `<name>.ktx2.<pid>.partial`
+/// - the script writer: `.<name>.<pid>-<counter>.partial`
+/// - `link_or_copy_spilling`: `<name>.<index>.partial-<pid>`
+/// - `write_glb_atomic` and the texture writer also park the previous output as
+///   `<name>.glb.<pid>.backup` / `<name>.ktx2.<pid>.backup` while they swap; a leftover one makes
+///   the writer refuse, and the output it held is converted again on resume.
+fn is_converter_temporary_name(name: &str) -> bool {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    if let Some(head) = name.strip_suffix(".backup") {
+        return head.rsplit_once('.').is_some_and(|(stem, pid)| {
+            digits(pid) && (stem.ends_with(".glb") || stem.ends_with(".ktx2"))
+        });
+    }
+    if let Some(head) = name.strip_suffix(".partial") {
+        // A script temporary carries a per-call counter after the process id; every other shape
+        // ends at the process id itself.
+        let head = match head.rsplit_once('-') {
+            Some((before_counter, counter)) if digits(counter) => before_counter,
+            _ => head,
+        };
+        return head.rsplit_once('.').is_some_and(|(_, pid)| digits(pid));
+    }
+    // The spill copy appends `.partial-<pid>` instead of replacing the extension.
+    name.rsplit_once(".partial-")
+        .is_some_and(|(_, pid)| digits(pid))
+}
+
+/// Removes the temporary files an interrupted run left in a staging folder, before a resumed run
+/// treats the folder as its own. Only the converter's own temporary names go: a file that merely
+/// ends in `.partial` belongs to somebody else and is left alone. Returns how many were removed.
+fn remove_stale_temporary_files(staging: &Path) -> Result<usize> {
+    let mut removed = 0;
+    // VFS bytes belong to source mods. Their names cannot prove converter ownership.
+    let vfs = staging.join("vfs");
+    for entry in WalkDir::new(staging)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.path() != vfs.as_path())
+    {
+        let entry = entry?;
+        if !entry.file_type().is_file()
+            || !is_converter_temporary_name(&entry.file_name().to_string_lossy())
+        {
+            continue;
+        }
+        fs::remove_file(entry.path()).wrap_err_with(|| {
+            format!(
+                "failed to remove stale temporary {}",
+                entry.path().display()
+            )
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// Provenance for a cache entry whose output is now complete inside staging.
@@ -4364,8 +4795,10 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
 ///
 /// Settings resolution per worldspace: an explicit `lod_origins` entry wins
 /// (custom worlds), otherwise the `lodsettings/<WorldspaceEDID>.lod` sidecar
-/// supplies its origin and Skyrim grid metadata (installed worlds). Missing or invalid
-/// settings omit only that world's LOD; full-detail conversion remains usable.
+/// supplies its origin and Skyrim grid metadata (installed worlds). Forced cluster mode
+/// derives a missing origin from exterior cell minima, including cells without LAND.
+/// Baked/auto omit worlds with missing or invalid settings; forced cluster mode rejects
+/// invalid authored settings.
 ///
 /// The build identity is one hash over the ordered plugin bytes, every
 /// compiled chunk's content hash, the configuration hash, and the converter
@@ -4560,7 +4993,8 @@ async fn compile_lod_chunks_inline(
     let prior_package = reuse_root.join("conversion-manifest.json").exists()
         || reuse_root.join("lod-manifest.json").exists()
         || reuse_root.join("skyrim_world.db").exists();
-    let reuse = if config.invalidate_cache || !prior_package {
+    let reuse = if crate::cluster::cluster_only(config) || config.invalidate_cache || !prior_package
+    {
         None
     } else {
         match LodReuse::open(reuse_root) {
@@ -4613,7 +5047,16 @@ async fn compile_lod_chunks_inline(
     }
     'world: for (index, (worldspace_id, editor_id)) in worlds.iter().enumerate() {
         interrupt(cancellation)?;
-        let settings = match resolve_lod_settings(config, &staging.join("vfs"), editor_id) {
+        let mut resolved = resolve_lod_settings(config, &staging.join("vfs"), editor_id);
+        let mut derived_origin = None;
+        if matches!(resolved, Ok(None)) && crate::cluster::cluster_only(config) {
+            derived_origin = exterior_cell_grid_origin(&connection, *worldspace_id)?;
+            resolved = Ok(derived_origin.map(|origin| ResolvedLodSettings {
+                origin,
+                sidecar: None,
+            }));
+        }
+        let settings = match resolved {
             Ok(Some(settings)) => settings,
             Ok(None) => {
                 let message = format!(
@@ -4637,6 +5080,11 @@ async fn compile_lod_chunks_inline(
                 continue;
             }
             Err(error) => {
+                if crate::cluster::cluster_only(config) {
+                    return Err(error).wrap_err_with(|| {
+                        format!("invalid cluster terrain settings for {editor_id}")
+                    });
+                }
                 report.lod_warnings.push(format!(
                     "worldspace {editor_id} ({worldspace_id:08X}) has invalid LOD settings: {error:#}; its terrain LOD is skipped"
                 ));
@@ -4658,7 +5106,7 @@ async fn compile_lod_chunks_inline(
             }
         };
         let origin = settings.origin;
-        world_settings.push(serde_json::json!({
+        let mut recorded_settings = serde_json::json!({
             "worldspace_id": worldspace_id,
             "editor_id": editor_id,
             "status": "ready",
@@ -4668,7 +5116,23 @@ async fn compile_lod_chunks_inline(
                 "min_level": sidecar.min_level,
                 "max_level": sidecar.max_level,
             })),
-        }));
+        });
+        if derived_origin.is_some() {
+            recorded_settings["origin_source"] = serde_json::json!("exterior_cell_minima");
+            let message = format!(
+                "worldspace {editor_id} ({worldspace_id:08X}) cluster grid origin ({}, {}) selected from exterior cell minima; no native LOD settings are present",
+                origin.grid_x, origin.grid_y
+            );
+            report.notices.push(message.clone());
+            let _ = progress_tx
+                .send(ProgressEvent::notice(
+                    ProgressStage::LodChunks,
+                    None,
+                    &message,
+                ))
+                .await;
+        }
+        world_settings.push(recorded_settings);
         connection.execute(
             "UPDATE worldspaces SET lod_origin_x = ?1, lod_origin_y = ?2 WHERE id = ?3",
             rusqlite::params![origin.grid_x, origin.grid_y, worldspace_id],
@@ -4699,6 +5163,11 @@ async fn compile_lod_chunks_inline(
         ) {
             Ok(textures) => textures,
             Err(error) => {
+                if crate::cluster::cluster_only(config) {
+                    return Err(error).wrap_err_with(|| {
+                        format!("invalid cluster terrain material inputs for {editor_id}")
+                    });
+                }
                 report.lod_warnings.push(format!("worldspace {editor_id} ({worldspace_id:08X}) terrain LOD skipped: invalid material inputs: {error:#}"));
                 if let Some(settings) = world_settings.last_mut() {
                     settings["status"] = serde_json::json!("invalid_material");
@@ -4716,6 +5185,14 @@ async fn compile_lod_chunks_inline(
                 continue;
             }
         };
+        if crate::cluster::cluster_only(config) {
+            // The cluster terrain producer needs the verified source recipe and canonical
+            // heights, never the baked chunk meshes, atlases or chunk-table rows.
+            textures.verify_sources(&staging.join("vfs"))?;
+            terrain_sources.extend(textures.source_hashes);
+            compiled_worlds += 1;
+            continue;
+        }
         let jobs = terrain_jobs(*worldspace_id, origin, &inputs);
         // Validate before fingerprinting: a cache hit cannot bypass source checks.
         let validation = jobs
@@ -5017,7 +5494,7 @@ async fn compile_lod_chunks_inline(
         "INSERT OR REPLACE INTO lod_build(id, build_identity) VALUES (1, ?1)",
         rusqlite::params![identity],
     )?;
-    if compiled_worlds > 0 {
+    if compiled_worlds > 0 || crate::cluster::cluster_only(config) {
         report.artifacts.push(PathBuf::from("lod-manifest.json"));
         let manifest = LodManifest {
             build_identity: identity,
@@ -5029,7 +5506,15 @@ async fn compile_lod_chunks_inline(
             compiler_version: crate::lod::TERRAIN_COMPILER_VERSION,
             chunk_inputs,
         };
-        let bytes = serde_json::to_vec_pretty(&manifest)?;
+        let bytes = if crate::cluster::cluster_only(config) {
+            // Keep the declared cluster grid selection reviewable alongside the identity
+            // that already binds these settings. Baked/auto recipe bytes stay unchanged.
+            let mut recipe = serde_json::to_value(&manifest)?;
+            recipe["world_settings"] = serde_json::to_value(&world_settings)?;
+            serde_json::to_vec_pretty(&recipe)?
+        } else {
+            serde_json::to_vec_pretty(&manifest)?
+        };
         fs::write(staging.join("lod-manifest.json"), &bytes)?;
     }
     Ok(())
@@ -5116,6 +5601,21 @@ struct ResolvedLodSettings {
     sidecar: Option<LodSettings>,
 }
 
+/// A cluster grid needs cell coordinates, not native LOD assets or LAND coverage.
+/// Both minima use the same set of complete coordinate pairs; empty worlds have no origin.
+fn exterior_cell_grid_origin(
+    connection: &Connection,
+    worldspace_id: u32,
+) -> Result<Option<LodOrigin>> {
+    let (x, y): (Option<i32>, Option<i32>) = connection.query_row(
+        "SELECT MIN(grid_x), MIN(grid_y) FROM cells WHERE worldspace_id = ?1
+         AND grid_x IS NOT NULL AND grid_y IS NOT NULL",
+        [worldspace_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(x.zip(y).map(|(x, y)| LodOrigin::new(x, y)))
+}
+
 /// Resolve against the effective staged VFS, after archive and loose overlays.
 fn resolve_lod_settings(
     config: &PipelineConfig,
@@ -5167,11 +5667,13 @@ fn build_identity(
 }
 
 #[cfg(test)]
-fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
+pub(crate) fn publish_directory(staging: &Path, output: &Path) -> Result<()> {
     publish_directory_with_policy(staging, output, true)
 }
 
-pub(crate) fn publish_new_directory(staging: &Path, output: &Path, lock: &AssetLock) -> Result<()> {
+/// Publish a finalized staging directory without replacing an existing dataset.
+/// The caller must retain the exclusive destination lock through publication.
+pub fn publish_new_directory(staging: &Path, output: &Path, lock: &AssetLock) -> Result<()> {
     publish_directory_locked(staging, output, false, lock)
 }
 
@@ -5370,6 +5872,9 @@ fn seal_generated_artifacts(output: &Path) -> Result<BTreeMap<String, ArtifactSe
         .filter_entry(|entry| {
             entry.depth() == 0
                 || !matches!(entry.file_name().to_str(), Some("vfs" | ".ingestion-cache"))
+                // Overlays are outside the base seal (they are bound by their own fingerprint),
+                // and a replaced base carries its `derived/` into the backup untouched.
+                && !(entry.depth() == 1 && entry.file_name() == "derived")
         })
     {
         let entry = entry?;
@@ -6305,7 +6810,7 @@ mod tests {
         );
     }
 
-    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    /// A known adapter-10 combined settings proof preserves eligible current-producer candidates.
     #[test]
     fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
         let directory = tempfile::tempdir().unwrap();
@@ -6366,8 +6871,8 @@ mod tests {
             ..Default::default()
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
-        // A combined historical proof cannot attest the new authored geometry.
-        // Texture and script proofs remain eligible.
+        // A historical combined proof cannot attest authored transform clips, so the mesh is
+        // rebuilt; the texture and script candidates stay eligible.
         let mut eligible = manifest.entries.clone();
         eligible.remove("meshes/prior.nif");
         assert_eq!(
@@ -6680,6 +7185,120 @@ mod tests {
 
         assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn the_publication_seal_does_not_cover_overlays() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("derived/clusters-fixture")).unwrap();
+        fs::write(
+            directory.path().join("derived/clusters-fixture/blob"),
+            b"overlay",
+        )
+        .unwrap();
+        fs::write(directory.path().join("extra.bin"), b"generated").unwrap();
+        let sealed = seal_generated_artifacts(directory.path()).unwrap();
+        assert_eq!(
+            sealed.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["extra.bin"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_derived_guard_sees_the_base_that_recovery_restores() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        let output = temp.path().join("modern_assets");
+        let backup = output.with_extension("backup-12345");
+        fs::create_dir_all(backup.join("derived/clusters-fixture")).unwrap();
+        fs::write(backup.join("derived/clusters-fixture/sentinel"), b"overlay").unwrap();
+        fs::write(backup.join("sentinel"), b"last good").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            entries: BTreeMap::from([(
+                "sentinel".to_owned(),
+                CacheEntry {
+                    animation_diagnostics: None,
+                    source_hash: "source".to_owned(),
+                    output: "sentinel".to_owned(),
+                    output_size: 9,
+                    output_hash: hash_file(&backup.join("sentinel")).unwrap(),
+                },
+            )]),
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        seal_test_backup(&output, &backup);
+
+        // The base is only back after recovery, so only a guard run after it sees its overlays.
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let error = AssetPipeline::run_async(PipelineConfig::new(&data, &output), tx)
+            .await
+            .unwrap_err();
+        drain.await.unwrap();
+
+        assert!(format!("{error:?}").contains("--discard-derived"));
+        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"last good");
+        assert_eq!(
+            fs::read(output.join("derived/clusters-fixture/sentinel")).unwrap(),
+            b"overlay"
+        );
+        assert!(!backup.exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_discarding_conversion_keeps_the_old_base_and_overlays() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        run_without_progress(PipelineConfig::new(&data, &output)).await;
+        let sentinel = output.join("derived/clusters-fixture/sentinel");
+        fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+        fs::write(&sentinel, b"overlay").unwrap();
+        let manifest = fs::read(output.join("conversion-manifest.json")).unwrap();
+
+        let discarding = || {
+            let mut config = PipelineConfig::new(&data, &output);
+            config.discard_derived = true;
+            config
+        };
+        // Cancelled after the guard and before publication: nothing was discarded.
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+        let (tx, mut rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let failure = AssetPipeline::run_async_with_cancel(discarding(), tx, cancellation)
+            .await
+            .unwrap_err();
+        drain.await.unwrap();
+        assert!(failure.cancelled);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"overlay");
+        assert_eq!(
+            fs::read(output.join("conversion-manifest.json")).unwrap(),
+            manifest
+        );
+        assert!(output.join("scripts/one.luau").is_file());
+
+        // A conversion that publishes retires the overlays together with the old base.
+        let report = run_without_progress(discarding()).await;
+        assert!(report.complete);
+        assert!(output.join("scripts/one.luau").is_file());
+        assert!(!output.join("derived").exists());
     }
 
     fn seal_test_backup(output: &Path, backup: &Path) {
@@ -10033,6 +10652,34 @@ mod tests {
         }
     }
 
+    /// A resumed run re-derives every cluster output, so no output of an earlier run's cluster
+    /// stages, the terrain manifest included, may be left to look current.
+    #[test]
+    fn invalidation_removes_every_staged_cluster_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let manifests = [
+            "cluster-manifest.json",
+            "cluster-report.json",
+            "cluster-terrain-manifest.json",
+        ];
+        for manifest in manifests {
+            fs::write(staging.join(manifest), b"{}").unwrap();
+        }
+        fs::create_dir_all(staging.join("clusters")).unwrap();
+        fs::write(staging.join("clusters/payload.mci"), b"payload").unwrap();
+        fs::create_dir_all(staging.join("vfs")).unwrap();
+        fs::write(staging.join("vfs/source.dds"), b"source").unwrap();
+
+        invalidate_staged_generated_outputs(staging).unwrap();
+
+        for manifest in manifests {
+            assert!(!staging.join(manifest).exists(), "{manifest} survived");
+        }
+        assert!(!staging.join("clusters").exists());
+        assert!(staging.join("vfs/source.dds").is_file());
+    }
+
     #[test]
     fn removes_staged_assets_without_current_sources() {
         let directory = tempfile::tempdir().unwrap();
@@ -10212,6 +10859,96 @@ mod tests {
             "the override wrote through the link into the previous output"
         );
         assert_eq!(fs::read(&previous_blob).unwrap(), b"archive bytes");
+    }
+
+    /// Every file under `root` whose name looks like a writer's leftover.
+    fn temporaries_under(root: &Path) -> Vec<PathBuf> {
+        WalkDir::new(root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_type().is_file()
+                    && entry.file_name().to_string_lossy().ends_with(".partial")
+            })
+            .map(|entry| entry.path().to_path_buf())
+            .collect()
+    }
+
+    /// The override copies through a temporary name and renames it into place, so the destination
+    /// name never holds half a file: a failed copy leaves the previous file untouched rather than
+    /// removed or torn.
+    #[test]
+    fn a_loose_override_never_leaves_a_temporary_under_the_destination_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging_vfs = directory.path().join("staging/vfs");
+        let destination = staging_vfs.join("textures/rock.dds");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"archive bytes").unwrap();
+
+        // A source the copy cannot read: a directory where a file is expected.
+        let data = directory.path().join("Data");
+        let loose = data.join("textures/rock.dds");
+        fs::create_dir_all(&loose).unwrap();
+
+        assert!(
+            overlay_loose_assets(&data, &staging_vfs, std::slice::from_ref(&loose)).is_err(),
+            "copying a directory as a file fails"
+        );
+
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"archive bytes",
+            "a failed override destroyed the previous file"
+        );
+        assert!(
+            temporaries_under(&staging_vfs).is_empty(),
+            "a failed override left a temporary behind"
+        );
+
+        // The successful copy publishes the new bytes and still leaves no temporary.
+        fs::remove_dir_all(&loose).unwrap();
+        fs::write(&loose, b"loose override").unwrap();
+        overlay_loose_assets(&data, &staging_vfs, std::slice::from_ref(&loose)).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"loose override");
+        assert!(
+            temporaries_under(&staging_vfs).is_empty(),
+            "an override left a temporary behind"
+        );
+    }
+
+    #[test]
+    fn only_the_converters_own_temporary_names_are_temporary() {
+        let pid = std::process::id();
+        for name in [
+            // archive::atomic_write
+            format!(".Skyrim.esm.{pid}.partial"),
+            // the script writer
+            format!(".one.luau.{pid}-7.partial"),
+            // ConversionManifest::save and the report writer
+            format!("conversion-manifest.json.{pid}.partial"),
+            // write_glb_atomic and the texture writer
+            format!("meshes/one.glb.{pid}.partial"),
+            format!("textures/rock.ktx2.{pid}.partial"),
+            // an archive entry written by atomic_write
+            format!(".rock.dds.{pid}.partial"),
+            // link_or_copy_spilling
+            format!("deadbeef.1.partial-{pid}"),
+        ] {
+            assert!(is_converter_temporary_name(&name), "{name} was not matched");
+        }
+        for name in [
+            "hand-authored.partial",
+            "notes.txt.partial",
+            "mod.v2.partial",
+            "rock.dds.partial",
+            "one.luau",
+        ] {
+            assert!(
+                !is_converter_temporary_name(name),
+                "{name} is no temporary of ours and must be kept"
+            );
+        }
     }
 
     /// MO2 activity accepts the same exact/space/dash/underscore boundary as installed ownership.
@@ -12812,6 +13549,91 @@ mod tests {
         assert_eq!(crate::find_resumable_staging(&output), None);
     }
 
+    /// A folder a killed run left behind holds the temporaries its writers never renamed into
+    /// place. The resume clears those, and only those: a real file that merely ends in `.partial`
+    /// is somebody else's and stays.
+    #[tokio::test]
+    async fn a_resumed_run_removes_stale_temporaries_and_keeps_other_partials() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(data.join("scripts")).unwrap();
+        fs::write(
+            data.join("scripts/one.pex"),
+            dummy_content::pex::minimal("One").unwrap(),
+        )
+        .unwrap();
+        // An asset the resumed run fails on, so it keeps its staging folder to inspect.
+        fs::create_dir_all(data.join("textures")).unwrap();
+        fs::write(data.join("textures/bad.dds"), b"not a DDS").unwrap();
+
+        // One leftover per temporary-name shape the converter's writers use. The pid is not this
+        // process's, so a stale name can never collide with the writer that made it.
+        let pid = std::process::id() + 1;
+        let staging = temp.path().join("modern.staging-1-1");
+        let stale = [
+            // The script writer: `.<name>.<pid>-<counter>.partial`.
+            staging.join(format!("scripts/.one.luau.{pid}-0.partial")),
+            // The manifest and report writer: `<name>.json.<pid>.partial`.
+            staging.join(format!("journals/conversion-manifest.json.{pid}.partial")),
+            // The mesh writer: `<name>.<extension>.<pid>.partial`.
+            staging.join(format!("meshes/one.glb.{pid}.partial")),
+            // The spill copy: `<name>.<index>.partial-<pid>`.
+            staging.join(format!("cache/deadbeef.1.partial-{pid}")),
+            // The previous output the mesh and texture writers park while they swap.
+            staging.join(format!("meshes/two.glb.{pid}.backup")),
+            staging.join(format!("textures/two.ktx2.{pid}.backup")),
+        ];
+        for path in &stale {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"torn").unwrap();
+        }
+        // A real file named like a backup of something else stays.
+        let kept_backup = staging.join("notes/settings.ini.7.backup");
+        fs::create_dir_all(kept_backup.parent().unwrap()).unwrap();
+        fs::write(&kept_backup, b"a real file").unwrap();
+        let kept = staging.join("notes/hand-authored.partial");
+        fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        fs::write(&kept, b"a real file").unwrap();
+
+        let mut config = PipelineConfig::new(&data, &output);
+        config.resume_staging = Some(staging);
+        config.fail_fast = true;
+        let (tx, mut rx) = mpsc::channel(64);
+        let collect = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+        let failure = AssetPipeline::run_async(config, tx).await.unwrap_err();
+        let events = collect.await.unwrap();
+
+        assert!(
+            failure.staging.is_some_and(|kept| kept.is_dir()),
+            "a failed run keeps the folder it worked in"
+        );
+        for path in &stale {
+            assert!(!path.exists(), "{} survived the resume", path.display());
+        }
+        assert_eq!(
+            fs::read(&kept).unwrap(),
+            b"a real file",
+            "a file that merely ends in .partial was removed"
+        );
+        assert!(
+            kept_backup.is_file(),
+            "a file that merely ends in .backup was removed"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.message.contains("stale temporary")),
+            "the resume did not report the cleanup"
+        );
+    }
+
     #[test]
     fn staging_that_holds_the_data_folder_is_kept_after_publishing() {
         let temp = tempfile::tempdir().unwrap();
@@ -13196,6 +14018,26 @@ mod tests {
             .extension()
             .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod output_ownership_regressions {
+    use super::*;
+
+    #[test]
+    fn resume_preserves_source_files_with_converter_temporary_names() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("vfs/textures/mod.12345.partial");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"authored source").unwrap();
+        fs::write(
+            root.path().join("report.json.12345.partial"),
+            b"interrupted write",
+        )
+        .unwrap();
+        assert_eq!(remove_stale_temporary_files(root.path()).unwrap(), 1);
+        assert_eq!(fs::read(source).unwrap(), b"authored source");
     }
 }
 

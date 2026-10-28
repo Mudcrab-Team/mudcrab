@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Exact generator policy is recorded in the cluster builder identity.
+bevy_mikktspace = "=1.0.0"
 rkyv.workspace = true
 serde.workspace = true
 color-eyre.workspace = true

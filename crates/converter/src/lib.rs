@@ -6,9 +6,16 @@ pub mod archive;
 pub mod asset_path;
 pub mod cache;
 pub mod check;
+pub mod cluster;
 pub mod collision;
 pub mod compose;
 pub mod config;
+#[cfg(test)]
+mod derive_database;
+pub mod derive_extensions;
+mod derive_space;
+mod derive_sqlite;
+pub mod durability;
 pub mod esm;
 pub mod extensions;
 mod glb;
@@ -36,14 +43,19 @@ mod texture_ktx2;
 
 #[cfg(test)]
 mod test_strategies;
+
 pub use check::{
     CheckCancelled, CheckMode, CheckProblem, CheckReport, check_output, check_output_with_cancel,
 };
 pub use config::{
-    OutputDirError, PipelineConfig, TextureEncoder, check_output_dir, find_resumable_staging,
+    OutputDirError, PipelineConfig, TextureEncoder, check_output_dir, check_outside_data,
+    find_resumable_staging,
 };
 pub use esm::EsmParser;
 pub use integration::IntegrationReport;
 pub use pipeline::{AssetPipeline, Cancellation, PipelineFailure, PipelineReport};
 pub use progress::{AssetOutcome, ProgressEstimate, ProgressEvent, ProgressStage};
 pub use shared;
+/// Native distant-LOD inventory: block meshes, grid headers and tree billboards.
+/// Terrain chunk generation is implemented separately in [`lod`].
+mod baked_sources;

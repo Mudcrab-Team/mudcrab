@@ -289,6 +289,10 @@ pub enum IngestionSelection {
     /// Runtime mesh/texture/script inputs, LOD settings, and English string banks.
     RuntimeEnglishV1,
     ConverterInputsV1,
+    /// Runtime inputs without native baked geometry or LOD texture namespaces.
+    ClusterEnglishV1,
+    /// All-language inputs without native baked geometry or LOD texture namespaces.
+    ClusterInputsV1,
 }
 
 impl IngestionSelection {
@@ -296,6 +300,10 @@ impl IngestionSelection {
         self == Self::All
             || self == requested
             || (self == Self::ConverterInputsV1 && requested == Self::RuntimeEnglishV1)
+            || (self == Self::ConverterInputsV1
+                && matches!(requested, Self::ClusterInputsV1 | Self::ClusterEnglishV1))
+            || (matches!(self, Self::RuntimeEnglishV1 | Self::ClusterInputsV1)
+                && requested == Self::ClusterEnglishV1)
     }
 }
 
@@ -383,6 +391,8 @@ impl IngestionJournal {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversionManifest {
+    #[serde(flatten)]
+    pub geometry: shared::geometry::GeometryManifest,
     pub schema_version: u32,
     /// Metadata-only rebuilds do not upgrade the retained mesh cache contract.
     /// Absent means the meshes follow `schema_version`.
@@ -401,6 +411,15 @@ pub struct ConversionManifest {
     /// Ordered identities of the runtime schema add-ons used by this pack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schema_addons: Vec<crate::records::addons::SchemaAddonIdentity>,
+    /// Derived output beyond `main`'s core schema, each with a content hash
+    /// (`docs/specs/converters/extensions.md`). Absent when the data set has none, so a
+    /// data set without extensions has `main`'s manifest.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_extensions"
+    )]
+    pub extensions: Vec<shared::extensions::ExtensionEntry>,
     /// Original producer settings of each converted asset kind, independent of
     /// record-reader metadata. A metadata-only migration retains these values.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -432,13 +451,6 @@ pub struct ConversionManifest {
         deserialize_with = "deserialize_derived_outputs"
     )]
     pub derived_outputs: BTreeMap<String, DerivedOutput>,
-    /// Versioned derived output, separate from the upstream core contract.
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_extensions"
-    )]
-    pub extensions: Vec<shared::extensions::ExtensionEntry>,
 }
 
 /// Historical producers whose scripts may pass normal reuse eligibility.
@@ -1368,8 +1380,6 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn optional_capability_parse_is_tolerant_per_entry() {
         let good = shared::extensions::ExtensionEntry {
@@ -1391,20 +1401,6 @@ mod tests {
         document["extensions"] = serde_json::Value::Null;
         let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
         assert!(manifest.extensions.is_empty());
-    }
-
-    #[test]
-    fn authored_animation_changes_the_nif_asset_proof() {
-        let config = crate::config::PipelineConfig::new("Data", "output");
-        let mut previous = serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION});
-        if mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
-            previous["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
-        }
-        let old = hash_bytes(&serde_json::to_vec(&previous).unwrap());
-        assert_ne!(
-            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, "nif").unwrap(),
-            old
-        );
     }
 
     #[test]
@@ -1430,6 +1426,8 @@ mod tests {
         with_extension.as_object_mut().unwrap().remove("extensions");
         assert_eq!(with_extension, before);
     }
+
+    use super::*;
 
     /// Legacy absence and malformed optional records do not poison neighboring proofs.
     #[test]
@@ -1471,6 +1469,20 @@ mod tests {
             let manifest: ConversionManifest = serde_json::from_value(json).unwrap();
             assert!(manifest.derived_outputs.is_empty());
         }
+    }
+
+    #[test]
+    fn authored_animation_changes_the_nif_asset_proof() {
+        let config = crate::config::PipelineConfig::new("Data", "output");
+        let mut previous = serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION});
+        if mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
+            previous["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
+        }
+        let old = hash_bytes(&serde_json::to_vec(&previous).unwrap());
+        assert_ne!(
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, "nif").unwrap(),
+            old
+        );
     }
 
     /// Historical absence stays unknown while known loss and success round-trip distinctly.
@@ -2635,7 +2647,7 @@ mod tests {
         }
     }
 
-    /// Against the authored-animation baseline, the contract list changes the current mesh proof, so
+    /// The contract list is the only thing that may change a mesh proof at a fixed producer, so
     /// an empty list has to leave the `nif` proof byte-identical and a historical producer's
     /// proof untouched whatever the list says.
     #[test]

@@ -146,6 +146,20 @@ impl TerrainOptions {
     }
 }
 
+/// Authored defaults that the optional near-terrain producer consumes in addition to LTEX.
+pub(crate) fn configured_default_sources(config: &PipelineConfig) -> Result<Vec<PathBuf>> {
+    if !config.merged_terrain || config.terrain_default_texture != TerrainDefaultTexture::SkyrimIni
+    {
+        return Ok(Vec::new());
+    }
+    let defaults = landscape_defaults(config.terrain_ini.as_deref())?;
+    [defaults.diffuse, defaults.normal]
+        .iter()
+        .filter(|path| !path.is_empty())
+        .map(|path| canonical_asset_path(path, AssetKind::Texture, "dds").map(PathBuf::from))
+        .collect()
+}
+
 /// The master lists of a load order, by priority slot (`LoadOrder::metadata[slot].masters`).
 pub fn load_order_masters(order: &LoadOrder) -> PluginMasters {
     order

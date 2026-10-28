@@ -328,6 +328,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
     add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;
     add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
+    // The stamped version is the shared contract; never spell it out as a
+    // literal here, or a schema bump lands in exactly one of the two copies.
     conn.prepare_cached(
         "INSERT INTO schema_info(version) SELECT ?1 WHERE NOT EXISTS (SELECT 1 FROM schema_info)",
     )?
@@ -533,6 +535,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS actor_model_parts;
         DROP TABLE IF EXISTS actor_models;
         DROP TABLE IF EXISTS lights;
+        DROP TABLE IF EXISTS door_links;
         DROP TABLE IF EXISTS statics;
         DROP TABLE IF EXISTS land;
         DROP TABLE IF EXISTS exterior_spatial;
@@ -1588,6 +1591,7 @@ mod tests {
             "worldspaces",
             "cells",
             "references",
+            "door_links",
             "land",
             "statics",
             "lights",
@@ -1613,6 +1617,23 @@ mod tests {
             assert_eq!(present, 1, "missing semantic table {table}");
         }
         validate_database(&conn).unwrap();
+    }
+
+    #[test]
+    fn stamps_the_database_with_the_shared_schema_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        // A second call must not append a second row: the runtime reads the
+        // first row of `schema_info`.
+        create_tables(&conn).unwrap();
+        let rows: Vec<u32> = conn
+            .prepare("SELECT version FROM schema_info")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows, vec![shared::WORLD_DATABASE_SCHEMA_VERSION]);
     }
 
     #[test]

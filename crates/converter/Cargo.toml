@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 shared = { path = "../shared" }
 mo2 = { path = "../mo2" }
+meshopt-cluster = { path = "../meshopt-cluster" }
 mesh-tools.workspace = true
 basis-universal.workspace = true
 ddsfile.workspace = true
@@ -37,10 +38,12 @@ project-wormhole-shared = "0.1.0"
 project-wormhole-esm.workspace = true
 mlua.workspace = true
 zstd = "0.13"
+ruzstd = "0.9.1"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
-gltf = { version = "1.4", default-features = false, features = ["names"] }
+# Mesh names support actor export; primitive utilities and metadata support cluster LOD.
+gltf = { version = "1.4", default-features = false, features = ["names", "utils", "extras", "extensions"] }
 
 [target.'cfg(all(target_arch = "aarch64", target_family = "unix"))'.dependencies]
 # sha2's AArch64 hardware backend is gated by its asm feature.
@@ -57,6 +60,10 @@ dummy-content = { path = "../dummy-content" }
 cc = "1.2"
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }

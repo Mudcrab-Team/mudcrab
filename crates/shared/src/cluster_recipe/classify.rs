@@ -15,8 +15,7 @@ use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Exterior cell side in Creation units.
-pub const CELL_SIZE: f32 = 4096.0;
+pub use crate::terrain::CELL_SIZE;
 
 /// `REFR` record header flag: initially disabled.
 const FLAG_INITIALLY_DISABLED: u32 = 0x800;
@@ -655,20 +654,20 @@ fn classify_row(
         return Err("deleted".into());
     }
     if row.header_flags & FLAG_INITIALLY_DISABLED != 0 {
-        return Err("initially_disabled".into());
+        return Err(super::refusal::INITIALLY_DISABLED.into());
     }
     if row.enable_parent.is_some() {
-        return Err("enable_parent".into());
+        return Err(super::refusal::ENABLE_PARENT.into());
     }
     if row.scripted {
-        return Err("scripted".into());
+        return Err(super::refusal::SCRIPTED.into());
     }
     let glb_path = row
         .model_path
         .as_deref()
         .ok_or_else(|| "no_model".to_string())?;
     if !matches!(row.record_type.as_deref(), Some("STAT" | "TREE")) {
-        return Err("state_change_writer_unavailable".into());
+        return Err(super::refusal::STATE_CHANGE_WRITER_UNAVAILABLE.into());
     }
     let glb_path = model_glb_path(glb_path).ok_or_else(|| "model_path_excluded".to_string())?;
     if !row

@@ -455,7 +455,7 @@ pub fn builder_identity(inputs: &BuilderIdentityInputs) -> [u8; 32] {
     inputs.identity()
 }
 
-pub(crate) use crate::extensions::hex;
+pub use crate::extensions::hex;
 
 /// Parses a 64-digit lowercase or uppercase hex SHA-256.
 pub fn parse_hash(text: &str) -> Option<[u8; 32]> {
