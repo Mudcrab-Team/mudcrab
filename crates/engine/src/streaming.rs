@@ -4207,47 +4207,11 @@ pub(crate) fn creation_rotation_to_bevy(rotation: [f32; 3]) -> Quat {
 /// The converted model a reference draws, or `None` when it draws nothing. A base record flagged
 /// `Is Marker` is editor-only and never drawn, whatever its model.
 fn spawned_model_path(model_path: Option<String>, base_is_marker: bool) -> Option<String> {
-    model_path
-        .filter(|_| !base_is_marker)
-        .and_then(converted_model_path)
+    shared::cluster_recipe::classify::spawned_model_path(model_path.as_deref(), base_is_marker)
 }
 
 pub(crate) fn converted_model_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching world-inspect's resolver).
-    // The filename is no marker signal: forges and the Civil War map flags carry
-    // "marker" and must draw. Editor markers are excluded by the base record's
-    // `Is Marker` flag (`spawned_model_path`) and, inside a mesh, by the converter's
-    // `EditorMarker` shape rule; the folder rules below stay as path-convention guards.
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    if normalized.starts_with("meshes/sky/")
-        || normalized.starts_with("sky/")
-        || normalized.starts_with("meshes/markers/")
-        || normalized.starts_with("markers/")
-        || normalized.starts_with("meshes/effects/")
-        || normalized.starts_with("effects/")
-    {
-        return None;
-    }
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.is_empty() || !is_safe_relative_asset_path(without_prefix) {
-        return None;
-    }
-    let mut converted = std::path::PathBuf::from("meshes").join(without_prefix);
-    converted.set_extension("glb");
-    Some(converted.to_string_lossy().replace('\\', "/"))
-}
-
-/// Rejects a database-supplied relative path that could escape the assets
-/// root once re-rooted under `meshes/` with `PathBuf::join`. A `..` segment
-/// walks back out of the base directory, and a rooted or drive-prefixed path
-/// makes `PathBuf::join` replace the base entirely instead of appending to it
-/// (see the `std::path::PathBuf::push` docs). Every component must therefore
-/// be a plain, non-empty path segment.
-fn is_safe_relative_asset_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .components()
-        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    shared::cluster_recipe::classify::model_glb_path(&path)
 }
 
 pub(crate) fn quadrant_layers(

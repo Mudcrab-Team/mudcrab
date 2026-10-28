@@ -28,6 +28,12 @@ pub const HASH_ALGORITHM: &str = "mudcrab-ext-hash-v1";
 
 /// Load-door teleport links (`XTEL`).
 pub const DOOR_LINKS: &str = "mudcrab.door_links";
+/// Reserved cluster geometry store (objects and terrain geometry); wrapper version 1.
+/// Payload format versions and builder identities are independent of this extension version.
+pub const CLUSTERS: &str = "mudcrab.clusters";
+/// Reserved terrain metadata/height grids and its dependency manifest; wrapper version 1.
+pub const CLUSTER_TERRAIN: &str = "mudcrab.cluster_terrain";
+
 /// What one extension wrote. Every list is sorted; a `files` entry ending in `/` covers every file
 /// below that directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -689,7 +695,7 @@ pub fn quote_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     push_hex(bytes, &mut text);
     text

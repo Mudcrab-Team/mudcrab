@@ -841,16 +841,7 @@ fn contract_status(path: &Path, passed_key: &str) -> ContractStatus {
 }
 
 fn converted_model_path(path: String) -> Option<String> {
-    // Converted assets are published with lowercase canonical paths, so the
-    // lookup must lowercase too (matching the engine runtime resolver).
-    let normalized = path.replace('\\', "/").to_ascii_lowercase();
-    let without_prefix = normalized.strip_prefix("meshes/").unwrap_or(&normalized);
-    if without_prefix.is_empty() {
-        return None;
-    }
-    let mut converted = PathBuf::from("meshes").join(without_prefix);
-    converted.set_extension("glb");
-    Some(converted.to_string_lossy().replace('\\', "/"))
+    shared::cluster_recipe::classify::model_glb_path(&path)
 }
 
 fn hex_id(value: u32) -> String {

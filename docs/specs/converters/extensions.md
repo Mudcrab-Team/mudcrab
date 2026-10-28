@@ -160,6 +160,22 @@ The generic mechanism does not establish provenance.
 Existing asset locks, provenance checks, record-data completeness, schema add-on identity,
 derived-output proofs and transactional publication remain responsible for dataset publication.
 
+## Cluster payload contracts
+
+`mudcrab.clusters` and `mudcrab.cluster_terrain` reserve wrapper version 1 for
+cluster geometry/coverage and terrain metadata respectively. Their payload format,
+builder identity and mapping versions are separate checks. Cluster declarations
+require a nonempty matching core identity; the generic allowance for datasets
+without a recorded identity is insufficient for cluster certification.
+
+The cluster overlay carries its entries in `overlay.json`; deriving it does not
+rewrite the base conversion manifest. See
+[cluster extension binding](cluster-extension-adoption.md) for whole-object
+ownership, hashes and terrain dependencies, and
+[ADR-0013](../../adr/0013-cluster-lod-payload-format.md) for the shared payload contract.
+These IDs do not install a producer or runtime reader by themselves.
+
+
 ## Content hash: `mudcrab-ext-hash-v1`
 
 `ExtensionHasher` accepts owned tables, indexes, files and glTF extension values, then returns

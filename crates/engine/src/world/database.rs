@@ -916,7 +916,7 @@ const STATIC_FLAGS_COLUMN: &str = "s.flags";
 const STATIC_FLAGS_INDEX: usize = REFERENCE_ENABLE_START + 3;
 
 /// The record header flag Skyrim sets on editor-only base records (`0x00800000`, "Is Marker").
-const MARKER_RECORD_FLAG: u32 = 0x0080_0000;
+use shared::cluster_recipe::classify::STATIC_FLAG_IS_MARKER as MARKER_RECORD_FLAG;
 
 fn has_records(connection: &Connection) -> Result<bool> {
     let count: i64 = connection
