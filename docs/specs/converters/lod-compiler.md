@@ -247,6 +247,15 @@ to LOD build/fingerprint identity; ordinary producer 24 bytes retain their prove
   stale generated outputs. `metadata-rebuild.json` retains source schema,
   manifest/configuration hash and copied asset hashes. Fresh archive/loose
   settings resolution; no VFS/archive-cache inheritance.
+  Supported `derived_outputs` proofs retain composed bodies and generated gait
+  clips with their original recipe/input identity and final output size/hash.
+  No raw VFS is required to copy proven derived bytes. Missing, unreadable or invalid
+  individual derived proofs/files and unproven strays are omitted locally with
+  one counted, bounded notice, leaving verified neighboring assets unchanged.
+  Derived copy/hash failures follow the same omission path; failed partial-copy
+  cleanup is counted in that notice without aborting the rebuild.
+  Historical unproven derived bytes are never promoted into producer proofs;
+  normal conversion regenerates these optional outputs.
 - LOD-V5: pruned GLB manifest/journal hashes and sizes describe final bytes.
   Legacy pre-prune hash accepted only with matching raw NIF hash, exact
   regenerated original hash/size, exact recorded prune set, and exact

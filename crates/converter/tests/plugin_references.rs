@@ -99,6 +99,10 @@ fn every_single_form_id_field_remaps_relocated_full_and_light_plugins() {
         (b"NPC_", b"SNAM", 8),
         (b"RACE", b"WKMV", 4),
         (b"RACE", b"RNMV", 4),
+        // The actor body chain: skin armor, each armature entry, and an armature's race.
+        (b"RACE", b"WNAM", 4),
+        (b"ARMO", b"MODL", 4),
+        (b"ARMA", b"RNAM", 4),
     ];
     for (light, expected_prefix) in [(false, 0x0500_0000u32), (true, 0xFE00_2000)] {
         let dir = tempfile::tempdir().unwrap();

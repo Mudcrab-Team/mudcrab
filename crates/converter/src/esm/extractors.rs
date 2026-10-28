@@ -176,6 +176,15 @@ impl<'a> SubrecordView<'a> {
             .map(|(_, data)| data.as_slice())
     }
 
+    /// Every FormID in a repeated `target_tag`, in file order. A repeated link
+    /// list (an `ARMO`'s armatures) keeps all its entries, unlike [`Self::get_form_id`].
+    pub fn get_form_ids(&self, target_tag: &[u8; 4]) -> Vec<u32> {
+        self.find_all(target_tag)
+            .filter(|data| data.len() >= 4)
+            .map(|data| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+            .collect()
+    }
+
     pub fn get_obnd(&self) -> Option<SubrecordOBND> {
         self.find(b"OBND")
             .filter(|d| d.len() >= 12)

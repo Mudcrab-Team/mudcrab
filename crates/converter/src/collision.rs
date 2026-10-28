@@ -1256,7 +1256,9 @@ mod tests {
         assert_eq!(node_name(&nif, target), "target");
 
         let model = nif_to_static_model(&nif).unwrap();
-        let (gltf, _) = model.to_gltf("collision-node-regression".to_owned());
+        let (gltf, _) = model
+            .to_gltf("collision-node-regression".to_owned())
+            .unwrap();
         let exported_index = gltf
             .nodes
             .iter()

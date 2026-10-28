@@ -86,6 +86,7 @@ expression: report
     "streaming-costs.json",
     "textures/generated_color.ktx2",
     "textures/generated_color.opensky-srgb.opensky-wrap0.ktx2",
+    "textures/generated_color.opensky-wrap0.ktx2",
     "textures/generated_color_x8.ktx2",
     "textures/generated_cube.ktx2",
     "textures/generated_normal.ktx2",

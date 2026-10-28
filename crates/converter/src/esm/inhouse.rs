@@ -90,6 +90,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "statics",
     "lights",
     "npcs",
+    "actor_models",
+    "actor_model_parts",
     "movement_types",
     "race_movement_links",
     "movement_game_settings",

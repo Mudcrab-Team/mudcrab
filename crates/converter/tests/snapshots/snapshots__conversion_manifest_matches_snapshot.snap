@@ -14,7 +14,7 @@ expression: manifest
         }
       ],
       "reader_version": 1,
-      "recipe": "runtime-english-v1",
+      "recipe": "runtime-english-v2",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -32,7 +32,7 @@ expression: manifest
         }
       ],
       "reader_version": 1,
-      "recipe": "runtime-english-v1",
+      "recipe": "runtime-english-v2",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -69,14 +69,14 @@ expression: manifest
           "size": 2892
         }
       ],
-      "recipe": "runtime-english-v1",
+      "recipe": "runtime-english-v2",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     }
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "1efcbe41597406d3477c232fd242b3120148ecfa301361214e1ef0d6d5f4cc65",
+    "nif": "acda6ca72264b8289c8abaf1a38708829fd8c8104ef0829d38f1f010a4ed3af7",
     "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
   },
   "complete": true,

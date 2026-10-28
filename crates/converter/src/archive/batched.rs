@@ -823,7 +823,7 @@ fn pack_directory(cache: &Path, source_hash: &str, recipe: &str) -> Result<PathB
     ensure!(
         matches!(
             recipe,
-            "all-v1" | "converter-inputs-v1" | "runtime-english-v1"
+            "all-v1" | "converter-inputs-v2" | "runtime-english-v2"
         ),
         "unknown ingestion recipe"
     );
@@ -1128,7 +1128,7 @@ fn read_pack(
     Ok(packed)
 }
 
-/// Removes only known pre-reader-version BSA packs from the writable current cache.
+/// Removes known pre-reader-version BSA packs and retired-recipe packs from the writable current cache.
 /// Previous generations and malformed or future pack formats remain untouched.
 pub(crate) fn prune_stale_reader_packs(
     cache_root: &Path,
@@ -1149,6 +1149,8 @@ pub(crate) fn prune_stale_reader_packs(
         for recipe in [
             ArchiveSelection::RuntimeEnglishV1.recipe(),
             ArchiveSelection::ConverterInputsV1.recipe(),
+            "runtime-english-v1",
+            "converter-inputs-v1",
             ArchiveSelection::All.recipe(),
         ] {
             let recipe_dir = source_dir.join(recipe);
@@ -1167,7 +1169,14 @@ pub(crate) fn prune_stale_reader_packs(
                 {
                     continue;
                 }
-                if pack_reader_version(&entry.path(), source_hash, recipe) == Some(0) {
+                let Some(reader_version) = pack_reader_version(&entry.path(), source_hash, recipe)
+                else {
+                    continue;
+                };
+                let retired_recipe = matches!(recipe, "runtime-english-v1" | "converter-inputs-v1");
+                if reader_version == 0
+                    || (retired_recipe && reader_version <= super::BSA_READER_VERSION)
+                {
                     fs::remove_file(entry.path())?;
                 }
             }
@@ -1385,6 +1394,72 @@ mod tests {
         assert!(!options.selection.accepts_recipe("future-unknown-v1"));
     }
 
+    // This checks the extraction outcome with a matching selection. The omitted HKX paths also
+    // make the selected-file inventory incomplete, so the unit `covers` test proves the
+    // recipe-less cache contract while this test checks that ingestion still extracts both.
+    #[test]
+    fn recipe_less_filtered_entry_does_not_suppress_hkx_extraction() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = fixture(
+            directory.path(),
+            "legacy-filtered.bsa",
+            &[
+                ("strings/game_english.strings", b"english"),
+                (
+                    "meshes/actors/character/character assets/skeleton.hkx",
+                    b"skeleton",
+                ),
+                ("meshes/actors/character/animations/mt_idle.hkx", b"clip"),
+            ],
+        );
+        let archive_bytes = fs::read(&archive).unwrap();
+        let stale = IngestionCacheEntry {
+            source_hash: hash_bytes(&archive_bytes),
+            // Match the requested selection. HKX entries remain absent from this filtered
+            // fixture, so extraction's expected-file coverage still forces a cache miss.
+            selection: ArchiveSelection::ConverterInputsV1,
+            recipe: String::new(),
+            files: vec![IngestedFile {
+                path: "strings/game_english.strings".to_owned(),
+                size: 7,
+                hash: hash_bytes(b"english"),
+            }],
+            reader_version: archive_reader_version(&archive_bytes),
+        };
+        let output = directory.path().join("vfs");
+        let cache = directory.path().join("cache");
+        let result = ArchiveExtractor::extract_batched(
+            &archive,
+            &output,
+            Path::new("unused"),
+            &cache,
+            Some(&stale),
+            false,
+            &options(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(!result.cache_hit);
+        assert!(
+            result
+                .files
+                .iter()
+                .any(|file| file.path.ends_with("skeleton.hkx"))
+        );
+        assert!(
+            result
+                .files
+                .iter()
+                .any(|file| file.path.ends_with("mt_idle.hkx"))
+        );
+        assert_eq!(
+            fs::read(output.join("meshes/actors/character/animations/mt_idle.hkx")).unwrap(),
+            b"clip"
+        );
+    }
+
     #[test]
     fn deduplicated_pack_recovers_aliases_after_all_derived_blobs_are_removed() {
         let directory = tempfile::tempdir().unwrap();
@@ -1495,7 +1570,7 @@ mod tests {
         let index = PackIndex {
             version: 1,
             source_hash: source.clone(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version: 0,
             files: vec![PackItem {
                 path: "textures/old.dds".into(),
@@ -1522,7 +1597,7 @@ mod tests {
         let index = PackIndex {
             version: PACK_VERSION,
             source_hash: source.to_owned(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version,
             files: vec![PackItem {
                 path: "textures/a.dds".into(),
@@ -1539,12 +1614,12 @@ mod tests {
         let path = root
             .join("batches")
             .join(source)
-            .join("converter-inputs-v1")
+            .join(ArchiveSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(&bytes)));
         let directory = root
             .join("batches")
             .join(source)
-            .join("converter-inputs-v1");
+            .join(ArchiveSelection::ConverterInputsV1.recipe());
         fs::create_dir_all(&directory).unwrap();
         fs::write(&path, &bytes).unwrap();
         path
@@ -1611,7 +1686,8 @@ mod tests {
             .path()
             .join("batches")
             .join(&source)
-            .join("converter-inputs-v1/unknown.pack");
+            .join(ArchiveSelection::ConverterInputsV1.recipe())
+            .join("unknown.pack");
         fs::write(&malformed, b"unknown future pack").unwrap();
 
         prune_stale_reader_packs(
@@ -1625,6 +1701,124 @@ mod tests {
         assert!(future_bsa.is_file());
         assert!(current_ba2.is_file());
         assert!(malformed.is_file());
+    }
+
+    #[test]
+    fn pruning_removes_stale_packs_from_retired_recipe_directories_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = "ab".repeat(32);
+        let retired_stale = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "converter-inputs-v1",
+            0,
+            b"stale converter inputs",
+        );
+        let retired_runtime_stale = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "runtime-english-v1",
+            0,
+            b"stale runtime english",
+        );
+        let retired_current = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "converter-inputs-v1",
+            BSA_READER_VERSION,
+            b"current reader",
+        );
+        let retired_runtime_current = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "runtime-english-v1",
+            BSA_READER_VERSION,
+            b"current reader runtime",
+        );
+        let retired_future = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "converter-inputs-v1",
+            BSA_READER_VERSION + 1,
+            b"future reader",
+        );
+        let mismatched_index = legacy_recipe_pack(
+            directory.path(),
+            &source,
+            "converter-inputs-v1",
+            BSA_READER_VERSION,
+            b"mismatched recipe",
+        );
+        let mismatched_index_destination = directory
+            .path()
+            .join("batches")
+            .join(&source)
+            .join("runtime-english-v1")
+            .join("mismatched.pack");
+        fs::rename(&mismatched_index, &mismatched_index_destination).unwrap();
+        let malformed = directory
+            .path()
+            .join("batches")
+            .join(&source)
+            .join("converter-inputs-v1/malformed.pack");
+        fs::write(&malformed, b"malformed retired pack").unwrap();
+        let current_recipe_stale = pack_path(directory.path(), &source, 0, b"stale current recipe");
+        let current_recipe_live = pack_path(
+            directory.path(),
+            &source,
+            BSA_READER_VERSION,
+            b"live current recipe",
+        );
+
+        prune_stale_reader_packs(
+            directory.path(),
+            &BTreeMap::from([(source, BSA_READER_VERSION)]),
+        )
+        .unwrap();
+
+        assert!(!retired_stale.exists());
+        assert!(!retired_runtime_stale.exists());
+        assert!(!retired_current.exists());
+        assert!(!retired_runtime_current.exists());
+        assert!(retired_future.is_file());
+        assert!(mismatched_index_destination.is_file());
+        assert!(malformed.is_file());
+        assert!(!current_recipe_stale.exists());
+        assert!(current_recipe_live.is_file());
+    }
+
+    fn legacy_recipe_pack(
+        root: &Path,
+        source: &str,
+        recipe: &str,
+        reader_version: u32,
+        data: &[u8],
+    ) -> PathBuf {
+        let index = PackIndex {
+            version: PACK_VERSION,
+            source_hash: source.to_owned(),
+            recipe: recipe.to_owned(),
+            reader_version,
+            files: vec![PackItem {
+                path: "textures/a.dds".into(),
+                size: data.len() as u64,
+                sha256: hash_bytes(data),
+                offset: 0,
+            }],
+        };
+        let index = serde_json::to_vec(&index).unwrap();
+        let mut bytes = Vec::from(PACK_MAGIC.as_slice());
+        bytes.extend_from_slice(&(index.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&index);
+        bytes.extend_from_slice(data);
+        let path = root
+            .join("batches")
+            .join(source)
+            .join(recipe)
+            .join(format!("{}.pack", hash_bytes(&bytes)));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        path
     }
 
     #[test]
@@ -1665,7 +1859,7 @@ mod tests {
         let index = PackIndex {
             version: PACK_VERSION,
             source_hash: source.clone(),
-            recipe: "converter-inputs-v1".into(),
+            recipe: ArchiveSelection::ConverterInputsV1.recipe().into(),
             reader_version: 0,
             files: Vec::new(),
         };
@@ -1945,7 +2139,10 @@ mod tests {
         assert_eq!(current.files.len(), 7);
         assert!(!output.join("sound/a.fuz").exists());
         assert!(!output.join("docs/a.txt").exists());
-        assert_eq!(current.cache_entry.recipe, "converter-inputs-v1");
+        assert_eq!(
+            current.cache_entry.recipe,
+            ArchiveSelection::ConverterInputsV1.recipe()
+        );
         assert!(!packs(&cache).is_empty());
         // A filtered inventory must never be treated as proof of a full archive.
         let all = ArchiveExtractor::extract_cached(

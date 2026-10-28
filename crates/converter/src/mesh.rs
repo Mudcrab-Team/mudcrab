@@ -7,9 +7,10 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure},
 };
+use log::warn;
 use project_wormhole_esm::structs::strings::{SizedString8, SizedString32, StringN};
 use project_wormhole_nif::{
-    nif_block::NifBlock,
+    nif_block::{NiObjectNETTraits, NifBlock},
     nif_file::{NifFile, nif_to_model, nif_to_static_model},
     nif_header::{Endianess, NifFileVersion, NifHeader},
 };
@@ -21,6 +22,7 @@ use std::{
     io::{Read, Write},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use walkdir::WalkDir;
 
@@ -70,13 +72,28 @@ pub struct NifParseDiagnostics {
 
 impl MeshConverter {
     pub fn dependency_paths(nif_path: &Path) -> Vec<PathBuf> {
-        find_skeleton(nif_path).into_iter().collect()
+        match find_skeleton(nif_path) {
+            SkeletonResolution::Skeleton(path) => vec![path],
+            SkeletonResolution::SelfContained | SkeletonResolution::Unresolved { .. } => Vec::new(),
+        }
     }
 
     /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
         let nif_path = nif_path.as_ref();
-        let skeleton = find_skeleton(nif_path);
+        let skeleton = match find_skeleton(nif_path) {
+            SkeletonResolution::Skeleton(path) => Some(path),
+            SkeletonResolution::SelfContained => None,
+            SkeletonResolution::Unresolved { best_coverage } => {
+                return Err(color_eyre::eyre::eyre!(
+                    "{}",
+                    unresolved_skeleton_diagnostic(
+                        format_args!("skinned NIF {}", nif_path.display()),
+                        best_coverage
+                    )
+                ));
+            }
+        };
         Self::convert_nif_to_glb_with_skeleton(
             nif_path,
             glb_output_path.as_ref(),
@@ -85,6 +102,10 @@ impl MeshConverter {
     }
 
     /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
+    ///
+    /// `None` means the mesh is a self-contained rig: the vendor builds its bone
+    /// tree from the mesh's own joints. A skinned mesh that no skeleton can
+    /// cover is rejected before it reaches this function.
     pub fn convert_nif_to_glb_with_skeleton(
         nif_path: &Path,
         glb_output_path: &Path,
@@ -92,38 +113,45 @@ impl MeshConverter {
     ) -> Result<()> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
+        let declares_skin = nif.declares_skin();
         let skeleton = if nif.has_skeleton() {
-            let skeleton_path = skeleton_path.ok_or_else(|| {
-                color_eyre::eyre::eyre!(
-                    "skinned NIF requires a skeleton, but none was found near {}",
-                    nif_path.display()
-                )
-            })?;
-            Some(open_nif_resilient(skeleton_path)?.0)
+            match skeleton_path {
+                Some(skeleton_path) => Some(open_nif_resilient(skeleton_path)?.0),
+                None => None,
+            }
         } else {
             None
         };
         let primary = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, skeleton.as_ref())));
         let (mut model, used_static_fallback) = match primary {
-            Ok(Ok(model)) => (model, false),
+            Ok(Ok(model)) => (
+                finish_skinned_model(&nif, nif_path, model, &material_contract)?,
+                false,
+            ),
             primary => {
                 let primary_error = match primary {
                     Ok(Err(error)) => format!("NIF model conversion failed: {error}"),
                     Err(_) => format!("NIF model conversion panicked for {}", nif_path.display()),
                     Ok(Ok(_)) => unreachable!(),
                 };
+                // A declared skin is a contract with the renderer: publishing the
+                // static fallback instead would hand it a mesh that can never
+                // follow a bone. Surface the real conversion failure.
+                ensure!(
+                    !declares_skin,
+                    "NIF {} declares a skin, so the static fallback is not allowed: {primary_error}",
+                    nif_path.display()
+                );
                 let static_model = catch_unwind(AssertUnwindSafe(|| nif_to_static_model(&nif)))
                     .map_err(|_| color_eyre::eyre::eyre!("static NIF fallback panicked"))?
                     .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))
                     .wrap_err(primary_error)?;
-                (static_model, true)
+                (
+                    finish_skinned_model(&nif, nif_path, static_model, &material_contract)?,
+                    true,
+                )
             }
         };
-        model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
-        model
-            .validate()
-            .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
-        apply_vertex_color_contract(&mut model, &nif, &material_contract)?;
         let name = nif_path
             .file_stem()
             .unwrap_or_default()
@@ -131,12 +159,13 @@ impl MeshConverter {
             .into_owned();
         if model.static_meshes.is_empty() && model.skeletal_meshes.is_empty() {
             ensure!(
-                is_deferred_dynamic_mesh(nif_path)
-                    || is_geometry_template(&nif)
-                    || !diagnostics
-                        .block_types
-                        .keys()
-                        .any(|block_type| is_declared_geometry_block(block_type)),
+                !declares_skin
+                    && (is_deferred_dynamic_mesh(nif_path)
+                        || is_geometry_template(&nif)
+                        || !diagnostics
+                            .block_types
+                            .keys()
+                            .any(|block_type| is_declared_geometry_block(block_type))),
                 "NIF declares mesh geometry, but no supported geometry was converted"
             );
             let output = glb_output_path;
@@ -152,8 +181,16 @@ impl MeshConverter {
         }
         let output = glb_output_path;
         let mut glb = catch_unwind(AssertUnwindSafe(|| model.to_glb(name.clone())))
-            .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?;
+            .map_err(|_| color_eyre::eyre::eyre!("NIF GLB export panicked"))?
+            .map_err(|error| {
+                color_eyre::eyre::eyre!("NIF {} GLB export failed: {error}", nif_path.display())
+            })?;
         if glb_bounds_from_bytes(&glb).is_err() && !used_static_fallback {
+            ensure!(
+                !declares_skin,
+                "NIF {} declares a skin but the exported GLB has invalid bounds; refusing the static fallback",
+                nif_path.display()
+            );
             let mut static_model = nif_to_static_model(&nif)
                 .map_err(|error| color_eyre::eyre::eyre!("static NIF fallback failed: {error}"))?;
             static_model.scene_root_rotation =
@@ -164,7 +201,13 @@ impl MeshConverter {
                 "NIF contains no supported mesh geometry"
             );
             glb = catch_unwind(AssertUnwindSafe(|| static_model.to_glb(name)))
-                .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?;
+                .map_err(|_| color_eyre::eyre::eyre!("static NIF GLB export panicked"))?
+                .map_err(|error| {
+                    color_eyre::eyre::eyre!(
+                        "NIF {} static GLB export failed: {error}",
+                        nif_path.display()
+                    )
+                })?;
             model = static_model;
         }
         let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
@@ -207,7 +250,11 @@ impl MeshConverter {
             .map(|node| node.name.clone().unwrap_or_default())
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
-        write_glb_atomic(output, &embed_collision(glb, &collision)?)
+        let glb = embed_collision(glb, &collision)?;
+        if declares_skin {
+            validate_declared_skin_glb(&glb, nif_path)?;
+        }
+        write_glb_atomic(output, &glb)
     }
 
     /// Add NIF-authored collision to an already converted GLB without changing its render data.
@@ -887,7 +934,86 @@ fn empty_scene_glb(name: &str) -> Vec<u8> {
     glb
 }
 
-fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
+/// Fails when a NIF that declares a skin exports a GLB the renderer cannot bind:
+/// no `skins`, a skinned node with no mesh-bound skin, or a primitive missing the
+/// joint or weight attribute. This inspects the bytes actually written, not the
+/// in-memory model.
+fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
+    let document = glb_json_from_bytes(glb)
+        .wrap_err_with(|| format!("failed to inspect declared-skin GLB for {}", path.display()))?;
+    let skins = document
+        .get("skins")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    ensure!(
+        !skins.is_empty(),
+        "NIF {} declares a skin, but the exported GLB has no skins",
+        path.display()
+    );
+    let nodes = document
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let meshes = document
+        .get("meshes")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut skinned_meshes = BTreeSet::new();
+    for node in nodes {
+        if node.get("skin").is_none() {
+            continue;
+        }
+        let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        skinned_meshes.insert(mesh_index);
+        let mesh = meshes.get(mesh_index as usize).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "NIF {} declares a skin, but the exported GLB references missing mesh {mesh_index}",
+                path.display()
+            )
+        })?;
+        let primitives = mesh
+            .get("primitives")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        ensure!(
+            !primitives.is_empty(),
+            "NIF {} declares a skin, but exported mesh {mesh_index} has no primitives",
+            path.display()
+        );
+        for (primitive_index, primitive) in primitives.iter().enumerate() {
+            let attributes = primitive
+                .get("attributes")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "NIF {} declares a skin, but exported mesh {mesh_index} primitive {primitive_index} has no attributes",
+                        path.display()
+                    )
+                })?;
+            for semantic in ["JOINTS_0", "WEIGHTS_0"] {
+                ensure!(
+                    attributes.contains_key(semantic),
+                    "NIF {} declares a skin, but exported mesh {mesh_index} primitive {primitive_index} is missing {semantic}",
+                    path.display()
+                );
+            }
+        }
+    }
+    ensure!(
+        !skinned_meshes.is_empty(),
+        "NIF {} declares a skin, but no exported mesh is bound to a skin",
+        path.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn glb_json_from_bytes(bytes: &[u8]) -> Result<serde_json::Value> {
     ensure!(
         bytes.len() >= 20 && &bytes[..4] == b"glTF",
         "invalid GLB container"
@@ -940,6 +1066,66 @@ fn glb_node_names(glb: &[u8]) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// Names the skin instances no exported shape claimed, together with the
+/// geometry blocks that point at them. Built from the parsed blocks so a block
+/// type the exporter does not handle is named instead of hidden behind a
+/// generic "no skeletal mesh" message.
+fn unclaimed_skin_instances(
+    nif: &NifFile,
+    model: &project_wormhole_nif::model::all::Model,
+) -> Vec<String> {
+    let claimed: BTreeSet<u32> = model
+        .skeletal_meshes
+        .iter()
+        .filter_map(|mesh| mesh.source_block)
+        .collect();
+
+    let mut referencing: BTreeMap<u32, Vec<(u32, &'static str)>> = BTreeMap::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let (skin, block_type) = match block {
+            NifBlock::BSTriShape(shape) => (shape.skin, "BSTriShape"),
+            NifBlock::BSDynamicTriShape(shape) => (shape.bs_tri_shape.skin, "BSDynamicTriShape"),
+            NifBlock::BSSubIndexTriShape(shape) => (shape.bs_tri_shape.skin, "BSSubIndexTriShape"),
+            NifBlock::BSLODTriShape(shape) => (shape.bs_tri_shape.skin, "BSLODTriShape"),
+            _ => continue,
+        };
+        referencing
+            .entry(skin)
+            .or_default()
+            .push((index as u32, block_type));
+    }
+
+    let mut unclaimed = Vec::new();
+    for (index, block) in nif.blocks.iter().enumerate() {
+        let instance_type = match block {
+            NifBlock::BSSkinInstance(_) => "BSSkin::Instance",
+            NifBlock::NiSkinInstance(_) => "NiSkinInstance",
+            NifBlock::BsDismemberSkinInstance(_) => "BSDismemberSkinInstance",
+            _ => continue,
+        };
+        let index = index as u32;
+        if claimed.contains(&index) {
+            continue;
+        }
+        match referencing.get(&index) {
+            Some(shapes) if !shapes.is_empty() => {
+                let shapes = shapes
+                    .iter()
+                    .map(|(block, block_type)| format!("{block_type} {block}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                unclaimed.push(format!(
+                    "skin instance {index} ({instance_type}) is referenced by {shapes}, which the legacy exporter does not handle"
+                ));
+            }
+            _ => unclaimed.push(format!(
+                "skin instance {index} ({instance_type}) is not referenced by any shape block"
+            )),
+        }
+    }
+    unclaimed
+}
+
 fn exported_shape_blocks(
     nif: &NifFile,
     model: &project_wormhole_nif::model::all::Model,
@@ -961,28 +1147,59 @@ fn exported_shape_blocks(
         blocks.push(node.block_index);
     }
     if !model.skeletal_meshes.is_empty() {
-        let mut skeletal_blocks = Vec::new();
-        let predicates: [fn(&NifBlock) -> bool; 3] = [
-            |block: &NifBlock| matches!(block, NifBlock::BSTriShape(_)),
-            |block: &NifBlock| matches!(block, NifBlock::BSDynamicTriShape(_)),
-            |block: &NifBlock| matches!(block, NifBlock::BSSubIndexTriShape(_)),
-        ];
-        for predicate in predicates {
-            skeletal_blocks.extend(
-                nif.blocks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, block)| predicate(block))
-                    .map(|(index, _)| u32::try_from(index))
-                    .collect::<std::result::Result<Vec<_>, _>>()?,
-            );
-        }
-        ensure!(
-            skeletal_blocks.len() == model.skeletal_meshes.len(),
-            "skeletal mesh/material association is incomplete: {} meshes, {} source shapes",
-            model.skeletal_meshes.len(),
-            skeletal_blocks.len()
-        );
+        let source_blocks = model
+            .skeletal_meshes
+            .iter()
+            .map(|mesh| mesh.source_block)
+            .collect::<Option<Vec<_>>>();
+        let skeletal_blocks = match source_blocks {
+            Some(source_blocks) => {
+                let mut seen = BTreeSet::new();
+                for block in &source_blocks {
+                    ensure!(
+                        matches!(
+                            nif.blocks.get(*block as usize),
+                            Some(
+                                NifBlock::BSTriShape(_)
+                                    | NifBlock::BSDynamicTriShape(_)
+                                    | NifBlock::BSSubIndexTriShape(_)
+                            )
+                        ),
+                        "skeletal mesh source block {block} is not a skinned geometry block"
+                    );
+                    ensure!(
+                        seen.insert(*block),
+                        "two skeletal meshes claim source block {block}"
+                    );
+                }
+                source_blocks
+            }
+            None => {
+                let mut skeletal_blocks = Vec::new();
+                let predicates: [fn(&NifBlock) -> bool; 3] = [
+                    |block: &NifBlock| matches!(block, NifBlock::BSTriShape(_)),
+                    |block: &NifBlock| matches!(block, NifBlock::BSDynamicTriShape(_)),
+                    |block: &NifBlock| matches!(block, NifBlock::BSSubIndexTriShape(_)),
+                ];
+                for predicate in predicates {
+                    skeletal_blocks.extend(
+                        nif.blocks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, block)| predicate(block))
+                            .map(|(index, _)| u32::try_from(index))
+                            .collect::<std::result::Result<Vec<_>, _>>()?,
+                    );
+                }
+                ensure!(
+                    skeletal_blocks.len() == model.skeletal_meshes.len(),
+                    "skeletal mesh/material association is incomplete: {} meshes, {} source shapes",
+                    model.skeletal_meshes.len(),
+                    skeletal_blocks.len()
+                );
+                skeletal_blocks
+            }
+        };
         blocks.extend(skeletal_blocks);
     }
     ensure!(
@@ -1200,7 +1417,94 @@ pub struct TextureDependency {
     pub required: bool,
 }
 
-fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
+/// A skinned export together with the material contract needed to publish it.
+pub(crate) struct SkinnedModelBuild {
+    pub model: project_wormhole_nif::model::all::Model,
+    pub material_contract: Vec<NifShapeMaterial>,
+}
+
+/// [`build_skinned_model_with_materials`] for callers that need only the geometry and bones.
+pub(crate) fn build_skinned_model(
+    nif_path: &Path,
+    skeleton_path: &Path,
+) -> Result<project_wormhole_nif::model::all::Model> {
+    Ok(build_skinned_model_with_materials(nif_path, skeleton_path)?.model)
+}
+
+/// Builds one part of a composed actor through the skinned export path, without
+/// the static fallback that a standalone conversion may take. The material contract comes back
+/// in exported mesh order, so callers that compose several NIFs can publish materials over the
+/// merged mesh list.
+pub(crate) fn build_skinned_model_with_materials(
+    nif_path: &Path,
+    skeleton_path: &Path,
+) -> Result<SkinnedModelBuild> {
+    let (nif, _diagnostics, material_contract) = open_nif_resilient(nif_path)?;
+    let skeleton = open_nif_resilient(skeleton_path)
+        .wrap_err_with(|| format!("failed to open skeleton {}", skeleton_path.display()))?
+        .0;
+    let model = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, Some(&skeleton))))
+        .map_err(|_| {
+            color_eyre::eyre::eyre!("NIF model conversion panicked for {}", nif_path.display())
+        })?
+        .map_err(|error| {
+            color_eyre::eyre::eyre!(
+                "NIF {} model conversion failed: {error}",
+                nif_path.display()
+            )
+        })?;
+    let model = finish_skinned_model(&nif, nif_path, model, &material_contract)?;
+    let shape_blocks = exported_shape_blocks(&nif, &model, &material_contract)?;
+    let exported_contract = shape_blocks
+        .iter()
+        .map(|block| {
+            material_contract
+                .iter()
+                .find(|shape| shape.shape_block == *block)
+                .cloned()
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "exported mesh references shape block {block} without a material contract"
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SkinnedModelBuild {
+        model,
+        material_contract: exported_contract,
+    })
+}
+
+/// Applies the contract every skinned export shares: a declared skin may never
+/// silently produce nothing, and the model must validate and carry the runtime
+/// coordinate rotation and vertex-colour policy.
+fn finish_skinned_model(
+    nif: &NifFile,
+    nif_path: &Path,
+    mut model: project_wormhole_nif::model::all::Model,
+    material_contract: &[NifShapeMaterial],
+) -> Result<project_wormhole_nif::model::all::Model> {
+    if nif.declares_skin() && model.skeletal_meshes.is_empty() {
+        let unclaimed = unclaimed_skin_instances(nif, &model);
+        let detail = if unclaimed.is_empty() {
+            "no skin instance blocks are present".to_owned()
+        } else {
+            unclaimed.join("; ")
+        };
+        return Err(color_eyre::eyre::eyre!(
+            "NIF {} declares a skin but produced no skeletal mesh: {detail}; refusing to publish a static mesh",
+            nif_path.display()
+        ));
+    }
+    model.scene_root_rotation = Some(shared::coordinates::CREATION_TO_RUNTIME_ROTATION);
+    model
+        .validate()
+        .map_err(|error| color_eyre::eyre::eyre!("invalid converted NIF model: {error}"))?;
+    apply_vertex_color_contract(&mut model, nif, material_contract)?;
+    Ok(model)
+}
+
+pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1712,7 +2016,7 @@ impl BoundsAccumulator {
     }
 }
 
-fn rewrite_materials_and_texture_uris(
+pub(crate) fn rewrite_materials_and_texture_uris(
     glb: Vec<u8>,
     material_contract: &[NifShapeMaterial],
     shape_blocks: &[u32],
@@ -1836,6 +2140,7 @@ fn texture_dependencies(document: &serde_json::Value) -> Vec<TextureDependency> 
                         Some("environment_cube") => TextureSemantic::EnvironmentCube,
                         Some("environment_mask") => TextureSemantic::EnvironmentMask,
                         Some("inner_layer") => TextureSemantic::InnerLayer,
+                        Some("facegen_tint") => TextureSemantic::FacegenTint,
                         Some("greyscale") => TextureSemantic::Greyscale,
                         _ => TextureSemantic::Unclassified,
                     };
@@ -1891,32 +2196,485 @@ fn texture_uri(document: &serde_json::Value, texture_index: usize) -> Option<&st
         .as_str()
 }
 
+/// Below half coverage no single skeleton is credible enough to attach.
+const MIN_SKELETON_COVERAGE: f32 = 0.5;
+
+/// Diagnostic for a rig that only partial skeletons cover. [`SkeletonResolution::Unresolved`]
+/// is returned above [`MIN_SKELETON_COVERAGE`], so the best indexed match is always at or above
+/// that threshold and the failure is missing full coverage, not missing coverage.
+pub(crate) fn unresolved_skeleton_diagnostic(
+    subject: impl std::fmt::Display,
+    best_coverage: f32,
+) -> String {
+    format!(
+        "{subject} declares skin joints that no skeleton covers fully and no path candidate covers at {MIN_SKELETON_COVERAGE:.1} or more; the best indexed skeleton covers {best_coverage:.2}, which is too partial to trust"
+    )
+}
+
+/// Which skeleton a skinned mesh needs, or why it needs none.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkeletonResolution {
+    /// A skeleton file that covers the rig.
+    Skeleton(PathBuf),
+    /// No skeleton covers the rig; the mesh's own hierarchy is its bone tree.
+    SelfContained,
+    /// Skeletons cover too few joints for any of them to be trusted.
+    Unresolved { best_coverage: f32 },
+}
+
+/// How a resolver names the skeleton it chose.
+type SkeletonName = fn(&SkeletonEntry) -> PathBuf;
+
+/// The readable file, for resolving meshes on disk.
+fn skeleton_source(entry: &SkeletonEntry) -> PathBuf {
+    entry.source.clone()
+}
+
+/// The logical source key. Repair verifies provenance by key, and two archives
+/// can share one physical blob, so only the chosen entry's own key identifies
+/// the winner; mapping its path back to a key could name the other archive.
+fn skeleton_key(entry: &SkeletonEntry) -> PathBuf {
+    PathBuf::from(&entry.key)
+}
+
+struct SkeletonEntry {
+    /// Lowercase, forward-slashed logical path: the ranking key.
+    key: String,
+    source: PathBuf,
+    /// Node names, or `None` when the file could not be parsed.
+    nodes: Option<BTreeSet<String>>,
+}
+
+impl SkeletonEntry {
+    fn load(key: String, source: PathBuf) -> Self {
+        let nodes = match open_nif_resilient(&source) {
+            Ok((nif, _, _)) => Some(
+                nif.get_nodes()
+                    .iter()
+                    .filter_map(|node| nif.header.get_string(node.name() as usize).ok())
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            Err(error) => {
+                warn!("skipping skeleton {}: {error:#}", source.display());
+                None
+            }
+        };
+        Self { key, source, nodes }
+    }
+
+    fn covers(&self, joints: &BTreeSet<String>) -> bool {
+        self.nodes
+            .as_ref()
+            .is_some_and(|nodes| joints.is_subset(nodes))
+    }
+}
+
+/// Node-name sets for every skeleton in a source set, plus cached directory
+/// joint unions. Build once and share it across a parallel conversion.
+pub struct SkeletonIndex {
+    entries: Vec<SkeletonEntry>,
+    by_key: BTreeMap<String, usize>,
+    skeleton_union: BTreeSet<String>,
+    /// Non-skeleton NIF sources grouped by logical directory, for the union.
+    dir_meshes: BTreeMap<String, Vec<PathBuf>>,
+    directory_unions: Mutex<BTreeMap<String, Arc<BTreeSet<String>>>>,
+}
+
+impl SkeletonIndex {
+    fn from_entries(
+        entries: Vec<SkeletonEntry>,
+        dir_meshes: BTreeMap<String, Vec<PathBuf>>,
+    ) -> Self {
+        let mut by_key = BTreeMap::new();
+        let mut skeleton_union = BTreeSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            by_key.insert(entry.key.clone(), index);
+            if let Some(nodes) = &entry.nodes {
+                skeleton_union.extend(nodes.iter().cloned());
+            }
+        }
+        Self {
+            entries,
+            by_key,
+            skeleton_union,
+            dir_meshes,
+            directory_unions: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn from_sources(sources: &BTreeMap<PathBuf, PathBuf>) -> Self {
+        let mut entries = Vec::new();
+        let mut dir_meshes: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        for (path, source) in sources {
+            let key = normalize_path_key(path);
+            if is_skeleton_key(&key) {
+                entries.push(SkeletonEntry::load(key, source.clone()));
+            } else if key.ends_with(".nif") {
+                dir_meshes
+                    .entry(key_dirname(&key).to_owned())
+                    .or_default()
+                    .push(source.clone());
+            }
+        }
+        Self::from_entries(entries, dir_meshes)
+    }
+
+    fn from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let entries = paths
+            .into_iter()
+            .map(|path| SkeletonEntry::load(normalize_path_key(&path), path))
+            .collect();
+        Self::from_entries(entries, BTreeMap::new())
+    }
+
+    fn add_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        let mut added = Vec::new();
+        for path in paths {
+            let key = normalize_path_key(&path);
+            if !self.by_key.contains_key(&key) {
+                added.push(SkeletonEntry::load(key, path));
+            }
+        }
+        if added.is_empty() {
+            return;
+        }
+        let mut entries = std::mem::take(&mut self.entries);
+        entries.extend(added);
+        let dir_meshes = std::mem::take(&mut self.dir_meshes);
+        *self = Self::from_entries(entries, dir_meshes);
+    }
+
+    fn add_actor_tree(&mut self, nif_path: &Path) {
+        let Some((root, _)) = actor_root(nif_path) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = WalkDir::new(&root)
+            .max_depth(6)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| entry.into_path())
+            .filter(|path| is_skeleton_key(&normalize_path_key(path)))
+            .collect();
+        paths.sort();
+        self.add_paths(paths);
+    }
+
+    fn get(&self, key: &str) -> Option<&SkeletonEntry> {
+        self.by_key.get(key).map(|index| &self.entries[*index])
+    }
+
+    pub(crate) fn source_for(&self, key: &Path) -> Option<&Path> {
+        self.get(&normalize_path_key(key))
+            .map(|entry| entry.source.as_path())
+    }
+
+    /// Joints across the mesh's directory that at least one skeleton carries.
+    /// Bones only the effect rig binds are left out so they cannot dilute the
+    /// ranking.
+    fn directory_union(&self, mesh_dir: &str, mesh_source: Option<&Path>) -> Arc<BTreeSet<String>> {
+        let cache = || {
+            self.directory_unions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        };
+        if let Some(union) = cache().get(mesh_dir) {
+            return Arc::clone(union);
+        }
+        let sources: Vec<PathBuf> = match self.dir_meshes.get(mesh_dir) {
+            Some(paths) => paths.clone(),
+            None => mesh_source
+                .and_then(Path::parent)
+                .and_then(|directory| fs::read_dir(directory).ok())
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("nif"))
+                        && !is_skeleton_key(&normalize_path_key(path))
+                })
+                .collect(),
+        };
+        let mut union = BTreeSet::new();
+        for source in sources {
+            let Ok((nif, _, _)) = open_nif_resilient(&source) else {
+                continue;
+            };
+            union.extend(
+                nif.legacy_skin_joint_names()
+                    .into_iter()
+                    .filter(|name| self.skeleton_union.contains(name)),
+            );
+        }
+        let union = Arc::new(union);
+        cache().insert(mesh_dir.to_owned(), Arc::clone(&union));
+        union
+    }
+}
+
+pub(crate) fn normalize_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn key_dirname(key: &str) -> &str {
+    key.rsplit_once('/').map_or("", |(directory, _)| directory)
+}
+
+fn key_file_name(key: &str) -> &str {
+    key.rsplit_once('/').map_or(key, |(_, name)| name)
+}
+
+fn is_skeleton_key(key: &str) -> bool {
+    let name = key_file_name(key);
+    name.starts_with("skeleton") && name.ends_with(".nif")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PathLocation {
+    /// `dragon` or `dlc01/dragon`, without the leading `actors/`.
+    actor: String,
+    /// The base actor a DLC folder mirrors: `dragon` for `dlc01/dragon`.
+    mirror: Option<String>,
+    package: String,
+}
+
+fn path_location(key: &str) -> Option<PathLocation> {
+    let components: Vec<&str> = key.split('/').collect();
+    let actors = components
+        .iter()
+        .position(|component| *component == "actors")?;
+    let first = *components.get(actors + 1)?;
+    let package = match first {
+        "dlc01" | "dlc02" => first,
+        _ => "base",
+    };
+    if package == "base" {
+        return Some(PathLocation {
+            actor: first.to_owned(),
+            mirror: None,
+            package: package.to_owned(),
+        });
+    }
+    let name = *components.get(actors + 2)?;
+    Some(PathLocation {
+        actor: format!("{first}/{name}"),
+        mirror: Some(name.to_owned()),
+        package: package.to_owned(),
+    })
+}
+
+fn coverage(joints: &BTreeSet<String>, nodes: &BTreeSet<String>) -> f32 {
+    if joints.is_empty() {
+        return 1.0;
+    }
+    let covered = joints.intersection(nodes).count();
+    covered as f32 / joints.len() as f32
+}
+
+type RankKey<'a> = (bool, bool, bool, bool, i64, bool, bool, &'a str);
+
+/// The reference ranking: same directory, same actor, mirrored base actor, base
+/// package, then the smallest overlap with the directory's joints beyond the
+/// rig's own, a plain `skeleton.nif` name, no first-person variant, and path
+/// order. Each field is ascending, so `false` and smaller overlaps win.
+fn rank_key<'a>(
+    entry: &'a SkeletonEntry,
+    mesh_dir: &str,
+    mesh_actor: Option<&str>,
+    mesh_mirror: Option<&str>,
+    directory_union: &BTreeSet<String>,
+) -> RankKey<'a> {
+    let location = path_location(&entry.key);
+    let actor = location.as_ref().map(|location| location.actor.as_str());
+    let in_base_package = location
+        .as_ref()
+        .is_none_or(|location| location.package == "base");
+    let overlap = entry
+        .nodes
+        .as_ref()
+        .map_or(0, |nodes| nodes.intersection(directory_union).count());
+    (
+        key_dirname(&entry.key) != mesh_dir,
+        actor != mesh_actor,
+        actor != mesh_mirror,
+        !in_base_package,
+        -(overlap as i64),
+        key_file_name(&entry.key) != "skeleton.nif",
+        entry.key.contains("_1stperson"),
+        &entry.key,
+    )
+}
+
+fn first_covering_candidate<'a>(
+    candidates: &[PathBuf],
+    index: &'a SkeletonIndex,
+    joints: &BTreeSet<String>,
+) -> Option<&'a SkeletonEntry> {
+    candidates.iter().find_map(|candidate| {
+        let entry = index.get(&normalize_path_key(candidate))?;
+        entry.covers(joints).then_some(entry)
+    })
+}
+
+/// A mesh with no joints to rank by keeps the old candidate lookup: the first
+/// path candidate that exists wins, and without one it has no skeleton.
+fn resolve_without_joints(
+    candidates: &[PathBuf],
+    index: &SkeletonIndex,
+    name: SkeletonName,
+) -> SkeletonResolution {
+    candidates
+        .iter()
+        .find_map(|candidate| index.get(&normalize_path_key(candidate)))
+        .map_or(SkeletonResolution::SelfContained, |entry| {
+            SkeletonResolution::Skeleton(name(entry))
+        })
+}
+
+/// Applies the ranking of the reference implementation. Path candidates win
+/// first, then a full-cover skeleton from the index, then a partly-covering
+/// path candidate, and only then is the rig either self-contained or rejected.
+fn resolve_against(
+    mesh_key: &str,
+    mesh_source: Option<&Path>,
+    candidates: &[PathBuf],
+    index: &SkeletonIndex,
+    joints: &BTreeSet<String>,
+    name: SkeletonName,
+) -> SkeletonResolution {
+    if let Some(entry) = first_covering_candidate(candidates, index, joints) {
+        return SkeletonResolution::Skeleton(name(entry));
+    }
+
+    let mut full: Vec<&SkeletonEntry> = index
+        .entries
+        .iter()
+        .filter(|entry| entry.covers(joints))
+        .collect();
+    if !full.is_empty() {
+        let mesh_dir = key_dirname(mesh_key);
+        let location = path_location(mesh_key);
+        let mesh_actor = location.as_ref().map(|location| location.actor.as_str());
+        let mesh_mirror = location
+            .as_ref()
+            .and_then(|location| location.mirror.as_deref());
+        let union = index.directory_union(mesh_dir, mesh_source);
+        full.sort_by(|left, right| {
+            rank_key(left, mesh_dir, mesh_actor, mesh_mirror, &union).cmp(&rank_key(
+                right,
+                mesh_dir,
+                mesh_actor,
+                mesh_mirror,
+                &union,
+            ))
+        });
+        let chosen = full[0];
+        if key_dirname(&chosen.key) != mesh_dir {
+            warn!(
+                "skeleton {} for {} was chosen outside the mesh's own directory",
+                chosen.source.display(),
+                mesh_source.map_or_else(|| mesh_key.to_owned(), |path| path.display().to_string())
+            );
+        }
+        if full.len() > 1 {
+            let first = rank_key(chosen, mesh_dir, mesh_actor, mesh_mirror, &union);
+            let second = rank_key(full[1], mesh_dir, mesh_actor, mesh_mirror, &union);
+            if first.0 == second.0
+                && first.1 == second.1
+                && first.2 == second.2
+                && first.3 == second.3
+                && first.4 == second.4
+                && first.5 == second.5
+                && first.6 == second.6
+            {
+                warn!(
+                    "skeleton {} for {} ties with {} on every ranking rule; only the path order decided",
+                    chosen.source.display(),
+                    mesh_source
+                        .map_or_else(|| mesh_key.to_owned(), |path| path.display().to_string()),
+                    full[1].source.display()
+                );
+            }
+        }
+        return SkeletonResolution::Skeleton(name(chosen));
+    }
+
+    let mut best_path: Option<(&SkeletonEntry, f32)> = None;
+    for candidate in candidates {
+        let Some(entry) = index.get(&normalize_path_key(candidate)) else {
+            continue;
+        };
+        let Some(nodes) = &entry.nodes else {
+            continue;
+        };
+        let candidate_coverage = coverage(joints, nodes);
+        if best_path.is_none_or(|(_, best)| candidate_coverage > best) {
+            best_path = Some((entry, candidate_coverage));
+        }
+    }
+    if let Some((entry, candidate_coverage)) = best_path
+        && candidate_coverage >= MIN_SKELETON_COVERAGE
+    {
+        return SkeletonResolution::Skeleton(name(entry));
+    }
+
+    let best_coverage = index
+        .entries
+        .iter()
+        .filter_map(|entry| entry.nodes.as_ref())
+        .map(|nodes| coverage(joints, nodes))
+        .fold(0.0f32, f32::max);
+    if best_coverage < MIN_SKELETON_COVERAGE {
+        SkeletonResolution::SelfContained
+    } else {
+        SkeletonResolution::Unresolved { best_coverage }
+    }
+}
+
 /// Resolves skeletons in a canonical, relative-path winning asset index.
 /// Repair callers must include archive assets and overlay winning loose files before resolving.
 pub fn resolve_skeleton(
     relative: &Path,
-    sources: &std::collections::BTreeMap<PathBuf, PathBuf>,
-) -> Option<PathBuf> {
-    let relative = PathBuf::from(
-        relative
-            .to_string_lossy()
-            .replace('\\', "/")
-            .to_ascii_lowercase(),
-    );
-    for candidate in skeleton_candidates(&relative) {
-        if let Some(source) = sources.get(&candidate) {
-            return Some(source.clone());
-        }
+    sources: &BTreeMap<PathBuf, PathBuf>,
+) -> SkeletonResolution {
+    let index = SkeletonIndex::from_sources(sources);
+    resolve_skeleton_with_index(relative, sources, &index)
+}
+
+pub(crate) fn resolve_skeleton_with_index(
+    relative: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    index: &SkeletonIndex,
+) -> SkeletonResolution {
+    let key = normalize_path_key(relative);
+    let key_path = PathBuf::from(&key);
+    let mesh_source = sources
+        .get(relative)
+        .or_else(|| sources.get(&key_path))
+        .or_else(|| {
+            sources
+                .iter()
+                .find(|(path, _)| normalize_path_key(path) == key)
+                .map(|(_, source)| source)
+        })
+        .map(PathBuf::as_path);
+    let (has_skeleton, joints) =
+        match mesh_source.and_then(|source| open_nif_resilient(source).ok()) {
+            Some((nif, _, _)) => (nif.has_skeleton(), nif.legacy_skin_joint_names()),
+            None => (false, BTreeSet::new()),
+        };
+    let candidates = skeleton_candidates(&key_path);
+    if !has_skeleton || joints.is_empty() {
+        return resolve_without_joints(&candidates, index, skeleton_key);
     }
-    let (root, actor) = actor_root(&relative)?;
-    let actor_dir = root.join(actor);
-    sources.iter().find_map(|(path, source)| {
-        let suffix = path.strip_prefix(&actor_dir).ok()?;
-        (suffix.components().count() <= 4
-            && path.file_name()?.to_string_lossy().starts_with("skeleton")
-            && path.extension()?.eq_ignore_ascii_case("nif"))
-        .then(|| source.clone())
-    })
+    resolve_against(&key, mesh_source, &candidates, index, &joints, skeleton_key)
 }
 
 fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
@@ -1946,32 +2704,32 @@ fn skeleton_candidates(nif_path: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn find_skeleton(nif_path: &Path) -> Option<PathBuf> {
-    let mut candidates = skeleton_candidates(nif_path);
-    if let Some((actors_root, actor_name)) = actor_root(nif_path) {
-        let actor_dir = actors_root.join(actor_name);
-        if let Some(found) = WalkDir::new(&actor_dir)
-            .max_depth(4)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(Result::ok)
-            .map(|entry| entry.into_path())
-            .find(|path| {
-                path.is_file()
-                    && path.file_name().is_some_and(|name| {
-                        name.to_string_lossy()
-                            .to_ascii_lowercase()
-                            .starts_with("skeleton")
-                            && path.extension().is_some_and(|ext| {
-                                ext.to_string_lossy().eq_ignore_ascii_case("nif")
-                            })
-                    })
-            })
-        {
-            candidates.push(found);
-        }
+/// Resolves a mesh on disk. The tree-wide skeleton index is built only when no
+/// path candidate covers the rig, so ordinary meshes never pay for the walk.
+pub fn find_skeleton(nif_path: &Path) -> SkeletonResolution {
+    let Ok((nif, _, _)) = open_nif_resilient(nif_path) else {
+        return SkeletonResolution::SelfContained;
+    };
+    let key = normalize_path_key(nif_path);
+    let candidates = skeleton_candidates(nif_path);
+    let joints = nif.legacy_skin_joint_names();
+    let mut index =
+        SkeletonIndex::from_paths(candidates.iter().filter(|path| path.is_file()).cloned());
+    if !nif.has_skeleton() || joints.is_empty() {
+        return resolve_without_joints(&candidates, &index, skeleton_source);
     }
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    if let Some(entry) = first_covering_candidate(&candidates, &index, &joints) {
+        return SkeletonResolution::Skeleton(entry.source.clone());
+    }
+    index.add_actor_tree(nif_path);
+    resolve_against(
+        &key,
+        Some(nif_path),
+        &candidates,
+        &index,
+        &joints,
+        skeleton_source,
+    )
 }
 
 fn actor_root(path: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -1982,12 +2740,19 @@ fn actor_root(path: &Path) -> Option<(PathBuf, PathBuf)> {
             .to_string_lossy()
             .eq_ignore_ascii_case("actors")
     })?;
-    let actor = components.get(index + 1)?.as_os_str();
+    let first = components.get(index + 1)?.as_os_str();
     let mut root = PathBuf::new();
     for component in &components[..=index] {
         root.push(component.as_os_str());
     }
-    Some((root, PathBuf::from(actor)))
+    let first_lossy = first.to_string_lossy();
+    if first_lossy.eq_ignore_ascii_case("dlc01") || first_lossy.eq_ignore_ascii_case("dlc02") {
+        let actor = components.get(index + 2)?.as_os_str();
+        let mut actor_path = PathBuf::from(first);
+        actor_path.push(actor);
+        return Some((root, actor_path));
+    }
+    Some((root, PathBuf::from(first)))
 }
 
 #[cfg(test)]
@@ -2199,11 +2964,37 @@ mod tests {
         let relative = Path::new("meshes/actors/character/armor/body.nif");
         let key = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
         let mut sources = std::collections::BTreeMap::from([(key.clone(), lower.clone())]);
-        assert_eq!(resolve_skeleton(relative, &sources), Some(lower));
-        sources.insert(key.clone(), winner.clone());
-        assert_eq!(resolve_skeleton(relative, &sources), Some(winner));
+        assert_eq!(
+            resolve_skeleton(relative, &sources),
+            SkeletonResolution::Skeleton(key.clone())
+        );
+        sources.insert(key.clone(), winner);
+        assert_eq!(
+            resolve_skeleton(relative, &sources),
+            SkeletonResolution::Skeleton(key.clone())
+        );
         sources.remove(&key);
-        assert_eq!(resolve_skeleton(relative, &sources), None);
+        assert_eq!(
+            resolve_skeleton(relative, &sources),
+            SkeletonResolution::SelfContained
+        );
+    }
+
+    #[test]
+    fn shared_blob_skeleton_resolves_to_the_chosen_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob = dir.path().join("shared-blob");
+        let relative = Path::new("meshes/actors/character/armor/body.nif");
+        // Sorts first, so a path-to-key lookup would find this entry before
+        // the candidate that was actually chosen.
+        let other = PathBuf::from("meshes/actors/aaa/skeleton.nif");
+        let chosen = PathBuf::from("meshes/actors/character/character assets/skeleton.nif");
+        let sources =
+            std::collections::BTreeMap::from([(other, blob.clone()), (chosen.clone(), blob)]);
+        assert_eq!(
+            resolve_skeleton(relative, &sources),
+            SkeletonResolution::Skeleton(chosen)
+        );
     }
 
     #[test]
@@ -2214,6 +3005,16 @@ mod tests {
         .unwrap();
         assert_eq!(root, PathBuf::from("vfs/Meshes/Actors"));
         assert_eq!(actor, PathBuf::from("Dragon"));
+    }
+
+    #[test]
+    fn derives_dlc_actor_root() {
+        let (root, actor) = actor_root(Path::new(
+            "Meshes/Actors/DLC02/Werebear/character assets/werebear.nif",
+        ))
+        .unwrap();
+        assert_eq!(root, PathBuf::from("Meshes/Actors"));
+        assert_eq!(actor, PathBuf::from("DLC02/Werebear"));
     }
 
     #[test]
@@ -2760,6 +3561,7 @@ mod tests {
                         uv_offset: [0.0; 2],
                         uv_scale: [1.0; 2],
                         texture_clamp_mode: 3,
+                        tint_color: None,
                         shader_family: NifShaderFamily::Lighting,
                         lighting_shader_type: Some(LightingShaderType::Default),
                         shader_block: 0,

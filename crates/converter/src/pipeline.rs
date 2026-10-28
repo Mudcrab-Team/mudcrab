@@ -1,16 +1,19 @@
 use crate::{
+    animation,
     archive::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession, prune_stale_reader_packs,
     },
-    asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
+    asset_path::{AssetKind, canonical_asset_path, normalize_separators, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionJournal,
+        BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, CacheEntry,
+        ConversionManifest, DEFAULT_GAIT_RECIPE, DerivedOutput, IngestionJournal,
         IngestionSelection, StagedOutput, StagingJournal, asset_configuration_hash_for_schema,
-        can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
-        configuration_hash_for_schema, current_configuration_hash_for_schema, hash_bytes,
-        hash_file, link_or_copy, load_staged_outputs,
+        body_compose_inputs, can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
+        configuration_hash_for_schema, current_configuration_hash_for_schema, default_gait_inputs,
+        hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
+    compose::{self, BodyPart, BodyPartKind},
     config::{PipelineConfig, TextureEncoder},
     esm::{
         EsmParser,
@@ -38,6 +41,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure, eyre},
 };
+use log::{info, warn};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use shared::{
@@ -554,6 +558,7 @@ impl AssetPipeline {
             pruned_texture_references: Default::default(),
             archives: Default::default(),
             entries: Default::default(),
+            derived_outputs: Default::default(),
         };
         report.phase_elapsed_ms.insert(
             "conversion_initialization".into(),
@@ -1260,6 +1265,39 @@ impl AssetPipeline {
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .collect();
         invalidate_staged_mesh_outputs(staging, &accepted_meshes)?;
+        compose_default_bodies(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        for sex in ["male", "female"] {
+            let relative = compose::composed_body_path("default", sex);
+            if staging.join(&relative).is_file() {
+                report
+                    .artifacts
+                    .push(normalize_separators(&relative).into());
+            }
+        }
+        if config.mo2.is_some() {
+            stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
+        }
+        convert_default_animations(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                let relative = default_animation_output(sex, stem);
+                if staging.join(&relative).is_file() {
+                    report.artifacts.push(relative.into());
+                }
+            }
+        }
         let texture_semantics = collect_texture_semantics(staging, &source_textures)?;
         report.phase_elapsed_ms.insert(
             "meshes_and_texture_semantics".into(),
@@ -1419,6 +1457,7 @@ impl AssetPipeline {
                     .len();
                 entry.output_hash = hash_file(&path)?;
             }
+            finalize_derived_outputs(staging, batch.report, batch.manifest)?;
             // The run summary reports what the manifest records, whether this run
             // pruned it or carried the record forward for a reused mesh.
             let recorded: u64 = batch
@@ -1822,6 +1861,10 @@ impl ConversionBatch<'_> {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
+        // Parsing every skeleton once per run keeps the per-mesh resolution
+        // cheap; only the directory-union cache inside needs a lock.
+        let skeleton_index =
+            (source_kind == "nif").then(|| crate::mesh::SkeletonIndex::from_sources(&mesh_sources));
         let source_textures = texture_source_keys(self.staging, files);
         let etc1s_quality = self.config.texture_fallback_quality;
         let uastc_level = self.config.texture_uastc_level;
@@ -2014,7 +2057,45 @@ impl ConversionBatch<'_> {
                         }
 
                         let skeleton = if source_kind == "nif" {
-                            crate::mesh::resolve_skeleton(&relative, &mesh_sources)
+                            let resolution = crate::mesh::resolve_skeleton_with_index(
+                                &relative,
+                                &mesh_sources,
+                                skeleton_index
+                                    .as_ref()
+                                    .expect("a nif batch always builds a skeleton index"),
+                            );
+                            match resolution {
+                                crate::mesh::SkeletonResolution::Skeleton(key) => skeleton_index
+                                    .as_ref()
+                                    .and_then(|index| index.source_for(&key))
+                                    .map(Path::to_path_buf)
+                                    .or(Some(key)),
+                                crate::mesh::SkeletonResolution::SelfContained => None,
+                                crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
+                                    let err = eyre!(
+                                        "{}",
+                                        crate::mesh::unresolved_skeleton_diagnostic(
+                                            format_args!("NIF {}", relative.display()),
+                                            best_coverage
+                                        )
+                                    );
+                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
+                                        Ok(()) => (err, false),
+                                        Err(remove_error) => (remove_error, true),
+                                    };
+                                    let _ = outcome_tx.send((
+                                        index,
+                                        key,
+                                        hash,
+                                        target_rel,
+                                        relative.clone(),
+                                        Err(err),
+                                        target,
+                                        fatal,
+                                    ));
+                                    return;
+                                }
+                            }
                         } else {
                             None
                         };
@@ -2433,6 +2514,580 @@ impl ConversionBatch<'_> {
     }
 }
 
+/// Hashes winning raw inputs under their canonical logical VFS source paths.
+/// Called inside optional producer attempts so unreadable inputs become notices.
+fn derived_input_hashes<const N: usize>(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    logical_inputs: [PathBuf; N],
+) -> Result<BTreeMap<String, String>> {
+    logical_inputs
+        .into_iter()
+        .map(|logical| {
+            let key = logical
+                .strip_prefix(staging.join("vfs"))?
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            let winner = sources.get(&logical).unwrap_or(&logical);
+            Ok((key, hash_file(winner)?))
+        })
+        .collect()
+}
+
+/// Captures a successful recipe's bytes; finalization refreshes postprocessed outputs.
+fn derived_output_proof(
+    recipe: &str,
+    inputs: BTreeMap<String, String>,
+    output: &Path,
+) -> Result<DerivedOutput> {
+    Ok(DerivedOutput {
+        recipe: recipe.to_owned(),
+        inputs,
+        output_size: fs::metadata(output)?.len(),
+        output_hash: hash_file(output)?,
+    })
+}
+
+/// Hashes effective skin choices and the optional thin preparation's winning bytes.
+/// A missing thin part skips all thin preparation, matching the composition path.
+fn body_compose_context_hash(
+    parts: &[BodyPart<'_>],
+    thin_paths: &[(PathBuf, BodyPartKind)],
+    skins: &[compose::DefaultSkinTextureSet],
+) -> Result<String> {
+    let heavy: Vec<_> = parts
+        .iter()
+        .map(|part| {
+            (
+                part.kind.slot(),
+                part.skin_textures.map(|set| (set.form_id, &set.slots)),
+            )
+        })
+        .collect();
+    let mut thin = Vec::new();
+    if thin_paths.iter().all(|(path, _)| path.is_file()) {
+        for (path, kind) in thin_paths {
+            let skin = compose::skin_texture_set_for(skins, *kind, path);
+            thin.push((
+                kind.slot(),
+                hash_file(path)?,
+                skin.map(|set| (set.form_id, &set.slots)),
+            ));
+        }
+    }
+    Ok(hash_bytes(&serde_json::to_vec(&(heavy, thin))?))
+}
+
+/// Binds derived proofs to final bytes after material repair and texture pruning.
+/// An unreadable optional output loses its proof and artifact instead of aborting neighbors.
+fn finalize_derived_outputs(
+    staging: &Path,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
+    let pending = std::mem::take(&mut manifest.derived_outputs);
+    for (key, proof) in pending {
+        let output = staging.join(&key);
+        match derived_output_proof(&proof.recipe, proof.inputs, &output) {
+            Ok(proof) => {
+                manifest.derived_outputs.insert(key, proof);
+            }
+            Err(error) => {
+                match fs::remove_file(&output) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error)
+                            .wrap_err_with(|| format!("failed to remove {}", output.display()));
+                    }
+                    _ => {}
+                }
+                report.artifacts.retain(|path| path != Path::new(&key));
+                manifest.pruned_texture_references.remove(&key);
+                let message =
+                    format!("{key}: failed to finalize optional derived output: {error:#}");
+                report.notices.push(message.clone());
+                warn!("{message}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Composes the default actor bodies from the character part NIFs.
+///
+/// Runs after the mesh stage and before texture dependency collection so the
+/// composed GLBs' texture references take part in the texture stage. Every input is
+/// resolved through the winning source map first, so an MO2 loose override is composed
+/// from the same file the mesh stage converted; the staged vfs copy is the fallback for
+/// physical Data and for sources without a loose winner. A load order missing any part
+/// leaves the body for that sex uncomposed rather than failing the conversion.
+fn compose_default_bodies(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
+    const PARTS: [(&str, BodyPartKind); 3] = [
+        ("body_1.nif", BodyPartKind::Body),
+        ("hands_1.nif", BodyPartKind::Hands),
+        ("feet_1.nif", BodyPartKind::Feet),
+    ];
+    let assets = staging.join("vfs/meshes/actors/character/character assets");
+    let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
+    let skeleton = winning(assets.join("skeleton.nif"));
+    let database = staging.join("skyrim_world.db");
+    for sex in ["male", "female"] {
+        let relative = compose::composed_body_path("default", sex);
+        let output = staging.join(&relative);
+        let key = relative.to_string_lossy().replace('\\', "/");
+        // Derived bodies are optional outputs, not source conversion failures. Clear old
+        // failure markers and proofs before deciding whether this run can publish one.
+        manifest.failures.remove(&key);
+        manifest.derived_outputs.remove(&key);
+        // A body skipped or failed on this run must not survive from an earlier one: orphan
+        // sweeps keep composed outputs, and the caller reports whatever is on disk.
+        // Successful attempts retain unchanged output so the writer can avoid republishing it.
+        let remove_output = || -> Result<()> {
+            match fs::remove_file(&output) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(error).wrap_err_with(|| format!("failed to remove {}", output.display()))
+                }
+                _ => Ok(()),
+            }
+        };
+        match fs::symlink_metadata(&output) {
+            Ok(metadata) if !metadata.file_type().is_file() => remove_output()?,
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to inspect {}", output.display()));
+            }
+            _ => {}
+        }
+        let mut attempt = || -> Result<Option<(usize, DerivedOutput)>> {
+            let part_paths =
+                PARTS.map(|(suffix, kind)| (winning(assets.join(format!("{sex}{suffix}"))), kind));
+            if !part_paths.iter().any(|(path, _)| path.is_file()) {
+                return Ok(None);
+            }
+            if !skeleton.is_file() {
+                warn!(
+                    "skipping composed default {sex} actor body: missing {}",
+                    skeleton.display()
+                );
+                return Ok(None);
+            }
+            if let Some((missing, _)) = part_paths.iter().find(|(path, _)| !path.is_file()) {
+                warn!(
+                    "skipping composed default {sex} actor body: missing {}",
+                    missing.display()
+                );
+                return Ok(None);
+            }
+            // Apply sex and slot-matched DefaultRace skin sets to validated skin shapes.
+            // Old catalogs or a missing database keep each NIF's original textures.
+            let skins = if database.is_file() {
+                compose::default_skin_texture_sets(&database, sex).wrap_err_with(|| {
+                    format!("failed to read the default {sex} armature skin texture sets")
+                })?
+            } else {
+                Vec::new()
+            };
+            let parts: Vec<_> = part_paths
+                .iter()
+                .map(|(path, kind)| BodyPart {
+                    path,
+                    kind: *kind,
+                    skin_textures: compose::skin_texture_set_for(&skins, *kind, path),
+                })
+                .collect();
+            let mut inputs = derived_input_hashes(
+                staging,
+                sources,
+                body_compose_inputs(sex).map(|path| staging.join("vfs").join(path)),
+            )?;
+
+            let thin_paths: Vec<(PathBuf, BodyPartKind)> = PARTS
+                .iter()
+                .map(|(suffix, kind)| {
+                    let thin_name = suffix.replace("_1.nif", "_0.nif");
+                    (winning(assets.join(format!("{sex}{thin_name}"))), *kind)
+                })
+                .collect();
+            let mut model = compose::compose_body(&parts, &skeleton)?;
+            attach_default_body_weight(&mut model, &thin_paths, &skeleton, &skins, sex, report)?;
+            inputs.insert(
+                BODY_COMPOSE_CONTEXT.into(),
+                body_compose_context_hash(&parts, &thin_paths, &skins)?,
+            );
+            compose::write_composed_body(&model, &output)?;
+            let proof = derived_output_proof(BODY_COMPOSE_RECIPE, inputs, &output)?;
+            Ok(Some((parts.len(), proof)))
+        };
+        match attempt() {
+            Ok(Some((part_count, proof))) => {
+                manifest.derived_outputs.insert(key, proof);
+                info!(
+                    "composed default {sex} actor body from {part_count} parts to {}",
+                    output.display()
+                );
+            }
+            Ok(None) => remove_output()?,
+            Err(error) if fail_fast => {
+                remove_output()?;
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to compose default {sex} actor body"));
+            }
+            Err(error) => {
+                remove_output()?;
+                let message =
+                    format!("{key}: failed to compose default {sex} actor body: {error:#}");
+                // Notices describe optional derived-output problems without making source
+                // repair incomplete; manifest failures are reserved for repairable inputs.
+                report.notices.push(message.clone());
+                warn!("{message}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds the weight-0 body as a `thin` morph target, or records why it cannot and leaves the
+/// heavy body alone. A missing or differently shaped thin part never fails a conversion.
+fn attach_default_body_weight(
+    model: &mut compose::ComposedBody,
+    thin_paths: &[(PathBuf, BodyPartKind)],
+    skeleton: &Path,
+    skins: &[compose::DefaultSkinTextureSet],
+    sex: &str,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    let unavailable = |report: &mut PipelineReport, reason: String| {
+        let message = format!("actor_body_weight_unavailable: {sex} body: {reason}");
+        warn!("{message}");
+        report.notices.push(message);
+    };
+
+    if let Some((missing, _)) = thin_paths.iter().find(|(path, _)| !path.is_file()) {
+        unavailable(report, format!("thin part missing: {}", missing.display()));
+        return Ok(());
+    }
+    let thin_parts: Vec<_> = thin_paths
+        .iter()
+        .map(|(path, kind)| BodyPart {
+            path,
+            kind: *kind,
+            skin_textures: compose::skin_texture_set_for(skins, *kind, path),
+        })
+        .collect();
+    let part_names = thin_paths
+        .iter()
+        .filter_map(|(path, _)| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let thin = compose::compose_body(&thin_parts, skeleton)
+        .wrap_err_with(|| format!("failed to prepare thin {sex} body parts {part_names}"))?;
+    match compose::attach_thin_target(model, &thin)? {
+        compose::ThinTargetOutcome::Attached => {}
+        compose::ThinTargetOutcome::Unavailable(reason) => {
+            unavailable(report, format!("thin parts {part_names}: {reason}"));
+        }
+    }
+    Ok(())
+}
+
+/// The gait clips every character ships, in emission order.
+///
+/// Each entry is the clip name followed by the source/output stem. Ordering is
+/// deterministic so a resumed run, the artifact report, and the logs agree.
+const DEFAULT_ANIMATION_CLIPS: [(&str, &str); 3] = [
+    ("idle", "mt_idle"),
+    ("walkforward", "mt_walkforward"),
+    ("runforward", "mt_runforward"),
+];
+
+/// The canonical asset key of one sex's converted clip, also used for report text.
+/// Native filesystem paths are formed only when this key is joined to staging.
+fn default_animation_output(sex: &str, stem: &str) -> String {
+    canonical_asset_path(
+        &format!("meshes/actors/character/animations/{sex}/{stem}.glb"),
+        AssetKind::Mesh,
+        "glb",
+    )
+    .expect("built-in default gait names form valid mesh asset keys")
+}
+
+/// Rejects non-directory ancestors, including those Windows masks as a missing child.
+fn validate_animation_output_parent(output: &Path) -> Result<()> {
+    for parent in output.ancestors().skip(1) {
+        match fs::metadata(parent) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                bail!(
+                    "failed to inspect {}: parent {} is not a directory",
+                    output.display(),
+                    parent.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to inspect {}", output.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Captures exactly the four raw dependencies used to bind and decode one gait.
+fn default_animation_input_hashes(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    sex: &str,
+    stem: &str,
+) -> Result<BTreeMap<String, String>> {
+    derived_input_hashes(
+        staging,
+        sources,
+        default_gait_inputs(sex, stem).map(|path| staging.join("vfs").join(path)),
+    )
+}
+
+/// Checks every built-in gait ancestor before a pass changes manifest markers or staged files.
+fn validate_animation_output_parents(staging: &Path) -> Result<()> {
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            validate_animation_output_parent(&staging.join(default_animation_output(sex, stem)))?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes blocking non-regular paths at every derived gait output before the pass can skip or write.
+fn clear_nonregular_animation_outputs(staging: &Path) -> Result<()> {
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            let output = staging.join(default_animation_output(sex, stem));
+            validate_animation_output_parent(&output)?;
+            match fs::symlink_metadata(&output) {
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                Ok(metadata) => {
+                    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                        return Err(eyre!(
+                            "refusing to remove directory at gait output {}",
+                            output.display()
+                        ));
+                    }
+                    fs::remove_file(&output)
+                        .wrap_err_with(|| format!("failed to remove {}", output.display()))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .wrap_err_with(|| format!("failed to inspect {}", output.display()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decodes staged default gait clips and writes animation-only GLBs.
+///
+/// Builds the binding bone tree from the raw body NIF and skeleton NIF; clips
+/// also consume skeleton HKX and clip HKX bytes, independently of composed GLBs.
+/// Missing inputs and conversion errors are optional notices.
+/// Each input resolves through the winning-source map, including MO2 overrides.
+fn convert_default_animations(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
+    let animations = staging.join("vfs/meshes/actors/character/animations");
+    let assets = staging.join("vfs/meshes/actors/character/character assets");
+    let winning = |logical: PathBuf| sources.get(&logical).cloned().unwrap_or(logical);
+    let remove_stale = |output: &Path| -> Result<()> {
+        match fs::remove_file(output) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(error).wrap_err_with(|| format!("failed to remove {}", output.display()))
+            }
+            _ => Ok(()),
+        }
+    };
+
+    // Ancestors and exact outputs are rejected before any marker is removed, so a rejected pass
+    // keeps its incoming failure and proof maps for both sexes.
+    validate_animation_output_parents(staging)?;
+    let prior_derived_relevance: BTreeMap<_, _> = ["male", "female"]
+        .into_iter()
+        .map(|sex| {
+            let relevant = DEFAULT_ANIMATION_CLIPS.iter().any(|(_, stem)| {
+                let key = default_animation_output(sex, stem);
+                staging.join(&key).is_file()
+                    || manifest.failures.contains_key(&key)
+                    || manifest.derived_outputs.contains_key(&key)
+            });
+            (sex, relevant)
+        })
+        .collect();
+    clear_nonregular_animation_outputs(staging)?;
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            let key = default_animation_output(sex, stem);
+            manifest.failures.remove(&key);
+            manifest.derived_outputs.remove(&key);
+        }
+    }
+
+    for sex in ["male", "female"] {
+        let outputs: Vec<_> = DEFAULT_ANIMATION_CLIPS
+            .iter()
+            .map(|(clip_name, stem)| (*clip_name, *stem, default_animation_output(sex, stem)))
+            .collect();
+        let skeleton_hkx = winning(assets.join("skeleton.hkx"));
+        let skeleton_nif = winning(assets.join("skeleton.nif"));
+        let body_path = winning(assets.join(format!("{sex}body_1.nif")));
+        let actor_work_exists = skeleton_hkx.is_file()
+            || skeleton_nif.is_file()
+            || body_path.is_file()
+            || outputs.iter().any(|(_, stem, _)| {
+                winning(animations.join(sex).join(format!("{stem}.hkx"))).is_file()
+            });
+        let notices_are_relevant =
+            actor_work_exists || prior_derived_relevance.get(sex).copied().unwrap_or(false);
+        let missing = [
+            ("skeleton.hkx", &skeleton_hkx),
+            ("body", &body_path),
+            ("skeleton.nif", &skeleton_nif),
+        ]
+        .into_iter()
+        .find(|(_, path)| !path.is_file());
+        if let Some((label, path)) = missing {
+            for (clip_name, _, relative) in &outputs {
+                remove_stale(&staging.join(relative))?;
+                if notices_are_relevant {
+                    report.notices.push(format!(
+                        "{relative}: skipping default {sex} {clip_name} animation: missing {label} {}",
+                        path.display()
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let prepared = (|| -> Result<_> {
+            let body_model = crate::mesh::build_skinned_model(&body_path, &skeleton_nif)
+                .wrap_err_with(|| format!("failed to build the default {sex} actor body"))?;
+            let bones = body_model
+                .skeletal_meshes
+                .first()
+                .ok_or_else(|| eyre!("default {sex} actor body has no skeletal mesh"))?
+                .bones
+                .clone();
+            let skeleton_bytes = fs::read(&skeleton_hkx)
+                .wrap_err_with(|| format!("failed to read {}", skeleton_hkx.display()))?;
+            Ok((bones, skeleton_bytes))
+        })();
+        let (bones, skeleton_bytes) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                for (clip_name, _, relative) in &outputs {
+                    remove_stale(&staging.join(relative))?;
+                    let message = format!(
+                        "{relative}: failed to prepare the default {sex} {clip_name} animation: {error:#}"
+                    );
+                    if fail_fast {
+                        for cleanup_sex in ["male", "female"] {
+                            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                                manifest
+                                    .derived_outputs
+                                    .remove(&default_animation_output(cleanup_sex, stem));
+                                remove_stale(
+                                    &staging.join(default_animation_output(cleanup_sex, stem)),
+                                )?;
+                            }
+                        }
+                        return Err(eyre!("{message}"));
+                    }
+                    report.notices.push(message.clone());
+                    warn!("{message}");
+                }
+                continue;
+            }
+        };
+
+        for (clip_name, stem, relative) in outputs {
+            let output = staging.join(&relative);
+            let clip_path = winning(animations.join(sex).join(format!("{stem}.hkx")));
+            if !clip_path.is_file() {
+                remove_stale(&output)?;
+                let message = format!(
+                    "{relative}: skipping default {sex} {clip_name} animation: missing clip {}",
+                    clip_path.display()
+                );
+                report.notices.push(message.clone());
+                warn!("{message}");
+                continue;
+            }
+
+            let converted = (|| -> Result<DerivedOutput> {
+                let inputs = default_animation_input_hashes(staging, sources, sex, stem)?;
+                let clip_bytes = fs::read(&clip_path)
+                    .wrap_err_with(|| format!("failed to read {}", clip_path.display()))?;
+                let mut clip =
+                    animation::decode_clip_with_skeleton(&clip_bytes, &skeleton_bytes)
+                        .wrap_err_with(|| format!("failed to decode {}", clip_path.display()))?;
+
+                let candidate_dir = tempfile::tempdir().wrap_err_with(|| {
+                    format!("failed to create a temporary directory for the {sex} {clip_name} clip")
+                })?;
+                let candidate = candidate_dir.path().join(format!("{stem}.glb"));
+                let binding = animation::write_clip_glb(&mut clip, &bones, stem, &candidate)
+                    .wrap_err_with(|| format!("failed to write {}", output.display()))?;
+                let bytes = fs::read(&candidate)?;
+                if !fs::read(&output).is_ok_and(|existing| existing == bytes) {
+                    crate::mesh::write_glb_atomic(&output, &bytes)?;
+                }
+                info!(
+                    "default {sex} {clip_name} animation over {} body bones at {} ({} bound, {} skipped)",
+                    bones.bones.len(),
+                    output.display(),
+                    binding.bound(),
+                    binding.skipped.len()
+                );
+                derived_output_proof(DEFAULT_GAIT_RECIPE, inputs, &output)
+            })();
+            if let Ok(proof) = converted {
+                manifest.derived_outputs.insert(relative, proof);
+            } else if let Err(error) = converted {
+                remove_stale(&output)?;
+                let message = format!(
+                    "{relative}: failed to convert the default {sex} {clip_name} animation: {error:#}"
+                );
+                if fail_fast {
+                    for cleanup_sex in ["male", "female"] {
+                        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                            manifest
+                                .derived_outputs
+                                .remove(&default_animation_output(cleanup_sex, stem));
+                            remove_stale(
+                                &staging.join(default_animation_output(cleanup_sex, stem)),
+                            )?;
+                        }
+                    }
+                    return Err(eyre!("{message}"));
+                }
+                report.notices.push(message.clone());
+                warn!("{message}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Collects texture usage from staged GLBs and the world database, including scoped replacement normals.
 pub(crate) fn collect_texture_semantics(
     staging: &Path,
@@ -2617,8 +3272,21 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
             let relative = destination.strip_prefix(staging)?.to_owned();
             let runtime_key =
                 canonical_asset_path(&relative.to_string_lossy(), AssetKind::Texture, "ktx2")?;
-            if source_texture_key(&runtime_key)? != runtime_key {
-                aliases.insert(PathBuf::from(runtime_key));
+            let source_key = source_texture_key(&runtime_key)?;
+            if source_key != runtime_key {
+                aliases.insert(PathBuf::from(&runtime_key));
+                // Bevy's skin material loads the same bytes with linear decoding. Publish its
+                // companion path as well, retaining `.opensky-wrapN` so clamp/repeat images keep
+                // distinct AssetServer identities and sampler settings.
+                if let Some(linear) = runtime_key.strip_suffix(".ktx2") {
+                    let linear = linear.replace(".opensky-srgb", "");
+                    let linear = format!("{linear}.ktx2");
+                    // The canonical source is already the default linear path. Never republish
+                    // it over itself; only sampler-specific companion aliases need a file.
+                    if linear != source_key {
+                        aliases.insert(PathBuf::from(linear));
+                    }
+                }
             }
         }
     }
@@ -2819,7 +3487,7 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
     let mut seen = BTreeMap::<String, PathBuf>::new();
     for source in files
         .iter()
-        .filter(|path| extension(path, &["dds", "nif", "pex", "lod"]))
+        .filter(|path| extension(path, &["dds", "nif", "pex", "lod", "hkx"]))
     {
         let relative = source.strip_prefix(data)?;
         let (kind, extension) = if extension(source, &["dds"]) {
@@ -2828,6 +3496,11 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
             (AssetKind::Mesh, "nif")
         } else if extension(source, &["pex"]) {
             (AssetKind::Script, "pex")
+        } else if extension(source, &["hkx"]) {
+            if !crate::archive::is_animation_input(relative) {
+                continue;
+            }
+            (AssetKind::Animation, "hkx")
         } else {
             (AssetKind::LodSettings, "lod")
         };
@@ -2965,6 +3638,28 @@ fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Resu
     Ok(())
 }
 
+/// Links the winning MO2 animation inputs into the staged VFS, where the animation pass reads
+/// them beside the archive-extracted copies they override.
+fn stage_mo2_animation_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
+    for (relative, source) in sources {
+        if crate::asset_path::is_authoring_resource(relative)
+            || !crate::archive::is_animation_input(Path::new(relative))
+        {
+            continue;
+        }
+        let destination = vfs.join(crate::archive::safe_relative_path(relative)?);
+        fs::create_dir_all(destination.parent().unwrap())?;
+        link_or_copy(source, &destination)?;
+    }
+    Ok(())
+}
+
+/// Whether a path names an output this converter derives without a matching
+/// source file: composed actor bodies and animation clips.
+fn is_derived_output(relative: &str) -> bool {
+    compose::is_composed_output(relative) || animation::is_animation_output(relative)
+}
+
 /// Removes staged mesh, texture, and script outputs absent from the current MO2 source selection.
 ///
 /// Retains current resume work while preventing removed outputs from contributing stale references.
@@ -2999,6 +3694,9 @@ fn prune_removed_mo2_outputs(staging: &Path, sources: &[PathBuf]) -> Result<()> 
                 .strip_prefix(staging)?
                 .to_string_lossy()
                 .replace('\\', "/");
+            if is_derived_output(&relative) {
+                continue;
+            }
             let key = if extension(&path, &["ktx2"]) {
                 source_texture_key(&relative)?
             } else {
@@ -3247,9 +3945,11 @@ fn remove_orphan_staged_assets(staging: &Path, sources: &[PathBuf]) -> Result<()
         .filter_entry(|entry| entry.path() != vfs.as_path())
     {
         let entry = entry?;
+        let relative = entry.path().strip_prefix(staging)?;
         if entry.file_type().is_file()
             && extension(entry.path(), &["glb", "ktx2", "luau"])
-            && !expected.contains(entry.path().strip_prefix(staging)?)
+            && !is_derived_output(&relative.to_string_lossy().replace('\\', "/"))
+            && !expected.contains(relative)
         {
             fs::remove_file(entry.path()).wrap_err_with(|| {
                 format!(
@@ -5796,9 +6496,14 @@ mod tests {
 
     #[test]
     fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
-        for mode in 0..3 {
+        for mode in 0..=3 {
             for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+                let sampler = if mode == 3 {
+                    String::new()
+                } else {
+                    format!(".opensky-wrap{mode}")
+                };
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
                 assert_eq!(
                     texture_reference_source_key(&alias).as_deref(),
@@ -5821,11 +6526,27 @@ mod tests {
                 glb.extend_from_slice(b"JSON");
                 glb.extend_from_slice(&json);
                 fs::write(root.join("meshes/alias.glb"), glb).unwrap();
-                assert_eq!(
-                    publish_texture_aliases(root).unwrap(),
+                let expected = if transfer.is_empty() && mode == 3 {
+                    vec![]
+                } else if transfer.is_empty() || mode == 3 {
                     vec![PathBuf::from(&alias)]
-                );
+                } else {
+                    let linear = alias.replace(".opensky-srgb", "");
+                    vec![PathBuf::from(&alias), PathBuf::from(linear)]
+                };
+                let published = publish_texture_aliases(root).unwrap();
+                assert_eq!(published, expected);
                 assert_eq!(fs::read(root.join(alias)).unwrap(), b"source");
+                for linear in published
+                    .iter()
+                    .filter(|path| !path.to_string_lossy().contains("srgb"))
+                {
+                    assert_eq!(fs::read(root.join(linear)).unwrap(), b"source");
+                }
+                assert_eq!(
+                    fs::read(root.join("textures/shared.ktx2")).unwrap(),
+                    b"source"
+                );
             }
         }
     }
@@ -6561,6 +7282,2383 @@ mod tests {
         assert!(staging.join("vfs/meshes/source.glb").is_file());
     }
 
+    use dummy_content::nif::{
+        BodyShape, BoxBody, LegacySkin, SkinInstanceKind, SkinNormals, StaticShape,
+        legacy_skin_tint_shape, legacy_skinned_shape, legacy_skinned_shape_with_normals,
+        legacy_skinned_shapes, legacy_skinned_shapes_scaled, static_shape,
+        static_shape_with_bodies,
+    };
+
+    const ACTOR_BONE_TRANSFORMS: [([f32; 3], [f32; 4], f32); 2] = [
+        (
+            [0.0, 0.0, 0.0],
+            [
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
+            1.0,
+        ),
+        ([0.0, 0.0, 2.0], [0.0, 0.0, 0.0, 1.0], 1.0),
+    ];
+
+    const ACTOR_WEIGHTS: [[f32; 4]; 4] = [
+        [0.7, 0.3, 0.0, 0.0],
+        [0.25, 0.75, 0.0, 0.0],
+        [0.5, 0.2, 0.0, 0.0],
+        [0.4, 0.6, 0.0, 0.0],
+    ];
+
+    const ACTOR_PALETTE: [u16; 2] = [1, 0];
+
+    fn actor_assets(staging: &Path) -> PathBuf {
+        staging.join("vfs/meshes/actors/character/character assets")
+    }
+
+    fn actor_part_spec<'a>(name: &'a str) -> LegacySkin<'a> {
+        LegacySkin {
+            name,
+            instance_kind: SkinInstanceKind::Dismember,
+            bone_transforms: ACTOR_BONE_TRANSFORMS,
+            palette: &ACTOR_PALETTE,
+            weights: &ACTOR_WEIGHTS,
+            with_geometry: true,
+            joint_override: None,
+        }
+    }
+
+    fn write_actor_part(assets: &Path, file_name: &str) {
+        fs::write(
+            assets.join(file_name),
+            legacy_skinned_shape(&actor_part_spec(file_name)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_actor_part_with_normals(assets: &Path, file_name: &str, normals: SkinNormals) {
+        fs::write(
+            assets.join(file_name),
+            legacy_skinned_shape_with_normals(&actor_part_spec(file_name), normals).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_actor_body_part(assets: &Path, file_name: &str) {
+        let first = actor_part_spec("BodyShapeA");
+        let second = actor_part_spec("BodyShapeB");
+        fs::write(
+            assets.join(file_name),
+            legacy_skinned_shapes(&[first, second]).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_actor_body_part_scaled(assets: &Path, file_name: &str, scale: f32) {
+        let first = actor_part_spec("BodyShapeA");
+        let second = actor_part_spec("BodyShapeB");
+        fs::write(
+            assets.join(file_name),
+            legacy_skinned_shapes_scaled(&[first, second], scale).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn actor_skeleton_shape(name: &str) -> StaticShape<'_> {
+        StaticShape {
+            name,
+            positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: &[[0, 1, 2]],
+            diffuse: "textures/generated_color.dds",
+            normal_texture: "textures/generated_normal.dds",
+        }
+    }
+
+    fn actor_skeleton_body(node_name: &str) -> BoxBody<'_> {
+        BoxBody {
+            node_name,
+            half_extents: [0.1, 0.1, 0.1],
+            transform: None,
+            collision_layer: 4,
+            collision_flags: 0,
+            collision_response: 1,
+            inner_collision_flags: 0,
+            inner_collision_response: 1,
+            shape: BodyShape::Box,
+            motion_system: 4,
+            deactivator_type: 1,
+            quality_type: 4,
+            mass: 1.0,
+            inertia: [0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1],
+            center_of_mass: [0.0; 3],
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.4,
+            max_linear_velocity: 104.4,
+            max_angular_velocity: 31.57,
+        }
+    }
+
+    struct ActorHeaderLayout {
+        block_sizes: Vec<u32>,
+        block_data_start: usize,
+    }
+
+    impl ActorHeaderLayout {
+        fn block_start(&self, index: usize) -> usize {
+            self.block_data_start
+                + self.block_sizes[..index]
+                    .iter()
+                    .map(|size| *size as usize)
+                    .sum::<usize>()
+        }
+    }
+
+    fn parse_actor_header(bytes: &[u8]) -> Option<ActorHeaderLayout> {
+        fn read_u32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
+            let end = cursor.checked_add(4)?;
+            let value = u32::from_le_bytes(bytes.get(*cursor..end)?.try_into().ok()?);
+            *cursor = end;
+            Some(value)
+        }
+        fn read_u16(bytes: &[u8], cursor: &mut usize) -> Option<u16> {
+            let end = cursor.checked_add(2)?;
+            let value = u16::from_le_bytes(bytes.get(*cursor..end)?.try_into().ok()?);
+            *cursor = end;
+            Some(value)
+        }
+        fn skip_string8(bytes: &[u8], cursor: &mut usize) -> Option<()> {
+            let length = usize::from(*bytes.get(*cursor)?);
+            *cursor = cursor.checked_add(1 + length)?;
+            bytes.get(..*cursor)?;
+            Some(())
+        }
+        fn read_string32(bytes: &[u8], cursor: &mut usize) -> Option<String> {
+            let length = read_u32(bytes, cursor)? as usize;
+            let end = cursor.checked_add(length)?;
+            let value = String::from_utf8_lossy(bytes.get(*cursor..end)?).into_owned();
+            *cursor = end;
+            Some(value)
+        }
+
+        let newline = bytes.iter().position(|byte| *byte == b'\n')?;
+        let mut cursor = newline + 1;
+        read_u32(bytes, &mut cursor)?;
+        cursor += 1;
+        read_u32(bytes, &mut cursor)?;
+        let block_count = read_u32(bytes, &mut cursor)?;
+        let bethesda_version = read_u32(bytes, &mut cursor)?;
+        if bethesda_version > 130 {
+            read_u32(bytes, &mut cursor)?;
+        }
+        skip_string8(bytes, &mut cursor)?;
+        if bethesda_version < 131 {
+            skip_string8(bytes, &mut cursor)?;
+        }
+        skip_string8(bytes, &mut cursor)?;
+        if bethesda_version >= 103 {
+            skip_string8(bytes, &mut cursor)?;
+        }
+        let type_count = read_u16(bytes, &mut cursor)?;
+        for _ in 0..type_count {
+            read_string32(bytes, &mut cursor)?;
+        }
+        for _ in 0..block_count {
+            read_u16(bytes, &mut cursor)?;
+        }
+        let mut block_sizes = Vec::with_capacity(block_count as usize);
+        for _ in 0..block_count {
+            block_sizes.push(read_u32(bytes, &mut cursor)?);
+        }
+        let string_count = read_u32(bytes, &mut cursor)?;
+        read_u32(bytes, &mut cursor)?;
+        for _ in 0..string_count {
+            read_string32(bytes, &mut cursor)?;
+        }
+        let group_count = read_u32(bytes, &mut cursor)?;
+        for _ in 0..group_count {
+            read_u32(bytes, &mut cursor)?;
+        }
+        Some(ActorHeaderLayout {
+            block_sizes,
+            block_data_start: cursor,
+        })
+    }
+
+    fn write_actor_skeleton(assets: &Path, root: &str, nodes: &[&str]) {
+        let bodies = nodes
+            .iter()
+            .map(|name| actor_skeleton_body(name))
+            .collect::<Vec<_>>();
+        let mut bytes = static_shape_with_bodies(&actor_skeleton_shape(root), &bodies).unwrap();
+        let header = parse_actor_header(&bytes).expect("fixture header must parse");
+        bytes[header.block_start(0)..header.block_start(0) + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        fs::write(assets.join("skeleton.nif"), bytes).unwrap();
+    }
+
+    fn stage_default_actor_parts(staging: &Path) {
+        let assets = actor_assets(staging);
+        fs::create_dir_all(&assets).unwrap();
+        write_actor_skeleton(&assets, "SkeletonRoot", &["Bone0", "Bone1"]);
+        for sex in ["male", "female"] {
+            write_actor_body_part(&assets, &format!("{sex}body_1.nif"));
+            write_actor_part(&assets, &format!("{sex}hands_1.nif"));
+            write_actor_part(&assets, &format!("{sex}feet_1.nif"));
+            write_actor_body_part_scaled(&assets, &format!("{sex}body_0.nif"), 0.8);
+            write_actor_part(&assets, &format!("{sex}hands_0.nif"));
+            write_actor_part(&assets, &format!("{sex}feet_0.nif"));
+        }
+    }
+
+    fn staged_sources(staging: &Path) -> BTreeMap<PathBuf, PathBuf> {
+        discover(&staging.join("vfs"))
+            .unwrap()
+            .into_iter()
+            .map(|path| (path.clone(), path))
+            .collect()
+    }
+
+    fn compose_staged_bodies(
+        staging: &Path,
+        fail_fast: bool,
+    ) -> (PipelineReport, ConversionManifest) {
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            fail_fast,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        (report, manifest)
+    }
+
+    fn glb_skin_joints(path: &Path) -> Vec<Vec<usize>> {
+        let bytes = fs::read(path).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        gltf.skins()
+            .map(|skin| skin.joints().map(|node| node.index()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn recognises_only_composed_actor_body_outputs() {
+        assert!(crate::compose::is_composed_output(
+            "meshes/actors/character/composed/default/male/body.glb"
+        ));
+        assert!(!crate::compose::is_composed_output(
+            "meshes/actors/character/malebody_1.glb"
+        ));
+        assert!(!crate::compose::is_composed_output(
+            "meshes/actors/character/composed/default/male/body.nif"
+        ));
+        assert!(!crate::compose::is_composed_output(
+            "meshes/actors/character/composed-body.glb"
+        ));
+    }
+
+    /// Both bodies record raw winning inputs with logical paths and final output bytes.
+    #[test]
+    fn composed_body_proofs_follow_winners_and_clear_stale_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        let mods = staging.join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_skeleton(&mods, "WinningRoot", &["Bone0", "Bone1"]);
+        write_actor_part(&mods, "WinningHands.nif");
+        let sources = BTreeMap::from([
+            (assets.join("skeleton.nif"), mods.join("skeleton.nif")),
+            (
+                assets.join("malehands_1.nif"),
+                mods.join("WinningHands.nif"),
+            ),
+        ]);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 2);
+        assert!(
+            manifest.entries.is_empty(),
+            "derived outputs are not synthetic sources"
+        );
+        for sex in ["male", "female"] {
+            let key = format!("meshes/actors/character/composed/default/{sex}/body.glb");
+            let proof = &manifest.derived_outputs[&key];
+            assert_eq!(proof.recipe, "body-compose-v2");
+            let mut expected = BTreeMap::new();
+            for suffix in ["body_1.nif", "hands_1.nif", "feet_1.nif"] {
+                let filename = format!("{sex}{suffix}");
+                let logical = assets.join(&filename);
+                let path = sources.get(&logical).unwrap_or(&logical);
+                expected.insert(
+                    format!("meshes/actors/character/character assets/{filename}"),
+                    hash_bytes(&fs::read(path).unwrap()),
+                );
+            }
+            expected.insert(
+                "meshes/actors/character/character assets/skeleton.nif".into(),
+                hash_bytes(&fs::read(mods.join("skeleton.nif")).unwrap()),
+            );
+            let thin: Vec<_> = ["body", "hands", "feet"]
+                .into_iter()
+                .map(|slot| {
+                    serde_json::json!([
+                        slot,
+                        hash_bytes(&fs::read(assets.join(format!("{sex}{slot}_0.nif"))).unwrap()),
+                        null
+                    ])
+                })
+                .collect();
+            let context =
+                serde_json::json!([[["body", null], ["hands", null], ["feet", null]], thin]);
+            expected.insert(
+                "recipes/body-compose-v2/context.json".into(),
+                hash_bytes(&serde_json::to_vec(&context).unwrap()),
+            );
+            assert_eq!(proof.inputs, expected);
+            assert!(crate::metadata::supported_derived_proof(&key, proof));
+            assert_ne!(
+                proof.inputs["meshes/actors/character/character assets/skeleton.nif"],
+                hash_file(&assets.join("skeleton.nif")).unwrap()
+            );
+            assert_eq!(
+                proof.output_hash,
+                hash_bytes(&fs::read(staging.join(&key)).unwrap())
+            );
+            assert_eq!(
+                proof.output_size,
+                fs::metadata(staging.join(&key)).unwrap().len()
+            );
+        }
+        let first = manifest.derived_outputs.clone();
+        write_actor_skeleton(&mods, "ChangedWinningRoot", &["Bone0", "Bone1"]);
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        for (key, old) in first {
+            assert_ne!(manifest.derived_outputs[&key].inputs, old.inputs);
+        }
+        fs::remove_file(assets.join("femalehands_1.nif")).unwrap();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        assert!(
+            !staging
+                .join("meshes/actors/character/composed/default/female/body.glb")
+                .exists()
+        );
+        fs::write(mods.join("WinningHands.nif"), b"broken winning NIF").unwrap();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert!(manifest.derived_outputs.is_empty());
+        assert!(
+            !staging
+                .join("meshes/actors/character/composed/default/male/body.glb")
+                .exists()
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to compose default male"))
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    /// The real prune pass changes bodies before their published hashes are finalized.
+    #[test]
+    fn derived_body_hashes_describe_post_prune_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let before = manifest.derived_outputs.clone();
+        let pruned =
+            MeshConverter::prune_dangling_texture_uris_with_sources(staging, &BTreeSet::new())
+                .unwrap();
+        assert!(pruned.iter().any(|file| !file.removed_uris.is_empty()));
+        finalize_derived_outputs(staging, &mut report, &mut manifest).unwrap();
+        for (key, proof) in &manifest.derived_outputs {
+            assert_ne!(
+                before[key].output_hash, proof.output_hash,
+                "body must actually be pruned"
+            );
+            assert_eq!(before[key].inputs, proof.inputs);
+            let bytes = fs::read(staging.join(key)).unwrap();
+            assert_eq!(proof.output_hash, hash_bytes(&bytes));
+            assert_eq!(proof.output_size, bytes.len() as u64);
+        }
+        assert_eq!(manifest.derived_outputs.len(), 2);
+    }
+
+    /// Publication preserves the valid sibling when a procedural actor part is corrupt.
+    #[tokio::test]
+    async fn derived_body_proofs_publish_after_pruning_and_optional_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("fixture");
+        stage_default_actor_parts(&fixture);
+        let data = fixture.join("vfs");
+        let output = directory.path().join("output");
+        let mut config = cpu_lod_config(&data, &output);
+        config.no_lod = true;
+        let report = run_without_progress(config.clone()).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        let manifest = published_manifest(&output);
+        assert_eq!(manifest.derived_outputs.len(), 2);
+        for (key, proof) in &manifest.derived_outputs {
+            assert_eq!(proof.output_hash, hash_file(&output.join(key)).unwrap());
+            assert_eq!(
+                proof.output_size,
+                fs::metadata(output.join(key)).unwrap().len()
+            );
+            assert!(manifest.pruned_texture_references.contains_key(key));
+        }
+        fs::write(
+            actor_assets(&fixture).join("femalehands_1.nif"),
+            b"broken neighbor",
+        )
+        .unwrap();
+        let report = run_without_progress(config).await;
+        let manifest = published_manifest(&output);
+        assert!(
+            !report.complete,
+            "the ordinary source conversion must report the broken NIF"
+        );
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        let male = "meshes/actors/character/composed/default/male/body.glb";
+        assert_eq!(
+            manifest.derived_outputs[male].output_hash,
+            hash_file(&output.join(male)).unwrap()
+        );
+        assert!(
+            !output
+                .join("meshes/actors/character/composed/default/female/body.glb")
+                .exists()
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to compose default female"))
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_writes_both_sexes_sharing_one_skeleton() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+
+        compose_staged_bodies(staging, false);
+
+        for sex in ["male", "female"] {
+            let output = staging.join(crate::compose::composed_body_path("default", sex));
+            let joints = glb_skin_joints(&output);
+            assert_eq!(joints.len(), 4, "{sex} body must compose four skins");
+            assert!(
+                joints.windows(2).all(|pair| pair[0] == pair[1]),
+                "{sex} composed skins must share one skeleton"
+            );
+        }
+    }
+
+    /// Both recipes' producer proofs satisfy reuse's exact input-set contract for each sex.
+    #[test]
+    fn producer_recipe_inputs_match_reuse_consumer_for_both_sexes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (_, mut manifest) = compose_staged_bodies(staging, false);
+        fs::write(actor_assets(staging).join("skeleton.hkx"), b"skeleton").unwrap();
+        for sex in ["male", "female"] {
+            for stem in ["mt_idle", "mt_walkforward", "mt_runforward"] {
+                let key = format!("meshes/actors/character/animations/{sex}/{stem}.glb");
+                let source = staging
+                    .join("vfs/meshes/actors/character/animations")
+                    .join(sex)
+                    .join(format!("{stem}.hkx"));
+                fs::create_dir_all(source.parent().unwrap()).unwrap();
+                fs::write(source, format!("{sex} {stem}")).unwrap();
+                let inputs =
+                    default_animation_input_hashes(staging, &BTreeMap::new(), sex, stem).unwrap();
+                // Output encoding is exercised by the gait-writer test below; this
+                // fixture isolates the raw dependency contract from HKX decoding.
+                let output = staging.join(&key);
+                fs::create_dir_all(output.parent().unwrap()).unwrap();
+                fs::write(&output, b"proof contract fixture").unwrap();
+                let proof = derived_output_proof(DEFAULT_GAIT_RECIPE, inputs, &output).unwrap();
+                manifest.derived_outputs.insert(key, proof);
+            }
+        }
+        assert_eq!(manifest.derived_outputs.len(), 8);
+        for (key, proof) in &manifest.derived_outputs {
+            assert!(
+                crate::metadata::supported_derived_proof(key, proof),
+                "{key}"
+            );
+            for input in proof.inputs.keys() {
+                let mut missing = proof.clone();
+                missing.inputs.remove(input);
+                assert!(!crate::metadata::supported_derived_proof(key, &missing));
+            }
+            let mut extra = proof.clone();
+            extra
+                .inputs
+                .insert("meshes/unrelated.nif".into(), "0".repeat(64));
+            assert!(!crate::metadata::supported_derived_proof(key, &extra));
+        }
+    }
+
+    /// Synthetic gait proof capture uses raw logical winners and a real GLB writer.
+    /// HKX decoding success is covered separately by the ignored retail test.
+    #[test]
+    fn derived_gait_proof_capture_tracks_actual_dependencies_and_winners() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        fs::write(assets.join("skeleton.hkx"), b"raw synthetic skeleton HKX").unwrap();
+        let mods = staging.join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("clip.hkx"), b"winning clip bytes").unwrap();
+        let logical_clip = staging.join("vfs/meshes/actors/character/animations/male/mt_idle.hkx");
+        let sources = BTreeMap::from([(logical_clip, mods.join("clip.hkx"))]);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let body_proofs = manifest.derived_outputs.clone();
+        for sex in ["male", "female"] {
+            let animations = staging
+                .join("vfs/meshes/actors/character/animations")
+                .join(sex);
+            fs::create_dir_all(&animations).unwrap();
+            let body = crate::mesh::build_skinned_model(
+                &assets.join(format!("{sex}body_1.nif")),
+                &assets.join("skeleton.nif"),
+            )
+            .unwrap();
+            let bones = &body.skeletal_meshes.first().unwrap().bones;
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                fs::write(
+                    animations.join(format!("{stem}.hkx")),
+                    format!("raw {sex} {stem}"),
+                )
+                .unwrap();
+                let inputs = default_animation_input_hashes(staging, &sources, sex, stem).unwrap();
+                let mut expected = BTreeMap::new();
+                for filename in [
+                    format!("{sex}body_1.nif"),
+                    "skeleton.nif".into(),
+                    "skeleton.hkx".into(),
+                ] {
+                    expected.insert(
+                        format!("meshes/actors/character/character assets/{filename}"),
+                        hash_bytes(&fs::read(assets.join(filename)).unwrap()),
+                    );
+                }
+                let expected_clip = if sex == "male" && stem == "mt_idle" {
+                    b"winning clip bytes".to_vec()
+                } else {
+                    format!("raw {sex} {stem}").into_bytes()
+                };
+                expected.insert(
+                    format!("meshes/actors/character/animations/{sex}/{stem}.hkx"),
+                    hash_bytes(&expected_clip),
+                );
+                assert_eq!(inputs, expected);
+                let mut clip = animation::AnimationClip {
+                    name: String::new(),
+                    original_skeleton_name: "synthetic".into(),
+                    duration_seconds: 1.0 / 30.0,
+                    frame_count: 2,
+                    frames_per_second: 30.0,
+                    tracks: vec![animation::TransformTrack {
+                        bone_index: 0,
+                        bone_name: Some("Bone0".into()),
+                        samples: vec![
+                            animation::TransformSample {
+                                translation: [0.0; 3],
+                                rotation: [0.0, 0.0, 0.0, 1.0],
+                                scale: [1.0; 3],
+                            };
+                            2
+                        ],
+                    }],
+                };
+                let relative = default_animation_output(sex, stem);
+                let output = staging.join(&relative);
+                animation::write_clip_glb(&mut clip, bones, stem, &output).unwrap();
+                let proof = derived_output_proof("default-gait-v1", inputs, &output).unwrap();
+                let key = relative;
+                assert!(crate::metadata::supported_derived_proof(&key, &proof));
+                assert_eq!(proof.output_hash, hash_bytes(&fs::read(&output).unwrap()));
+                assert_eq!(proof.output_size, fs::metadata(&output).unwrap().len());
+                manifest.derived_outputs.insert(key, proof);
+            }
+        }
+        let before = default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap();
+        for filename in ["malehands_1.nif", "malefeet_1.nif"] {
+            fs::write(assets.join(filename), b"not a gait dependency").unwrap();
+        }
+        assert_eq!(
+            before,
+            default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap()
+        );
+        for path in [
+            assets.join("malebody_1.nif"),
+            assets.join("skeleton.nif"),
+            assets.join("skeleton.hkx"),
+            mods.join("clip.hkx"),
+        ] {
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, b"changed actual dependency").unwrap();
+            let after =
+                default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap();
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|(key, value)| after.get(*key) != Some(*value))
+                    .count(),
+                1
+            );
+            fs::write(path, original).unwrap();
+        }
+        let stale_gait_proofs: BTreeMap<_, _> = manifest
+            .derived_outputs
+            .iter()
+            .filter(|(key, _)| key.starts_with("meshes/actors/character/animations/"))
+            .map(|(key, proof)| (key.clone(), proof.clone()))
+            .collect();
+        // Invalid HKX bytes fail locally through the real producer and remove all
+        // stale gait proofs/files while leaving the composed-body neighbor intact.
+        convert_default_animations(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs, body_proofs);
+        assert!(report.warnings.is_empty());
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to convert"))
+        );
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                assert!(!staging.join(default_animation_output(sex, stem)).exists());
+            }
+        }
+        // A later missing dependency also clears proofs, including proof-only remnants.
+        manifest.derived_outputs.extend(stale_gait_proofs);
+        fs::remove_file(assets.join("skeleton.hkx")).unwrap();
+        convert_default_animations(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs, body_proofs);
+    }
+
+    /// Missing final outputs lose proofs locally while a readable sibling survives.
+    #[test]
+    fn derived_finalization_drops_missing_output_proof_and_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let missing = "meshes/actors/character/composed/default/female/body.glb";
+        report.artifacts = manifest.derived_outputs.keys().map(PathBuf::from).collect();
+        fs::remove_file(staging.join(missing)).unwrap();
+        finalize_derived_outputs(staging, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        assert!(!manifest.derived_outputs.contains_key(missing));
+        assert!(!report.artifacts.contains(&PathBuf::from(missing)));
+        assert_eq!(report.notices.len(), 1);
+        assert!(report.notices[0].contains(missing));
+        assert!(report.warnings.is_empty());
+    }
+
+    fn glb_node_names(path: &Path) -> BTreeSet<String> {
+        let bytes = fs::read(path).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        gltf.nodes()
+            .filter_map(|node| node.name().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn compose_default_bodies_uses_the_winning_source_map() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+
+        let mods = directory.path().join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_skeleton(&mods, "ModRoot", &["Bone0", "Bone1"]);
+        write_actor_body_part(&mods, "malebody_1.nif");
+
+        let assets = actor_assets(staging);
+        let staged_body = assets.join("malebody_1.nif");
+        fs::remove_file(&staged_body).unwrap();
+        let mut sources = staged_sources(staging);
+        sources.insert(assets.join("skeleton.nif"), mods.join("skeleton.nif"));
+        sources.insert(staged_body, mods.join("malebody_1.nif"));
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+
+        for sex in ["male", "female"] {
+            let output = staging.join(crate::compose::composed_body_path("default", sex));
+            let names = glb_node_names(&output);
+            assert!(
+                names.contains("ModRoot"),
+                "{sex} body did not use the winning skeleton: {names:?}"
+            );
+            assert!(
+                !names.contains("SkeletonRoot"),
+                "{sex} body used the losing staged skeleton: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_default_bodies_is_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let outputs = ["male", "female"]
+            .map(|sex| staging.join(crate::compose::composed_body_path("default", sex)));
+
+        compose_staged_bodies(staging, false);
+        let first = outputs.each_ref().map(|path| fs::read(path).unwrap());
+        let untouched_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567_890);
+        for output in &outputs {
+            fs::File::options()
+                .write(true)
+                .open(output)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(untouched_at))
+                .unwrap();
+        }
+        let modified = outputs
+            .each_ref()
+            .map(|path| fs::metadata(path).unwrap().modified().unwrap());
+        compose_staged_bodies(staging, false);
+        let second = outputs.each_ref().map(|path| fs::read(path).unwrap());
+
+        assert_eq!(
+            first, second,
+            "a second composition must not rewrite the bodies"
+        );
+        assert_eq!(
+            modified,
+            outputs
+                .each_ref()
+                .map(|path| fs::metadata(path).unwrap().modified().unwrap()),
+            "unchanged bodies must keep their modification times"
+        );
+    }
+
+    /// Every morph target in `glb`, as the mesh name and its POSITION deltas.
+    fn glb_thin_morphs(glb: &Path) -> Vec<(String, Vec<[f32; 3]>)> {
+        let bytes = fs::read(glb).unwrap();
+        let gltf = gltf::Gltf::from_slice(&bytes).unwrap();
+        let blob = gltf.blob.as_deref().unwrap();
+        let mut morphs = Vec::new();
+        for mesh in gltf.document.meshes() {
+            let name = mesh.name().unwrap_or_default().to_owned();
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|buffer| (buffer.index() == 0).then_some(blob));
+                for (positions, _, _) in reader.read_morph_targets() {
+                    morphs.push((name.clone(), positions.unwrap().collect()));
+                }
+            }
+        }
+        morphs
+    }
+
+    #[test]
+    fn compose_default_bodies_attaches_a_thin_morph_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+
+        compose_staged_bodies(staging, false);
+
+        for sex in ["male", "female"] {
+            let output = staging.join(crate::compose::composed_body_path("default", sex));
+            let bytes = fs::read(&output).unwrap();
+            let json = crate::mesh::glb_json_from_bytes(&bytes).unwrap();
+            for mesh in json["meshes"].as_array().unwrap() {
+                assert_eq!(mesh["weights"], serde_json::json!([0.0]), "{sex}: {mesh}");
+                assert_eq!(
+                    mesh["extras"]["targetNames"],
+                    serde_json::json!(["thin"]),
+                    "{sex}: {mesh}"
+                );
+            }
+
+            let morphs = glb_thin_morphs(&output);
+            assert_eq!(morphs.len(), 4, "{sex} must morph four shapes: {morphs:?}");
+            let body = morphs
+                .iter()
+                .find(|(name, _)| name.as_str() == "BodyShapeA")
+                .unwrap();
+            assert_eq!(body.1[0], [0.0, 0.0, 0.0]);
+            assert!((body.1[1][0] + 0.2).abs() < 1e-5, "{:?}", body.1);
+            assert!(body.1[1][1].abs() < 1e-5, "{:?}", body.1);
+        }
+    }
+
+    /// Thin winners and catalog skin choices must change the recorded body provenance.
+    #[test]
+    fn composed_body_proof_tracks_thin_winners_and_skin_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        let key = "meshes/actors/character/composed/default/female/body.glb";
+        let (_, baseline) = compose_staged_bodies(staging, false);
+
+        let mods = staging.join("thin-mod");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_body_part_scaled(&mods, "female-thin.nif", 0.4);
+        let sources = BTreeMap::from([(
+            actor_assets(staging).join("femalebody_0.nif"),
+            mods.join("female-thin.nif"),
+        )]);
+        let mut report = PipelineReport::default();
+        let mut thin = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut thin).unwrap();
+        assert_ne!(
+            baseline.derived_outputs[key].output_hash,
+            thin.derived_outputs[key].output_hash
+        );
+        let thin_changed = baseline.derived_outputs[key].inputs != thin.derived_outputs[key].inputs;
+
+        write_skin_catalog(staging, true);
+        let mut skin = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut skin).unwrap();
+        assert_ne!(
+            thin.derived_outputs[key].output_hash,
+            skin.derived_outputs[key].output_hash
+        );
+        let skin_changed = thin.derived_outputs[key].inputs != skin.derived_outputs[key].inputs;
+        assert_eq!(
+            (thin_changed, skin_changed),
+            (true, true),
+            "thin winners and catalog skin choices must each change provenance"
+        );
+        assert!(crate::metadata::supported_derived_proof(
+            key,
+            &skin.derived_outputs[key]
+        ));
+    }
+
+    #[test]
+    fn compose_default_bodies_resolves_thin_sources_from_logical_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let heavy_mod = staging.join("heavy-mod");
+        let thin_mod = staging.join("thin-mod");
+        fs::create_dir_all(&heavy_mod).unwrap();
+        fs::create_dir_all(&thin_mod).unwrap();
+        write_actor_body_part_scaled(&heavy_mod, "malebody_1.nif", 0.7);
+        write_actor_body_part_scaled(&heavy_mod, "malebody_0.nif", 0.5);
+        write_actor_body_part_scaled(&thin_mod, "malebody_0.nif", 0.3);
+
+        let assets = actor_assets(staging);
+        let mut sources = staged_sources(staging);
+        sources.insert(
+            assets.join("malebody_1.nif"),
+            heavy_mod.join("malebody_1.nif"),
+        );
+        sources.insert(
+            assets.join("malebody_0.nif"),
+            thin_mod.join("malebody_0.nif"),
+        );
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        let output = staging.join(crate::compose::composed_body_path("default", "male"));
+        let body = glb_thin_morphs(&output)
+            .into_iter()
+            .find(|(name, _)| name == "BodyShapeA")
+            .unwrap();
+        assert!(
+            (body.1[1][0] + 0.4).abs() < 1e-5,
+            "thin source delta: {:?}",
+            body.1
+        );
+
+        // The heavy winner's physical sibling must not beat staged thin fallback.
+        sources.remove(&assets.join("malebody_0.nif"));
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        let body = glb_thin_morphs(&output)
+            .into_iter()
+            .find(|(name, _)| name == "BodyShapeA")
+            .unwrap();
+        assert!(
+            (body.1[1][0] - 0.1).abs() < 1e-5,
+            "staged thin delta: {:?}",
+            body.1
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_without_thin_parts_keeps_the_heavy_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        fs::remove_file(actor_assets(staging).join("malebody_0.nif")).unwrap();
+
+        let (report, _) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(glb_thin_morphs(&male).is_empty());
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("actor_body_weight_unavailable")
+                    && notice.contains("thin part missing")),
+            "notices: {:?}",
+            report.notices
+        );
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert_eq!(glb_thin_morphs(&female).len(), 4);
+    }
+
+    #[test]
+    fn compose_default_bodies_with_mismatched_thin_parts_keeps_the_heavy_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        fs::write(
+            actor_assets(staging).join("malebody_0.nif"),
+            legacy_skinned_shape(&actor_part_spec("BodyShapeA")).unwrap(),
+        )
+        .unwrap();
+
+        let (report, _) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(glb_thin_morphs(&male).is_empty());
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("actor_body_weight_unavailable")
+                    && notice.contains("skeletal mesh counts differ")),
+            "notices: {:?}",
+            report.notices
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_with_thin_parts_missing_normals_keeps_the_heavy_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        write_actor_part_with_normals(
+            &actor_assets(staging),
+            "malehands_0.nif",
+            SkinNormals::Omitted,
+        );
+
+        let (report, _) = compose_staged_bodies(staging, false);
+
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(male.is_file(), "heavy body must remain available");
+        assert!(glb_thin_morphs(&male).is_empty());
+        assert!(report.notices.iter().any(|notice| {
+            notice.contains("actor_body_weight_unavailable")
+                && notice.contains("per-vertex normals are missing or incomplete")
+        }));
+    }
+
+    /// The `KHR_materials_specular` of every material in `glb` whose name is `shape`.
+    fn glb_specular(glb: &Path, shape: &str) -> Vec<(f64, Option<String>)> {
+        let bytes = fs::read(glb).unwrap();
+        let json = crate::mesh::glb_json_from_bytes(&bytes).unwrap();
+        json["materials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|material| material["name"] == shape)
+            .map(|material| {
+                let specular = &material["extensions"]["KHR_materials_specular"];
+                let uri = specular["specularColorTexture"]["index"]
+                    .as_u64()
+                    .map(|texture| {
+                        let image = json["textures"][texture as usize]["source"]
+                            .as_u64()
+                            .unwrap();
+                        json["images"][image as usize]["uri"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned()
+                    });
+                (specular["specularFactor"].as_f64().unwrap(), uri)
+            })
+            .collect()
+    }
+
+    /// A world database holding one female Nord whose `DefaultRace` hands armature carries
+    /// `SkinHandFemale_1`, written with the catalog columns or, when `with_skin_columns` is
+    /// false, as a database from before them.
+    fn write_skin_catalog(staging: &Path, with_skin_columns: bool) {
+        let connection = rusqlite::Connection::open(staging.join("skyrim_world.db")).unwrap();
+        let skin_columns = if with_skin_columns {
+            ", armature_race_id INTEGER, skin_texture_set_id INTEGER"
+        } else {
+            ""
+        };
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE actor_models (id INTEGER PRIMARY KEY, race_id INTEGER NOT NULL, \
+                 sex TEXT NOT NULL, skin_armo_id INTEGER, head_model TEXT, head_source TEXT, \
+                 resolution TEXT NOT NULL);
+                 CREATE TABLE actor_model_parts (npc_id INTEGER NOT NULL, slot TEXT NOT NULL, \
+                 model_path TEXT NOT NULL{skin_columns}, PRIMARY KEY (npc_id, slot));
+                 CREATE TABLE texture_sets (id INTEGER PRIMARY KEY, editor_id TEXT, \
+                 diffuse_path TEXT, normal_path TEXT, glow_path TEXT, height_path TEXT, \
+                 environment_path TEXT, mask_path TEXT, specular_path TEXT, detail_path TEXT);
+                 INSERT INTO actor_models VALUES (256, 79686, 'female', 3428, NULL, NULL, 'body');
+                 INSERT INTO texture_sets VALUES (257001, 'SkinHandFemale_1', \
+                 'Actors\\Character\\Female\\FemaleHands_1.dds', \
+                 'Actors\\Character\\Female\\FemaleHands_1_msn.dds', \
+                 'Actors\\Character\\Female\\FemaleHands_1_sk.dds', NULL, NULL, NULL, \
+                 'Actors\\Character\\Female\\FemaleHands_1_S.dds', NULL);"
+            ))
+            .unwrap();
+        if with_skin_columns {
+            connection
+                .execute(
+                    "INSERT INTO actor_model_parts VALUES (256, 'hands', \
+                     'Actors\\Character\\Character Assets\\FemaleHands_1.nif', 25, 257001)",
+                    [],
+                )
+                .unwrap();
+        } else {
+            connection
+                .execute(
+                    "INSERT INTO actor_model_parts VALUES (256, 'hands', \
+                     'Actors\\Character\\Character Assets\\FemaleHands_1.nif')",
+                    [],
+                )
+                .unwrap();
+        }
+    }
+
+    fn stage_skin_tint_hands(staging: &Path) {
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        for sex in ["male", "female"] {
+            let file_name = format!("{sex}hands_1.nif");
+            fs::write(
+                assets.join(&file_name),
+                legacy_skin_tint_shape(&actor_part_spec(&file_name)).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn compose_default_bodies_applies_the_default_armature_skin_texture_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        write_skin_catalog(staging, true);
+
+        compose_staged_bodies(staging, true);
+
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        let hands = glb_specular(&female, "femalehands_1.nif");
+        assert_eq!(hands.len(), 1, "{hands:?}");
+        let (factor, uri) = &hands[0];
+        assert_eq!(*factor, 1.0);
+        // The specular colour texture is the sRGB alias; the engine loads its linear twin.
+        assert!(
+            uri.as_deref().is_some_and(|uri| uri
+                .contains("/textures/actors/character/female/femalehands_1_s.opensky-srgb.")),
+            "{uri:?}"
+        );
+        // No male row: the male hands keep their NIF textures, and without `_s` no specular.
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert_eq!(glb_specular(&male, "malehands_1.nif"), [(0.0, None)]);
+    }
+
+    #[test]
+    fn compose_default_bodies_keeps_nif_textures_with_an_older_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        write_skin_catalog(staging, false);
+
+        compose_staged_bodies(staging, true);
+
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert_eq!(glb_specular(&female, "femalehands_1.nif"), [(0.0, None)]);
+    }
+
+    #[test]
+    fn compose_default_bodies_skips_a_sex_without_its_parts() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let assets = actor_assets(staging);
+        fs::create_dir_all(&assets).unwrap();
+        write_actor_skeleton(&assets, "SkeletonRoot", &["Bone0", "Bone1"]);
+        write_actor_body_part(&assets, "malebody_1.nif");
+        write_actor_part(&assets, "malehands_1.nif");
+        write_actor_part(&assets, "malefeet_1.nif");
+
+        compose_staged_bodies(staging, false);
+
+        assert!(
+            staging
+                .join(crate::compose::composed_body_path("default", "male"))
+                .is_file()
+        );
+        assert!(
+            !staging
+                .join(crate::compose::composed_body_path("default", "female"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_removes_a_body_whose_part_went_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        compose_staged_bodies(staging, false);
+        assert!(female.is_file());
+
+        fs::remove_file(actor_assets(staging).join("femalehands_1.nif")).unwrap();
+        compose_staged_bodies(staging, false);
+
+        assert!(
+            !female.exists(),
+            "a skipped sex must not keep last run's body"
+        );
+        assert!(
+            staging
+                .join(crate::compose::composed_body_path("default", "male"))
+                .is_file()
+        );
+    }
+
+    fn stage_a_failing_male_hands(staging: &Path) {
+        let assets = actor_assets(staging);
+        fs::write(
+            assets.join("malehands_1.nif"),
+            static_shape(&actor_skeleton_shape("StaticHands")).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn stage_a_malformed_male_thin_body(staging: &Path) {
+        fs::write(actor_assets(staging).join("malebody_0.nif"), []).unwrap();
+    }
+
+    /// Keeps optional composition failures under the canonical derived asset key.
+    #[test]
+    fn compose_default_bodies_reports_optional_failure_as_a_notice() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        compose_staged_bodies(staging, false);
+        let male = staging.join(crate::compose::composed_body_path("default", "male"));
+        assert!(
+            male.is_file(),
+            "the stale body must exist before poisoning a part"
+        );
+        stage_a_failing_male_hands(staging);
+
+        let (report, manifest) = compose_staged_bodies(staging, false);
+
+        let female = staging.join(crate::compose::composed_body_path("default", "female"));
+        assert!(!male.exists(), "a failed body must not leave stale output");
+        assert!(female.is_file(), "the other sex must still compose");
+        let key = "meshes/actors/character/composed/default/male/body.glb";
+        assert!(!manifest.failures.contains_key(key));
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.starts_with(&format!("{key}: failed to compose default male"))),
+            "notices: {:?}",
+            report.notices
+        );
+    }
+
+    fn block_male_composed_output(staging: &Path) {
+        let output = staging.join(crate::compose::composed_body_path("default", "male"));
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        let partial = output.with_extension(format!("glb.{}.partial", std::process::id()));
+        fs::write(partial, b"stale partial output").unwrap();
+    }
+
+    #[test]
+    fn compose_default_bodies_handles_output_write_failure_without_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        compose_staged_bodies(staging, false);
+        write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
+        block_male_composed_output(staging);
+        let key = "meshes/actors/character/composed/default/male/body.glb";
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(key.into(), "old derived failure".into());
+
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+
+        assert!(
+            !staging.join(key).is_file(),
+            "failed output must not be advertised"
+        );
+        assert!(!manifest.failures.contains_key(key));
+        assert!(report.notices.iter().any(|notice| {
+            notice.contains("failed to compose default male")
+                && notice.contains("stale temporary GLB")
+        }));
+        assert!(
+            staging
+                .join(crate::compose::composed_body_path("default", "female"))
+                .is_file(),
+            "the other sex must still compose"
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_cleanup_failure_is_fatal_without_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let output = staging.join(crate::compose::composed_body_path("default", "male"));
+        fs::create_dir_all(&output).unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+
+        let error = compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .expect_err("failure to clear an old output must stop composition");
+
+        let error = format!("{error:#}");
+        assert!(error.contains("failed to remove"), "{error}");
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    #[test]
+    fn compose_default_bodies_contextualizes_output_failure_with_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        compose_staged_bodies(staging, false);
+        write_actor_skeleton(&actor_assets(staging), "ChangedRoot", &["Bone0", "Bone1"]);
+        block_male_composed_output(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+
+        let error = compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            true,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains("failed to compose default male"), "{error}");
+        assert!(error.contains("stale temporary GLB"), "{error}");
+        assert!(
+            !staging
+                .join(crate::compose::composed_body_path("default", "male"))
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_clears_old_derived_failure_after_success_and_skip() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let male_key = "meshes/actors/character/composed/default/male/body.glb";
+        let female_key = "meshes/actors/character/composed/default/female/body.glb";
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(male_key.into(), "old male failure".into());
+        manifest
+            .failures
+            .insert(female_key.into(), "old female failure".into());
+        manifest
+            .failures
+            .insert("meshes/source.nif".into(), "source failure".into());
+        let mut report = PipelineReport::default();
+
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        fs::remove_file(actor_assets(staging).join("femalehands_1.nif")).unwrap();
+        manifest
+            .failures
+            .insert(female_key.into(), "old female skip failure".into());
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+
+        assert!(!manifest.failures.contains_key(male_key));
+        assert!(!manifest.failures.contains_key(female_key));
+        assert_eq!(
+            manifest.failures.get("meshes/source.nif").unwrap(),
+            "source failure"
+        );
+        assert!(
+            !staging.join(female_key).exists(),
+            "skipped output must be absent"
+        );
+    }
+
+    #[test]
+    fn compose_default_bodies_propagates_a_failure_when_fail_fast_is_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        stage_a_failing_male_hands(staging);
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        let error = compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            true,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("failed to compose default male"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn malformed_thin_preparation_reaches_fail_fast_and_clears_stale_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        compose_staged_bodies(staging, false);
+        let key = "meshes/actors/character/composed/default/male/body.glb";
+        let output = staging.join(key);
+        assert!(output.is_file());
+        stage_a_malformed_male_thin_body(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(key.into(), "old derived failure".into());
+
+        let error = compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            true,
+            &mut report,
+            &mut manifest,
+        )
+        .expect_err("malformed thin NIF preparation must fail fast");
+
+        assert!(format!("{error:#}").contains("failed to compose default male"));
+        assert!(
+            !output.exists(),
+            "stale heavy body must be removed on failure"
+        );
+        assert!(!manifest.failures.contains_key(key));
+    }
+
+    #[test]
+    fn malformed_thin_preparation_is_a_derived_notice_without_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        compose_staged_bodies(staging, false);
+        let key = "meshes/actors/character/composed/default/male/body.glb";
+        let output = staging.join(key);
+        assert!(output.is_file());
+        stage_a_malformed_male_thin_body(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(key.into(), "old derived failure".into());
+
+        compose_default_bodies(
+            staging,
+            &staged_sources(staging),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+
+        assert!(!output.exists(), "failed body must not keep stale output");
+        assert!(!manifest.failures.contains_key(key));
+        assert!(report.notices.iter().any(|notice| {
+            notice.contains("failed to compose default male")
+                && !notice.contains("actor_body_weight_unavailable")
+        }));
+        assert!(
+            staging
+                .join(crate::compose::composed_body_path("default", "female"))
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn composed_actor_bodies_survive_orphan_removal() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let male = staging.join("meshes/actors/character/composed/default/male/body.glb");
+        let female = staging.join("meshes/actors/character/composed/default/female/body.glb");
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        for path in [&male, &female, &orphan] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"mesh").unwrap();
+        }
+
+        remove_orphan_staged_assets(staging, &[]).unwrap();
+
+        assert!(male.is_file());
+        assert!(female.is_file());
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn composed_actor_bodies_survive_mo2_pruning() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let male = staging.join("meshes/actors/character/composed/default/male/body.glb");
+        let female = staging.join("meshes/actors/character/composed/default/female/body.glb");
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        for path in [&male, &female, &orphan] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"mesh").unwrap();
+        }
+
+        prune_removed_mo2_outputs(staging, &[]).unwrap();
+
+        assert!(male.is_file());
+        assert!(female.is_file());
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn recognises_only_composed_and_animation_derived_outputs() {
+        assert!(is_derived_output(
+            "meshes/actors/character/composed/default/male/body.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/male/mt_idle.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/female/mt_idle.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/male/mt_walkforward.glb"
+        ));
+        assert!(is_derived_output(
+            "meshes/actors/character/animations/female/mt_runforward.glb"
+        ));
+        assert!(!is_derived_output("meshes/actors/character/malebody_1.glb"));
+        assert!(!is_derived_output(
+            "meshes/actors/character/animations/male/mt_idle.hkx"
+        ));
+        assert!(!is_derived_output(
+            "textures/actors/character/animations/male/mt_idle.ktx2"
+        ));
+        assert!(!is_derived_output(
+            "meshes/actors/character/animation/male/mt_idle.glb"
+        ));
+    }
+
+    #[test]
+    fn animation_clips_survive_orphan_removal() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        fs::write(&orphan, b"clip").unwrap();
+
+        remove_orphan_staged_assets(staging, &[]).unwrap();
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn animation_clips_survive_mo2_pruning() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+        let orphan = staging.join("meshes/actors/character/stale.glb");
+        fs::write(&orphan, b"clip").unwrap();
+
+        prune_removed_mo2_outputs(staging, &[]).unwrap();
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+        assert!(!orphan.exists());
+    }
+
+    #[test]
+    fn all_gait_clips_survive_a_second_cleanup_pass() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let clips = write_staged_gait_clips(staging);
+
+        for _ in 0..2 {
+            remove_orphan_staged_assets(staging, &[]).unwrap();
+            prune_removed_mo2_outputs(staging, &[]).unwrap();
+        }
+
+        for clip in clips {
+            assert!(clip.is_file(), "{} must survive", clip.display());
+        }
+    }
+
+    /// Keeps the six gait keys ordered and portable through report serialization.
+    #[test]
+    fn default_animation_clip_table_is_ordered() {
+        assert_eq!(
+            DEFAULT_ANIMATION_CLIPS,
+            [
+                ("idle", "mt_idle"),
+                ("walkforward", "mt_walkforward"),
+                ("runforward", "mt_runforward"),
+            ]
+        );
+        for sex in ["male", "female"] {
+            let paths: Vec<String> = DEFAULT_ANIMATION_CLIPS
+                .iter()
+                .map(|(_, stem)| default_animation_output(sex, stem))
+                .collect();
+            assert_eq!(
+                paths,
+                [
+                    format!("meshes/actors/character/animations/{sex}/mt_idle.glb"),
+                    format!("meshes/actors/character/animations/{sex}/mt_walkforward.glb"),
+                    format!("meshes/actors/character/animations/{sex}/mt_runforward.glb"),
+                ]
+            );
+            let report = PipelineReport {
+                artifacts: paths.iter().map(PathBuf::from).collect(),
+                ..PipelineReport::default()
+            };
+            let serialized = serde_json::to_value(report).unwrap();
+            for (artifact, expected) in serialized["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(paths)
+            {
+                let key = artifact.as_str().unwrap();
+                assert!(!key.contains('\\'), "noncanonical gait artifact: {key}");
+                assert_eq!(key, expected);
+            }
+        }
+    }
+
+    /// Exercises Windows-style key text even when CI runs on a Unix host.
+    #[test]
+    fn default_animation_output_canonicalizes_windows_asset_keys() {
+        let relative = default_animation_output("FEMALE", r"Nested\MT_IDLE");
+        assert_eq!(
+            Path::new(&relative).to_str(),
+            Some("meshes/actors/character/animations/female/nested/mt_idle.glb")
+        );
+    }
+
+    #[test]
+    fn convert_default_animations_is_a_no_op_without_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(!staging.join("meshes").exists());
+        assert!(report.notices.is_empty());
+    }
+
+    #[test]
+    fn missing_animation_inputs_remove_stale_outputs_and_failure_markers() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        let outputs = write_staged_gait_clips(staging);
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest
+                .failures
+                .insert(key, "stale derived failure".into());
+        }
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert_eq!(report.notices.len(), outputs.len());
+    }
+
+    /// Keeps missing-input notices for both sexes when only old gait markers remain.
+    #[test]
+    fn marker_only_gait_work_keeps_missing_actor_notices_for_both_sexes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                let key = default_animation_output(sex, stem);
+                manifest.failures.insert(key, "stale gait failure".into());
+            }
+        }
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert_eq!(report.notices.len(), 6);
+        for sex in ["male", "female"] {
+            assert_eq!(
+                report
+                    .notices
+                    .iter()
+                    .filter(|notice| notice.contains(&format!("default {sex} ")))
+                    .count(),
+                3,
+                "notices: {:?}",
+                report.notices
+            );
+        }
+        assert!(manifest.failures.is_empty());
+    }
+
+    #[test]
+    fn gait_output_directory_collision_is_fatal_and_preserved_with_or_without_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let output = staging.join(default_animation_output("male", "mt_runforward"));
+        fs::create_dir_all(&output).unwrap();
+        let contents = output.join("blocker");
+        fs::write(&contents, b"staged generated assets").unwrap();
+
+        for fail_fast in [false, true] {
+            let mut report = PipelineReport::default();
+            let mut manifest = ConversionManifest::default();
+            let error = convert_default_animations(
+                staging,
+                &BTreeMap::new(),
+                fail_fast,
+                &mut report,
+                &mut manifest,
+            )
+            .expect_err("directory collision must abort preflight");
+            assert!(format!("{error:#}").contains("refusing to remove directory"));
+            assert_eq!(fs::read(&contents).unwrap(), b"staged generated assets");
+            assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+        }
+    }
+
+    /// Rejects immediate and higher file ancestors before changing manifests or notices.
+    #[test]
+    fn gait_output_metadata_errors_are_fatal_without_notices() {
+        for relative in [
+            "meshes",
+            "meshes/actors/character/animations",
+            "meshes/actors/character/animations/male",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let staging = directory.path();
+            stage_invalid_default_animation(staging);
+            let blocker = staging.join(relative);
+            fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+            fs::write(&blocker, b"not a directory").unwrap();
+
+            for fail_fast in [false, true] {
+                let mut report = PipelineReport::default();
+                let mut manifest = ConversionManifest::default();
+                manifest
+                    .failures
+                    .insert(MALE_IDLE_GLB.into(), "old failure".into());
+                let error = convert_default_animations(
+                    staging,
+                    &BTreeMap::new(),
+                    fail_fast,
+                    &mut report,
+                    &mut manifest,
+                )
+                .expect_err("metadata error must abort preflight with either fail-fast setting");
+
+                assert!(format!("{error:#}").contains("failed to inspect"));
+                assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+                assert_eq!(manifest.failures.get(MALE_IDLE_GLB).unwrap(), "old failure");
+                assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+            }
+        }
+    }
+
+    /// A rejected gait preflight leaves the complete failure and proof maps for both sexes intact.
+    #[test]
+    fn gait_preflight_rejection_preserves_complete_manifest_maps() {
+        // File ancestors are rejected by the early parent check; directories at exact outputs are
+        // rejected by the output cleanup that runs before any map entry is removed.
+        let mut blockers: Vec<(String, bool)> = [
+            "meshes",
+            "meshes/actors/character/animations",
+            "meshes/actors/character/animations/male",
+            "meshes/actors/character/animations/female",
+        ]
+        .into_iter()
+        .map(|blocked| (blocked.to_owned(), false))
+        .collect();
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                blockers.push((default_animation_output(sex, stem), true));
+            }
+        }
+        for (blocked, is_directory) in blockers {
+            for fail_fast in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let staging = directory.path();
+                stage_invalid_default_animation(staging);
+                let blocker = staging.join(&blocked);
+                let contents = blocker.join("blocker");
+                fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+                if is_directory {
+                    fs::create_dir_all(&blocker).unwrap();
+                    fs::write(&contents, b"staged generated assets").unwrap();
+                } else {
+                    fs::write(&blocker, b"not a directory").unwrap();
+                }
+
+                let mut manifest = ConversionManifest::default();
+                for sex in ["male", "female"] {
+                    for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                        let key = default_animation_output(sex, stem);
+                        manifest
+                            .failures
+                            .insert(key.clone(), format!("old {sex} failure"));
+                        manifest.derived_outputs.insert(
+                            key,
+                            DerivedOutput {
+                                recipe: DEFAULT_GAIT_RECIPE.into(),
+                                inputs: BTreeMap::new(),
+                                output_size: 1,
+                                output_hash: hash_bytes(b"old gait"),
+                            },
+                        );
+                    }
+                }
+                let incoming = manifest.clone();
+                let mut report = PipelineReport::default();
+                let error = convert_default_animations(
+                    staging,
+                    &BTreeMap::new(),
+                    fail_fast,
+                    &mut report,
+                    &mut manifest,
+                )
+                .expect_err("blocked gait path must abort before any map mutation");
+
+                let expected = if is_directory {
+                    "refusing to remove directory"
+                } else {
+                    "failed to inspect"
+                };
+                assert!(
+                    format!("{error:#}").contains(expected),
+                    "{blocked}: {error:#}"
+                );
+                assert!(report.notices.is_empty(), "{blocked}: {:?}", report.notices);
+                assert_eq!(manifest, incoming, "{blocked} fail_fast={fail_fast}");
+                if is_directory {
+                    assert!(blocker.is_dir(), "{blocked} fail_fast={fail_fast}");
+                    assert_eq!(
+                        fs::read(&contents).unwrap(),
+                        b"staged generated assets",
+                        "{blocked} fail_fast={fail_fast}"
+                    );
+                    assert_eq!(
+                        fs::read_dir(&blocker).unwrap().count(),
+                        1,
+                        "{blocked} fail_fast={fail_fast}"
+                    );
+                } else {
+                    assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gait_output_preflight_preserves_regular_outputs_and_removes_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let regular = staging.join(default_animation_output("female", "mt_idle"));
+        let symlink = staging.join(default_animation_output("male", "mt_walkforward"));
+        let target = directory.path().join("external-target.glb");
+        fs::create_dir_all(regular.parent().unwrap()).unwrap();
+        fs::create_dir_all(symlink.parent().unwrap()).unwrap();
+        fs::write(&regular, b"unchanged clip").unwrap();
+        fs::write(&target, b"external target bytes").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        clear_nonregular_animation_outputs(staging).unwrap();
+
+        assert_eq!(fs::read(regular).unwrap(), b"unchanged clip");
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::symlink_metadata(&symlink).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound,
+                "symlink must be removed"
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"external target bytes");
+        }
+    }
+
+    /// Reports a canonical asset prefix while preserving unrelated source repairs.
+    #[test]
+    fn animation_preparation_failure_is_a_notice_and_keeps_source_repairs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let output = staging.join(MALE_IDLE_GLB);
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, b"stale clip").unwrap();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        manifest
+            .failures
+            .insert(MALE_IDLE_GLB.into(), "old derived failure".into());
+        manifest
+            .failures
+            .insert("meshes/source.nif".into(), "source repair failure".into());
+
+        convert_default_animations(staging, &BTreeMap::new(), false, &mut report, &mut manifest)
+            .unwrap();
+
+        assert!(!output.exists(), "failed conversion must remove stale clip");
+        assert!(!manifest.failures.contains_key(MALE_IDLE_GLB));
+        assert_eq!(
+            manifest
+                .failures
+                .get("meshes/source.nif")
+                .map(String::as_str),
+            Some("source repair failure")
+        );
+        assert!(
+            report.warnings.is_empty(),
+            "warnings: {:?}",
+            report.warnings
+        );
+        assert!(report.notices.iter().any(|notice| {
+            notice.contains(MALE_IDLE_GLB) && notice.contains("failed to prepare")
+        }));
+        for notice in &report.notices {
+            let (key, _) = notice.split_once(": ").unwrap();
+            assert!(!key.contains('\\'), "noncanonical gait notice: {key}");
+            assert_eq!(key, key.to_ascii_lowercase());
+        }
+    }
+
+    #[test]
+    fn animation_preparation_failure_propagates_with_fail_fast() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_invalid_default_animation(staging);
+        let outputs = write_staged_gait_clips(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest.failures.insert(key, "stale gait failure".into());
+        }
+
+        let error =
+            convert_default_animations(staging, &BTreeMap::new(), true, &mut report, &mut manifest)
+                .expect_err("fail-fast must propagate an optional-output preparation error");
+
+        assert!(format!("{error:#}").contains("failed to build the default male actor body"));
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    #[test]
+    fn animation_conversion_failure_propagates_with_fail_fast_and_cleans_all_gaits() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        let assets = actor_assets(staging);
+        let animations = staging.join("vfs/meshes/actors/character/animations/male");
+        fs::create_dir_all(&assets).unwrap();
+        fs::create_dir_all(&animations).unwrap();
+        write_actor_skeleton(&assets, "SkeletonRoot", &["Bone0", "Bone1"]);
+        write_actor_body_part(&assets, "malebody_1.nif");
+        fs::write(assets.join("skeleton.hkx"), b"synthetic skeleton").unwrap();
+        fs::write(animations.join("mt_idle.hkx"), b"invalid clip").unwrap();
+        let outputs = write_staged_gait_clips(staging);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        for output in &outputs {
+            let key = output
+                .strip_prefix(staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            manifest.failures.insert(key, "stale gait failure".into());
+        }
+
+        let error =
+            convert_default_animations(staging, &BTreeMap::new(), true, &mut report, &mut manifest)
+                .expect_err("fail-fast must propagate a default clip conversion error");
+
+        assert!(format!("{error:#}").contains("failed to convert the default male idle animation"));
+        assert!(outputs.iter().all(|output| !output.exists()));
+        assert!(manifest.failures.is_empty());
+        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+    }
+
+    fn retail_path(variable: &str) -> PathBuf {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("{variable} must point at an extracted character tree"))
+    }
+
+    fn write_staged_gait_clips(staging: &Path) -> Vec<PathBuf> {
+        DEFAULT_ANIMATION_CLIPS
+            .iter()
+            .flat_map(|(_, stem)| {
+                ["male", "female"].map(|sex| staging.join(default_animation_output(sex, stem)))
+            })
+            .inspect(|path| {
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"clip").unwrap();
+            })
+            .collect()
+    }
+
+    const MALE_IDLE_GLB: &str = "meshes/actors/character/animations/male/mt_idle.glb";
+
+    fn stage_invalid_default_animation(staging: &Path) {
+        let assets = staging.join("vfs/meshes/actors/character/character assets");
+        let animations = staging.join("vfs/meshes/actors/character/animations/male");
+        fs::create_dir_all(&assets).unwrap();
+        fs::create_dir_all(&animations).unwrap();
+        fs::write(assets.join("skeleton.hkx"), b"invalid skeleton").unwrap();
+        fs::write(assets.join("skeleton.nif"), b"invalid skeleton").unwrap();
+        fs::write(assets.join("malebody_1.nif"), b"invalid body").unwrap();
+        fs::write(animations.join("mt_idle.hkx"), b"invalid clip").unwrap();
+    }
+
+    fn read_glb(path: &Path) -> (serde_json::Value, Vec<u8>) {
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(&bytes[..4], b"glTF", "GLB magic");
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[16..20], b"JSON", "JSON chunk type");
+        let json = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let bin_len =
+            u32::from_le_bytes(bytes[20 + json_len..24 + json_len].try_into().unwrap()) as usize;
+        let bin_start = 20 + json_len + 8;
+        (json, bytes[bin_start..bin_start + bin_len].to_vec())
+    }
+
+    fn accessor_values(json: &serde_json::Value, bin: &[u8], index: usize) -> Vec<f32> {
+        let accessor = &json["accessors"][index];
+        let view = &json["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let components = match accessor["type"].as_str().unwrap() {
+            "SCALAR" => 1,
+            "VEC2" => 2,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            other => panic!("unexpected accessor type {other}"),
+        };
+        let count = accessor["count"].as_u64().unwrap() as usize;
+        bin[offset..offset + count * components * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect()
+    }
+
+    fn clip_duration(json: &serde_json::Value) -> (f32, usize) {
+        let animation = &json["animations"][0];
+        let input = animation["samplers"][0]["input"].as_u64().unwrap() as usize;
+        let accessor = &json["accessors"][input];
+        (
+            accessor["max"][0].as_f64().unwrap() as f32,
+            accessor["count"].as_u64().unwrap() as usize,
+        )
+    }
+
+    fn rotation_samples(json: &serde_json::Value, bin: &[u8], node_name: &str) -> Vec<[f32; 4]> {
+        let nodes = json["nodes"].as_array().unwrap();
+        let node = nodes
+            .iter()
+            .position(|node| node["name"].as_str() == Some(node_name))
+            .unwrap_or_else(|| panic!("node {node_name} is missing"));
+        let animation = &json["animations"][0];
+        let channel = animation["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|channel| {
+                channel["target"]["node"].as_u64() == Some(node as u64)
+                    && channel["target"]["path"].as_str() == Some("rotation")
+            })
+            .unwrap_or_else(|| panic!("{node_name} has no rotation channel"));
+        let sampler = &animation["samplers"][channel["sampler"].as_u64().unwrap() as usize];
+        accessor_values(json, bin, sampler["output"].as_u64().unwrap() as usize)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| [chunk[0], chunk[1], chunk[2], chunk[3]])
+            .collect()
+    }
+
+    fn quaternion_angle_degrees(a: [f32; 4], b: [f32; 4]) -> f32 {
+        let dot = a
+            .iter()
+            .zip(b)
+            .map(|(left, right)| left * right)
+            .sum::<f32>()
+            .abs()
+            .min(1.0);
+        2.0 * dot.acos().to_degrees()
+    }
+
+    fn stage_retail_animation_tree(
+        staging: &Path,
+        animation_root: &Path,
+        actor_root: &Path,
+        skipped: Option<(&str, &str)>,
+    ) {
+        let assets = staging.join("vfs/meshes/actors/character/character assets");
+        let animations = staging.join("vfs/meshes/actors/character/animations");
+        fs::create_dir_all(&assets).unwrap();
+        fs::copy(
+            animation_root.join("character assets/skeleton.hkx"),
+            assets.join("skeleton.hkx"),
+        )
+        .unwrap();
+        fs::copy(
+            actor_root.join("character/character assets/skeleton.nif"),
+            assets.join("skeleton.nif"),
+        )
+        .unwrap();
+        for sex in ["male", "female"] {
+            fs::create_dir_all(animations.join(sex)).unwrap();
+            fs::copy(
+                actor_root.join(format!("character/character assets/{sex}body_1.nif")),
+                assets.join(format!("{sex}body_1.nif")),
+            )
+            .unwrap();
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                if skipped == Some((sex, clip)) {
+                    continue;
+                }
+                fs::copy(
+                    animation_root.join(format!("animations/{sex}/{stem}.hkx")),
+                    animations.join(sex).join(format!("{stem}.hkx")),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn assert_written_clip(path: &Path, label: &str, expected_duration: Option<f32>) {
+        let (json, _) = read_glb(path);
+        let animation = &json["animations"][0];
+        let channels = animation["channels"].as_array().unwrap();
+        assert_eq!(channels.len(), 288, "{label} channels");
+        let (duration, frames) = clip_duration(&json);
+        println!(
+            "{label}: {} channels, {frames} frames, {duration:.6}s",
+            channels.len()
+        );
+        if let Some(expected) = expected_duration {
+            assert!(
+                (duration - expected).abs() <= 1e-4,
+                "{label} duration {duration}"
+            );
+        }
+    }
+
+    /// Real HKX decoding records every successful gait's four raw inputs and bytes.
+    #[test]
+    #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
+    fn retail_default_animations_emit_all_gait_clips() {
+        let animation_root = retail_path("MUDCRAB_ANIMATION_DIR");
+        let actor_root = retail_path("MUDCRAB_ACTOR_NIF_DIR");
+
+        let full = tempfile::tempdir().unwrap();
+        stage_retail_animation_tree(full.path(), &animation_root, &actor_root, None);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            full.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+
+        let mut written = Vec::new();
+        assert_eq!(manifest.derived_outputs.len(), 6);
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let output = full.path().join(default_animation_output(sex, stem));
+                assert!(output.is_file(), "{sex} {clip} clip must exist");
+                let key = format!("meshes/actors/character/animations/{sex}/{stem}.glb");
+                let proof = &manifest.derived_outputs[&key];
+                assert_eq!(proof.recipe, "default-gait-v1");
+                let expected_paths = [
+                    format!("meshes/actors/character/character assets/{sex}body_1.nif"),
+                    "meshes/actors/character/character assets/skeleton.nif".into(),
+                    "meshes/actors/character/character assets/skeleton.hkx".into(),
+                    format!("meshes/actors/character/animations/{sex}/{stem}.hkx"),
+                ];
+                let expected: BTreeMap<_, _> = expected_paths
+                    .into_iter()
+                    .map(|path| {
+                        let bytes = fs::read(full.path().join("vfs").join(&path)).unwrap();
+                        (path, hash_bytes(&bytes))
+                    })
+                    .collect();
+                assert_eq!(proof.inputs, expected);
+                assert_eq!(proof.output_hash, hash_bytes(&fs::read(&output).unwrap()));
+                assert_eq!(proof.output_size, fs::metadata(&output).unwrap().len());
+                let expected = match clip {
+                    "idle" => Some(9.133_333),
+                    "walkforward" => Some(1.133_333),
+                    _ => None,
+                };
+                assert_written_clip(&output, &format!("{sex} {clip}"), expected);
+                let bytes = fs::read(&output).unwrap();
+                written.push((output, bytes));
+            }
+        }
+
+        let first_proofs = manifest.derived_outputs.clone();
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            full.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        assert_eq!(manifest.derived_outputs, first_proofs);
+        for (output, first) in &written {
+            assert_eq!(
+                fs::read(output).unwrap(),
+                *first,
+                "a second run must not rewrite {}",
+                output.display()
+            );
+        }
+
+        let partial = tempfile::tempdir().unwrap();
+        stage_retail_animation_tree(
+            partial.path(),
+            &animation_root,
+            &actor_root,
+            Some(("male", "runforward")),
+        );
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        convert_default_animations(
+            partial.path(),
+            &BTreeMap::new(),
+            false,
+            &mut report,
+            &mut manifest,
+        )
+        .unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 5);
+        assert!(
+            !manifest
+                .derived_outputs
+                .contains_key("meshes/actors/character/animations/male/mt_runforward.glb")
+        );
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let output = partial.path().join(default_animation_output(sex, stem));
+                if (sex, clip) == ("male", "runforward") {
+                    assert!(
+                        !output.exists(),
+                        "the missing male run clip must be skipped"
+                    );
+                } else {
+                    assert!(
+                        output.is_file(),
+                        "{sex} {clip} must still be written without the male run clip"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
+    fn retail_default_animations_decode_all_gait_clips() {
+        let animation_root = retail_path("MUDCRAB_ANIMATION_DIR");
+        let actor_root = retail_path("MUDCRAB_ACTOR_NIF_DIR");
+        let skeleton_bytes = fs::read(animation_root.join("character assets/skeleton.hkx"))
+            .expect("read skeleton.hkx");
+
+        for sex in ["male", "female"] {
+            for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
+                let bytes = fs::read(animation_root.join(format!("animations/{sex}/{stem}.hkx")))
+                    .unwrap_or_else(|error| panic!("read {sex} {clip}: {error}"));
+                let decoded = animation::decode_clip_with_skeleton(&bytes, &skeleton_bytes)
+                    .unwrap_or_else(|error| panic!("decode {sex} {clip}: {error}"));
+                println!(
+                    "{sex} {clip}: duration {:.6}s, {} frames, {} tracks, {:.3} fps",
+                    decoded.duration_seconds,
+                    decoded.frame_count,
+                    decoded.tracks.len(),
+                    decoded.frames_per_second
+                );
+                assert_eq!(decoded.tracks.len(), 99, "{sex} {clip} tracks");
+                match clip {
+                    "idle" => {
+                        assert_eq!(decoded.frame_count, 275, "{sex} idle frames");
+                        assert!(
+                            (decoded.duration_seconds - 9.133_333).abs() <= 1e-4,
+                            "{sex} idle duration {}",
+                            decoded.duration_seconds
+                        );
+                    }
+                    "walkforward" => {
+                        assert_eq!(decoded.frame_count, 35, "{sex} walk frames");
+                        assert!(
+                            (decoded.duration_seconds - 1.133_333).abs() <= 1e-4,
+                            "{sex} walk duration {}",
+                            decoded.duration_seconds
+                        );
+                    }
+                    "runforward" => assert!(decoded.frame_count > 0, "{sex} run must carry frames"),
+                    other => panic!("unexpected clip {other}"),
+                }
+            }
+        }
+
+        let skeleton_nif = actor_root.join("character/character assets/skeleton.nif");
+        let body = crate::mesh::build_skinned_model(
+            &actor_root.join("character/character assets/malebody_1.nif"),
+            &skeleton_nif,
+        )
+        .expect("build the male body");
+        let bones = body
+            .skeletal_meshes
+            .first()
+            .expect("male body has a skeletal mesh")
+            .bones
+            .clone();
+        let walk_bytes =
+            fs::read(animation_root.join("animations/male/mt_walkforward.hkx")).unwrap();
+        let mut walk = animation::decode_clip_with_skeleton(&walk_bytes, &skeleton_bytes)
+            .expect("decode male walk");
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("mt_walkforward.glb");
+        animation::write_clip_glb(&mut walk, &bones, "mt_walkforward", &output)
+            .expect("write male walk");
+
+        let (json, bin) = read_glb(&output);
+        assert_eq!(json["nodes"].as_array().unwrap().len(), 100);
+        let animation = &json["animations"][0];
+        assert_eq!(animation["channels"].as_array().unwrap().len(), 288);
+        let (duration, frames) = clip_duration(&json);
+        println!("male walk GLB: {frames} frames, {duration:.6}s");
+        assert!(
+            (duration - 1.133_333).abs() <= 1e-4,
+            "male walk GLB duration {duration}"
+        );
+
+        for bone in ["NPC L Thigh [LThg]", "NPC R Thigh [RThg]"] {
+            let samples = rotation_samples(&json, &bin, bone);
+            assert_eq!(samples.len(), frames, "{bone} rotation samples");
+            let first = samples[0];
+            let (peak_frame, peak_angle) = samples
+                .iter()
+                .enumerate()
+                .map(|(frame, sample)| (frame, quaternion_angle_degrees(first, *sample)))
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .unwrap();
+            let final_angle = quaternion_angle_degrees(first, *samples.last().unwrap());
+            println!(
+                "{bone}: peak {peak_angle:.3} deg at frame {peak_frame}, final {final_angle:.3} deg"
+            );
+            assert!(
+                peak_angle > 5.0,
+                "{bone} must move more than 5 degrees, peak {peak_angle}"
+            );
+            assert!(
+                final_angle <= 1.0,
+                "{bone} walk cycle must close, final {final_angle}"
+            );
+        }
+    }
+
     #[test]
     fn removes_staged_assets_without_current_sources() {
         let directory = tempfile::tempdir().unwrap();
@@ -6645,6 +9743,65 @@ mod tests {
             vec![PathBuf::from("textures/effects/fire.opensky-srgb.ktx2")]
         );
         assert_eq!(fs::read(staging.join(&aliases[0])).unwrap(), b"texture");
+    }
+
+    #[test]
+    fn loose_character_animation_inputs_are_overlaid_and_other_hkx_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let skeleton = data.join("Meshes/Actors/Character/Character Assets/skeleton.hkx");
+        let behavior = data.join("Meshes/Actors/Character/Behaviors/0_master.hkx");
+        fs::create_dir_all(skeleton.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&skeleton, b"skeleton").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+
+        overlay_loose_assets(&data, &vfs, &discover(&data).unwrap()).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/character assets/skeleton.hkx")).unwrap(),
+            b"skeleton"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn mo2_animation_inputs_stage_the_winning_clips() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = directory.path().join("vfs");
+        fs::create_dir_all(&vfs).unwrap();
+        let clip = directory.path().join("mod/animations/male/mt_idle.hkx");
+        let behavior = directory.path().join("mod/behaviors/0_master.hkx");
+        fs::create_dir_all(clip.parent().unwrap()).unwrap();
+        fs::create_dir_all(behavior.parent().unwrap()).unwrap();
+        fs::write(&clip, b"clip").unwrap();
+        fs::write(&behavior, b"behaviour").unwrap();
+        let sources = BTreeMap::from([
+            (
+                "meshes/actors/character/animations/male/mt_idle.hkx".to_owned(),
+                clip,
+            ),
+            (
+                "meshes/actors/character/behaviors/0_master.hkx".to_owned(),
+                behavior,
+            ),
+        ]);
+
+        stage_mo2_animation_inputs(&vfs, &sources).unwrap();
+
+        assert_eq!(
+            fs::read(vfs.join("meshes/actors/character/animations/male/mt_idle.hkx")).unwrap(),
+            b"clip"
+        );
+        assert!(
+            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+                .exists()
+        );
     }
 
     #[test]
@@ -8944,7 +12101,7 @@ mod tests {
         fs::write(data.join("review.ba2"), &archive).unwrap();
         let recipe = PathBuf::from("batches")
             .join(hash_bytes(&archive))
-            .join("runtime-english-v1");
+            .join(IngestionSelection::RuntimeEnglishV1.recipe());
         let pack_directory = staging.join(".ingestion-cache").join(&recipe);
         fs::create_dir_all(&pack_directory).unwrap();
         let abandoned = [
@@ -8979,7 +12136,7 @@ mod tests {
         let root = directory.path().join("cache");
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::create_dir_all(root.join(&relative).parent().unwrap()).unwrap();
@@ -8989,8 +12146,33 @@ mod tests {
         assert_eq!(fs::read(root.join(relative)).unwrap(), b"sealed batch");
     }
 
+    /// Persist a relative cache destination from a private cwd independent of checkout depth.
     #[test]
     fn durable_cache_persistence_accepts_relative_destinations() {
+        const CHILD: &str = "MUDCRAB_TEST_RELATIVE_CACHE_CHILD";
+        const TEST: &str =
+            "pipeline::tests::durable_cache_persistence_accepts_relative_destinations";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            // Keep process-global cwd unchanged for other tests running in parallel.
+            let directory = tempfile::tempdir().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .current_dir(directory.path())
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                result.status.success(),
+                "relative-cache subprocess failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+            assert!(
+                stdout.contains(TEST) && stdout.contains("1 passed"),
+                "subprocess did not run the relative-cache test\nstdout:\n{stdout}"
+            );
+            return;
+        }
         let directory = tempfile::tempdir_in(".").unwrap();
         let staging = directory.path().join("staging-cache");
         let current_directory = std::env::current_dir().unwrap();
@@ -9002,7 +12184,7 @@ mod tests {
         assert!(!root.is_absolute());
         let relative = PathBuf::from("batches")
             .join("ab".repeat(32))
-            .join("converter-inputs-v1")
+            .join(IngestionSelection::ConverterInputsV1.recipe())
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::write(staging.join(&relative), b"sealed batch").unwrap();
@@ -9184,8 +12366,12 @@ mod tests {
         fs::write(cache.join(format!("{dead}.2")), b"dead spill").unwrap();
         fs::write(cache.join("probe.tmp"), b"not a blob").unwrap();
         let packs = directory.path().join(".ingestion-cache/batches");
-        let live_packs = packs.join("00".repeat(32)).join("converter-inputs-v1");
-        let dead_packs = packs.join("ff".repeat(32)).join("converter-inputs-v1");
+        let live_packs = packs
+            .join("00".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
+        let dead_packs = packs
+            .join("ff".repeat(32))
+            .join(IngestionSelection::ConverterInputsV1.recipe());
         fs::create_dir_all(&live_packs).unwrap();
         fs::create_dir_all(&dead_packs).unwrap();
         fs::write(live_packs.join(format!("{dead}.pack")), b"live pack").unwrap();

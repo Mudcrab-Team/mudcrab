@@ -6,7 +6,7 @@ This document details the technical specification for converting Bethesda NetImm
 
 ## 1. Overview & Objectives
 
-- **Input:** Skyrim `.nif` file (NiHeader, BSTriShape / NiTriShape, BSLightingShaderProperty).
+- **Input:** Skyrim `.nif` file (NiHeader, BSTriShape / BSDynamicTriShape / NiTriShape, BSLightingShaderProperty).
 - **Output:** Standalone glTF 2.0 binary file (`.glb`).
 - **Goal:** Convert legacy proprietary 3D geometry into standard PBR-compatible glTF primitives that render zero-copy inside Bevy.
 
@@ -18,10 +18,10 @@ This document details the technical specification for converting Bethesda NetImm
 | :----------------------------------------------- | :---------------------- | :-------------------------------------------------------------------------------- |
 | **`NiHeader`**                                   | `asset` metadata        | Copy generator & version tags                                                     |
 | **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`)    |
-| **`BSTriShape` / `NiTriShape`**                  | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers               |
+| **`BSTriShape` / `BSDynamicTriShape` / `NiTriShape`** | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers; `NiTriShape` is static geometry only (§7.2) |
 | **`BSLightingShaderProperty`**                   | `materials`             | Map Bethesda shader flags to glTF PBR Metallic Roughness properties               |
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
-| **`NiSkinInstance` / `BSDismemberSkinInstance`** | `skins`                 | Map bone indices (`JOINTS_0`) and vertex weights (`WEIGHTS_0`)                    |
+| **`NiSkinInstance` / `BSDismemberSkinInstance`** | `skins`                 | Map bone indices (`JOINTS_0`) and vertex weights (`WEIGHTS_0`); see §7             |
 
 `BSMultiBoundNode`, `BSOrderedNode`, `NiBillboardNode` and `BSValueNode` are `NiNode`s with a few
 trailing fields, and convert like `NiNode`: their transform and children join the scene, and the
@@ -235,3 +235,57 @@ midpoints); like the box and hull arms, the Havok convex radius (a thin shell) i
 Collision coverage (sphere, multi-sphere and cylinder shapes) moved the converter to schema 27:
 schema 24 and 26 outputs keep their verified scripts and archive ingestion and regenerate GLBs, textures
 and world data, so no cached GLB keeps the older collision extras.
+
+## 7. Skinning support boundary
+
+### 7.1 Supported
+
+- **Legacy skin instances:** `NiSkinInstance` and `BSDismemberSkinInstance`. Joint names come from
+  `instance.bones` (block references resolved to `NiNode` names); inverse bind matrices come from
+  the referenced `NiSkinData`, one per joint in the same order. Per-vertex joints and weights come
+  from the shape's vertex buffer, or from the skin partition when the buffer carries none.
+- **`BSSkin::Instance`** (Fallout 4) behaviour is unchanged. It does not occur in Skyrim meshes.
+- **Geometry:** `BSTriShape` and `BSDynamicTriShape`. A dynamic shape keeps its live positions in
+  the trailing dynamic `Vec4` array while `data_size` is zero; UVs, triangles and per-vertex
+  weights come from the referenced `NiSkinPartition`. Missing vertex channels are filled from the
+  partition channel by channel, not all-or-nothing.
+- **Partition layouts:** both the SSE layout (inline vertex buffer plus per-partition records) and
+  the legacy Bethesda layout. Multi-partition blocks are merged into one bone palette, and a
+  partition whose palette differs is remapped into the merged one. The concatenated vertex map
+  ties each weight row to its shape vertex, including when the row count equals the vertex count
+  (the map can be a permutation) and when partitions repeat shared vertices. Rows are read in
+  shape-vertex order only when the partition has no map.
+- Bone indices in a shared vertex buffer (the shape's, or the partition's SSE copy) address the
+  skin instance's bone list directly. Only the per-partition `bone_indices` rows are palette-local
+  and are remapped through `bone_palette`. Only influences with a non-zero weight are validated,
+  and weights are normalised to sum to 1.
+- Inverse binds come from each `NiSkinData` bone transform as translation · rotation · scale.
+- A skeleton that repeats a node name keeps the first occurrence; a skin that binds a repeated
+  name is rejected, because either copy could be the bone it was authored against.
+- Each skinned shape becomes one `SkeletalMesh` that records its source block, so material and
+  vertex-colour contracts associate by block instead of by shape-type enumeration order.
+
+### 7.2 Rejected
+
+- `BSDismember` body-part flags are retained for diagnostics only; they do not split meshes.
+- Legacy `NiTriShape` / `NiTriShapeData` geometry is not skinned (no such file exists in the
+  Skyrim SE actor meshes).
+- `BSSubIndexTriShape` skinning is not handled (same dataset: no such block).
+
+### 7.3 Failure contract
+
+A NIF that declares a skin and cannot produce one fails conversion. It does not publish a static
+substitute and does not emit an empty scene. The diagnostic names the NIF path and the block
+indices, lists every skin instance that no exported shape claimed together with the block type that
+references it, and reports all unresolved joint names at once rather than the first one.
+
+Classes that still fail:
+
+- a rig that some skeleton covers at 50% or more, while no skeleton covers it fully and no path
+  candidate covers it at 50%: the resolver does not guess between partial matches;
+- a skin that binds a name its resolved skeleton repeats (§7.1).
+
+Not failures, but approximations with their own follow-ups: a rig no skeleton covers at 50% converts
+self-contained from its own hierarchy (FX meshes skinned to their own controller bones are the
+retail case), and a skeleton only a RACE record identifies (for example Alduin) is chosen by joint
+coverage instead, which can pick a near-identical rig.

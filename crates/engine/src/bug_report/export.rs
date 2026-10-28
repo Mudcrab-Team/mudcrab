@@ -618,12 +618,15 @@ fn private_file(path: &Path) -> io::Result<File> {
 }
 
 fn create_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
+    // Only Unix sets permission bits on the builder, so only that arm needs it mutable.
+    let builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     builder.create(path)
 }
 
@@ -1338,6 +1341,18 @@ mod tests {
         }
         assert!(!directory.exists());
         assert_eq!(fs::read(&foreign_archive).unwrap(), b"foreign data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directories_are_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = TempDir::new().unwrap();
+        let directory = root.path().join("private");
+        create_private_dir(&directory).unwrap();
+        let mode = fs::metadata(&directory).unwrap().permissions().mode();
+        // The process umask can only remove bits, so group and other access must stay off.
+        assert_eq!(mode & 0o077, 0, "group or other access on {mode:o}");
     }
 
     #[test]

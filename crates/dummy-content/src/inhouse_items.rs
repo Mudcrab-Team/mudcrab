@@ -229,3 +229,184 @@ pub fn minimal_family_records(first_id: u32) -> Vec<Vec<u8>> {
         })
         .collect()
 }
+
+/// `DefaultRace`, the armature race every humanoid body is shared through.
+pub const DEFAULT_RACE_FORM_ID: u32 = 25;
+
+/// `ARMA/BOD2` biped slot bits, the slot number minus 30.
+pub const BIPED_BODY: u32 = 1 << 2;
+pub const BIPED_HANDS: u32 = 1 << 3;
+pub const BIPED_FEET: u32 = 1 << 7;
+
+/// The native 8-byte `ARMA/BOD2` biped template: slot bits, then armor type.
+#[must_use]
+pub fn body_template(slots: u32) -> Vec<u8> {
+    [slots.to_le_bytes(), 2_u32.to_le_bytes()].concat()
+}
+
+/// A `RACE/DATA` block with the playable bit and an optional FaceGen head bit.
+#[must_use]
+pub fn race_data(facegen_head: bool) -> Vec<u8> {
+    let mut data = vec![0u8; 124];
+    let flags: u32 = 1 | if facegen_head { 2 } else { 0 };
+    data[32..36].copy_from_slice(&flags.to_le_bytes());
+    data
+}
+
+/// A `RACE` with an optional `WNAM` skin and its FaceGen-head flag.
+#[must_use]
+pub fn race(id: u32, editor_id: &str, skin: Option<u32>, facegen_head: bool) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"EDID", text(editor_id))];
+    if let Some(skin) = skin {
+        fields.push((b"WNAM", skin.to_le_bytes().to_vec()));
+    }
+    // TES5 RACE puts the skin before DATA; the in-house reader enforces that native order.
+    fields.push((b"DATA", race_data(facegen_head)));
+    record(b"RACE", id, &fields)
+}
+
+/// A skin `ARMO` whose repeated `MODL` lists its armatures in order.
+#[must_use]
+pub fn skin_armor(id: u32, armatures: &[u32]) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"EDID", text("SyntheticSkin"))];
+    for armature in armatures {
+        fields.push((b"MODL", armature.to_le_bytes().to_vec()));
+    }
+    record(b"ARMO", id, &fields)
+}
+
+/// An `ARMA` with a race link, a biped slot and optional `MOD2`/`MOD3` paths.
+#[must_use]
+pub fn armature(
+    id: u32,
+    race_id: u32,
+    slots: u32,
+    male_path: Option<&str>,
+    female_path: Option<&str>,
+) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticArmature")),
+        (b"BOD2", body_template(slots)),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(path) = male_path {
+        fields.push((b"MOD2", text(path)));
+    }
+    if let Some(path) = female_path {
+        fields.push((b"MOD3", text(path)));
+    }
+    record(b"ARMA", id, &fields)
+}
+
+/// An [`armature`] with `NAM0` (male) and `NAM1` (female) skin texture sets.
+#[must_use]
+pub fn armature_with_skins(
+    id: u32,
+    race_id: u32,
+    slots: u32,
+    paths: (Option<&str>, Option<&str>),
+    skins: (Option<u32>, Option<u32>),
+) -> Vec<u8> {
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticArmature")),
+        (b"BOD2", body_template(slots)),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(path) = paths.0 {
+        fields.push((b"MOD2", text(path)));
+    }
+    if let Some(path) = paths.1 {
+        fields.push((b"MOD3", text(path)));
+    }
+    if let Some(skin) = skins.0 {
+        fields.push((b"NAM0", skin.to_le_bytes().to_vec()));
+    }
+    if let Some(skin) = skins.1 {
+        fields.push((b"NAM1", skin.to_le_bytes().to_vec()));
+    }
+    record(b"ARMA", id, &fields)
+}
+
+/// An `NPC_` with a race link and the 24-byte `ACBS`; bit 0 selects female.
+#[must_use]
+pub fn npc(id: u32, race_id: u32, female: bool) -> Vec<u8> {
+    npc_fields(id, race_id, female, None, None)
+}
+
+/// An [`npc`] that also carries a `NAM7` body weight in 0..100.
+#[must_use]
+pub fn npc_with_weight(id: u32, race_id: u32, female: bool, weight: f32) -> Vec<u8> {
+    npc_fields(id, race_id, female, Some(weight), None)
+}
+
+/// An [`npc`] with the supplied raw `NAM7` payload for malformed-record tests.
+#[must_use]
+pub fn npc_with_weight_payload(id: u32, race_id: u32, female: bool, payload: &[u8]) -> Vec<u8> {
+    npc_fields_with_weight_payload(id, race_id, female, Some(payload.to_vec()), None)
+}
+
+/// An [`npc`] with an optional `TPLT` traits template and an optional `NAM7` body weight.
+#[must_use]
+pub fn npc_with_template(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    template: u32,
+    weight: Option<f32>,
+) -> Vec<u8> {
+    npc_fields(id, race_id, female, weight, Some(template))
+}
+
+fn npc_fields(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    weight: Option<f32>,
+    template: Option<u32>,
+) -> Vec<u8> {
+    npc_fields_with_weight_payload(
+        id,
+        race_id,
+        female,
+        weight.map(|weight| weight.to_le_bytes().to_vec()),
+        template,
+    )
+}
+
+fn npc_fields_with_weight_payload(
+    id: u32,
+    race_id: u32,
+    female: bool,
+    weight_payload: Option<Vec<u8>>,
+    template: Option<u32>,
+) -> Vec<u8> {
+    let mut acbs = vec![0u8; 24];
+    if female {
+        acbs[0] = 1;
+    }
+    let mut fields: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", text("SyntheticNpc")),
+        (b"ACBS", acbs),
+        (b"RNAM", race_id.to_le_bytes().to_vec()),
+    ];
+    if let Some(template) = template {
+        fields.push((b"TPLT", template.to_le_bytes().to_vec()));
+    }
+    if let Some(weight_payload) = weight_payload {
+        fields.push((b"NAM7", weight_payload));
+    }
+    record(b"NPC_", id, &fields)
+}
+
+/// An `NPC_` whose `RNAM` names `race_id` but which carries no `ACBS`.
+#[must_use]
+pub fn npc_without_acbs(id: u32, race_id: u32) -> Vec<u8> {
+    record(
+        b"NPC_",
+        id,
+        &[
+            (b"EDID", text("SyntheticNpc")),
+            (b"RNAM", race_id.to_le_bytes().to_vec()),
+        ],
+    )
+}

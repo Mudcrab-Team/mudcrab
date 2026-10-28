@@ -26,6 +26,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
+log = "0.4"
 same-file = "1.0"
 lz4_flex.workspace = true
 image_dds.workspace = true
@@ -35,19 +36,20 @@ project-wormhole-nif.workspace = true
 project-wormhole-shared = "0.1.0"
 project-wormhole-esm.workspace = true
 mlua.workspace = true
-zstd = "0.13"
+zstd = "0.14"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"
+gltf = { version = "1.4", default-features = false, features = ["names"] }
 
 [target.'cfg(all(target_arch = "aarch64", target_family = "unix"))'.dependencies]
 # sha2's AArch64 hardware backend is gated by its asm feature.
 sha2 = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
-gltf = { version = "1.4", default-features = false, features = ["utils"] }
 insta = { version = "1.48", features = ["json", "redactions"] }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+log = "0.4"
 ruzstd = "0.9.1"
 dummy-content = { path = "../dummy-content" }
 
@@ -55,3 +57,6 @@ dummy-content = { path = "../dummy-content" }
 cc = "1.2"
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }

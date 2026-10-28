@@ -9,7 +9,9 @@
 //! lookup, so both readers publish the same names and the same `records.data` text.
 
 use super::{
-    inhouse::{StringSources, localized_text, read_plugin_strings, runtime_string},
+    inhouse::{
+        ParsedTextTable, StringSources, localized_text, read_plugin_strings, runtime_string,
+    },
     load_order::LoadOrder,
     records::RawRecord,
 };
@@ -25,19 +27,20 @@ const LOCALIZED: u32 = 0x80;
 /// Fields left without text, by record, as the exporter's runtime projection expects them.
 pub(crate) type UnresolvedFields = HashMap<u32, BTreeSet<usize>>;
 
-type LoadedStringTable = (Option<HashMap<u32, String>>, Option<String>);
+type LoadedStringTable = (Option<ParsedTextTable>, Option<String>);
 
 /// Resolve every localized string field of the winning `records` in place, returning fields
-/// without text and bounded warnings for actual localization loss.
+/// without text and bounded warnings/notices using the in-house reader's severity policy.
 pub(crate) fn resolve_localized_fields(
     records: &mut HashMap<u32, RawRecord>,
     plugin_paths: &[PathBuf],
     order: &LoadOrder,
     sources: StringSources<'_>,
-) -> (UnresolvedFields, Vec<String>) {
+) -> (UnresolvedFields, Vec<String>, Vec<String>) {
     let mut tables: HashMap<(usize, &'static str), LoadedStringTable> = HashMap::new();
     let mut unresolved = UnresolvedFields::new();
     let mut misses: BTreeMap<usize, (usize, String)> = BTreeMap::new();
+    let mut notices: BTreeMap<usize, (usize, String)> = BTreeMap::new();
     let mut record_ids = records.keys().copied().collect::<Vec<_>>();
     record_ids.sort_unstable();
     for record_id in record_ids {
@@ -68,31 +71,46 @@ pub(crate) fn resolve_localized_fields(
                 .ok()
                 .map(u32::from_le_bytes);
             let (table, table_error) = tables.entry((priority, bank)).or_insert_with(|| {
-                match plugin_paths.get(priority).map(|plugin| {
-                    read_plugin_strings(plugin, sources, bank)
-                        .map(|table| table.map(|table| table.values))
-                }) {
+                match plugin_paths
+                    .get(priority)
+                    .map(|plugin| read_plugin_strings(plugin, sources, bank))
+                {
                     Some(Ok(Some(table))) => (Some(table), None),
                     Some(Ok(None)) => (None, Some(format!("missing {bank} string table"))),
                     Some(Err(error)) => (None, Some(error.to_string())),
                     None => (None, Some("plugin path unavailable".to_owned())),
                 }
             });
-            match id.and_then(|id| localized_text(id, table.as_ref()?)) {
+            match id.and_then(|id| localized_text(id, &table.as_ref()?.values)) {
                 Some(text) => *data = runtime_string(text),
                 None => {
                     unresolved.entry(record.form_id).or_default().insert(index);
                     // Zero is the reader's null-key sentinel, not a failed lookup.
                     if id != Some(0) {
+                        let malformed = id.is_some_and(|id| {
+                            table
+                                .as_ref()
+                                .is_some_and(|table| table.malformed_ids.contains(&id))
+                        });
                         let reason = match id {
                             None => format!("{} bytes, not a four-byte ID", data.len()),
                             Some(id) if table.is_none() => format!(
                                 "ID {id}: unreadable {bank} table ({})",
                                 table_error.as_deref().unwrap_or("unavailable")
                             ),
+                            Some(id) if malformed => {
+                                format!("references malformed {bank} entry for localized ID {id}")
+                            }
                             Some(id) => format!("missing localized ID {id}"),
                         };
-                        let miss = misses.entry(priority).or_insert_with(|| {
+                        // An absent key in a readable bank is a faithful data gap; a
+                        // malformed field, referenced entry or unreadable bank is data loss.
+                        let summaries = if id.is_some() && table.is_some() && !malformed {
+                            &mut notices
+                        } else {
+                            &mut misses
+                        };
+                        let miss = summaries.entry(priority).or_insert_with(|| {
                             (
                                 0,
                                 format!(
@@ -117,7 +135,16 @@ pub(crate) fn resolve_localized_fields(
             order.names[priority]
         ));
     }
-    (unresolved, warnings)
+    let notices = notices
+        .into_iter()
+        .map(|(priority, (count, first))| {
+            format!(
+                "notice: {}: {count} localized IDs missing from readable string tables (first: {first})",
+                order.names[priority]
+            )
+        })
+        .collect();
+    (unresolved, warnings, notices)
 }
 
 #[cfg(test)]

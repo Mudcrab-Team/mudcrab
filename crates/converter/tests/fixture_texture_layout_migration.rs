@@ -1,5 +1,6 @@
-//! Producer-27 texture containers regenerate under producer 28 with smallest-first level data,
-//! while the meshes and scripts they sit beside stay cache hits on their own proofs.
+//! Producer-27 texture containers regenerate under producer 28 with smallest-first level data.
+//! Its meshes also regenerate because a producer-27 proof predates the named mesh contracts,
+//! while scripts stay cache hits on their own proofs.
 
 use converter::{
     AssetPipeline, PipelineConfig, PipelineReport,
@@ -142,7 +143,8 @@ async fn producer_27_texture_containers_regenerate_under_producer_28() {
         );
     }
 
-    // Publish the pack as producer 27 left it: old texture bytes, 27 settings proofs, same meshes.
+    // Publish the pack as producer 27 left it: old texture bytes and 27 settings proofs. Its mesh
+    // bytes match a current export only because this fixture rewrites the producer in place.
     let mut legacy = current.clone();
     legacy.schema_version = PRODUCER_27;
     let mut stale_bytes = BTreeMap::new();
@@ -179,16 +181,25 @@ async fn producer_27_texture_containers_regenerate_under_producer_28() {
 
     let rerun = run(config.clone()).await;
 
-    // Textures regenerate, and their output is the producer-28 layout.
-    assert_eq!(rerun.cache_hits as usize, untouched.len(), "{rerun:?}");
-    assert_eq!(rerun.converted as usize, textures.len(), "{rerun:?}");
+    // Textures regenerate into the producer-28 layout, and meshes regenerate because the
+    // producer-27 proofs cannot name the current mesh contract.
+    let reused_scripts = untouched
+        .iter()
+        .filter(|key| current.entries[*key].output.ends_with(".luau"))
+        .count();
+    assert_eq!(rerun.cache_hits as usize, reused_scripts, "{rerun:?}");
+    assert_eq!(
+        rerun.converted as usize,
+        textures.len() + untouched.len() - reused_scripts,
+        "{rerun:?}"
+    );
     for key in &textures {
         let name = &current.entries[key].output;
         let regenerated = fs::read(output.join(name)).unwrap();
         assert_eq!(regenerated, current_bytes[key], "{key}");
         assert_ne!(regenerated, stale_bytes[key], "{key}");
     }
-    // Meshes and scripts remain eligible on their own proofs, byte-for-byte unchanged.
+    // Rebuilt meshes and reused scripts must still match the bytes the pack held.
     for key in &untouched {
         let name = &current.entries[key].output;
         assert_eq!(

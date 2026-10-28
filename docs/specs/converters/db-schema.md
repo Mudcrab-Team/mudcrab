@@ -1396,3 +1396,160 @@ it through a `LEFT JOIN` on `references`, only when the table exists with every 
 | Door without `XTEL`, or with a malformed one | no row | scenery |
 | Destination cell has no resolvable record | no row | scenery |
 | Row with a NULL arrival value | n/a | not a load door |
+
+---
+
+### 18. Actor Model Catalog (`actor_models`, `actor_model_parts`)
+
+Every non-deleted `NPC_` base in the merged record map gets one `actor_models` row describing its
+race, sex, effective skin armor, body/head resolution and head path, plus one `actor_model_parts`
+row per biped slot the effective skin resolves. The catalog is resolved once, after the record
+loop, from the merged record map; the tables are projected from canonical records, not from either
+reader's raw `records.data`, so the legacy and in-house frontends publish identical rows.
+
+```sql
+CREATE TABLE IF NOT EXISTS actor_models (
+    id INTEGER PRIMARY KEY,          -- NPC_ FormID
+    race_id INTEGER NOT NULL,
+    sex TEXT NOT NULL,               -- 'male' | 'female'
+    skin_armo_id INTEGER,            -- effective NPC WNAM override, else effective RACE/WNAM
+    head_model TEXT,                 -- FaceGen or default head NIF path
+    head_source TEXT,                -- 'facegen' | 'default'
+    resolution TEXT NOT NULL,        -- 'body', 'body_head', 'unresolved'
+    skin_tone_r REAL,                -- NPC_/QNAM, 0..1, encoded scale
+    skin_tone_g REAL,
+    skin_tone_b REAL,
+    weight REAL                      -- NPC_/NAM7, 0..100
+);
+CREATE TABLE IF NOT EXISTS actor_model_parts (
+    npc_id INTEGER NOT NULL,
+    slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
+    model_path TEXT NOT NULL,
+    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+    skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
+    PRIMARY KEY (npc_id, slot)
+);
+```
+
+**Traits.** When `NPC_/ACBS` `u16` at offset 18 has bit 0 set, `TPLT` is followed while each
+target also has that bit set. The final Traits root supplies race (`RNAM`), sex (`ACBS` bit 0 at
+offset 0), and skin override (`WNAM`). A Traits-enabled NPC's own valid `WNAM` is ignored. A
+visited set detects cycles; there is no fixed depth limit. If the chain cannot resolve, the
+original NPC still gets one unresolved row with `race_id = 0`, placeholder `sex = 'male'`, no
+skin, parts, or head. Diagnostics identify missing, deleted, wrong-type, cyclic, or `LVLN`
+targets. The detailed source and evidence boundaries are in
+[`actor-catalog-inheritance-policy.md`](../../research/actor-catalog-inheritance-policy.md).
+
+**Armature skin texture set.** The game draws a part's `skin_tint` shapes with the armature's skin
+`TXST` for the NPC's sex (`NAM0` male, `NAM1` female), not with the part NIF's own texture set:
+retail `femalehands_1.nif` has no `_s`, while `NakedHands` (`00000D6C`) gives female hands
+`SkinHandFemale_1` (`0003EDE9`), whose `TX07` is `FemaleHands_1_S.dds`. `skin_texture_set_id`
+stores that FormID (`NULL` when the armature has none for the sex; the other sex's set is not
+used), and `armature_race_id` the armature's own `RNAM`, so `25` marks a part that came from the
+shared `DefaultRace` armature. The converter composes the default humanoid body from the
+`DefaultRace` sets: per sex and slot, the set most parts with `armature_race_id = 25` use, applied
+in NIF slot order (`TX00`→0, `TX01`→1, `TX03`→2, `TX04`→3, `TX05`→4, `TX02`→5, `TX06`→6,
+`TX07`→7; slots the set leaves empty keep the NIF's path) when the armature's model file is the
+part being composed. Both columns arrived after the first catalog export without a schema bump;
+`create_tables` adds them to an older reused `actor_model_parts`, and a database without them
+composes the body from the NIFs' own textures.
+
+**Skin tone.** `NPC_/QNAM` is three little-endian `f32` (red, green, blue), stored as written:
+0..1 on the encoded scale (retail values are whole steps of 1/255; Alvor `00013475` is
+198,176,168). The game passes it to the `skin_tint` shaders of the body, hands and feet as their
+tint colour. A base without `QNAM`, or with a short or non-finite one, stores `NULL` in all three. Since
+QNAM is not a confirmed Traits inheritance field, a Traits-enabled source NPC stores `NULL` even
+when it or its resolved root carries QNAM; this conservative catalog policy avoids inventing root
+inheritance.
+The columns arrived after the first catalog export without a schema bump: `create_tables` adds
+them to an older reused `actor_models`, and the engine probes for them, so a database without them
+still loads and its actors stay untinted.
+
+**Body weight.** `NPC_/NAM7` is one little-endian `f32` in 0..100: the weight the game blends
+between the thin (`_0`) and heavy (`_1`) body meshes (0 is thinnest, 100 is heaviest). The column
+is nullable; a base with no `NAM7`, or with a short, non-finite or out-of-range one, stores `NULL`
+and the engine draws the heavy body. The weight comes only from the base's own record: `TPLT`
+template inheritance is not resolved for it, matching `QNAM` and `RNAM`. The column arrived after
+the first catalog export without a schema bump (`WORLD_DATABASE_SCHEMA_VERSION` stays 9):
+`create_tables` adds it to an older reused `actor_models`, and the engine probes for it, so a
+database without it still loads.
+
+**Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
+`missing_acbs` diagnostic.
+
+Without Traits, the NPC supplies its own race and sex. A missing effective-root `ACBS` defaults
+to male and records `missing_acbs`.
+
+**Body resolver chain.** Effective Traits-root `NPC_/RNAM` -> the `RACE` record -> effective skin
+armor -> every `ARMO/MODL` armature in authored order -> each `ARMA`:
+
+1. Skin is the effective Traits-root NPC's `WNAM` override when it names a live `ARMO`; otherwise
+   it falls back to the effective race's `WNAM`. An invalid explicit override records its
+   diagnostic and uses that race fallback. This is a conservative catalog policy, not proof of
+   Skyrim engine fallback behavior.
+2. An armature is compatible when its primary `ARMA/RNAM` equals the effective race, or a
+   resolvable additional-race `ARMA/MODL` names that race. These matches share one tier and keep
+   authored `ARMO/MODL` order.
+3. Compatible armatures are considered before armatures whose primary `RNAM` is `25`
+   (`DefaultRace`), whatever order `ARMO/MODL` lists them in. If neither tier matches, no part is
+   written and `no_matching_arma` is recorded (the resolver never picks the first `ARMA`).
+4. `MOD2` is the male path. Female NPCs use `MOD3`, falling back to `MOD2` when `MOD3` is absent
+   or empty.
+5. The slot is the armature's biped bit: bit 2 = body, bit 3 = hands, bit 7 = feet (slot number
+   minus 30). The resolver reads `ARMA/BOD2` when present and falls back to `ARMA/BODT`, which is
+   the field retail Skyrim's `ARMA` records actually carry (the same `u32` slot word at offset 0;
+   `ARMO` is the record with `BOD2`). An armature with neither recognized bit is rejected loudly
+   with an `unrecognized_slot` diagnostic; a slot is never inferred from the filename.
+6. Paths are deduplicated case-insensitively, and a slot already filled keeps the higher-priority
+   armature.
+
+**Head.** The `RACE/DATA` `facegen_head` flag (bit 1 of the flags word at offset 32) selects the
+FaceGen geometry `meshes/actors/character/facegendata/facegeom/<plugin>/<formid>.nif`, lowercased,
+with `<plugin>` and plugin-local FormID from the effective Traits root's defining-owner
+`formid_map` identity (`plugin_name`/`internal_id`). The local ID uses eight-digit lower-case hex
+without the load-order slot prefix, so the runtime mod index never appears in the file name
+(`head_source = 'facegen'`). Using the Traits root is a conservative catalog policy, not proof of
+engine copy-body or FaceGen ownership behavior. Otherwise, when the
+resolved body is humanoid (a part path contains `malebody` or `femalebody`), the race/sex default
+head is used (`head_source = 'default'`):
+`meshes/actors/character/character assets/` plus `malehead.nif`/`femalehead.nif`, with the
+`maleheadargonian.nif`/`maleheadkhajiit.nif` variants when the race EditorID names Argonian or
+Khajiit. A creature body never gets a humanoid default head.
+
+**Path bases.** `head_model` is archive-root-relative: it starts with `meshes/` and uses forward
+slashes. `actor_model_parts.model_path` preserves the authored `ARMA/MOD2` or `ARMA/MOD3`
+string, including its case and separators. Retail part paths are relative to `meshes/` and
+omit that prefix; consumers must normalize these authored paths before asset lookup.
+
+This slice computes the head *path string* only; it does not compose a head NIF and does not treat
+`HDPT/PNAM` as the head mesh. FaceGen presence is the race flag, not a per-NPC file probe: the ESM
+export path has no asset index, so PR-6 validates the path before loading.
+
+**Reason codes.** A base that fails to resolve records the reason it was rejected: `no_rnam`,
+`no_race_record`, `race_no_wnam`, `no_armo_record`, `armo_no_modl`, `no_matching_arma`. Traits
+resolution and skin overrides add nine codes: `missing_traits_template`, `deleted_traits_template`,
+`wrong_type_traits_template`, `traits_template_cycle`, `leveled_traits_template`,
+`zero_npc_skin_override`, `missing_npc_skin_override`, `deleted_npc_skin_override`, and
+`wrong_type_npc_skin_override`. A base that reaches head resolution but has no head path also
+records `no_facegen_and_no_default`; early returns for unresolved Traits, missing race links, or
+missing race records do not. The reasons are not mutually exclusive, and a report that counts
+them counts a base once per reason.
+`unrecognized_slot` and `missing_acbs` are recorded wherever they occur. Diagnostics are printed
+by the exporter and returned by `converter::actor_models::resolve_actor_models`; they are not
+stored in the database.
+
+**Resolution.** `body_head` when at least one part and a head path resolve, `body` when parts
+resolve without a head, and `unresolved` otherwise. A base with no effective-root `RNAM` is still
+written with `race_id = 0` and `resolution = 'unresolved'`. Any unresolved Traits chain also
+produces one row for the original NPC with `race_id = 0`, placeholder `sex = 'male'`, and no parts
+or head, so it is recorded rather than dropped.
+
+**Ownership.** A complete load-order export drops and rebuilds both tables in the record
+transaction. A subset export, such as movement annotation, leaves them alone: a partial record map
+cannot resolve an `NPC_` whose race or skin it did not receive, so it must not overwrite a complete
+row with an unresolved one. A diagnostic archive (which defers every runtime view) leaves both
+tables empty. `NPC_` bases are never written into `statics`.
+
+**These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
+they only add tables, and consumers must check that they exist before reading them. No mandatory
+join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
