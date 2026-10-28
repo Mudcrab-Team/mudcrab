@@ -1,11 +1,16 @@
 //! Authored NIF depth state for surfaces drawn after opaque geometry.
 use bevy::{
+    ecs::system::SystemParamItem,
     mesh::MeshVertexBufferLayoutRef,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
     prelude::*,
-    render::render_resource::{
-        AsBindGroup, CompareFunction, DepthStencilState, RenderPipelineDescriptor,
-        SpecializedMeshPipelineError,
+    render::{
+        render_resource::{
+            AsBindGroup, AsBindGroupError, BindGroupLayout, BindGroupLayoutEntry, BindingResources,
+            BindlessDescriptor, BindlessSlabResourceLimit, CompareFunction, DepthStencilState,
+            RenderPipelineDescriptor, SpecializedMeshPipelineError, UnpreparedBindGroup,
+        },
+        renderer::RenderDevice,
     },
 };
 
@@ -58,6 +63,39 @@ impl NifDepthState {
     }
 
     pub fn apply(&self, depth: &mut DepthStencilState) {
+        NifDepthRasterKey::from(*self).apply(depth);
+    }
+
+    pub fn excludes_shadow(&self) -> bool {
+        !self.cast_shadows
+    }
+}
+
+/// Camera raster specialization, independent of authored caster eligibility.
+///
+/// `NotShadowCaster` owns per-entity shadow inclusion. That flag does not alter
+/// the material pipeline and must not split otherwise identical sorted runs.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Reflect)]
+pub struct NifDepthRasterKey {
+    pub depth_test: bool,
+    pub depth_write: bool,
+    pub decal: bool,
+    pub alpha_mask: bool,
+}
+
+impl From<NifDepthState> for NifDepthRasterKey {
+    fn from(state: NifDepthState) -> Self {
+        Self {
+            depth_test: state.depth_test,
+            depth_write: state.depth_write,
+            decal: state.decal,
+            alpha_mask: state.alpha_mask,
+        }
+    }
+}
+
+impl NifDepthRasterKey {
+    pub fn apply(&self, depth: &mut DepthStencilState) {
         depth.depth_write_enabled = Some(self.depth_write);
         depth.depth_compare = Some(if self.depth_test {
             CompareFunction::GreaterEqual
@@ -69,16 +107,53 @@ impl NifDepthState {
             depth.bias.slope_scale = DECAL_SLOPE_BIAS;
         }
     }
-
-    pub fn excludes_shadow(&self) -> bool {
-        !self.cast_shadows
-    }
 }
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-#[bind_group_data(NifDepthState)]
+#[derive(Asset, Reflect, Debug, Clone)]
 pub struct NifDepthExtension {
     pub state: NifDepthState,
+}
+
+// This extension owns only a pipeline key and deliberately preserves the original
+// non-bindless material contract. It introduces no additional GPU bindings.
+impl AsBindGroup for NifDepthExtension {
+    type Data = NifDepthRasterKey;
+    type Param = ();
+
+    fn label() -> &'static str {
+        "NifDepthExtension"
+    }
+
+    fn bind_group_data(&self) -> Self::Data {
+        self.state.into()
+    }
+
+    fn bindless_slot_count() -> Option<BindlessSlabResourceLimit> {
+        None
+    }
+
+    fn bindless_descriptor() -> Option<BindlessDescriptor> {
+        None
+    }
+
+    fn unprepared_bind_group(
+        &self,
+        _layout: &BindGroupLayout,
+        _render_device: &RenderDevice,
+        _param: &mut SystemParamItem<'_, '_, Self::Param>,
+        _force_no_bindless: bool,
+    ) -> Result<UnpreparedBindGroup, AsBindGroupError> {
+        Ok(UnpreparedBindGroup {
+            bindings: BindingResources(Vec::new()),
+        })
+    }
+
+    fn bind_group_layout_entries(
+        _render_device: &RenderDevice,
+        _force_no_bindless: bool,
+    ) -> Vec<BindGroupLayoutEntry> {
+        Vec::new()
+    }
 }
 
 impl From<&NifDepthExtension> for NifDepthState {
@@ -112,7 +187,7 @@ impl MaterialExtension for NifDepthExtension {
 
 fn specialize_nif_depth_descriptor(
     descriptor: &mut RenderPipelineDescriptor,
-    state: NifDepthState,
+    state: NifDepthRasterKey,
 ) {
     // Shadow depth belongs to the light, not the authored camera depth state.
     // Spawned mesh entities exclude casters only when Cast_Shadows is unset.
@@ -216,7 +291,7 @@ mod tests {
             ));
         let light_depth = shadow.depth_stencil.clone().unwrap();
 
-        specialize_nif_depth_descriptor(&mut shadow, state);
+        specialize_nif_depth_descriptor(&mut shadow, state.into());
 
         assert!(has_may_discard(&shadow));
         assert_eq!(shadow.fragment.unwrap().shader_defs.len(), 1);
@@ -230,7 +305,7 @@ mod tests {
                 .unwrap();
         let mut color = descriptor(vec![color_target()]);
 
-        specialize_nif_depth_descriptor(&mut color, state);
+        specialize_nif_depth_descriptor(&mut color, state.into());
 
         assert!(has_may_discard(&color));
         let depth = color.depth_stencil.unwrap();
@@ -244,7 +319,7 @@ mod tests {
         let nonmask = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Opaque).unwrap();
         let mut shadow = descriptor(vec![None]);
         let light_depth = shadow.depth_stencil.clone();
-        specialize_nif_depth_descriptor(&mut shadow, nonmask);
+        specialize_nif_depth_descriptor(&mut shadow, nonmask.into());
         assert!(!has_may_discard(&shadow));
         assert_eq!(shadow.depth_stencil, light_depth);
 
@@ -260,9 +335,78 @@ mod tests {
             ..default()
         };
         let light_depth = no_fragment.depth_stencil.clone();
-        specialize_nif_depth_descriptor(&mut no_fragment, mask);
+        specialize_nif_depth_descriptor(&mut no_fragment, mask.into());
         assert!(!has_may_discard(&no_fragment));
         assert_eq!(no_fragment.depth_stencil, light_depth);
+    }
+
+    #[test]
+    fn caster_eligibility_does_not_split_identical_raster_keys() {
+        let mut state = NifDepthState {
+            depth_test: true,
+            depth_write: false,
+            decal: true,
+            alpha_mask: true,
+            cast_shadows: false,
+        };
+        let no_shadow = depth_material(StandardMaterial::default(), state);
+        state.cast_shadows = true;
+        let shadow = depth_material(StandardMaterial::default(), state);
+        assert!(no_shadow.extension.state.excludes_shadow());
+        assert!(!shadow.extension.state.excludes_shadow());
+        assert_eq!(
+            no_shadow.extension.bind_group_data(),
+            shadow.extension.bind_group_data()
+        );
+        assert!(no_shadow.bind_group_data() == shadow.bind_group_data());
+        assert_ne!(
+            NifDepthState::from(&no_shadow.extension),
+            NifDepthState::from(&shadow.extension)
+        );
+    }
+
+    #[test]
+    fn state_only_extension_keeps_the_legacy_non_bindless_slot_limit() {
+        assert!(NifDepthMaterial::bindless_slot_count().is_none());
+    }
+
+    #[test]
+    fn state_only_extension_declares_no_bindless_resources_or_index_tables() {
+        assert!(NifDepthExtension::bindless_descriptor().is_none());
+        assert!(NifDepthMaterial::bindless_descriptor().is_none());
+        assert!(crate::nif_material::EffectPaletteDepthMaterial::bindless_descriptor().is_none());
+        assert!(crate::skin_material::SkyrimSkinDepthMaterial::bindless_descriptor().is_none());
+    }
+
+    #[test]
+    fn all_authored_states_preserve_each_raster_bit_without_caster_splits() {
+        let mut keys = std::collections::HashSet::new();
+        for bits in 0..32 {
+            let state = NifDepthState {
+                depth_test: bits & 1 != 0,
+                depth_write: bits & 2 != 0,
+                decal: bits & 4 != 0,
+                alpha_mask: bits & 8 != 0,
+                cast_shadows: bits & 16 != 0,
+            };
+            let material = depth_material(StandardMaterial::default(), state);
+            let key = material.bind_group_data();
+            let extension_key = key.extension;
+            assert_eq!(material.extension.state, state);
+            assert_eq!(extension_key.depth_test, state.depth_test);
+            assert_eq!(extension_key.depth_write, state.depth_write);
+            assert_eq!(extension_key.decal, state.decal);
+            assert_eq!(extension_key.alpha_mask, state.alpha_mask);
+            assert_eq!(extension_key, NifDepthRasterKey::from(state));
+            assert_eq!(material.extension.bind_group_data(), extension_key);
+            assert_eq!(NifDepthState::from(&material.extension), state);
+            assert_eq!(
+                material.extension.state.excludes_shadow(),
+                !state.cast_shadows
+            );
+            assert_eq!(keys.insert(key), bits < 16);
+        }
+        assert_eq!(keys.len(), 16);
     }
 
     #[test]
@@ -426,5 +570,13 @@ mod tests {
                 .depth_bias,
             0.0
         );
+    }
+
+    #[test]
+    fn authored_depth_extensions_keep_the_legacy_non_bindless_contract() {
+        assert!(NifDepthExtension::bindless_slot_count().is_none());
+        assert!(NifDepthMaterial::bindless_slot_count().is_none());
+        assert!(crate::nif_material::EffectPaletteDepthMaterial::bindless_slot_count().is_none());
+        assert!(crate::skin_material::SkyrimSkinDepthMaterial::bindless_slot_count().is_none());
     }
 }

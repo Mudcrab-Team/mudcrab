@@ -826,16 +826,31 @@ fn a_merged_cell_hides_its_lod_tiles_in_all_four_quadrants() {
         .insert_resource(StreamingMetrics::default())
         .insert_resource(ProfilingState::default())
         .insert_resource(lod::LodStreaming::default())
-        .add_systems(Update, lod::update_terrain_lod_visibility);
+        .init_resource::<lod::TerrainLodIndex>()
+        .add_systems(
+            Update,
+            lod::update_terrain_lod_visibility.run_if(lod::terrain_lod_visibility_has_work),
+        );
     let world = app.world_mut();
     world.spawn((
         StreamingCamera,
         Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
     ));
+    let worldspace_id = world.resource::<EngineConfig>().worldspace_id;
+    let owner = lod::LodStreaming::spawn_ready_chunk_at_tier_for_test(
+        world,
+        shared::lod::ChunkKey::new(
+            worldspace_id,
+            LodTier::Tier4,
+            shared::lod::ChunkAnchor::new(0, 0),
+        ),
+        shared::lod::LodOrigin::new(0, 0),
+    );
     let tiles: Vec<Entity> = (0..4u8)
         .map(|quadrant| {
             world
                 .spawn((
+                    ChildOf(owner),
                     TerrainCoverage {
                         grid: IVec2::ZERO,
                         quadrant,
@@ -862,6 +877,7 @@ fn a_merged_cell_hides_its_lod_tiles_in_all_four_quadrants() {
     let merged = app
         .world_mut()
         .spawn((
+            TerrainWorldspace(worldspace_id),
             TerrainPatch,
             MergedTerrainCoverage { grid: IVec2::ZERO },
             TerrainSurfaceReady,
@@ -997,13 +1013,13 @@ fn a_cell_that_fails_both_paths_is_an_error_and_counted_once() {
     assert_eq!(metrics.terrain_cells_fallback, 1);
 }
 
-fn payload_for(key: CellKey, cell_id: u32) -> Result<CellPayload, String> {
-    Ok(CellPayload {
+fn payload_for(key: CellKey, cell_id: u32) -> Result<Option<CellPayload>, String> {
+    Ok(Some(CellPayload {
         generation: 1,
         key,
         cell_id,
         references: Vec::new(),
-    })
+    }))
 }
 
 #[test]
