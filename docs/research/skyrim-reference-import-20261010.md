@@ -138,8 +138,8 @@ an unchecked BYOH-house entrance note. That space/subject mismatch remains open.
 
 Two small fixtures retain three imported candidate poses:
 
-- [Inn and Faendal, 1400×1050](../../crates/engine/tests/fixtures/lighting-reference-riverwood-shots.json): unchanged numeric poses and angles; 4:3 output matches both imported reference aspects.
-- [Riverwood street, 1400×788](../../crates/engine/tests/fixtures/lighting-reference-riverwood-wide-shots.json): unchanged numeric pose and angles; only output aspect changes from the imported 4:3 fixture.
+- Inn and Faendal, 1400×1050 (`crates/engine/tests/fixtures/lighting-reference-riverwood-shots.json`, snapshot only): unchanged numeric poses and angles; 4:3 output matches both imported reference aspects.
+- Riverwood street, 1400×788 (`crates/engine/tests/fixtures/lighting-reference-riverwood-wide-shots.json`, snapshot only): unchanged numeric pose and angles; only output aspect changes from the imported 4:3 fixture.
 
 Names, worldspace/interior fields, positions, yaw, pitch, horizontal FOV,
 reference and confidence fields were compared with the immutable imported JSON

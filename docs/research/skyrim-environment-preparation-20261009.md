@@ -181,9 +181,9 @@ simulated: preview interpolates the selected weather's own four time slots.
 
 ## Preview implementation and remaining gates
 
-The pure resolver in [environment_preview.rs](../../crates/engine/src/environment_preview.rs) returns `InjectedLighting`,
-source/provenance reports, optional sky colors, and fog source metadata. It
-uses an explicit weather ID when supplied; otherwise it finds `SkyrimClear`
+The pure resolver in `crates/engine/src/environment_preview.rs` (snapshot only, absent here)
+returns `InjectedLighting`, source/provenance reports, optional sky colors, and fog source
+metadata. It uses an explicit weather ID when supplied; otherwise it finds `SkyrimClear`
 by editor ID in the ordered catalog. Missing explicit weather does not select
 another weather silently. Missing inputs use reported fixed coefficients.
 

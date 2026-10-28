@@ -9,7 +9,7 @@ hash-checking launcher.
 
 ## Implemented behavior
 
-[Checkpoint tooling](../../scripts/skyrim-render-checkpoint.py) preserves the
+Checkpoint tooling (`scripts/skyrim-render-checkpoint.py`, snapshot only) preserves the
 dirty source tree, tracked patch, local vendor dependencies, binary, asset
 manifest, requested profile and shot fixture in a new directory outside the
 checkout. Verification checks the complete saved inventory, contents and
@@ -19,7 +19,7 @@ Source symlinks retain their targets; external symlink referents are not frozen.
 The current candidate inventory contains no source symlinks. Asset-manifest
 identity is recorded separately from full pack-content validation.
 
-[Capture receipts](../../crates/engine/src/capture_receipt.rs) cover `--shots`
+Capture receipts (`crates/engine/src/capture_receipt.rs`, snapshot only) cover `--shots`
 and headless `--acceptance-screenshot`. Each PNG has an immutable `.capture.json`
 sidecar with distinct requested, extracted and readback-completed
 frame identities, camera and output-view joins, image hashes, adapter/format
@@ -51,7 +51,7 @@ pipeline readiness are recorded separately from actual pass execution. Direct
 float-to-PNG equality needs a validated or explicitly controlled remaining
 output chain.
 
-[Native diffuse publication](../../crates/converter/src/native_diffuse.rs)
+Native diffuse publication (`crates/converter/src/native_diffuse.rs`, snapshot only)
 requalifies the winning staged DDS on every conversion, including cached NIF
 outputs. Qualified ordinary 2D legacy DXT1/3/5 and typed DX10 BC1/2/3/7 views
 preserve the declared mip blocks and transfer in independent KTX2 aliases.

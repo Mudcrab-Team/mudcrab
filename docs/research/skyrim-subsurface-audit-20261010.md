@@ -6,7 +6,7 @@ This is a source, converted-package and static shipped-shader audit. It does not
 
 ## Active shading and lost inputs
 
-[Ordinary native shading](../../crates/engine/src/nif_material/native_common.wgsl) adds shadowed Lambert diffuse, affine ambient, constant emission and an injected IBL term, with separate half-vector specular. It has no wrap, thickness, scattering texture or transmitted-light term. Native two-sided meshes disable culling while retaining the original normal. The Bevy PBR fallback flips backface normals, but `diffuse_transmission`, `specular_transmission` and `thickness` remain zero. No converted GLB publishes transmission or volume extensions.
+Ordinary native shading (`crates/engine/src/nif_material/native_common.wgsl`, snapshot only) adds shadowed Lambert diffuse, affine ambient, constant emission and an injected IBL term, with separate half-vector specular. It has no wrap, thickness, scattering texture or transmitted-light term. Native two-sided meshes disable culling while retaining the original normal. The Bevy PBR fallback flips backface normals, but `diffuse_transmission`, `specular_transmission` and `thickness` remain zero. No converted GLB publishes transmission or volume extensions.
 
 | Authored input | Retained | Current gap |
 | --- | --- | --- |

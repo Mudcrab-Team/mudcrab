@@ -82,8 +82,8 @@ but does not retain the original DDS format.
 [Native surface construction](../../crates/engine/src/nif_material.rs#L441)
 initially copies `StandardMaterial.base_color_texture`; the material hook now
 replaces that native binding when explicit DDS provenance selects a separate
-native URI. Its
-[fragment shader](../../crates/engine/src/nif_material/native_material.wgsl#L18)
+native URI. Its fragment shader
+(`crates/engine/src/nif_material/native_material.wgsl` line 18, snapshot only)
 samples that handle before applying the native response. Updating a
 `nativeSurface.textureViews` entry alone does not replace this bound handle.
 
