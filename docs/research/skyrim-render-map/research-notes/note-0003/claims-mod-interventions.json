@@ -815,7 +815,7 @@
      "revision": "revision not captured in rendered corpus",
      "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
      "line_or_locus": "line 2229, source_contradictions_and_attribution_gaps",
-     "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+     "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
      "hash_basis": "source file SHA-256 retained in rendered corpus"
     },
     {
@@ -823,7 +823,7 @@
      "revision": "revision not captured in rendered corpus",
      "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
      "line_or_locus": "line 2229, source_contradictions_and_attribution_gaps",
-     "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+     "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
      "hash_basis": "source file SHA-256 retained in rendered corpus"
     }
    ],

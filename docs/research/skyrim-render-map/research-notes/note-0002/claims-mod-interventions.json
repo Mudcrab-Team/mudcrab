@@ -640,7 +640,7 @@
           "revision": "local audit 2026-10-10",
           "path": "scope_matrix/findings",
           "line_or_locus": "MC-F01, MC-F20–MC-F23",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         }
       ],
@@ -941,7 +941,7 @@
           "revision": "local audit 2026-10-10",
           "path": "MC-S01/MC-S06/MC-S07 and scope_matrix",
           "line_or_locus": "Lux/ELFX/Relighting author-page scope; no archive fetched",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         },
         {
@@ -989,7 +989,7 @@
           "revision": "local audit 2026-10-10",
           "path": "Lux historical/current author scope MC-F findings and reconciliation MC-R03",
           "line_or_locus": "Lux 6.9 portal-strict option; archive not fetched",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         }
       ],
@@ -1029,7 +1029,7 @@
           "revision": "local audit 2026-10-10",
           "path": "MC-S01–MC-S09; MC-F findings",
           "line_or_locus": "author pages document radius/fade for some options/mods",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         },
         {
@@ -1076,7 +1076,7 @@
           "revision": "local audit 2026-10-10",
           "path": "MC-F20–MC-F23; MC-S06",
           "line_or_locus": "main, Enhancer, Exteriors, Weathers are distinct modules",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         }
       ],
@@ -1115,7 +1115,7 @@
           "revision": "local audit 2026-10-10",
           "path": "MC-F24–MC-F26; MC-S07",
           "line_or_locus": "current author documentation; archive absent",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         }
       ],
@@ -1154,7 +1154,7 @@
           "revision": "local audit 2026-10-10",
           "path": "MC-S01; MC-R03; MC-F findings",
           "line_or_locus": "author docs; current page version 7.1, no archive payload",
-          "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72",
+          "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c",
           "hash_basis": "local evidence artifact SHA-256"
         },
         {

@@ -355,7 +355,7 @@
   "input_anchor_evidence": [
     {
       "path": "docs/research/skyrim-render-map/input-contracts.json",
-      "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e",
+      "sha256": "4f9edd12522bfd81449ff3bc634ffa309f9dff07318ebc932547138a0e48506e",
       "revision_scope_note": "This pin follows the reviewed I-E06 hash/scope update for project diagnostic and FXAA/output-chain notes. Native equations, input edges, proof statuses and coverage counts are unchanged."
     },
     {

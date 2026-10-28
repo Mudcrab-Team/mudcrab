@@ -468,8 +468,8 @@
   "artifacts": [
     {
       "path": "docs/research/skyrim-render-map/README.md",
-      "bytes": 14039,
-      "sha256": "49378fe2f9d0f330b514a1660e21321f9f3484886ffec9e35bc0fa2190c05cf3"
+      "bytes": 14268,
+      "sha256": "96728df4fdc3d234b8af75b6758834bbb3ea3e7d78a1a2e413ca96f6a60c44d1"
     },
     {
       "path": "docs/research/skyrim-render-map/d3d11-abi.json",
@@ -508,8 +508,8 @@
     },
     {
       "path": "docs/research/skyrim-render-map/input-contracts.json",
-      "bytes": 250166,
-      "sha256": "0dfff1971153514dffdaf852f50a6e1ef77ea5c9018989637130681f2ab5b85e"
+      "bytes": 249950,
+      "sha256": "4f9edd12522bfd81449ff3bc634ffa309f9dff07318ebc932547138a0e48506e"
     },
     {
       "path": "docs/research/skyrim-render-map/input-contracts.md",
@@ -519,7 +519,7 @@
     {
       "path": "docs/research/skyrim-render-map/mod-content-rendering.json",
       "bytes": 67429,
-      "sha256": "48e37abdea8e13999fda1f6f060944bf6c67b5c31a73acac2607556d6fac4d72"
+      "sha256": "3e949473cf4fed094e476078deb362e8160165f14c1077eb4dc66b3f6000934c"
     },
     {
       "path": "docs/research/skyrim-render-map/mod-content-rendering.md",
@@ -616,7 +616,7 @@
   "validation_tools": [
     {
       "path": "scripts/check-skyrim-render-map.py",
-      "sha256": "fa3e31516dfc7bd134c0f886bef382735de97da4e24861ef67bdbb2f10e6dcb5"
+      "sha256": "25fbcbdb4db0dc3c325370016a4f5c4254e5b0a448a23006a7d50ad5145fc851"
     },
     {
       "path": "scripts/build-skyrim-render-map.py",
@@ -628,5 +628,97 @@
     "Remaining technique selection, producers, callbacks and complete conditional call closure",
     "Active session/record/override/settings identities and per-draw committed resource/state receipts",
     "Matched retail intermediate outputs and visual acceptance"
-  ]
+  ],
+  "research_evidence": {
+    "root_supplied": true,
+    "checked": 12,
+    "skipped": 0,
+    "rows": [
+      {
+        "evidence_id": "I-E04",
+        "path": "glow-20261010/analysis/native-sun-producer.json",
+        "checked_path": "<research-evidence>/glow-20261010/analysis/native-sun-producer.json",
+        "pinned_sha256": "dce59aba6becadd0b1f5d5aeb4a5f5227308c9ec2cac03bf282833dc0761e4b9",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E20",
+        "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceModifierInstanceForm.h",
+        "checked_path": "<research-evidence>/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceModifierInstanceForm.h",
+        "pinned_sha256": "c643f5b28034df50d32c890d2e3c4ffc7e7e22d4ad026615890f55b92a927b62",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E21",
+        "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+        "checked_path": "<research-evidence>/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+        "pinned_sha256": "4fab870f4a3fd9faccc2e0213577687444312be2da68e157ed5d8476d28fff43",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E22",
+        "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BSShaderMaterial.h",
+        "checked_path": "<research-evidence>/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BSShaderMaterial.h",
+        "pinned_sha256": "250cd0227563c29ccc055728fdfaa60cb5744491349eb3f46ae0d12c3f1080d5",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E23",
+        "path": "fog-20261008/shaders/skyrimse-test/skyrim64_test/src/patches/TES/BSGraphics/BSGraphicsRenderer.cpp",
+        "checked_path": "<research-evidence>/fog-20261008/shaders/skyrimse-test/skyrim64_test/src/patches/TES/BSGraphics/BSGraphicsRenderer.cpp",
+        "pinned_sha256": "ba370062d6008e2a6f6c95d5fb2a193d8960a813f2c4027762d731151217d2d8",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E24",
+        "path": "render-map-20261010/identity/native-identifiers.json",
+        "checked_path": "<research-evidence>/render-map-20261010/identity/native-identifiers.json",
+        "pinned_sha256": "1e70e50b814c59848842ff982376c7de1a1152cd489c11deac35251f7f4cfb37",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E25",
+        "path": "render-map-20261010/inputs/native-interpretation.json",
+        "checked_path": "<research-evidence>/render-map-20261010/inputs/native-interpretation.json",
+        "pinned_sha256": "c226c2a2635547f38590eea03b352a66ef50c07c15d2817d3fb285e0766af8aa",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E26",
+        "path": "render-map-20261010/inputs/verification.json",
+        "checked_path": "<research-evidence>/render-map-20261010/inputs/verification.json",
+        "pinned_sha256": "9cc8e64a1e25f325b79ed9ba25b266c636bfcb1f51fb3d733630b21947dca806",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E27",
+        "path": "render-map-20261010/frame/native/frame-11-input-layout.json",
+        "checked_path": "<research-evidence>/render-map-20261010/frame/native/frame-11-input-layout.json",
+        "pinned_sha256": "92d6c167dd7b98dcabbd2a7d0570f1d38de16edfbd380bfedf181b3a152548bd",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E28",
+        "path": "render-map-20261010/shaders/targeted-material-shader-links.json",
+        "checked_path": "<research-evidence>/render-map-20261010/shaders/targeted-material-shader-links.json",
+        "pinned_sha256": "b825ab31b2bc455233c701e4b3fd78451d62e3b004d997713eb9405a66009a3f",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E29",
+        "path": "render-map-20261010/inputs/pe-data.json",
+        "checked_path": "<research-evidence>/render-map-20261010/inputs/pe-data.json",
+        "pinned_sha256": "868c2b2ad830f42d76b3033c150c2020a1aceae0b5e8c85cfebcbe2c118f0642",
+        "checked": true
+      },
+      {
+        "evidence_id": "I-E31",
+        "path": "render-map-20261010/frame/native/frame-10-renderer-apply.json",
+        "checked_path": "<research-evidence>/render-map-20261010/frame/native/frame-10-renderer-apply.json",
+        "pinned_sha256": "6c0b4bef6c6e2e96eb19f9fbc2473c9be96bb935e292f8db4bb4493880e8351c",
+        "checked": true
+      }
+    ],
+    "scope": "Pins under the private research root are verified only when --research-evidence is given; a missing root leaves them unchecked and closes no gate."
+  }
 }

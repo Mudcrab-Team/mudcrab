@@ -277,6 +277,8 @@ def main():
     parser.add_argument('--native-output-evidence', type=Path, help='Private native-output extension root; check exports/LLVM receipt hashes separately, requires --target')
     parser.add_argument('--project-source-evidence', type=Path,
                         help='Frozen checkpoint workspace for historical project_source pins; record current source differences, requires parent receipt.json')
+    parser.add_argument('--research-evidence', type=Path,
+                        help='Private mudcrab-research root holding the glow, rea, fog and render-map trees; verifies the pins that name a research root')
     parser.add_argument('--write-coverage', action='store_true', help='Refresh coverage.json after validation')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -560,6 +562,7 @@ def main():
     check(inputs['scope_counts']['connections'] == len(edge_ids), 'Input connection count mismatch')
     check(inputs['scope_counts']['connections_by_status'] == dict(statuses), 'Input status counts mismatch')
     project_source_rows = []
+    research_rows = []
     project_source_receipt = None
     if args.project_source_evidence:
         project_source_root = args.project_source_evidence.resolve()
@@ -572,6 +575,25 @@ def main():
         project_source_receipt = dict(path='<project-source-evidence>/../receipt.json', sha256=digest(receipt_path),
                                       scope='Receipt identity and selected source-file pins only; no complete checkpoint inventory validation here.')
     for evidence in inputs['evidence']:
+        root_name = evidence.get('root')
+        if root_name is not None:
+            # Pins that live in the private research tree carry a named root so the
+            # public map holds no home paths. They are verified only when that root is
+            # supplied; without it they are recorded as unchecked, not as failures.
+            check(root_name == 'research', 'Unknown input evidence root: ' + evidence['id'])
+            relative = Path(evidence['path'])
+            check(not relative.is_absolute() and '..' not in relative.parts,
+                  'Research input pin must be relative to its root: ' + evidence['id'])
+            pinned = args.research_evidence / relative if args.research_evidence else None
+            if pinned is not None:
+                check(pinned.exists(), 'Missing input evidence: ' + str(pinned))
+                check(digest(pinned) == evidence['sha256'], 'Stale input evidence: ' + str(pinned))
+            research_rows.append(dict(evidence_id=evidence['id'], path=evidence['path'],
+                                      checked_path=str(pinned) if pinned else None,
+                                      pinned_sha256=evidence['sha256'], checked=pinned is not None))
+            continue
+        check(not Path(evidence['path']).is_absolute(),
+              'Input evidence pin must be repository-relative or rooted: ' + evidence['id'])
         path = Path(evidence['path'])
         if not path.is_absolute():
             path = root / path
@@ -600,6 +622,11 @@ def main():
             continue
         check(path.exists(), 'Missing input evidence: ' + str(path))
         check(digest(path) == evidence['sha256'], 'Stale input evidence: ' + str(path))
+    research_scope = dict(root_supplied=args.research_evidence is not None,
+                          checked=sum(1 for row in research_rows if row['checked']),
+                          skipped=sum(1 for row in research_rows if not row['checked']),
+                          rows=research_rows,
+                          scope='Pins under the private research root are verified only when --research-evidence is given; a missing root leaves them unchecked and closes no gate.')
     project_source_scope = dict(historical_snapshot_used=args.project_source_evidence is not None,
                                 receipt=project_source_receipt, rows=project_source_rows,
                                 all_current_source_files_match_pins=all(row['current_source_matches_pin'] for row in project_source_rows),
@@ -777,7 +804,7 @@ def main():
                    target_sha256=target_hash, package=shaders['counts'], embedded=embedded['counts'], native_identity=native['coverage'],
                    frame_verification=verification, frame_nodes=len(node_ids), frame_edges=len(frame['graph']['edges']),
                    frame_stage_domains=len(frame['coverage_matrix']), input_coverage=inputs['scope_counts'],
-                   project_source_evidence=project_source_scope,
+                   project_source_evidence=project_source_scope, research_evidence=research_scope,
                    native_shader_loader=loader['counts'],
                    image_space_connections=connections['validation'],
                    native_output_transfer=output_transfer,

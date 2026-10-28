@@ -93,7 +93,8 @@
     },
     {
       "id": "I-E04",
-      "path": "/Users/taylor/.local/share/mudcrab-research/glow-20261010/analysis/native-sun-producer.json",
+      "root": "research",
+      "path": "glow-20261010/analysis/native-sun-producer.json",
       "sha256": "dce59aba6becadd0b1f5d5aeb4a5f5227308c9ec2cac03bf282833dc0761e4b9",
       "level": "interpreted_native_evidence",
       "scope": "Default Sun diffuse/dimmer producer and ordinary sunlight consumer.",
@@ -247,7 +248,8 @@
     },
     {
       "id": "I-E20",
-      "path": "/Users/taylor/.local/share/mudcrab-research/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceModifierInstanceForm.h",
+      "root": "research",
+      "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceModifierInstanceForm.h",
       "sha256": "c643f5b28034df50d32c890d2e3c4ffc7e7e22d4ad026615890f55b92a927b62",
       "level": "source_assistance_only",
       "scope": "Trigger/Stop/CrossFade relocation-ID and virtual Apply seeds; addresses/layouts require target verification.",
@@ -256,7 +258,8 @@
     },
     {
       "id": "I-E21",
-      "path": "/Users/taylor/.local/share/mudcrab-research/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+      "root": "research",
+      "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
       "sha256": "4fab870f4a3fd9faccc2e0213577687444312be2da68e157ed5d8476d28fff43",
       "level": "source_assistance_only",
       "scope": "Serialized/instance channel names and interpolation candidate structure; no target producer arithmetic claim.",
@@ -265,7 +268,8 @@
     },
     {
       "id": "I-E22",
-      "path": "/Users/taylor/.local/share/mudcrab-research/rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BSShaderMaterial.h",
+      "root": "research",
+      "path": "rea-20261008/references/CommonLibSSE-NG-b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BSShaderMaterial.h",
       "sha256": "250cd0227563c29ccc055728fdfaa60cb5744491349eb3f46ae0d12c3f1080d5",
       "level": "source_assistance_only",
       "scope": "Feature/type enum candidates; does not prove runtime permutation translation.",
@@ -274,7 +278,8 @@
     },
     {
       "id": "I-E23",
-      "path": "/Users/taylor/.local/share/mudcrab-research/fog-20261008/shaders/skyrimse-test/skyrim64_test/src/patches/TES/BSGraphics/BSGraphicsRenderer.cpp",
+      "root": "research",
+      "path": "fog-20261008/shaders/skyrimse-test/skyrim64_test/src/patches/TES/BSGraphics/BSGraphicsRenderer.cpp",
       "sha256": "ba370062d6008e2a6f6c95d5fb2a193d8960a813f2c4027762d731151217d2d8",
       "level": "source_assistance_only",
       "scope": "Historical descriptor intersection/layout cache and helper name; historical addresses are not target addresses.",
@@ -283,7 +288,8 @@
     },
     {
       "id": "I-E24",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/identity/native-identifiers.json",
+      "root": "research",
+      "path": "render-map-20261010/identity/native-identifiers.json",
       "sha256": "1e70e50b814c59848842ff982376c7de1a1152cd489c11deac35251f7f4cfb37",
       "level": "target_PE_identity_only",
       "scope": "Root original-PE RTTI/COL/vtable catalog pins the modifier class table and method pointers, not their behavior.",
@@ -292,7 +298,8 @@
     },
     {
       "id": "I-E25",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/inputs/native-interpretation.json",
+      "root": "research",
+      "path": "render-map-20261010/inputs/native-interpretation.json",
       "sha256": "c226c2a2635547f38590eea03b352a66ef50c07c15d2817d3fb285e0766af8aa",
       "level": "fresh_target_native_interpretation",
       "scope": "Nine scoped segments: selected sunlight source, material load/packing/key translation/binding, authored layout, IMAD composition and conditional static shader-loader association.",
@@ -301,7 +308,8 @@
     },
     {
       "id": "I-E26",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/inputs/verification.json",
+      "root": "research",
+      "path": "render-map-20261010/inputs/verification.json",
       "sha256": "9cc8e64a1e25f325b79ed9ba25b266c636bfcb1f51fb3d733630b21947dca806",
       "level": "fresh_original_PE_and_independent_LLVM_verification",
       "scope": "Eleven successful bounded read-only batches; all queried function bodies untruncated; requested-span bytes and function instruction boundaries checked.",
@@ -310,7 +318,8 @@
     },
     {
       "id": "I-E27",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/frame/native/frame-11-input-layout.json",
+      "root": "research",
+      "path": "render-map-20261010/frame/native/frame-11-input-layout.json",
       "sha256": "92d6c167dd7b98dcabbd2a7d0570f1d38de16edfbd380bfedf181b3a152548bd",
       "level": "target_native_export",
       "scope": "Target input-element creator and layout cache; bytes/LLVM validated by frame agent.",
@@ -319,7 +328,8 @@
     },
     {
       "id": "I-E28",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/shaders/targeted-material-shader-links.json",
+      "root": "research",
+      "path": "render-map-20261010/shaders/targeted-material-shader-links.json",
       "sha256": "b825ab31b2bc455233c701e4b3fd78451d62e3b004d997713eb9405a66009a3f",
       "level": "original_shipped_shader_metadata_and_signature",
       "scope": "Lighting VS00000000 original ISGN/descriptor and PS00006201/00006601 original material remaps and register access.",
@@ -328,7 +338,8 @@
     },
     {
       "id": "I-E29",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/inputs/pe-data.json",
+      "root": "research",
+      "path": "render-map-20261010/inputs/pe-data.json",
       "sha256": "868c2b2ad830f42d76b3033c150c2020a1aceae0b5e8c85cfebcbe2c118f0642",
       "level": "original_PE_data_reads",
       "scope": "Target semantic strings and exact IMAD fallback/clamp/sentinel floats; private hashes/file offsets retained.",
@@ -346,7 +357,8 @@
     },
     {
       "id": "I-E31",
-      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/frame/native/frame-10-renderer-apply.json",
+      "root": "research",
+      "path": "render-map-20261010/frame/native/frame-10-renderer-apply.json",
       "sha256": "6c0b4bef6c6e2e96eb19f9fbc2473c9be96bb935e292f8db4bb4493880e8351c",
       "level": "target_native_export",
       "scope": "Descriptor intersection and D3D layout/resource apply; bytes/LLVM validated by frame agent.",
