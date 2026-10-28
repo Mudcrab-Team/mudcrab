@@ -371,6 +371,18 @@ fn access_path(
     }
 }
 
+/// Naga broadcasts a scalar divisor before vector division; compare the original scalar
+/// access rather than that generated vector expression with the mask helper's scalar input.
+fn scalar_access_path(
+    function: &naga::Function,
+    expression: Handle<Expression>,
+) -> (Handle<Expression>, Vec<u32>) {
+    match function.expressions[expression] {
+        Expression::Splat { value, .. } => scalar_access_path(function, value),
+        _ => access_path(function, expression),
+    }
+}
+
 /// Resolve one production call result, rather than accepting a disconnected helper invocation.
 fn call<'a>(
     module: &naga::Module,
@@ -548,7 +560,7 @@ fn mask_slots(
             .iter()
             .any(|(_, expression)| matches!(expression,
                 Expression::Binary { op: naga::BinaryOperator::Divide, right, .. }
-                    if access_path(fragment, *right) == access_path(fragment, arguments[2])
+            if scalar_access_path(fragment, *right) == scalar_access_path(fragment, arguments[2])
             ))
     );
     let (mask_root, path) = access_path(fragment, arguments[1]);
