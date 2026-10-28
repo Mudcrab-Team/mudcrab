@@ -30,13 +30,17 @@ Candidates follow a cell-shifted R2 sequence, seeded with cell ID and slot index
 Every accepted instance retains its original slot index and batches retain slot
 order. Effective blend weight is shared among a texture's nominated species;
 weights for repeated species accumulate across layers. The INI type cap selects
-the first N species in stable cache FormID order per texture, and the texture
-threshold rejects blend weights below its value. Both apply again after jitter.
-The current converter and cache do not retain LTEX GNAM occurrence order; the
-shared validator requires ascending species IDs. xEdit defines Grasses as a
-sorted array, which does not establish a native first-N priority rule. Preserving
-GNAM occurrence order would require a converter/cache contract change before
-the runtime could use it. This cap remains MudCrab policy, not Skyrim parity.
+the first N species in each cached layer's winning LTEX GNAM occurrence order
+(default `iMaxGrassTypesPerTexure=2`), and the texture threshold rejects blend
+weights below its value. Both apply again after jitter. The converter preserves
+first occurrences and filters unresolved/deleted links without reordering survivors;
+the runtime never sorts the per-layer list by FormID. Only the global rule table
+and output batches use FormID order for lookup and deterministic organization.
+For example, LReachGrass01 nominates ReachGrass02, ReachGrass01, TundraGrass03;
+the default cap admits ReachGrass02 and ReachGrass01. The existing version gate
+rejects v5 archives and requests reconversion, because their sorted lists cannot
+recover GNAM priority. See the [cache contract](../converters/grass-cache.md).
+This first-N cap remains MudCrab policy, not a claim of Skyrim's selection algorithm.
 Species that fail slope
 or water rules cannot compete. Each eligible species scores its blended weight
 and density through a deterministic exponential race; the highest score wins.

@@ -120,7 +120,7 @@ fn quantize(value: f32, span: f32) -> u16 {
 }
 
 // Apply texture suitability and the type cap at both the candidate and jittered
-// position. Cache order is stable FormID order; native Skyrim selection is not
+// position. Cache v6 retains each texture's GNAM order; native Skyrim selection is not
 // reproduced by this deterministic placement algorithm.
 /// Apply the texture threshold and species cap to sampled layer coverage.
 fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfig) -> f32 {
@@ -489,6 +489,66 @@ mod tests {
             texture_form_id: id,
             grass_ids,
             weights: vec![weight; GRASS_BLEND_SIDE * GRASS_BLEND_SIDE],
+        }
+    }
+
+    #[test]
+    /// LReachGrass01's authored first two links win the cap despite descending FormIDs.
+    fn reach_gnam_order_selects_first_two_species() {
+        // Literal official IDs: ReachGrass02, ReachGrass01, TundraGrass03.
+        let order = vec![342275, 341137, 175315];
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let data = shared::grass::GrassCache {
+            version: GRASS_CACHE_VERSION,
+            types: vec![species(175315), species(341137), species(342275)],
+            cells: vec![fixture(vec![layer(117831, order.clone(), 1.0)])],
+        };
+        std::fs::write(
+            file.path(),
+            rkyv::to_bytes::<rkyv::rancor::Error>(&data).unwrap(),
+        )
+        .unwrap();
+        let opened = GrassCache::open(file.path());
+        assert!(
+            opened.is_ok(),
+            "GNAM-ordered layer must load: {:?}",
+            opened.err()
+        );
+        let cache = GrassCache::open(file.path()).unwrap();
+        let cached: Vec<u32> = cache.cell(42).unwrap().quadrants[0].layers[0]
+            .grass_ids
+            .iter()
+            .map(|id| (*id).into())
+            .collect();
+        assert_eq!(cached, order);
+        let config = EngineConfig::default();
+        assert_eq!(config.grass_max_types_per_texture, 2);
+        for (cap, expected) in [
+            (1, vec![342275]),
+            (2, vec![341137, 342275]),
+            (3, vec![175315, 341137, 342275]),
+            (0, vec![]),
+        ] {
+            let generated = generate(
+                &cache,
+                42,
+                &EngineConfig {
+                    grass_max_types_per_texture: cap,
+                    ..config.clone()
+                },
+            );
+            let ids: Vec<_> = generated
+                .batches
+                .iter()
+                .map(|batch| batch.grass_id)
+                .collect();
+            assert_eq!(ids, expected, "GNAM cap {cap}");
+            assert!(
+                generated
+                    .batches
+                    .iter()
+                    .all(|batch| !batch.instances.is_empty())
+            );
         }
     }
 

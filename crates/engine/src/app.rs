@@ -3407,7 +3407,7 @@ mod tests {
         assert!(load_optional_grass_cache(&mut config, true).is_none());
         assert!(!config.grass);
         let mut cache = shared::grass::GrassCache {
-            version: 4,
+            version: 5,
             types: vec![],
             cells: vec![],
         };
@@ -3419,7 +3419,7 @@ mod tests {
         config.grass = true;
         assert!(load_optional_grass_cache(&mut config, true).is_none());
         assert!(!config.grass);
-        cache.version = 5;
+        cache.version = shared::grass::GRASS_CACHE_VERSION;
         std::fs::write(
             &path,
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
