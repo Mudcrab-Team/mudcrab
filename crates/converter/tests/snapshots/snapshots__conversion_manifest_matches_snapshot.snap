@@ -82,6 +82,7 @@ expression: manifest
   "configuration_hash": "5d4328fe57cd0e9a3129eb86fe660997eed83f2c07206c6be34669315e7370f3",
   "entries": {
     "meshes/generated.nif": {
+      "animation_diagnostics": {},
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
       "output_size": 2320,

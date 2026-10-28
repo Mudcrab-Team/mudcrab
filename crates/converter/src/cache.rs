@@ -42,6 +42,9 @@ pub struct StagedOutput {
     pub source_hash: String,
     pub output_size: u64,
     pub output_hash: String,
+    /// Absent historical diagnostics are read once from verified retained GLB metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation_diagnostics: Option<AnimationDiagnostics>,
 }
 
 impl StagedOutput {
@@ -163,12 +166,30 @@ pub fn load_staged_outputs(staging: &Path) -> Result<BTreeMap<String, StagedOutp
     Ok(records)
 }
 
+/// Non-gating authored-animation diagnostics, carried with the output's hash provenance.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnimationDiagnostics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped_channels: BTreeMap<String, usize>,
+}
+
+impl AnimationDiagnostics {
+    pub fn is_empty(&self) -> bool {
+        self.notices.is_empty() && self.skipped_channels.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheEntry {
     pub source_hash: String,
     pub output: String,
     pub output_size: u64,
     pub output_hash: String,
+    /// Absent historical diagnostics are read once from verified retained GLB metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation_diagnostics: Option<AnimationDiagnostics>,
 }
 
 /// Body composition with thin morph inputs and effective catalog skin choices.
@@ -463,6 +484,12 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
+    "authored-material-animation",
+    "authored-billboard-mode",
+    "reference-root-placement",
+    "collision-reference-root-placement",
+    "one-primitive-per-authored-shape",
+    "retained-transform-animation-warnings",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -688,6 +715,27 @@ pub(crate) fn legacy_projection_v2_configuration_hash(
     )
 }
 
+/// Retaining GLBs cannot upgrade their authored animation; require the current NIF producer proof.
+/// Packs without retained meshes still follow each caller's configuration, source and integrity checks.
+pub(crate) fn ensure_current_retained_mesh_proof(
+    config: &crate::config::PipelineConfig,
+    manifest: &ConversionManifest,
+) -> Result<()> {
+    if manifest
+        .entries
+        .values()
+        .any(|entry| entry.output.ends_with(".glb"))
+    {
+        let expected =
+            asset_configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION, "nif")?;
+        color_eyre::eyre::ensure!(
+            manifest.asset_configuration_hashes.get("nif") == Some(&expected),
+            "retained NIF proof predates the current authored mesh output contract; run normal conversion to regenerate every NIF GLB before retaining converted meshes"
+        );
+    }
+    Ok(())
+}
+
 /// Settings that change one asset kind's bytes, excluding full reader metadata.
 ///
 /// Mesh conversion consumes NIF/skeleton/material source dependencies. Texture
@@ -702,6 +750,10 @@ pub fn asset_configuration_hash_for_schema(
     let mut relevant = match source_ext {
         "nif" => {
             let mut mesh = serde_json::json!({"mesh_producer": schema});
+            if schema == CONVERTER_SCHEMA_VERSION {
+                mesh["authored_transform_animation"] =
+                    serde_json::json!(crate::nif_animation::PRODUCER_VERSION);
+            }
             if mesh_output_contracts_apply(schema) {
                 mesh["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
             }
@@ -1342,6 +1394,20 @@ mod tests {
         document["extensions"] = serde_json::Value::Null;
         let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
         assert!(manifest.extensions.is_empty());
+    }
+
+    #[test]
+    fn authored_animation_changes_the_nif_asset_proof() {
+        let config = crate::config::PipelineConfig::new("Data", "output");
+        let mut previous = serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION});
+        if mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
+            previous["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
+        }
+        let old = hash_bytes(&serde_json::to_vec(&previous).unwrap());
+        assert_ne!(
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, "nif").unwrap(),
+            old
+        );
     }
 
     #[test]
@@ -2159,6 +2225,7 @@ mod tests {
             fs::write(&path, b"verified old bytes").unwrap();
             for schema_version in [17, 18, 19, 20, 21, 22, 23, 24, 25, 26] {
                 let record = StagedOutput {
+                    animation_diagnostics: None,
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
                     source_hash: "matching-source".to_owned(),
@@ -2308,6 +2375,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
         let stale = StagedOutput {
+            animation_diagnostics: None,
             schema_version: CONVERTER_SCHEMA_VERSION,
             configuration_hash: "config".to_owned(),
             source_hash: "stale".to_owned(),
@@ -2315,6 +2383,7 @@ mod tests {
             output_hash: "stale".to_owned(),
         };
         let current = StagedOutput {
+            animation_diagnostics: None,
             source_hash: "current".to_owned(),
             ..stale.clone()
         };
@@ -2518,6 +2587,7 @@ mod tests {
         let path = directory.path().join("mesh.glb");
         fs::write(&path, b"verified mesh").unwrap();
         let record = StagedOutput {
+            animation_diagnostics: None,
             schema_version: CONVERTER_SCHEMA_VERSION,
             configuration_hash: "config".into(),
             source_hash: "source".into(),
@@ -2548,6 +2618,7 @@ mod tests {
                 manifest.entries.insert(
                     output.to_owned(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".to_owned(),
                         output: output.to_owned(),
                         output_size: 1,
@@ -2567,7 +2638,7 @@ mod tests {
         }
     }
 
-    /// The contract list is the only thing that may change a mesh proof at a fixed producer, so
+    /// Against the authored-animation baseline, the contract list changes the current mesh proof, so
     /// an empty list has to leave the `nif` proof byte-identical and a historical producer's
     /// proof untouched whatever the list says.
     #[test]
@@ -2578,7 +2649,12 @@ mod tests {
             directory.path().join("output"),
         );
         let plain = |schema: u32| {
-            hash_bytes(&serde_json::to_vec(&serde_json::json!({"mesh_producer": schema})).unwrap())
+            let mut proof = serde_json::json!({"mesh_producer": schema});
+            if schema == CONVERTER_SCHEMA_VERSION {
+                proof["authored_transform_animation"] =
+                    serde_json::json!(crate::nif_animation::PRODUCER_VERSION);
+            }
+            hash_bytes(&serde_json::to_vec(&proof).unwrap())
         };
         let nif =
             |schema: u32| asset_configuration_hash_for_schema(&config, schema, "nif").unwrap();
@@ -2637,6 +2713,7 @@ mod tests {
                 manifest.entries.insert(
                     output.into(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".into(),
                         output: output.into(),
                         output_size: 1,
@@ -2689,6 +2766,7 @@ mod tests {
                 manifest.entries.insert(
                     output.to_owned(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".to_owned(),
                         output: output.to_owned(),
                         output_size: 1,

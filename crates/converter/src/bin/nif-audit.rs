@@ -25,6 +25,7 @@ struct AuditFile {
     validated_material_shape_count: usize,
     excluded_material_shape_count: usize,
     material_exclusions: BTreeMap<String, usize>,
+    animation_skipped_channels: BTreeMap<String, usize>,
     parse_error: Option<String>,
     conversion_error: Option<String>,
 }
@@ -50,6 +51,7 @@ struct AuditSummary {
     validated_material_shapes: usize,
     excluded_material_shapes: usize,
     material_exclusions: BTreeMap<String, usize>,
+    animation_skipped_channels: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +99,10 @@ fn main() -> Result<()> {
                     &mut summary.material_exclusions,
                     &diagnostics.material_exclusions,
                 );
+                merge_counts(
+                    &mut summary.animation_skipped_channels,
+                    &diagnostics.animation_skipped_channels,
+                );
                 summary.material_shapes += diagnostics.material_shape_count;
                 summary.validated_material_shapes += diagnostics.validated_material_shape_count;
                 summary.excluded_material_shapes += diagnostics.excluded_material_shape_count;
@@ -138,6 +144,7 @@ fn main() -> Result<()> {
                     validated_material_shape_count: diagnostics.validated_material_shape_count,
                     excluded_material_shape_count: diagnostics.excluded_material_shape_count,
                     material_exclusions: diagnostics.material_exclusions,
+                    animation_skipped_channels: diagnostics.animation_skipped_channels,
                     parse_error: None,
                     conversion_error: None,
                 }
@@ -171,6 +178,7 @@ fn main() -> Result<()> {
                     validated_material_shape_count: 0,
                     excluded_material_shape_count: 0,
                     material_exclusions: BTreeMap::new(),
+                    animation_skipped_channels: BTreeMap::new(),
                     parse_error: Some(error),
                     conversion_error: None,
                 }

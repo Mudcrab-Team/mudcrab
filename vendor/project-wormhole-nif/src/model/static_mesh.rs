@@ -21,6 +21,9 @@ pub struct StaticSceneNode {
     pub scale: f32,
     pub children: Vec<u32>,
     pub mesh: Option<usize>,
+    /// The `NiBillboardNode` mode (nif.xml `BillboardMode`) when this node turns to face the
+    /// camera; `None` for an ordinary node.
+    pub billboard_mode: Option<u16>,
 }
 
 impl StaticSceneNode {
