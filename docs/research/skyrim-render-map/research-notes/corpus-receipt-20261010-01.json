@@ -105,13 +105,13 @@
   "artifacts": [
     {
       "path": "docs/research/skyrim-render-map/research-notes/README.md",
-      "sha256": "f466cecec9fa42e7ea8fe3c58465c9b1608d599c42496cf30495551d2778d2f5",
-      "bytes": 4578
+      "sha256": "c92a7fcebc6eb36bfe9226f884cac4b7b8eff233484dc39abb8cec169f7d15fe",
+      "bytes": 6602
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/claims-index.json",
-      "sha256": "389335d64b2b00168ef51230607174ced423721bdd94d3a1b681aab8837eb97b",
-      "bytes": 97950
+      "sha256": "dbd3ecbd0ffbefa0130f8cf104189e0caf296b2b70de5050412916f920cddc4e",
+      "bytes": 255503
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/input-receipt.json",
@@ -120,12 +120,12 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/model.html",
-      "sha256": "a31387b4dbef8b362c9efe3b3f3ac02fb4e1531db198c0ec2c2f61643e7b6f52",
-      "bytes": 194105
+      "sha256": "e3545482bca6a9b1c07fefc9afac6e0d6833082c1cf35390f4d22712256a5ba8",
+      "bytes": 406329
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0001/claims-ck-data.json",
-      "sha256": "de1a34bb24546f9507da2fe84d2bdbb94d91ebf255c6a25d21026f5a207bf900",
+      "sha256": "4b15c250fd8047f885f2b585d1effb597682dd441b861a96ebdc2b4f7c29b90e",
       "bytes": 24358
     },
     {
@@ -140,7 +140,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-mod-interventions.json",
-      "sha256": "0a7a310823eefa1edbdd2e08479fac2a8efa6cfdc6ce971b0fc3a20a6ccd5943",
+      "sha256": "6a23f7acb41a7e74fb862e3cae433fcb4a9845c20c54f15dd788a80a635fb94e",
       "bytes": 81483
     },
     {
@@ -190,13 +190,13 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/world-model.json",
-      "sha256": "ccf1fac771a8536f0015386db195613e5b578c9b32c75426258eb08feb1e2baa",
-      "bytes": 41823
+      "sha256": "a401cbdb89a0e99b1d3e1a550114fe419a236950a759b1ba539cf1d90c7da53c",
+      "bytes": 47534
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/world-model.md",
-      "sha256": "fdbb2fa181431e1be642d993d14c07920d103caf92fe43e648acdbf9b4c80bf9",
-      "bytes": 5177
+      "sha256": "9e0a40720f9fd80604d18d3fec719c07f5b39b5a7d24971d454bdc5f589ea7df",
+      "bytes": 5731
     },
     {
       "path": "scripts/build-skyrim-research-notes-viewer.py",
@@ -210,13 +210,13 @@
     },
     {
       "path": "docs/specs/engine/lighting-and-shading.md",
-      "sha256": "cddba0bf17b2b43484247512321b85d0156b5bd3b17863a591b2edf6e436c8a4",
-      "bytes": 29027
+      "sha256": "b5208e1d8f2402495af0420ce8f4ebe9bb84981694ce0dae8d6fcb460882e60c",
+      "bytes": 29967
     },
     {
       "path": "docs/specs/engine/skyrim-rendering-remediation-plan.md",
-      "sha256": "9130b14da7ecb696641cd4584fe02e047e4be98f64c7efd6fe07672a3df99f90",
-      "bytes": 37401
+      "sha256": "3f8141b2d05b43c091ff4289256a747af553d7ca2cff910e41aaecf0edecd34f",
+      "bytes": 37941
     }
   ],
   "used_mod_source_anchor_verification": {

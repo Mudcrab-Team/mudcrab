@@ -14,7 +14,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 20,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "The parser reads the 92-byte layout and the catalog resolves all eleven serialized inheritance groups. CELL and template cubes are retained separately. Data preservation is implemented; individual consumers still need qualification."
         },
         {
@@ -48,7 +48,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 20,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "The parser reads the 92-byte layout and the catalog resolves all eleven serialized inheritance groups. CELL and template cubes are retained separately. Data preservation is implemented; individual consumers still need qualification."
         },
         {
@@ -82,7 +82,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 21,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Exterior lighting uses WTHR DALC without multiplying by scalar NAM0 Ambient. Interior scalar-Ambient fallback is explicit preview policy. The pack has DALC in all 133 templates and zero successful interior scalar-Ambient fallback cases. Adding base Ambient would not repair an identified active error."
         },
         {
@@ -116,7 +116,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 22,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Recovered native preparation builds affine rows; the ordinary shader evaluates them outside direct shadow visibility. This inspected arithmetic has stronger evidence than the notes' open question. Effective retail rows and the extra native RGB operand remain unknown."
         },
         {
@@ -150,7 +150,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 23,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "The preview chooses template DALC using the Ambient inheritance bit. This coupling is approximate. In 411 inherited-ambient interiors, CELL and template cubes differ. Fog getter inheritance does not prove cube ownership."
         },
         {
@@ -184,7 +184,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 24,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "The lighting catalog rejects a nonzero inheritance mask without valid template inputs. Forty-two of 786 interior records have null LTMP and nonzero masks. Selecting one causes fixed preview lighting. Existing native null-template proof covers seven fog fields; ambient/directional handling remains open."
         },
         {
@@ -218,7 +218,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 25,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Fade is retained but unapplied. Interior angles use a stated approximation. Of 744 resolvable interiors, 524 have nonunit Fade and nonblack directional RGB. The two CK pages disagree on Fade's meaning; multiplying by it would be an assumption."
         },
         {
@@ -252,7 +252,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 26,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Flags affect environment mode and sky display; authored interior coefficients still ignore their lighting precedence. The pack has 282 ShowSky interiors. Their ambient/directional selection remains unsupported."
         },
         {
@@ -286,7 +286,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 27,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "All placed locals become unshadowed PointLights. Native preview takes seven camera-nearest candidates; fallback has a separate 64-light budget. Omni shadows, spotlight and hemispherical distinctions are absent. Neither budget implements the tutorial's four-caster statement."
         },
         {
@@ -320,7 +320,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 28,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "XCLL/LGTM distances are retained but unused by both local-light consumers. Related INI setting objects and compiled initializers are inventoried; effective values remain unresolved. Effective zero fallbacks, fade interpolation and shadow-caster exemption need a native consumer trace."
         },
         {
@@ -354,7 +354,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 29,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Raw XEMI bytes and FormID remapping survive. Typed linkage and the documented FX light-selection policy are absent. An FX reference containing only XEMI is excluded from the typed lighting snapshot. This is a typed/runtime gap, not demonstrated source-byte loss."
         },
         {
@@ -388,7 +388,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 30,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "LNAM/INAM links survive. Explicit room fog endpoints can blend; automatic room selection and room ImageSpace selection are absent. CELL-level template/XCIM selection does not implement room ownership or transitions."
         },
         {
@@ -422,7 +422,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 31,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "Those template controls are separate from active NIF material specular. Their documented no-op does not justify disabling material highlights or reflection families."
         },
         {
@@ -456,7 +456,7 @@
           "kind": "prior_implementation_and_primary_source_audit",
           "path": "docs/research/skyrim-lighting-notes-comparison-20261010.md",
           "line": 32,
-          "sha256": "6b5f686607c9f42d5c089db84a5f32c4392339f8562cf78e1f28b4b4ce1d9c69",
+          "sha256": "ae3df6042b8f4f78c539c8a1634b77d3ef79d75f85620e5fb804d648e2acee80",
           "finding": "The CK pages conflict. Existing native getter/shader evidence supplies an active fog maximum. Preserve the scoped native implementation; the Cell Lighting page alone cannot justify disabling Max."
         },
         {

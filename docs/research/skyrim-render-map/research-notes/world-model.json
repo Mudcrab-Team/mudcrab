@@ -1274,7 +1274,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0001/claims-ck-data.json",
-      "sha256": "5e7adf34cd932042d931baa59c6a3420f0620a5870ddba4e46e50c46b2a00a78",
+      "sha256": "4b15c250fd8047f885f2b585d1effb597682dd441b861a96ebdc2b4f7c29b90e",
       "note_id": "N001",
       "claim_count": 14
     },
@@ -1304,7 +1304,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-mod-interventions.json",
-      "sha256": "6b2f1c480fed5e529f73166f54c07853aa0400a740b28d55e1e5a921ed8f9b7e",
+      "sha256": "0be44cf4bda81e4d7cfddb33dc2f9df137c70fa2f5d827320c9c942e3ea57b13",
       "note_id": "N003",
       "claim_count": 26
     },

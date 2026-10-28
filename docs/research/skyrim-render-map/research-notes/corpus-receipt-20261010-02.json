@@ -6,8 +6,8 @@
   "git_head": "f40ca1df770eab4ace83b335b6b38168bd83af60",
   "parent_receipt": {
     "path": "docs/research/skyrim-render-map/research-notes/corpus-receipt-20261010-01.json",
-    "sha256": "8346e5a9353ed1ffa1e0730fa1387675f95e911733083074bacea6091d9190e3",
-    "bytes": 9106
+    "sha256": "ff464351a3386532b5125f7d6cd39f3f97d78993697fba11018c56b10859a1ed",
+    "bytes": 9107
   },
   "scope": "N003 intake and reviewed integration into the lighting/color research corpus; evidence coherence, not selected retail execution or visual acceptance",
   "counts": {
@@ -56,7 +56,7 @@
       },
       {
         "path": "docs/research/skyrim-render-map/research-notes/note-0001/claims-ck-data.json",
-        "sha256": "de1a34bb24546f9507da2fe84d2bdbb94d91ebf255c6a25d21026f5a207bf900",
+        "sha256": "4b15c250fd8047f885f2b585d1effb597682dd441b861a96ebdc2b4f7c29b90e",
         "bytes": 24358
       },
       {
@@ -71,7 +71,7 @@
       },
       {
         "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-mod-interventions.json",
-        "sha256": "0a7a310823eefa1edbdd2e08479fac2a8efa6cfdc6ce971b0fc3a20a6ccd5943",
+        "sha256": "6a23f7acb41a7e74fb862e3cae433fcb4a9845c20c54f15dd788a80a635fb94e",
         "bytes": 81483
       },
       {
@@ -190,18 +190,18 @@
   "artifacts": [
     {
       "path": "docs/research/skyrim-render-map/research-notes/README.md",
-      "sha256": "cdf9befef3913f598116a7d3a809835d4c08dd89279fc9ab391c8741e5842125",
-      "bytes": 5169
+      "sha256": "c92a7fcebc6eb36bfe9226f884cac4b7b8eff233484dc39abb8cec169f7d15fe",
+      "bytes": 6602
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/claims-index.json",
-      "sha256": "8b16ecad63b1934c7425767d0934d592f12b6787f80505dbce1f544f1c67afa8",
+      "sha256": "dbd3ecbd0ffbefa0130f8cf104189e0caf296b2b70de5050412916f920cddc4e",
       "bytes": 255503
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/corpus-receipt-20261010-01.json",
-      "sha256": "8346e5a9353ed1ffa1e0730fa1387675f95e911733083074bacea6091d9190e3",
-      "bytes": 9106
+      "sha256": "ff464351a3386532b5125f7d6cd39f3f97d78993697fba11018c56b10859a1ed",
+      "bytes": 9107
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/input-receipt.json",
@@ -220,7 +220,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0001/claims-ck-data.json",
-      "sha256": "de1a34bb24546f9507da2fe84d2bdbb94d91ebf255c6a25d21026f5a207bf900",
+      "sha256": "4b15c250fd8047f885f2b585d1effb597682dd441b861a96ebdc2b4f7c29b90e",
       "bytes": 24358
     },
     {
@@ -235,7 +235,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-mod-interventions.json",
-      "sha256": "0a7a310823eefa1edbdd2e08479fac2a8efa6cfdc6ce971b0fc3a20a6ccd5943",
+      "sha256": "6a23f7acb41a7e74fb862e3cae433fcb4a9845c20c54f15dd788a80a635fb94e",
       "bytes": 81483
     },
     {
@@ -290,7 +290,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-mod-interventions.json",
-      "sha256": "ce886c57b917ce54430c6abb1dea0d8afd2cd34675906c6b357804736f55581b",
+      "sha256": "0be44cf4bda81e4d7cfddb33dc2f9df137c70fa2f5d827320c9c942e3ea57b13",
       "bytes": 51109
     },
     {
@@ -580,7 +580,7 @@
     },
     {
       "path": "docs/research/skyrim-render-map/research-notes/world-model.json",
-      "sha256": "738fa86b3928408bef01212ed34378fbf798520feb14b0e0bcba3e86eb7d4c64",
+      "sha256": "a401cbdb89a0e99b1d3e1a550114fe419a236950a759b1ba539cf1d90c7da53c",
       "bytes": 47534
     },
     {
@@ -600,13 +600,13 @@
     },
     {
       "path": "docs/specs/engine/lighting-and-shading.md",
-      "sha256": "cddba0bf17b2b43484247512321b85d0156b5bd3b17863a591b2edf6e436c8a4",
-      "bytes": 29027
+      "sha256": "b5208e1d8f2402495af0420ce8f4ebe9bb84981694ce0dae8d6fcb460882e60c",
+      "bytes": 29967
     },
     {
       "path": "docs/specs/engine/skyrim-rendering-remediation-plan.md",
-      "sha256": "9130b14da7ecb696641cd4584fe02e047e4be98f64c7efd6fe07672a3df99f90",
-      "bytes": 37401
+      "sha256": "3f8141b2d05b43c091ff4289256a747af553d7ca2cff910e41aaecf0edecd34f",
+      "bytes": 37941
     }
   ],
   "corpus_check": {

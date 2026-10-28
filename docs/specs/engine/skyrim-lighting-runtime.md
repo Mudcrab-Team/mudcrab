@@ -1,5 +1,11 @@
 # Skyrim lighting runtime
 
+> **Checkout status.** This guide describes the runtime built in the render-map research
+> snapshot (`c39449b5`), not the engine in this repository. Absent here: the
+> `native_lighting_probe` example and the `lighting-consolidation-20261009` build and binary
+> paths the commands use. `world-inspect` does exist. Package versions named below are the
+> snapshot's; this checkout's are in `crates/shared/src/lib.rs`.
+
 This runtime guide was imported from lighting thread `68505759-f655-46eb-a471-4f079d8efff2` on 2026-10-09 and consolidated with the receiving fog/image-space work. The [lighting and shading hub](lighting-and-shading.md) owns the current integration plan, package identity and launch defaults. Source-thread captures remain historical evidence.
 
 The combined implementation includes lossless authored inputs, field-level interior inheritance, settings provenance, inspected ordinary Lighting response, recovered weather byte transfer and ambient-matrix arithmetic, source-derived distance fog, and optional stable-record HDR/image-space processing. Native light units, final sun scaling, live additive ambient, retail shadow production and complete display parity remain unresolved.
@@ -58,7 +64,7 @@ For the existing full world report, append `--lighting` after its positional wor
 
 ## Run the diagnostic
 
-Use current metadata-26/world-9 assets with compatible native mesh contracts; the refreshed test pack retains producer-25 native mesh outputs. Then supply known linear coefficients:
+Use the snapshot's metadata-26/world-9 assets with compatible native mesh contracts; the refreshed test pack retains producer-25 native mesh outputs. This checkout is at a later converter schema with world schema 9. Then supply known linear coefficients:
 
 ```sh
 /Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/bin/engine \

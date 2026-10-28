@@ -7,7 +7,11 @@ The preview uses real converted Skyrim meshes and textures with the production n
 ## Launch the prepared scene
 
 The launcher script and private binary below belong to the source snapshot and are not part of this
-repository; adjust the paths or build them from that snapshot before following this section.
+repository; adjust the paths or build them from that snapshot before following this section. Neither
+are its fixtures: `crates/engine/tests/fixtures/skyrim-clear-day-inputs.json`,
+`lighting-preview-prefs.ini` and `lighting-riverwood-shots.json` are absent here, and this checkout's
+fixtures directory holds only `color-grade-riverwood-shots.json`. The shots format itself is
+documented in [reference-shots.md](reference-shots.md).
 
 From the snapshot's worktree:
 

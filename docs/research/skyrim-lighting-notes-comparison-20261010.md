@@ -37,12 +37,14 @@ The authoring claims above are supported by the [CELL format page](https://en.ue
 [Lights and FX tutorial](https://ck.uesp.net/wiki/Bethesda_Tutorial_Lights_and_FX).
 The tutorial revision predates SE. None observes a selected retail draw.
 
-The owning code is the converter [lighting parser](../../crates/converter/src/esm/lighting.rs),
-[lighting catalog](../../crates/engine/src/lighting_catalog.rs),
-[environment preparation](../../crates/engine/src/environment_preview.rs),
-[local lights](../../crates/engine/src/lights.rs),
-[lighting runtime](../../crates/engine/src/lighting_runtime.rs) and
-[ordinary native response](../../crates/engine/src/nif_material/native_common.wgsl).
+The owning code in the snapshot was the converter lighting parser
+(`crates/converter/src/esm/lighting.rs`), the lighting catalog
+(`crates/engine/src/lighting_catalog.rs`), environment preparation
+(`crates/engine/src/environment_preview.rs`), [local lights](../../crates/engine/src/lights.rs),
+the lighting runtime (`crates/engine/src/lighting_runtime.rs`) and the ordinary native
+response (`crates/engine/src/nif_material/native_common.wgsl`). Apart from `lights.rs`,
+those modules are not in this checkout; the claim records pin them by symbol and line in
+the snapshot tree.
 The [input contracts](skyrim-render-map/input-contracts.md) retain the native
 proof limits; retained fields do not establish active rendering behavior.
 

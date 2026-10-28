@@ -1,5 +1,11 @@
 # Skyrim rendering remediation and validation plan
 
+> **Checkout status.** This plan records work done in the render-map research snapshot
+> (`c39449b5`), not the engine in this repository. Absent here: the `lighting_runtime`,
+> `image_space` and `environment_render` modules, the `skyrim-world-lighting-baseline.sh`
+> and `skyrim-world-lighting-preview.sh` launchers, and the shot and probe fixtures the
+> commands below cite. Read it as that snapshot's plan; do not follow its commands here.
+
 Status: stage A implemented and checked within its recorded limits, 2026-10-10. Target: vanilla Skyrim SE/AE, copied executable
 1.7.104.0 and its pinned assets. This plan coordinates converter, material,
 lighting, visibility, fog and image-space work. It does not mark the rejected
@@ -106,9 +112,9 @@ response or shadows caused the regression.
 
 ### R0 — Preserve controls and identify candidates
 
-Keep the hash-checking
-[brighter-checkpoint launcher](../../../scripts/skyrim-world-lighting-baseline.sh)
-and its binary/assets intact. Preserve current rejected candidates separately.
+Keep the hash-checking brighter-checkpoint launcher
+(`scripts/skyrim-world-lighting-baseline.sh`, snapshot only) and its binary/assets
+intact. Preserve current rejected candidates separately.
 Snapshot HEAD, the tracked patch and hashes of untracked source files: HEAD
 `f40ca1df770eab4ace83b335b6b38168bd83af60` alone cannot identify this dirty
 worktree. Include Cargo.lock, shader hashes, converter contract, asset manifest,
@@ -127,8 +133,8 @@ verified during implementation, not inferred from the launcher.
 
 Extend [shots](../../../crates/engine/src/shots.rs),
 [GPU readiness](../../../crates/engine/src/render.rs),
-[lighting reports](../../../crates/engine/src/lighting_runtime.rs) and
-[image-space diagnostics](../../../crates/engine/src/image_space.rs).
+lighting reports (`crates/engine/src/lighting_runtime.rs`) and
+image-space diagnostics (`crates/engine/src/image_space.rs`).
 Publish an immutable per-shot sidecar that joins the screenshot, intermediate
 readbacks, effective constants and resources to one actual rendered frame/view.
 Distinguish requested, submitted and readback-completed frames.
@@ -212,7 +218,7 @@ control must fail. Source publication can pass before retail use is observed.
 
 ### R4 — Correct numeric domains and final output ownership
 
-Owners: [environment render state](../../../crates/engine/src/environment_render.rs),
+Owners: environment render state (`crates/engine/src/environment_render.rs`),
 color pipeline, material adapters, image-space Rust/WGSL and target setup.
 Recover the actual domain at each texture sample, light/material response,
 fog operation, HDR intermediate and final target/view. Count transfer, exposure,
@@ -509,6 +515,8 @@ format is unsupported; an RGBA fallback cannot satisfy that format gate.
 
 Replay the brighter checkpoint:
 
+Snapshot only: this launcher is not in this repository.
+
 ```sh
 MUDCRAB_BASELINE_OUTPUT="$validation_root/captures/brighter-checkpoint" \
   ./scripts/skyrim-world-lighting-baseline.sh \
@@ -517,6 +525,8 @@ MUDCRAB_BASELINE_OUTPUT="$validation_root/captures/brighter-checkpoint" \
 ```
 
 Capture a clear-noon candidate:
+
+Snapshot only: this launcher is not in this repository.
 
 ```sh
 MUDCRAB_WORLD_BINARY="$validation_root/build/quick/engine" \

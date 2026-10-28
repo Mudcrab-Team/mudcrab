@@ -129,7 +129,8 @@ must not become implicit world defaults.
 ## Current launch controls
 
 The latest combined texture/sun candidate is rejected for appearance. The
-earlier brighter build is available as an explicit recovery checkpoint:
+earlier brighter build is available as an explicit recovery checkpoint. The
+launcher is snapshot-only and absent from this checkout:
 
 ```sh
 ./scripts/skyrim-world-lighting-baseline.sh
@@ -153,7 +154,7 @@ reference before becoming the user-test route. An individually recovered native
 operation or a passing equation test does not establish an improved combined
 image. Keep changes isolated and retain both captures when appearance regresses.
 
-The older exploratory launcher remains available:
+The older exploratory launcher remains snapshot-only and is not in this checkout:
 
 ```sh
 ./scripts/skyrim-world-lighting-preview.sh
@@ -173,6 +174,8 @@ unresolved.
 ```sh
 ./scripts/skyrim-world-lighting-preview.sh --game-hour 12 --fog --image-space
 ```
+
+That launcher is snapshot-only; the option names are the record of what it accepted.
 
 `--weather` and `--fog-weather` select the same weather;
 `--game-hour` and `--fog-hour` select the same hour. Repeated options apply in
