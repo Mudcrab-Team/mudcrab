@@ -59,12 +59,19 @@ impl Plugin for NifMaterialPlugin {
             .world()
             .get_resource::<DefaultGltfImageSampler>()
             .map(DefaultGltfImageSampler::get_internal);
+        // Every plugin build has completed. The renderer creates this registry only
+        // after validating Feature::Material, regardless of our relative build order.
+        let animations = app
+            .world()
+            .get_resource::<crate::material_animation::MaterialAnimationRegistry>()
+            .cloned();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
             .write_blocking()
             .push(Box::new(NativeMaterialHandler {
                 default_sampler,
+                animations,
                 ..default()
             }));
     }
@@ -244,6 +251,8 @@ fn effect_palette_material(
 /// reported holds a default handle, which spawn validation reports as not loaded.
 #[derive(Clone, Default)]
 struct NativeMaterialHandler {
+    /// Shared only when the manifest permits scalar material playback. No asset handles.
+    animations: Option<crate::material_animation::MaterialAnimationRegistry>,
     textures: Vec<Handle<Image>>,
     /// The sampler `bevy_gltf` loaded each texture with, by glTF texture index.
     samplers: HashMap<usize, ImageSamplerDescriptor>,
@@ -458,6 +467,17 @@ fn native_material(
 }
 
 impl GltfExtensionHandler for NativeMaterialHandler {
+    fn on_root(
+        &mut self,
+        context: &mut LoadContext<'_>,
+        _gltf: &gltf::Gltf,
+        _settings: &bevy::gltf::GltfLoaderSettings,
+    ) {
+        if let Some(registry) = &self.animations {
+            registry.clear_source(&context.path().to_string(), "/nif");
+        }
+    }
+
     fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
         Box::new(self.clone())
     }
@@ -563,6 +583,15 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         material.clone(),
                         model_space_normal,
                         specular_srgb,
+                    );
+                }
+                // Native StandardMaterial draws bind /nif. Publish the supported scalar
+                // payload at this asset's real label, with the native loaded UV base.
+                // Registry presence carries the renderer's manifest capability gate.
+                if let Some(registry) = &self.animations {
+                    registry.replace(
+                        &format!("{}#{label}/nif", context.path()),
+                        crate::render::material_animation_of(source, material.uv_transform, true),
                     );
                 }
                 context.add_labeled_asset(format!("{label}/nif"), material);
