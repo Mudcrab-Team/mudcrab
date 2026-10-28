@@ -55,6 +55,12 @@ ktx2 = "0.5"
 project-wormhole-nif = { path = "vendor/project-wormhole-nif" }
 project-wormhole-esm = "0.1.0"
 
+# bevy_image 0.19.0 requires zstd ^0.13.3, which carries RUSTSEC-2026-0391, -0398
+# and -0403. The vendored copy changes only that requirement to 0.14, so the
+# engine's KTX2 decoder shares the fixed zstd with the converter.
+[patch.crates-io]
+bevy_image = { path = "vendor/bevy_image" }
+
 # Workspace profile optimization
 [profile.dev]
 opt-level = 1

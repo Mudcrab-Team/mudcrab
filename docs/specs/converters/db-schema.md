@@ -1415,12 +1415,18 @@ CREATE TABLE IF NOT EXISTS actor_models (
     skin_armo_id INTEGER,            -- effective NPC WNAM override, else effective RACE/WNAM
     head_model TEXT,                 -- FaceGen or default head NIF path
     head_source TEXT,                -- 'facegen' | 'default'
-    resolution TEXT NOT NULL         -- 'body', 'body_head', 'unresolved'
+    resolution TEXT NOT NULL,        -- 'body', 'body_head', 'unresolved'
+    skin_tone_r REAL,                -- NPC_/QNAM, 0..1, encoded scale
+    skin_tone_g REAL,
+    skin_tone_b REAL,
+    weight REAL                      -- NPC_/NAM7, 0..100
 );
 CREATE TABLE IF NOT EXISTS actor_model_parts (
     npc_id INTEGER NOT NULL,
     slot TEXT NOT NULL,              -- 'body' | 'hands' | 'feet'
     model_path TEXT NOT NULL,
+    armature_race_id INTEGER,        -- ARMA/RNAM: the NPC's race or DefaultRace (25)
+    skin_texture_set_id INTEGER,     -- ARMA/NAM0 (male) or NAM1 (female), a TXST
     PRIMARY KEY (npc_id, slot)
 );
 ```
@@ -1433,6 +1439,43 @@ original NPC still gets one unresolved row with `race_id = 0`, placeholder `sex 
 skin, parts, or head. Diagnostics identify missing, deleted, wrong-type, cyclic, or `LVLN`
 targets. The detailed source and evidence boundaries are in
 [`actor-catalog-inheritance-policy.md`](../../research/actor-catalog-inheritance-policy.md).
+
+**Armature skin texture set.** The game draws a part's `skin_tint` shapes with the armature's skin
+`TXST` for the NPC's sex (`NAM0` male, `NAM1` female), not with the part NIF's own texture set:
+retail `femalehands_1.nif` has no `_s`, while `NakedHands` (`00000D6C`) gives female hands
+`SkinHandFemale_1` (`0003EDE9`), whose `TX07` is `FemaleHands_1_S.dds`. `skin_texture_set_id`
+stores that FormID (`NULL` when the armature has none for the sex; the other sex's set is not
+used), and `armature_race_id` the armature's own `RNAM`, so `25` marks a part that came from the
+shared `DefaultRace` armature. The converter composes the default humanoid body from the
+`DefaultRace` sets: per sex and slot, the set most parts with `armature_race_id = 25` use, applied
+in NIF slot order (`TX00`→0, `TX01`→1, `TX03`→2, `TX04`→3, `TX05`→4, `TX02`→5, `TX06`→6,
+`TX07`→7; slots the set leaves empty keep the NIF's path) when the armature's model file is the
+part being composed. Both columns arrived after the first catalog export without a schema bump;
+`create_tables` adds them to an older reused `actor_model_parts`, and a database without them
+composes the body from the NIFs' own textures.
+
+**Skin tone.** `NPC_/QNAM` is three little-endian `f32` (red, green, blue), stored as written:
+0..1 on the encoded scale (retail values are whole steps of 1/255; Alvor `00013475` is
+198,176,168). The game passes it to the `skin_tint` shaders of the body, hands and feet as their
+tint colour. A base without `QNAM`, or with a short or non-finite one, stores `NULL` in all three. Since
+QNAM is not a confirmed Traits inheritance field, a Traits-enabled source NPC stores `NULL` even
+when it or its resolved root carries QNAM; this conservative catalog policy avoids inventing root
+inheritance.
+The columns arrived after the first catalog export without a schema bump: `create_tables` adds
+them to an older reused `actor_models`, and the engine probes for them, so a database without them
+still loads and its actors stay untinted.
+
+**Body weight.** `NPC_/NAM7` is one little-endian `f32` in 0..100: the weight the game blends
+between the thin (`_0`) and heavy (`_1`) body meshes (0 is thinnest, 100 is heaviest). The column
+is nullable; a base with no `NAM7`, or with a short, non-finite or out-of-range one, stores `NULL`
+and the engine draws the heavy body. The weight comes only from the base's own record: `TPLT`
+template inheritance is not resolved for it, matching `QNAM` and `RNAM`. The column arrived after
+the first catalog export without a schema bump (`WORLD_DATABASE_SCHEMA_VERSION` stays 9):
+`create_tables` adds it to an older reused `actor_models`, and the engine probes for it, so a
+database without it still loads.
+
+**Sex.** `NPC_/ACBS` bit 0 (`1` = female). A base with no `ACBS` defaults to male and records a
+`missing_acbs` diagnostic.
 
 Without Traits, the NPC supplies its own race and sex. A missing effective-root `ACBS` defaults
 to male and records `missing_acbs`.
