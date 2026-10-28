@@ -21,7 +21,7 @@ const SHADER: &str = include_str!("terrain_merged.wgsl");
 
 const PBR_TYPES: &str = "
 #define_import_path bevy_pbr::pbr_types
-struct StandardMaterial { base_color: vec4<f32>, flags: u32 }
+struct StandardMaterial { base_color: vec4<f32>, flags: u32, reflectance: vec3<f32> }
 const STANDARD_MATERIAL_FLAGS_UNLIT_BIT: u32 = 32u;
 struct PbrInput {
     material: StandardMaterial,
@@ -38,6 +38,12 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
 #ifdef VERTEX_UVS_A
     @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(3) world_tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(4) uv_b: vec2<f32>,
 #endif
 #ifdef VERTEX_COLORS
     @location(5) color: vec4<f32>,
@@ -109,7 +115,7 @@ fn position_world_to_clip(world_pos: vec3<f32>) -> vec4<f32> {
 
 /// Composes the shader with `defs` plus the defs Bevy's own mesh pipeline adds for a mesh with
 /// positions, normals, UVs and colours.
-fn compose(defs: Vec<bevy::shader::ShaderDefVal>) -> Result<(), String> {
+fn compose_source(source: &str, defs: Vec<bevy::shader::ShaderDefVal>) -> Result<(), String> {
     let mut composer = Composer::default();
     let mut shader_defs: HashMap<String, ShaderDefValue> = HashMap::new();
     for name in [
@@ -149,7 +155,7 @@ fn compose(defs: Vec<bevy::shader::ShaderDefVal>) -> Result<(), String> {
     }
     composer
         .make_naga_module(NagaModuleDescriptor {
-            source: SHADER,
+            source,
             file_path: "terrain_merged.wgsl",
             shader_type: ShaderType::Wgsl,
             shader_defs,
@@ -159,6 +165,12 @@ fn compose(defs: Vec<bevy::shader::ShaderDefVal>) -> Result<(), String> {
         .map_err(|error| error.emit_to_string(&composer))
 }
 
+/// Compile the merged path with its production specialisation flags.
+fn compose(defs: Vec<bevy::shader::ShaderDefVal>) -> Result<(), String> {
+    compose_source(SHADER, defs)
+}
+
+/// Build one production terrain class key for compilation coverage.
 fn key(diffuse_classes: u8, normal_classes: u8) -> TerrainClassKey {
     TerrainClassKey {
         diffuse_classes,
@@ -166,6 +178,7 @@ fn key(diffuse_classes: u8, normal_classes: u8) -> TerrainClassKey {
     }
 }
 
+/// Both vertex strides compile with the usual vanilla texture classes.
 #[test]
 fn the_shader_compiles_for_both_strides_with_a_vanilla_class_set() {
     for wide in [false, true] {
@@ -175,14 +188,128 @@ fn the_shader_compiles_for_both_strides_with_a_vanilla_class_set() {
     }
 }
 
+/// Every supported texture-class count compiles, including no normal maps.
 #[test]
 fn the_shader_compiles_for_the_smallest_and_the_largest_class_sets() {
     let most = MAX_CLASSES_PER_USAGE as u8;
     for wide in [false, true] {
-        for (diffuse, normal) in [(1, 0), (1, 1), (most, most), (most, 0), (2, most)] {
+        for (diffuse, normal) in (1..=most).flat_map(|d| (0..=most).map(move |n| (d, n))) {
             compose(shader_defs(key(diffuse, normal), wide)).unwrap_or_else(|error| {
                 panic!("{diffuse} diffuse and {normal} normal classes, wide {wide}:\n{error}")
             });
+        }
+    }
+}
+
+/// The quadrant path compiles with each optional weight carrier and normal-map combination.
+#[test]
+fn quadrant_shader_compiles_with_every_weight_carrier() {
+    for tangents in [false, true] {
+        for uv_b in [false, true] {
+            let defs = [("VERTEX_TANGENTS", tangents), ("VERTEX_UVS_B", uv_b)]
+                .into_iter()
+                .filter(|(_, enabled)| *enabled)
+                .map(|(name, _)| bevy::shader::ShaderDefVal::Bool(name.to_owned(), true))
+                .collect();
+            compose_source(include_str!("../shaders/terrain.wgsl"), defs).unwrap();
+        }
+    }
+}
+
+/// Evaluate the small pure material-parameter function in the actual WGSL, without a GPU.
+/// Absence means the old shader's unmodified material reflectance, so the baseline fails on
+/// a numerical assertion rather than a parser or compilation error.
+fn shader_reflectance(source: &str, reflectance: [f32; 3], mask_sum: f32, total: f32) -> Vec<f32> {
+    use wgpu::naga::{Expression, Literal, MathFunction, Statement};
+
+    /// Interpret just the scalar/vector arithmetic used by the parameter function.
+    fn evaluate(
+        function: &wgpu::naga::Function,
+        expression: wgpu::naga::Handle<Expression>,
+        arguments: &[Vec<f32>],
+    ) -> Vec<f32> {
+        let eval = |handle| evaluate(function, handle, arguments);
+        match function.expressions[expression] {
+            Expression::Literal(Literal::F32(value)) => vec![value],
+            Expression::FunctionArgument(index) => arguments[index as usize].clone(),
+            Expression::Binary { op, left, right } => {
+                let left = eval(left);
+                let right = eval(right);
+                (0..left.len().max(right.len()))
+                    .map(|i| match op {
+                        wgpu::naga::BinaryOperator::Multiply => {
+                            left[i % left.len()] * right[i % right.len()]
+                        }
+                        wgpu::naga::BinaryOperator::Divide => {
+                            left[i % left.len()] / right[i % right.len()]
+                        }
+                        _ => panic!("unsupported parameter operator {op:?}"),
+                    })
+                    .collect()
+            }
+            Expression::Math {
+                fun: MathFunction::Sqrt,
+                arg,
+                ..
+            } => eval(arg).into_iter().map(f32::sqrt).collect(),
+            Expression::Math {
+                fun: MathFunction::Clamp,
+                arg,
+                arg1: Some(low),
+                arg2: Some(high),
+                ..
+            } => {
+                let low = eval(low)[0];
+                let high = eval(high)[0];
+                eval(arg)
+                    .into_iter()
+                    .map(|value| value.clamp(low, high))
+                    .collect()
+            }
+            ref other => panic!("unsupported parameter expression {other:?}"),
+        }
+    }
+
+    let Some(start) = source.find("fn terrain_reflectance(") else {
+        return reflectance.to_vec();
+    };
+    let end = start + source[start..].find("\n}").unwrap() + 2;
+    let module = wgpu::naga::front::wgsl::parse_str(&source[start..end]).unwrap();
+    let (_, function) = module.functions.iter().next().unwrap();
+    let result = function
+        .body
+        .iter()
+        .find_map(|statement| match statement {
+            Statement::Return { value } => *value,
+            _ => None,
+        })
+        .unwrap();
+    evaluate(
+        function,
+        result,
+        &[reflectance.to_vec(), vec![mask_sum], vec![total]],
+    )
+}
+
+/// Normal alpha scales dielectric F0 linearly; applying it to reflectance directly would square
+/// the mask. Asymmetric RGB and non-unit totals distinguish both mistakes and overpaint handling.
+#[test]
+fn terrain_specular_mask_scales_f0_instead_of_squaring_it() {
+    for source in [SHADER, include_str!("../shaders/terrain.wgsl")] {
+        for (mask_sum, total, expected_f0) in [
+            (0.0, 1.0, [0.0, 0.0, 0.0]),
+            (0.25, 1.0, [0.01, 0.0025, 0.0225]),
+            (0.75, 1.5, [0.02, 0.005, 0.045]),
+            (1.0, 1.0, [0.04, 0.01, 0.09]),
+            (1.2, 1.0, [0.04, 0.01, 0.09]),
+        ] {
+            let actual = shader_reflectance(source, [0.5, 0.25, 0.75], mask_sum, total);
+            for (reflectance, expected) in actual.into_iter().zip(expected_f0) {
+                assert!(
+                    (0.16 * reflectance * reflectance - expected).abs() < 1.0e-6,
+                    "mask_sum={mask_sum}, total={total}, expected F0={expected}, reflectance={reflectance}"
+                );
+            }
         }
     }
 }
