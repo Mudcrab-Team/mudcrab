@@ -741,7 +741,7 @@ fn advance_terrain_merge(
                         material: materials.add(MergedTerrainMaterial {
                             base: StandardMaterial {
                                 base_color: Color::WHITE,
-                                perceptual_roughness: 0.92,
+                                perceptual_roughness: shared::terrain::ATLAS_ROUGHNESS as f32,
                                 cull_mode: None,
                                 double_sided: true,
                                 ..default()

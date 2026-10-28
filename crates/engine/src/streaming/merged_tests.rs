@@ -1092,3 +1092,7 @@ fn chunk_files_written_by_the_converter_are_read_through_the_store() {
         CellLookup::NoData
     ));
 }
+
+#[cfg(test)]
+#[path = "source_writer_tests.rs"]
+mod source_writer_tests;

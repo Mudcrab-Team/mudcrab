@@ -1863,6 +1863,54 @@ fn update_counts(
     profiler.set_gauge("lod/pending_chunks", metrics.pending_lod_chunks as f64);
 }
 
+impl LodChunkRoot {
+    /// Immutable placement identity; does not imply visibility or drawable assets.
+    pub(super) fn terrain_key(&self) -> ChunkKey {
+        self.key
+    }
+}
+
+#[cfg(test)]
+impl LodStreaming {
+    /// Spawns a chunk root the way [`collect_lod_chunks`] does - its [`LodChunkRoot`] and the
+    /// visibility a shown root carries - records it as ready, and returns it.
+    pub(super) fn spawn_ready_chunk_for_test(
+        world: &mut World,
+        worldspace_id: u32,
+        anchor: shared::lod::ChunkAnchor,
+        origin: LodOrigin,
+    ) -> Entity {
+        Self::spawn_ready_chunk_at_tier_for_test(
+            world,
+            ChunkKey::new(worldspace_id, LodTier::Tier16, anchor),
+            origin,
+        )
+    }
+    /// Records a ready root with the exact world, tier and anchor owned by a visibility fixture.
+    pub(super) fn spawn_ready_chunk_at_tier_for_test(
+        world: &mut World,
+        key: ChunkKey,
+        origin: LodOrigin,
+    ) -> Entity {
+        let root = world
+            .spawn((
+                LodChunkRoot {
+                    key,
+                    generation: 0,
+                    origin,
+                    retry_count: 0,
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+        world
+            .resource_mut::<LodStreaming>()
+            .chunks
+            .insert(key, LodChunkStatus::Ready { root, origin });
+        root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3282,3 +3330,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "lod_source_writer_tests.rs"]
+mod source_writer_tests;

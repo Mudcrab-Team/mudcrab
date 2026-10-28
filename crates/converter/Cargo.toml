@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Synthetic producer fixtures for cross-crate renderer certification tests.
+test-support = []
+
 [dependencies]
 shared = { path = "../shared" }
 mo2 = { path = "../mo2" }
