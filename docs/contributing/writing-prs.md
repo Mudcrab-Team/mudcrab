@@ -19,7 +19,7 @@ A short guide for anyone sending work here, written by hand or with an AI assist
 
 PR titles must strictly adhere to the [Conventional Commits](https://www.conventionalcommits.org/) specification (`type(scope): description` or `type(scope)!: description`).
 
-With a squash merge, the PR title becomes the exact commit message on `main`. These titles drive automated SemVer version bumping and changelog generation via `git-cliff`. Non-conventional titles are blocked in CI.
+With a squash merge, the PR title becomes the exact commit message on `main`. These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
 
 - **Format:** `type(scope): plain effect`, at most 72 characters, lowercase after the colon. Leave out PR numbers and notes like "part 2".
 - **Types:**
@@ -43,6 +43,7 @@ With a squash merge, the PR title becomes the exact commit message on `main`. Th
 - **`main`**: Target branch for ongoing development and roadmap features.
 - **`release/vX.Y.x`** (e.g. `release/v0.1.x`): Maintained for post-release hotfixes and critical patch releases without blocking feature work on `main`.
 - Target `main` by default. Only target a release branch when explicitly backporting an approved patch.
+- How to tag, publish and hotfix: [releasing.md](releasing.md).
 
 ## PR body
 
