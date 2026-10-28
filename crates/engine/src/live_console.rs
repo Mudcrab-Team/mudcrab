@@ -289,6 +289,7 @@ mod tests {
             },
             terrain_coverage: default(),
             terrain_gauges: default(),
+            room_culling: None,
             grading: Some(CaptureGrade {
                 color_grade: "snapshot-srgb".into(),
                 visual_preset: "cool-gray".into(),

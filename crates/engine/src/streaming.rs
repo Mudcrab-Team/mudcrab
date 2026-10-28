@@ -1789,6 +1789,10 @@ fn spawn_cell(
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
             }
+            // Actors, doors and loose objects are never culled by their stored room.
+            if crate::room_culling::exempt_record_type(reference.base_record_type.as_deref()) {
+                entity.insert(crate::room_culling::RoomCullExempt);
+            }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);
                 if !plan.parts.is_empty() {

@@ -32,6 +32,7 @@ pub mod profiling;
 pub mod render;
 pub mod render_timing;
 mod renderer_init;
+pub mod room_culling;
 pub mod route;
 mod scene_evidence;
 pub mod schedule_timing;

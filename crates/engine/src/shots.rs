@@ -388,6 +388,18 @@ pub struct SettleCounts {
     pub pending_batch_selection: usize,
     pub pending_specializations: Option<usize>,
     pub pending_render_transfers: Option<usize>,
+    /// With `--room-culling`: interior room graphs still being read, and loaded interiors whose
+    /// graph could not be read. Either leaves the view unculled, so it is not the view to photograph.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pending_room_graphs: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub failed_room_graphs: usize,
+}
+
+/// Room-graph counts stay out of a receipt that has none, so a run without `--room-culling`
+/// writes the receipts it wrote before.
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// The run-wide failure counters at one moment. They only ever grow, so a shot compares them with
@@ -454,6 +466,18 @@ impl SettleCounts {
         }
     }
 
+    /// Adds room culling's graph reads; a run without `--room-culling` has none.
+    pub fn with_room_graphs(
+        self,
+        room_culling: Option<&crate::room_culling::RoomCullingState>,
+    ) -> Self {
+        Self {
+            pending_room_graphs: room_culling.map_or(0, |state| state.pending_reads()),
+            failed_room_graphs: room_culling.map_or(0, |state| state.failed_reads()),
+            ..self
+        }
+    }
+
     /// Nothing is pending and nothing failed: every load the current view asked for has landed and
     /// is drawn. A failure is not "still pending", it is a view that will never be right, so the
     /// shot is held back and given up on by the timeout rather than photographed as settled.
@@ -476,6 +500,8 @@ impl SettleCounts {
             && self.failed_cells == 0
             && self.asset_load_failures == 0
             && self.validation_failures == 0
+            && self.pending_room_graphs == 0
+            && self.failed_room_graphs == 0
             && self.renderer_ready
     }
 
@@ -496,7 +522,7 @@ impl SettleCounts {
             self.validation_failures,
             self.renderer_ready
         ) + &format!(
-            " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?}",
+            " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?} room_graphs={} room_graph_failures={}",
             self.pending_lod_queries,
             self.pending_lod_chunks,
             self.failed_lod_work,
@@ -505,7 +531,9 @@ impl SettleCounts {
             self.pending_batch_initial,
             self.pending_batch_selection,
             self.pending_specializations,
-            self.pending_render_transfers
+            self.pending_render_transfers,
+            self.pending_room_graphs,
+            self.failed_room_graphs
         )
     }
 }
@@ -769,6 +797,7 @@ fn run_shots(
     retries: Res<crate::capture_frame::RetryReadiness>,
     main_frame: Res<bevy::diagnostic::FrameCount>,
     transfers: Res<crate::capture_frame::TransferReadiness>,
+    room_culling: Option<Res<crate::room_culling::RoomCullingState>>,
 ) {
     // Borrowed once: the shot is taken from the file without cloning it, and the arms below still
     // write the run's other fields, which the borrow checker allows field by field.
@@ -894,6 +923,7 @@ fn run_shots(
                 .unwrap_or(0.0) as usize;
             counts.pending_specializations = *retries.0.lock().unwrap();
             counts.pending_render_transfers = *transfers.0.lock().unwrap();
+            let counts = counts.with_room_graphs(room_culling.as_deref());
             // The window is counted in before it is read, so a view that has been quiet for
             // `SETTLE_QUIET_FRAMES` frames running is photographed on that very frame: the log's
             // `frames=` is then the constant, not one more (the count read here is the previous
