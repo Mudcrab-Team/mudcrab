@@ -559,6 +559,7 @@ impl AssetPipeline {
             archives: Default::default(),
             entries: Default::default(),
             derived_outputs: Default::default(),
+            extensions: Vec::new(),
         };
         report.phase_elapsed_ms.insert(
             "conversion_initialization".into(),
@@ -1613,6 +1614,7 @@ impl AssetPipeline {
         manifest.complete = conversion_is_complete(&report);
         report.complete = manifest.complete;
         report.inputs_by_kind = manifest.inputs_by_kind.clone();
+        crate::extensions::refresh_manifest(&mut manifest, staging)?;
         manifest.save(&staging.join("conversion-manifest.json"))?;
         report
             .artifacts

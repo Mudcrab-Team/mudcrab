@@ -704,6 +704,11 @@ async fn rebuild_into(
     manifest.schema_addons = config.schemas()?.identities().to_vec();
     // No archive extraction cache is copied by this route.
     manifest.archives.clear();
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            manifest, staging,
+        )?);
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
     manifest.save(&staging.join("conversion-manifest.json"))?;
@@ -1334,8 +1339,8 @@ mod tests {
                 output_hash: hash_bytes(proven),
             },
         );
-        // A writable occupant with a read-only parent makes the old overwrite-then-unlink path
-        // leave rejected bytes, while Windows denies the same unlink through the read-only file.
+        // A read-only parent prevents unlinking on Unix. On Windows a read-only attribute alone
+        // need not prevent removal, so hold a real handle that denies deletion while allowing writes.
         let destination = staging.join(relative);
         let parent = destination.parent().unwrap().to_path_buf();
         fs::create_dir_all(&parent).unwrap();
@@ -1347,6 +1352,17 @@ mod tests {
         };
         set_readonly(parent.as_path(), true);
         set_readonly(destination.as_path(), true);
+        #[cfg(windows)]
+        let occupant_guard = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&destination)
+                .unwrap()
+        };
         // Root can unlink through a read-only parent; skip rather than assert rejection.
         #[cfg(unix)]
         if fs::remove_file(&destination).is_ok() {
@@ -1355,6 +1371,8 @@ mod tests {
             return;
         }
         let result = copy_verified_assets(&source, &staging, &mut manifest, &mut Vec::new());
+        #[cfg(windows)]
+        drop(occupant_guard);
         set_readonly(destination.as_path(), false);
         set_readonly(parent.as_path(), false);
         assert!(result.is_err(), "unremovable occupant must fail closed");
