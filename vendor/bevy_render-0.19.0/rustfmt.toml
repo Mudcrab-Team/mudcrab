@@ -1,0 +1,2 @@
+# Preserve the published renderer's formatting when checking it as a workspace member.
+style_edition = "2021"

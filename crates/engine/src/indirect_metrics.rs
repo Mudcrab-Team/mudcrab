@@ -12,7 +12,10 @@ use bevy::{
         query::ROQueryItem,
         system::{ReadOnlySystemParam, SystemParamItem, lifetimeless::SRes},
     },
-    pbr::{DrawDepthOnlyPrepass, DrawMaterial, DrawMesh, DrawPrepass, Shadow, Transmissive3d},
+    pbr::{
+        DrawDepthOnlyPrepass, DrawMaterial, DrawMesh, DrawPrepass, Shadow, Transmissive3d,
+        shadow_cache::ShadowCacheTracking,
+    },
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
@@ -197,7 +200,7 @@ impl DrawCountBridge {
             .collect();
         DrawSubmissionReport {
             instrumentation: "atomic counters after the original Bevy DrawMesh command",
-            scope: "through the last completed render schedule, including warmup; shared StandardMaterial and ExtendedMaterial draw paths; excludes non-mesh render nodes",
+            scope: "through the last completed render schedule, including warmup; shared StandardMaterial and ExtendedMaterial draw paths; excludes non-mesh render nodes; counted shadow commands refuse retained-cache reuse",
             render_schedule_frames: self.0.render_schedule_frames.load(Ordering::Relaxed),
             coverage_complete: phases.iter().all(|phase| phase.coverage_complete),
             dropped_frame_samples: 0,
@@ -277,6 +280,10 @@ trait WithObservedMesh {
 impl<A, B, C, D, E> WithObservedMesh for (A, B, C, D, E, DrawMesh) {
     type Observed = (A, B, C, D, E, CountedDrawMesh);
 }
+impl<C: WithObservedMesh> WithObservedMesh for ShadowCacheTracking<C> {
+    // Track the whole tuple's result, including failures before DrawMesh.
+    type Observed = ShadowCacheTracking<C::Observed>;
+}
 
 fn replace_draw<P, C>(world: &mut World)
 where
@@ -292,8 +299,13 @@ where
         return;
     };
     let replacement = RenderCommandState::<P, C::Observed>::new(world);
-    world.resource::<DrawFunctions<P>>().write().draw_functions[id.0 as usize] =
-        Box::new(replacement);
+    if !world
+        .resource::<DrawFunctions<P>>()
+        .write()
+        .replace(id, replacement)
+    {
+        return;
+    }
     world.resource::<DrawCountBridge>().0.wrapped_variants[P::INDEX]
         .fetch_add(1, Ordering::Relaxed);
 }
@@ -324,7 +336,15 @@ fn install_observed_draws(world: &mut World) {
     install!(AlphaMask3dPrepass, DrawPrepass);
     install!(Opaque3dDeferred, DrawPrepass);
     install!(AlphaMask3dDeferred, DrawPrepass);
-    install!(Shadow, DrawPrepass, DrawDepthOnlyPrepass);
+    // Counted shadow commands deliberately remain unsupported retained-cache
+    // producers. Their concrete types differ from the stock allowlist, so count
+    // captures render shadows rather than reuse them. Keep failure tracking and
+    // do not consume the external producers' two certificate slots.
+    install!(
+        Shadow,
+        ShadowCacheTracking<DrawPrepass>,
+        ShadowCacheTracking<DrawDepthOnlyPrepass>
+    );
 }
 
 struct CountedDrawMesh;
@@ -424,12 +444,15 @@ fn record_issued_draw(
 mod tests {
     use super::*;
     use bevy::{
+        app::SubApp,
+        asset::AssetApp,
         ecs::system::RunSystemOnce,
         pbr::{
-            SetMaterialBindGroup, SetMeshBindGroup, SetMeshViewBindGroup,
+            MaterialsPlugin, SetMaterialBindGroup, SetMeshBindGroup, SetMeshViewBindGroup,
             SetMeshViewBindingArrayBindGroup,
         },
         render::render_phase::{Draw, DrawError, SetItemPipeline},
+        shader::{Shader, ShaderLoader},
     };
     use std::any::TypeId;
 
@@ -493,6 +516,88 @@ mod tests {
             TypeId::of::<<DrawMaterial as WithObservedMesh>::Observed>(),
             TypeId::of::<PreservedMaterialCommands>()
         );
+    }
+
+    #[test]
+    fn production_shadow_registry_observes_both_tracked_commands() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                ..Default::default()
+            },
+        ))
+        .init_asset::<Shader>()
+        .init_asset_loader::<ShaderLoader>();
+        let mut render_app = SubApp::new();
+        // Normally supplied by the core pipeline. Let MaterialsPlugin own the
+        // shadow registry and both production shadow command registrations.
+        render_app
+            .init_resource::<DrawFunctions<Opaque3d>>()
+            .init_resource::<DrawFunctions<AlphaMask3d>>()
+            .init_resource::<DrawFunctions<Transparent3d>>()
+            .init_resource::<DrawFunctions<Opaque3dPrepass>>()
+            .init_resource::<DrawFunctions<AlphaMask3dPrepass>>()
+            .init_resource::<DrawFunctions<Opaque3dDeferred>>()
+            .init_resource::<DrawFunctions<AlphaMask3dDeferred>>();
+        app.insert_sub_app(RenderApp, render_app);
+        app.add_plugins(MaterialsPlugin::default());
+
+        let original_ids = {
+            let world = app.sub_app(RenderApp).world();
+            let functions = world.resource::<DrawFunctions<Shadow>>().read();
+            assert_eq!(functions.draw_functions.len(), 2);
+            assert!(functions.get_id::<DrawPrepass>().is_none());
+            assert!(functions.get_id::<DrawDepthOnlyPrepass>().is_none());
+            [
+                functions.id::<ShadowCacheTracking<DrawPrepass>>(),
+                functions.id::<ShadowCacheTracking<DrawDepthOnlyPrepass>>(),
+            ]
+        };
+
+        app.add_plugins(IndirectDrawMetricsPlugin);
+        app.finish();
+        let world = app.sub_app(RenderApp).world();
+        let functions = world.resource::<DrawFunctions<Shadow>>().read();
+        assert_eq!(functions.draw_functions.len(), 2);
+        assert_eq!(
+            functions.id::<ShadowCacheTracking<DrawPrepass>>(),
+            original_ids[0]
+        );
+        assert_eq!(
+            functions.id::<ShadowCacheTracking<DrawDepthOnlyPrepass>>(),
+            original_ids[1]
+        );
+        let observed_types = [
+            TypeId::of::<
+                RenderCommandState<
+                    Shadow,
+                    ShadowCacheTracking<<DrawPrepass as WithObservedMesh>::Observed>,
+                >,
+            >(),
+            TypeId::of::<
+                RenderCommandState<
+                    Shadow,
+                    ShadowCacheTracking<<DrawDepthOnlyPrepass as WithObservedMesh>::Observed>,
+                >,
+            >(),
+        ];
+        for (id, expected) in original_ids.into_iter().zip(observed_types) {
+            let draw = functions.draw_functions[id.0 as usize].as_ref();
+            assert_eq!(std::any::Any::type_id(draw), expected);
+        }
+        let report = world.resource::<DrawCountBridge>().snapshot();
+        let shadow = report
+            .phases
+            .iter()
+            .find(|phase| phase.phase == "shadow")
+            .unwrap();
+        assert!(shadow.registry_present);
+        assert_eq!(shadow.registered_draw_variants, 2);
+        assert_eq!(shadow.wrapped_draw_variants, 2);
+        assert_eq!(shadow.unwrapped_draw_variants, 0);
+        assert!(shadow.coverage_complete);
     }
 
     #[test]
