@@ -343,7 +343,7 @@ async fn asset_repair_recovers_legacy_database_gnam_order() {
         let bytes = fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap();
         let cache =
             rkyv::from_bytes::<shared::grass::GrassCache, rkyv::rancor::Error>(&bytes).unwrap();
-        assert_eq!(cache.version, 6);
+        assert_eq!(cache.version, 7);
         assert_eq!(cache.cells.len(), 2);
         assert_eq!(
             cache

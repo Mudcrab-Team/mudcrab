@@ -354,9 +354,9 @@ fn obstruction_notice_limit_and_first_example_survive_reuse_and_removal() {
     assert_eq!(removed.notices(), fresh.notices());
 }
 
-/// A genuine version-four layout is rejected before rebuilding and reusing version-six masks.
+/// A genuine version-four layout is rejected before rebuilding and reusing current-version masks.
 #[test]
-fn version_four_archive_layout_rebuilds_before_version_six_reuse() {
+fn version_four_archive_layout_rebuilds_before_current_version_reuse() {
     #[derive(rkyv::Archive, rkyv::Serialize)]
     #[rkyv(bytecheck())]
     struct VersionFourCell {
@@ -379,7 +379,7 @@ fn version_four_archive_layout_rebuilds_before_version_six_reuse() {
     let dir = tempfile::tempdir().unwrap();
     let conn = fixture(dir.path());
     let (_, expected) = bake(&conn, dir.path(), None, "expected.rkyv");
-    assert_eq!(expected.version, 6);
+    assert_eq!(expected.version, 7);
     let old = VersionFourCache {
         version: 4,
         types: expected.types.clone(),
@@ -408,14 +408,14 @@ fn version_four_archive_layout_rebuilds_before_version_six_reuse() {
     let previous = dir.path().join("v4.rkyv");
     std::fs::write(&previous, bytes).unwrap();
     assert!(validate_grass_cache(&previous).is_err());
-    let (rebuilt, after) = bake(&conn, dir.path(), Some(&previous), "v6.rkyv");
+    let (rebuilt, after) = bake(&conn, dir.path(), Some(&previous), "current.rkyv");
     assert_eq!((rebuilt.baked_cells, rebuilt.reused_cells), (3, 0));
     assert_eq!(after, expected);
     let (warm, after) = bake(
         &conn,
         dir.path(),
-        Some(&dir.path().join("v6.rkyv")),
-        "v6-warm.rkyv",
+        Some(&dir.path().join("current.rkyv")),
+        "current-warm.rkyv",
     );
     assert_eq!(
         (warm.baked_cells, warm.reused_cells, warm.geometry_decodes),

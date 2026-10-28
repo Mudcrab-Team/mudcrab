@@ -41,6 +41,9 @@ decoding geometry again. Older grass artifacts rebuild; mask sampling and the
 mesh, texture and terrain cache identities are unchanged.
 Version six rebuilds masks without invisible or explicitly excluded primitives
 and preserves authored GNAM species order. Only the grass artifact is invalidated.
+Version seven excludes bases whose winning record header has Is Marker set,
+using the existing `statics.flags` projection. Older grass masks rebuild; the
+database schema, archive layout and other asset/cache identities are unchanged.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
@@ -92,9 +95,12 @@ combined model bounds enclose them. Elevated roofs within the ray window can
 block grass beneath them, while triangles below the surface or beyond the upper
 window do not.
 
-TREE and FLOR base records, generic `meshes/markers/` and `meshes/effects/` paths,
-and alpha-blended primitives are excluded from obstruction inspection, matching
-the earlier policy. Converted primitive `openSkyrim.materialExclusion` declarations
+Base records with header flag `0x00800000` (Is Marker) are excluded before bounded
+candidate selection and unbounded-reference counting, regardless of model path.
+The existing exporter already persists those winning flags in `statics.flags`;
+this policy needs no new column or plugin reingest. TREE and FLOR base records,
+generic `meshes/markers/` and `meshes/effects/` paths, and alpha-blended primitives
+remain excluded. Converted primitive `openSkyrim.materialExclusion` declarations
 and material `openSkyrim.nonRenderingExclusion` declarations are omitted before
 typed geometry validation, so a broken excluded material cannot discard healthy
 sibling geometry. Live siblings retain their original material validation.

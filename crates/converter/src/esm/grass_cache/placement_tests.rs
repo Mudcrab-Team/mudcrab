@@ -233,5 +233,5 @@ fn placement_version_five_cache_is_rebuilt() {
     );
     let (report, cache) = bake(&conn, dir.path(), Some(&previous), "new.rkyv");
     assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
-    assert_eq!(cache.version, 6);
+    assert_eq!(cache.version, 7);
 }

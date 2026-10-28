@@ -19,6 +19,9 @@ use std::{
     sync::Arc,
 };
 
+/// The winning base record's authoritative Is Marker header flag, also used by runtime spawning.
+const MARKER_RECORD_FLAG: i64 = 0x0080_0000;
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct GrassBakeReport {
     #[cfg(test)]
@@ -871,9 +874,9 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
 /// Collect eligible exterior obstruction bounds and count references lacking valid bounds.
 fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usize)> {
     let mut enable = enable::EnableStates::new(conn)?;
-    let mut statement = conn.prepare("SELECT s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND COALESCE(s.bounds_valid,0)=0")?;
+    let mut statement = conn.prepare("SELECT s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND (COALESCE(s.flags,0) & ?1)=0 AND COALESCE(s.bounds_valid,0)=0")?;
     let mut unbounded = 0;
-    for row in statement.query_map([], |row| {
+    for row in statement.query_map([MARKER_RECORD_FLAG], |row| {
         Ok((
             row.get::<_, Option<String>>(0)?,
             row.get::<_, Option<String>>(1)?,
@@ -884,9 +887,9 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
             unbounded += 1;
         }
     }
-    let mut statement = conn.prepare("SELECT r.id,r.base_form_id,COALESCE(r.worldspace_id,c.worldspace_id),r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,s.bounds_min_x,s.bounds_min_y,s.bounds_min_z,s.bounds_max_x,s.bounds_max_y,s.bounds_max_z,rec.data,s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id JOIN cells c ON c.id=r.cell_id LEFT JOIN records rec ON rec.form_id=r.id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND s.bounds_valid=1 AND COALESCE(r.worldspace_id,c.worldspace_id) IS NOT NULL ORDER BY r.id")?;
+    let mut statement = conn.prepare("SELECT r.id,r.base_form_id,COALESCE(r.worldspace_id,c.worldspace_id),r.pos_x,r.pos_y,r.pos_z,r.rot_x,r.rot_y,r.rot_z,r.scale,s.bounds_min_x,s.bounds_min_y,s.bounds_min_z,s.bounds_max_x,s.bounds_max_y,s.bounds_max_z,rec.data,s.model_path,base.record_type FROM \"references\" r JOIN statics s ON s.id=r.base_form_id JOIN cells c ON c.id=r.cell_id LEFT JOIN records rec ON rec.form_id=r.id LEFT JOIN records base ON base.form_id=r.base_form_id WHERE r.is_exterior=1 AND (COALESCE(s.flags,0) & ?1)=0 AND s.bounds_valid=1 AND COALESCE(r.worldspace_id,c.worldspace_id) IS NOT NULL ORDER BY r.id")?;
     let mut references = Vec::new();
-    for row in statement.query_map([], |row| {
+    for row in statement.query_map([MARKER_RECORD_FLAG], |row| {
         Ok((
             row.get::<_, u32>(0)?,
             row.get::<_, u32>(1)?,
@@ -955,17 +958,14 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
     Ok((references, unbounded))
 }
 
-/// Resolve canonical modeled obstructions while excluding vegetation, markers and effects.
+/// Resolve modeled obstruction paths after base-header filtering, excluding vegetation and effects.
 fn obstruction_model_path(model: Option<&str>, kind: Option<&str>) -> Option<String> {
     if matches!(kind, Some("TREE" | "FLOR")) {
         return None;
     }
     let path = canonical_asset_path(model?, AssetKind::Mesh, "glb").ok()?;
-    // The records table retains subrecords, not the base header's Is Marker flag.
-    // These path exclusions and the later shared::model_visibility checks are
-    // therefore a heuristic: a header-only marker with otherwise visible mesh
-    // geometry can still obstruct grass. Authoritative filtering needs persisted
-    // header flags and reingestion, rather than another model-path guess.
+    // The queries already exclude Is Marker using the winning statics.flags header.
+    // Keep path and primitive visibility exclusions for unflagged editor geometry too.
     (!path.starts_with("meshes/markers/") && !path.starts_with("meshes/effects/")).then_some(path)
 }
 
@@ -2122,6 +2122,75 @@ mod tests {
         );
     }
 
+    /// Header markers on ordinary opaque models contribute no local or neighboring masks.
+    #[test]
+    fn marker_header_omits_cross_cell_masks_and_keeps_ordinary_blocker() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        conn.execute("UPDATE statics SET flags=?1 WHERE id=40", [0x00800000u32])
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid)
+             SELECT 41,model_path,0,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid FROM statics WHERE id=40;
+             INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
+             VALUES(51,10,1,41,1,512,512,0,0,0,0,2);",
+        )
+        .unwrap();
+        let path = dir.path().join("grass.rkyv");
+        write_grass_cache(
+            &conn,
+            dir.path(),
+            &dir.path().join("terrain.rkyv"),
+            None,
+            &path,
+        )
+        .unwrap();
+        let cache = read(&path);
+        let local = cache.cells.iter().find(|cell| cell.cell_id == 10).unwrap();
+        let neighbor = cache.cells.iter().find(|cell| cell.cell_id == 11).unwrap();
+        assert!(
+            local.quadrants[0].exclusion.iter().any(|&byte| byte != 0),
+            "ordinary nearby blocker must still contribute"
+        );
+        assert!(
+            local.quadrants[1].exclusion.iter().all(|&byte| byte == 0),
+            "marker header must remove local contributions from meshes/blocker.glb"
+        );
+        assert!(
+            neighbor
+                .quadrants
+                .iter()
+                .all(|q| q.exclusion.iter().all(|&byte| byte == 0)),
+            "marker header must remove neighboring contributions"
+        );
+    }
+
+    /// Missing bounds on a header marker are not an omitted obstruction candidate.
+    #[test]
+    fn marker_header_is_not_counted_as_unbounded_obstruction() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        conn.execute_batch(
+            "INSERT INTO statics(id,model_path,flags) VALUES
+             (41,'meshes/arbitrary.glb',0),(42,'meshes/ordinary.glb',0);
+             INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
+             VALUES(51,10,1,41,1,0,0,0,0,0,0,1),(52,10,1,42,1,0,0,0,0,0,0,1);",
+        )
+        .unwrap();
+        conn.execute("UPDATE statics SET flags=?1 WHERE id=41", [0x00800000u32])
+            .unwrap();
+        let (references, unbounded) = read_reference_bounds(&conn).unwrap();
+        assert_eq!(
+            references.len(),
+            1,
+            "healthy bounded blocker remains eligible"
+        );
+        assert_eq!(
+            unbounded, 1,
+            "header marker must not count as an unbounded obstruction"
+        );
+    }
+
     /// Full-layer coverage uses the current version and rebuilds caches made from capped terrain.
     #[test]
     fn full_layer_grass_cache_uses_current_version_and_rebuilds_version_one() {
@@ -2143,6 +2212,42 @@ mod tests {
             write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
         assert_eq!((report.baked_cells, report.reused_cells), (3, 0));
         assert_eq!(read(&output).version, GRASS_CACHE_VERSION);
+    }
+
+    /// A warm v6 archive must rebuild rather than retain masks from a now-marker base.
+    #[test]
+    fn marker_header_policy_rebuilds_warm_v6_masks() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        let terrain = dir.path().join("terrain.rkyv");
+        let previous = dir.path().join("previous.rkyv");
+        let output = dir.path().join("grass.rkyv");
+        write_grass_cache(&conn, dir.path(), &terrain, None, &previous).unwrap();
+        let mut legacy = read(&previous);
+        assert!(
+            legacy.cells[0].quadrants[1]
+                .exclusion
+                .iter()
+                .any(|&b| b != 0)
+        );
+        legacy.version = 6;
+        std::fs::write(&previous, rkyv::to_bytes::<Error>(&legacy).unwrap()).unwrap();
+        conn.execute("UPDATE statics SET flags=8388608 WHERE id=40", [])
+            .unwrap();
+        let report =
+            write_grass_cache(&conn, dir.path(), &terrain, Some(&previous), &output).unwrap();
+        assert_eq!(
+            (report.baked_cells, report.reused_cells),
+            (3, 0),
+            "v6 marker masks must never be reused"
+        );
+        let cache = read(&output);
+        assert_eq!(cache.version, 7);
+        assert!(cache.cells.iter().all(|cell| {
+            cell.quadrants
+                .iter()
+                .all(|q| q.exclusion.iter().all(|&byte| byte == 0))
+        }));
     }
 
     /// Reuse unchanged cells and invalidate cells affected by rule or reference changes.
