@@ -130,6 +130,18 @@ pub enum StaticColliderSource {
     RenderProxy,
 }
 
+/// A spawned model's hierarchy nodes as the strict bounds check reads them. `Billboard` marks the
+/// camera-facing nodes, whose authored rotation stands in for their camera-dependent one.
+type SpawnedNodeQuery<'world, 'state> = Query<
+    'world,
+    'state,
+    (
+        &'static Transform,
+        &'static GlobalTransform,
+        Option<&'static crate::billboard::Billboard>,
+    ),
+>;
+
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StreamingWorld>()
@@ -1959,7 +1971,7 @@ fn static_proxy_from_hierarchy(
     path: &str,
     root: Entity,
     children: &Query<&Children>,
-    transforms: &Query<(&Transform, &GlobalTransform)>,
+    transforms: &SpawnedNodeQuery,
     primitives: &RenderPrimitiveQuery,
     meshes: &Assets<Mesh>,
     materials: &Assets<StandardMaterial>,
@@ -1971,9 +1983,10 @@ fn static_proxy_from_hierarchy(
         stack.extend(kids.iter().map(|child| (child, Affine3A::IDENTITY)));
     }
     while let Some((entity, parent_to_root)) = stack.pop() {
-        let (local, _) = transforms
+        let (local, _, billboard) = transforms
             .get(entity)
             .map_err(|_| format!("static proxy node {entity:?} has no transform"))?;
+        let local = crate::billboard::authored_transform(local, billboard);
         let node_to_root = parent_to_root * local.compute_affine();
         if let Ok((mesh_handle, material_handle, material_name, extras, native_source)) =
             primitives.get(entity)
@@ -2440,7 +2453,7 @@ fn static_collision_from_hierarchy(
     root: Entity,
     children: &Query<&Children>,
     scene_extras: &Query<&GltfSceneExtras>,
-    transforms: &Query<(&Transform, &GlobalTransform)>,
+    transforms: &SpawnedNodeQuery,
     primitives: &RenderPrimitiveQuery,
     meshes: &Assets<Mesh>,
     materials: &Assets<StandardMaterial>,
@@ -2873,7 +2886,7 @@ fn track_asset_readiness(
     children: Query<&Children>,
     scene_extras: Query<&GltfSceneExtras>,
     primitives: RenderPrimitiveQuery,
-    transforms: Query<(&Transform, &GlobalTransform)>,
+    transforms: SpawnedNodeQuery,
     images: Res<Assets<Image>>,
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
@@ -3697,7 +3710,7 @@ fn validate_spawned_transforms_and_bounds(
     actor_scene: bool,
     converted_model: Option<&WorldAsset>,
     children: &Query<&Children>,
-    transforms: &Query<(&Transform, &GlobalTransform)>,
+    transforms: &SpawnedNodeQuery,
     primitives: &RenderPrimitiveQuery,
     meshes: &Assets<Mesh>,
 ) -> Result<TransformValidationSummary, String> {
@@ -3832,7 +3845,7 @@ fn accumulate_relative_bounds(
     entity: Entity,
     relative_to_root: Affine3A,
     children: &Query<&Children>,
-    transforms: &Query<(&Transform, &GlobalTransform)>,
+    transforms: &SpawnedNodeQuery,
     primitives: &RenderPrimitiveQuery,
     meshes: &Assets<Mesh>,
     nodes: &mut usize,
@@ -3844,11 +3857,12 @@ fn accumulate_relative_bounds(
     // stack. Children are pushed in reverse so they are visited in order, as before.
     let mut stack = vec![(entity, relative_to_root)];
     while let Some((entity, parent_to_root)) = stack.pop() {
-        let (local, global) = transforms
+        let (local, global, billboard) = transforms
             .get(entity)
             .map_err(|_| format!("hierarchy node {entity:?} has no local/global transform"))?;
         validate_transform(&format!("hierarchy node {entity:?}"), local, global)?;
         *nodes += 1;
+        let local = crate::billboard::authored_transform(local, billboard);
         let relative_to_root = parent_to_root * local.compute_affine();
         if let Ok((mesh_handle, _, _, _, _)) = primitives.get(entity) {
             let mesh = meshes.get(mesh_handle).ok_or_else(|| {
@@ -5146,7 +5160,7 @@ mod tests {
                     .run_system_once(
                         move |children: Query<&Children>,
                               scene_extras: Query<&GltfSceneExtras>,
-                              transforms: Query<(&Transform, &GlobalTransform)>,
+                              transforms: SpawnedNodeQuery,
                               primitives: RenderPrimitiveQuery,
                               meshes: Res<Assets<Mesh>>,
                               materials: Res<Assets<StandardMaterial>>| {
@@ -5209,7 +5223,7 @@ mod tests {
             .run_system_once(
                 move |children: Query<&Children>,
                       scene_extras: Query<&GltfSceneExtras>,
-                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      transforms: SpawnedNodeQuery,
                       primitives: RenderPrimitiveQuery,
                       meshes: Res<Assets<Mesh>>,
                       materials: Res<Assets<StandardMaterial>>| {
@@ -5344,7 +5358,7 @@ mod tests {
             .world_mut()
             .run_system_once(
                 move |children: Query<&Children>,
-                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      transforms: SpawnedNodeQuery,
                       primitives: RenderPrimitiveQuery,
                       meshes: Res<Assets<Mesh>>,
                       materials: Res<Assets<StandardMaterial>>| {
@@ -5459,7 +5473,7 @@ mod tests {
             .world_mut()
             .run_system_once(
                 move |children: Query<&Children>,
-                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      transforms: SpawnedNodeQuery,
                       primitives: RenderPrimitiveQuery,
                       meshes: Res<Assets<Mesh>>,
                       materials: Res<Assets<StandardMaterial>>| {
@@ -5518,7 +5532,7 @@ mod tests {
             .world_mut()
             .run_system_once(
                 move |children: Query<&Children>,
-                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      transforms: SpawnedNodeQuery,
                       primitives: RenderPrimitiveQuery,
                       meshes: Res<Assets<Mesh>>,
                       materials: Res<Assets<StandardMaterial>>| {
@@ -8058,7 +8072,7 @@ mod tests {
         #[allow(clippy::type_complexity)]
         let mut system_state: SystemState<(
             Query<&Children>,
-            Query<(&Transform, &GlobalTransform)>,
+            SpawnedNodeQuery,
             RenderPrimitiveQuery,
         )> = SystemState::new(&mut world);
         let (children, transforms, primitives) = system_state.get(&world).unwrap();
@@ -8078,7 +8092,7 @@ mod tests {
             let aabb = mesh.compute_aabb().unwrap();
             let center = Vec3::from(aabb.center);
             let half_extents = Vec3::from(aabb.half_extents);
-            let (_, global) = transforms.get(descendant).unwrap();
+            let (_, global, _) = transforms.get(descendant).unwrap();
             let relative = Mat4::from(root_inverse * global.affine());
             let transformed =
                 InstanceBounds::transformed(center - half_extents, center + half_extents, relative);
@@ -8201,7 +8215,7 @@ mod tests {
         #[allow(clippy::type_complexity)]
         let mut system_state: SystemState<(
             Query<&Children>,
-            Query<(&Transform, &GlobalTransform)>,
+            SpawnedNodeQuery,
             RenderPrimitiveQuery,
         )> = SystemState::new(&mut world);
         let (children, transforms, primitives) = system_state.get(&world).unwrap();
@@ -9686,6 +9700,103 @@ mod tests {
                 .get::<FormId>(),
             Some(&FormId(0x100)),
             "and the reference is still spawned"
+        );
+    }
+}
+
+#[cfg(test)]
+mod authored_billboard_proxy_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn proxy(app: &mut App, root: Entity) -> Collider {
+        app.world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      transforms: SpawnedNodeQuery,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_proxy_from_hierarchy(
+                        "meshes/static.glb",
+                        root,
+                        &children,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn static_proxy_keeps_authored_billboard_rotation_with_parent_and_child_placement() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(20.0, 100.0, 10.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(500.0, 0.0, 0.0))
+            .id();
+        let parent = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(30.0, 7.0, -5.0)
+                    .with_rotation(Quat::from_rotation_y(0.4))
+                    .with_scale(Vec3::splat(2.0)),
+                ChildOf(root),
+            ))
+            .id();
+        let local = Transform::from_xyz(1.0, 2.0, 3.0)
+            .with_rotation(Quat::from_rotation_y(0.2))
+            .with_scale(Vec3::new(1.0, 2.0, 3.0));
+        let card = app
+            .world_mut()
+            .spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                local,
+                ChildOf(parent),
+                crate::billboard::Billboard {
+                    mode: crate::billboard::BillboardMode::TurnAboutUp,
+                    authored: local.rotation,
+                },
+            ))
+            .id();
+        app.update();
+        let before = proxy(&mut app, root);
+        app.world_mut().get_mut::<Transform>(card).unwrap().rotation = Quat::from_rotation_y(1.1);
+        app.update();
+        let after = proxy(&mut app, root);
+        assert_eq!(
+            before.raw.as_trimesh().unwrap().vertices(),
+            after.raw.as_trimesh().unwrap().vertices()
+        );
+        assert_eq!(
+            before.raw.as_trimesh().unwrap().indices(),
+            after.raw.as_trimesh().unwrap().indices()
+        );
+        // The control proves ordinary authored transform edits still affect proxy geometry.
+        app.world_mut()
+            .entity_mut(card)
+            .remove::<crate::billboard::Billboard>();
+        let ordinary = proxy(&mut app, root);
+        assert_ne!(
+            before.raw.as_trimesh().unwrap().vertices(),
+            ordinary.raw.as_trimesh().unwrap().vertices()
         );
     }
 }
