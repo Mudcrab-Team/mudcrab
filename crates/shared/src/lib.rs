@@ -5,6 +5,7 @@ pub mod cluster;
 pub mod cluster_mapping;
 pub mod cluster_overlay;
 pub mod cluster_recipe;
+pub mod cluster_tangents;
 pub mod collision;
 pub mod coordinates;
 pub mod extensions;

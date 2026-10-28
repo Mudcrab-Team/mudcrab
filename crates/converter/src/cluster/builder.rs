@@ -27,6 +27,7 @@ pub fn builder_config_json(wrapper_source_sha256: &str, rust_sources_sha256: &st
     json!({
         "preset": "classic",
         "material_certification_version": shared::cluster_material::CERTIFICATION_VERSION,
+        "tangent_generation": "bevy_mikktspace-1.0.0-shared-leaf-proof-v1",
         "max_triangles": MAX_CLUSTER_TRIANGLES,
         "tail_min_triangles": TAIL_MIN_TRIANGLES,
         "bvh_node_width": BVH_NODE_WIDTH,
@@ -68,6 +69,49 @@ pub fn build_mesh_payload(
     mesh_hash: [u8; 32],
 ) -> Result<BuiltMesh, Reject> {
     build_payload(primitive, builder_identity, mesh_hash, None)
+}
+
+/// Certify the encoded geometry that runtime tangent preparation actually reads.
+/// Authored MCL tangents already take runtime's direct packed-stream path. Without
+/// them, MikkTSpace must prove every leaf corner; Bevy's default for an absent
+/// tangent is diagnostic geometry, never permission to certify a normal map.
+pub(super) fn certify_material_geometry(bytes: &[u8], material: &Value) -> Result<(), Reject> {
+    use shared::cluster_material::{GeometryField, geometry_requirements};
+    let requirements = geometry_requirements(
+        material
+            .get("normalTexture")
+            .filter(|texture| !texture.is_null())
+            .into_iter()
+            .flat_map(|texture| {
+                [
+                    GeometryField::PresentTexture("normal_map_texture"),
+                    GeometryField::Channel {
+                        uv0: texture.get("texCoord").map_or(Some(0), Value::as_u64) == Some(0),
+                        texture_present: Some(true),
+                    },
+                ]
+            }),
+    );
+    if !requirements.supported {
+        return Err(Reject::new(
+            RejectReason::UnsupportedMaterialFeature,
+            "normal map requires UV0",
+        ));
+    }
+    if !requirements.tangents {
+        return Ok(());
+    }
+    let view = shared::cluster::read_mcl(bytes).map_err(format_error)?;
+    if view.flags & shared::cluster::FLAG_TANGENTS != 0 {
+        return Ok(());
+    }
+    if !shared::cluster_tangents::generate_mcl_tangents(&view, |_, _| {}) {
+        return Err(Reject::new(
+            RejectReason::MissingAttributes,
+            "normal map has no usable generated tangents in encoded MCL leaf geometry",
+        ));
+    }
+    Ok(())
 }
 
 /// Like [`build_mesh_payload`], with one lock byte per vertex: a non-zero byte keeps that vertex

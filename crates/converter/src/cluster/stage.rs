@@ -9,7 +9,7 @@
 //!
 use super::{
     LodMode,
-    builder::{MeshStats, build_mesh_payload},
+    builder::{MeshStats, build_mesh_payload, certify_material_geometry},
     classify::{
         WorldReference, WorldspaceOrigin, block_of, classify_references, detect_snow_source,
         transform_point,
@@ -797,10 +797,11 @@ fn process_model(context: &Context<'_>, glb_path: &str, hash_hex: &str) -> Model
                 !context.settings.map_references || hash_bytes(&bytes) == hash_hex,
                 "the converted GLB no longer hashes to the manifest's content hash"
             );
-            load_model(&bytes, glb_path)
+            let materials = shared::cluster_recipe::model_facts::parse_glb_json(&bytes)?;
+            Ok((load_model(&bytes, glb_path)?, materials))
         });
-    let primitives = match loaded {
-        Ok(primitives) => primitives,
+    let (primitives, materials) = match loaded {
+        Ok(loaded) => loaded,
         Err(error) => {
             outcome.load_failed = Some(format!("{error:#}"));
             return outcome;
@@ -819,9 +820,29 @@ fn process_model(context: &Context<'_>, glb_path: &str, hash_hex: &str) -> Model
                     format!("{triangles} triangles under {threshold}"),
                 )),
                 (None, false) => {
-                    match build_or_reuse(context, &mut outcome, &primitive, hash, hash_hex) {
-                        Ok(mesh) => PrimStatus::Cluster(mesh),
-                        Err(reject) => reject_status(&reject),
+                    match shared::cluster_recipe::model_facts::raw_material(
+                        &materials,
+                        primitive.material_index.map(|slot| slot as usize),
+                    ) {
+                        Ok(material) => match build_or_reuse(
+                            context,
+                            &mut outcome,
+                            &primitive,
+                            hash,
+                            hash_hex,
+                            &material,
+                        ) {
+                            Ok(mesh) => PrimStatus::Cluster(mesh),
+                            Err(reject) => reject_status(&reject),
+                        },
+                        Err(error) => {
+                            outcome.fatal =
+                                Some(format!("{glb_path}: cannot certify material: {error:#}"));
+                            reject_status(&Reject::new(
+                                RejectReason::BuilderFailed,
+                                "material facts unavailable",
+                            ))
+                        }
                     }
                 }
             }
@@ -853,6 +874,7 @@ fn build_or_reuse(
     primitive: &ModelPrimitive,
     hash: [u8; 32],
     hash_hex: &str,
+    material: &serde_json::Value,
 ) -> Result<ClusterMesh, Reject> {
     let payload_path = mesh_payload_path(hash_hex, primitive.index);
     if let Some(previous) = context.previous
@@ -877,6 +899,7 @@ fn build_or_reuse(
             (hash, primitive.index),
         )
     {
+        certify_material_geometry(&reused, material)?;
         let (group_count, bounds) = header_facts(&reused);
         return Ok(ClusterMesh {
             payload_path,
@@ -892,6 +915,7 @@ fn build_or_reuse(
     }
 
     let built = build_mesh_payload(primitive, context.identity, hash)?;
+    certify_material_geometry(&built.bytes, material)?;
     let content_hash = hash_bytes(&built.bytes);
     let destination = context.staging.join(&payload_path);
     if let Err(error) = context.write_new(&destination, &built.bytes) {
@@ -1435,4 +1459,204 @@ fn write_mapping(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tangent_certification_tests {
+    use super::*;
+
+    // Missing tangent admission (or accepting MikkTSpace's absent/default corner)
+    // must fail the refusal tests; refusing healthy generated or authored tangents breaks acceptance.
+    fn tangent_glb(positions: [[f32; 3]; 3], uvs: [[f32; 2]; 3], normal_map: bool) -> Vec<u8> {
+        use serde_json::json;
+        let mut binary = Vec::new();
+        for values in positions.iter().chain(&[[0.0, 0.0, 1.0]; 3]) {
+            binary.extend(values.iter().flat_map(|value| value.to_le_bytes()));
+        }
+        binary.extend(uvs.iter().flatten().flat_map(|value| value.to_le_bytes()));
+        binary.extend([0u32, 1, 2].iter().flat_map(|value| value.to_le_bytes()));
+        let mut material = json!({"extras": {"openSkyrim": {
+            "shaderFamily": "lighting", "normalConvention": "directx"
+        }}});
+        if normal_map {
+            material["normalTexture"] = json!({"index": 0});
+        }
+        let document = json!({
+            "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {
+                "POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2
+            }, "indices": 3, "material": 0}]}],
+            "materials": [material], "textures": [{"source": 0}],
+            "images": [{"uri": "normal.ktx2"}],
+            "buffers": [{"byteLength": binary.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 24},
+                {"buffer": 0, "byteOffset": 96, "byteLength": 12}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                 "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"},
+                {"bufferView": 3, "componentType": 5125, "count": 3, "type": "SCALAR"}
+            ]
+        });
+        crate::cluster::test_support::glb(&document, &binary)
+    }
+
+    fn process(bytes: &[u8]) -> (ModelOutcome, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("x.glb"), bytes).unwrap();
+        let settings = StageSettings {
+            mode: LodMode::Cluster,
+            triangle_threshold: 1,
+            jobs: 1,
+            assets_root: None,
+            read_database: None,
+            area: None,
+            child_worldspaces: Vec::new(),
+            include_trees: false,
+            map_references: false,
+        };
+        let context = Context {
+            settings: &settings,
+            cluster_mode: true,
+            staging: directory.path(),
+            assets: directory.path(),
+            identity: [1; 32],
+            previous: None,
+            catalog: None,
+            space: None,
+        };
+        let outcome = process_model(&context, "x.glb", &hash_bytes(bytes));
+        assert!(outcome.load_failed.is_none(), "{:?}", outcome.load_failed);
+        assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
+        assert_eq!(outcome.prims.len(), 1);
+        (outcome, directory)
+    }
+
+    #[test]
+    fn normal_map_without_tangents_rejects_degenerate_uvs_before_publication() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0]; 3],
+            true,
+        );
+        let (outcome, directory) = process(&bytes);
+        assert!(
+            matches!(&outcome.prims[0].status, PrimStatus::Rejected { reason, .. }
+            if reason == "missing_attributes")
+        );
+        let path = mesh_payload_path(&hash_bytes(&bytes), 0);
+        assert!(!directory.path().join(path).exists());
+    }
+
+    #[test]
+    fn normal_map_without_tangents_rejects_degenerate_positions_before_publication() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0]; 3],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            true,
+        );
+        let (outcome, directory) = process(&bytes);
+        assert!(matches!(
+            &outcome.prims[0].status,
+            PrimStatus::Rejected { .. }
+        ));
+        let path = mesh_payload_path(&hash_bytes(&bytes), 0);
+        assert!(!directory.path().join(path).exists());
+    }
+
+    #[test]
+    fn healthy_normal_map_geometry_is_published_for_runtime_tangent_generation() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            true,
+        );
+        let (outcome, directory) = process(&bytes);
+        let PrimStatus::Cluster(mesh) = &outcome.prims[0].status else {
+            panic!("healthy tangent geometry refused: {:?}", outcome.prims[0]);
+        };
+        let payload = fs::read(directory.path().join(&mesh.payload_path)).unwrap();
+        let view = read_mcl(&payload).unwrap();
+        assert_eq!(view.flags & shared::cluster::FLAG_TANGENTS, 0);
+        assert_eq!(mesh.source_triangles, 1);
+    }
+
+    #[test]
+    fn plain_geometry_does_not_gain_a_tangent_requirement() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0]; 3],
+            false,
+        );
+        let (outcome, directory) = process(&bytes);
+        let PrimStatus::Cluster(mesh) = &outcome.prims[0].status else {
+            panic!("plain geometry refused: {:?}", outcome.prims[0]);
+        };
+        assert!(directory.path().join(&mesh.payload_path).is_file());
+    }
+
+    #[test]
+    fn authored_tangents_keep_a_normal_map_drawable_without_generation() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0]; 3],
+            true,
+        );
+        let mut document = shared::cluster_recipe::model_facts::parse_glb_json(&bytes).unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let mut binary = bytes[28 + json_len..].to_vec();
+        let offset = binary.len();
+        binary.extend(
+            [[1.0f32, 0.0, 0.0, 1.0]; 3]
+                .iter()
+                .flatten()
+                .flat_map(|c| c.to_le_bytes()),
+        );
+        document["buffers"][0]["byteLength"] = json!(binary.len());
+        document["bufferViews"].as_array_mut().unwrap().push(json!({
+            "buffer": 0, "byteOffset": offset, "byteLength": 48
+        }));
+        document["accessors"].as_array_mut().unwrap().push(json!({
+            "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC4"
+        }));
+        document["meshes"][0]["primitives"][0]["attributes"]["TANGENT"] = json!(4);
+        let bytes = crate::cluster::test_support::glb(&document, &binary);
+        let (outcome, directory) = process(&bytes);
+        let PrimStatus::Cluster(mesh) = &outcome.prims[0].status else {
+            panic!("authored tangent geometry refused: {:?}", outcome.prims[0]);
+        };
+        let payload = fs::read(directory.path().join(&mesh.payload_path)).unwrap();
+        let view = read_mcl(&payload).unwrap();
+        assert_ne!(view.flags & shared::cluster::FLAG_TANGENTS, 0);
+    }
+
+    #[test]
+    fn normal_map_uv1_cannot_be_certified_by_uv0_geometry() {
+        let bytes = tangent_glb(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            true,
+        );
+        let mut document = shared::cluster_recipe::model_facts::parse_glb_json(&bytes).unwrap();
+        document["materials"][0]["normalTexture"]["texCoord"] = json!(1);
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let bytes = crate::cluster::test_support::glb(&document, &bytes[28 + json_len..]);
+        let (outcome, directory) = process(&bytes);
+        assert!(
+            matches!(&outcome.prims[0].status, PrimStatus::Rejected { reason, .. }
+            if reason == "unsupported_material_feature")
+        );
+        assert!(
+            !directory
+                .path()
+                .join(mesh_payload_path(&hash_bytes(&bytes), 0))
+                .exists()
+        );
+    }
 }

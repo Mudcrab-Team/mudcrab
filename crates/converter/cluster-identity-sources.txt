@@ -38,6 +38,7 @@ src/lod/terrain.rs
 # Shared material certification and converted metadata define the shading contract.
 src/material.rs
 ../shared/src/cluster_material.rs
+../shared/src/cluster_tangents.rs
 # Terrain geometry contracts and the complete CPU atlas encoding path.
 ../shared/src/lod.rs
 ../shared/src/terrain.rs
