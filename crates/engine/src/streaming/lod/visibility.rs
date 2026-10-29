@@ -425,6 +425,7 @@ struct Selection {
     origin: IVec2,
     camera_grid: IVec2,
     distances: TerrainLodDistances,
+    own_statics: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -537,6 +538,73 @@ fn count_desync(stats: &mut TerrainLodStats, reason: &str, key: PatchKey, entity
     error!(?key, %entity, reason, "terrain LOD visibility index desynchronized");
 }
 
+/// Cluster policy inputs are optional; the ordinary selector keeps its original inputs when
+/// packaged terrain is disabled. Presence, shared readiness revision and resource replacement
+/// all matter, including a replacement with different members at the same revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClusterStamp {
+    world: Option<u32>,
+    readiness_revision: u64,
+    own_statics: bool,
+    terrain: bool,
+    readiness: bool,
+}
+
+#[derive(SystemParam)]
+pub(in crate::streaming) struct ClusterTerrainInputs<'w> {
+    terrain: Option<Res<'w, crate::cluster::terrain::ClusterTerrain>>,
+    readiness: Option<Res<'w, crate::cluster::terrain::TerrainDrawReadiness>>,
+}
+
+impl ClusterTerrainInputs<'_> {
+    fn stamp(&self, config: &EngineConfig, world: Option<u32>) -> Option<ClusterStamp> {
+        if config.clusters.is_none() || !config.cluster_terrain {
+            return None;
+        }
+        Some(ClusterStamp {
+            world,
+            readiness_revision: self.readiness.as_ref().map_or(0, |ready| ready.revision()),
+            own_statics: config.cluster_own_statics,
+            terrain: self.terrain.is_some(),
+            readiness: self.readiness.is_some(),
+        })
+    }
+
+    fn changed(&self, current: Option<ClusterStamp>, previous: Option<ClusterStamp>) -> bool {
+        current != previous
+            || current.is_some()
+                && (self
+                    .terrain
+                    .as_ref()
+                    .is_some_and(|terrain| terrain.is_changed())
+                    || self
+                        .readiness
+                        .as_ref()
+                        .is_some_and(|ready| ready.is_changed()))
+    }
+
+    /// Only an admitted input change reads the block inventory; settled frames read no blocks.
+    fn pending_blocks(&self, stamp: Option<ClusterStamp>) -> usize {
+        let Some(stamp) = stamp else {
+            return 0;
+        };
+        self.terrain.as_ref().map_or(0, |terrain| {
+            terrain
+                .blocks
+                .iter()
+                .filter(|block| Some(block.worldspace_id) == stamp.world)
+                .filter(|block| {
+                    !block.batch.is_some_and(|batch| {
+                        self.readiness
+                            .as_ref()
+                            .is_some_and(|ready| ready.contains(batch))
+                    })
+                })
+                .count()
+        })
+    }
+}
+
 /// Test-owned snapshot of the production index work statistics.
 #[cfg(test)]
 #[derive(Resource, Default)]
@@ -569,6 +637,7 @@ pub(in crate::streaming) struct TerrainLodIndex {
     selection: Option<Selection>,
     /// The demanded world counts are taken for.
     world: Option<u32>,
+    cluster_stamp: Option<ClusterStamp>,
     /// Retained batches and confirmed merged cells feed the same tier decision as source patches.
     retained: HashMap<PatchKey, u8>,
     merged: HashSet<PatchKey>,
@@ -617,7 +686,9 @@ impl TerrainLodIndex {
             self.world = selection.world;
             self.recount();
             self.apply_all = true;
-        } else if previous.distances != selection.distances {
+        } else if (previous.distances, previous.own_statics)
+            != (selection.distances, selection.own_statics)
+        {
             // A config change writes every patch again, so a `Visibility` changed from outside is
             // restored by it as it always was.
             self.apply_all = true;
@@ -1220,6 +1291,7 @@ pub(in crate::streaming) fn terrain_lod_visibility_has_work(
     config: Res<EngineConfig>,
     origin: Res<RenderOrigin>,
     views: LodDemandViews,
+    cluster: ClusterTerrainInputs,
     mut inputs: TerrainLodWakeInputs,
     streaming: Res<LodStreaming>,
     index: Res<TerrainLodIndex>,
@@ -1234,11 +1306,14 @@ pub(in crate::streaming) fn terrain_lod_visibility_has_work(
         return true;
     }
     let demand = views.current(&config, origin.0);
+    let cluster_stamp = cluster.stamp(&config, demand.map(|demand| demand.world));
+    let cluster_changed = cluster.changed(cluster_stamp, index.cluster_stamp);
     let selection = Selection {
         world: demand.map(|demand| demand.world),
         origin: origin.0,
         camera_grid: demand.map_or(IVec2::ZERO, |demand| demand.center),
         distances: config.terrain_lod,
+        own_statics: cluster_stamp.is_some_and(|stamp| stamp.own_statics),
     };
     let journaled = journal_is_covered(
         inputs.journal.is_some(),
@@ -1263,6 +1338,7 @@ pub(in crate::streaming) fn terrain_lod_visibility_has_work(
     index.mode == Mode::Unsynced
         || index.has_work()
         || index.selection != Some(selection)
+        || cluster_changed
         || (journaled && index.mode != Mode::Journal)
         || (journaled && index.journal_lost)
         || (!journaled && index.mode != Mode::Legacy)
@@ -1305,6 +1381,7 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
     config: Res<EngineConfig>,
     origin: Res<RenderOrigin>,
     views: LodDemandViews,
+    cluster: ClusterTerrainInputs,
     mut inputs: TerrainLodInputs,
     mut streaming: ParamSet<(Res<LodStreaming>, ResMut<LodStreaming>)>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -1329,11 +1406,14 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
         return;
     }
     let demand = views.current(&config, origin.0);
+    let cluster_stamp = cluster.stamp(&config, demand.map(|demand| demand.world));
+    let cluster_changed = cluster.changed(cluster_stamp, index.cluster_stamp);
     let selection = Selection {
         world: demand.map(|demand| demand.world),
         origin: origin.0,
         camera_grid: demand.map_or(IVec2::ZERO, |demand| demand.center),
         distances: config.terrain_lod,
+        own_statics: cluster_stamp.is_some_and(|stamp| stamp.own_statics),
     };
     let replaced = if streaming.p0().replaced_source_quadrants.is_empty() {
         HashSet::new()
@@ -1436,6 +1516,7 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
         // changed selection is a trigger too: `sync_selection` has just queued its work.
         // A newly ready patch is a trigger even when retained/merged coverage did not change.
         index.mode != Mode::Legacy
+            || cluster_changed
             || roots_removed
             || worlds_removed
             || !inputs.root_changed.is_empty()
@@ -1479,9 +1560,23 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
         inputs.changed_visibility(&mut changed);
         index.changed = changed;
         index.note_overrides();
-        if selection_moved || flagged || removals || external_changed || batches_removed {
+        if selection_moved
+            || cluster_changed
+            || flagged
+            || removals
+            || external_changed
+            || batches_removed
+        {
             index.restore_overrides();
         }
+    }
+
+    if rebuild || cluster_changed {
+        let pending = cluster.pending_blocks(cluster_stamp);
+        if metrics.pending_cluster_terrain_blocks != pending {
+            metrics.pending_cluster_terrain_blocks = pending;
+        }
+        index.cluster_stamp = cluster_stamp;
     }
 
     let refresh = index.has_work();
@@ -1497,6 +1592,7 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
         || external_changed
         || batches_removed
         || selection_moved
+        || cluster_changed
         || removals
     {
         let mut selected: HashMap<_, _> = index
@@ -1515,7 +1611,7 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
             });
         }
         let semantic_changed = index.batch_selection != selected;
-        if semantic_changed || selection_moved || removals || batches_removed {
+        if semantic_changed || selection_moved || cluster_changed || removals || batches_removed {
             let mut state = streaming.p1();
             state.visibility_revision = state.visibility_revision.wrapping_add(1);
         }
@@ -1526,6 +1622,7 @@ pub(in crate::streaming) fn update_terrain_lod_visibility(
         || external_changed
         || batches_removed
         || selection_moved
+        || cluster_changed
         || batch_inputs_changed;
     let (batched_visible, _, _) = if batch_work {
         batches.update_for_world(&index.batch_selection, selection.world)

@@ -1765,6 +1765,7 @@ fn an_absent_exterior_square_settles_without_retry_refusal_or_terrain() {
         world.resource::<StreamingMetrics>(),
         Vec3::ZERO,
         0,
+        None,
     );
     assert!(ready, "a verified empty window is settled");
     assert_eq!(failed, 0);

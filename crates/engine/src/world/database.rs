@@ -1,8 +1,10 @@
 use super::enable_state::{EnableStateError, EnableStateResolver, InitialEnableInputs};
-use bevy::prelude::Resource;
+use crate::world::is_safe_relative_asset_path;
+use bevy::prelude::{Reflect, Resource, warn};
 use color_eyre::{Result, eyre::WrapErr};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use shared::cluster_recipe::classify::CELL_SIZE;
 use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin, LodTier, chunk_payload_path};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -21,7 +23,7 @@ pub(crate) const EXTERIOR_CELL_ID_SQL: &str = "SELECT c.id FROM cells c
      ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC
      LIMIT 1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bevy::prelude::Reflect)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellKey {
     Exterior {
         worldspace_id: u32,
@@ -118,6 +120,13 @@ pub enum DatabaseRequest {
         query: LodChunkQuery,
         queued_at: Instant,
     },
+    LoadReferences {
+        generation: u64,
+        key: CellKey,
+        reference_ids: BTreeSet<u32>,
+        responses: Sender<ReferenceResponse>,
+        queued_at: Instant,
+    },
     Shutdown,
 }
 
@@ -130,6 +139,17 @@ pub struct DatabaseResponse {
     pub queue_wait_micros: u64,
     pub total_request_micros: u64,
     pub row_count: usize,
+}
+
+/// One sparse request's exact selected rows; its bounded response channel is caller-owned.
+#[derive(Debug)]
+pub struct ReferenceResponse {
+    pub generation: u64,
+    pub key: CellKey,
+    pub result: std::result::Result<Vec<ReferenceRow>, String>,
+    pub query_micros: u64,
+    pub queue_wait_micros: u64,
+    pub total_request_micros: u64,
 }
 
 /// World-space AABB used to discover LOD chunks. Bounds are XY Creation units.
@@ -228,6 +248,11 @@ pub struct WorldDatabase {
     lod_responses: Receiver<LodChunkResponse>,
     worker: Option<thread::JoinHandle<()>>,
     worker_stopped: Arc<AtomicBool>,
+    /// The receiving end [`WorldDatabase::saturated_queue`] keeps open so its one request slot
+    /// fills. `None` in every run: a real database's worker owns the receiving end. See
+    /// [`Drop`], which releases it before the shutdown request.
+    #[cfg(test)]
+    held_receiver: Option<Receiver<DatabaseRequest>>,
 }
 
 /// A water's Skyrim colours and reflectivity factors, decoded by the converter from its WATR
@@ -379,19 +404,10 @@ fn converted_texture_path(path: String) -> Option<String> {
     Some(converted.to_string_lossy().replace('\\', "/"))
 }
 
-/// Rejects a database-supplied relative path that could escape the assets
-/// root once re-rooted under `textures/` or `meshes/` with `PathBuf::join`.
-/// A `..` segment walks back out of the base directory, and a rooted or
-/// drive-prefixed path makes `PathBuf::join` replace the base entirely
-/// instead of appending to it (see the `std::path::PathBuf::push` docs).
-/// Every component must therefore be a plain, non-empty path segment.
-fn is_safe_relative_asset_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .components()
-        .all(|component| matches!(component, std::path::Component::Normal(_)))
-}
-
 impl WorldDatabase {
+    /// A database with no worker whose request queue holds `capacity` requests, with the far ends of
+    /// both channels handed to the test: it reads what the engine asked for and answers as the
+    /// worker would. Tests only.
     #[cfg(test)]
     pub(crate) fn channel_fixture(
         capacity: usize,
@@ -406,18 +422,20 @@ impl WorldDatabase {
                 lod_responses,
                 worker: None,
                 worker_stopped: Arc::new(AtomicBool::new(true)),
+                held_receiver: None,
             },
             request_rx,
             response_tx,
         )
     }
 
-    /// Opens available core doors, including legacy packages with no door table.
+    /// Opens core data, including available core door links (`WorldDatabaseFeatures::default`).
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with(path, WorldDatabaseFeatures::default())
     }
 
-    /// Opens the ordinary database with a validated door capability policy.
+    /// Opens a world database and reads the extensions in `features`. A listed extension whose table
+    /// is missing is an error here, at open, not a cell that fails later.
     pub fn open_with(path: &Path, features: WorldDatabaseFeatures) -> Result<Self> {
         validate(path)?;
         if features.door_links == DoorLinksAccess::LegacyExtension {
@@ -449,6 +467,8 @@ impl WorldDatabase {
             lod_responses: lod_response_rx,
             worker: Some(worker),
             worker_stopped,
+            #[cfg(test)]
+            held_receiver: None,
         })
     }
 
@@ -458,9 +478,38 @@ impl WorldDatabase {
             .wrap_err("world database worker stopped")
     }
 
-    /// Ordinary streaming intake must never wait for the worker on the main thread.
+    /// [`Self::request`] without blocking. Ordinary streaming intake must never wait for the worker
+    /// on the main thread.
+    ///
+    /// The planner asks for a grid of full cells at once, and the worker drains
+    /// its bounded queue at one query per answer: blocking on a full queue would stall the frame
+    /// for as long as that takes. A request that does not fit is refused as a full queue and left
+    /// for the next frame - the plan's wanted list is ordered nearest first, so the cells closest
+    /// to the camera are always the ones that do. A stopped worker is refused with its own error.
     pub(crate) fn try_request(&self, request: DatabaseRequest) -> Result<()> {
         enqueue_request(&self.requests, request)
+    }
+
+    /// A database with no worker running and a request queue of one slot that nothing drains: the
+    /// first request fills it and every later one is refused with `Full`, which is what the planner
+    /// sees on a frame where the worker is behind. Tests only - a run would never get a cell out of
+    /// this.
+    #[cfg(test)]
+    pub(crate) fn saturated_queue() -> Self {
+        let (requests, held_receiver) = bounded(1);
+        let (_responses, responses) = unbounded();
+        let (_lod_responses, lod_responses) = unbounded();
+        Self {
+            requests,
+            responses,
+            lod_responses,
+            worker: None,
+            worker_stopped: Arc::new(AtomicBool::new(true)),
+            // Held open and never read, so the one slot fills: dropping the receiver instead would
+            // refuse requests as `Disconnected`, which is the stopped-worker case rather than a
+            // full queue.
+            held_receiver: Some(held_receiver),
+        }
     }
 
     pub fn try_response(&self) -> Option<DatabaseResponse> {
@@ -480,6 +529,46 @@ impl WorldDatabase {
     /// Read the next LOD response without consuming ordinary cell responses.
     pub fn try_lod_response(&self) -> Option<LodChunkResponse> {
         self.lod_responses.try_recv().ok()
+    }
+
+    /// Request exact exterior references on the existing worker, independently of cell/LOD
+    /// response polling. A canceled receiver does not cancel or stop that shared worker.
+    pub fn request_references(
+        &self,
+        generation: u64,
+        key: CellKey,
+        reference_ids: BTreeSet<u32>,
+    ) -> Result<Receiver<ReferenceResponse>> {
+        enqueue_reference_query(&self.requests, generation, key, reference_ids)
+    }
+}
+
+fn enqueue_reference_query(
+    requests: &Sender<DatabaseRequest>,
+    generation: u64,
+    key: CellKey,
+    reference_ids: BTreeSet<u32>,
+) -> Result<Receiver<ReferenceResponse>> {
+    color_eyre::eyre::ensure!(
+        matches!(key, CellKey::Exterior { .. }),
+        "sparse reference requests require an exterior position grid"
+    );
+    let (responses, receiver) = bounded(1);
+    let request = DatabaseRequest::LoadReferences {
+        generation,
+        key,
+        reference_ids,
+        responses,
+        queued_at: Instant::now(),
+    };
+    match requests.try_send(request) {
+        Ok(()) => Ok(receiver),
+        Err(TrySendError::Full(_)) => Err(color_eyre::eyre::eyre!(
+            "world database request queue is full"
+        )),
+        Err(TrySendError::Disconnected(_)) => {
+            Err(color_eyre::eyre::eyre!("world database worker stopped"))
+        }
     }
 }
 
@@ -510,6 +599,10 @@ fn enqueue_request(requests: &Sender<DatabaseRequest>, request: DatabaseRequest)
 
 impl Drop for WorldDatabase {
     fn drop(&mut self) {
+        // A test-only receiver goes first. Only a running worker is sent the shutdown, a blocking
+        // send that it drains; a database with no worker (a test fixture) has nothing to stop.
+        #[cfg(test)]
+        drop(self.held_receiver.take());
         if let Some(worker) = self.worker.take() {
             let _ = self.requests.send(DatabaseRequest::Shutdown);
             let _ = worker.join();
@@ -518,6 +611,8 @@ impl Drop for WorldDatabase {
     }
 }
 
+/// A listed extension's table must exist: a data set that names the extension and lacks the table is
+/// corrupt, and says so when the database opens.
 fn require_table(path: &Path, table: &str, feature: crate::extensions::Feature) -> Result<()> {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .wrap_err_with(|| format!("failed to open {}", path.display()))?;
@@ -631,6 +726,43 @@ fn worker(
                     break;
                 }
             }
+            DatabaseRequest::LoadReferences {
+                generation,
+                key,
+                reference_ids,
+                responses: reference_responses,
+                queued_at,
+            } => {
+                let queue_wait_micros = elapsed_micros(queued_at);
+                let started = Instant::now();
+                let result = match &mut setup {
+                    Ok((connection, query)) => {
+                        load_references(connection, query, key, &reference_ids)
+                            .map_err(|error| format!("{error:#}"))
+                    }
+                    Err(error) => Err(error.clone()),
+                };
+                let query_micros = elapsed_micros(started);
+                // Exactly one reply fits the fresh one-slot channel. A canceled sparse
+                // consumer must not stop unrelated cell/LOD requests on this worker.
+                let response = ReferenceResponse {
+                    generation,
+                    key,
+                    result,
+                    query_micros,
+                    queue_wait_micros,
+                    total_request_micros: elapsed_micros(queued_at),
+                };
+                if let Err(TrySendError::Full(_)) = reference_responses.try_send(response) {
+                    // DatabaseRequest is public: a caller can supply a full or rendezvous
+                    // channel instead of request_references' fresh one-slot receiver.
+                    warn!(
+                        generation,
+                        ?key,
+                        "sparse reference reply channel has no capacity"
+                    );
+                }
+            }
         }
     }
 }
@@ -727,12 +859,12 @@ fn load_lod_chunks(connection: &Connection, query: LodChunkQuery) -> Result<Vec<
     .collect()
 }
 
-fn has_lod_table(connection: &Connection) -> Result<bool> {
-    Ok(connection.query_row(
+fn has_lod_table(connection: &Connection) -> rusqlite::Result<bool> {
+    connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')",
         [],
         |row| row.get(0),
-    )?)
+    )
 }
 
 fn validate_lod_query(query: LodChunkQuery) -> Result<()> {
@@ -878,8 +1010,8 @@ const REFERENCE_JOIN: &str = " LEFT JOIN statics s ON s.id=r.base_form_id";
 const DOOR_COLUMNS: &str = "d.destination_ref_id,d.destination_cell_id,d.destination_worldspace_id,\
      d.pos_x,d.pos_y,d.pos_z,d.rot_x,d.rot_y,d.rot_z";
 
-/// Stand-in for [`DOOR_COLUMNS`] in a database without the `door_links` table: every reference
-/// reads as a non-door, with the column order unchanged.
+/// Stand-in for [`DOOR_COLUMNS`] in a database whose doors are not read: every reference reads as a
+/// non-door, with the column order unchanged.
 const ABSENT_DOOR_COLUMNS: &str = "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL";
 
 const DOOR_JOIN: &str = " LEFT JOIN door_links d ON d.ref_id=r.id";
@@ -1007,6 +1139,8 @@ fn has_emittance(connection: &Connection) -> Result<bool> {
 struct ReferenceQuery {
     columns: String,
     joins: String,
+    #[cfg(test)]
+    has_doors: bool,
     parent_sql: String,
     enable_states: EnableStateResolver,
     enable_errors: HashSet<EnableStateError>,
@@ -1027,12 +1161,16 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
-        let has_door_links =
+        let has_doors =
             features.door_links != DoorLinksAccess::Disabled && has_door_links(connection)?;
-        let door_columns = if has_door_links {
+        color_eyre::eyre::ensure!(
+            has_doors || features.door_links != DoorLinksAccess::LegacyExtension,
+            "extension {} is listed but its door_links table lacks columns",
+            crate::extensions::Feature::DoorLinks.extension()
+        );
+        let door_columns = if has_doors {
             DOOR_COLUMNS
         } else {
-            bevy::log::info!("world database has no door_links table; no reference is a load door");
             ABSENT_DOOR_COLUMNS
         };
         let has_emittance = has_emittance(connection)?;
@@ -1048,7 +1186,7 @@ impl ReferenceQuery {
         if has_lights {
             joins.push_str(LIGHT_JOIN);
         }
-        if has_door_links {
+        if has_doors {
             joins.push_str(DOOR_JOIN);
         }
         if has_emittance {
@@ -1083,10 +1221,49 @@ impl ReferenceQuery {
                  {STATIC_FLAGS_COLUMN}"
             ),
             joins,
+            #[cfg(test)]
+            has_doors,
             parent_sql: format!("SELECT {enable_columns} FROM \"references\" WHERE id=?1"),
             enable_states: EnableStateResolver::default(),
             enable_errors: HashSet::new(),
         })
+    }
+
+    /// Resolves each row's new-game enable state from its own inputs and its parent chain, which
+    /// may lead outside the loaded cell. A reference whose chain cannot be resolved (a missing or
+    /// cyclic parent) stays in the payload but reads as initially disabled, and each kind of
+    /// failure is logged once for the connection.
+    fn resolve_enable_states(
+        &mut self,
+        connection: &Connection,
+        rows: Vec<(ReferenceRow, InitialEnableInputs)>,
+    ) -> Result<Vec<ReferenceRow>> {
+        let mut references = Vec::with_capacity(rows.len());
+        for (mut reference, inputs) in rows {
+            let state = self
+                .enable_states
+                .resolve(reference.form_id, inputs, |parent| {
+                    connection
+                        .prepare_cached(&self.parent_sql)?
+                        .query_row([parent], |row| map_enable_inputs(row, 0))
+                        .optional()
+                })
+                .wrap_err_with(|| format!("enable state of reference {:08X}", reference.form_id))?;
+            reference.initially_enabled = match state {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    if self.enable_errors.insert(error) {
+                        bevy::log::warn!(
+                            "reference {:08X}: {error}; unresolved references will not spawn",
+                            reference.form_id
+                        );
+                    }
+                    false
+                }
+            };
+            references.push(reference);
+        }
+        Ok(references)
     }
 }
 
@@ -1178,7 +1355,61 @@ fn load_cell(
     }))
 }
 
-pub(crate) fn map_enable_inputs(
+/// Selected-ID lookups use the same projection as near streaming, but membership is exact
+/// placed-world plus the shared cluster recipe's position grid, never an owning CELL or Rtree.
+/// The rows carry the same enable state and door enrichment a cell load gives them.
+fn load_references(
+    connection: &Connection,
+    query: &mut ReferenceQuery,
+    key: CellKey,
+    reference_ids: &BTreeSet<u32>,
+) -> Result<Vec<ReferenceRow>> {
+    let CellKey::Exterior {
+        worldspace_id,
+        grid_x,
+        grid_y,
+    } = key
+    else {
+        color_eyre::eyre::bail!("sparse reference requests require an exterior position grid");
+    };
+    if reference_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT {} FROM \"references\" r{} \
+         WHERE r.id=?1 AND r.is_exterior=1 AND r.worldspace_id=?2",
+        query.columns, query.joins
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let mut rows = Vec::with_capacity(reference_ids.len());
+    for &reference_id in reference_ids {
+        let (reference, inputs) = statement
+            .query_row(params![reference_id, worldspace_id], map_reference)
+            .optional()?
+            .ok_or_else(|| color_eyre::eyre::eyre!(
+                "reference {reference_id:08X} is missing or not exterior in placed world {worldspace_id:08X}"
+            ))?;
+        color_eyre::eyre::ensure!(
+            reference.position[..2]
+                .iter()
+                .all(|value| value.is_finite()),
+            "reference {reference_id:08X} has non-finite XY position"
+        );
+        let position_grid = (
+            (reference.position[0] / CELL_SIZE).floor() as i32,
+            (reference.position[1] / CELL_SIZE).floor() as i32,
+        );
+        color_eyre::eyre::ensure!(
+            position_grid == (grid_x, grid_y),
+            "reference {reference_id:08X} position grid {position_grid:?} differs from requested ({grid_x}, {grid_y})"
+        );
+        rows.push((reference, inputs));
+    }
+    let references = query.resolve_enable_states(connection, rows)?;
+    Ok(references)
+}
+
+pub(super) fn map_enable_inputs(
     row: &rusqlite::Row<'_>,
     start: usize,
 ) -> rusqlite::Result<InitialEnableInputs> {
@@ -1270,6 +1501,15 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
 }
 
 #[cfg(test)]
+impl WorldDatabase {
+    pub(crate) fn enqueue_lod_response_for_test(&mut self, response: LodChunkResponse) {
+        let (sender, receiver) = unbounded();
+        sender.send(response).unwrap();
+        self.lod_responses = receiver;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1290,16 +1530,40 @@ mod tests {
         assert!(!LodQueryFailure::from_error(rusqlite::Error::InvalidQuery.into()).transient);
     }
 
-    /// `load_cell` with the reference query built for `connection` as it is now, the way the
-    /// worker builds it when it opens a database.
+    /// Load a full cell using the fixture's declared legacy/core door capability and a fresh
+    /// reference query. Tests that retain enable-state resolver state use `load_cell_with`.
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
+            &mut ReferenceQuery::for_connection(connection, fixture_features(connection))?,
             generation,
             key,
         )?
         .ok_or_else(|| color_eyre::eyre::eyre!("fixture expected a recorded exterior cell"))
+    }
+
+    /// [`super::load_cell`] for a whole cell with a query the test keeps across loads (the enable
+    /// state resolver lives on it).
+    fn load_cell_with(
+        connection: &Connection,
+        query: &mut ReferenceQuery,
+        generation: u64,
+        key: CellKey,
+    ) -> Result<CellPayload> {
+        super::load_cell(connection, query, generation, key)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("fixture expected a recorded exterior cell"))
+    }
+
+    /// The features a fixture database stands for: it lists `mudcrab.door_links` exactly when it
+    /// holds the complete public table, checked by the same column detector as the worker.
+    fn fixture_features(connection: &Connection) -> WorldDatabaseFeatures {
+        WorldDatabaseFeatures {
+            door_links: if has_door_links(connection).unwrap() {
+                DoorLinksAccess::LegacyExtension
+            } else {
+                DoorLinksAccess::Core
+            },
+        }
     }
 
     fn fixture(connection: &Connection) {
@@ -1318,6 +1582,55 @@ mod tests {
                 INSERT INTO exterior_spatial VALUES(30,8200,8200,-12200,-12200,50,50,10,60);
                 INSERT INTO "references" VALUES(31,99,20,8250,-12150,55,0,0,0,1);
                 INSERT INTO exterior_spatial VALUES(31,8250,8250,-12150,-12150,55,55,99,60);"#,
+            ).unwrap();
+    }
+
+    // Minimal door projection: no interior names or worldspaces, so the label stays empty.
+    fn door_fixture(connection: &Connection) {
+        connection.execute_batch(
+            r#"CREATE TABLE door_links(ref_id INTEGER PRIMARY KEY,destination_ref_id INTEGER NOT NULL,
+                pos_x REAL NOT NULL,pos_y REAL NOT NULL,pos_z REAL NOT NULL,
+                rot_x REAL NOT NULL,rot_y REAL NOT NULL,rot_z REAL NOT NULL,
+                destination_cell_id INTEGER,destination_worldspace_id INTEGER);
+            INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(99,NULL,NULL,NULL);
+            INSERT INTO door_links VALUES(30,77,-947.038,3958.835,591.917,0,0,2.96989,99,NULL);"#,
+        ).unwrap();
+    }
+
+    fn sparse_reference_fixture(connection: &Connection) {
+        fixture(connection);
+        door_fixture(connection);
+        light_fixture(connection);
+        connection
+            .execute_batch(
+                r#"CREATE TABLE records(form_id INTEGER PRIMARY KEY,record_type TEXT);
+                INSERT INTO records VALUES(20,'DOOR'),(22,'LIGH');
+                UPDATE lights SET id=22 WHERE id=20;
+                UPDATE "references" SET radius_override=NULL WHERE id=30;
+                UPDATE "references" SET radius_override=850.8 WHERE id=40;
+                INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(11,60,0,0),(12,614,0,0);
+                UPDATE "references" SET cell_id=11 WHERE id=31;
+                UPDATE door_links SET destination_ref_id=31,destination_cell_id=11,destination_worldspace_id=60 WHERE ref_id=30;
+                INSERT INTO door_links VALUES(31,30,8201,-12201,51,0,0,1,10,60);
+                ALTER TABLE "references" ADD COLUMN is_exterior INTEGER;
+                ALTER TABLE "references" ADD COLUMN worldspace_id INTEGER;
+                UPDATE "references" SET is_exterior=1,worldspace_id=60;
+                INSERT INTO "references"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,is_exterior,worldspace_id) VALUES
+                    (55,12,20,8200,-12200,50,0,0,0,1,1,614),
+                    (56,99,20,8200,-12200,50,0,0,0,1,0,NULL),
+                    (57,11,20,12288,-12200,50,0,0,0,1,1,60),
+                    (60,11,20,-0.25,-4096,50,0,0,0,1,1,60),
+                    (61,11,20,-4096,-0.25,50,0,0,0,1,1,60),
+                    (62,11,20,-4096.25,-4096,50,0,0,0,1,1,60),
+                    (63,11,20,0,0,50,0,0,0,1,1,60),
+                    (64,11,20,4096,-4096,50,0,0,0,1,1,60);"#,
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,is_exterior,worldspace_id) \
+                 VALUES(58,11,20,?1,-12200,50,0,0,0,1,1,60)",
+                [f64::INFINITY],
             )
             .unwrap();
     }
@@ -1332,6 +1645,273 @@ mod tests {
             .unwrap();
     }
 
+    fn sparse_key(worldspace_id: u32, grid_x: i32, grid_y: i32) -> CellKey {
+        CellKey::Exterior {
+            worldspace_id,
+            grid_x,
+            grid_y,
+        }
+    }
+
+    fn sparse_rows(
+        connection: &Connection,
+        key: CellKey,
+        ids: impl IntoIterator<Item = u32>,
+    ) -> Result<Vec<ReferenceRow>> {
+        load_references(
+            connection,
+            &mut ReferenceQuery::for_connection(connection, fixture_features(connection))?,
+            key,
+            &ids.into_iter().collect(),
+        )
+    }
+
+    #[test]
+    fn sparse_references_select_only_sorted_ids_and_use_placed_world_and_position() {
+        let connection = Connection::open_in_memory().unwrap();
+        sparse_reference_fixture(&connection);
+        // The exact-ID path does not need a cell-wide spatial query, even for a persistent
+        // reference whose owning CELL disagrees with its position grid.
+        connection
+            .execute("DROP TABLE exterior_spatial", [])
+            .unwrap();
+        let rows = sparse_rows(&connection, sparse_key(60, 2, -3), [40, 30]).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.form_id).collect::<Vec<_>>(),
+            [30, 40]
+        );
+        let persistent = sparse_rows(&connection, sparse_key(60, 2, -3), [31]).unwrap();
+        assert_eq!(persistent[0].cell_id, 11, "authored CELL stays intact");
+        assert!(sparse_rows(&connection, sparse_key(60, 0, 0), [31]).is_err());
+        let child = sparse_rows(&connection, sparse_key(614, 2, -3), [55]).unwrap();
+        assert_eq!(child[0].cell_id, 12);
+        assert!(sparse_rows(&connection, sparse_key(60, 2, -3), [55]).is_err());
+    }
+
+    #[test]
+    fn sparse_references_preserve_all_near_projection_and_door_enrichment() {
+        let connection = Connection::open_in_memory().unwrap();
+        sparse_reference_fixture(&connection);
+        let key = sparse_key(60, 2, -3);
+        let near = load_cell(&connection, 1, key).unwrap();
+        let sparse = sparse_rows(&connection, key, [30, 40]).unwrap();
+        assert_eq!(near.references.len(), 3);
+        for actual in &sparse {
+            let expected = near
+                .references
+                .iter()
+                .find(|row| row.form_id == actual.form_id)
+                .unwrap();
+            assert_eq!(actual.form_id, expected.form_id);
+            assert_eq!(actual.initially_enabled, expected.initially_enabled);
+            assert_eq!(actual.cell_id, expected.cell_id);
+            assert_eq!(actual.base_form_id, expected.base_form_id);
+            assert_eq!(actual.base_record_type, expected.base_record_type);
+            assert_eq!(actual.model_path, expected.model_path);
+            assert_eq!(actual.position, expected.position);
+            assert_eq!(actual.rotation, expected.rotation);
+            assert_eq!(actual.scale, expected.scale);
+            assert_eq!(actual.bounds_min, expected.bounds_min);
+            assert_eq!(actual.bounds_max, expected.bounds_max);
+            assert_eq!(actual.bounds_valid, expected.bounds_valid);
+            assert_eq!(actual.door, expected.door);
+            assert_eq!(actual.light, expected.light);
+            assert_eq!(actual.emittance, expected.emittance);
+            assert_eq!(actual.light_radius_override, expected.light_radius_override);
+        }
+        let door = sparse[0].door.as_ref().unwrap();
+        assert_eq!(
+            door,
+            &DoorLinkRow {
+                destination_ref_id: 31,
+                destination_cell_id: Some(11),
+                destination_worldspace_id: Some(60),
+                arrival_position: [-947.038, 3958.835, 591.917],
+                arrival_rotation: [0.0, 0.0, 2.96989],
+            }
+        );
+        assert!(sparse[1].light.is_some());
+        assert_eq!(sparse[1].light_radius_override, Some(850.8));
+    }
+
+    #[test]
+    fn sparse_references_reject_the_whole_batch_for_any_invalid_selected_id() {
+        let connection = Connection::open_in_memory().unwrap();
+        sparse_reference_fixture(&connection);
+        for (id, reason) in [
+            (999, "missing or not exterior"),
+            (55, "missing or not exterior"),
+            (56, "missing or not exterior"),
+            (57, "position grid"),
+            (58, "non-finite XY"),
+        ] {
+            let error = sparse_rows(&connection, sparse_key(60, 2, -3), [30, id])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("{id:08X}")), "{error}");
+            assert!(error.contains(reason), "{error}");
+        }
+    }
+
+    #[test]
+    fn sparse_references_use_floor_at_negative_and_exact_cell_boundaries() {
+        let connection = Connection::open_in_memory().unwrap();
+        sparse_reference_fixture(&connection);
+        for (id, x, y) in [
+            (60, -1, -1),
+            (61, -1, -1),
+            (62, -2, -1),
+            (63, 0, 0),
+            (64, 1, -1),
+        ] {
+            let rows = sparse_rows(&connection, sparse_key(60, x, y), [id]).unwrap();
+            assert_eq!(rows[0].form_id, id);
+            assert!(sparse_rows(&connection, sparse_key(60, x + 1, y), [id]).is_err());
+        }
+    }
+
+    #[test]
+    fn empty_sparse_requests_do_not_require_new_columns_or_read_a_cell() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        assert_eq!(
+            load_cell(&connection, 1, sparse_key(60, 2, -3))
+                .unwrap()
+                .references
+                .len(),
+            2
+        );
+        // This exterior key has no owning cell, and the old fixture lacks the new placement
+        // columns. Empty selection still succeeds without preparing any reference SQL.
+        assert!(
+            sparse_rows(&connection, sparse_key(614, 900, 900), [])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(sparse_rows(&connection, sparse_key(60, 2, -3), [30]).is_err());
+        assert!(sparse_rows(&connection, CellKey::Interior(10), []).is_err());
+    }
+
+    #[test]
+    fn sparse_worker_responses_are_isolated_and_canceled_receivers_do_not_stop_cells() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("OWNER.txt"),
+            "database sparse worker test\n",
+        )
+        .unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        sparse_reference_fixture(&connection);
+        drop(connection);
+        let key = sparse_key(60, 2, -3);
+        let child_key = sparse_key(614, 2, -3);
+        let (requests, request_rx) = bounded(8);
+        let first = enqueue_reference_query(&requests, 7, key, BTreeSet::from([30])).unwrap();
+        let second =
+            enqueue_reference_query(&requests, 8, child_key, BTreeSet::from([55])).unwrap();
+        let canceled = enqueue_reference_query(&requests, 9, key, BTreeSet::from([30])).unwrap();
+        let failed = enqueue_reference_query(&requests, 10, key, BTreeSet::from([999])).unwrap();
+        let empty = enqueue_reference_query(&requests, 11, key, BTreeSet::new()).unwrap();
+        let (zero_capacity, stalled_receiver) = bounded(0);
+        requests
+            .send(DatabaseRequest::LoadReferences {
+                generation: 99,
+                key,
+                reference_ids: BTreeSet::from([30]),
+                responses: zero_capacity,
+                queued_at: Instant::now(),
+            })
+            .unwrap();
+        assert_eq!(first.capacity(), Some(1));
+        assert_eq!(second.capacity(), Some(1));
+        drop(canceled);
+        requests
+            .send(DatabaseRequest::Load {
+                generation: 12,
+                key,
+                queued_at: Instant::now(),
+            })
+            .unwrap();
+        requests.send(DatabaseRequest::Shutdown).unwrap();
+        let (responses, response_rx) = unbounded();
+        let (lod_responses, lod_rx) = unbounded();
+        worker(
+            path,
+            WorldDatabaseFeatures {
+                door_links: crate::world::database::DoorLinksAccess::LegacyExtension,
+            },
+            request_rx,
+            responses,
+            lod_responses,
+        );
+        for (receiver, generation, expected_key, id) in
+            [(first, 7, key, 30), (second, 8, child_key, 55)]
+        {
+            let response = receiver.recv().unwrap();
+            assert_eq!(response.generation, generation);
+            assert_eq!(response.key, expected_key);
+            let rows = response.result.unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].form_id, id);
+            assert!(response.total_request_micros >= response.queue_wait_micros);
+            assert!(response.total_request_micros >= response.query_micros);
+            assert!(receiver.try_recv().is_err());
+        }
+        let failed = failed.recv().unwrap();
+        assert_eq!(failed.generation, 10);
+        assert!(failed.result.is_err());
+        let empty = empty.recv().unwrap();
+        assert_eq!(empty.generation, 11);
+        assert!(empty.result.unwrap().is_empty());
+        let ordinary = response_rx.recv().unwrap();
+        assert_eq!(ordinary.generation, 12);
+        assert_eq!(
+            ordinary
+                .result
+                .unwrap()
+                .expect("fixture cell must be recorded")
+                .references
+                .len(),
+            3
+        );
+        assert!(response_rx.try_recv().is_err());
+        assert!(lod_rx.try_recv().is_err());
+        assert!(stalled_receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn sparse_requests_report_backpressure_disconnection_and_interior_keys() {
+        let database = WorldDatabase::saturated_queue();
+        let key = sparse_key(60, 2, -3);
+        let response = database
+            .request_references(1, key, BTreeSet::from([30]))
+            .unwrap();
+        assert_eq!(response.capacity(), Some(1));
+        assert!(
+            database
+                .request_references(2, key, BTreeSet::from([31]))
+                .unwrap_err()
+                .to_string()
+                .contains("request queue is full")
+        );
+        assert!(
+            database
+                .request_references(3, CellKey::Interior(10), BTreeSet::new())
+                .unwrap_err()
+                .to_string()
+                .contains("exterior position grid")
+        );
+        let (requests, request_rx) = bounded(1);
+        drop(request_rx);
+        assert!(
+            enqueue_reference_query(&requests, 4, key, BTreeSet::from([30]))
+                .unwrap_err()
+                .to_string()
+                .contains("worker stopped")
+        );
+    }
+
     #[test]
     fn disabled_legacy_doors_preserve_query_layout_without_reading_core_doors() {
         let connection = Connection::open_in_memory().unwrap();
@@ -1339,7 +1919,7 @@ mod tests {
         add_door_links(&connection);
         let core =
             ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
-        assert!(core.joins.contains("door_links"));
+        assert!(core.has_doors);
         let mut denied = ReferenceQuery::for_connection(
             &connection,
             WorldDatabaseFeatures {
@@ -1347,6 +1927,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert!(!denied.has_doors);
         assert!(!denied.joins.contains("door_links"));
         assert!(denied.columns.contains(ABSENT_DOOR_COLUMNS));
         let sql = format!(
@@ -1465,7 +2046,7 @@ mod tests {
                 .expect("fixture cell must be recorded");
             assert_eq!(interior.references.len(), 1);
             assert!(!interior.references[0].initially_enabled);
-            let exterior = super::load_cell(
+            let exterior = load_cell_with(
                 &connection,
                 &mut query,
                 2,
@@ -1475,8 +2056,7 @@ mod tests {
                     grid_y: -3,
                 },
             )
-            .unwrap()
-            .expect("fixture cell must be recorded");
+            .unwrap();
             assert_eq!(
                 exterior.references.len(),
                 2,
@@ -1519,7 +2099,7 @@ mod tests {
                 ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default())
                     .unwrap();
             for _ in 0..2 {
-                let payload = super::load_cell(
+                let payload = load_cell_with(
                     &connection,
                     &mut query,
                     1,
@@ -1529,8 +2109,7 @@ mod tests {
                         grid_y: -3,
                     },
                 )
-                .unwrap()
-                .expect("fixture cell must be recorded");
+                .unwrap();
                 assert_eq!(payload.references.len(), 2);
                 assert!(payload.references.iter().all(|row| !row.initially_enabled));
                 assert_eq!(query.enable_errors.len(), 1);
@@ -1793,7 +2372,8 @@ mod tests {
         std::fs::write(
             directory.path().join("lod-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
-                "build_identity": identity, "converter_schema": 24,
+                "build_identity": identity,
+                "converter_schema": shared::LOD_CONVERTER_SCHEMA_VERSION,
                 "world_database_schema": shared::WORLD_DATABASE_SCHEMA_VERSION,
                 "chunks": 1, "land_texture_repeats_per_cell": shared::LAND_TEXTURE_REPEATS_PER_CELL,
             }))
@@ -2289,6 +2869,141 @@ mod tests {
         assert_eq!(catalog.landscape_normal(1), None);
     }
 
+    /// Full exterior requests preserve identity and include authored references and enrichment.
+    #[test]
+    fn loads_a_full_exterior_cell_with_its_references_lights_and_doors() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        light_fixture(&connection);
+        let key = CellKey::Exterior {
+            worldspace_id: 60,
+            grid_x: 2,
+            grid_y: -3,
+        };
+        let full = load_cell(&connection, 7, key).unwrap();
+        assert_eq!(full.generation, 7);
+        assert_eq!(full.cell_id, 10);
+        assert_eq!(full.key, key);
+        assert_eq!(full.references.len(), 4);
+        let reference = full
+            .references
+            .iter()
+            .find(|row| row.form_id == 30)
+            .unwrap();
+        assert!(reference.light.is_some());
+        assert!(reference.door.is_some());
+    }
+
+    /// Interior requests load all references without an exterior spatial lookup.
+    #[test]
+    fn loads_an_interior_request_in_full() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let payload = load_cell(&connection, 1, CellKey::Interior(99)).unwrap();
+        assert_eq!(payload.cell_id, 99);
+        assert_eq!(payload.references.len(), 1);
+    }
+
+    /// An uncovered exterior grid is an error, never a successful empty cell.
+    #[test]
+    fn fails_a_full_request_for_a_grid_the_worldspace_does_not_cover() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let absent = CellKey::Exterior {
+            worldspace_id: 60,
+            grid_x: 900,
+            grid_y: 900,
+        };
+        assert!(load_cell(&connection, 1, absent).is_err());
+    }
+
+    /// LAND availability cannot turn a reference decoding error into a successful cell response.
+    #[test]
+    fn full_reference_query_error_reaches_worker_response_even_when_land_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("OWNER.txt"),
+            "database full reference query error test\n",
+        )
+        .unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        fixture(&connection);
+        connection
+            .execute_batch(
+                "INSERT INTO land VALUES(10); \
+                 UPDATE \"references\" SET pos_z='corrupt' WHERE id=30;",
+            )
+            .unwrap();
+        let key = sparse_key(60, 2, -3);
+        let cell_id: u32 = connection
+            .query_row(EXTERIOR_CELL_ID_SQL, params![60, 2, -3], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            cell_id, 10,
+            "cell identity resolves despite the broken reference"
+        );
+        let mut query = ReferenceQuery::for_connection(&connection, fixture_features(&connection))
+            .expect("worker query setup must succeed before reference decoding fails");
+        let error = super::load_cell(&connection, &mut query, 7, key).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::InvalidColumnType(_, name, _)) if name == "pos_z"
+        ));
+        drop(connection);
+
+        let (requests, request_rx) = bounded(4);
+        let (responses, response_rx) = unbounded();
+        let (lod_responses, lod_rx) = unbounded();
+        for (generation, key) in [(7, key), (8, key), (9, CellKey::Interior(99))] {
+            requests
+                .send(DatabaseRequest::Load {
+                    generation,
+                    key,
+                    queued_at: Instant::now(),
+                })
+                .unwrap();
+        }
+        requests.send(DatabaseRequest::Shutdown).unwrap();
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            responses,
+            lod_responses,
+        );
+
+        for generation in [7, 8] {
+            let response = response_rx.try_recv().unwrap();
+            assert_eq!(response.generation, generation);
+            assert_eq!(response.key, key);
+            assert_eq!(response.row_count, 0);
+            assert!(response.total_request_micros >= response.query_micros);
+            assert!(response.total_request_micros >= response.queue_wait_micros);
+            let error = response
+                .result
+                .expect_err("LAND must not rescue a failed reference query");
+            assert!(error.contains("pos_z"), "{error}");
+            assert!(!error.contains("is unusable"), "setup succeeded: {error}");
+        }
+        let healthy = response_rx.try_recv().unwrap();
+        assert_eq!(healthy.generation, 9);
+        assert_eq!(healthy.key, CellKey::Interior(99));
+        assert_eq!(healthy.row_count, 1);
+        assert_eq!(
+            healthy
+                .result
+                .unwrap()
+                .expect("fixture cell must be recorded")
+                .references
+                .len(),
+            1
+        );
+        assert!(response_rx.try_recv().is_err());
+        assert!(lod_rx.try_recv().is_err());
+    }
+
     #[test]
     fn rejects_previous_database_schema() {
         let directory = tempfile::tempdir().unwrap();
@@ -2297,45 +3012,6 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES(2);",
-            )
-            .unwrap();
-        drop(connection);
-        assert!(validate(&path).is_err());
-    }
-
-    /// Schema-4 and schema-5 databases validate and load; a schema newer than the current one does not.
-    #[test]
-    fn accepts_schema_four_and_five_databases_with_legacy_query_columns() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("world.db");
-        let connection = Connection::open(&path).unwrap();
-        fixture(&connection);
-        drop(connection);
-        for version in [4, 5] {
-            let connection = Connection::open(&path).unwrap();
-            connection
-                .execute("UPDATE schema_info SET version=?1", [version])
-                .unwrap();
-            drop(connection);
-            validate(&path).unwrap();
-            let connection = Connection::open(&path).unwrap();
-            let payload = load_cell(
-                &connection,
-                1,
-                CellKey::Exterior {
-                    worldspace_id: 60,
-                    grid_x: 2,
-                    grid_y: -3,
-                },
-            )
-            .unwrap();
-            assert_eq!(payload.references.len(), 2);
-        }
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute(
-                "UPDATE schema_info SET version=?1",
-                [shared::WORLD_DATABASE_SCHEMA_VERSION + 1],
             )
             .unwrap();
         drop(connection);
@@ -2902,5 +3578,43 @@ mod tests {
         );
         let error = result.expect_err("an unreadable cell table is never successful absence");
         assert!(format!("{error:#}").contains("cells"));
+    }
+    #[test]
+    fn accepts_schema_four_and_five_databases_with_legacy_query_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        let connection = Connection::open(&path).unwrap();
+        fixture(&connection);
+        drop(connection);
+        for version in [4, 5] {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute("UPDATE schema_info SET version=?1", [version])
+                .unwrap();
+            drop(connection);
+            validate(&path).unwrap();
+            drop(WorldDatabase::open(&path).unwrap());
+            let connection = Connection::open(&path).unwrap();
+            let payload = load_cell(
+                &connection,
+                1,
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 2,
+                    grid_y: -3,
+                },
+            )
+            .unwrap();
+            assert_eq!(payload.references.len(), 2);
+        }
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE schema_info SET version=?1",
+                [shared::WORLD_DATABASE_SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(validate(&path).is_err());
     }
 }

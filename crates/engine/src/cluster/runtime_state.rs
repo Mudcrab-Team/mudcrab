@@ -1,11 +1,10 @@
-//! Runtime suppression of the converted resting representation of a reference.
+//! Runtime suppression of certified resting representations.
 //!
-//! Logical state writers trigger `ReferenceStateChanged` before mutating a reference.
-//! A changed reference stays on the ordinary stock path for this session, including
-//! after streaming unload/reload. Restoring a resting proxy requires a new certified
-//! representation, rather than assuming that a later entity spawn resets game state.
-//! Explicit enable transitions use `SetReferenceEnabled` instead: their suppression is reversible
-//! and cannot erase a separate pose, harvest, or other permanent representation revocation.
+//! Explicit enable transitions are reversible: disabled instances draw neither clusters nor
+//! stock and do not fail loading readiness. Independent pose or gameplay revocation remains
+//! permanent, never restores a stock body, and refuses with the reference and cause once actual
+//! cluster ownership qualifies. Native pose/visibility observers are existing producers.
+//! The public logical ReferenceStateChanged event currently has no production sender.
 
 use bevy::{
     camera::visibility::VisibilitySystems,
@@ -14,7 +13,7 @@ use bevy::{
     transform::TransformSystems,
 };
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::Arc,
 };
 
@@ -24,7 +23,7 @@ use super::{
 };
 use crate::world::components::FormId;
 
-/// Emitted by gameplay when a reference is moved, disabled, harvested or otherwise changed.
+/// Logical pose/gameplay revocation input; no production gameplay sender exists yet.
 /// This identifies the placed reference, never its shared mesh or base record.
 #[derive(Event, Clone, Copy, Debug)]
 pub struct ReferenceStateChanged {
@@ -40,11 +39,19 @@ pub(crate) struct RestingReferencePose(pub(crate) Transform);
 pub(crate) struct RuntimeReferenceState {
     pub(crate) revision: u64,
     references: Arc<BTreeSet<u32>>,
-    permanent: Arc<BTreeSet<u32>>,
+    permanent: Arc<BTreeMap<u32, Revocation>>,
     disabled: Arc<BTreeSet<u32>>,
 }
 
+/// A cause can precede source qualification; only the shared refusal owner confirms ownership.
+#[derive(Clone, Copy)]
+struct Revocation {
+    cause: &'static str,
+    qualified_owned: bool,
+}
+
 impl RuntimeReferenceState {
+    #[cfg(test)]
     pub(crate) fn contains(&self, reference: u32) -> bool {
         self.references.contains(&reference)
     }
@@ -53,36 +60,83 @@ impl RuntimeReferenceState {
         self.references.iter().copied()
     }
 
-    fn suppress(&mut self, reference: u32) {
-        if !Arc::make_mut(&mut self.permanent).insert(reference) {
-            return;
+    /// Only confirmed-owned revocations invalidate loading contributions.
+    pub(crate) fn readiness_references(&self) -> impl Iterator<Item = u32> + '_ {
+        self.permanent
+            .iter()
+            .filter_map(|(&reference, revocation)| revocation.qualified_owned.then_some(reference))
+    }
+
+    /// A reversible disable never waives an independent permanent revocation.
+    pub(crate) fn legitimately_disabled(&self, reference: u32) -> bool {
+        self.disabled.contains(&reference) && !self.permanent.contains_key(&reference)
+    }
+
+    fn suppress(&mut self, reference: u32, cause: &'static str) -> bool {
+        if self.permanent.contains_key(&reference) {
+            return false;
         }
-        if Arc::make_mut(&mut self.references).insert(reference) {
-            self.revision = self.revision.wrapping_add(1);
-        }
+        Arc::make_mut(&mut self.permanent).insert(
+            reference,
+            Revocation {
+                cause,
+                qualified_owned: false,
+            },
+        );
+        Arc::make_mut(&mut self.references).insert(reference);
+        // Classification changed even if a prior reversible disable already hid the instance.
+        self.revision = self.revision.wrapping_add(1);
         info!(
             reference,
-            suppressed_references = self.references.len(),
-            "cluster resting reference revoked by runtime state change"
+            cause, "cluster resting reference permanently revoked"
         );
+        true
     }
 
     /// Enable overrides are reversible; pose and gameplay revocations remain permanent.
     fn set_enabled(&mut self, reference: u32, enabled: bool, mapped: bool) {
         let changed = if enabled {
             Arc::make_mut(&mut self.disabled).remove(&reference);
-            !self.permanent.contains(&reference)
+            !self.permanent.contains_key(&reference)
                 && Arc::make_mut(&mut self.references).remove(&reference)
         } else {
             Arc::make_mut(&mut self.disabled).insert(reference);
             if mapped {
                 Arc::make_mut(&mut self.references).insert(reference)
             } else {
-                !self.permanent.contains(&reference)
+                !self.permanent.contains_key(&reference)
                     && Arc::make_mut(&mut self.references).remove(&reference)
             }
         };
         if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// A replacement certificate can change mapped membership without changing enable inputs.
+    /// Reproject only remembered state, once per certificate, never per frame or per instance.
+    pub(crate) fn reproject_enable_overrides(&mut self, package: &super::reader::CertifiedPackage) {
+        let mut references: BTreeSet<_> = self.permanent.keys().copied().collect();
+        references.extend(
+            self.disabled
+                .iter()
+                .copied()
+                .filter(|id| package.reference(*id).is_some()),
+        );
+        if *self.references != references {
+            self.references = Arc::new(references);
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    pub(crate) fn clear_enable_overrides(&mut self) {
+        if self.disabled.is_empty() {
+            return;
+        }
+        self.disabled = Arc::default();
+        let permanent: BTreeSet<_> = self.permanent.keys().copied().collect();
+        if *self.references != permanent {
+            self.references = Arc::new(permanent);
             self.revision = self.revision.wrapping_add(1);
         }
     }
@@ -100,7 +154,11 @@ pub(crate) fn install(app: &mut App) {
         .add_observer(record_disabled_reference)
         .add_systems(
             PostUpdate,
-            observe_changed_reference_poses
+            (
+                observe_changed_reference_poses,
+                refuse_pending_owned_revocations.run_if(owned_revocations_changed),
+            )
+                .chain()
                 .in_set(RuntimeStateSystems::Observe)
                 .after(bevy::app::AnimationSystems)
                 .before(TransformSystems::Propagate)
@@ -109,8 +167,71 @@ pub(crate) fn install(app: &mut App) {
         .add_plugins(ExtractResourcePlugin::<RuntimeReferenceState>::default());
 }
 
-fn record_state_change(event: On<ReferenceStateChanged>, mut state: ResMut<RuntimeReferenceState>) {
-    state.suppress(event.reference);
+fn record_state_change(
+    event: On<ReferenceStateChanged>,
+    mut state: ResMut<RuntimeReferenceState>,
+    mut commands: Commands,
+) {
+    if state.suppress(event.reference, "logical reference state changed") {
+        let reference = event.reference;
+        commands.queue(move |world: &mut World| refuse_owned_revocation(world, reference));
+    }
+}
+
+fn refuse_owned_revocation(world: &mut World, reference: u32) {
+    if !world
+        .get_resource::<OwnershipFacts>()
+        .is_some_and(|facts| facts.reference_has_owned(reference))
+    {
+        return;
+    }
+    let Some(revocation) = world
+        .get_resource::<RuntimeReferenceState>()
+        .and_then(|state| state.permanent.get(&reference))
+        .copied()
+    else {
+        return;
+    };
+    if !revocation.qualified_owned {
+        let mut state = world.resource_mut::<RuntimeReferenceState>();
+        if let Some(stored) = Arc::make_mut(&mut state.permanent).get_mut(&reference) {
+            stored.qualified_owned = true;
+        }
+        state.revision = state.revision.wrapping_add(1);
+    }
+    // Exclusive confirmation and the cause-bearing refusal finish before extraction can
+    // publish confirmed invalidity as a generic renderer failure.
+    crate::streaming::failure::refuse_loading(
+        world,
+        format!(
+            "owned reference {reference:08X} representation revoked: {}",
+            revocation.cause
+        ),
+    );
+}
+
+fn owned_revocations_changed(
+    state: Res<RuntimeReferenceState>,
+    facts: Option<Res<OwnershipFacts>>,
+    refusal: Option<Res<crate::streaming::failure::LoadingRefusal>>,
+) -> bool {
+    refusal.is_none()
+        && !state.permanent.is_empty()
+        && facts.is_some_and(|facts| state.is_changed() || facts.is_changed())
+}
+
+fn refuse_pending_owned_revocations(world: &mut World) {
+    let reference = world.get_resource::<OwnershipFacts>().and_then(|facts| {
+        world
+            .get_resource::<RuntimeReferenceState>()?
+            .permanent
+            .keys()
+            .find(|reference| facts.reference_has_owned(**reference))
+            .copied()
+    });
+    if let Some(reference) = reference {
+        refuse_owned_revocation(world, reference);
+    }
 }
 
 fn record_enable_change(
@@ -135,9 +256,13 @@ fn record_disabled_reference(
         ),
     >,
     mut state: ResMut<RuntimeReferenceState>,
+    mut commands: Commands,
 ) {
-    if let Ok(reference) = references.get(event.entity) {
-        state.suppress(reference.0);
+    if let Ok(reference) = references.get(event.entity)
+        && state.suppress(reference.0, "native Disabled marker added")
+    {
+        let reference = reference.0;
+        commands.queue(move |world: &mut World| refuse_owned_revocation(world, reference));
     }
 }
 
@@ -215,13 +340,21 @@ fn observe_changed_reference_poses(
     identities: Query<&FormId, With<RestingReferencePose>>,
     subtree_nodes: SourceSubtreeNodes,
     facts: Option<Res<OwnershipFacts>>,
-    mut state: ResMut<RuntimeReferenceState>,
+    (mut state, mut commands): (ResMut<RuntimeReferenceState>, Commands),
 ) {
     for (form, resting, current, visible) in &roots {
-        if *current != resting.0
-            || (visible == Some(&Visibility::Hidden) && !state.disabled.contains(&form.0))
+        let cause = if *current != resting.0 {
+            Some("resting pose changed")
+        } else if visible == Some(&Visibility::Hidden) && !state.disabled.contains(&form.0) {
+            Some("reference visibility changed")
+        } else {
+            None
+        };
+        if let Some(cause) = cause
+            && state.suppress(form.0, cause)
         {
-            state.suppress(form.0);
+            let reference = form.0;
+            commands.queue(move |world: &mut World| refuse_owned_revocation(world, reference));
         }
     }
     for (entity, current, resting) in &changed_nodes {
@@ -235,7 +368,7 @@ fn observe_changed_reference_poses(
                 break;
             }
             if let Ok(reference) = identities.get(node) {
-                if state.contains(reference.0) {
+                if state.permanent.contains_key(&reference.0) {
                     break;
                 }
                 // Logical/root state remains global. Descendants may be independent
@@ -249,8 +382,12 @@ fn observe_changed_reference_poses(
                         .is_none_or(|owned| {
                             subtree_affects_owned_source(entity, &owned, &subtree_nodes, &parents)
                         });
-                if affects_reference {
-                    state.suppress(reference.0);
+                if affects_reference
+                    && state.suppress(reference.0, "owned source descendant pose changed")
+                {
+                    let reference = reference.0;
+                    commands
+                        .queue(move |world: &mut World| refuse_owned_revocation(world, reference));
                 }
                 break;
             }
@@ -434,11 +571,11 @@ mod tests {
             manifest.entries.insert(
                 model_path.to_owned(),
                 CacheEntry {
+                    animation_diagnostics: None,
                     source_hash: hash_bytes(&bytes),
                     output: model_path.to_owned(),
                     output_size: bytes.len() as u64,
                     output_hash: hash_bytes(&bytes),
-                    animation_diagnostics: None,
                 },
             );
             let db = Connection::open_with_flags(
@@ -818,6 +955,92 @@ mod tests {
             enabled: true,
         });
         assert!(app.world().resource::<RuntimeReferenceState>().contains(7));
+    }
+
+    #[test]
+    fn wholly_refused_enable_changes_do_not_invalidate_cluster_masks_or_catalogs() {
+        use crate::world::reference_state::{self, ReferenceEnableState, SetReferenceEnabled};
+        let directory =
+            super::super::reader::producer_fixture_tests::published_for_runtime_draw_states();
+        let package = Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        assert!(package.reference(0x113).is_none());
+        assert!(package.reference(0x100).is_some());
+        assert!(!package.unclustered_primitives(0x100).unwrap().is_empty());
+        let mut app = app();
+        reference_state::install(&mut app);
+        app.world_mut()
+            .resource_mut::<ReferenceEnableState>()
+            .bind(package.enable_catalog().clone());
+        app.insert_resource(crate::cluster::package::ValidatedPackage(package));
+        for reference in [0x113, 0x100] {
+            let root = app
+                .world_mut()
+                .spawn((
+                    FormId(reference),
+                    RestingReferencePose(Transform::default()),
+                    Transform::default(),
+                    Visibility::Inherited,
+                ))
+                .id();
+            app.update();
+            let before = app.world().resource::<RuntimeReferenceState>().revision;
+            for (enabled, delta) in [(false, 1), (true, 2)] {
+                app.world_mut()
+                    .trigger(SetReferenceEnabled { reference, enabled });
+                app.update();
+                let state = app.world().resource::<RuntimeReferenceState>();
+                let expected = if reference == 0x100 { delta } else { 0 };
+                assert_eq!(
+                    state.revision - before,
+                    expected,
+                    "mapped-only invalidation for {reference:X}"
+                );
+                assert_eq!(
+                    state.references().count(),
+                    usize::from(reference == 0x100 && !enabled)
+                );
+                assert!(!state.permanent.contains_key(&reference));
+            }
+            assert_ne!(
+                app.world().get::<Visibility>(root),
+                Some(&Visibility::Hidden)
+            );
+        }
+    }
+
+    #[test]
+    fn resting_root_enable_roundtrip_stays_reversible_after_post_update() {
+        use crate::world::reference_state::{
+            self, EnableCatalog, ReferenceEnableState, SetReferenceEnabled,
+        };
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE \"references\" (id INTEGER PRIMARY KEY); INSERT INTO \"references\" VALUES (7);").unwrap();
+        let mut app = app();
+        reference_state::install(&mut app);
+        app.world_mut()
+            .resource_mut::<ReferenceEnableState>()
+            .bind(Arc::new(EnableCatalog::read(&connection).unwrap()));
+        app.world_mut().spawn((
+            FormId(7),
+            RestingReferencePose(Transform::default()),
+            Transform::default(),
+            Visibility::Inherited,
+        ));
+        app.update();
+        app.world_mut().trigger(SetReferenceEnabled {
+            reference: 7,
+            enabled: false,
+        });
+        app.update();
+        assert!(app.world().resource::<RuntimeReferenceState>().contains(7));
+        app.world_mut().trigger(SetReferenceEnabled {
+            reference: 7,
+            enabled: true,
+        });
+        app.update();
+        assert!(!app.world().resource::<RuntimeReferenceState>().contains(7));
     }
 
     #[test]

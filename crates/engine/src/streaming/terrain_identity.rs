@@ -473,6 +473,21 @@ impl TerrainIdentityAccess<'_, '_> {
         self.identities_snapshot(false)
     }
 
+    /// Delta-consuming callers fetch unconditionally and do not retain a prior Arc.
+    pub(crate) fn identities_shared_with_changes(
+        &mut self,
+    ) -> std::sync::Arc<HashMap<MainEntity, TerrainPrimitiveIdentity>> {
+        self.identities_snapshot(true)
+    }
+
+    pub(crate) fn changed_identities(&self) -> &[MainEntity] {
+        &self.cache.changed
+    }
+
+    pub(crate) fn recovered(&self) -> bool {
+        self.cache.recovered
+    }
+
     fn identities_snapshot(
         &mut self,
         track_changes: bool,

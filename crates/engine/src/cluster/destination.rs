@@ -1,18 +1,56 @@
-//! Candidate changes revoke destination evidence for every observed request scope.
+//! Same-frame destination handoff over the representation selected before stock queueing.
+//! This publishes proof only; it never changes a queue, mask or draw at this late point.
 use super::*;
-use crate::swap_bridge::{destination::*, systems::extract_destination_protocol};
-use bevy::render::MainWorld;
+use crate::swap_bridge::{
+    destination::*,
+    systems::{
+        DestinationSystems, ExtractedRequests, PhaseMembers, QueuePhases,
+        extract_destination_protocol,
+    },
+};
+use bevy::{
+    pbr::{ExtractedPointLight, PointAndSpotLightViewEntities, ViewLightEntities},
+    render::MainWorld,
+};
+type LocalShadowLights<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static MainEntity,
+        &'static ExtractedPointLight,
+        &'static PointAndSpotLightViewEntities,
+    ),
+>;
+
+#[derive(Default, Resource)]
+struct Published {
+    keys: HashSet<DestinationKey>,
+}
+
 pub(super) fn install(app: &mut App) {
+    app.insert_resource(RequiredHandoff);
     let Some(render) = app.get_sub_app_mut(RenderApp) else {
         return;
     };
-    render.init_resource::<CandidateObserver>().add_systems(
-        ExtractSchedule,
-        observe_candidates
-            .after(extract_sources)
-            .after(extract_batch_materials)
-            .after(extract_destination_protocol),
-    );
+    render
+        .init_resource::<Published>()
+        .init_resource::<CandidateObserver>()
+        .add_systems(
+            ExtractSchedule,
+            observe_candidates
+                .after(extract_sources)
+                .after(extract_batch_materials)
+                .after(extract_destination_protocol),
+        )
+        .add_systems(
+            Render,
+            publish
+                .in_set(DestinationSystems::PublishHandoff)
+                .after(finalize_terrain_clips)
+                .after(RenderSystems::PrepareBindGroups)
+                .before(DestinationSystems::Evaluate)
+                .before(RenderSystems::Render),
+        );
 }
 
 /// Eligibility/composition changes invalidate old reports; becoming drawable does
@@ -221,9 +259,611 @@ fn observe_candidates(
     previous.versions = Some((sources.candidate_version, materials.version));
 }
 
+fn selected(view: &ViewGpu, index: u32) -> bool {
+    let offset = (index / 32) as usize * 4;
+    view.instance_mask_bytes
+        .get(offset..offset + 4)
+        .is_some_and(|bytes| {
+            u32::from_le_bytes(bytes.try_into().unwrap()) & (1 << (index % 32)) != 0
+        })
+}
+
+struct ViewMembers {
+    forward: PhaseMembers,
+    depth: PhaseMembers,
+    shadow: PhaseMembers,
+}
+/// Exact resources the later RenderGraph cull encoder reads. Grouping them
+/// keeps publish within the system-function parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+struct CullProofResources<'w> {
+    frame: Res<'w, ClusterFrame>,
+    pipelines: Res<'w, ClusterPipelines>,
+    opaque: Res<'w, ViewBinnedRenderPhases<Opaque3d>>,
+    shadow: Res<'w, ViewBinnedRenderPhases<Shadow>>,
+}
+
+struct DrawProof<'a, 'w> {
+    gpu: &'a ClusterGpu,
+    cull: &'a CullProofResources<'w>,
+    cache: &'a PipelineCache,
+    materials: &'a ErasedRenderAssets<PreparedMaterial>,
+    allocators: &'a MaterialBindGroupAllocators,
+    carriers: &'a HashMap<u32, MainEntity>,
+    phases: &'a QueuePhases<'w>,
+}
+impl DrawProof<'_, '_> {
+    fn members(&self, key: &RetainedViewEntity) -> ViewMembers {
+        ViewMembers {
+            forward: self.phases.forward(key),
+            depth: self.phases.prepass(key),
+            shadow: self.phases.shadow(key),
+        }
+    }
+    fn batch(
+        &self,
+        key: &RetainedViewEntity,
+        batch: usize,
+        shadow: bool,
+        prepass: bool,
+        members: &ViewMembers,
+    ) -> bool {
+        let Some(view) = self.gpu.views.get(key) else {
+            return false;
+        };
+        let material = self
+            .gpu
+            .batches
+            .get(batch)
+            .and_then(|batch| batch.material)
+            .and_then(|id| self.materials.get(id));
+        if shadow && material.is_some_and(|material| !material.properties.shadows_enabled) {
+            return true;
+        }
+        // This is a pre-RenderGraph proof: require the exact dependencies and
+        // active-view predicate the encoder will use, never a previous epoch.
+        if prepared_cluster_cull(self.gpu, &self.cull.frame, &self.cull.pipelines, self.cache)
+            .is_none()
+            || !cluster_cull_view_eligible(
+                view,
+                self.cull.opaque.contains_key(key),
+                self.cull.shadow.contains_key(key),
+            )
+        {
+            return false;
+        }
+        if !batch_ready(
+            self.gpu,
+            view,
+            batch,
+            shadow,
+            prepass,
+            (self.cache, self.materials, self.allocators),
+        ) {
+            return false;
+        }
+        let Some(group) = table_group(view, batch) else {
+            return false;
+        };
+        if shadow {
+            return self
+                .carriers
+                .get(&group)
+                .is_some_and(|main| members.shadow.queued(*main));
+        }
+        let Some(draw) = view.draws.get(&group) else {
+            return false;
+        };
+        let Some(rep) = view.plan_rep(draw.representative) else {
+            return false;
+        };
+        members.forward.queued(rep.main_entity)
+            && (!prepass
+                || material.is_some_and(|material| !material.properties.prepass_enabled)
+                || members.depth.queued(rep.main_entity))
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn publish(
+    gpu: Option<Res<ClusterGpu>>,
+    sources: Res<Sources>,
+    runtime_state: Option<Res<crate::cluster::runtime_state::RuntimeReferenceState>>,
+    requests: Option<Res<ExtractedRequests>>,
+    frame: Option<Res<RenderFrame>>,
+    reports: Option<ResMut<HandoffReports>>,
+    mut published: ResMut<Published>,
+    cache: Res<PipelineCache>,
+    cull: CullProofResources,
+    materials: Res<ErasedRenderAssets<PreparedMaterial>>,
+    allocators: Res<MaterialBindGroupAllocators>,
+    phases: QueuePhases,
+    carriers: Query<(&ClusterBatch, &MainEntity)>,
+    views: Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+    local_shadow_lights: LocalShadowLights,
+    camera_shadow_views: Query<&ViewLightEntities>,
+) {
+    let (Some(requests), Some(frame), Some(mut reports)) = (requests, frame, reports) else {
+        return;
+    };
+    let wanted: HashSet<_> = requests
+        .iter()
+        .filter(|(request, _)| request.handoff == Handoff::Required)
+        .map(|(request, _)| request.key)
+        .collect();
+    for old in published.keys.difference(&wanted) {
+        reports.clear(old);
+    }
+    published.keys = wanted;
+    // Withdraw obsolete reports above even when no request needs a new proof.
+    if published.keys.is_empty() {
+        return;
+    }
+    let carrier_ids = carriers
+        .iter()
+        .map(|(marker, main)| (marker.index, *main))
+        .collect();
+    for (request, generation) in requests
+        .iter()
+        .filter(|(request, _)| request.handoff == Handoff::Required)
+    {
+        let mut state = DestinationState::Waiting(Missing::Handoff);
+        if request.key.generation != generation {
+            state = DestinationState::Stale;
+        } else if let Some(gpu) = gpu.as_deref() {
+            let same = match (&gpu.certificate, &sources.certificate) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            };
+            if same
+                && let Some((_, view, _)) = views.iter().find(|(_, view, light)| {
+                    light.is_none() && view.retained_view_entity == request.key.view.view
+                })
+            {
+                let key = view.retained_view_entity;
+                let world = sources.worlds.get(&key.main_entity);
+                if request.key.world.0 & (1 << 63) != 0 {
+                    // The certified domains are exterior only. Interior geometry is
+                    // intentionally stock, whose actual passes the bridge proves.
+                    if world == Some(&None) {
+                        state = DestinationState::Ready;
+                    }
+                } else if let Ok(worldspace) = u32::try_from(request.key.world.0)
+                    && world == Some(&Some(worldspace))
+                {
+                    let proof = DrawProof {
+                        gpu,
+                        cull: &cull,
+                        cache: &cache,
+                        materials: &materials,
+                        allocators: &allocators,
+                        carriers: &carrier_ids,
+                        phases: &phases,
+                    };
+                    if destination_ready(
+                        &proof,
+                        (&sources, runtime_state.as_deref()),
+                        request,
+                        worldspace,
+                        &views,
+                        &local_shadow_lights,
+                        &camera_shadow_views,
+                    ) {
+                        state = DestinationState::Ready;
+                    }
+                }
+            }
+        }
+        let report = HandoffReport {
+            key: request.key,
+            evaluated_render_frame: *frame,
+            state,
+        };
+        let state = report.state.clone();
+        if reports.publish(report) {
+            debug!(?request.key, ?state, "cluster destination handoff changed");
+        }
+    }
+}
+
+/// Cluster-only handoff is legal only for Complete reference coverage. Partial
+/// replacement needs every validated stock-only source primitive instantiated;
+/// the generic bridge still proves their actual visible queues and passes.
+fn replacement_coverage_ready(
+    certificate: &super::super::super::reader::CertifiedPackage,
+    sources: &Sources,
+    reference: u32,
+    stock_exists: bool,
+) -> bool {
+    certificate.reference_complete(reference)
+        || (stock_exists
+            && certificate
+                .unclustered_primitives(reference)
+                .is_some_and(|expected| {
+                    expected.iter().all(|primitive| {
+                        sources
+                            .stock_primitives
+                            .contains_key(&(reference, *primitive))
+                    })
+                }))
+}
+
+/// Resolve the actual dependent local shadow domain after native light preparation.
+fn required_local_shadow_views(
+    key: &RetainedViewEntity,
+    world: u32,
+    sources: &Sources,
+    shadow_phases: &ViewBinnedRenderPhases<Shadow>,
+    views: &Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+    local_shadow_lights: &LocalShadowLights,
+) -> Option<HashSet<Entity>> {
+    let Some(Some(dependencies)) = sources.light_dependencies.get(&key.main_entity) else {
+        return None;
+    };
+    let mut required = HashSet::new();
+    for dependency in dependencies {
+        let Some((_, light, light_views)) = local_shadow_lights
+            .iter()
+            .find(|(main, _, _)| *main == dependency)
+        else {
+            // An absent render light is unknown, not an empty native shadow domain.
+            return None;
+        };
+        if !light.shadow_maps_enabled || light_views.is_empty() {
+            continue;
+        }
+        let expected = if light.spot_light_angles.is_some() {
+            1
+        } else {
+            bevy::camera::primitives::CUBE_MAP_FACES.len()
+        };
+        if light_views.len() != expected {
+            return None;
+        }
+        let mut admitted = HashSet::new();
+        for entity in light_views.iter() {
+            let Ok((_, view, Some(role))) = views.get(*entity) else {
+                return None;
+            };
+            if !matches!(role, LightEntity::Point { .. } | LightEntity::Spot { .. }) {
+                return None;
+            }
+            // Native preparation can leave old face entities alive when its light/atlas
+            // allocation shrinks. The actual shadow pass returns early without this phase.
+            if shadow_phases.contains_key(&view.retained_view_entity) {
+                admitted.insert(*entity);
+            }
+        }
+        if admitted.is_empty() {
+            continue;
+        }
+        if admitted.len() != expected {
+            return None;
+        }
+        let owner = sources.worlds.get(dependency)?;
+        if *owner != Some(world) {
+            // An admitted light affects this camera; foreign ownership cannot erase its pass.
+            return None;
+        }
+        required.extend(admitted);
+    }
+    Some(required)
+}
+
+/// Resolve camera-specific native directional shadow allocation after light preparation.
+fn required_directional_shadow_views(
+    key: &RetainedViewEntity,
+    views: &Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+    camera_shadow_views: &Query<&ViewLightEntities>,
+    shadow_phases: &ViewBinnedRenderPhases<Shadow>,
+) -> Option<Vec<RetainedViewEntity>> {
+    let (camera, _, _) = views
+        .iter()
+        .find(|(_, view, light)| light.is_none() && view.retained_view_entity == *key)?;
+    let allocation = camera_shadow_views.get(camera).ok()?;
+    let mut required = Vec::with_capacity(allocation.lights.len());
+    // Native light selection can leave displaced lights' old view entities alive.
+    // The camera's current allocated list is the actual directional shadow pass input.
+    for entity in &allocation.lights {
+        let (_, view, Some(LightEntity::Directional { .. })) = views.get(*entity).ok()? else {
+            return None;
+        };
+        if view.retained_view_entity.auxiliary_entity != key.main_entity
+            || !shadow_phases.contains_key(&view.retained_view_entity)
+        {
+            return None;
+        }
+        required.push(view.retained_view_entity);
+    }
+    Some(required)
+}
+
+/// Accepted object obligations in this exact placing world/cell. Material-refused
+/// records belong to permanent stock coverage and cannot also require a cluster draw.
+fn destination_owned_records<'a>(
+    certificate: &'a crate::cluster::reader::CertifiedPackage,
+    sources: &'a Sources,
+    runtime_state: Option<&'a crate::cluster::runtime_state::RuntimeReferenceState>,
+    world: u32,
+    grid: IVec2,
+) -> impl Iterator<
+    Item = (
+        &'a crate::cluster::reader::RecordKey,
+        &'a crate::cluster::reader::ReferencePrimitive,
+    ),
+> + 'a {
+    certificate
+        .records_in_placed_cell(world, grid)
+        .filter(move |(record, identity)| {
+            !sources.permanently_refused_records.contains(*record)
+                && !runtime_state
+                    .is_some_and(|state| state.legitimately_disabled(identity.reference))
+        })
+}
+
+fn destination_ready(
+    proof: &DrawProof,
+    (sources, runtime_state): (
+        &Sources,
+        Option<&crate::cluster::runtime_state::RuntimeReferenceState>,
+    ),
+    request: &DestinationRequest,
+    world: u32,
+    views: &Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+    local_shadow_lights: &LocalShadowLights,
+    camera_shadow_views: &Query<&ViewLightEntities>,
+) -> bool {
+    let key = request.key.view.view;
+    let Some(view) = proof.gpu.views.get(&key) else {
+        return false;
+    };
+    let Some(certificate) = proof.gpu.certificate.as_ref() else {
+        return false;
+    };
+    let prepass = [
+        PassFamily::DepthPrepass,
+        PassFamily::NormalPrepass,
+        PassFamily::MotionPrepass,
+    ]
+    .into_iter()
+    .any(|family| request.passes.contains(family));
+    let members = proof.members(&key);
+    let local_shadow_views = if request.passes.contains(PassFamily::Shadow) {
+        let Some(local) = required_local_shadow_views(
+            &key,
+            world,
+            sources,
+            &proof.cull.shadow,
+            views,
+            local_shadow_lights,
+        ) else {
+            return false;
+        };
+        local
+    } else {
+        HashSet::new()
+    };
+    let directional = if request.passes.contains(PassFamily::Shadow) {
+        let Some(required) =
+            required_directional_shadow_views(&key, views, camera_shadow_views, &proof.cull.shadow)
+        else {
+            return false;
+        };
+        required
+    } else {
+        Vec::new()
+    };
+    let shadows: Vec<_> = views
+        .iter()
+        .filter(|(entity, view, light)| match light {
+            Some(LightEntity::Directional { .. }) => {
+                directional.contains(&view.retained_view_entity)
+            }
+            Some(_) => local_shadow_views.contains(entity),
+            None => false,
+        })
+        .map(|(_, view, _)| {
+            (
+                view.retained_view_entity,
+                proof.members(&view.retained_view_entity),
+            )
+        })
+        .collect();
+    for cell in request.coverage.iter() {
+        let CellKey::Exterior {
+            worldspace_id,
+            grid_x,
+            grid_y,
+        } = *cell
+        else {
+            return false;
+        };
+        if worldspace_id != world {
+            return false;
+        }
+        let grid = IVec2::new(grid_x, grid_y);
+        for (record, identity) in
+            destination_owned_records(certificate, sources, runtime_state, world, grid)
+        {
+            if view
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !ViewDomain::new(&selection.layers, false).objects)
+            {
+                continue;
+            }
+            let stock_exists = sources.present.contains(&identity.reference)
+                && !sources.retired_present.contains(&identity.reference);
+            if !replacement_coverage_ready(certificate, sources, identity.reference, stock_exists) {
+                return false;
+            }
+            let Some(index) = proof.gpu.object_indices.get(record).copied() else {
+                return false;
+            };
+            let batch = proof.gpu.placed[index as usize].batch as usize;
+            if !selected(view, index) || !proof.batch(&key, batch, false, prepass, &members) {
+                return false;
+            }
+            if request.passes.contains(PassFamily::Shadow) {
+                let material = proof
+                    .gpu
+                    .batches
+                    .get(batch)
+                    .and_then(|batch| batch.material)
+                    .and_then(|id| proof.materials.get(id));
+                if material.is_some_and(|material| !material.properties.shadows_enabled) {
+                    continue;
+                }
+                for (shadow_key, shadow_members) in &shadows {
+                    let Some(shadow_view) = proof.gpu.views.get(shadow_key) else {
+                        return false;
+                    };
+                    if shadow_view
+                        .selection
+                        .as_ref()
+                        .is_some_and(|selection| !ViewDomain::new(&selection.layers, true).objects)
+                    {
+                        continue;
+                    }
+                    if !selected(shadow_view, index)
+                        || !proof.batch(shadow_key, batch, true, false, shadow_members)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (block_index, block) in proof
+            .gpu
+            .terrain_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block.worldspace_id == world && block.cells.contains(&grid))
+        {
+            let cell_ready = |key: &RetainedViewEntity,
+                              shadow: bool,
+                              needs_depth: bool,
+                              members: &ViewMembers| {
+                let Some(candidate) = proof.gpu.views.get(key) else {
+                    return false;
+                };
+                let Some(inputs) = candidate.terrain_clip_inputs.as_ref().filter(|inputs| {
+                    inputs.world == Some(world) && inputs.origin == sources.origin
+                }) else {
+                    return false;
+                };
+                terrain_pass_ready(
+                    inputs,
+                    grid,
+                    block_index as u32,
+                    shadow,
+                    needs_depth,
+                    block.batch.is_some_and(|batch| {
+                        proof.batch(key, batch as usize, shadow, needs_depth, members)
+                    }),
+                )
+            };
+            if !cell_ready(&key, false, prepass, &members) {
+                return false;
+            }
+            if request.passes.contains(PassFamily::Shadow)
+                && shadows
+                    .iter()
+                    .any(|(key, members)| !cell_ready(key, true, false, members))
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod partial_coverage_tests {
+    use super::*;
+    use crate::cluster::reader::producer_fixture_tests::{published, published_for_loader};
+
+    #[test]
+    fn partial_cluster_only_waits_for_every_rejected_source_primitive() {
+        let directory = published();
+        let certificate =
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap();
+        let mut sources = Sources::default();
+        let reference = 0x100;
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            false
+        ));
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            true
+        ));
+        sources
+            .stock_primitives
+            .insert((reference, 0), Entity::from_raw_u32(1).unwrap().into());
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            true
+        ));
+        sources
+            .stock_primitives
+            .insert((reference, 1), Entity::from_raw_u32(2).unwrap().into());
+        assert!(replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            true
+        ));
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            false
+        ));
+        sources.stock_primitives.remove(&(reference, 1));
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            reference,
+            true
+        ));
+    }
+
+    #[test]
+    fn complete_real_reference_needs_no_stock_piece_but_unknown_never_qualifies() {
+        let directory = published_for_loader();
+        let certificate =
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap();
+        let sources = Sources::default();
+        assert!(replacement_coverage_ready(
+            &certificate,
+            &sources,
+            0x100,
+            false
+        ));
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            0x999,
+            false
+        ));
+        assert!(!replacement_coverage_ready(
+            &certificate,
+            &sources,
+            0x999,
+            true
+        ));
+    }
+}
+
 /// Stock coverage is current queued/drawable coverage for this actual pass.
 /// Early selection alone never proves a late material or shadow pipeline.
-#[cfg(test)]
 fn terrain_pass_ready(
     inputs: &TerrainClipInputs,
     grid: IVec2,
@@ -245,6 +885,8 @@ fn terrain_pass_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("destination_obligation_tests.rs");
 
     #[test]
     fn late_clip_cache_rechecks_exact_target_offset_even_with_unchanged_grid_and_far_nonce() {
@@ -582,6 +1224,7 @@ mod terrain_candidate_regressions {
             key: h.key,
             passes: PassFamilies::NONE,
             coverage: Arc::from(coverage),
+            handoff: Handoff::NotRequired,
         });
         h.render
             .resource_mut::<MainWorld>()
@@ -817,5 +1460,285 @@ mod terrain_candidate_regressions {
         assert!(h.ready());
         let sources = h.render.resource::<Sources>();
         assert_eq!((sources.version, sources.candidate_version), (2, 0));
+    }
+
+    #[test]
+    fn real_destination_owner_installs_required_publication_in_the_render_graph() {
+        let mut app = App::new();
+        let mut render = bevy::app::SubApp::new();
+        render.add_schedule(Render::base_schedule());
+        render
+            .world_mut()
+            .init_resource::<bevy::render::MainWorld>();
+        app.insert_sub_app(RenderApp, render);
+        app.add_plugins(crate::swap_bridge::systems::DestinationReadinessPlugin);
+        install(&mut app);
+        let published =
+            app.sub_app_mut(RenderApp)
+                .world_mut()
+                .schedule_scope(Render, |world, schedule| {
+                    schedule
+                        .initialize(world)
+                        .expect("real publication/evaluation ordering must be acyclic");
+                    schedule
+                        .graph()
+                        .systems_in_set(bevy::ecs::schedule::SystemSet::intern(
+                            &crate::swap_bridge::systems::DestinationSystems::PublishHandoff,
+                        ))
+                        .map_or(0, |systems| systems.len())
+                });
+        assert_eq!(
+            published, 1,
+            "Required destinations need their actual cluster publication owner, not only candidate invalidation"
+        );
+        assert!(app.world().contains_resource::<RequiredHandoff>());
+    }
+}
+
+#[cfg(test)]
+mod native_shadow_domain_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn local_light(spot: bool) -> ExtractedPointLight {
+        ExtractedPointLight {
+            color: LinearRgba::WHITE,
+            intensity: 1.0,
+            range: 10.0,
+            radius: 0.0,
+            transform: GlobalTransform::IDENTITY,
+            shadow_maps_enabled: true,
+            contact_shadows_enabled: false,
+            shadow_depth_bias: 0.0,
+            shadow_normal_bias: 0.0,
+            shadow_map_near_z: 0.1,
+            spot_light_angles: spot.then_some((0.2, 0.4)),
+            volumetric: false,
+            soft_shadows_enabled: false,
+            affects_lightmapped_mesh_diffuse: true,
+        }
+    }
+
+    fn proof(
+        metadata: bool,
+        spot: bool,
+        allocated: usize,
+        arrived: usize,
+    ) -> Option<HashSet<Entity>> {
+        proof_with_admission(metadata, spot, allocated, arrived, allocated)
+    }
+
+    pub(super) fn proof_with_admission(
+        metadata: bool,
+        spot: bool,
+        allocated: usize,
+        arrived: usize,
+        live_phases: usize,
+    ) -> Option<HashSet<Entity>> {
+        let mut world = World::new();
+        let mut phases = ViewBinnedRenderPhases::<Shadow>::default();
+        let camera: MainEntity = world.spawn_empty().id().into();
+        let light: MainEntity = world.spawn_empty().id().into();
+        let mut sources = Sources::default();
+        sources.worlds.insert(light, Some(42));
+        sources
+            .light_dependencies
+            .insert(camera, Some(HashSet::from([light])));
+        let mut light_views = PointAndSpotLightViewEntities::default();
+        for index in 0..allocated {
+            if index < live_phases {
+                phases.prepare_for_new_frame(
+                    RetainedViewEntity::new(light, None, index as u32),
+                    bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode::None,
+                );
+            }
+            let mut entity = world.spawn_empty();
+            if index < arrived {
+                entity.insert((
+                    ExtractedView {
+                        retained_view_entity: RetainedViewEntity::new(light, None, index as u32),
+                        clip_from_view: Mat4::IDENTITY,
+                        world_from_view: GlobalTransform::IDENTITY,
+                        clip_from_world: None,
+                        target_format: bevy::render::render_resource::TextureFormat::Rgba16Float,
+                        viewport: UVec4::new(0, 0, 64, 64),
+                        color_grading: default(),
+                        invert_culling: false,
+                    },
+                    if spot {
+                        LightEntity::Spot {
+                            light_entity: light.id(),
+                        }
+                    } else {
+                        LightEntity::Point {
+                            light_entity: light.id(),
+                            face_index: index,
+                        }
+                    },
+                ));
+            }
+            light_views.push(entity.id());
+        }
+        if metadata {
+            world.spawn((light, local_light(spot), light_views));
+        }
+        world
+            .run_system_once(
+                move |views: Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+                      lights: LocalShadowLights| {
+                    required_local_shadow_views(
+                        &RetainedViewEntity::new(camera, None, 0),
+                        42,
+                        &sources,
+                        &phases,
+                        &views,
+                        &lights,
+                    )
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn native_unadmitted_local_shadow_lights_have_no_required_pass() {
+        // Native preparation leaves an empty allocated list when light/atlas limits exclude
+        // a configured shadow caster. Its ExtractedPointLight flag remains enabled.
+        for spot in [false, true] {
+            assert_eq!(proof(true, spot, 0, 0), Some(HashSet::new()));
+        }
+    }
+
+    #[test]
+    fn unknown_local_shadow_metadata_and_incomplete_admitted_views_remain_pending() {
+        for spot in [false, true] {
+            assert_eq!(proof(false, spot, 0, 0), None);
+            let expected = if spot {
+                1
+            } else {
+                bevy::camera::primitives::CUBE_MAP_FACES.len()
+            };
+            assert_eq!(proof(true, spot, expected, expected - 1), None);
+            let complete =
+                proof(true, spot, expected, expected).expect("all admitted native views arrived");
+            assert_eq!(complete.len(), expected);
+        }
+        assert_eq!(
+            proof(true, false, 1, 1),
+            None,
+            "a partial cube is not an unadmitted light"
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_shadow_phase_tests {
+    use super::native_shadow_domain_tests::proof_with_admission;
+
+    #[test]
+    fn native_local_shadow_budget_shrink_does_not_require_stale_face_views() {
+        for spot in [false, true] {
+            let count = if spot {
+                1
+            } else {
+                bevy::camera::primitives::CUBE_MAP_FACES.len()
+            };
+            assert_eq!(
+                proof_with_admission(true, spot, count, count, 0),
+                Some(Default::default()),
+                "native preparation removed the phases even if old face entities remain"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_native_shadow_phase_admission_does_not_prove_a_complete_cube() {
+        let count = bevy::camera::primitives::CUBE_MAP_FACES.len();
+        assert_eq!(
+            proof_with_admission(true, false, count, count, count - 1),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_directional_admission_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn extracted(key: RetainedViewEntity) -> ExtractedView {
+        ExtractedView {
+            retained_view_entity: key,
+            clip_from_view: Mat4::IDENTITY,
+            world_from_view: GlobalTransform::IDENTITY,
+            clip_from_world: None,
+            target_format: bevy::render::render_resource::TextureFormat::Rgba16Float,
+            viewport: UVec4::new(0, 0, 64, 64),
+            color_grading: default(),
+            invert_culling: false,
+        }
+    }
+
+    fn evidence(
+        allocation: Option<bool>,
+        arrived: bool,
+        phase: bool,
+    ) -> Option<Vec<RetainedViewEntity>> {
+        let mut world = World::new();
+        let camera = world.spawn_empty().id();
+        let light = world.spawn_empty().id();
+        let camera_key = RetainedViewEntity::new(camera.into(), None, 0);
+        let light_key = RetainedViewEntity::new(light.into(), Some(camera.into()), 0);
+        world.entity_mut(camera).insert(extracted(camera_key));
+        let mut shadow = world.spawn_empty();
+        if arrived {
+            shadow.insert((
+                extracted(light_key),
+                LightEntity::Directional {
+                    light_entity: light,
+                    cascade_index: 0,
+                },
+            ));
+        }
+        let shadow = shadow.id();
+        if let Some(allocated) = allocation {
+            world.entity_mut(camera).insert(ViewLightEntities {
+                lights: if allocated { vec![shadow] } else { Vec::new() },
+            });
+        }
+        let mut phases = ViewBinnedRenderPhases::<Shadow>::default();
+        if phase {
+            phases.prepare_for_new_frame(
+                light_key,
+                bevy::render::batching::gpu_preprocessing::GpuPreprocessingMode::None,
+            );
+        }
+        world
+            .run_system_once(
+                move |views: Query<(Entity, &ExtractedView, Option<&LightEntity>)>,
+                      allocation: Query<&ViewLightEntities>| {
+                    required_directional_shadow_views(&camera_key, &views, &allocation, &phases)
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn native_directional_displacement_does_not_require_surviving_old_cascades() {
+        assert_eq!(evidence(Some(false), true, false), Some(Vec::new()));
+    }
+
+    #[test]
+    fn native_directional_unknown_allocation_and_missing_admitted_view_remain_pending() {
+        assert_eq!(evidence(None, false, false), None);
+        assert_eq!(evidence(Some(true), false, true), None);
+        assert_eq!(evidence(Some(true), true, false), None);
+    }
+
+    #[test]
+    fn native_directional_complete_allocated_view_is_the_required_domain() {
+        let complete =
+            evidence(Some(true), true, true).expect("current allocated view and phase arrived");
+        assert_eq!(complete.len(), 1);
+        assert_eq!(evidence(Some(false), false, false), Some(Vec::new()));
     }
 }
