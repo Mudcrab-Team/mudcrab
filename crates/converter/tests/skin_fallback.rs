@@ -113,7 +113,8 @@ fn transform(bytes: &mut [u8], start: usize, translation: [f32; 3], scale: f32) 
     bytes[start + 64..start + 68].copy_from_slice(&scale.to_le_bytes());
 }
 
-/// Generate two parts with a nonidentity parent and distinct shape transforms.
+/// Generate two parts under a nonidentity root block, with distinct shape transforms.
+/// The root transform is authored but not expected in world space; each shape's own is.
 fn fixture(weights: &[[f32; 4]], rigid: bool) -> Vec<u8> {
     let mut bytes =
         legacy_skinned_shapes(&[skin("Affected", weights), skin("Healthy", &GOOD)]).unwrap();
@@ -243,16 +244,20 @@ fn assert_rigid(glb: &Glb, name: &str) {
         glb.json["accessors"][primitive["indices"].as_u64().unwrap() as usize]["count"],
         6
     );
+    // The ordinary static path writes the NIF root block with an identity transform, because a
+    // placed reference replaces it (nif-to-gltf.md, "Root transform"). The fixture still authors
+    // (11, -7, 5) at scale 2 on block 0, so these world positions also prove the recovery path
+    // follows that rule instead of reviving it for rigid shapes.
     let world = world_matrix(glb, index);
     let actual = world.transform_point3(Vec3::from_array(positions[0]));
     assert!(
-        (actual - Vec3::new(17.0, 1.0, -1.0)).length() < 1e-4,
-        "lost parent/shape translation: {actual:?}"
+        (actual - Vec3::new(3.0, -2.0, -4.0)).length() < 1e-4,
+        "lost shape translation: {actual:?}"
     );
     let second = world.transform_point3(Vec3::from_array(positions[1]));
     assert!(
-        (second - Vec3::new(20.0, 1.0, -1.0)).length() < 1e-4,
-        "lost parent/shape scale: {second:?}"
+        (second - Vec3::new(4.5, -2.0, -4.0)).length() < 1e-4,
+        "lost shape scale: {second:?}"
     );
 }
 
