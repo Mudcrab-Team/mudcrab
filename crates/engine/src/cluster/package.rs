@@ -1794,6 +1794,15 @@ fn load_batches_in_view(
                     bevy::asset::LoadState::Failed(_)
                 );
                 if !published && !failed {
+                    report_stalled_source(
+                        &mut batch.reported,
+                        batch.requested_at,
+                        &batch.key.model_path,
+                        &asset_server,
+                        scene.id(),
+                        time.elapsed_secs(),
+                        "reload",
+                    );
                     loading += 1;
                     loading_sources.insert(scene.id());
                     still_in_flight.push(index);
@@ -1835,6 +1844,15 @@ fn load_batches_in_view(
                 }
                 loading += 1;
             } else {
+                report_stalled_source(
+                    &mut batch.reported,
+                    batch.requested_at,
+                    &batch.key.model_path,
+                    &asset_server,
+                    scene.id(),
+                    time.elapsed_secs(),
+                    "load",
+                );
                 loading += 1;
                 loading_sources.insert(scene.id());
             }
@@ -2051,6 +2069,30 @@ fn load_batches_in_view(
 
 /// AssetServer completion can precede the asset becoming visible in Assets.
 /// Both facts are needed before extraction can qualify the source geometry/material.
+/// Reports once when a batch's source model has been loading longer than [`STALLED_SECONDS`].
+/// Without it a batch stuck before its material request holds readiness with no trace in the log.
+fn report_stalled_source(
+    reported: &mut bool,
+    requested_at: f32,
+    model: &str,
+    server: &AssetServer,
+    id: AssetId<WorldAsset>,
+    now: f32,
+    phase: &str,
+) {
+    if *reported || now - requested_at <= STALLED_SECONDS {
+        return;
+    }
+    *reported = true;
+    warn!(
+        model,
+        phase,
+        state = ?server.load_state(id),
+        recursive = ?server.recursive_dependency_load_state(id),
+        "cluster batch source model still loading after {STALLED_SECONDS} s"
+    );
+}
+
 fn source_asset_ready(present: bool, dependencies_loaded: bool) -> bool {
     present && dependencies_loaded
 }
