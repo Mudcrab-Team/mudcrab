@@ -174,6 +174,15 @@ impl AssetPipeline {
             )?,
             "retained producer configuration does not match rebuild settings"
         );
+        ensure!(
+            manifest.asset_configuration_hashes.get("nif")
+                == Some(&crate::cache::asset_configuration_hash_for_schema(
+                    &config,
+                    mesh_schema,
+                    "nif",
+                )?),
+            "retained mesh settings predate the current mesh output contract; run normal conversion to regenerate models"
+        );
         let plugins = matched_plugins(&source, &config.data_dir)?;
         let staging = staging_path(&config.output_dir);
         fs::create_dir(&staging)?;

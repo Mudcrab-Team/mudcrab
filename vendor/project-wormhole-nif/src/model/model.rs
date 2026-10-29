@@ -79,6 +79,7 @@ impl Model {
         Ok(Some(&first.bones))
     }
 
+    /// Emits rigid scene nodes and skeletal meshes with independent mesh and skin indices.
     pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
         use gltf::json::*;
 
@@ -946,7 +947,8 @@ impl Model {
                 rotation: None,
                 scale: None,
                 translation: None,
-                skin: Some(Index::new(root.meshes.len() as u32)),
+                // Rigid meshes precede skins in mixed rigs; skin and mesh indices differ.
+                skin: Some(Index::new(index as u32)),
                 weights: None,
             });
 

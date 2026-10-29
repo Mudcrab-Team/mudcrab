@@ -145,6 +145,15 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         manifest.configuration_hash == configuration_hash(config)?,
         "repair configuration differs from the original conversion; use the same Data, MO2 instance/profile and encoding settings"
     );
+    ensure!(
+        manifest.asset_configuration_hashes.get("nif")
+            == Some(&crate::cache::asset_configuration_hash_for_schema(
+                config,
+                CONVERTER_SCHEMA_VERSION,
+                "nif"
+            )?),
+        "repair mesh output contract is stale or missing; run normal conversion to regenerate models"
+    );
     check_existing(
         &config.output_dir,
         if apply {
@@ -741,6 +750,7 @@ fn attempt(
                 skeletons.get_or_init(|| crate::mesh::SkeletonIndex::from_sources(mesh_sources));
             let skeleton_key =
                 crate::mesh::resolve_skeleton_with_index(Path::new(key), mesh_sources, skeletons);
+            let mut unresolved_skin = None;
             let skeleton = match skeleton_key {
                 crate::mesh::SkeletonResolution::Skeleton(path) => {
                     // The resolver returns the normalized key, while archive
@@ -769,16 +779,20 @@ fn attempt(
                 }
                 crate::mesh::SkeletonResolution::SelfContained => None,
                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
-                    return Err(color_eyre::eyre::eyre!(
-                        "{}",
-                        crate::mesh::unresolved_skeleton_diagnostic(
-                            format_args!("NIF {key}"),
-                            best_coverage
-                        )
+                    source_hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
+                    unresolved_skin = Some(crate::mesh::unresolved_skeleton_diagnostic(
+                        format_args!("NIF {key}"),
+                        best_coverage,
                     ));
+                    None
                 }
             };
-            MeshConverter::convert_nif_to_glb_with_skeleton(&source.path, &target, skeleton)?;
+            MeshConverter::convert_nif_to_glb_with_skin_resolution(
+                &source.path,
+                &target,
+                skeleton,
+                unresolved_skin.as_deref(),
+            )?;
             MeshConverter::glb_texture_dependencies(&target)?;
             if MeshConverter::is_geometry_template(&source.path)? {
                 manifest.excluded_inputs.insert(key.into(), "Geometryless overlay template; standalone mesh is empty, runtime overlays are not implemented".into());

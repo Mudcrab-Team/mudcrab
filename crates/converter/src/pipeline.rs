@@ -1701,7 +1701,8 @@ fn reusable_manifest(
                     }
                 }
             }
-            matched
+            // Combined metadata proofs cannot name fixed-producer mesh contracts.
+            matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
             kind,
@@ -2056,6 +2057,7 @@ impl ConversionBatch<'_> {
                             }
                         }
 
+                        let mut unresolved_skin = None;
                         let skeleton = if source_kind == "nif" {
                             let resolution = crate::mesh::resolve_skeleton_with_index(
                                 &relative,
@@ -2072,28 +2074,13 @@ impl ConversionBatch<'_> {
                                     .or(Some(key)),
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
-                                    let err = eyre!(
-                                        "{}",
-                                        crate::mesh::unresolved_skeleton_diagnostic(
+                                    hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
+                                    unresolved_skin =
+                                        Some(crate::mesh::unresolved_skeleton_diagnostic(
                                             format_args!("NIF {}", relative.display()),
-                                            best_coverage
-                                        )
-                                    );
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
+                                            best_coverage,
+                                        ));
+                                    None
                                 }
                             }
                         } else {
@@ -2269,11 +2256,14 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => MeshConverter::convert_nif_to_glb_with_skeleton(
-                                            &source,
-                                            &target,
-                                            skeleton.as_deref(),
-                                        ),
+                                        "nif" => {
+                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
+                                                &source,
+                                                &target,
+                                                skeleton.as_deref(),
+                                                unresolved_skin.as_deref(),
+                                            )
+                                        }
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
@@ -5940,9 +5930,9 @@ mod tests {
         );
     }
 
-    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    /// An adapter-10 combined proof preserves DDS/PEX candidates but cannot prove NIF contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
+    fn adapter10_combined_asset_proof_reuses_dds_and_pex_but_excludes_nif_without_relabeling() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
             directory.path().join("Data"),
@@ -5999,8 +5989,29 @@ mod tests {
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         assert_eq!(
-            reused.entries, manifest.entries,
-            "metadata-only adapter identity must preserve eligible asset candidates"
+            reused.entries,
+            [
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
+            .into(),
+            "combined metadata proof must retain DDS/PEX provenance and exclude unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);

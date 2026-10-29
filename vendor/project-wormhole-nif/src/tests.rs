@@ -1391,7 +1391,9 @@ mod legacy_skin {
 
         let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
 
-        assert!(error.contains("skin weight sum"), "{error}");
+        // The negative-weight guard runs before the sum check, so a substantive negative is
+        // rejected for the weight itself rather than for the zero total it leaves behind.
+        assert!(error.contains("has an invalid skin weight -1"), "{error}");
     }
 
     #[test]

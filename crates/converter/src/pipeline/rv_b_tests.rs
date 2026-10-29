@@ -292,9 +292,9 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     assert!(fixture.output.join("cell_cache_preserved.rkyv").is_file());
 }
 
-/// Known full legacy proofs retain assets; arbitrary metadata hashes cannot replace them.
+/// Known full legacy proofs retain DDS/PEX, but cannot prove the named NIF output contract.
 #[tokio::test]
-async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
+async fn known_legacy_full_hashes_reuse_dds_and_pex_but_regenerate_nif_without_kind_keys() {
     for contract in [
         "historical",
         "projection-1",
@@ -360,8 +360,8 @@ async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
         }
         let report = publish(config.clone()).await;
         let rejected = matches!(contract, "unproven" | "projection-3-nonenglish");
-        assert_eq!(report.converted, if rejected { 5 } else { 0 });
-        assert_eq!(report.cache_hits, if rejected { 1 } else { 6 });
+        assert_eq!(report.converted, if rejected { 5 } else { 1 });
+        assert_eq!(report.cache_hits, if rejected { 1 } else { 5 });
         assert_asset_bytes(&fixture.output, &expected);
         let published = manifest(&fixture.output);
         assert_eq!(published.archives, archive_proof);
@@ -665,9 +665,10 @@ async fn repeated_metadata_migrations_preserve_recorded_asset_producer() {
     );
 }
 
-/// Mode-only and previous versioned proofs survive multiple retained publications unchanged.
+/// Historical reader proofs and a fresh NIF kind proof survive repeated metadata publications.
 #[tokio::test]
-async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations() {
+async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repeated_metadata_migrations()
+ {
     for projection_version in [None, Some(1), Some(2), Some(3)] {
         let fixture = Fixture::new(true);
         let legacy = fixture.config(RecordReader::Legacy);
@@ -693,7 +694,18 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
             .unwrap(),
             _ => unreachable!(),
         };
-        original.asset_configuration_hashes.clear();
+        // Retain the fresh mesh contract proof; historical combined proofs still cover DDS/PEX.
+        original
+            .asset_configuration_hashes
+            .retain(|kind, _| kind == "nif");
+        assert_eq!(
+            original
+                .asset_configuration_hashes
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["nif"]
+        );
         original
             .save(&fixture.output.join("conversion-manifest.json"))
             .unwrap();
@@ -726,7 +738,10 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
                 retained.retained_asset_configuration_hash.as_deref(),
                 Some(original.configuration_hash.as_str())
             );
-            assert!(retained.asset_configuration_hashes.is_empty());
+            assert_eq!(
+                retained.asset_configuration_hashes, original.asset_configuration_hashes,
+                "metadata retention must preserve only the original fresh NIF proof"
+            );
             let provenance = json_artifact(output, "metadata-rebuild.json");
             assert_eq!(provenance["retained_asset_record_reader"], original_reader);
             assert_eq!(

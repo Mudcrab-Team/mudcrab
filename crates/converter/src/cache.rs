@@ -437,6 +437,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "msn-specular-default",
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
+    "skin-static-fallback",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

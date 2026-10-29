@@ -1,5 +1,5 @@
-//! Legacy Skyrim skin export (#273 stage 1a): a NIF that declares a skin must
-//! either publish a skinned GLB or fail, never a static fallback.
+//! Legacy Skyrim skin export (#273 stage 1a), with per-shape static recovery
+//! when geometry is usable but its skin cannot be bound safely.
 
 use converter::mesh::{MeshConverter, SkeletonResolution, find_skeleton};
 use dummy_content::nif::{
@@ -524,7 +524,8 @@ fn legacy_skin_reads_buffer_indices_as_instance_bones() {
 }
 
 #[test]
-fn legacy_skin_rejects_out_of_range_joint() {
+/// Invalid influence indices retain the shape as rigid geometry.
+fn legacy_skin_keeps_geometry_for_out_of_range_joint() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = spec(
         SkinInstanceKind::Dismember,
@@ -536,17 +537,10 @@ fn legacy_skin_rejects_out_of_range_joint() {
     let nif_path = write_fixture(directory.path(), &fixture);
     let skeleton_path = write_skeleton_fixture(directory.path(), &fixture);
     let glb_path = directory.path().join("skin.glb");
-    let error = convert(&nif_path, &skeleton_path, &glb_path).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("shape block"),
-        "error does not name the offending shape/block: {message}"
-    );
-    assert!(
-        message.contains("the skin instance has 2 bones"),
-        "error does not name the skin instance's bone count: {message}"
-    );
-    assert!(!glb_path.exists(), "a static GLB was published anyway");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+    assert_eq!(glb.json["meshes"].as_array().unwrap().len(), 1);
+    assert!(skinned_meshes(&glb).is_empty());
 }
 
 #[test]
@@ -589,7 +583,8 @@ fn legacy_skin_rejects_declared_skin_without_geometry() {
 }
 
 #[test]
-fn legacy_lod_skin_reports_the_unhandled_shape() {
+/// Unsupported LOD skinning does not discard its supported static geometry.
+fn legacy_lod_skin_keeps_static_geometry() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = spec(
         SkinInstanceKind::Dismember,
@@ -602,19 +597,10 @@ fn legacy_lod_skin_reports_the_unhandled_shape() {
     fs::write(&nif_path, legacy_lod_skinned_shape(&fixture).unwrap()).unwrap();
     let skeleton_path = write_skeleton_fixture(directory.path(), &fixture);
     let glb_path = directory.path().join("skin.glb");
-    let error = convert(&nif_path, &skeleton_path, &glb_path).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(
-        message.contains(
-            "skin instance 4 (BSDismemberSkinInstance) is referenced by BSLODTriShape 3, which the legacy exporter does not handle"
-        ),
-        "error does not name the shape type that claimed no exported mesh: {message}"
-    );
-    assert!(
-        message.contains("skin.nif"),
-        "error does not name the NIF path: {message}"
-    );
-    assert!(!glb_path.exists(), "a static GLB was published anyway");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+    assert_eq!(glb.json["meshes"].as_array().unwrap().len(), 1);
+    assert!(skinned_meshes(&glb).is_empty());
 }
 
 #[test]
@@ -832,7 +818,8 @@ fn legacy_skin_binds_mesh_local_joints_when_the_skeleton_covers_half() {
 }
 
 #[test]
-fn legacy_skin_leaves_a_rig_without_skeleton_coverage_unresolved() {
+/// An explicitly supplied skeleton with no matching joints retains rigid geometry.
+fn legacy_skin_without_skeleton_coverage_keeps_geometry() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = spec(
         SkinInstanceKind::Dismember,
@@ -844,13 +831,10 @@ fn legacy_skin_leaves_a_rig_without_skeleton_coverage_unresolved() {
     let nif_path = write_fixture(directory.path(), &fixture);
     let skeleton_path = write_single_node_skeleton(directory.path(), "SkeletonRoot");
     let glb_path = directory.path().join("skin.glb");
-    let error = convert(&nif_path, &skeleton_path, &glb_path).unwrap_err();
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("skin joints could not be resolved"),
-        "a rig below the coverage gate must keep the unresolved-joint error: {message}"
-    );
-    assert!(!glb_path.exists(), "a static GLB was published anyway");
+    convert(&nif_path, &skeleton_path, &glb_path).unwrap();
+    let glb = read_glb(&glb_path);
+    assert_eq!(glb.json["meshes"].as_array().unwrap().len(), 1);
+    assert!(skinned_meshes(&glb).is_empty());
 }
 
 #[test]
