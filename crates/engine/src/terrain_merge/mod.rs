@@ -368,10 +368,35 @@ impl TerrainMerge {
     }
 }
 
+/// Refuse white or unproven defaults so merged terrain falls back to textured quadrants.
 fn read_table(path: &Path) -> Result<LandTextureTable, String> {
     let text =
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+    let table: LandTextureTable =
+        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    table
+        .validate()
+        .map_err(|error| format!("land texture table: {error}"))?;
+    if !table.entries.first().is_some_and(|entry| {
+        entry.ltex_form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID
+            && entry.normal.is_some()
+    }) || !table.settings.as_ref().is_some_and(|settings| {
+        settings.default == shared::terrain_mesh::LandTextureDefault::SkyrimIni
+            && settings
+                .default_diffuse
+                .as_ref()
+                .is_some_and(|path| !path.is_empty())
+            && settings
+                .default_normal
+                .as_ref()
+                .is_some_and(|path| !path.is_empty())
+    }) {
+        return Err(
+            "land texture table has no proven default diffuse/normal pair; using quadrant terrain"
+                .to_owned(),
+        );
+    }
+    Ok(table)
 }
 
 /// The device's verdict on the table, written once by the render world and read by the main one.
@@ -830,12 +855,64 @@ mod tests {
         ));
     }
 
+    /// A table whose default pair is explicitly recorded by the converter.
+    fn table_with_default_pair() -> LandTextureTable {
+        let mut table = vanilla_table(6);
+        table.settings = Some(shared::terrain_mesh::LandTextureSettings {
+            request: shared::terrain_mesh::LandTextureRequest::SkyrimIni,
+            default: shared::terrain_mesh::LandTextureDefault::SkyrimIni,
+            default_diffuse: Some("textures/landscape/dirt02.ktx2".into()),
+            default_normal: Some("textures/landscape/dirt02_n.ktx2".into()),
+            terrain_ini_sha256: None,
+            allow_downscale: false,
+        });
+        table
+    }
+
+    /// White, legacy unknown, and incomplete defaults must fall back before array loading.
+    #[test]
+    fn null_base_merged_white_or_unknown_default_uses_quadrants() {
+        use shared::terrain_mesh::LandTextureDefault;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LAND_TEXTURE_TABLE_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for default in [
+            LandTextureDefault::GeneratedWhite,
+            LandTextureDefault::SkyrimIniFallbackWhite,
+        ] {
+            let mut table = table_with_default_pair();
+            let settings = table.settings.as_mut().unwrap();
+            settings.default = default;
+            settings.default_diffuse = None;
+            settings.default_normal = None;
+            std::fs::write(&path, serde_json::to_string(&table).unwrap()).unwrap();
+            let merge = TerrainMerge::open(dir.path());
+            assert!(matches!(merge.state, MergeState::Refused(_)));
+            assert!(!merge.holds_cells());
+        }
+        for table in [vanilla_table(6), {
+            let mut table = table_with_default_pair();
+            table.settings.as_mut().unwrap().default_normal = None;
+            table
+        }] {
+            std::fs::write(&path, serde_json::to_string(&table).unwrap()).unwrap();
+            assert!(matches!(
+                TerrainMerge::open(dir.path()).state,
+                MergeState::Refused(_)
+            ));
+        }
+    }
+
     #[test]
     fn a_valid_table_waits_for_the_device_and_holds_cells() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(LAND_TEXTURE_TABLE_PATH);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, serde_json::to_string(&vanilla_table(6)).unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_string(&table_with_default_pair()).unwrap(),
+        )
+        .unwrap();
         let merge = TerrainMerge::open(dir.path());
         assert!(matches!(merge.state, MergeState::AwaitingDevice(_)));
         assert!(merge.holds_cells());

@@ -33,9 +33,9 @@ pub(crate) fn surface_resource_paths(
             continue;
         };
         for layer in layers {
-            // Zero is an unresolved slot for base and overlays alike: `TerrainExtension::from_quadrant`
-            // binds no image there, so the catalog's row zero must not be reserved.
-            if layer.texture_form_id == 0 {
+            // Match the material: zero bases load Skyrim's default pair; unresolved overlays
+            // keep their slots without requesting images.
+            if layer.texture_form_id == 0 && !layer.is_base {
                 continue;
             }
             paths.extend(catalog.landscape_diffuse(layer.texture_form_id));
@@ -225,7 +225,7 @@ mod tests {
             .unwrap();
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
-        // Row zero is a real catalog entry, so skipping it is the only thing that keeps it out.
+        // A zero overlay must not request either the default base pair or the poison row.
         assert!(catalog.landscape_diffuse(0).is_some());
         let mut terrain = terrain();
         for quadrant in 0..4 {
@@ -247,6 +247,35 @@ mod tests {
         assert_eq!(
             surface_resource_paths(Some(&terrain), false, &catalog),
             vec!["textures/shared.ktx2", "textures/shared_n.ktx2"]
+        );
+    }
+
+    /// Default images are charged even when a quadrant has no stored texture layers.
+    #[test]
+    fn null_base_default_images_are_reserved_once() {
+        let (_directory, catalog) = catalog();
+        let mut terrain = terrain();
+        terrain.layers.clear();
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), false, &catalog),
+            vec![
+                "textures/landscape/dirt02.ktx2",
+                "textures/landscape/dirt02_n.ktx2"
+            ]
+        );
+        terrain.layers.push(TerrainLayerSnapshot {
+            texture_form_id: 0,
+            quadrant: 0,
+            layer: 0,
+            is_base: true,
+            weights: vec![],
+        });
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), false, &catalog),
+            vec![
+                "textures/landscape/dirt02.ktx2",
+                "textures/landscape/dirt02_n.ktx2"
+            ]
         );
     }
 

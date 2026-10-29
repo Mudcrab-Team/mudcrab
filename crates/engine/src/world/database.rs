@@ -317,12 +317,19 @@ impl AssetCatalog {
         })
     }
 
+    /// The converted LTEX diffuse, or Skyrim's built-in default for the zero base ID.
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return Some("textures/landscape/dirt02.ktx2");
+        }
         self.landscape_diffuse.get(&form_id).map(String::as_str)
     }
 
-    /// The converted normal map of landscape texture `form_id`, if its texture set has one.
+    /// The converted LTEX normal, or Skyrim's built-in default for the zero base ID.
     pub fn landscape_normal(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return Some("textures/landscape/dirt02_n.ktx2");
+        }
         self.landscape_normal.get(&form_id).map(String::as_str)
     }
 

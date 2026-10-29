@@ -4439,6 +4439,7 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
         .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+/// Orders stored layers, supplying Skyrim's implicit base for an unpainted quadrant.
 pub(crate) fn quadrant_layers(
     terrain: &TerrainSnapshot,
     quadrant: u8,
@@ -4450,6 +4451,21 @@ pub(crate) fn quadrant_layers(
         .collect();
     layers.sort_by_key(|layer| (!layer.is_base, layer.layer, layer.texture_form_id));
     if layers.is_empty() {
+        // The cell cache omits a quadrant with no texture assignments. It still draws Skyrim's
+        // default land, just like an explicit null BTXT base.
+        static DEFAULT_BASES: std::sync::LazyLock<[TerrainLayerSnapshot; 4]> =
+            std::sync::LazyLock::new(|| {
+                std::array::from_fn(|quadrant| TerrainLayerSnapshot {
+                    texture_form_id: shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID,
+                    quadrant: quadrant as u8,
+                    layer: 0,
+                    is_base: true,
+                    weights: Vec::new(),
+                })
+            });
+        if let Some(base) = DEFAULT_BASES.get(usize::from(quadrant)) {
+            layers.push(base);
+        }
         return Ok(layers);
     }
     let base_count = layers.iter().filter(|layer| layer.is_base).count();
@@ -4491,8 +4507,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry and nonzero image dependencies. Normalized zero-ID layers retain
-/// their slots and weights without requiring a converted texture.
+/// Validates terrain geometry and nonzero LTEX dependencies. Zero bases use Skyrim's default
+/// pair; zero overlays retain their slots and weights without requiring a converted texture.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -7132,11 +7148,15 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).is_err());
     }
 
+    /// A fully unpainted quadrant uses the same default as a null BTXT.
     #[test]
     fn accepts_textureless_official_land_quadrant() {
         let mut terrain = terrain_fixture(1, 0.0);
         terrain.layers.clear();
-        assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
+        let layers = quadrant_layers(&terrain, 0).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].is_base);
+        assert_eq!(layers[0].texture_form_id, 0);
     }
 
     /// Zero overlays retain ordered weights and geometry validation while missing nonzero

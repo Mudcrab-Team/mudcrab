@@ -23,6 +23,18 @@ refuses merged terrain for the whole run, deliberately: the converter transcodes
 into the BC7 class, so a table that still names one is a converter fault, not content to work
 around one cell at a time.
 
+Null or absent base assignments use Skyrim's default land diffuse and normal, never a white
+base. The quadrant path binds `textures/landscape/dirt02.ktx2` and
+`textures/landscape/dirt02_n.ktx2`, including quadrants without stored texture layers. Zero
+overlays remain unresolved slots with their existing weights and no image requests. Missing
+nonzero LTEX diffuse images retain the existing validation error.
+
+Merged tables must record a `skyrim_ini` default with diffuse and normal paths, and entry 0
+must bind a normal as well as a diffuse. Generated-white, fallback-white, legacy tables without
+settings, and incomplete default pairs are refused and use the quadrant path. This also applies
+to tables produced with an explicit converter `white` request: runtime gameplay has no white
+base override. Tables with a recorded Skyrim.ini default pair keep their configured arrays.
+
 ## Per cell
 
 1. The streaming code asks `TerrainMerge::lookup` for the cell. A chunk file is opened once
