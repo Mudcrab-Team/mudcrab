@@ -75,6 +75,13 @@ pub fn read_model_facts(assets_root: &Path, glb_path: &str) -> Result<ModelFacts
     model_facts_from_json(&json, glb_path)
 }
 
+/// Whether a converted model's geometry stays at its loaded pose: no morph targets, and skins
+/// only in a document with no animations, so nothing moves the joints. The producer bakes such a
+/// skin at its rest pose and the engine certifies the matching stock source; both use this rule.
+pub fn model_rests(has_skins: bool, has_morph_targets: bool, has_animations: bool) -> bool {
+    !has_morph_targets && (!has_skins || !has_animations)
+}
+
 /// The JSON of a GLB's first chunk, as raw JSON. Everything that decides a material key or a
 /// primitive number is read from this document and never from a typed glTF model, so the answer
 /// does not depend on which crate features the build that links this code happens to enable.
