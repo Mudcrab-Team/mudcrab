@@ -983,6 +983,10 @@ fn install_water_reflection_update(app: &mut App) {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .after(bevy::camera::CameraUpdateSystems)
                 .after(VisibilitySystems::CalculateBounds)
+                // Cascades are built per active camera; the reflection camera's active flag and
+                // transform must be final first, or a camera that turns on this frame reaches
+                // `prepare_lights` with no cascade entry.
+                .before(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
                 .before(VisibilitySystems::UpdateFrusta)
                 .before(VisibilitySystems::CheckVisibility),
         );
@@ -1898,6 +1902,45 @@ mod tests {
         assert_eq!(
             work.planes, planes,
             "one actual test per readable water: {work:?}"
+        );
+    }
+
+    #[test]
+    fn reflection_camera_gets_directional_cascades_the_frame_it_turns_on() {
+        use bevy::light::{
+            CascadeShadowConfig, Cascades, DirectionalLight, DirectionalLightShadowMap,
+            SimulationLightSystems, cascade::build_directional_light_cascades,
+        };
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app
+            .insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO))
+            .init_resource::<DirectionalLightShadowMap>()
+            .add_systems(
+                PostUpdate,
+                build_directional_light_cascades
+                    .in_set(SimulationLightSystems::UpdateDirectionalLightCascades)
+                    .after(bevy::transform::TransformSystems::Propagate),
+            );
+        let sun = h
+            .app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                CascadeShadowConfig::default(),
+                Cascades::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+
+        assert!(h.frame().active);
+        let cascades = h.app.world().get::<Cascades>(sun).unwrap();
+        assert!(
+            cascades.cascades.contains_key(&h.reflection_camera),
+            "the reflection camera turned on this frame must have cascades this frame"
         );
     }
 
