@@ -779,7 +779,7 @@ fn observe(
                     runtime_state
                         .as_ref()
                         .into_iter()
-                        .flat_map(|state| state.references())
+                        .flat_map(|state| state.readiness_references())
                         .collect()
                 },
             )
@@ -870,8 +870,17 @@ fn publish(mut producer: ResMut<Producer>, mut main: ResMut<MainWorld>) {
                     .as_ref()
                     .is_some_and(|current| Arc::ptr_eq(current, &inventory))
         });
+    // These are the renderer's already-computed per-world aggregates, not a
+    // second batch discovery pass. Rejected scope/generation/frame facts cannot refuse.
+    let failed = worlds.iter().find_map(|(&world, facts)| {
+        (facts.failed_batches > 0).then_some((world, facts.failed_batches))
+    });
+    let mut terminal = None;
     if let Some(mut gate) = main.get_resource_mut::<ClusterLoadingGate>() {
         let accepted = coherent && gate.publish(&package, layout, generation, frame, worlds);
+        if accepted {
+            terminal = failed;
+        }
         if !coherent {
             gate.withdraw();
         }
@@ -881,6 +890,14 @@ fn publish(mut producer: ResMut<Producer>, mut main: ResMut<MainWorld>) {
         }
     } else {
         producer.revision = None;
+    }
+    if let Some((world, failed)) = terminal {
+        crate::streaming::failure::refuse_loading(
+            &mut main,
+            format!(
+                "cluster loading refused: {failed} required batch/view failure(s) in world {world} at accepted renderer publication"
+            ),
+        );
     }
 }
 
@@ -902,6 +919,8 @@ pub(super) fn install(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("runtime_policy_tests.rs");
     include!("readiness_inventory_tests.rs");
     include!("readiness_batch_tests.rs");
     include!("readiness_delta_tests.rs");
@@ -1586,6 +1605,276 @@ mod tests {
                     .filter(|entity| entity.contains::<Mesh3d>())
                     .count(),
                 0
+            );
+        }
+    }
+
+    #[test]
+    fn failed_snapshot_rejected_for_old_package_layout_inventory_or_generation_has_no_terminal_effect()
+     {
+        use crate::{
+            cluster::package::{LazyBatches, ValidatedPackage},
+            streaming::failure::LoadingRefusal,
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        // Scope rejection belongs to the real publisher. Gate::publish alone intentionally
+        // accepts a changed package/layout after the producer establishes coherence.
+        for stale in ["package", "layout", "inventory", "generation", "frame"] {
+            let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+            let package = Arc::new(
+                crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+            );
+            let lazy = LazyBatches::unrequested_for_test(1, Vec3::ZERO);
+            let layout = lazy.layout_scope;
+            let mut main = MainWorld::default();
+            main.insert_resource(lazy);
+            main.insert_resource(ValidatedPackage(package.clone()));
+            main.insert_resource(Messages::<AppExit>::default());
+            main.init_resource::<ClusterLoadingGate>();
+            let inventory = install_empty_inventory_scene(&mut main, &package, layout);
+            let generation = main.resource::<ClusterLoadingGate>().generation();
+            let ready = ClusterWorldReadiness {
+                applicable_cameras: 1,
+                needed_batches: 1,
+                ..default()
+            };
+            assert!(main.resource_mut::<ClusterLoadingGate>().publish(
+                &package,
+                layout,
+                generation,
+                10,
+                HashMap::from([(42, ready)]),
+            ));
+            let failed = ClusterWorldReadiness {
+                failed_batches: 1,
+                ..ready
+            };
+            let mut snapshot = Snapshot {
+                package: package.clone(),
+                inventory: inventory.clone(),
+                layout,
+                generation,
+                frame: 11,
+                worlds: HashMap::from([(42, failed)]),
+            };
+            match stale {
+                "package" => main.insert_resource(ValidatedPackage(Arc::new(
+                    crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+                ))),
+                "layout" => {
+                    main.resource_mut::<LazyBatches>().layout_scope += 1;
+                }
+                "inventory" => {
+                    main.resource_mut::<ClusterScene>().inventory = Some(Arc::new(
+                        Inventory::build(package.clone(), layout, &[], 0).unwrap(),
+                    ));
+                }
+                "generation" => {
+                    snapshot.generation = generation.wrapping_sub(1);
+                }
+                "frame" => {
+                    snapshot.frame = 9;
+                }
+                _ => unreachable!(),
+            }
+            let mut exits = main.resource::<Messages<AppExit>>().get_cursor_current();
+            let mut render = World::new();
+            render.insert_resource(main);
+            render.init_resource::<Producer>();
+            render.resource_mut::<Producer>().revision = Some([0; 9]);
+            render.resource_mut::<Producer>().pending = Some(snapshot);
+            render.run_system_once(publish).unwrap();
+            {
+                let mut main = render.resource_mut::<MainWorld>();
+                main.flush();
+                assert!(!main.contains_resource::<LoadingRefusal>(), "stale={stale}");
+                assert_eq!(
+                    exits.read(main.resource::<Messages<AppExit>>()).count(),
+                    0,
+                    "stale={stale}"
+                );
+                if matches!(stale, "generation" | "frame") {
+                    assert!(main.resource::<ClusterLoadingGate>().world_ready(42));
+                } else {
+                    assert!(!main.resource::<ClusterLoadingGate>().world_ready(42));
+                }
+            }
+            assert!(
+                render.resource::<Producer>().revision.is_none(),
+                "rejection must rearm {stale}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_failed_publication_refuses_once_without_any_cover_or_new_demand() {
+        use crate::{
+            cluster::package::{LazyBatches, ValidatedPackage},
+            streaming::failure::{LoadingRefusal, refuse_loading},
+        };
+        use bevy::ecs::system::RunSystemOnce;
+        for earlier_reason in [None, Some("original terminal cell diagnostic")] {
+            let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+            let package = Arc::new(
+                crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+            );
+            let lazy = LazyBatches::unrequested_for_test(1, Vec3::ZERO);
+            let layout = lazy.layout_scope;
+            let mut main = MainWorld::default();
+            main.insert_resource(lazy);
+            main.insert_resource(ValidatedPackage(package.clone()));
+            main.insert_resource(Messages::<AppExit>::default());
+            main.init_resource::<ClusterLoadingGate>();
+            let inventory = install_empty_inventory_scene(&mut main, &package, layout);
+            let generation = main.resource::<ClusterLoadingGate>().generation();
+            let mut exits = main.resource::<Messages<AppExit>>().get_cursor_current();
+            if let Some(reason) = earlier_reason {
+                refuse_loading(&mut main, reason.into());
+            }
+            let mut render = World::new();
+            render.insert_resource(main);
+            render.init_resource::<Producer>();
+            for frame in 1..=3 {
+                render.resource_mut::<Producer>().pending = Some(Snapshot {
+                    package: package.clone(),
+                    inventory: inventory.clone(),
+                    layout,
+                    generation,
+                    frame,
+                    worlds: HashMap::from([(
+                        42,
+                        ClusterWorldReadiness {
+                            applicable_cameras: 1,
+                            needed_batches: 1,
+                            failed_batches: 1,
+                            ..default()
+                        },
+                    )]),
+                });
+                render.run_system_once(publish).unwrap();
+                let mut main = render.resource_mut::<MainWorld>();
+                main.flush();
+                assert!(!main.resource::<ClusterLoadingGate>().world_ready(42));
+                let refusal = main.get_resource::<LoadingRefusal>();
+                assert!(
+                    refusal.is_some(),
+                    "the accepted publisher must escalate failure even with no loading transition"
+                );
+                if let Some(reason) = earlier_reason {
+                    assert_eq!(refusal.unwrap().0, reason);
+                }
+                let emitted: Vec<_> = exits
+                    .read(main.resource::<Messages<AppExit>>())
+                    .cloned()
+                    .collect();
+                if frame == 1 {
+                    assert_eq!(emitted, [AppExit::error()]);
+                } else {
+                    assert!(
+                        emitted.is_empty(),
+                        "accepted replay must not emit another error exit"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn actual_cached_lazy_zero_writer_cannot_erase_an_accepted_terminal_render_failure() {
+        use crate::{
+            cluster::package::{
+                LazyBatches, ValidatedPackage, register_lazy_batch_system_for_test,
+            },
+            streaming::{StreamingMetrics, failure::LoadingRefusal},
+        };
+        use bevy::{asset::AssetPlugin, ecs::system::RunSystemOnce};
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let lazy = LazyBatches::unrequested_for_test(3, Vec3::ZERO);
+        let layout = lazy.layout_scope;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<WorldAsset>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<crate::cluster::render::ClusterBatchHandles>()
+            .init_resource::<StreamingMetrics>()
+            .insert_resource(crate::config::EngineConfig {
+                clusters: Some("selected".into()),
+                cluster_own_statics: true,
+                worldspace_id: 42,
+                ..default()
+            })
+            .insert_resource(lazy)
+            .insert_resource(ValidatedPackage(package.clone()))
+            .init_resource::<ClusterLoadingGate>();
+        app.update();
+        let mut main = MainWorld::default();
+        std::mem::swap(&mut *main, app.world_mut());
+        let inventory = install_empty_inventory_scene(&mut main, &package, layout);
+        let lazy_system = register_lazy_batch_system_for_test(&mut main);
+        main.run_system(lazy_system).unwrap(); // Warm the actual private producer's Local cache.
+        assert_eq!(
+            main.resource::<StreamingMetrics>().failed_cluster_batches,
+            0
+        );
+        let generation = main.resource::<ClusterLoadingGate>().generation();
+        let mut exits = main.resource::<Messages<AppExit>>().get_cursor_current();
+        let mut render = World::new();
+        render.insert_resource(main);
+        render.init_resource::<Producer>();
+        for frame in 1..=2 {
+            render.resource_mut::<Producer>().pending = Some(Snapshot {
+                package: package.clone(),
+                inventory: inventory.clone(),
+                layout,
+                generation,
+                frame,
+                worlds: HashMap::from([(
+                    42,
+                    ClusterWorldReadiness {
+                        applicable_cameras: 1,
+                        needed_batches: 1,
+                        failed_batches: 1,
+                        ..default()
+                    },
+                )]),
+            });
+            render.run_system_once(publish).unwrap();
+            let mut main = render.resource_mut::<MainWorld>();
+            let reason = main
+                .get_resource::<LoadingRefusal>()
+                .expect("the actual accepted renderer publication must commit terminal failure")
+                .0
+                .clone();
+            assert!(!reason.is_empty());
+            // This sentinel proves that the following zero comes from the real cached lazy
+            // writer, not from a test-only policy consumer or another aggregate metric owner.
+            main.resource_mut::<StreamingMetrics>()
+                .failed_cluster_batches = 99;
+            main.run_system(lazy_system).unwrap();
+            assert_eq!(
+                main.resource::<StreamingMetrics>().failed_cluster_batches,
+                0
+            );
+            assert_eq!(main.resource::<LoadingRefusal>().0, reason);
+            assert!(!main.resource::<ClusterLoadingGate>().world_ready(42));
+            let emitted: Vec<_> = exits
+                .read(main.resource::<Messages<AppExit>>())
+                .cloned()
+                .collect();
+            if frame == 1 {
+                assert_eq!(emitted, [AppExit::error()]);
+            } else {
+                assert!(
+                    emitted.is_empty(),
+                    "cached lazy work cannot re-emit terminal failure"
+                );
+            }
+            assert!(
+                main.resource::<LazyBatches>().failed_batches().is_empty(),
+                "renderer terminal policy must not forge a lazy-loader failure to keep a metric nonzero"
             );
         }
     }

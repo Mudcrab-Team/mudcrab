@@ -9,12 +9,14 @@
 //!    player is teleported to the door's `XTEL` arrival point.
 //! 3. **Hold black** until the landing cell is resident, nothing under its root is pending (models, surfaces) and
 //!    every mesh, material and texture under the cell's root has finished loading, then two more
-//!    frames so render extraction and preparation run, for at most 10 s per landing. While black,
+//!    frames so render extraction and preparation run. Ordinary landings wait at most 10 s; a
+//!    Required restore waits at most 10 s without progress, excluding deliberate pause. While black,
 //!    the per-frame upload budget is lifted (a stutter behind black is invisible) and the configured
 //!    value comes back when the fade-in starts. A landing cell that fails to load puts the player
 //!    back where they were, with a warning. A destination timeout also returns to the saved space.
 //!    If that return fails or times out, an ordinary crossing fades in with movement paused until
 //!    the player recovers in noclip: press V with the cursor captured, or enter `tcl` in the console.
+//!    A Required restore failure or deadline refuses the run with an error exit.
 //! 4. **Fade in** (0.25 s). The player is placed on the landing point once more as it starts.
 //!
 //! The player's walking and noclip systems pause for the whole crossing ([`no_door_crossing`]): nothing under
@@ -38,8 +40,8 @@ use crate::{
         assets::LandingAssets,
         destination::{
             DestinationKey, DestinationReports, DestinationRequest, DestinationRequests,
-            DestinationState, Generations, InvalidationCause, PassFamilies, PassFamily, RequestId,
-            ViewKey, WorldId,
+            DestinationState, Generations, Handoff, InvalidationCause, PassFamilies, PassFamily,
+            RequestId, RequiredHandoff, ViewKey, WorldId,
         },
         systems::{DestinationReadinessPlugin, DestinationReportsUpdated},
     },
@@ -70,7 +72,7 @@ pub const FALLBACK_DOOR_MAX: Vec3 = Vec3::new(80.0, 200.0, 80.0);
 pub const DOOR_BLOCKER_SLACK: f32 = 15.0;
 /// Seconds to fade out, and to fade in.
 pub const FADE_SECONDS: f32 = 0.25;
-/// Longest the screen stays black waiting for the destination.
+/// Ordinary landing time limit, and Required restore inactivity limit, in seconds.
 pub const LANDING_TIMEOUT_SECONDS: f32 = 10.0;
 /// Frames to keep waiting once everything under the landing cell has loaded.
 const SETTLE_FRAMES: u32 = 2;
@@ -145,6 +147,8 @@ enum Stage {
         recovery: bool,
     },
     Recovery,
+    /// Terminal refusal; keep movement guarded until the error exit is handled.
+    Refused,
 }
 
 /// The player's own place before a crossing.
@@ -200,6 +204,23 @@ impl Restore {
     }
 }
 
+/// Landing-scoped facts that can change while a Required restore is doing useful work.
+/// A report's render-frame stamp is deliberately absent: republication alone is not progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreProgress {
+    key: DestinationKey,
+    root: Option<Entity>,
+    pending_components: usize,
+    assets_loading: usize,
+    failed_assets: usize,
+    far_root: Option<Entity>,
+    far_pending: usize,
+    far_pending_components: usize,
+    far_assets_loading: usize,
+    far_failed_assets: usize,
+    destination: Option<DestinationState>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Crossing {
     door: LoadDoor,
@@ -210,6 +231,9 @@ struct Crossing {
     restore: Restore,
     /// Seconds since E was pressed.
     since_press: f32,
+    /// Required restores use real inactivity, separate from ordinary landing/fade virtual time.
+    restore_stalled_seconds: f64,
+    restore_last_progress: Option<RestoreProgress>,
     stage: Stage,
     /// The destination the black hold waits for, made by [`switch_space`] for the space the player is
     /// put in (the target, or the restore after a failure) and withdrawn when the hold ends.
@@ -281,6 +305,8 @@ impl DoorCrossing {
                     yaw: 0.0,
                 },
                 since_press: 0.0,
+                restore_stalled_seconds: 0.0,
+                restore_last_progress: None,
                 request: None,
                 stage: Stage::Landing {
                     waited: 0.0,
@@ -474,7 +500,8 @@ fn switch_space(world: &mut World, landing: Landing) {
 /// was proven about it is gone), the space entered gets a new generation, and a request for the main
 /// camera's view of the landing cell is stored on the crossing. The passes are the ones the camera
 /// and the lights run: forward always, each prepass the camera carries, shadows when a light casts
-/// them (a destination with no shadow view is vacuous for that family).
+/// them (a destination with no shadow view is vacuous for that family). Admission policy decides
+/// whether the request also requires its representation owner's handoff.
 fn request_destination(world: &mut World, left: &ActiveSpace, landing: &Landing) {
     let configured = world
         .resource::<crate::config::EngineConfig>()
@@ -501,12 +528,22 @@ fn request_destination(world: &mut World, left: &ActiveSpace, landing: &Landing)
         world: entered,
         generation,
     };
+    let handoff = if world
+        .resource::<crate::config::EngineConfig>()
+        .clusters
+        .is_some()
+    {
+        Handoff::Required
+    } else {
+        Handoff::for_policy(world.get_resource::<RequiredHandoff>())
+    };
     let id = world
         .resource_mut::<DestinationRequests>()
         .request(DestinationRequest {
             key,
             passes,
             coverage: std::sync::Arc::from(vec![landing.key]),
+            handoff,
         });
     if let Some(active) = world.resource_mut::<DoorCrossing>().active.as_mut() {
         if let Some((old, old_key)) = active.request.replace((id, key)) {
@@ -552,7 +589,7 @@ fn destination_passes(world: &mut World, camera: Entity) -> PassFamilies {
 }
 
 /// A held crossing must not accept an earlier, weaker render proof after settings change.
-/// The request owner preserves coverage while invalidating the old scope.
+/// The request owner preserves coverage and handoff while invalidating the old scope.
 fn refresh_destination_request(world: &mut World) {
     let held = world
         .resource::<DoorCrossing>()
@@ -592,6 +629,7 @@ fn refresh_destination_request(world: &mut World) {
             view,
             passes,
             request.coverage,
+            request.handoff,
         )
     });
     if current != Some(previous) {
@@ -654,6 +692,11 @@ type TargetLoadDoors<'w, 's> = Query<
     ),
 >;
 
+fn refuse_crossing(commands: &mut Commands, reason: String) {
+    commands
+        .queue(move |world: &mut World| crate::streaming::failure::refuse_loading(world, reason));
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
     (keyboard, capture, mut open): (
@@ -661,7 +704,7 @@ fn drive_door_crossing(
         Option<Res<CursorCapture>>,
         MessageWriter<crate::doors::OpenDoor>,
     ),
-    time: Res<Time>,
+    (time, real_time, virtual_time): (Res<Time>, Res<Time<Real>>, Res<Time<bevy::time::Virtual>>),
     config: Res<crate::config::EngineConfig>,
     tuning: Res<MovementTuning>,
     space: Res<ActiveSpace>,
@@ -677,16 +720,34 @@ fn drive_door_crossing(
     ),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
-    (mut budget, landing_assets, pending_under, mut requests, mut reports, generations): (
+    (
+        mut budget,
+        landing_assets,
+        pending_under,
+        mut requests,
+        mut reports,
+        generations,
+        required_handoff,
+        mut loading_cover,
+        far_stock,
+    ): (
         Option<ResMut<RenderAssetBytesPerFrame>>,
         LandingAssets,
         PendingUnder,
         ResMut<DestinationRequests>,
         ResMut<DestinationReports>,
         Res<Generations>,
+        Option<Res<RequiredHandoff>>,
+        Option<ResMut<crate::pacing::LoadingCover>>,
+        Option<Res<crate::streaming::far_stock::FarStock>>,
     ),
     mut commands: Commands,
 ) {
+    if let Some(cover) = loading_cover.as_mut()
+        && cover.crossing_pending() != crossing.is_active()
+    {
+        cover.set_crossing_pending(crossing.is_active());
+    }
     let delta = time.delta_secs();
     let Some(active) = crossing.active.as_mut() else {
         let Ok(view) = camera.single() else {
@@ -740,10 +801,17 @@ fn drive_door_crossing(
             target,
             restore,
             since_press: 0.0,
+            restore_stalled_seconds: 0.0,
+            restore_last_progress: None,
             request: None,
             stage: Stage::FadeOut { elapsed: 0.0 },
         });
         set_alpha(&mut overlay, 0.0);
+        if let Some(cover) = loading_cover.as_mut()
+            && !cover.crossing_pending()
+        {
+            cover.set_crossing_pending(true);
+        }
         return;
     };
     active.since_press += delta;
@@ -777,9 +845,17 @@ fn drive_door_crossing(
             } else {
                 active.target
             };
-            // A failed or timed-out landing returns to the saved space. An ordinary restore
-            // keeps movement paused if it cannot finish.
-
+            // A destination whose request requires a replacement handoff is never certified by a
+            // clock or by a failure: the timeout cannot say the replacement is drawable, so fading
+            // in would show an unproved landing. A crossing that fails or times out puts the player
+            // back instead; a required restore that fails or times out refuses the run.
+            let handoff_required = config.clusters.is_some()
+                || required_handoff.is_some()
+                || active.request.is_some_and(|(id, _)| {
+                    requests
+                        .iter()
+                        .any(|(held, request)| held == id && request.handoff == Handoff::Required)
+                });
             let key = if let Some((id, previous)) = active.request {
                 let current = requests.rebase(id, &generations);
                 if current != Some(previous) {
@@ -796,7 +872,24 @@ fn drive_door_crossing(
                     .is_some_and(|report| matches!(report.state, DestinationState::Failed(_)))
             });
             if streaming.is_failed(landing.key) || destination_failed {
-                if restoring {
+                if restoring && handoff_required {
+                    let reason = format!(
+                        "door crossing refused: required restore for door {:08X} to {} failed to reload: {}",
+                        active.door.ref_id,
+                        describe_destination(&landing.key),
+                        key.map_or_else(
+                            || "cell loading failed".to_owned(),
+                            |key| reports.describe(&key)
+                        )
+                    );
+                    set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                    if let Some((id, key)) = active.request.take() {
+                        requests.withdraw(id);
+                        reports.remove(&key);
+                    }
+                    active.stage = Stage::Refused;
+                    refuse_crossing(&mut commands, reason);
+                } else if restoring {
                     warn!(
                         door = format_args!("{:08X}", active.door.ref_id),
                         "door crossing: the player's own space could not be reloaded; movement stays paused; press V or use tcl to recover in noclip"
@@ -850,29 +943,78 @@ fn drive_door_crossing(
             // still lifted: the fade-in starts on the SETTLE_FRAMES-th loaded frame.
             let ready_frames = if loaded { ready_frames + 1 } else { 0 };
             let ready = ready_frames >= SETTLE_FRAMES;
-            // A destination that is not ready in time puts the player back. An ordinary restore
-            // that times out fades in with movement paused.
-            if !ready && waited >= LANDING_TIMEOUT_SECONDS && !restoring {
+            let required_restore = restoring && handoff_required;
+            if required_restore {
+                let far = far_stock.as_deref().map(|far| far.cell_state(landing.key));
+                let far_root = far.as_ref().and_then(|far| far.holder);
+                let far_report = far_root.map(|root| landing_assets.inspect_under(root));
+                let progress = key.map(|key| RestoreProgress {
+                    key,
+                    root,
+                    pending_components: pending,
+                    assets_loading: report.as_ref().map_or(0, |report| report.waiting),
+                    failed_assets: report.as_ref().map_or(0, |report| report.failed.len()),
+                    far_root,
+                    far_pending: far.as_ref().map_or(0, |far| far.pending),
+                    far_pending_components: far_root.map_or(0, |root| pending_under.count(root)),
+                    far_assets_loading: far_report.as_ref().map_or(0, |report| report.waiting),
+                    far_failed_assets: far_report.as_ref().map_or(0, |report| report.failed.len()),
+                    destination: reports.get(&key).map(|report| report.state.clone()),
+                });
+                // As in teleport admission, reset on changed valid facts, not elapsed total time.
+                // Missing request context ages, and a deliberate Virtual pause does not.
+                if progress.is_some() && progress != active.restore_last_progress {
+                    active.restore_stalled_seconds = 0.0;
+                } else if !virtual_time.is_paused() {
+                    active.restore_stalled_seconds += real_time.delta_secs_f64();
+                }
+                active.restore_last_progress = progress;
+            }
+            let expired = if required_restore {
+                active.restore_stalled_seconds >= f64::from(LANDING_TIMEOUT_SECONDS)
+            } else {
+                waited >= LANDING_TIMEOUT_SECONDS
+            };
+            // A destination that is not ready in time puts the player back. A Required restore
+            // refuses only after inactivity; the ordinary return retains its total-time recovery.
+            if !ready && expired && (handoff_required || !restoring) {
                 let destination =
                     key.map_or_else(|| "no request".to_owned(), |key| reports.describe(&key));
-
-                warn!(
-                    door = format_args!("{:08X}", active.door.ref_id),
-                    waited_seconds = waited,
-                    %destination,
-                    "door crossing: the destination was not ready in time; putting the player back"
-                );
-                let restore = active.restore.landing();
-                commands.queue(move |world: &mut World| switch_space(world, restore));
-                active.stage = Stage::Landing {
-                    waited: 0.0,
-                    restoring: true,
-                    ready_frames: 0,
-                };
-
+                if restoring {
+                    let reason = format!(
+                        "door crossing refused: required restore for door {:08X} to {} reached its loading inactivity deadline: stalled_seconds={:.3} pending_components={} progress={:?}; {}",
+                        active.door.ref_id,
+                        describe_destination(&landing.key),
+                        active.restore_stalled_seconds,
+                        pending,
+                        active.restore_last_progress,
+                        destination
+                    );
+                    set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                    if let Some((id, key)) = active.request.take() {
+                        requests.withdraw(id);
+                        reports.remove(&key);
+                    }
+                    active.stage = Stage::Refused;
+                    refuse_crossing(&mut commands, reason);
+                } else {
+                    warn!(
+                        door = format_args!("{:08X}", active.door.ref_id),
+                        waited_seconds = waited,
+                        %destination,
+                        "door crossing: the destination was not ready in time; putting the player back"
+                    );
+                    let restore = active.restore.landing();
+                    commands.queue(move |world: &mut World| switch_space(world, restore));
+                    active.stage = Stage::Landing {
+                        waited: 0.0,
+                        restoring: true,
+                        ready_frames: 0,
+                    };
+                }
                 return;
             }
-            if ready || waited >= LANDING_TIMEOUT_SECONDS {
+            if ready || (!handoff_required && waited >= LANDING_TIMEOUT_SECONDS) {
                 if !ready {
                     warn!(
                         door = format_args!("{:08X}", active.door.ref_id),
@@ -944,11 +1086,18 @@ fn drive_door_crossing(
             }
         }
         Stage::Recovery => {}
+        Stage::Refused => {}
+    }
+    if let Some(cover) = loading_cover.as_mut()
+        && cover.crossing_pending() != crossing.is_active()
+    {
+        cover.set_crossing_pending(crossing.is_active());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    include!("door_crossing_inactivity_tests.rs");
     use super::*;
     use crate::nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial};
     use crate::{
@@ -1589,6 +1738,7 @@ mod tests {
                             frame,
                             extracted_generation: request.key.generation,
                             proof: crate::swap_bridge::destination::RenderProof::default(),
+                            handoff: None,
                         },
                     );
                 }
@@ -1669,6 +1819,21 @@ mod tests {
         }
         let requests = app.world().resource::<DestinationRequests>();
         requests.iter().next().expect("the hold made a request");
+    }
+
+    #[test]
+    fn ordinary_destination_requests_remain_stock_only() {
+        use crate::swap_bridge::destination::DestinationRequests;
+
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        let requests = app.world().resource::<DestinationRequests>();
+        let (_, request) = requests.iter().next().expect("the hold made a request");
+        assert_eq!(request.handoff, Handoff::NotRequired);
     }
 
     #[test]
@@ -2214,6 +2379,39 @@ mod tests {
     }
 
     #[test]
+    fn a_destination_asset_failure_starts_the_restore_without_waiting_for_the_deadline() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            crate::streaming::AssetFailed,
+            Visibility::Hidden,
+            ChildOf(root),
+        ));
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        app.update();
+        let crossing = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .unwrap();
+        assert!(matches!(
+            crossing.stage,
+            Stage::Landing {
+                restoring: true,
+                ..
+            }
+        ));
+        assert_eq!(app.world().resource::<Teleports>().0.len(), 2);
+        assert_eq!(alpha(&mut app), 1.0);
+    }
+
+    #[test]
     fn destination_requests_include_camera_prepasses_and_each_stock_light_family() {
         for light_kind in 0..3 {
             let (mut app, _) = app_with(interior_door());
@@ -2323,6 +2521,7 @@ mod tests {
                 frame: RenderFrame(10),
                 extracted_generation: old.generation,
                 proof: RenderProof::default(),
+                handoff: None,
             };
             {
                 let mut results = app.world_mut().resource_mut::<RenderResults>();
@@ -2387,5 +2586,498 @@ mod tests {
             );
             assert!(app.world().resource::<DestinationRequests>().is_empty());
         }
+    }
+
+    /// A replacement owner's policy resource makes the hold's request require its handoff; without
+    /// it the request is stock-only. The crossing names neither the owner nor the replacement.
+    #[test]
+    fn the_hold_requires_a_handoff_only_when_the_policy_says_so() {
+        use crate::swap_bridge::destination::DestinationRequests;
+        for required in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            if required {
+                app.insert_resource(RequiredHandoff);
+            }
+            press_e(&mut app);
+            run_until_black(&mut app);
+            for _ in 0..3 {
+                app.update();
+            }
+            let requests = app.world().resource::<DestinationRequests>();
+            let (_, request) = requests.iter().next().expect("the hold made a request");
+            assert_eq!(
+                request.handoff,
+                if required {
+                    Handoff::Required
+                } else {
+                    Handoff::NotRequired
+                }
+            );
+        }
+    }
+
+    /// With a required handoff the clock never certifies a landing: the crossing that times out puts
+    /// the player back, and a restore that times out refuses the run while remaining covered.
+    /// (Without the policy,
+    /// `a_destination_timeout_returns_to_the_saved_space_before_resuming` keeps the stock rule.)
+    #[test]
+    fn a_required_handoff_past_the_timeout_never_fades_into_the_landing() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let frames = (LANDING_TIMEOUT_SECONDS / DT) as usize;
+        for _ in 0..frames + 20 {
+            app.update();
+        }
+        let space = *app.world().resource::<ActiveSpace>();
+        assert_eq!(space, ActiveSpace::default(), "the player was put back");
+        assert_eq!(app.world().resource::<Teleports>().0.len(), 2);
+        // A refused Required restore stays covered until its error exit is handled.
+        for _ in 0..2 * frames {
+            app.update();
+        }
+        assert!(
+            alpha(&mut app) >= 0.99,
+            "still black, never faded into an unproved place"
+        );
+        assert!(
+            app.world().resource::<DoorCrossing>().active.is_some(),
+            "the crossing is still holding"
+        );
+    }
+
+    /// A restore whose own space failed to reload fades in with movement paused without the policy
+    /// (stock), but with a required handoff it refuses the run without exposing unproved geometry.
+    #[test]
+    fn a_required_handoff_does_not_fade_into_a_restore_that_failed_to_reload() {
+        for required in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            if required {
+                app.insert_resource(RequiredHandoff);
+            }
+            press_e(&mut app);
+            run_until_black(&mut app);
+            let restore_key = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .expect("a crossing is active")
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(CellKey::Interior(77));
+            // The switch back unloads every cell (and so clears failure marks), so the restore's
+            // own cell fails only once the player has been put back.
+            for _ in 0..3 {
+                app.update();
+            }
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore_key);
+            for _ in 0..60 {
+                app.update();
+            }
+            let still_black = alpha(&mut app) >= 0.99;
+            let holding = app.world().resource::<DoorCrossing>().active.is_some();
+            if required {
+                assert!(
+                    still_black && holding,
+                    "no fade-in into an unproved restore"
+                );
+            } else {
+                assert!(
+                    !still_black && app.world().resource::<DoorCrossing>().needs_recovery(),
+                    "stock: the failed restore fades in with movement paused"
+                );
+            }
+        }
+    }
+
+    fn required_restore_app(request_policy: bool) -> App {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_failed_for_test(CellKey::Interior(77));
+        app.update();
+        // The restore request retains Required even if the resource is withdrawn.
+        if request_policy {
+            let requests = app.world().resource::<DestinationRequests>();
+            assert!(
+                requests
+                    .iter()
+                    .any(|(_, request)| request.handoff == Handoff::Required)
+            );
+            app.world_mut().remove_resource::<RequiredHandoff>();
+        }
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::Landing {
+                restoring: true,
+                ..
+            }
+        ));
+        assert!(
+            !app.world()
+                .contains_resource::<crate::streaming::failure::LoadingRefusal>()
+        );
+        app
+    }
+
+    #[test]
+    fn required_restore_load_failure_refuses_once_and_restores_the_upload_budget() {
+        for request_policy in [false, true] {
+            let mut app = required_restore_app(request_policy);
+            let restore = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore);
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            app.update();
+            let refusal = &app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0;
+            assert!(
+                refusal.contains("restore") && refusal.contains("failed"),
+                "{refusal}"
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+            assert!(alpha(&mut app) >= 0.99, "never expose an unproved restore");
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn required_restore_deadline_refuses_once_without_granting_readiness() {
+        for request_policy in [false, true] {
+            let mut app = required_restore_app(request_policy);
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            // First valid observation seeds progress; then ten real seconds stall.
+            for _ in 0..=(LANDING_TIMEOUT_SECONDS / DT).ceil() as usize {
+                app.update();
+            }
+            let refusal = &app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0;
+            assert!(
+                refusal.contains("restore") && refusal.contains("deadline"),
+                "{refusal}"
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+            assert!(alpha(&mut app) >= 0.99);
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_required_restore_without_a_request_cannot_timeout_into_recovery() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        let mut crossing = DoorCrossing::holding_for_test();
+        crossing.active.as_mut().unwrap().stage = Stage::Landing {
+            waited: 0.0,
+            restoring: true,
+            ready_frames: 0,
+        };
+        app.insert_resource(crossing);
+        // Missing context cannot reset progress; the actual driver ages it to refusal.
+        for _ in 0..=(LANDING_TIMEOUT_SECONDS / DT).ceil() as usize {
+            app.update();
+        }
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::Refused
+        ));
+        assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+        assert!(alpha(&mut app) >= 0.99);
+    }
+
+    #[test]
+    fn combined_required_restore_failures_preserve_the_first_reason_and_one_exit() {
+        for earlier_failure in [false, true] {
+            let mut app = required_restore_app(true);
+            let restore = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore);
+            app.world_mut()
+                .resource_mut::<DoorCrossing>()
+                .active
+                .as_mut()
+                .unwrap()
+                .stage = Stage::Landing {
+                waited: LANDING_TIMEOUT_SECONDS,
+                restoring: true,
+                ready_frames: 0,
+            };
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            if earlier_failure {
+                crate::streaming::failure::refuse_loading(
+                    app.world_mut(),
+                    "earlier cell failure".to_owned(),
+                );
+            }
+            app.update();
+            let reason = app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0
+                .clone();
+            if earlier_failure {
+                assert_eq!(reason, "earlier cell failure");
+            } else {
+                assert!(reason.contains("failed to reload"), "{reason}");
+            }
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::Refused
+            ));
+            assert!(alpha(&mut app) >= 0.99);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<crate::streaming::failure::LoadingRefusal>()
+                    .0,
+                reason
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn selected_package_requests_required_handoff_without_a_policy_resource() {
+        let (mut app, _) = app_with(interior_door());
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .clusters = Some("selected".into());
+        assert!(!app.world().contains_resource::<RequiredHandoff>());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let requests = app.world().resource::<DestinationRequests>();
+        assert!(!requests.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|(_, request)| request.handoff == Handoff::Required),
+            "selected-package policy must apply at the actual request factory without its optional resource"
+        );
+    }
+
+    #[test]
+    fn selected_package_restore_without_a_request_refuses_on_failure_or_deadline() {
+        for failed in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            app.world_mut()
+                .resource_mut::<crate::config::EngineConfig>()
+                .clusters = Some("selected".into());
+            assert!(!app.world().contains_resource::<RequiredHandoff>());
+            press_e(&mut app);
+            run_until_black(&mut app);
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(CellKey::Interior(77));
+            app.update();
+            let restore;
+            let request;
+            {
+                let mut crossing = app.world_mut().resource_mut::<DoorCrossing>();
+                let active = crossing.active.as_mut().unwrap();
+                assert!(matches!(
+                    active.stage,
+                    Stage::Landing {
+                        restoring: true,
+                        ..
+                    }
+                ));
+                restore = active.restore.landing().key;
+                request = active.request.take();
+            }
+            if let Some((id, key)) = request {
+                app.world_mut()
+                    .resource_mut::<DestinationRequests>()
+                    .withdraw(id);
+                app.world_mut()
+                    .resource_mut::<DestinationReports>()
+                    .remove(&key);
+            }
+            if failed {
+                app.world_mut()
+                    .resource_mut::<StreamingWorld>()
+                    .set_failed_for_test(restore);
+            }
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            // Failed sources refuse immediately; missing request context ages in real time.
+            let updates = if failed {
+                1
+            } else {
+                (LANDING_TIMEOUT_SECONDS / DT).ceil() as usize
+            };
+            for _ in 0..updates {
+                app.update();
+            }
+            let refusal = app
+                .world()
+                .get_resource::<crate::streaming::failure::LoadingRefusal>();
+            assert!(
+                refusal.is_some(),
+                "config-only Required restore must refuse even when its request is missing: failed={failed}"
+            );
+            assert!(refusal.unwrap().0.contains(if failed {
+                "failed to reload"
+            } else {
+                "deadline"
+            }));
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::Refused
+            ));
+            assert!(alpha(&mut app) >= 0.99);
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_black_crossing_projects_its_control_hold_to_the_neutral_owner() {
+        let (mut app, _) = app_with(interior_door());
+        crate::cluster::loading::install(&mut app);
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .clusters = Some("selected".into());
+        assert!(
+            !app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .controls_blocked()
+        );
+        press_e(&mut app);
+        run_until_black(&mut app);
+        assert!(alpha(&mut app) >= 0.99);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .controls_blocked(),
+            "physics must see the actual crossing cover through its neutral contract"
+        );
     }
 }

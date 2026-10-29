@@ -173,20 +173,24 @@ fn publish_scoped(
         return;
     }
     let first_refusal = refusals.reported.is_empty();
+    let mut terminal_reason = None;
     {
         let Some(mut lazy) = main.get_resource_mut::<super::super::package::LazyBatches>() else {
             return;
         };
-        for &batch in refusals.failed.keys() {
+        for (&batch, reason) in &refusals.failed {
             if !refusals.reported.contains(&batch) && lazy.refuse_gpu_batch(batch) {
                 refusals.reported.insert(batch);
+                terminal_reason.get_or_insert_with(|| {
+                    format!("cluster shadow batch {batch} refused: {reason}")
+                });
             }
         }
     }
-    if first_refusal && !refusals.reported.is_empty() {
-        // Use the package loader's existing terminal-error channel; no admission
-        // timeout or camera-frustum metric is needed to discover a GPU failure.
-        let _ = main.write_message(AppExit::error());
+    if first_refusal && let Some(reason) = terminal_reason {
+        // Accepted renderer failures share the cell/destination terminal owner.
+        // Batch refusal and its revision above still commit when another cause won first.
+        crate::streaming::failure::refuse_loading(main, reason);
     }
 }
 
@@ -401,5 +405,95 @@ mod tests {
                 .record(package.records().next().unwrap().0)
                 .is_some()
         );
+    }
+
+    // Exercises the real renderer publication seam, including its existing direct exit.
+    fn shadow_fixture() -> (
+        tempfile::TempDir,
+        Arc<crate::cluster::reader::CertifiedPackage>,
+        ClusterScene,
+        MainWorld,
+    ) {
+        use crate::cluster::{
+            instance_inventory::InstanceInventory,
+            package::{LazyBatches, ValidatedPackage},
+        };
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let lazy = LazyBatches::unrequested_for_test(3, Vec3::ZERO);
+        let inventory =
+            Arc::new(InstanceInventory::build(package.clone(), lazy.layout_scope, &[], 3).unwrap());
+        let mesh = ClusterMeshAsset::from_bytes(
+            include_bytes!("../../../shared/tests/data/cluster/fixture.mcl").to_vec(),
+        )
+        .unwrap();
+        let mut scene = ClusterScene::new(mesh, &[]);
+        scene.certificate = Some(package.clone());
+        scene.inventory = Some(inventory);
+        let mut main = MainWorld::default();
+        main.insert_resource(lazy);
+        main.insert_resource(ValidatedPackage(package.clone()));
+        main.insert_resource(Messages::<AppExit>::default());
+        main.insert_resource(scene.clone());
+        (directory, package, scene, main)
+    }
+
+    #[test]
+    fn accepted_shadow_failure_uses_shared_refusal_and_exactly_one_error_exit() {
+        use crate::{cluster::package::LazyBatches, streaming::failure::LoadingRefusal};
+        let (_directory, package, scene, mut main) = shadow_fixture();
+        let before = main.resource::<LazyBatches>().failed_key();
+        let mut exits = main.resource::<Messages<AppExit>>().get_cursor_current();
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        let pipeline = CachedRenderPipelineId::new(7);
+        refusals.require(view(), 1, pipeline);
+        refusals.refresh(1, |_| Some("invalid shadow variant causal fixture".into()));
+        publish_scoped(&mut refusals, 1, Some(&package), &scene, &mut main);
+        main.flush();
+        assert_eq!(main.resource::<LazyBatches>().failed_batches(), [1]);
+        assert_eq!(
+            main.resource::<LazyBatches>().failed_key(),
+            (before.0, before.1 + 1)
+        );
+        let first = main.resource::<LoadingRefusal>().0.clone();
+        assert!(!first.is_empty());
+        let emitted: Vec<_> = exits
+            .read(main.resource::<Messages<AppExit>>())
+            .cloned()
+            .collect();
+        assert_eq!(emitted, [AppExit::error()]);
+        publish_scoped(&mut refusals, 1, Some(&package), &scene, &mut main);
+        main.flush();
+        assert_eq!(main.resource::<LoadingRefusal>().0, first);
+        assert_eq!(
+            main.resource::<LazyBatches>().failed_key(),
+            (before.0, before.1 + 1)
+        );
+        assert_eq!(exits.read(main.resource::<Messages<AppExit>>()).count(), 0);
+    }
+
+    #[test]
+    fn shadow_failure_after_a_lower_failure_preserves_original_reason_and_exit_count() {
+        use crate::streaming::failure::{LoadingRefusal, refuse_loading};
+        let (_directory, package, scene, mut main) = shadow_fixture();
+        let mut exits = main.resource::<Messages<AppExit>>().get_cursor_current();
+        refuse_loading(&mut main, "original cell request failure".into());
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        refusals.refuse(1, "later shadow variant failure".into());
+        publish_scoped(&mut refusals, 1, Some(&package), &scene, &mut main);
+        main.flush();
+        assert_eq!(
+            main.resource::<LoadingRefusal>().0,
+            "original cell request failure"
+        );
+        let emitted: Vec<_> = exits
+            .read(main.resource::<Messages<AppExit>>())
+            .cloned()
+            .collect();
+        assert_eq!(emitted, [AppExit::error()]);
     }
 }

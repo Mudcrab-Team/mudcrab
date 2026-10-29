@@ -6,7 +6,7 @@
 //!
 //! Extract publishes only stored results from the completed Render pass, then captures waiting
 //! declarations. Render evaluates those inputs after RenderSystems::Render and before Cleanup.
-//! Native entity probes cost O(waiting entities), with view/phase lookups per waiting entity.
+//! Native entity probes cost O(due entities), with view/phase lookups per due entity.
 //! Declaration writers withdraw old evidence atomically with their payload edit. Settled
 //! declarations have no discovery scan or native resource probes.
 
@@ -76,6 +76,11 @@ impl WaitingVisibility<'_, '_> {
 
 /// Visible or still-unobserved waiting surfaces. Headless runs have no render obligation.
 pub(crate) fn pending_drawn(waiting: &WaitingVisibility) -> usize {
+    pending_waiting_count(waiting)
+}
+
+/// Admission and ordinary settling share the completed-camera observation policy.
+pub(crate) fn pending_waiting_count(waiting: &WaitingVisibility) -> usize {
     if !waiting.renderer_exists() {
         return 0;
     }
@@ -128,7 +133,7 @@ impl SwapSurface {
 
 /// A completed CPU Render observation held the declared images, matching native mesh/material
 /// instances, mesh allocation/render asset, and the native material allocator slab/bind group.
-/// Pending surfaces are rechecked every Render.
+/// In-transit surfaces are rechecked every Render; prepared offscreen waits sleep until woken.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SwapPrepared {
     /// The bridge's own extract-frame index at which the surface was prepared. Kept for later
@@ -257,6 +262,150 @@ impl SwapDeclaration {
     }
 }
 
+/// Main-world journal of waiting-set changes, written by observers as they happen and drained by
+/// the bridge at each extract. A settled world writes nothing to it.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct SwapWaitingJournal {
+    changed: Vec<Entity>,
+    removed: Vec<Entity>,
+}
+
+/// A surface entered the waiting set, or a waiting surface's mesh or declaration was replaced.
+fn journal_waiting_insert(
+    entity: Entity,
+    waiting: &Query<(), With<SwapWaiting>>,
+    journal: &mut SwapWaitingJournal,
+) {
+    if waiting.contains(entity) {
+        journal.changed.push(entity);
+    }
+}
+
+fn journal_waiting_marker(
+    event: On<Insert, SwapWaiting>,
+    waiting: Query<(), With<SwapWaiting>>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    journal_waiting_insert(event.entity, &waiting, &mut journal);
+}
+
+fn journal_waiting_mesh(
+    event: On<Insert, Mesh3d>,
+    waiting: Query<(), With<SwapWaiting>>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    journal_waiting_insert(event.entity, &waiting, &mut journal);
+}
+
+fn journal_waiting_surface(
+    event: On<Insert, SwapSurface>,
+    waiting: Query<(), With<SwapWaiting>>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    journal_waiting_insert(event.entity, &waiting, &mut journal);
+}
+
+/// Fires for a removed marker and for a despawned waiting surface alike.
+fn journal_waiting_removed(
+    event: On<Remove, SwapWaiting>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    journal.removed.push(event.entity);
+}
+
+/// Which waiting surfaces the bridge evaluates this extract. Evaluation is event-driven: a surface
+/// is due when the main world changed it (journal), when a camera's visible set gained or lost it
+/// (the render world's own per-frame visibility diff), or while it is still in transit - its
+/// assets are not prepared yet, or a camera sees it and it is not yet drawn. A prepared surface no
+/// camera sees is dormant: nothing about it can change until one of those events names it, so a
+/// settled frame evaluates nothing.
+#[derive(Debug, Default)]
+pub(crate) struct WaitingWork {
+    waiting: bevy::platform::collections::HashSet<Entity>,
+    active: bevy::platform::collections::HashSet<Entity>,
+    due: Vec<Entity>,
+    seeded: bool,
+}
+
+impl WaitingWork {
+    fn note_changed(&mut self, entity: Entity) {
+        self.waiting.insert(entity);
+        self.active.insert(entity);
+    }
+
+    fn note_removed(&mut self, entity: Entity) {
+        self.waiting.remove(&entity);
+        self.active.remove(&entity);
+    }
+
+    /// A camera's visible set gained or lost this entity.
+    fn note_view_change(&mut self, entity: Entity) {
+        if self.waiting.contains(&entity) {
+            self.active.insert(entity);
+        }
+    }
+
+    /// The surfaces to evaluate this extract, in a stable order.
+    fn take_due(&mut self) -> Vec<Entity> {
+        let mut due = std::mem::take(&mut self.due);
+        due.clear();
+        due.extend(self.active.iter().copied());
+        due.sort_unstable();
+        due
+    }
+
+    /// After evaluation: keep a surface in transit due next extract, let a settled one rest.
+    fn settle(&mut self, entity: Entity, in_transit: bool) {
+        if !in_transit {
+            self.active.remove(&entity);
+        }
+    }
+
+    /// A due entity the waiting query no longer yields (it lost its mesh or declaration).
+    fn forget(&mut self, entity: Entity) {
+        self.note_removed(entity);
+    }
+
+    fn give_back(&mut self, due: Vec<Entity>) {
+        self.due = due;
+    }
+}
+
+/// Install before spawning when possible. Protocol-only render fixtures also use this entry
+/// point on their first extract; the one-time waiting-set seed covers pre-existing entities.
+fn ensure_waiting_journal(world: &mut World) {
+    if world.contains_resource::<SwapWaitingJournal>() {
+        return;
+    }
+    world.init_resource::<SwapWaitingJournal>();
+    world.add_observer(journal_waiting_marker);
+    world.add_observer(journal_waiting_mesh);
+    world.add_observer(journal_waiting_surface);
+    world.add_observer(journal_waiting_removed);
+    world.add_observer(journal_waiting_mesh_removed);
+    world.add_observer(journal_waiting_surface_removed);
+}
+
+fn journal_waiting_mesh_removed(
+    event: On<Remove, Mesh3d>,
+    waiting: Query<(), With<SwapWaiting>>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    if waiting.contains(event.entity) {
+        journal.removed.push(event.entity);
+    }
+}
+
+fn journal_waiting_surface_removed(
+    event: On<Remove, SwapSurface>,
+    waiting: Query<(), With<SwapWaiting>>,
+    mut journal: ResMut<SwapWaitingJournal>,
+) {
+    if waiting.contains(event.entity) {
+        journal.removed.push(event.entity);
+    }
+}
+
 struct CompletedSwap {
     declaration: SwapDeclaration,
     facts: SwapSurfaceFacts,
@@ -269,6 +418,8 @@ struct CompletedSwap {
 struct SwapBuffers {
     inputs: Vec<SwapDeclaration>,
     completed: HashMap<Entity, CompletedSwap>,
+    /// Visibility deltas from completed Render, never native resource probes during Extract.
+    view_changes: Vec<Entity>,
 }
 
 /// Publish only the prior completed snapshot for the identical live waiting declaration, then
@@ -276,28 +427,61 @@ struct SwapBuffers {
 fn swap_bridge(
     mut main_world: ResMut<MainWorld>,
     mut waiting: Local<Option<SystemState<WaitingSurfaces>>>,
-    mut frame: Local<u32>,
+    (mut work, mut frame): (Local<WaitingWork>, Local<u32>),
     mut decisions: Local<Vec<SwapDecision>>,
     mut buffers: ResMut<SwapBuffers>,
 ) {
     *frame = frame.saturating_add(1);
+    ensure_waiting_journal(&mut main_world);
     let state = waiting.get_or_insert_with(|| SystemState::new(&mut main_world));
     decisions.clear();
     buffers.inputs.clear();
     {
+        let mut journal = main_world.resource_mut::<SwapWaitingJournal>();
+        // Entries describe mutations, not their final ordering. The due query below validates
+        // final live membership, including remove/reinsert and incomplete declarations.
+        for entity in journal.removed.drain(..) {
+            work.note_removed(entity);
+        }
+        for entity in journal.changed.drain(..) {
+            work.note_changed(entity);
+        }
+    }
+    if !work.seeded {
+        work.seeded = true;
         let query = state
             .get(&main_world)
             .expect("the query was built from this main world");
-        for (entity, mesh, surface, obligation, prepared, in_view) in query.iter() {
+        // Once only, for entities that predate observer registration. Never scan declarations.
+        for (entity, ..) in query.iter() {
+            work.note_changed(entity);
+        }
+    }
+    let view_changes = std::mem::take(&mut buffers.view_changes);
+    for &entity in &view_changes {
+        work.note_view_change(entity);
+    }
+    let due = work.take_due();
+    {
+        let query = state
+            .get(&main_world)
+            .expect("the query was built from this main world");
+        for &due_entity in &due {
+            let Ok((entity, mesh, surface, obligation, prepared, in_view)) = query.get(due_entity)
+            else {
+                work.forget(due_entity);
+                continue;
+            };
             let declaration = SwapDeclaration::capture(entity, &mesh, &surface, &obligation);
             let result = buffers
                 .completed
                 .remove(&entity)
                 .filter(|result| result.declaration == declaration);
-            let mut drawn = false;
+            let mut in_transit = true;
             if let Some(result) = result {
                 let readiness = swap_readiness(&result.facts);
-                drawn = readiness == SwapReadiness::Drawn;
+                let drawn = readiness == SwapReadiness::Drawn;
+                in_transit = readiness == SwapReadiness::Waiting || (result.in_view && !drawn);
                 decisions.push(SwapDecision {
                     entity,
                     insert_prepared: readiness != SwapReadiness::Waiting && prepared.is_none(),
@@ -306,11 +490,25 @@ fn swap_bridge(
                     in_view: (result.in_view != in_view).then_some(result.in_view),
                 });
             }
-            if !drawn {
+            work.settle(entity, in_transit);
+            if in_transit {
                 buffers.inputs.push(declaration);
             }
         }
     }
+    work.give_back(due);
+    // A dormant offscreen surface woken by a camera delta has no current observation yet.
+    // Hold readiness as unknown until a matching completed snapshot arrives. An active
+    // surface with a matching snapshot below publishes that same Render's membership.
+    for &entity in &view_changes {
+        if work.waiting.contains(&entity)
+            && let Ok(mut entity) = main_world.get_entity_mut(entity)
+        {
+            entity.remove::<SwapCameraObserved>();
+        }
+    }
+    buffers.view_changes = view_changes;
+    buffers.view_changes.clear();
     // Anything not joined above was despawned, cancelled, changed or already drawn.
     buffers.completed.clear();
     for decision in decisions.iter() {
@@ -362,6 +560,12 @@ fn evaluate_swaps(
 ) {
     let buffers = &mut *buffers;
     buffers.completed.clear();
+    buffers.view_changes.clear();
+    for (_, visible) in &views {
+        if let Some(class) = visible.get::<Mesh3d>() {
+            collect_view_changes(class, &mut buffers.view_changes);
+        }
+    }
     if buffers.inputs.is_empty() {
         return;
     }
@@ -392,6 +596,17 @@ fn evaluate_swaps(
             },
         );
     }
+}
+
+/// Consume the renderer's own visibility deltas; do not build a second visibility cache.
+fn collect_view_changes(class: &RenderVisibleEntitiesClass, changed: &mut Vec<Entity>) {
+    changed.extend(
+        class
+            .added_entities
+            .iter()
+            .chain(&class.removed_entities)
+            .map(|(_, entity)| entity.id()),
+    );
 }
 
 #[derive(Default)]
@@ -493,6 +708,9 @@ pub struct SwapBridgePlugin;
 
 impl Plugin for SwapBridgePlugin {
     fn build(&self, app: &mut App) {
+        if app.get_sub_app(RenderApp).is_some() {
+            ensure_waiting_journal(app.world_mut());
+        }
         if !app.is_plugin_added::<systems::DestinationReadinessPlugin>() {
             app.add_plugins(systems::DestinationReadinessPlugin);
         }
@@ -520,6 +738,161 @@ pub mod systems;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_native_members_publish_no_waiting_wake_work() {
+        let mut world = World::new();
+        let gpu = world.spawn_empty().id();
+        let cpu = world.spawn_empty().id();
+        let mut class = RenderVisibleEntitiesClass {
+            entities_cpu_culling: vec![(Entity::PLACEHOLDER, cpu.into())],
+            ..default()
+        };
+        class
+            .entities_gpu_culling
+            .insert(gpu.into(), Entity::PLACEHOLDER);
+        let mut changed = Vec::new();
+        for _ in 0..4 {
+            collect_view_changes(&class, &mut changed);
+            assert!(
+                changed.is_empty(),
+                "unchanged native members are not visibility deltas: {changed:?}"
+            );
+        }
+        class.added_entities.push((Entity::PLACEHOLDER, gpu.into()));
+        collect_view_changes(&class, &mut changed);
+        assert_eq!(
+            changed,
+            vec![gpu],
+            "one changed GPU member creates one wake"
+        );
+        changed.clear();
+        class.added_entities.clear();
+        class
+            .removed_entities
+            .push((Entity::PLACEHOLDER, gpu.into()));
+        collect_view_changes(&class, &mut changed);
+        assert_eq!(
+            changed,
+            vec![gpu],
+            "removed GPU membership uses the same native delta channel"
+        );
+    }
+
+    #[test]
+    fn rendererless_bridge_keeps_no_undrained_waiting_lifetime_journal() {
+        let mut app = App::new();
+        app.add_plugins(SwapBridgePlugin);
+        for _ in 0..4 {
+            for _ in 0..128 {
+                let entity = app
+                    .world_mut()
+                    .spawn((Mesh3d(Handle::default()), surface(&[]), SwapWaiting))
+                    .id();
+                app.world_mut().despawn(entity);
+            }
+            app.update();
+            assert!(
+                app.world().get_resource::<SwapWaitingJournal>().is_none(),
+                "without a RenderApp drain the bridge must not retain mutation history"
+            );
+        }
+    }
+
+    /// The bridge's work list: a settled frame - every surface prepared and unseen, no journal
+    /// entry, no visibility diff - evaluates nothing; each event names exactly its surface.
+    #[test]
+    fn a_settled_frame_evaluates_no_waiting_surface() {
+        let mut world = World::new();
+        let surfaces: Vec<Entity> = (0..512).map(|_| world.spawn_empty().id()).collect();
+        let unrelated = world.spawn_empty().id();
+        let mut work = WaitingWork::default();
+        for &entity in &surfaces {
+            work.note_changed(entity);
+        }
+        // First evaluation: all prepared, none seen, except one still loading its assets and one
+        // a camera sees before its pipeline is ready.
+        let due = work.take_due();
+        assert_eq!(due.len(), 512);
+        for &entity in &due {
+            work.settle(entity, entity == surfaces[0] || entity == surfaces[1]);
+        }
+        work.give_back(due);
+        let mut in_transit = vec![surfaces[0], surfaces[1]];
+        in_transit.sort_unstable();
+        assert_eq!(work.take_due(), in_transit);
+        work.settle(surfaces[0], false);
+        work.settle(surfaces[1], false);
+
+        // Settled: nothing is due, frame after frame.
+        for _ in 0..3 {
+            let due = work.take_due();
+            assert!(
+                due.is_empty(),
+                "a settled frame evaluates {} surfaces",
+                due.len()
+            );
+            work.give_back(due);
+        }
+
+        // A camera turn names one surface; a diff entry for an entity that is not waiting is
+        // ignored.
+        work.note_view_change(surfaces[7]);
+        work.note_view_change(unrelated);
+        assert_eq!(work.take_due(), vec![surfaces[7]]);
+        work.settle(surfaces[7], false);
+
+        // A replaced mesh names its surface; a removed surface is never due again.
+        work.note_changed(surfaces[9]);
+        work.note_removed(surfaces[9]);
+        work.note_view_change(surfaces[9]);
+        assert!(work.take_due().is_empty());
+    }
+
+    /// The main-world journal records waiting-set changes as they happen, and nothing else.
+    #[test]
+    fn the_journal_records_only_waiting_surface_changes() {
+        let mut app = App::new();
+        app.init_resource::<SwapWaitingJournal>()
+            .add_observer(journal_waiting_marker)
+            .add_observer(journal_waiting_mesh)
+            .add_observer(journal_waiting_surface)
+            .add_observer(journal_waiting_removed);
+        let world = app.world_mut();
+        let waiting = world
+            .spawn((Mesh3d(Handle::<Mesh>::default()), surface(&[]), SwapWaiting))
+            .id();
+        // An ordinary mesh and a declaration nobody waits on are not journaled.
+        let ordinary = world
+            .spawn((Mesh3d(Handle::<Mesh>::default()), surface(&[])))
+            .id();
+        world
+            .entity_mut(ordinary)
+            .insert(Mesh3d(Handle::<Mesh>::default()));
+        let journal = world.resource::<SwapWaitingJournal>();
+        assert!(journal.changed.iter().all(|entity| *entity == waiting));
+        assert!(!journal.changed.is_empty());
+        assert!(journal.removed.is_empty());
+
+        world.resource_mut::<SwapWaitingJournal>().changed.clear();
+        world
+            .entity_mut(waiting)
+            .insert(Mesh3d(Handle::<Mesh>::default()));
+        assert_eq!(
+            world.resource::<SwapWaitingJournal>().changed,
+            vec![waiting]
+        );
+
+        world.entity_mut(waiting).remove::<SwapWaiting>();
+        let despawned = world
+            .spawn((Mesh3d(Handle::<Mesh>::default()), surface(&[]), SwapWaiting))
+            .id();
+        world.despawn(despawned);
+        assert_eq!(
+            world.resource::<SwapWaitingJournal>().removed,
+            vec![waiting, despawned]
+        );
+    }
 
     fn surface(images: &[AssetId<Image>]) -> SwapSurface {
         SwapSurface::new(
@@ -1156,5 +1529,252 @@ mod tests {
         let main = render.resource::<MainWorld>();
         assert!(main.get::<SwapWaiting>(entity).is_some());
         assert!(main.get::<SwapDrawn>(entity).is_none());
+    }
+    fn finish_offscreen_snapshot(render: &mut World) {
+        finish_snapshot(
+            render,
+            SwapSurfaceFacts {
+                forward_queued: false,
+                pipeline_ok: false,
+                ..complete_facts()
+            },
+        );
+        for result in render.resource_mut::<SwapBuffers>().completed.values_mut() {
+            result.in_view = false;
+        }
+    }
+
+    #[test]
+    fn completed_offscreen_preparation_stops_requesting_declaration_population() {
+        let (mut render, mut extract, entity) = extraction_world();
+        for _ in 0..255 {
+            render.resource_mut::<MainWorld>().spawn((
+                Mesh3d(Handle::default()),
+                surface(&[]),
+                SwapWaiting,
+            ));
+        }
+        extract.run(&mut render);
+        assert_eq!(render.resource::<SwapBuffers>().inputs.len(), 256);
+        finish_offscreen_snapshot(&mut render);
+        extract.run(&mut render);
+        for _ in 0..3 {
+            assert!(render.resource::<SwapBuffers>().inputs.is_empty());
+            let main = render.resource::<MainWorld>();
+            assert!(main.get::<SwapWaiting>(entity).is_some());
+            assert!(main.get::<SwapPrepared>(entity).is_some());
+            assert!(main.get::<SwapCameraObserved>(entity).is_some());
+            assert!(main.get::<SwapDrawn>(entity).is_none());
+            extract.run(&mut render);
+        }
+    }
+
+    #[test]
+    fn late_declaration_and_writer_rearm_wake_only_the_affected_wait() {
+        let (mut render, mut extract, entity) = extraction_world();
+        extract.run(&mut render);
+        finish_offscreen_snapshot(&mut render);
+        extract.run(&mut render);
+        let late = render
+            .resource_mut::<MainWorld>()
+            .spawn((Mesh3d(Handle::default()), surface(&[]), SwapWaiting))
+            .id();
+        extract.run(&mut render);
+        assert_eq!(
+            render
+                .resource::<SwapBuffers>()
+                .inputs
+                .iter()
+                .map(|d| d.entity)
+                .collect::<Vec<_>>(),
+            vec![late],
+        );
+        finish_offscreen_snapshot(&mut render);
+        extract.run(&mut render);
+        assert!(render.resource::<SwapBuffers>().inputs.is_empty());
+        rearm_swap(&mut render.resource_mut::<MainWorld>(), entity);
+        extract.run(&mut render);
+        assert_eq!(
+            render
+                .resource::<SwapBuffers>()
+                .inputs
+                .iter()
+                .map(|d| d.entity)
+                .collect::<Vec<_>>(),
+            vec![entity],
+        );
+        let main = render.resource::<MainWorld>();
+        assert!(main.get::<SwapPrepared>(entity).is_none());
+        assert!(main.get::<SwapCameraObserved>(entity).is_none());
+    }
+
+    #[test]
+    fn dormant_payload_removal_and_reinsertion_wake_without_population_discovery() {
+        for remove_mesh in [true, false] {
+            let (mut render, mut extract, entity) = extraction_world();
+            extract.run(&mut render);
+            finish_offscreen_snapshot(&mut render);
+            extract.run(&mut render);
+            {
+                let mut main = render.resource_mut::<MainWorld>();
+                if remove_mesh {
+                    main.entity_mut(entity).remove::<Mesh3d>();
+                } else {
+                    main.entity_mut(entity).remove::<SwapSurface>();
+                }
+            }
+            extract.run(&mut render);
+            assert!(render.resource::<SwapBuffers>().inputs.is_empty());
+            {
+                let mut main = render.resource_mut::<MainWorld>();
+                if remove_mesh {
+                    main.entity_mut(entity).insert(Mesh3d(Handle::default()));
+                } else {
+                    main.entity_mut(entity).insert(surface(&[]));
+                }
+                rearm_swap(&mut main, entity);
+            }
+            extract.run(&mut render);
+            assert_eq!(
+                render
+                    .resource::<SwapBuffers>()
+                    .inputs
+                    .iter()
+                    .map(|d| d.entity)
+                    .collect::<Vec<_>>(),
+                vec![entity],
+            );
+            finish_snapshot(&mut render, complete_facts());
+            render.resource_mut::<MainWorld>().despawn(entity);
+            extract.run(&mut render);
+            assert!(render.resource::<SwapBuffers>().inputs.is_empty());
+            assert!(render.resource::<SwapBuffers>().completed.is_empty());
+        }
+    }
+
+    #[test]
+    fn completed_camera_delta_wakes_dormant_wait_and_holds_unknown_until_new_proof() {
+        let (mut render, mut extract, entity) = extraction_world();
+        extract.run(&mut render);
+        finish_offscreen_snapshot(&mut render);
+        extract.run(&mut render);
+        // Protocol fixture only: production collects these deltas after completed Render.
+        let class = RenderVisibleEntitiesClass {
+            added_entities: vec![(Entity::PLACEHOLDER, MainEntity::from(entity))],
+            ..default()
+        };
+        collect_view_changes(
+            &class,
+            &mut render.resource_mut::<SwapBuffers>().view_changes,
+        );
+        extract.run(&mut render);
+        assert_eq!(render.resource::<SwapBuffers>().inputs.len(), 1);
+        assert_eq!(render.resource::<SwapBuffers>().inputs[0].entity, entity);
+        {
+            let mut main = render.resource_mut::<MainWorld>();
+            let mut state = SystemState::<WaitingVisibility>::new(&mut main);
+            assert_eq!(pending_waiting_count(&state.get(&main).unwrap()), 1);
+            assert!(main.get::<SwapCameraObserved>(entity).is_none());
+            assert!(main.get::<SwapDrawn>(entity).is_none());
+        }
+        finish_snapshot(&mut render, complete_facts());
+        extract.run(&mut render);
+        let main = render.resource::<MainWorld>();
+        assert!(main.get::<SwapDrawn>(entity).is_some());
+        assert!(main.get::<SwapCameraObserved>(entity).is_some());
+        assert!(main.get::<SwapInCameraView>(entity).is_some());
+        assert!(render.resource::<SwapBuffers>().inputs.is_empty());
+    }
+
+    #[test]
+    fn native_visibility_deltas_include_changed_gpu_members_and_skip_unchanged_population() {
+        let mut world = World::new();
+        let added = world.spawn_empty().id();
+        let removed = world.spawn_empty().id();
+        let gpu = world.spawn_empty().id();
+        let unchanged = world.spawn_empty().id();
+        let unchanged_gpu = world.spawn_empty().id();
+        let mut class = RenderVisibleEntitiesClass {
+            added_entities: vec![
+                (Entity::PLACEHOLDER, added.into()),
+                (Entity::PLACEHOLDER, gpu.into()),
+            ],
+            removed_entities: vec![(Entity::PLACEHOLDER, removed.into())],
+            entities_cpu_culling: vec![(Entity::PLACEHOLDER, unchanged.into())],
+            ..default()
+        };
+        class
+            .entities_gpu_culling
+            .insert(gpu.into(), Entity::PLACEHOLDER);
+        class
+            .entities_gpu_culling
+            .insert(unchanged_gpu.into(), Entity::PLACEHOLDER);
+        let mut changed = Vec::new();
+        collect_view_changes(&class, &mut changed);
+        assert_eq!(changed, vec![added, gpu, removed]);
+    }
+}
+
+// Test-only observation seam for streaming compatibility fixtures. No production behavior.
+#[cfg(test)]
+pub(crate) mod terrain_compatibility_fixture {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    pub(crate) fn image_ids(surface: &SwapSurface) -> Vec<AssetId<Image>> {
+        surface.images.clone()
+    }
+
+    /// Protocol fixture only: completed observations are supplied, never inferred from Extract.
+    /// Actual native Render resource readiness/GPU execution is outside this fixture's claim.
+    pub(crate) fn publish_completed_camera_observations(
+        world: &mut World,
+        observations: &[(Entity, bool, bool)],
+    ) {
+        world.init_resource::<systems::RenderResults>();
+        world.resource_mut::<systems::RenderResults>().renderer = true;
+        world.init_resource::<SwapBridgeStats>();
+        let mut main = MainWorld::default();
+        std::mem::swap(&mut *main, world);
+        let mut render = World::new();
+        render.insert_resource(main);
+        render.init_resource::<SwapBuffers>();
+        let mut extract = Schedule::new(ExtractSchedule);
+        extract.add_systems(swap_bridge);
+        extract.run(&mut render);
+        {
+            let mut buffers = render.resource_mut::<SwapBuffers>();
+            let inputs = std::mem::take(&mut buffers.inputs);
+            for declaration in inputs {
+                let Some(&(_, in_view, drawn)) = observations
+                    .iter()
+                    .find(|(entity, _, _)| *entity == declaration.entity)
+                else {
+                    continue;
+                };
+                let image_count = declaration.images.len();
+                buffers.completed.insert(
+                    declaration.entity,
+                    CompletedSwap {
+                        declaration,
+                        facts: SwapSurfaceFacts {
+                            mesh_allocated: true,
+                            render_mesh: true,
+                            images_ready: image_count,
+                            images_declared: image_count,
+                            material: true,
+                            payload_matches: true,
+                            forward_queued: drawn,
+                            pipeline_ok: drawn,
+                        },
+                        in_view,
+                    },
+                );
+            }
+        }
+        extract.run(&mut render);
+        let mut main = render.remove_resource::<MainWorld>().unwrap();
+        main.run_system_once(complete_drawn_swaps).unwrap();
+        std::mem::swap(&mut *main, world);
     }
 }

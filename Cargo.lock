@@ -2888,6 +2888,7 @@ dependencies = [
  "memmap2",
  "mlua",
  "naga_oil",
+ "proptest",
  "regex",
  "rkyv",
  "rusqlite",

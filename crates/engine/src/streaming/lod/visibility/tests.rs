@@ -1,6 +1,7 @@
 use super::super::select_terrain_lod_tier;
 use super::*;
 use crate::{
+    cluster::terrain::{ClusterTerrain, TerrainBlock, TerrainDrawReadiness},
     streaming::{ActiveSpace, identity_changes},
     world::components::{CELL_SIZE, StreamingCamera},
 };
@@ -72,6 +73,37 @@ fn app_with(journal: bool, disabler: Option<Disabler>) -> App {
         Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
     ));
     app
+}
+
+fn cluster_terrain(blocks: &[(u32, &[IVec2], Option<u32>)]) -> ClusterTerrain {
+    ClusterTerrain::for_blocks_test(
+        blocks
+            .iter()
+            .map(|&(worldspace_id, cells, batch)| TerrainBlock {
+                mesh_hash: String::new(),
+                primitive_index: 0,
+                worldspace_id,
+                anchor: cells.first().copied().unwrap_or_default(),
+                side_cells: 1,
+                instance_path: String::new(),
+                cells: cells.to_vec(),
+                material: Handle::default(),
+                batch,
+            })
+            .collect(),
+    )
+}
+
+fn pending_blocks(app: &App) -> usize {
+    app.world()
+        .resource::<StreamingMetrics>()
+        .pending_cluster_terrain_blocks
+}
+
+fn enable_cluster_terrain(app: &mut App) {
+    let mut config = app.world_mut().resource_mut::<EngineConfig>();
+    config.clusters = Some(String::new());
+    config.cluster_terrain = true;
 }
 
 #[test]
@@ -185,6 +217,7 @@ fn visibility(app: &App, entity: Entity) -> Visibility {
 struct Expected {
     visibility: HashMap<Entity, Visibility>,
     visible: usize,
+    pending: usize,
 }
 
 /// The independent exhaustive ownership walk used by the oracle.
@@ -235,6 +268,8 @@ fn reference(world: &mut World) -> Expected {
         LodDemandViews,
         Res<EngineConfig>,
         Res<RenderOrigin>,
+        Option<Res<ClusterTerrain>>,
+        Option<Res<TerrainDrawReadiness>>,
         Query<LodTerrainOwner>,
         Query<
             (Entity, &TerrainCoverage, Option<&TerrainWorldspace>),
@@ -251,10 +286,29 @@ fn reference(world: &mut World) -> Expected {
         >,
         Query<(&MergedTerrainCoverage, &TerrainWorldspace), DrawnMergedTerrain>,
     )>::new(world);
-    let (views, config, origin, owners, full, lod, merged) = state.get(world).unwrap();
+    let (views, config, origin, cluster_terrain, terrain_readiness, owners, full, lod, merged) =
+        state.get(world).unwrap();
     let demand = views.current(&config, origin.0);
     let camera_grid = demand.map_or(IVec2::ZERO, |demand| demand.center);
     let terrain_world = demand.map(|demand| demand.world);
+    let pending = if config.clusters.is_some() && config.cluster_terrain {
+        cluster_terrain.as_ref().map_or(0, |terrain| {
+            terrain
+                .blocks
+                .iter()
+                .filter(|block| Some(block.worldspace_id) == terrain_world)
+                .filter(|block| {
+                    !block.batch.is_some_and(|batch| {
+                        terrain_readiness
+                            .as_ref()
+                            .is_some_and(|ready| ready.contains(batch))
+                    })
+                })
+                .count()
+        })
+    } else {
+        0
+    };
     let mut full_ready: HashSet<_> = full
         .iter()
         .filter_map(|(entity, coverage, _)| {
@@ -298,6 +352,7 @@ fn reference(world: &mut World) -> Expected {
     let mut expected = Expected {
         visibility: HashMap::new(),
         visible: 0,
+        pending,
     };
     for (entity, coverage, surface, _) in &lod {
         if surface.is_none() {
@@ -342,6 +397,11 @@ fn assert_matches_full_pass_except(app: &mut App, context: &str, held: &HashSet<
             "{context}: {entity} differs from a full pass"
         );
     }
+    assert_eq!(
+        pending_blocks(app),
+        expected.pending,
+        "{context}: pending cluster terrain blocks"
+    );
     assert_eq!(
         app.world()
             .resource::<StreamingMetrics>()
@@ -888,6 +948,7 @@ fn desync_visible_on_reselect() -> TerrainLodIndex {
         origin: IVec2::ZERO,
         camera_grid: IVec2::ZERO,
         distances: EngineConfig::default().terrain_lod,
+        own_statics: false,
     };
     let mut state = SystemState::<Query<LodPatches, LodPatchFilter>>::new(&mut world);
     let mut lod = state.get_mut(&mut world).unwrap();
@@ -962,6 +1023,7 @@ impl Rng {
 
 struct Pool {
     entities: Vec<Entity>,
+    cluster: bool,
 }
 
 impl Pool {
@@ -1010,6 +1072,69 @@ fn random_root(rng: &mut Rng) -> LodChunkRoot {
     )
 }
 
+fn random_cluster_terrain(rng: &mut Rng) -> ClusterTerrain {
+    let blocks: Vec<_> = (0..1 + rng.below(3))
+        .map(|_| {
+            let cells: Vec<_> = (0..1 + rng.below(3))
+                .map(|_| IVec2::new(rng.below(6) as i32, rng.below(2) as i32))
+                .collect();
+            let batch = (!rng.chance(20)).then(|| rng.below(3));
+            (random_worldspace(rng), cells, batch)
+        })
+        .collect();
+    let blocks: Vec<_> = blocks
+        .iter()
+        .map(|(world, cells, batch)| (*world, cells.as_slice(), *batch))
+        .collect();
+    cluster_terrain(&blocks)
+}
+
+fn mutate_cluster(world: &mut World, rng: &mut Rng) {
+    match rng.below(8) {
+        0 => {
+            if let Some(ready) = world.get_resource::<TerrainDrawReadiness>() {
+                ready.mark(rng.below(3));
+            }
+        }
+        1 => {
+            if let Some(ready) = world.get_resource::<TerrainDrawReadiness>() {
+                ready.clear();
+            }
+        }
+        2 => {
+            world.remove_resource::<ClusterTerrain>();
+        }
+        3 => {
+            world.remove_resource::<TerrainDrawReadiness>();
+        }
+        4 => {
+            let terrain = random_cluster_terrain(rng);
+            world.insert_resource(terrain);
+        }
+        5 => {
+            // A replacement that starts over: fresh state, perhaps the same revision as the
+            // resource it replaces.
+            let ready = TerrainDrawReadiness::default();
+            if rng.chance(70) {
+                ready.mark(rng.below(3));
+            }
+            world.insert_resource(ready);
+        }
+        6 => {
+            if let Some(mut terrain) = world.get_resource_mut::<ClusterTerrain>()
+                && !terrain.blocks.is_empty()
+            {
+                let index = rng.below(terrain.blocks.len() as u32) as usize;
+                terrain.blocks[index].batch = (!rng.chance(25)).then(|| rng.below(3));
+            }
+        }
+        _ => {
+            let mut config = world.resource_mut::<EngineConfig>();
+            config.cluster_own_statics = !config.cluster_own_statics;
+        }
+    }
+}
+
 /// Changes the `Visibility` of a LOD patch in place, as an outside system would. Returns it.
 fn override_visibility(world: &mut World, pool: &Pool, rng: &mut Rng) -> Option<Entity> {
     let (_, entity) = pool.pick(world, rng)?;
@@ -1029,6 +1154,10 @@ fn override_visibility(world: &mut World, pool: &Pool, rng: &mut Rng) -> Option<
 fn mutate(world: &mut World, pool: &mut Pool, rng: &mut Rng) -> Option<Entity> {
     match rng.below(12) {
         0 => override_visibility(world, pool, rng),
+        1 if pool.cluster => {
+            mutate_cluster(world, rng);
+            None
+        }
         _ => {
             mutate_terrain(world, pool, rng);
             None
@@ -1222,6 +1351,7 @@ fn mutate_terrain(world: &mut World, pool: &mut Pool, rng: &mut Rng) {
 struct Scenario {
     journal: bool,
     disabler: Option<Disabler>,
+    cluster: bool,
 }
 
 impl Scenario {
@@ -1229,6 +1359,7 @@ impl Scenario {
         Self {
             journal,
             disabler: None,
+            cluster: false,
         }
     }
 }
@@ -1256,10 +1387,26 @@ fn still_overridden(app: &mut App, held: &mut HashSet<Entity>) {
 /// no chunk root, no parent) join the world, and every twentieth step is followed by
 /// object-only frames that must not cost a rebuild, an ancestry walk or a patch read.
 fn run_oracle(scenario: Scenario, seed: u64, steps: u32) {
-    let Scenario { journal, disabler } = scenario;
+    let Scenario {
+        journal,
+        disabler,
+        cluster,
+    } = scenario;
     let mut app = app_with(journal, disabler);
+    if cluster {
+        enable_cluster_terrain(&mut app);
+        let mut rng = Rng(seed ^ 0xc1u64);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = true;
+        app.insert_resource(random_cluster_terrain(&mut rng));
+        let ready = TerrainDrawReadiness::default();
+        ready.mark(0);
+        app.insert_resource(ready);
+    }
     let mut pool = Pool {
         entities: Vec::new(),
+        cluster,
     };
     let mut rng = Rng(seed);
     let mut held = HashSet::new();
@@ -1603,6 +1750,7 @@ fn audit_returns_descriptive_failures_for_corrupt_counts_and_selection() {
         origin: IVec2::ZERO,
         camera_grid: IVec2::ZERO,
         distances: EngineConfig::default().terrain_lod,
+        own_statics: false,
     };
     let mut index = TerrainLodIndex::default();
     index.sync_selection(selection);
@@ -1667,6 +1815,7 @@ fn audit_checks_ecs_visibility_but_allows_held_overrides() {
         origin: IVec2::ZERO,
         camera_grid: IVec2::ZERO,
         distances: EngineConfig::default().terrain_lod,
+        own_statics: false,
     };
     let mut index = TerrainLodIndex::default();
     index.sync_selection(selection);
@@ -2385,4 +2534,488 @@ fn outer_selector_gate_completes_a_journal_loss_episode_without_another_mutation
     assert!(!app.world().resource::<TerrainLodObservation>().journal_lost);
     assert_eq!(work(&app), rebuilt);
     assert_matches_full_pass(&mut app, "complete read ends lost-journal episode");
+}
+
+#[test]
+fn visibility_equals_a_full_pass_with_cluster_terrain() {
+    for journal in [true, false] {
+        for seed in [0xc0ff_ee00_dead_beef, 31, 0x1357_9bdf_2468_ace0] {
+            run_oracle(
+                Scenario {
+                    cluster: true,
+                    ..Scenario::new(journal)
+                },
+                seed,
+                250,
+            );
+        }
+    }
+}
+
+#[test]
+fn cluster_resources_removed_replaced_and_restored_change_what_is_owned() {
+    for journal in [true, false] {
+        let mut app = app(journal);
+        enable_cluster_terrain(&mut app);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = true;
+        let world = app.world_mut();
+        let grid = IVec2::new(3, 0);
+        let root = chunk_root(world, WORLD, LodTier::Tier4, grid);
+        let far = lod_patch(world, Some(root), grid, 0, Some(LodTier::Tier4));
+        // Batch 0 is drawable; batch 1 is pending elsewhere. Stock stays available to extraction.
+        let owned_cells = [grid];
+        let other_cells = [IVec2::new(9, 9)];
+        let blocks = [
+            (WORLD, &owned_cells[..], Some(0)),
+            (WORLD, &other_cells[..], Some(1)),
+        ];
+        let ready = TerrainDrawReadiness::default();
+        ready.mark(0);
+        app.insert_resource(cluster_terrain(&blocks));
+        app.insert_resource(ready);
+
+        let step = |app: &mut App, context: &str, pending: usize| {
+            app.update();
+            let context = format!("journal {journal}: {context}");
+            assert_eq!(visibility(app, far), Visibility::Inherited, "{context}");
+            assert_eq!(pending_blocks(app), pending, "{context}");
+            assert_matches_full_pass(app, &context);
+        };
+        step(&mut app, "owned by a drawable block", 1);
+
+        // Same revision, same world, same flag: only the resource itself went away.
+        app.world_mut().remove_resource::<ClusterTerrain>();
+        step(&mut app, "terrain removed", 0);
+        app.insert_resource(cluster_terrain(&blocks));
+        step(&mut app, "terrain restored", 1);
+
+        app.world_mut().remove_resource::<TerrainDrawReadiness>();
+        step(&mut app, "readiness removed", 2);
+        let ready = TerrainDrawReadiness::default();
+        ready.mark(0);
+        app.insert_resource(ready);
+        step(&mut app, "readiness restored", 1);
+
+        // A replacement that starts over reaches the same revision with a different set:
+        // batch 1 draws now and batch 0 no longer does; stock selection remains unchanged.
+        let replacement = TerrainDrawReadiness::default();
+        replacement.mark(1);
+        assert_eq!(
+            replacement.revision(),
+            app.world().resource::<TerrainDrawReadiness>().revision()
+        );
+        app.insert_resource(replacement);
+        step(&mut app, "readiness replaced at the same revision", 1);
+
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = false;
+        step(&mut app, "owned statics off", 1);
+    }
+}
+
+#[test]
+fn fallback_terrain_survives_rebuilds_and_lost_journal_messages() {
+    for journal in [true, false] {
+        let mut app = app(journal);
+        enable_cluster_terrain(&mut app);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = true;
+        let grid = IVec2::new(3, 0);
+        let root = chunk_root(app.world_mut(), WORLD, LodTier::Tier4, grid);
+        let far = lod_patch(app.world_mut(), Some(root), grid, 0, Some(LodTier::Tier4));
+        let ready = TerrainDrawReadiness::default();
+        ready.mark(0);
+        app.insert_resource(ready);
+        app.insert_resource(cluster_terrain(&[(WORLD, &[grid], Some(0))]));
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_matches_full_pass(&mut app, "owned initial snapshot");
+        let before = work(&app);
+        // Newly arriving stock stays extracted despite historical readiness.
+        // Only the render view can authorize current complementary suppression.
+        let duplicate = lod_patch(app.world_mut(), Some(root), grid, 0, Some(LodTier::Tier4));
+        if journal {
+            // Discard the unread insertion messages, forcing recovery from a snapshot.
+            app.world_mut()
+                .resource_mut::<Messages<TerrainNodeChanged>>()
+                .clear();
+        } else {
+            app.world_mut()
+                .resource_mut::<LodStreaming>()
+                .visibility_dirty = true;
+        }
+        app.update();
+        assert_eq!(work(&app)[0], before[0] + 1.0, "one recovery rebuild");
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(visibility(&app, duplicate), Visibility::Inherited);
+        assert_eq!(pending_blocks(&app), 0);
+        assert_matches_full_pass(&mut app, "owned cells after snapshot recovery");
+        let after = work(&app);
+        app.update();
+        assert_eq!(work(&app), after, "an idle frame performs no terrain work");
+        // Shared readiness changes through an immutable handle: Res::is_changed alone
+        // cannot detect this transition. Clearing it changes pending diagnostics only.
+        assert!(app.world().resource::<TerrainDrawReadiness>().clear());
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(visibility(&app, duplicate), Visibility::Inherited);
+        assert_eq!(pending_blocks(&app), 1);
+        assert_matches_full_pass(&mut app, "readiness withdrawal after recovery");
+        if journal {
+            assert_eq!(
+                &work(&app)[..3],
+                &after[..3],
+                "readiness uses cached patch facts"
+            );
+        }
+    }
+}
+
+#[test]
+fn fallback_terrain_and_pending_blocks_follow_public_world_demand() {
+    for journal in [true, false] {
+        let mut app = app(journal);
+        enable_cluster_terrain(&mut app);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = true;
+        let grid = IVec2::new(3, 0);
+        let root = chunk_root(app.world_mut(), WORLD, LodTier::Tier4, grid);
+        let far = lod_patch(app.world_mut(), Some(root), grid, 0, Some(LodTier::Tier4));
+        let other_root = chunk_root(app.world_mut(), WORLD + 1, LodTier::Tier4, grid);
+        let other = lod_patch(
+            app.world_mut(),
+            Some(other_root),
+            grid,
+            0,
+            Some(LodTier::Tier4),
+        );
+        app.insert_resource(cluster_terrain(&[
+            (WORLD, &[grid], Some(0)),
+            (WORLD, &[IVec2::new(8, 0)], None),
+            (WORLD + 1, &[grid], Some(1)),
+        ]));
+        let ready = TerrainDrawReadiness::default();
+        ready.mark(0);
+        app.insert_resource(ready);
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(visibility(&app, other), Visibility::Hidden);
+        assert_eq!(pending_blocks(&app), 1, "unassigned batch stays pending");
+        assert_matches_full_pass(&mut app, "configured world owns ready terrain only");
+        let before = work(&app);
+        app.insert_resource(ActiveSpace {
+            worldspace_id: Some(WORLD + 1),
+            interior: None,
+        });
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Hidden);
+        assert_eq!(visibility(&app, other), Visibility::Inherited);
+        assert_eq!(
+            pending_blocks(&app),
+            1,
+            "only the demanded world's block counts"
+        );
+        assert_matches_full_pass(&mut app, "unready other-world terrain retains stock");
+        app.world_mut().resource_mut::<ActiveSpace>().interior = Some(10);
+        app.update();
+        assert_eq!(visibility(&app, other), Visibility::Hidden);
+        assert_eq!(
+            pending_blocks(&app),
+            0,
+            "no exterior demand has no pending blocks"
+        );
+        assert_matches_full_pass(&mut app, "interior withdraws exterior terrain demand");
+        app.world_mut().remove_resource::<ActiveSpace>();
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(pending_blocks(&app), 1);
+        assert_matches_full_pass(&mut app, "configured owned world restored");
+        if journal {
+            assert_eq!(
+                &work(&app)[..3],
+                &before[..3],
+                "world changes reuse patch ancestry"
+            );
+        }
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = false;
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(
+            pending_blocks(&app),
+            1,
+            "pending readiness is independent of ownership flag"
+        );
+        assert_matches_full_pass(
+            &mut app,
+            "ownership off restores stock without hiding pending work",
+        );
+    }
+}
+
+#[test]
+fn disabled_cluster_terrain_preserves_ordinary_selector_behavior() {
+    for journal in [false, true] {
+        // Neither half of upper activation alone admits the terrain policy.
+        for (package, terrain) in [(false, false), (true, false), (false, true)] {
+            let mut ordinary = app(journal);
+            let mut disabled = app(journal);
+            let grid = IVec2::new(3, 0);
+            let mut patches = Vec::new();
+            for app in [&mut ordinary, &mut disabled] {
+                let root = chunk_root(app.world_mut(), WORLD, LodTier::Tier4, grid);
+                patches.push(lod_patch(
+                    app.world_mut(),
+                    Some(root),
+                    grid,
+                    0,
+                    Some(LodTier::Tier4),
+                ));
+            }
+            {
+                let mut config = disabled.world_mut().resource_mut::<EngineConfig>();
+                config.clusters = package.then(String::new);
+                config.cluster_terrain = terrain;
+                config.cluster_own_statics = true;
+            }
+            disabled.insert_resource(cluster_terrain(&[(WORLD, &[grid], Some(0))]));
+            disabled.insert_resource(TerrainDrawReadiness::default());
+            for _ in 0..4 {
+                ordinary.update();
+                disabled.update();
+            }
+            let ordinary_run = selector_last_run(&ordinary);
+            let disabled_run = selector_last_run(&disabled);
+            for step in 0..6 {
+                match step {
+                    0 => {
+                        disabled.world().resource::<TerrainDrawReadiness>().mark(0);
+                    }
+                    1 => {
+                        disabled.insert_resource(TerrainDrawReadiness::default());
+                    }
+                    2 => {
+                        disabled.world_mut().resource_mut::<ClusterTerrain>().blocks[0].batch =
+                            None;
+                    }
+                    3 => {
+                        disabled.world_mut().remove_resource::<ClusterTerrain>();
+                    }
+                    4 => {
+                        disabled
+                            .world_mut()
+                            .remove_resource::<TerrainDrawReadiness>();
+                    }
+                    _ => {
+                        disabled.insert_resource(cluster_terrain(&[(WORLD, &[grid], None)]));
+                    }
+                }
+                ordinary.update();
+                disabled.update();
+                assert_eq!(selector_last_run(&ordinary), ordinary_run);
+                assert_eq!(selector_last_run(&disabled), disabled_run);
+                assert_eq!(
+                    visibility(&ordinary, patches[0]),
+                    visibility(&disabled, patches[1])
+                );
+                assert_eq!(work(&ordinary), work(&disabled));
+                assert_eq!(
+                    ordinary
+                        .world()
+                        .resource::<LodStreaming>()
+                        .visibility_revision,
+                    disabled
+                        .world()
+                        .resource::<LodStreaming>()
+                        .visibility_revision
+                );
+                assert_eq!(pending_blocks(&disabled), 0);
+                assert_eq!(
+                    ordinary
+                        .world()
+                        .resource::<StreamingMetrics>()
+                        .visible_lod_terrain_patches,
+                    disabled
+                        .world()
+                        .resource::<StreamingMetrics>()
+                        .visible_lod_terrain_patches
+                );
+                assert_eq!(
+                    ordinary
+                        .world()
+                        .resource::<ProfilingState>()
+                        .gauge("lod/pending_terrain_selection_uploads"),
+                    disabled
+                        .world()
+                        .resource::<ProfilingState>()
+                        .gauge("lod/pending_terrain_selection_uploads")
+                );
+            }
+            // Native selection dependencies still work with the inactive upper resources present.
+            move_camera(ordinary.world_mut(), 30);
+            move_camera(disabled.world_mut(), 30);
+            ordinary.update();
+            disabled.update();
+            assert_eq!(
+                visibility(&ordinary, patches[0]),
+                visibility(&disabled, patches[1])
+            );
+            assert_eq!(work(&ordinary), work(&disabled));
+            assert_matches_full_pass(&mut ordinary, "ordinary control camera move");
+            assert_matches_full_pass(&mut disabled, "disabled upper camera move");
+        }
+    }
+}
+
+#[test]
+fn cluster_inputs_wake_the_outer_selector_and_settle_again() {
+    for journal in [false, true] {
+        let mut app = app(journal);
+        let grid = IVec2::new(3, 0);
+        let root = chunk_root(app.world_mut(), WORLD, LodTier::Tier4, grid);
+        let far = lod_patch(app.world_mut(), Some(root), grid, 0, Some(LodTier::Tier4));
+        app.insert_resource(cluster_terrain(&[(WORLD, &[grid], Some(0))]));
+        app.insert_resource(TerrainDrawReadiness::default());
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_eq!(pending_blocks(&app), 0);
+        let disabled_run = selector_last_run(&app);
+        enable_cluster_terrain(&mut app);
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            disabled_run,
+            "config-only activation wakes the outer gate"
+        );
+        assert_eq!(pending_blocks(&app), 1);
+        app.update();
+        let ready = app.world().resource::<TerrainDrawReadiness>().clone();
+        let mut last_run = selector_last_run(&app);
+        let before = work(&app);
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(selector_last_run(&app), last_run);
+            assert_eq!(work(&app), before);
+        }
+        assert!(ready.mark(0));
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            last_run,
+            "immutable shared readiness revision wakes the gate"
+        );
+        assert_eq!(pending_blocks(&app), 0);
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        if journal {
+            assert_eq!(&work(&app)[..3], &before[..3]);
+        }
+        last_run = selector_last_run(&app);
+        app.update();
+        assert_eq!(selector_last_run(&app), last_run);
+        let replacement = TerrainDrawReadiness::default();
+        replacement.mark(1);
+        assert_eq!(replacement.revision(), ready.revision());
+        app.insert_resource(replacement);
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            last_run,
+            "same-revision resource replacement wakes the gate"
+        );
+        assert_eq!(pending_blocks(&app), 1);
+        // The policy is independent of static ownership; toggling that flag still refreshes.
+        *app.world_mut().get_mut::<Visibility>(far).unwrap() = Visibility::Hidden;
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_own_statics = true;
+        app.update();
+        assert_eq!(visibility(&app, far), Visibility::Inherited);
+        assert_eq!(pending_blocks(&app), 1);
+        last_run = selector_last_run(&app);
+        app.world_mut().resource_mut::<ClusterTerrain>().blocks[0].batch = Some(1);
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            last_run,
+            "in-place terrain edits wake the gate"
+        );
+        assert_eq!(pending_blocks(&app), 0);
+        last_run = selector_last_run(&app);
+        app.world_mut().remove_resource::<TerrainDrawReadiness>();
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            last_run,
+            "optional resource removal wakes the gate"
+        );
+        assert_eq!(pending_blocks(&app), 1);
+        last_run = selector_last_run(&app);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .cluster_terrain = false;
+        app.update();
+        assert_ne!(
+            selector_last_run(&app),
+            last_run,
+            "disabling policy clears the pending count"
+        );
+        assert_eq!(pending_blocks(&app), 0);
+        app.update();
+        last_run = selector_last_run(&app);
+        app.insert_resource(TerrainDrawReadiness::default());
+        app.update();
+        assert_eq!(
+            selector_last_run(&app),
+            last_run,
+            "disabled policy ignores resource writes"
+        );
+        assert_matches_full_pass(&mut app, "cluster gate lifecycle");
+    }
+}
+
+#[test]
+fn cluster_resource_refreshes_repair_only_the_overridden_key() {
+    for journal in [false, true] {
+        for refresh in 0..3 {
+            let (mut app, target, _) = override_scene(journal);
+            enable_cluster_terrain(&mut app);
+            app.insert_resource(cluster_terrain(&[(WORLD, &[], None)]));
+            app.insert_resource(TerrainDrawReadiness::default());
+            for _ in 0..4 {
+                app.update();
+            }
+            *app.world_mut().get_mut::<Visibility>(target).unwrap() = Visibility::Hidden;
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_eq!(visibility(&app, target), Visibility::Hidden);
+            let before = work(&app);
+            match refresh {
+                0 => {
+                    app.world().resource::<TerrainDrawReadiness>().mark(5);
+                }
+                1 => {
+                    app.insert_resource(TerrainDrawReadiness::default());
+                }
+                _ => {
+                    app.world_mut()
+                        .resource_mut::<ClusterTerrain>()
+                        .set_changed();
+                }
+            }
+            app.update();
+            assert_eq!(visibility(&app, target), Visibility::Inherited);
+            assert_matches_full_pass(&mut app, "cluster resource override repair");
+            if journal {
+                assert_eq!(work(&app)[3] - before[3], 1.0);
+            }
+        }
+    }
 }

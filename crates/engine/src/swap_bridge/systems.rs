@@ -1,7 +1,7 @@
 //! The systems of the destination readiness protocol ([`super::destination`]): the render world
 //! evaluates every pending request after its queue step, the next extract copies the result into the
-//! main world, and a main-world system combines it with residency and assets into a
-//! [`DestinationReport`].
+//! main world, and a main-world system combines it with residency, assets and the replacement
+//! owner's handoff into a [`DestinationReport`].
 //!
 //! Frame order, on the render clock ([`RenderFrame`]): extract N increments the clock, copies the
 //! pending requests into the render world and copies the evaluation of frame N-1 back; the render
@@ -18,8 +18,9 @@ use super::{
     assets::LandingAssets,
     destination::{
         DestinationFacts, DestinationKey, DestinationReport, DestinationReports,
-        DestinationRequest, DestinationRequests, Generation, Generations, PassFamily, RenderFrame,
-        RenderInvalidations, RenderProof, RequestId, Residency, destination_state,
+        DestinationRequest, DestinationRequests, DestinationState, Generation, Generations,
+        HandoffReports, PassFamily, RenderFrame, RenderInvalidations, RenderProof, RequestId,
+        Residency, destination_state, handoff_for_frame,
     },
 };
 use crate::streaming::{PendingUnder, StreamingWorld};
@@ -119,15 +120,24 @@ pub struct EvaluatedProof {
     /// The world's generation the render world recorded when it extracted the request.
     pub extracted_generation: Generation,
     pub proof: RenderProof,
+    /// The replacement owner's state for this key **in this frame** (fact 5), if it published one.
+    pub handoff: Option<DestinationState>,
 }
 
 /// Main-world consumers run after this set to read the newly combined render report.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DestinationReportsUpdated;
 
-/// Render evaluation runs after material preparation and before the passes draw.
+/// The ordering seam of the render-world frame. The replacement owner adds its handoff publication
+/// to [`DestinationSystems::PublishHandoff`] after the queue and planning steps it depends on;
+/// publication runs after material preparation. The bridge's evaluation is in
+/// [`DestinationSystems::Evaluate`], which runs after it and after `RenderSystems::PrepareBindGroups`
+/// (before the passes draw), so it reads this frame's final material bind groups. Nothing here names
+/// the owner's code.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DestinationSystems {
+    /// Handoff publication for the current render frame.
+    PublishHandoff,
     /// Evaluation of the pending requests for the current render frame.
     Evaluate,
 }
@@ -162,6 +172,14 @@ pub(crate) struct ExtractedRequests {
     list: Vec<ExtractedRequest>,
 }
 
+impl ExtractedRequests {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&DestinationRequest, Generation)> {
+        self.list
+            .iter()
+            .map(|pending| (&pending.request, pending.extracted_generation))
+    }
+}
+
 /// Render world: the newest evaluation of each pending request.
 #[derive(Resource, Default)]
 pub(crate) struct Evaluations {
@@ -169,7 +187,8 @@ pub(crate) struct Evaluations {
 }
 
 /// Increments the render clock, copies the pending requests into the render world and the previous
-/// evaluation and invalidation records of the requested keys back into the main world.
+/// evaluation (with the handoff and invalidation records of the requested keys) back into the main
+/// world.
 pub(crate) fn extract_destination_protocol(
     mut main_world: ResMut<MainWorld>,
     mut frame: ResMut<RenderFrame>,
@@ -541,6 +560,7 @@ fn evaluate_destinations(
     prepass: Option<Res<SpecializedPrepassMaterialPipelineCache>>,
     shadow: Option<Res<SpecializedShadowMaterialPipelineCache>>,
     pipelines: Res<PipelineCache>,
+    handoffs: Res<HandoffReports>,
     views: Query<(
         &ExtractedView,
         &RenderVisibleEntities,
@@ -670,12 +690,13 @@ fn evaluate_destinations(
                 frame: *frame,
                 extracted_generation: pending.extracted_generation,
                 proof: proof.finish(),
+                handoff: handoff_for_frame(&handoffs, &request.key, *frame),
             },
         );
     }
 }
 
-/// Combines what the render world proved with residency and assets into one report per
+/// Combines what the render world proved with residency, assets and the handoff into one report per
 /// pending request. Runs only while a request is pending, so an idle run pays nothing.
 #[allow(clippy::too_many_arguments)]
 fn update_destination_reports(
@@ -683,12 +704,13 @@ fn update_destination_reports(
     generations: Res<Generations>,
     results: Res<RenderResults>,
     streaming: Option<Res<StreamingWorld>>,
+    far: Option<Res<crate::streaming::far_stock::FarStock>>,
     pending_under: PendingUnder,
     assets: LandingAssets,
     mut reports: ResMut<DestinationReports>,
 ) {
     for (id, request) in requests.iter() {
-        let (residency, assets_pending) =
+        let (mut residency, mut assets_pending) =
             streaming
                 .as_deref()
                 .map_or((Residency::Pending, 0), |streaming| {
@@ -702,6 +724,13 @@ fn update_destination_reports(
                         match streaming.resident_root(*cell) {
                             Some(root) => {
                                 let inspected = assets.inspect_under(root);
+                                if request.handoff == super::destination::Handoff::Required
+                                    && (pending_under.failed(root) > 0
+                                        || !inspected.failed.is_empty())
+                                {
+                                    residency = Residency::AssetsFailed(*cell);
+                                    break;
+                                }
                                 assets_pending += pending_under.count(root) + inspected.waiting;
                             }
                             None => residency = Residency::Pending,
@@ -709,6 +738,31 @@ fn update_destination_reports(
                     }
                     (residency, assets_pending)
                 });
+        // Only this request's exact placed-world cells matter here. Global far-horizon work
+        // belongs to whole-view settling, and a sparse source holder never proves geometry or
+        // a pass drawable. Keep the render-world proof below unchanged.
+        if let Some(far) = far.as_deref() {
+            for &cell in request.coverage.iter() {
+                let state = far.cell_state(cell);
+                assets_pending += state.pending;
+                if request.handoff == super::destination::Handoff::Required
+                    && state.failed
+                    && !matches!(residency, Residency::Failed(_) | Residency::AssetsFailed(_))
+                {
+                    residency = Residency::AssetsFailed(cell);
+                }
+                if let Some(root) = state.holder {
+                    let inspected = assets.inspect_under(root);
+                    assets_pending += pending_under.count(root) + inspected.waiting;
+                    if request.handoff == super::destination::Handoff::Required
+                        && (pending_under.failed(root) > 0 || !inspected.failed.is_empty())
+                        && !matches!(residency, Residency::Failed(_) | Residency::AssetsFailed(_))
+                    {
+                        residency = Residency::AssetsFailed(cell);
+                    }
+                }
+            }
+        }
         let evaluated = results
             .proofs
             .get(&id)
@@ -720,6 +774,7 @@ fn update_destination_reports(
         };
         let facts = DestinationFacts {
             key: request.key,
+            handoff: request.handoff,
             current_generation: generations.current(request.key.world),
             extracted_generation: evaluated
                 .map_or(request.key.generation, |proof| proof.extracted_generation),
@@ -728,6 +783,7 @@ fn update_destination_reports(
             residency,
             assets_pending,
             render,
+            handoff_report: evaluated.and_then(|proof| proof.handoff.clone()),
         };
         reports.set(DestinationReport {
             key: request.key,
@@ -764,12 +820,19 @@ impl Plugin for DestinationReadinessPlugin {
                 .init_resource::<ExtractedRequests>()
                 .init_resource::<Evaluations>()
                 .init_resource::<RenderInvalidations>()
+                .init_resource::<HandoffReports>()
                 .configure_sets(
                     Render,
-                    // A slab that gained a material has no bind group until preparation.
-                    DestinationSystems::Evaluate
-                        .after(RenderSystems::PrepareBindGroups)
-                        .before(RenderSystems::Render),
+                    (
+                        DestinationSystems::PublishHandoff.after(RenderSystems::PrepareBindGroups),
+                        // After the material bind groups were rebuilt this frame: a slab that
+                        // gained a material has no bind group until `PrepareBindGroups`, so an
+                        // earlier evaluation would call a drawable material missing.
+                        DestinationSystems::Evaluate
+                            .after(RenderSystems::PrepareBindGroups)
+                            .before(RenderSystems::Render),
+                    )
+                        .chain(),
                 )
                 .add_systems(ExtractSchedule, extract_destination_protocol)
                 .add_systems(
@@ -784,7 +847,7 @@ impl Plugin for DestinationReadinessPlugin {
 mod tests {
     use super::*;
     use crate::swap_bridge::destination::{
-        DestinationState, InvalidationCause, Missing, PassFamilies, ViewKey, WorldId,
+        Failure, Handoff, InvalidationCause, Missing, PassFamilies, ViewKey, WorldId,
     };
 
     fn drawn(passes: [Option<bool>; 5]) -> EntityFacts {
@@ -1077,7 +1140,9 @@ mod tests {
     fn a_headless_app_reports_ready_once_residency_and_assets_hold() {
         use crate::{
             streaming::StreamingWorld,
-            swap_bridge::destination::{DestinationRequest, InvalidationCause, ViewKey, WorldId},
+            swap_bridge::destination::{
+                DestinationRequest, Handoff, InvalidationCause, ViewKey, WorldId,
+            },
             world::database::CellKey,
         };
         use bevy::render::view::RetainedViewEntity;
@@ -1106,6 +1171,7 @@ mod tests {
                 key,
                 passes: PassFamilies::NONE.with(PassFamily::Forward),
                 coverage: Arc::from(vec![cell]),
+                handoff: Handoff::NotRequired,
             });
         app.update();
         let generations = app.world().resource::<Generations>();
@@ -1136,8 +1202,69 @@ mod tests {
         assert!(!reports.is_ready(&key, generations));
     }
 
+    /// A resident cell whose only trace of a failed model is a hidden child with `AssetFailed`:
+    /// nothing is pending and no visible mesh is missing, yet the destination is not ready.
+    #[test]
+    fn a_resident_cell_with_a_hidden_failed_asset_reports_failed_not_ready() {
+        use crate::{
+            streaming::{AssetFailed, StreamingWorld},
+            swap_bridge::destination::{
+                DestinationRequest, Failure, Handoff, InvalidationCause, ViewKey, WorldId,
+            },
+            world::database::CellKey,
+        };
+        use bevy::render::view::RetainedViewEntity;
+        use std::sync::Arc;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+        app.init_resource::<StreamingWorld>()
+            .add_plugins(DestinationReadinessPlugin);
+        let cell = CellKey::Interior(9);
+        let world = WorldId(1);
+        let generation = app
+            .world_mut()
+            .resource_mut::<Generations>()
+            .bump(world, InvalidationCause::Composition);
+        let key = DestinationKey {
+            view: ViewKey {
+                view: RetainedViewEntity::new(Entity::from_raw_u32(1).unwrap().into(), None, 0),
+                incarnation: 0,
+            },
+            world,
+            generation,
+        };
+        app.world_mut()
+            .resource_mut::<DestinationRequests>()
+            .request(DestinationRequest {
+                key,
+                passes: PassFamilies::NONE.with(PassFamily::Forward),
+                coverage: Arc::from(vec![cell]),
+                handoff: Handoff::Required,
+            });
+        let root = app.world_mut().spawn_empty().id();
+        let model = app.world_mut().spawn(ChildOf(root)).id();
+        app.world_mut()
+            .spawn((Visibility::Hidden, AssetFailed, ChildOf(model)));
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(cell, root);
+        app.update();
+        let generations = app.world().resource::<Generations>();
+        let reports = app.world().resource::<DestinationReports>();
+        assert!(
+            !reports.is_ready(&key, generations),
+            "{}",
+            reports.describe(&key)
+        );
+        assert_eq!(
+            reports.get(&key).map(|report| report.state.clone()),
+            Some(DestinationState::Failed(Failure::AssetFailed(cell)))
+        );
+    }
+
     fn report_app(
         coverage: Vec<crate::world::database::CellKey>,
+        handoff: Handoff,
     ) -> (App, RequestId, DestinationKey) {
         let mut app = App::new();
         app.add_plugins((
@@ -1167,6 +1294,7 @@ mod tests {
                 key,
                 passes: PassFamilies::NONE.with(PassFamily::Forward),
                 coverage: coverage.into(),
+                handoff,
             });
         (app, id, key)
     }
@@ -1175,7 +1303,7 @@ mod tests {
     fn production_reports_need_the_exact_view_generation_and_render_proof() {
         use crate::world::database::CellKey;
         let cell = CellKey::Interior(9);
-        let (mut app, id, key) = report_app(vec![cell]);
+        let (mut app, id, key) = report_app(vec![cell], Handoff::NotRequired);
         let root = app.world_mut().spawn_empty().id();
         app.world_mut()
             .resource_mut::<StreamingWorld>()
@@ -1199,6 +1327,7 @@ mod tests {
                 checked: 1,
                 ..default()
             },
+            handoff: None,
         };
         app.world_mut()
             .resource_mut::<RenderResults>()
@@ -1270,8 +1399,39 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_coverage_cell_wins_over_pending_cells_in_either_order() {
+        use crate::world::database::CellKey;
+        let failed = CellKey::Interior(9);
+        let pending = CellKey::Interior(10);
+        for coverage in [vec![failed, pending], vec![pending, failed]] {
+            let (mut app, _, key) = report_app(coverage, Handoff::Required);
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut().spawn((
+                Visibility::Hidden,
+                crate::streaming::AssetFailed,
+                ChildOf(root),
+            ));
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(failed, root);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<DestinationReports>()
+                    .get(&key)
+                    .unwrap()
+                    .state,
+                DestinationState::Failed(Failure::AssetFailed(failed))
+            );
+        }
+    }
+
+    #[test]
     fn a_missing_streaming_provider_is_pending_not_resident() {
-        let (mut app, _, key) = report_app(vec![crate::world::database::CellKey::Interior(9)]);
+        let (mut app, _, key) = report_app(
+            vec![crate::world::database::CellKey::Interior(9)],
+            Handoff::NotRequired,
+        );
         app.world_mut().remove_resource::<StreamingWorld>();
         app.update();
         assert_eq!(
@@ -1281,6 +1441,28 @@ mod tests {
                 .unwrap()
                 .state,
             DestinationState::Waiting(Missing::Residency)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_resident_cell_with_a_hidden_failed_asset_remains_ready() {
+        use crate::world::database::CellKey;
+        let cell = CellKey::Interior(9);
+        let (mut app, _, key) = report_app(vec![cell], Handoff::NotRequired);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            Visibility::Hidden,
+            crate::streaming::AssetFailed,
+            ChildOf(root),
+        ));
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(cell, root);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<DestinationReports>()
+                .is_ready(&key, app.world().resource::<Generations>())
         );
     }
 
@@ -1787,5 +1969,42 @@ mod tests {
             .unwrap()
             .remove(entity);
         assert!(!read(&mut state, &world).pipeline_ok);
+    }
+
+    #[test]
+    fn hidden_failed_flat_primitive_is_terminal_only_for_required_destination_policy() {
+        use crate::cluster::flat_source::FlatSourceOwner;
+        use crate::{streaming::AssetFailed, world::database::CellKey};
+        for handoff in [Handoff::NotRequired, Handoff::Required] {
+            let cell = CellKey::Interior(9);
+            let (mut app, _id, key) = report_app(vec![cell], handoff);
+            let root = app.world_mut().spawn_empty().id();
+            let model = app.world_mut().spawn(ChildOf(root)).id();
+            let primitive = app
+                .world_mut()
+                .spawn((Visibility::Hidden, AssetFailed, FlatSourceOwner(model)))
+                .id();
+            assert!(app.world().get::<ChildOf>(primitive).is_none());
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(cell, root);
+            app.update();
+            let reports = app.world().resource::<DestinationReports>();
+            let state = reports.get(&key).map(|report| report.state.clone());
+            if handoff == Handoff::Required {
+                assert_eq!(
+                    state,
+                    Some(DestinationState::Failed(Failure::AssetFailed(cell)))
+                );
+            } else {
+                assert!(
+                    !matches!(
+                        state,
+                        Some(DestinationState::Failed(Failure::AssetFailed(_)))
+                    ),
+                    "ordinary hidden failures keep lower policy even through flat ownership"
+                );
+            }
+        }
     }
 }

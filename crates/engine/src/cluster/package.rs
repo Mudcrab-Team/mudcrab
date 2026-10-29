@@ -168,8 +168,8 @@ pub(super) fn refuse_package(world: &mut World, reason: String) {
         return;
     }
     error!(%reason, "cluster package failed; stopping before world readiness");
-    world.insert_resource(PackageValidationStatus::Failed(reason));
-    let _ = world.write_message(AppExit::error());
+    world.insert_resource(PackageValidationStatus::Failed(reason.clone()));
+    crate::streaming::failure::refuse_loading(world, reason);
 }
 
 fn poll_tangent_workers(pending: Option<ResMut<PendingTangents>>, mut commands: Commands) {
@@ -361,7 +361,6 @@ fn poll_package_validation(
     pending: Option<ResMut<PendingPackageValidation>>,
     prefetched: Option<ResMut<PendingModelPrefetch>>,
     assets: Option<Res<AssetServer>>,
-    mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut pending) = pending else {
         return;
@@ -400,8 +399,10 @@ fn poll_package_validation(
             // is not a successful stock-only cluster run. Match the dataset policy
             // for a declared extension that its reader cannot safely consume.
             error!(%reason, "requested cluster package failed authoritative validation");
-            commands.insert_resource(PackageValidationStatus::Failed(reason));
-            exit.write(AppExit::error());
+            commands.insert_resource(PackageValidationStatus::Failed(reason.clone()));
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
         }
     }
 }
@@ -409,6 +410,7 @@ fn poll_package_validation(
 impl Plugin for ClusterPackagePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(super::source_identity::SourceIdentityPlugin);
+        app.add_plugins(crate::streaming::far_stock::FarStockPlugin);
         if self.terrain {
             app.add_plugins(super::terrain::ClusterTerrainPlugin);
         }
@@ -433,6 +435,10 @@ impl Plugin for ClusterPackagePlugin {
                     load_batches_in_view
                         .after(load_cluster_package)
                         .run_if(resource_exists::<LazyBatches>),
+                    super::ownership::demand_owned_batches
+                        .after(load_cluster_package)
+                        .before(load_batches_in_view)
+                        .run_if(super::ownership::batch_demand_pending),
                     // After the loader, which sets the pending count this adds to.
                     count_blocks_not_resident.after(load_batches_in_view),
                 ),
@@ -655,7 +661,7 @@ type PackageLoadGate<'w, 's> = (
 );
 
 fn stop_unusable_overlay(
-    exit: &mut MessageWriter<AppExit>,
+    commands: &mut Commands,
     package: &CertifiedPackage,
     reason: impl std::fmt::Display,
 ) {
@@ -665,7 +671,13 @@ fn stop_unusable_overlay(
         rebuild = %envelope.metadata.rebuild_hint(&envelope.root),
         "requested cluster overlay payload is unusable; stopping before publishing the scene"
     );
-    exit.write(AppExit::error());
+    let reason = format!(
+        "requested cluster overlay payload is unusable: {reason}; {}",
+        envelope.metadata.rebuild_hint(&envelope.root)
+    );
+    commands.queue(move |world: &mut World| {
+        crate::streaming::failure::refuse_loading(world, reason);
+    });
 }
 
 fn load_cluster_package(
@@ -674,7 +686,6 @@ fn load_cluster_package(
     mut handles: ResMut<ClusterBatchHandles>,
     mut images: ResMut<Assets<Image>>,
     mut terrain_materials: Option<ResMut<Assets<super::terrain::ClusterTerrainMaterial>>>,
-    mut exit: MessageWriter<AppExit>,
 ) {
     let (source, validated, mut loaded, mut prefetched) = gate;
     if *loaded {
@@ -699,7 +710,10 @@ fn load_cluster_package(
         // base (changed after certification) stops the run, it never draws without them.
         Err(error) => {
             error!("requested cluster overlay unreadable: {error:#}");
-            exit.write(AppExit::error());
+            let reason = format!("requested cluster overlay unreadable: {error:#}");
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         }
     };
@@ -707,7 +721,10 @@ fn load_cluster_package(
         Ok(rows) => rows,
         Err(error) => {
             error!("requested cluster overlay unreadable: {error}");
-            exit.write(AppExit::error());
+            let reason = format!("requested cluster overlay unreadable: {error}");
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         }
     };
@@ -715,14 +732,20 @@ fn load_cluster_package(
         Ok(paths) => paths,
         Err(error) => {
             error!("requested cluster overlay chunks unreadable: {error}");
-            exit.write(AppExit::error());
+            let reason = format!("requested cluster overlay chunks unreadable: {error}");
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         }
     };
     let mut terrain = if source.terrain {
         let Some(materials) = terrain_materials.as_deref_mut() else {
             error!("cluster terrain material plugin is missing");
-            exit.write(AppExit::error());
+            let reason = "cluster terrain material plugin is missing".to_owned();
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         };
         match super::terrain::ClusterTerrain::load_certified(
@@ -733,7 +756,10 @@ fn load_cluster_package(
             Ok(terrain) => Some(terrain),
             Err(error) => {
                 error!("cluster terrain package refused: {error}");
-                exit.write(AppExit::error());
+                let reason = format!("cluster terrain package refused: {error}");
+                commands.queue(move |world: &mut World| {
+                    crate::streaming::failure::refuse_loading(world, reason);
+                });
                 return;
             }
         }
@@ -779,7 +805,7 @@ fn load_cluster_package(
             Ok(payload) => payload,
             Err(error) => {
                 stop_unusable_overlay(
-                    &mut exit,
+                    &mut commands,
                     &validated.0,
                     format_args!("cluster block {chunk} unreadable: {error}"),
                 );
@@ -790,7 +816,7 @@ fn load_cluster_package(
             Ok(block) => block,
             Err(error) => {
                 stop_unusable_overlay(
-                    &mut exit,
+                    &mut commands,
                     &validated.0,
                     format_args!("cluster block {chunk} invalid: {error}"),
                 );
@@ -799,7 +825,7 @@ fn load_cluster_package(
         };
         if hex(&block.builder_identity) != identity {
             stop_unusable_overlay(
-                &mut exit,
+                &mut commands,
                 &validated.0,
                 format_args!(
                     "cluster block {chunk} has another builder identity; expected {identity}"
@@ -815,7 +841,7 @@ fn load_cluster_package(
             let key = (hex(&reference.mesh_hash), reference.primitive_index);
             let Some(row) = rows.get(&key) else {
                 stop_unusable_overlay(
-                    &mut exit,
+                    &mut commands,
                     &validated.0,
                     format_args!(
                         "cluster block {chunk} references missing mesh {} primitive {}",
@@ -854,7 +880,7 @@ fn load_cluster_package(
                         }
                         Err(error) => {
                             stop_unusable_overlay(
-                                &mut exit,
+                                &mut commands,
                                 &validated.0,
                                 format_args!("cluster mesh {} unusable: {error}", row.payload_path),
                             );
@@ -885,7 +911,7 @@ fn load_cluster_package(
             };
             let Some((mesh, row)) = block_meshes.get(record.mesh as usize) else {
                 stop_unusable_overlay(
-                    &mut exit,
+                    &mut commands,
                     &validated.0,
                     format_args!(
                         "cluster block {chunk} record {original_ordinal} references missing mesh index {}",
@@ -907,7 +933,10 @@ fn load_cluster_package(
                 Ok(key) => key,
                 Err(reason) => {
                     error!(%reason, "cluster terrain material identity refused");
-                    exit.write(AppExit::error());
+                    let reason = format!("cluster terrain material identity refused: {reason}");
+                    commands.queue(move |world: &mut World| {
+                        crate::streaming::failure::refuse_loading(world, reason);
+                    });
                     return;
                 }
             };
@@ -924,14 +953,20 @@ fn load_cluster_package(
             if let ChunkDomain::Terrain(index) = chunk_source.domain {
                 let Some(terrain) = terrain.as_mut() else {
                     error!("terrain instance has no terrain metadata");
-                    exit.write(AppExit::error());
+                    let reason = "terrain instance has no terrain metadata".to_owned();
+                    commands.queue(move |world: &mut World| {
+                        crate::streaming::failure::refuse_loading(world, reason);
+                    });
                     return;
                 };
                 if let Err(reason) =
                     bind_terrain_batch(&mut terrain.blocks, index, batch, &mut handles)
                 {
                     error!(%reason, "cluster terrain material binding refused");
-                    exit.write(AppExit::error());
+                    let reason = format!("cluster terrain material binding refused: {reason}");
+                    commands.queue(move |world: &mut World| {
+                        crate::streaming::failure::refuse_loading(world, reason);
+                    });
                     return;
                 }
             }
@@ -986,7 +1021,7 @@ fn load_cluster_package(
                 match native_materials(&base_root.join(&key.model_path)) {
                     Ok(native) => entry.insert(native),
                     Err(error) => {
-                        stop_unusable_overlay(&mut exit, &validated.0, error);
+                        stop_unusable_overlay(&mut commands, &validated.0, error);
                         return;
                     }
                 }
@@ -994,7 +1029,7 @@ fn load_cluster_package(
         };
         if native.get(slot as usize).is_none() {
             stop_unusable_overlay(
-                &mut exit,
+                &mut commands,
                 &validated.0,
                 format_args!(
                     "model {} has no certified material slot {slot}",
@@ -1045,6 +1080,7 @@ fn load_cluster_package(
             .collect(),
         in_flight: Vec::new(),
         failed: Vec::new(),
+        demanded: default(),
 
         scenes_revision: 0,
         failed_revision: 0,
@@ -1066,7 +1102,10 @@ fn load_cluster_package(
     if let Some(terrain) = terrain {
         if terrain.blocks.iter().any(|block| block.batch.is_none()) {
             error!("cluster terrain has a block with no valid drawable payload");
-            exit.write(AppExit::error());
+            let reason = "cluster terrain has a block with no valid drawable payload".to_owned();
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         }
         commands.insert_resource(TerrainBatchIds(
@@ -1123,7 +1162,10 @@ fn load_cluster_package(
         Ok(inventory) => Arc::new(inventory),
         Err(reason) => {
             error!(%reason, "cluster instance inventory could not be certified");
-            exit.write(AppExit::error());
+            let reason = format!("cluster instance inventory could not be certified: {reason}");
+            commands.queue(move |world: &mut World| {
+                crate::streaming::failure::refuse_loading(world, reason);
+            });
             return;
         }
     };
@@ -1172,7 +1214,7 @@ fn load_cluster_package(
             Ok(worker) => workers.0.push(worker),
             Err(error) => {
                 stop_unusable_overlay(
-                    &mut exit,
+                    &mut commands,
                     &validated.0,
                     format_args!("cannot start cluster tangent worker: {error}"),
                 );
@@ -1181,7 +1223,7 @@ fn load_cluster_package(
         }
     }
     if let Err(error) = validated.0.envelope().release_consumed_payload_bytes() {
-        stop_unusable_overlay(&mut exit, &validated.0, error);
+        stop_unusable_overlay(&mut commands, &validated.0, error);
         return;
     }
     commands.insert_resource(workers);
@@ -1446,12 +1488,25 @@ pub(super) struct LazyBatches {
     in_flight: Vec<usize>,
     /// Terminal source/material failures remain explicit, separate from pending work.
     failed: Vec<usize>,
+    /// Unrequested batches required by held references independently of current views.
+    demanded: std::collections::BTreeSet<usize>,
     /// Bumped whenever `scenes` gains or loses a model, so a reader of `source_scene` can tell
     /// an unchanged map without looking every batch up (the loader touches this resource every
     /// frame, so its change tick says nothing).
     scenes_revision: u64,
     /// Bumped whenever a batch joins `failed`, for the same reason.
     failed_revision: u64,
+}
+
+/// What [`LazyBatches::demand`] found for one batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BatchDemand {
+    /// The batch was neither requested nor demanded; the loader now requests it.
+    Queued,
+    /// Already requested (loading or loaded) or already demanded.
+    Underway,
+    /// Its source or material failed terminally; demanding it again changes nothing.
+    Failed,
 }
 
 fn next_layout_scope() -> u64 {
@@ -1488,10 +1543,30 @@ impl LazyBatches {
             unrequested: Vec::new(),
             in_flight: vec![0],
             failed: Vec::new(),
+            demanded: default(),
 
             scenes_revision: 0,
             failed_revision: 0,
         }
+    }
+
+    /// Wants `batch` loaded whether or not any view sees it. Requests made this way take their
+    /// turn after the batches in view, under the same file-load limit, and hold readiness like
+    /// them. `None` for an index outside the package.
+    pub(super) fn demand(&mut self, batch: u32) -> Option<BatchDemand> {
+        let index = batch as usize;
+        let entry = self.batches.get(index)?;
+        if self.failed.contains(&index) {
+            return Some(BatchDemand::Failed);
+        }
+        if entry.requested || self.unrequested.binary_search(&index).is_err() {
+            return Some(BatchDemand::Underway);
+        }
+        Some(if self.demanded.insert(index) {
+            BatchDemand::Queued
+        } else {
+            BatchDemand::Underway
+        })
     }
 
     fn prefetch_only_in_flight(&self) -> usize {
@@ -1620,7 +1695,7 @@ fn load_batches_in_view(
     #[cfg(test)] mut scan_work: Option<ResMut<LazyScanWork>>,
     mut standard_materials: ResMut<Assets<StandardMaterial>>,
     mut metrics: Option<ResMut<crate::streaming::StreamingMetrics>>,
-    mut exit: MessageWriter<AppExit>,
+    mut commands: Commands,
     time: Res<Time>,
     origin: Option<Res<RenderOrigin>>,
     config: Res<EngineConfig>,
@@ -1660,6 +1735,7 @@ fn load_batches_in_view(
         })
         .eq(scan.cameras.iter().copied());
     if scan.valid
+        && lazy.demanded.is_empty()
         && scan.layout_scope == lazy.layout_scope
         && scan.failed_revision == lazy.failed_revision
         && scan.offset == offset
@@ -1749,7 +1825,12 @@ fn load_batches_in_view(
                     error!(%reason, "cluster material metadata unavailable; stopping before readiness");
                     lazy.failed.push(index);
                     lazy.failed_revision += 1;
-                    exit.write(AppExit::error());
+                    commands.queue(move |world: &mut World| {
+                        crate::streaming::failure::refuse_loading(
+                            world,
+                            format!("cluster material metadata unavailable: {reason}"),
+                        );
+                    });
                     continue;
                 }
                 loading += 1;
@@ -1839,6 +1920,7 @@ fn load_batches_in_view(
     // all of them, and nothing the views or a crossing's destination proof depend on changes
     // under them during play. The scan cache must not stop the requests while any are left.
     let unchanged = !(preload && !lazy.unrequested.is_empty())
+        && lazy.demanded.is_empty()
         && scan.valid
         && scan.layout_scope == lazy.layout_scope
         && scan.failed_revision == lazy.failed_revision
@@ -1873,7 +1955,7 @@ fn load_batches_in_view(
         }
         if nearest.is_finite() {
             candidates.push((nearest, index));
-        } else if preload {
+        } else if preload || lazy.demanded.contains(&index) {
             // After every batch in view, in index order (the sort is stable).
             candidates.push((f32::MAX, index));
         }
@@ -1959,6 +2041,9 @@ fn load_batches_in_view(
     }
     scan.waiting = wanted - taken.len();
     if !taken.is_empty() {
+        for index in &taken {
+            lazy.demanded.remove(index);
+        }
         lazy.unrequested.retain(|index| !taken.contains(index));
         lazy.in_flight.extend(taken);
     }
@@ -3350,6 +3435,7 @@ impl LazyBatches {
             unrequested: (0..count).collect(),
             in_flight: Vec::new(),
             failed: Vec::new(),
+            demanded: default(),
             scenes_revision: 0,
             failed_revision: 0,
         }
@@ -3680,4 +3766,144 @@ mod tangent_cancellation_tests {
             "failed tangent work must cancel peers before they finish"
         );
     }
+}
+
+#[cfg(test)]
+mod terminal_failure_tests {
+    use super::*;
+    use crate::streaming::failure::{LoadingRefusal, refuse_loading};
+    use bevy::ecs::system::RunSystemOnce;
+
+    fn assert_one_outcome(app: &App, earlier: Option<&str>, own_reason: &str) {
+        let refusal = app.world().get_resource::<LoadingRefusal>();
+        assert!(
+            refusal.is_some(),
+            "actual package failure must reach the shared terminal owner"
+        );
+        let reason = &refusal.unwrap().0;
+        if let Some(earlier) = earlier {
+            assert_eq!(reason, earlier);
+        } else {
+            assert!(reason.contains(own_reason), "{reason}");
+        }
+        let emitted: Vec<_> = app
+            .world()
+            .resource::<Messages<AppExit>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(emitted, [AppExit::error()]);
+    }
+
+    #[test]
+    fn asynchronous_package_failure_preserves_validation_status_and_first_terminal_outcome() {
+        for earlier in [None, Some("original cell read failure")] {
+            let mut app = App::new();
+            if let Some(reason) = earlier {
+                refuse_loading(app.world_mut(), reason.into());
+            }
+            refuse_package(app.world_mut(), "tangent worker failure".into());
+            refuse_package(app.world_mut(), "later payload failure".into());
+            assert_eq!(
+                app.world().resource::<PackageValidationStatus>(),
+                &PackageValidationStatus::Failed("tangent worker failure".into())
+            );
+            assert_one_outcome(&app, earlier, "tangent worker failure");
+        }
+    }
+
+    #[test]
+    fn actual_certification_poll_preserves_cleanup_and_first_terminal_outcome() {
+        for earlier in [None, Some("original destination failure")] {
+            let mut app = App::new();
+            if let Some(reason) = earlier {
+                refuse_loading(app.world_mut(), reason.into());
+            }
+            let task = IoTaskPool::get_or_init(Default::default).spawn(async {
+                Err::<CertifiedPackage, _>("actual certification failure".to_owned())
+            });
+            app.insert_resource(PackageValidationStatus::Pending)
+                .insert_resource(PendingPackageValidation(task));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while app.world().contains_resource::<PendingPackageValidation>() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "certification task did not finish"
+                );
+                app.world_mut()
+                    .run_system_once(poll_package_validation)
+                    .unwrap();
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                app.world().resource::<PackageValidationStatus>(),
+                &PackageValidationStatus::Failed("actual certification failure".into())
+            );
+            assert!(!app.world().contains_resource::<ValidatedPackage>());
+            assert!(!app.world().contains_resource::<PendingModelPrefetch>());
+            assert_one_outcome(&app, earlier, "actual certification failure");
+        }
+    }
+
+    #[test]
+    fn actual_loader_runtime_refusals_preserve_certificate_status_and_first_terminal_outcome() {
+        for corruption in ["binding", "mesh_row"] {
+            for earlier in [None, Some("original full-cell failure")] {
+                let directory = crate::cluster::reader::producer_fixture_tests::published();
+                let root = directory.path();
+                let certificate =
+                    Arc::new(crate::cluster::overlay_fixture::open_fixture(root, false).unwrap());
+                if corruption == "binding" {
+                    let database = Connection::open(root.join("skyrim_world.db")).unwrap();
+                    database
+                        .execute(
+                            "UPDATE lod_build SET build_identity = ?1",
+                            ["ef".repeat(32)],
+                        )
+                        .unwrap();
+                } else {
+                    let database = crate::cluster::overlay_fixture::overlay_db(root);
+                    database
+                        .execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM cluster_meshes;")
+                        .unwrap();
+                }
+                let mut app = App::new();
+                app.insert_resource(PackageSource {
+                    base: root.to_owned(),
+                    overlay: crate::cluster::overlay_fixture::overlay_path(root),
+                    terrain: false,
+                    priority_point: None,
+                })
+                .insert_resource(ValidatedPackage(certificate.clone()))
+                .insert_resource(PackageValidationStatus::Ready)
+                .init_resource::<ClusterBatchHandles>()
+                .init_resource::<Assets<Image>>();
+                if let Some(reason) = earlier {
+                    refuse_loading(app.world_mut(), reason.into());
+                }
+                app.world_mut()
+                    .run_system_once(load_cluster_package)
+                    .unwrap();
+                assert!(!app.world().contains_resource::<ClusterScene>());
+                assert!(!app.world().contains_resource::<LazyBatches>());
+                assert!(app.world().contains_resource::<PackageLoadStarted>());
+                assert_eq!(
+                    app.world().resource::<PackageValidationStatus>(),
+                    &PackageValidationStatus::Ready,
+                    "runtime inability must not rewrite authoritative certification status"
+                );
+                assert_one_outcome(&app, earlier, "cluster");
+                drop(app);
+                drop(certificate);
+            }
+        }
+    }
+}
+
+/// Register the actual private producer so cross-owner tests can retain its Local cache.
+#[cfg(test)]
+pub(super) fn register_lazy_batch_system_for_test(
+    world: &mut World,
+) -> bevy::ecs::system::SystemId {
+    world.register_system(load_batches_in_view)
 }

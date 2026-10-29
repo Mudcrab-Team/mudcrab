@@ -1,5 +1,5 @@
 use super::{
-    ActiveSpace, RenderOrigin, StreamingCommitBudget, StreamingMetrics, StreamingWorld,
+    ActiveSpace, LodHorizon, RenderOrigin, StreamingCommitBudget, StreamingMetrics, StreamingWorld,
     TerrainCoverage, TerrainSurfaceReady, requests,
 };
 use crate::{
@@ -45,6 +45,11 @@ pub(crate) mod terrain_batching;
 
 pub(crate) use terrain_batching::LodTerrainBatch;
 
+/// How far distant terrain reaches, in Creation units.
+fn lod_horizon(distances: &TerrainLodDistances) -> f32 {
+    CELL_SIZE * distances.max_reach_cells().max(0) as f32
+}
+
 /// A far plane that keeps every cell within `reach_cells` of the camera's cell.
 fn lod_camera_far(reach_cells: i32) -> f32 {
     CELL_SIZE * (reach_cells as f32 + 0.5) * std::f32::consts::SQRT_2
@@ -55,6 +60,15 @@ fn lod_camera_far(reach_cells: i32) -> f32 {
 pub(super) struct LodDemand {
     pub(super) world: u32,
     pub(super) center: IVec2,
+}
+
+impl LodDemand {
+    pub(super) fn contains_cell(self, world: u32, cell: IVec2, radius: i32) -> bool {
+        radius >= 0
+            && self.world == world
+            && (i64::from(cell.x) - i64::from(self.center.x)).abs() <= i64::from(radius)
+            && (i64::from(cell.y) - i64::from(self.center.y)).abs() <= i64::from(radius)
+    }
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -82,6 +96,8 @@ impl LodDemandViews<'_, '_> {
 pub(super) struct LodStreaming {
     generation: u64,
     center: Option<IVec2>,
+    /// Exterior demand used by the current terrain source.
+    demand: Option<LodDemand>,
     /// The worldspace `center` belongs to; a door into another worldspace moves the centre too.
     worldspace_id: Option<u32>,
     requested_queries: HashSet<LodTier>,
@@ -429,12 +445,98 @@ pub(super) fn pending_fixture(metadata: LodChunkMetadata) -> PendingLodChunk {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_lod_chunks(
-    mut commands: Commands,
+    commands: Commands,
     config: Res<EngineConfig>,
-    space: Option<Res<ActiveSpace>>,
     database: Res<WorldDatabase>,
     origin: Res<RenderOrigin>,
-    camera: Query<&Transform, With<StreamingCamera>>,
+    views: LodDemandViews,
+    chunk_visibility: Query<(&Visibility, Option<&super::RetireHidden>)>,
+    chunk_roots: Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
+    mut streaming: ResMut<LodStreaming>,
+    mut budget: ResMut<StreamingCommitBudget>,
+    metrics: ResMut<StreamingMetrics>,
+    profiler: ResMut<ProfilingState>,
+    runtime: Option<Res<super::runtime::StreamingRuntime>>,
+    mut previous_distances: Local<Option<crate::config::TerrainLodDistances>>,
+    mut horizon: Option<ResMut<LodHorizon>>,
+    terrain: Option<Res<crate::cluster::terrain::ClusterTerrain>>,
+) {
+    // Without the ordinary streaming camera, leave the plan and reservation untouched.
+    if views.main.single().is_err() {
+        return;
+    }
+    let demand = views.current(&config, origin.0);
+    if config.clusters.is_some() {
+        if streaming.demand != demand {
+            streaming.demand = demand;
+        }
+        if let (Some(demand), Some(terrain), Some(horizon)) =
+            (demand, terrain.as_deref(), horizon.as_mut())
+        {
+            let reach = lod_horizon(&config.terrain_lod);
+            // Certified source availability is indexed; this does not scan the terrain blocks.
+            if horizon.reach_in(demand.world) != Some(reach) && terrain.has_world(demand.world) {
+                horizon.set(demand.world, reach);
+            }
+        }
+        if budget.reserved_for_lod {
+            budget.reserved_for_lod = false;
+        }
+        return;
+    }
+    plan_lod_demand_controlled(
+        demand,
+        commands,
+        config,
+        database,
+        chunk_visibility,
+        chunk_roots,
+        streaming,
+        budget,
+        metrics,
+        profiler,
+        runtime,
+        &mut previous_distances,
+    );
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn plan_lod_demand(
+    demand: Option<LodDemand>,
+    commands: Commands,
+    config: Res<EngineConfig>,
+    database: Res<WorldDatabase>,
+    chunk_visibility: Query<(&Visibility, Option<&super::RetireHidden>)>,
+    chunk_roots: Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
+    streaming: ResMut<LodStreaming>,
+    budget: ResMut<StreamingCommitBudget>,
+    metrics: ResMut<StreamingMetrics>,
+    profiler: ResMut<ProfilingState>,
+    previous_distances: &mut Option<crate::config::TerrainLodDistances>,
+) {
+    plan_lod_demand_controlled(
+        demand,
+        commands,
+        config,
+        database,
+        chunk_visibility,
+        chunk_roots,
+        streaming,
+        budget,
+        metrics,
+        profiler,
+        None,
+        previous_distances,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_lod_demand_controlled(
+    demand: Option<LodDemand>,
+    mut commands: Commands,
+    config: Res<EngineConfig>,
+    database: Res<WorldDatabase>,
     chunk_visibility: Query<(&Visibility, Option<&super::RetireHidden>)>,
     chunk_roots: Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
     mut streaming: ResMut<LodStreaming>,
@@ -442,15 +544,12 @@ pub(super) fn plan_lod_chunks(
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
     runtime: Option<Res<super::runtime::StreamingRuntime>>,
-    mut previous_distances: Local<Option<crate::config::TerrainLodDistances>>,
+    previous_distances: &mut Option<crate::config::TerrainLodDistances>,
 ) {
     let started = Instant::now();
-    let Ok(camera) = camera.single() else {
-        return;
-    };
-    let Some(worldspace_id) =
-        lod_worldspace(config.stream_radius, space.as_deref(), config.worldspace_id)
-    else {
+    let demand = demand.filter(|_| config.clusters.is_none());
+    streaming.demand = demand;
+    let Some(demand) = demand else {
         if streaming.center.take().is_some() {
             streaming.generation = streaming.generation.wrapping_add(1);
         }
@@ -468,7 +567,8 @@ pub(super) fn plan_lod_chunks(
         return;
     };
 
-    let center = streaming_center(config.acceptance_screenshot.is_some(), origin.0, camera);
+    let worldspace_id = demand.world;
+    let center = demand.center;
     let distances_changed = previous_distances.as_ref() != Some(&config.terrain_lod);
     *previous_distances = Some(config.terrain_lod);
     if distances_changed {
@@ -551,6 +651,23 @@ pub(super) fn plan_lod_chunks(
     profiler.record_elapsed("lod/plan", started);
 }
 
+fn widen_lod_cameras(
+    demand: Option<LodDemand>,
+    config: &EngineConfig,
+    horizon: &LodHorizon,
+    camera_projection: &mut Query<&mut Projection, With<StreamingCamera>>,
+) {
+    if let Some(demand) = demand
+        && horizon.reach_in(demand.world).is_some()
+        && let Ok(mut projection) = camera_projection.single_mut()
+        && let Projection::Perspective(perspective) = &mut *projection
+    {
+        perspective.far = perspective
+            .far
+            .max(lod_camera_far(config.terrain_lod.max_reach_cells()));
+    }
+}
+
 /// Collect LOD query results and request current chunks within the shared commit budget.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_lod_chunks(
@@ -566,7 +683,14 @@ pub(super) fn collect_lod_chunks(
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
     runtime: Option<Res<super::runtime::StreamingRuntime>>,
+    mut horizon: Option<ResMut<LodHorizon>>,
 ) {
+    if config.clusters.is_some() {
+        if let Some(horizon) = horizon.as_deref() {
+            widen_lod_cameras(streaming.demand, &config, horizon, &mut camera_projection);
+        }
+        return;
+    }
     let started = Instant::now();
     for _ in 0..LOD_RESPONSE_SCAN_LIMIT {
         let Some(response) = database.try_lod_response() else {
@@ -603,6 +727,14 @@ pub(super) fn collect_lod_chunks(
             }
             Ok(chunks) => {
                 streaming.query_retries.remove(&response.query.tier);
+                if !chunks.is_empty()
+                    && let Some(horizon) = horizon.as_mut()
+                {
+                    let reach = lod_horizon(&config.terrain_lod);
+                    if horizon.reach_in(response.query.worldspace_id) != Some(reach) {
+                        horizon.set(response.query.worldspace_id, reach);
+                    }
+                }
                 if !chunks.is_empty()
                     && let Ok(mut projection) = camera_projection.single_mut()
                     && let Projection::Perspective(perspective) = &mut *projection
@@ -1737,6 +1869,7 @@ impl LodStreaming {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("lod_admission_review_tests.rs");
     use crate::world::database::LodChunkBounds;
     use bevy::ecs::system::RunSystemOnce;
 
@@ -3388,6 +3521,16 @@ mod tests {
             matches!(streaming.chunks.get(&metadata.key), Some(LodChunkStatus::Retiring { root: actual, .. }) if *actual == root)
         );
         assert!(streaming.pending_chunks.is_empty());
+        let mut counts = StreamingMetrics::default();
+        update_counts(streaming, &mut counts, &mut ProfilingState::default());
+        assert_eq!(
+            (
+                streaming.retiring_chunks().len(),
+                counts.resident_lod_chunks,
+                counts.pending_lod_chunks
+            ),
+            (1, 0, 0)
+        );
         world.insert_resource(EngineConfig {
             max_cell_unloads_per_frame: 1,
             ..default()
@@ -3761,3 +3904,251 @@ mod terrain_primitive_identity_tests {
 #[cfg(test)]
 #[path = "lod_source_writer_tests.rs"]
 mod source_writer_tests;
+
+#[cfg(test)]
+mod cluster_lod_source_tests {
+    use super::*;
+    use bevy::ecs::system::SystemState;
+
+    #[derive(Resource, Default)]
+    struct TestLodDistances(Option<crate::config::TerrainLodDistances>);
+
+    fn plan(world: &mut World, demand: Option<LodDemand>) {
+        world.init_resource::<TestLodDistances>();
+        let mut state = SystemState::<(
+            Commands,
+            Res<EngineConfig>,
+            Res<WorldDatabase>,
+            Query<(&Visibility, Option<&super::super::RetireHidden>)>,
+            Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
+            ResMut<LodStreaming>,
+            ResMut<StreamingCommitBudget>,
+            ResMut<StreamingMetrics>,
+            ResMut<ProfilingState>,
+            ResMut<TestLodDistances>,
+        )>::new(world);
+        let (
+            commands,
+            config,
+            database,
+            visibility,
+            roots,
+            streaming,
+            budget,
+            metrics,
+            profiler,
+            mut previous,
+        ) = state.get_mut(world).unwrap();
+        plan_lod_demand(
+            demand,
+            commands,
+            config,
+            database,
+            visibility,
+            roots,
+            streaming,
+            budget,
+            metrics,
+            profiler,
+            &mut previous.0,
+        );
+        state.apply(world);
+    }
+
+    #[test]
+    fn cluster_mode_uses_certified_terrain_for_horizon_and_camera_reach() {
+        use crate::cluster::terrain::{ClusterTerrain, TerrainBlock};
+
+        let config = EngineConfig {
+            clusters: Some("fixture".into()),
+            cluster_terrain: true,
+            ..default()
+        };
+        let worldspace = config.worldspace_id;
+        let required_far = lod_camera_far(config.terrain_lod.max_reach_cells());
+        let expected_reach = lod_horizon(&config.terrain_lod);
+        let (database, _requests, _responses) = WorldDatabase::channel_fixture(0);
+        let mut app = App::new();
+        app.insert_resource(config)
+            .insert_resource(database)
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(ClusterTerrain::for_blocks_test(vec![TerrainBlock {
+                mesh_hash: "fixture".into(),
+                primitive_index: 0,
+                worldspace_id: worldspace,
+                anchor: IVec2::ZERO,
+                side_cells: 1,
+                instance_path: "terrain/fixture.mci".into(),
+                cells: vec![IVec2::ZERO],
+                material: Handle::default(),
+                batch: None,
+            }]))
+            .init_resource::<LodStreaming>()
+            .init_resource::<LodHorizon>()
+            .init_resource::<StreamingCommitBudget>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, plan_lod_chunks);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Transform::default(),
+                StreamingCamera,
+                Projection::Perspective(PerspectiveProjection {
+                    far: 10.0,
+                    ..default()
+                }),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().resource::<LodHorizon>().reach_in(worldspace),
+            Some(expected_reach)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_queries_submitted,
+            0
+        );
+        let demand = app.world().resource::<LodStreaming>().demand;
+        assert_eq!(demand.unwrap().world, worldspace);
+        let config = app.world().resource::<EngineConfig>().clone();
+        let horizon = *app.world().resource::<LodHorizon>();
+        let mut state =
+            SystemState::<Query<&mut Projection, With<StreamingCamera>>>::new(app.world_mut());
+        widen_lod_cameras(
+            demand,
+            &config,
+            &horizon,
+            &mut state.get_mut(app.world_mut()).unwrap(),
+        );
+        let Projection::Perspective(projection) = app.world().get::<Projection>(camera).unwrap()
+        else {
+            panic!("fixture camera must remain perspective");
+        };
+        assert_eq!(projection.far, required_far);
+    }
+
+    #[test]
+    fn cluster_mode_submits_no_baked_terrain_queries_without_baked_tables() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skyrim_world.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        drop(connection);
+        let mut world = World::new();
+        world.insert_resource(EngineConfig {
+            clusters: Some("fixture".into()),
+            cluster_terrain: true,
+            ..default()
+        });
+        world.insert_resource(WorldDatabase::open_with(&path, Default::default()).unwrap());
+        world.init_resource::<LodStreaming>();
+        world.init_resource::<StreamingCommitBudget>();
+        world.init_resource::<StreamingMetrics>();
+        world.init_resource::<ProfilingState>();
+        plan(
+            &mut world,
+            Some(LodDemand {
+                world: 77,
+                center: IVec2::ZERO,
+            }),
+        );
+        assert_eq!(
+            world.resource::<StreamingMetrics>().lod_queries_submitted,
+            0
+        );
+        assert!(world.resource::<LodStreaming>().pending_queries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod admission_demand_tests {
+    use super::*;
+
+    #[test]
+    fn demand_membership_checks_world_radius_and_wide_coordinate_differences() {
+        let demand = LodDemand {
+            world: 7,
+            center: IVec2::new(i32::MIN, i32::MAX),
+        };
+        assert!(demand.contains_cell(7, demand.center, 0));
+        assert!(!demand.contains_cell(8, demand.center, 1));
+        assert!(!demand.contains_cell(7, demand.center, -1));
+        assert!(!demand.contains_cell(7, IVec2::new(i32::MAX, i32::MIN), i32::MAX));
+        assert!(demand.contains_cell(7, IVec2::new(i32::MIN + 1, i32::MAX - 1), 1));
+    }
+}
+
+#[cfg(test)]
+mod source_choice_tests {
+    use super::*;
+
+    fn app(
+        selected: bool,
+    ) -> (
+        App,
+        crossbeam_channel::Receiver<crate::world::database::DatabaseRequest>,
+    ) {
+        let (database, requests, _) = WorldDatabase::channel_fixture(16);
+        let mut app = App::new();
+        app.insert_resource(EngineConfig {
+            clusters: selected.then(|| "selected".to_owned()),
+            ..default()
+        })
+        .insert_resource(database)
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .init_resource::<LodStreaming>()
+        .init_resource::<StreamingCommitBudget>()
+        .init_resource::<StreamingMetrics>()
+        .init_resource::<ProfilingState>()
+        .add_systems(Update, plan_lod_chunks);
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::default()));
+        (app, requests)
+    }
+
+    #[test]
+    fn selected_package_does_not_request_baked_lod_even_when_database_can_accept_it() {
+        let (mut app, requests) = app(true);
+        app.update();
+        assert!(
+            requests.is_empty(),
+            "selected package must not start a native source fallback while its package is loading"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_queries_submitted,
+            0
+        );
+        assert!(
+            app.world()
+                .resource::<LodStreaming>()
+                .pending_queries
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn ordinary_source_still_submits_native_lod_to_the_database() {
+        let (mut app, requests) = app(false);
+        app.update();
+        assert!(
+            !requests.is_empty(),
+            "ordinary source choice must retain the real baked request path"
+        );
+        assert!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .lod_queries_submitted
+                > 0
+        );
+    }
+}

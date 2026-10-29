@@ -72,11 +72,14 @@ impl TerrainLodDistances {
 
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
+    /// Live cluster quality controls, initialized by their graphics flags.
+    pub graphics: crate::graphics_settings::GraphicsSettings,
     /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
     pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
     /// Explicit local report destination. `None` uses the per-user application-data directory.
     pub bug_report_dir: Option<PathBuf>,
+
     pub worldspace_id: u32,
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
@@ -86,6 +89,17 @@ pub struct EngineConfig {
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
     pub terrain_lod: TerrainLodDistances,
+    /// The cluster overlay (ADR-0013 output, `<assets>/derived/clusters-<settings-id>`) to draw
+    /// objects from, as clusters in place of the stock models it owns. `--clusters [label |
+    /// settings-id | path]`: the text names one overlay of `--assets`, empty for the only one.
+    /// The conversion manifest selects its required package when this is unset.
+    pub clusters: Option<String>,
+    /// Remove certified owned exterior render bodies before instance spawn.
+    /// Always enabled when a cluster overlay is selected.
+    pub cluster_own_statics: bool,
+    /// Draw packaged terrain clusters, clipping against ready near terrain. Startup enables
+    /// this for every selected overlay, which must include terrain and trees.
+    pub cluster_terrain: bool,
     pub max_cell_commits_per_frame: usize,
     pub max_commit_micros_per_frame: u64,
     /// Cells outside the unload radius a frame may despawn. `0` despawns every one at once, which
@@ -219,9 +233,11 @@ impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
         Self {
+            graphics: crate::graphics_settings::GraphicsSettings::default(),
             settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
             bug_report_dir: None,
+
             worldspace_id: 0x3c,
             start_grid: (0, 0),
             // Skyrim's default `uGridsToLoad=5`.
@@ -230,6 +246,9 @@ impl Default for EngineConfig {
             sun_shadow_distance_limit: None,
             sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
+            clusters: None,
+            cluster_own_statics: false,
+            cluster_terrain: false,
             max_cell_commits_per_frame: 1,
             max_commit_micros_per_frame: 16_670,
             max_cell_unloads_per_frame: 2,
@@ -364,6 +383,10 @@ Streaming:
   --max-upload-mib-per-frame <mib>      render-asset upload budget per frame; 0 is unlimited (default: 16)
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
+  --clusters [label|settings-id|path]   draw this cluster overlay of --assets (built by converter
+                                        derive-clusters under <assets>/derived) as GPU-selected
+                                        clusters in place of the stock models it owns (ADR-0013)
+                                        selected overlays require terrain and trees and always own statics
   --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
 
 Benchmark and profiling:
@@ -401,6 +424,8 @@ Benchmark and profiling:
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
   --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
+  --cluster-error-pixels <px>          object cluster error threshold (default: 1; above 0, at most 16)
+  --cluster-terrain-error-pixels <px>  terrain cluster error threshold (default: 1; above 0, at most 16)
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
   --shots-settle-timeout <seconds>      maximum settling time per shot (default: 30, maximum: 600)
   --shots-out <dir>                     where the shots' PNGs and shots.log go (default: beside the shots file)
@@ -811,6 +836,16 @@ impl EngineConfig {
                     config.stream_radius = value;
                     config.unload_radius = value + 1;
                 }
+                "--clusters" => {
+                    // The selector is optional: bare `--clusters` means the only overlay.
+                    let named = args.peek().is_some_and(|next| !next.starts_with("--"));
+                    let selector = if named {
+                        args.next().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    config.clusters = Some(selector);
+                }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
                 "--max-unloads-per-frame" => {
@@ -1210,6 +1245,31 @@ impl EngineConfig {
                         )
                     })?);
                 }
+                "--cluster-error-pixels" | "--cluster-terrain-error-pixels" => {
+                    let value = take_raw(
+                        if argument == "--cluster-error-pixels" {
+                            "--cluster-error-pixels"
+                        } else {
+                            "--cluster-terrain-error-pixels"
+                        },
+                        "a pixel count above 0, at most 16",
+                        args.next(),
+                    )?;
+                    config
+                        .graphics
+                        .set(argument.trim_start_matches("--"), &value)
+                        .map_err(|_| {
+                            ConfigError::invalid_value(
+                                if argument == "--cluster-error-pixels" {
+                                    "--cluster-error-pixels"
+                                } else {
+                                    "--cluster-terrain-error-pixels"
+                                },
+                                Some(value),
+                                "a pixel count above 0, at most 16",
+                            )
+                        })?;
+                }
                 "--shots" => {
                     config.shots = Some(take_value("--shots", "a shots file path", args.next())?);
                 }
@@ -1314,7 +1374,23 @@ impl EngineConfig {
                 requires: "--profile-output",
             });
         }
+        if config.clusters.is_none() {
+            for option in ["--cluster-error-pixels", "--cluster-terrain-error-pixels"] {
+                if config
+                    .settings_overrides
+                    .iter()
+                    .any(|argument| argument == option)
+                {
+                    return Err(ConfigError::MissingRequirement {
+                        option,
+                        requires: "--clusters",
+                    });
+                }
+            }
+        }
         config.drop_jump_the_run_would_overwrite();
+        config.cluster_own_statics = config.clusters.is_some();
+
         Ok(ConfigAction::Run(Box::new(config)))
     }
 
@@ -1625,6 +1701,63 @@ fn edit_distance(left: &str, right: &str) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cluster_overlay_selection_accepts_bare_and_named_launch_options() {
+        for arguments in [vec!["--clusters"], vec!["--clusters", "fixture"]] {
+            let result = EngineConfig::from_args(arguments.iter().map(|value| (*value).to_owned()));
+            assert!(
+                matches!(result, Ok(ConfigAction::Run(_))),
+                "{arguments:?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cluster_quality_launch_options_require_valid_pixel_thresholds() {
+        for option in ["--cluster-error-pixels", "--cluster-terrain-error-pixels"] {
+            for value in ["0.5", "1", "16"] {
+                let result = EngineConfig::from_args([
+                    "--clusters".to_owned(),
+                    option.to_owned(),
+                    value.to_owned(),
+                ]);
+                assert!(
+                    matches!(result, Ok(ConfigAction::Run(_))),
+                    "{option} {value}: {result:?}"
+                );
+            }
+            for value in ["0", "-1", "17", "NaN", "inf"] {
+                let result = EngineConfig::from_args([option.to_owned(), value.to_owned()]);
+                assert!(
+                    matches!(result, Err(ConfigError::InvalidValue { .. })),
+                    "{option} {value}: {result:?}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn cluster_pixel_options_require_explicit_cluster_selection_in_either_order() {
+        for option in ["--cluster-error-pixels", "--cluster-terrain-error-pixels"] {
+            let result = EngineConfig::from_args([option.to_owned(), "1".to_owned()]);
+            assert!(
+                matches!(result, Err(ConfigError::MissingRequirement { option: name, requires: "--clusters" }) if name == option),
+                "{option}: {result:?}"
+            );
+            for args in [
+                vec![option, "1", "--clusters"],
+                vec!["--clusters", option, "1"],
+            ] {
+                assert!(
+                    matches!(
+                        EngineConfig::from_args(args.iter().map(|s| (*s).to_owned())),
+                        Ok(ConfigAction::Run(_))
+                    ),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
     /// This file, so the tests can read the parser's own match arms back out of
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
@@ -1775,6 +1908,61 @@ mod tests {
         EngineConfig::run_from_args(arguments.iter().map(|argument| (*argument).to_owned()))
     }
 
+    #[test]
+    fn cluster_ownership_is_always_on_with_clusters() {
+        assert!(run_config(&["--clusters", "fixture"]).cluster_own_statics);
+        assert!(run_config(&["--clusters"]).cluster_own_statics);
+    }
+
+    #[test]
+    fn cluster_ownership_defaults_off_without_clusters() {
+        let config = run_config(&[]);
+        assert!(config.clusters.is_none());
+        assert!(!config.cluster_own_statics);
+        assert!(!config.cluster_terrain);
+    }
+
+    #[test]
+    fn cluster_ownership_opt_out_is_not_an_option() {
+        for arguments in [
+            ["--no-cluster-own-statics"].as_slice(),
+            ["--clusters", "--no-cluster-own-statics"].as_slice(),
+            ["--clusters", "fixture", "--no-cluster-own-statics"].as_slice(),
+            ["--no-cluster-own-statics", "--clusters", "fixture"].as_slice(),
+        ] {
+            let error =
+                EngineConfig::from_args(arguments.iter().map(|argument| (*argument).to_owned()))
+                    .unwrap_err();
+            assert!(matches!(
+                error,
+                ConfigError::UnknownOption { argument, .. }
+                    if argument == "--no-cluster-own-statics"
+            ));
+        }
+    }
+
+    #[test]
+    fn obsolete_cluster_controls_are_unknown_and_absent_from_help() {
+        let help_options = option_tokens(HELP_TEXT);
+        for flag in [
+            "--cluster-own-statics",
+            "--cluster-terrain",
+            "--cluster-preload-batches",
+            "--no-cluster-prepass",
+        ] {
+            assert!(
+                !help_options.contains(&flag),
+                "help still advertises {flag}"
+            );
+            for arguments in [vec![flag], vec!["--clusters", "fixture", flag]] {
+                assert!(matches!(
+                    parse_error(&arguments),
+                    ConfigError::UnknownOption { argument, .. } if argument == flag
+                ));
+            }
+        }
+    }
+
     fn parse_error(arguments: &[&str]) -> ConfigError {
         match EngineConfig::from_args(arguments.iter().map(|argument| (*argument).to_owned())) {
             Err(error) => error,
@@ -1786,10 +1974,20 @@ mod tests {
     fn parser_options() -> Vec<&'static str> {
         CONFIG_SOURCE
             .lines()
-            .filter_map(|line| {
-                let (option, rest) = leading_quoted(line)?;
-                // The bare `--` arm is a no-op marker, not an option to document.
-                (rest.trim_start().starts_with("=>") && option != "--").then_some(option)
+            .filter_map(|line| line.split_once("=>"))
+            .flat_map(|(pattern, _)| {
+                let options: Option<Vec<_>> = pattern
+                    .split('|')
+                    .map(|alternative| {
+                        let (option, rest) = leading_quoted(alternative)?;
+                        rest.trim().is_empty().then_some(option)
+                    })
+                    .collect();
+                // Match only option literals, excluding value enums and the bare separator.
+                options
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|option| option.starts_with('-') && *option != "--")
             })
             .collect()
     }
