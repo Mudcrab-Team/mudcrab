@@ -388,6 +388,10 @@ pub struct SettleCounts {
     pub pending_batch_selection: usize,
     pub pending_specializations: Option<usize>,
     pub pending_render_transfers: Option<usize>,
+    /// 1 while cluster admission is not ready to draw the active world (the loading cover's
+    /// `pending_cluster_drawability`). A jump between shots needs no cover, but its newly loaded
+    /// owned references draw only once admission has proved them.
+    pub pending_cluster_drawability: usize,
 }
 
 /// The run-wide failure counters at one moment. They only ever grow, so a shot compares them with
@@ -476,6 +480,7 @@ impl SettleCounts {
             && self.failed_cells == 0
             && self.asset_load_failures == 0
             && self.validation_failures == 0
+            && self.pending_cluster_drawability == 0
             && self.renderer_ready
     }
 
@@ -496,7 +501,7 @@ impl SettleCounts {
             self.validation_failures,
             self.renderer_ready
         ) + &format!(
-            " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?}",
+            " lod_queries={} lod_chunks={} lod_failures={} terrain_transfers={} batch_cpu={} initial_uploads={} selection_uploads={} specializations={:?} render_transfers={:?} cluster_drawability={}",
             self.pending_lod_queries,
             self.pending_lod_chunks,
             self.failed_lod_work,
@@ -505,7 +510,8 @@ impl SettleCounts {
             self.pending_batch_initial,
             self.pending_batch_selection,
             self.pending_specializations,
-            self.pending_render_transfers
+            self.pending_render_transfers,
+            self.pending_cluster_drawability
         )
     }
 }
@@ -753,6 +759,33 @@ impl ShotsRun {
     }
 }
 
+/// What loading still stands between a shot and its view: the loading cover, and cluster
+/// admission for the active world. Every part is optional; an app without it has nothing to wait for.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ShotLoading<'w> {
+    cover: Option<Res<'w, crate::pacing::LoadingCover>>,
+    config: Option<Res<'w, crate::config::EngineConfig>>,
+    space: Option<Res<'w, crate::streaming::ActiveSpace>>,
+    gate: Option<Res<'w, crate::cluster::loading::ClusterLoadingGate>>,
+}
+
+impl ShotLoading<'_> {
+    fn covered(&self) -> bool {
+        self.cover
+            .as_deref()
+            .is_some_and(crate::pacing::LoadingCover::controls_blocked)
+    }
+
+    fn clusters_drawable(&self) -> bool {
+        self.config
+            .as_deref()
+            .zip(self.space.as_deref())
+            .is_none_or(|(config, space)| {
+                crate::cluster::loading::ready_for_active(config, space, self.gate.as_deref())
+            })
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_shots(
     mut commands: Commands,
@@ -769,6 +802,7 @@ fn run_shots(
     retries: Res<crate::capture_frame::RetryReadiness>,
     main_frame: Res<bevy::diagnostic::FrameCount>,
     transfers: Res<crate::capture_frame::TransferReadiness>,
+    loading: ShotLoading,
 ) {
     // Borrowed once: the shot is taken from the file without cloning it, and the arms below still
     // write the run's other fields, which the borrow checker allows field by field.
@@ -869,10 +903,15 @@ fn run_shots(
                 &mut transform,
                 &mut projection,
             );
-            run.timer += time.delta_secs();
+            let covered = loading.covered();
+            // The settle timeout measures the view, not the load: it starts once the cover is
+            // down. A load that never finishes is refused by admission's own deadline.
+            if !covered {
+                run.timer += time.delta_secs();
+            }
             run.frames = run.frames.saturating_add(1);
             let renderer_ready =
-                renderer.final_path_active() && time.elapsed_secs() >= WARM_UP_SECONDS;
+                shots_renderer_ready(renderer.final_path_active(), time.elapsed_secs(), covered);
             let mut counts = SettleCounts::read(
                 &streaming,
                 &renderer,
@@ -894,6 +933,7 @@ fn run_shots(
                 .unwrap_or(0.0) as usize;
             counts.pending_specializations = *retries.0.lock().unwrap();
             counts.pending_render_transfers = *transfers.0.lock().unwrap();
+            counts.pending_cluster_drawability = usize::from(!loading.clusters_drawable());
             // The window is counted in before it is read, so a view that has been quiet for
             // `SETTLE_QUIET_FRAMES` frames running is photographed on that very frame: the log's
             // `frames=` is then the constant, not one more (the count read here is the previous
@@ -967,6 +1007,13 @@ fn run_shots(
         }
         Phase::Done => {}
     }
+}
+
+/// The renderer is ready to be photographed once its final path runs, the warm-up has passed and
+/// no loading cover (startup, crossing or teleport) is over the view: a shot taken under the cover
+/// is a black frame. Admission refuses a load that never lifts the cover.
+fn shots_renderer_ready(final_path: bool, elapsed_seconds: f32, covered: bool) -> bool {
+    final_path && elapsed_seconds >= WARM_UP_SECONDS && !covered
 }
 
 /// A serialized runner has one image-target request in flight. Keep the ticket on that
@@ -1246,6 +1293,31 @@ mod tests {
     fn assert_close(actual: Vec3, expected: Vec3) {
         let difference = (actual - expected).abs().max_element();
         assert!(difference < 1.0e-5, "{actual:?} != {expected:?}");
+    }
+
+    #[test]
+    fn pending_cluster_admission_keeps_a_view_unsettled() {
+        let quiet = SettleCounts {
+            renderer_ready: true,
+            pending_specializations: Some(0),
+            pending_render_transfers: Some(0),
+            ..SettleCounts::default()
+        };
+        assert!(quiet.is_quiet());
+        let pending = SettleCounts {
+            pending_cluster_drawability: 1,
+            ..quiet
+        };
+        assert!(!pending.is_quiet());
+        assert!(pending.describe().contains("cluster_drawability=1"));
+    }
+
+    #[test]
+    fn a_loading_cover_holds_the_shot_until_it_lifts() {
+        assert!(!shots_renderer_ready(true, 60.0, true));
+        assert!(shots_renderer_ready(true, 60.0, false));
+        assert!(!shots_renderer_ready(true, WARM_UP_SECONDS / 2.0, false));
+        assert!(!shots_renderer_ready(false, 60.0, false));
     }
 
     #[test]
