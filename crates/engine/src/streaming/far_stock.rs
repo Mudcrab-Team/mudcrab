@@ -1231,6 +1231,12 @@ fn publish_work(world: &mut World) {
     if !discover && output == previous && !first_refusal {
         return;
     }
+    // With --allow-incomplete-assets the user accepted a conversion with failed assets. The
+    // loader has already logged and counted each failure and left the reference undrawn, as near
+    // streaming does; only without the option is a failed distant source a loading refusal.
+    let allow_incomplete = world
+        .get_resource::<EngineConfig>()
+        .is_some_and(|config| config.allow_incomplete_assets);
     if discover {
         world.resource_scope(|world, mut far: Mut<FarStock>| {
             if !covered {
@@ -1260,7 +1266,8 @@ fn publish_work(world: &mut World) {
                     if identity.0 != placing_world {
                         continue;
                     }
-                    if world.get::<super::AssetFailed>(owner.entity).is_some()
+                    if !allow_incomplete
+                        && world.get::<super::AssetFailed>(owner.entity).is_some()
                         && world
                             .get::<FormId>(owner.entity)
                             .is_some_and(|form| form.0 == identity.1)

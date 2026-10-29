@@ -95,6 +95,31 @@ fn settled_populated_worlds_do_no_entity_discovery_or_near_reconciliation() {
 }
 
 #[test]
+fn failed_distant_asset_is_not_a_refusal_when_incomplete_assets_are_allowed() {
+    let fixture = Fixture::new();
+    let (key, row, _) = fixture.selected();
+    let mut app = failure_app();
+    app.insert_resource(EngineConfig {
+        allow_incomplete_assets: true,
+        ..default()
+    });
+    let parent = app.world_mut().spawn_empty().id();
+    let entity = app
+        .world_mut()
+        .spawn((FormId(row.form_id), AssetFailed))
+        .id();
+    failed_owner(&mut app, key, row.form_id, entity, parent);
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(app.world().resource::<FarStock>().failed.is_empty());
+    assert!(
+        !app.world()
+            .contains_resource::<crate::streaming::failure::LoadingRefusal>()
+    );
+}
+
+#[test]
 fn old_failure_is_discovered_once_when_ownership_arrives_and_then_stays_settled() {
     let fixture = Fixture::new();
     let (key, row, _) = fixture.selected();
