@@ -1,6 +1,6 @@
 #!/bin/sh
 # Mudcrab Installer for Linux & macOS
-# Usage: curl -fsSL https://mudcrab.dev/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Mudcrab-Team/mudcrab/main/scripts/install.sh | bash
 #
 # "Hey you, you're finally awake."
 
@@ -105,6 +105,8 @@ else
 fi
 
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/mudcrab-${TAG}-${TARGET}.tar.gz"
+CHECKSUM_URL="https://github.com/${REPO}/releases/download/${TAG}/SHA256SUMS.txt"
+ARCHIVE_FILENAME="mudcrab-${TAG}-${TARGET}.tar.gz"
 
 info "Downloading Mudcrab ${BOLD}${TAG}${RESET} (${TARGET})..."
 
@@ -116,10 +118,37 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-ARCHIVE="${TMP_DIR}/mudcrab.tar.gz"
+ARCHIVE="${TMP_DIR}/${ARCHIVE_FILENAME}"
+CHECKSUMS="${TMP_DIR}/SHA256SUMS.txt"
 
 if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "$ARCHIVE"; then
     error "Failed to download Mudcrab from: $DOWNLOAD_URL\nCheck that the release tag '${TAG}' and target '${TARGET}' exist."
+fi
+
+info "Verifying SHA256 checksum..."
+if curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUMS" 2>/dev/null; then
+    (
+        cd "$TMP_DIR"
+        EXPECTED_HASH="$(grep " ${ARCHIVE_FILENAME}\$" SHA256SUMS.txt | awk '{print $1}')"
+        if [ -n "$EXPECTED_HASH" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL_HASH="$(sha256sum "$ARCHIVE_FILENAME" | awk '{print $1}')"
+            elif command -v shasum >/dev/null 2>&1; then
+                ACTUAL_HASH="$(shasum -a 256 "$ARCHIVE_FILENAME" | awk '{print $1}')"
+            else
+                error "Neither sha256sum nor shasum found on system; cannot verify checksum."
+            fi
+
+            if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+                error "Checksum verification failed!\nExpected: ${EXPECTED_HASH}\nGot:      ${ACTUAL_HASH}"
+            fi
+            success "Checksum verified ($EXPECTED_HASH)"
+        else
+            warn "No entry for ${ARCHIVE_FILENAME} in SHA256SUMS.txt; skipping checksum verification."
+        fi
+    )
+else
+    warn "SHA256SUMS.txt not found for release ${TAG}; skipping checksum verification."
 fi
 
 # 4. Extract into installation directory

@@ -27,6 +27,8 @@ All crates inherit one version from `[workspace.package]` in the root `Cargo.tom
 
 3. The tag push publishes the release.
 
+> **Note on macOS builds**: macOS binaries are currently distributed unsigned and unnotarized until Apple Developer code-signing certificates are provisioned. macOS users may need to clear the quarantine flag (`xattr -d com.apple.quarantine <binary>`) or allow the application in System Settings > Privacy & Security.
+
 To inspect it before it goes public, run the `release` workflow by hand (**Actions → release → Run workflow**) with the tag. It defaults to a **draft**; publish it from the Releases page when the notes and binaries look right. The tag must already exist, because the workflow builds that tag's commit, not the branch you run it from.
 
 A tag with a suffix, such as `v0.2.0-rc.1`, needs `0.2.0-rc.1` as the Cargo version. It is published as a prerelease, so the installers don't pick it up as the latest release.

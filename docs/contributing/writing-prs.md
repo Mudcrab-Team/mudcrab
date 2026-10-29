@@ -19,7 +19,7 @@ A short guide for anyone sending work here, written by hand or with an AI assist
 
 PR titles must strictly adhere to the [Conventional Commits](https://www.conventionalcommits.org/) specification (`type(scope): description` or `type(scope)!: description`).
 
-With a squash merge, the PR title becomes the exact commit message on `main`. These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
+With a squash merge, the PR title becomes the exact commit message on `main` (assuming repository settings configure `squash_merge_commit_title: PR_TITLE`). These titles drive changelog generation via `git-cliff` and tell maintainers which SemVer bump a release needs. See [releasing.md](releasing.md). Non-conventional titles are blocked in CI.
 
 - **Format:** `type(scope): plain effect`, at most 72 characters, lowercase after the colon. Leave out PR numbers and notes like "part 2".
 - **Types:**
@@ -27,13 +27,17 @@ With a squash merge, the PR title becomes the exact commit message on `main`. Th
   - `fix`: Bug, panic, or visual defect correction (maps to *Fixed*).
   - `perf`: Performance or memory allocation optimization (maps to *Performance*).
   - `refactor`: Structural code cleanup without behavior change (maps to *Changed*).
+  - `style`: Formatting, whitespace, or cosmetic code changes without logic changes (maps to *Changed*).
+  - `revert`: Reverting a previous commit (maps to *Removed*).
+  - `build`: Changes to build system, toolchains, or external dependencies (maps to *Tooling & CI*).
   - `docs`: Documentation, guides, or specifications (maps to *Documentation*).
-  - `test`: Adding or correcting tests or fixtures.
-  - `chore`: Auxiliary tooling, dependencies, or maintenance tasks.
-  - `ci`: CI workflows, GitHub Actions, and release pipelines.
+  - `test`: Adding or correcting tests or fixtures (maps to *Tests*).
+  - `chore`: Auxiliary tooling, dependencies, or maintenance tasks (maps to *Tooling & CI*).
+  - `ci`: CI workflows, GitHub Actions, and release pipelines (maps to *Tooling & CI*).
 - **Scopes:**
   - Crates: `converter`, `engine`, `launcher`, `shared`, `mo2`, `dummy-content`.
-  - Non-crate areas: `ci`, `scripts`, `release`, `deps`.
+  - Non-crate areas: `ci`, `scripts`, `release`, `deps`, `nif`, `converters`, `streaming`, `lod-experiment`.
+  - Scope is optional when changes cross multiple subsystems or apply broadly.
 - **Breaking changes (`!`):**
   - Append an exclamation point before the colon for breaking changes: `type(scope)!: description` (e.g., `feat(converter)!: advance world database schema to 10`).
   - In the PR body footer, include `BREAKING CHANGE: <explanation>` detailing migration impact (such as mandatory asset reconversion).

@@ -1,0 +1,25 @@
+name: pr_title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr_title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Conventional Commit PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          TYPES='feat|fix|perf|refactor|style|revert|build|docs|test|chore|ci'
+          SCOPES='converter|engine|launcher|shared|mo2|dummy-content|ci|scripts|release|deps|nif|converters|streaming|lod-experiment'
+          # Allow standard types, optional scope, optional '!' for breaking changes
+          REGEX="^(${TYPES})(\((${SCOPES})\))?!?: .+"
+          if [[ ! "$PR_TITLE" =~ $REGEX ]] || [ "${#PR_TITLE}" -gt 72 ]; then
+            echo "::error::PR title '$PR_TITLE' must be 'type(scope): description' (max 72 chars). See docs/contributing/writing-prs.md."
+            exit 1
+          fi

@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.98.1"
 
@@ -77,6 +77,16 @@ jobs:
           # The tag must exist; every job builds this exact commit.
           COMMIT="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
           echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
+
+          # Verify tag commit is reachable from origin/main or origin/release/*
+          git fetch origin main 'release/*:refs/remotes/origin/release/*' --depth=1000
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            if ! git branch -r --contains "$COMMIT" | grep -q 'origin/release/'; then
+              echo "::error::Release commit $COMMIT is not reachable from origin/main or origin/release/*!"
+              exit 1
+            fi
+          fi
+
           git checkout --detach "$COMMIT"
 
           CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "shared").version')"
@@ -88,7 +98,7 @@ jobs:
           echo "Tag $TAG matches workspace version $CARGO_VERSION at $COMMIT."
 
       - name: Install git-cliff
-        uses: taiki-e/install-action@git-cliff
+        uses: taiki-e/install-action@2c5a065444fe3f40756405ba5abfcf6a873b33ab # git-cliff
 
       - name: Generate Changelog with git-cliff
         env:
@@ -154,19 +164,14 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.98.1"
           targets: ${{ matrix.target }}
 
       - name: Set up mold linker
         if: runner.os == 'Linux'
-        uses: rui314/setup-mold@v1
-
-      - name: Setup kache compiler cache
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-release-${{ matrix.target }}
+        uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
 
       - name: Build release binaries
         shell: bash
@@ -271,7 +276,7 @@ jobs:
           ls -la ./dist
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           name: Mudcrab ${{ needs.preflight.outputs.tag }}

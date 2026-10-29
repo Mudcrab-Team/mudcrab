@@ -1,6 +1,6 @@
 # Mudcrab Installer for Windows
 # Usage in PowerShell:
-#   irm https://mudcrab.dev/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Mudcrab-Team/mudcrab/main/scripts/install.ps1 | iex
 #
 # "Hey you, you're finally awake."
 
@@ -42,7 +42,9 @@ if (-not $Tag -or $Tag -eq "latest") {
     }
 }
 
-$DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/mudcrab-$Tag-$Target.zip"
+$ArchiveFileName = "mudcrab-$Tag-$Target.zip"
+$DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$ArchiveFileName"
+$ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/SHA256SUMS.txt"
 
 # 3. Setup Install Directories
 $InstallDir = if ($env:MUDCRAB_INSTALL_DIR) { $env:MUDCRAB_INSTALL_DIR } else { "$env:LOCALAPPDATA\Mudcrab" }
@@ -52,7 +54,9 @@ if (-not (Test-Path $BinDir)) {
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 }
 
-$TempZip = Join-Path ([System.IO.Path]::GetTempPath()) "mudcrab-$Tag.zip"
+$TempDir = [System.IO.Path]::GetTempPath()
+$TempZip = Join-Path $TempDir $ArchiveFileName
+$TempChecksums = Join-Path $TempDir "SHA256SUMS-$Tag.txt"
 
 # 4. Download Release Archive
 Write-Host "==> Downloading Mudcrab $Tag..." -ForegroundColor Cyan
@@ -62,6 +66,38 @@ try {
 } catch {
     Write-Error "Failed to download Mudcrab from: $DownloadUrl`nVerify that release $Tag exists."
     exit 1
+}
+
+# 4.1 Verify Checksum
+Write-Host "==> Verifying SHA256 checksum..." -ForegroundColor Cyan
+try {
+    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction SilentlyContinue
+    if (Test-Path $TempChecksums) {
+        $ExpectedHash = $null
+        Get-Content $TempChecksums | ForEach-Object {
+            $Parts = $_ -split '\s+'
+            if ($Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveFileName) {
+                $ExpectedHash = $Parts[0].Trim().ToLower()
+            }
+        }
+
+        if ($ExpectedHash) {
+            $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
+            if ($ActualHash -ne $ExpectedHash) {
+                Write-Error "Checksum verification failed!`nExpected: $ExpectedHash`nGot:      $ActualHash"
+                exit 1
+            }
+            Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
+        } else {
+            Write-Warning "No entry for $ArchiveFileName in SHA256SUMS.txt; skipping verification."
+        }
+    }
+} catch {
+    Write-Warning "Could not fetch SHA256SUMS.txt; skipping checksum verification."
+} finally {
+    if (Test-Path $TempChecksums) {
+        Remove-Item -Path $TempChecksums -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # 5. Extract Binaries
