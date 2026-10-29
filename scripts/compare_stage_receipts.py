@@ -5,13 +5,16 @@ The tolerance and the probe set are frozen in docs/specs/engine/visual-profiles.
 when every channel is within 2 % of the reference at stage 3 and within 2 bytes at stage 4. A stage
 is compared when both receipts have a value; one that only one side measured fails, and one
 neither side measured is listed as skipped. Probes are matched by name, and a probe whose
-`world_position` or `patch_px` differs between the receipts is a different measurement and fails.
-A stage 3 value must hold RGB or RGBA and a stage 4 value RGB; anything shorter fails. Exits 1 when
-anything fails.
+`world_position` or `patch_px` differs between the receipts is a different measurement and fails,
+and so is one that does not record both fields: two absent values are not evidence of agreement.
+A stage 3 value must hold RGB or RGBA and a stage 4 value RGB; anything shorter fails, and so does
+a non-finite channel, which would otherwise let any candidate satisfy an infinite reference. Exits
+1 when anything fails.
 """
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -39,26 +42,42 @@ def malformed(stage, value):
         return f"needs {counts} channels, has {value!r}"
     if not all(isinstance(channel, (int, float)) and not isinstance(channel, bool) for channel in value):
         return f"has a non-numeric channel: {value!r}"
+    # An infinite reference channel accepts every candidate, because `inf <= relative * inf` holds.
+    # `json.loads` parses the `Infinity` and `NaN` literals by default, so a receipt can carry one.
+    if not all(math.isfinite(channel) for channel in value):
+        return f"has a non-finite channel: {value!r}"
     return None
 
 
 def compare(reference, candidate, relative, tolerance):
     failures, skipped, passed = [], [], []
     for key in POSE_KEYS:
-        if reference["pose"].get(key) != candidate["pose"].get(key):
-            failures.append(f"pose {key}: {reference['pose'].get(key)} != {candidate['pose'].get(key)}")
+        absent = [side for side, posed in (("the reference", reference["pose"]),
+                                           ("the candidate", candidate["pose"])) if key not in posed]
+        if absent:
+            failures.append(f"pose {key}: missing from {' and '.join(absent)}")
+        elif reference["pose"][key] != candidate["pose"][key]:
+            failures.append(f"pose {key}: {reference['pose'][key]} != {candidate['pose'][key]}")
     by_name = {probe["name"]: probe for probe in candidate["probes"]}
     for probe in reference["probes"]:
         other = by_name.pop(probe["name"], None)
         if other is None:
             failures.append(f"{probe['name']}: missing from the candidate")
             continue
-        moved = [key for key in PROBE_KEYS if probe.get(key) != other.get(key)]
-        if moved:
-            failures.extend(
-                f"{probe['name']} {key}: {probe.get(key)} != {other.get(key)}, a different measurement"
-                for key in moved
-            )
+        identity = []
+        for key in PROBE_KEYS:
+            if key not in probe and key not in other:
+                identity.append(f"{probe['name']} {key}: not recorded by either receipt, so the two "
+                                f"probes are not shown to be the same measurement")
+            elif key not in probe:
+                identity.append(f"{probe['name']} {key}: missing from the reference")
+            elif key not in other:
+                identity.append(f"{probe['name']} {key}: missing from the candidate")
+            elif probe[key] != other[key]:
+                identity.append(f"{probe['name']} {key}: {probe[key]} != {other[key]}, "
+                                f"a different measurement")
+        if identity:
+            failures.extend(identity)
             continue
         for stage, check, limit in (
             ("hdr_pre_tonemap", stage3_ok, relative),

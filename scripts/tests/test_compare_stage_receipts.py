@@ -77,6 +77,59 @@ class CompareStageReceiptsTests(unittest.TestCase):
                 self.assertEqual(len(failures), 1)
                 self.assertIn(f"sunlit-thatch {key}", failures[0])
 
+    def test_non_finite_channels_never_pass(self):
+        for stage, bad in [("hdr_pre_tonemap", receipt(hdr=(float("inf"), 0.2, 0.1))),
+                           ("output", receipt(output=(float("nan"), 198.0, 154.0)))]:
+            with self.subTest(stage=stage):
+                failures, _, passed = run(bad, receipt())
+                self.assertNotIn(f"sunlit-thatch {stage}", passed)
+                self.assertIn("the reference has a non-finite channel", failures[0])
+        # A finite candidate must not satisfy an infinite reference channel.
+        failures, _, passed = run(receipt(hdr=(float("inf"), 0.2, 0.1)), receipt(hdr=(1000.0, 0.2, 0.1)))
+        self.assertNotIn("sunlit-thatch hdr_pre_tonemap", passed)
+        self.assertTrue(failures[0].startswith(
+            "sunlit-thatch hdr_pre_tonemap: the reference has a non-finite channel"), failures[0])
+        candidate_failures, _, candidate_passed = run(receipt(), receipt(hdr=(float("inf"), 0.2, 0.1)))
+        self.assertNotIn("sunlit-thatch hdr_pre_tonemap", candidate_passed)
+        self.assertIn("the candidate has a non-finite channel", candidate_failures[0])
+
+    def test_a_probe_missing_identity_fields_is_not_the_same_measurement(self):
+        reference, candidate = receipt(), receipt()
+        for document in (reference, candidate):
+            del document["probes"][0]["world_position"]
+        failures, _, passed = run(reference, candidate)
+        self.assertEqual(passed, [])
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("world_position: not recorded by either receipt", failures[0])
+
+        candidate = receipt()
+        del candidate["probes"][0]["patch_px"]
+        failures, _, passed = run(receipt(), candidate)
+        self.assertEqual(passed, [])
+        self.assertEqual([failure for failure in failures if "patch_px" in failure],
+                         ["sunlit-thatch patch_px: missing from the candidate"])
+
+    def test_a_pose_field_missing_from_both_receipts_fails(self):
+        reference, candidate = receipt(), receipt()
+        del reference["pose"]["worldspace_id"]
+        del candidate["pose"]["worldspace_id"]
+        failures = run(reference, candidate)[0]
+        self.assertIn("pose worldspace_id: missing from the reference and the candidate", failures)
+
+    def test_the_command_rejects_a_receipt_written_with_the_infinity_literal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, candidate = root / "reference.json", root / "candidate.json"
+            reference.write_text(json.dumps(receipt(hdr=(float("inf"), 0.2, 0.1))))
+            self.assertIn("Infinity", reference.read_text())
+            candidate.write_text(json.dumps(receipt()))
+            result = subprocess.run([sys.executable, str(SCRIPT), str(reference), str(candidate)],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            report = json.loads(result.stdout)
+            self.assertNotIn("sunlit-thatch hdr_pre_tonemap", report["passed"])
+            self.assertIn("non-finite", report["failures"][0])
+
     def test_a_stage_only_one_side_measured_fails_and_neither_is_skipped(self):
         candidate = receipt(output=None)
         candidate["probes"][0]["unavailable"]["output"] = "off screen"
