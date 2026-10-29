@@ -287,6 +287,7 @@ type SourceSubtreeNodes<'w, 's> = Query<
         Has<OwnedPrimitiveSource>,
         Has<SourcePrimitiveMesh>,
         Has<Mesh3d>,
+        Has<super::source_identity::SourceSkinJoint>,
     ),
 >;
 
@@ -305,11 +306,13 @@ fn subtree_affects_owned_source(
         if !visited.insert(entity) {
             return true;
         }
-        let Ok((children, tag, owned_source, source_mesh, mesh)) = nodes.get(entity) else {
+        let Ok((children, tag, owned_source, source_mesh, mesh, joint)) = nodes.get(entity) else {
             return true;
         };
-        // The retained owned-source marker also protects a lost or edited ordinal.
-        if owned_source {
+        // The retained owned-source marker also protects a lost or edited ordinal. A skin joint
+        // places a skinned primitive elsewhere in the tree; which ordinals it serves is not
+        // recorded, so moving one counts as moving an owned source.
+        if owned_source || joint {
             return true;
         }
         if let Some(tag) = tag {
@@ -703,6 +706,33 @@ mod tests {
                     .resource::<RuntimeReferenceState>()
                     .revision,
                 0
+            );
+        }
+
+        #[test]
+        fn a_meshless_skin_joint_pose_revokes_whole_reference() {
+            let mut fixture = Fixture::new();
+            let joint = node(&mut fixture.app, fixture.root);
+            fixture
+                .app
+                .world_mut()
+                .entity_mut(joint)
+                .insert(crate::cluster::source_identity::SourceSkinJoint);
+            fixture.app.update();
+            fixture
+                .app
+                .world_mut()
+                .get_mut::<Transform>(joint)
+                .unwrap()
+                .translation
+                .y += 1.0;
+            fixture.app.update();
+            assert!(
+                fixture
+                    .app
+                    .world()
+                    .resource::<RuntimeReferenceState>()
+                    .contains(fixture.reference)
             );
         }
 

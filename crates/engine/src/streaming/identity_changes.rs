@@ -183,6 +183,7 @@ pub(crate) fn install(world: &mut World) {
         SourcePrimitiveTransform,
         SourceStaticModel,
         SourceNodePose,
+        SourceSkinJoint,
         crate::world::components::StreamedCellKey,
         super::AssetFailed,
         super::TerrainCoverage,

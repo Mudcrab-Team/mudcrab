@@ -3,6 +3,8 @@
 //! Node transforms (and the scene root's Creation-to-runtime rotation, which the converter writes
 //! as a node) are baked into the vertex data, so a primitive's positions are in runtime (Y-up)
 //! axes and a reference's TRS applies directly. A mirrored node flips the triangle winding.
+//! A skin in a model that never moves its joints (no animations, no morph targets) is posed at
+//! rest into the same model space, as the stock renderer draws it.
 
 use super::model::{AlphaMode, ModelPrimitive, PrimitiveGeometry, Reject, RejectReason};
 use color_eyre::{
@@ -12,7 +14,10 @@ use color_eyre::{
 use gltf::{Gltf, Node, Semantic, mesh::Mode};
 use serde_json::Value;
 use shared::cluster_material::{stock_requires_sorted_depth, unsupported_feature};
-use shared::cluster_recipe::model_facts::{material_key, parse_glb_json, raw_material};
+use shared::cluster_recipe::model_facts::{
+    material_key, model_rests, parse_glb_json, raw_material,
+};
+use std::collections::HashMap;
 
 type Matrix = [[f32; 4]; 4];
 
@@ -44,12 +49,28 @@ pub fn load_model(bytes: &[u8], glb_path: &str) -> Result<Vec<ModelPrimitive>> {
         .or_else(|| document.scenes().next())
         .ok_or_else(|| eyre!("GLB has no scene"))?;
 
+    let rests = model_rests(
+        document.skins().next().is_some(),
+        document.meshes().any(|mesh| {
+            mesh.primitives()
+                .any(|primitive| primitive.morph_targets().next().is_some())
+        }),
+        document.animations().next().is_some(),
+    );
+    let node_worlds = scene_node_worlds(&scene);
+
     let mut primitives = Vec::new();
     let mut stack: Vec<(Node, Matrix)> = scene.nodes().map(|node| (node, IDENTITY)).collect();
     stack.reverse();
     while let Some((node, parent)) = stack.pop() {
         let world = multiply(&parent, &node.transform().matrix());
         if let Some(mesh) = node.mesh() {
+            let skinning = match node.skin() {
+                Some(skin) if rests => skin_pose(&skin, &world, &node_worlds, &buffers)
+                    .map_or_else(|detail| Skinning::Refused(detail.into()), Skinning::Rest),
+                Some(_) => Skinning::Refused("skin in a document with animations".into()),
+                None => Skinning::None,
+            };
             for primitive in mesh.primitives() {
                 let index = primitives.len() as u32;
                 let material = raw_material(&raw, primitive.material().index())?;
@@ -57,7 +78,7 @@ pub fn load_model(bytes: &[u8], glb_path: &str) -> Result<Vec<ModelPrimitive>> {
                 primitives.push(read_primitive(
                     index,
                     &primitive,
-                    node.skin().is_some(),
+                    &skinning,
                     &world,
                     &buffers,
                     &material,
@@ -72,10 +93,74 @@ pub fn load_model(bytes: &[u8], glb_path: &str) -> Result<Vec<ModelPrimitive>> {
     Ok(primitives)
 }
 
+/// How a mesh node's skin, if any, reaches the cluster.
+enum Skinning {
+    None,
+    /// One matrix per joint, `joint world * inverse bind`, in the scene's model space.
+    Rest(Vec<Matrix>),
+    Refused(String),
+}
+
+/// World matrix of every node reachable from the scene roots, by node index.
+fn scene_node_worlds(scene: &gltf::Scene<'_>) -> HashMap<usize, Matrix> {
+    let mut worlds = HashMap::new();
+    let mut stack: Vec<(Node, Matrix)> = scene.nodes().map(|node| (node, IDENTITY)).collect();
+    while let Some((node, parent)) = stack.pop() {
+        let world = multiply(&parent, &node.transform().matrix());
+        // A node reached twice is not a tree; leave it out so a joint on it is refused.
+        if worlds.insert(node.index(), world).is_some() {
+            worlds.insert(node.index(), [[f32::NAN; 4]; 4]);
+            continue;
+        }
+        stack.extend(node.children().map(|child| (child, world)));
+    }
+    worlds
+}
+
+/// The rest-pose joint matrices of a skin, as the stock renderer computes them from the loaded
+/// scene: each joint's world matrix times its inverse bind matrix (identity when absent). The
+/// skinned node's own transform does not place its vertices; a mirrored one is refused because
+/// its determinant decides the stock path's face winding.
+fn skin_pose(
+    skin: &gltf::Skin<'_>,
+    node_world: &Matrix,
+    node_worlds: &HashMap<usize, Matrix>,
+    buffers: &[Vec<u8>],
+) -> Result<Vec<Matrix>, &'static str> {
+    if determinant3(node_world) <= 0.0 {
+        return Err("skinned node transform is mirrored or degenerate");
+    }
+    let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
+    let inverse_binds: Option<Vec<Matrix>> =
+        reader.read_inverse_bind_matrices().map(Iterator::collect);
+    let joints: Vec<Node> = skin.joints().collect();
+    if inverse_binds
+        .as_ref()
+        .is_some_and(|binds| binds.len() != joints.len())
+    {
+        return Err("inverse bind matrix count differs from the joint count");
+    }
+    joints
+        .iter()
+        .enumerate()
+        .map(|(slot, joint)| {
+            let world = node_worlds
+                .get(&joint.index())
+                .ok_or("joint is not in the scene")?;
+            let bind = inverse_binds.as_ref().map_or(IDENTITY, |binds| binds[slot]);
+            let matrix = multiply(world, &bind);
+            if !matrix.iter().flatten().all(|c| c.is_finite()) {
+                return Err("joint matrix is not finite");
+            }
+            Ok(matrix)
+        })
+        .collect()
+}
+
 fn read_primitive(
     index: u32,
     primitive: &gltf::Primitive<'_>,
-    node_skinned: bool,
+    skinning: &Skinning,
     world: &Matrix,
     buffers: &[Vec<u8>],
     material: &Value,
@@ -105,7 +190,6 @@ fn read_primitive(
         .and_then(|value| value.get("nonRenderingExclusion"))
         .is_some_and(|value| value.as_bool() != Some(false))
         || primitive_has_exclusion(primitive);
-    let skinned = node_skinned || primitive.get(&Semantic::Joints(0)).is_some();
     let effect = family == Some("effect");
 
     let mut geometry = PrimitiveGeometry::default();
@@ -190,9 +274,26 @@ fn read_primitive(
             ));
         }
     }
-    if structural.is_some() {
+    // A refused skin keeps its geometry out like a structural reject would; the reason stays
+    // "skinned" so the report counts it where it always has.
+    let mut skinned = None;
+    if structural.is_none() {
+        match skinning {
+            Skinning::None if primitive.get(&Semantic::Joints(0)).is_some() => {
+                skinned = Some("JOINTS_0 without a skin".to_owned());
+            }
+            Skinning::None => {}
+            Skinning::Refused(detail) => skinned = Some(detail.clone()),
+            Skinning::Rest(joints) => {
+                if let Err(detail) = bake_skin(&mut geometry, primitive, joints, buffers) {
+                    skinned = Some(detail.to_owned());
+                }
+            }
+        }
+    }
+    if structural.is_some() || skinned.is_some() {
         geometry = PrimitiveGeometry::default();
-    } else {
+    } else if !matches!(skinning, Skinning::Rest(_)) {
         bake_transform(&mut geometry, world);
     }
     let bounds = bounds_of(&geometry.positions);
@@ -208,8 +309,8 @@ fn read_primitive(
             RejectReason::EffectShader,
             "shaderFamily effect",
         ))
-    } else if skinned {
-        Some(Reject::new(RejectReason::Skinned, "skin or JOINTS_0"))
+    } else if let Some(detail) = skinned {
+        Some(Reject::new(RejectReason::Skinned, detail))
     } else if non_rendering {
         Some(Reject::new(
             RejectReason::NonRendering,
@@ -268,9 +369,7 @@ fn bake_transform(geometry: &mut PrimitiveGeometry, world: &Matrix) {
     }
     let linear = |row: usize, column: usize| world[column][row];
     let cofactor = cofactor_matrix(&linear);
-    let determinant = linear(0, 0) * (linear(1, 1) * linear(2, 2) - linear(1, 2) * linear(2, 1))
-        - linear(0, 1) * (linear(1, 0) * linear(2, 2) - linear(1, 2) * linear(2, 0))
-        + linear(0, 2) * (linear(1, 0) * linear(2, 1) - linear(1, 1) * linear(2, 0));
+    let determinant = determinant3(world);
     for position in &mut geometry.positions {
         let [x, y, z] = *position;
         *position = [
@@ -309,6 +408,104 @@ fn bake_transform(geometry: &mut PrimitiveGeometry, world: &Matrix) {
             triangle.swap(1, 2);
         }
     }
+}
+
+/// Poses a skinned primitive at rest the way bevy_pbr's skinning shader does: each vertex takes
+/// `sum(weight * joint matrix)` from JOINTS_0/WEIGHTS_0 (weights as authored, not renormalised),
+/// normals the blended matrix's inverse transpose and tangents its linear part. A blend with a
+/// non-positive determinant would need per-vertex winding the cluster cannot carry, so it is
+/// refused, as are a second influence set and joint slots past the skin.
+fn bake_skin(
+    geometry: &mut PrimitiveGeometry,
+    primitive: &gltf::Primitive<'_>,
+    joints: &[Matrix],
+    buffers: &[Vec<u8>],
+) -> Result<(), &'static str> {
+    if primitive.get(&Semantic::Joints(1)).is_some()
+        || primitive.get(&Semantic::Weights(1)).is_some()
+    {
+        return Err("more than four joint influences");
+    }
+    let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
+    let indices: Vec<[u16; 4]> = reader
+        .read_joints(0)
+        .ok_or("skin without JOINTS_0")?
+        .into_u16()
+        .collect();
+    let weights: Vec<[f32; 4]> = reader
+        .read_weights(0)
+        .ok_or("skin without WEIGHTS_0")?
+        .into_f32()
+        .collect();
+    let vertex_count = geometry.positions.len();
+    if indices.len() != vertex_count || weights.len() != vertex_count {
+        return Err("JOINTS_0 or WEIGHTS_0 length differs from POSITION");
+    }
+    for vertex in 0..vertex_count {
+        let mut blend = [[0.0f32; 4]; 4];
+        for (&joint, &weight) in indices[vertex].iter().zip(&weights[vertex]) {
+            if weight == 0.0 {
+                continue;
+            }
+            let matrix = joints
+                .get(usize::from(joint))
+                .ok_or("joint slot outside the skin")?;
+            for (column, source) in blend.iter_mut().zip(matrix) {
+                for (out, value) in column.iter_mut().zip(source) {
+                    *out += weight * value;
+                }
+            }
+        }
+        if determinant3(&blend) <= 0.0 {
+            return Err("blended joint matrix is mirrored or degenerate");
+        }
+        let linear = |row: usize, column: usize| blend[column][row];
+        let [x, y, z] = geometry.positions[vertex];
+        geometry.positions[vertex] = [
+            linear(0, 0) * x + linear(0, 1) * y + linear(0, 2) * z + blend[3][0],
+            linear(1, 0) * x + linear(1, 1) * y + linear(1, 2) * z + blend[3][1],
+            linear(2, 0) * x + linear(2, 1) * y + linear(2, 2) * z + blend[3][2],
+        ];
+        // Positive determinant: the cofactor matrix points the same way as the inverse transpose.
+        let cofactor = cofactor_matrix(&linear);
+        geometry.normals[vertex] = normalise(apply3(&cofactor, geometry.normals[vertex]));
+        if let Some(tangent) = geometry
+            .tangents
+            .as_mut()
+            .and_then(|tangents| tangents.get_mut(vertex))
+        {
+            let direction = normalise([
+                linear(0, 0) * tangent[0] + linear(0, 1) * tangent[1] + linear(0, 2) * tangent[2],
+                linear(1, 0) * tangent[0] + linear(1, 1) * tangent[1] + linear(1, 2) * tangent[2],
+                linear(2, 0) * tangent[0] + linear(2, 1) * tangent[1] + linear(2, 2) * tangent[2],
+            ]);
+            *tangent = [direction[0], direction[1], direction[2], tangent[3]];
+        }
+        let finite = geometry.positions[vertex]
+            .iter()
+            .chain(&geometry.normals[vertex])
+            .chain(
+                geometry
+                    .tangents
+                    .as_ref()
+                    .and_then(|tangents| tangents.get(vertex))
+                    .into_iter()
+                    .flatten(),
+            )
+            .all(|c| c.is_finite());
+        if !finite {
+            return Err("skinned vertex is not finite");
+        }
+    }
+    Ok(())
+}
+
+/// Determinant of a column-major matrix's upper-left 3x3.
+fn determinant3(m: &Matrix) -> f32 {
+    let linear = |row: usize, column: usize| m[column][row];
+    linear(0, 0) * (linear(1, 1) * linear(2, 2) - linear(1, 2) * linear(2, 1))
+        - linear(0, 1) * (linear(1, 0) * linear(2, 2) - linear(1, 2) * linear(2, 0))
+        + linear(0, 2) * (linear(1, 0) * linear(2, 1) - linear(1, 1) * linear(2, 0))
 }
 
 /// Cofactor matrix of a 3x3 matrix: the inverse transpose scaled by the determinant.
@@ -454,6 +651,184 @@ mod tests {
                 Some(flag.into())
             );
         }
+    }
+
+    /// One triangle skinned to two joints: joint slot 0 is node 1 (world translation (5, 0, 10)),
+    /// slot 1 is node 0 (world (0, 0, 10)) with the inverse bind that cancels it. Vertex 0 follows
+    /// slot 0, vertex 1 is split half and half, vertex 2 follows slot 1. The skinned node 2 sits at
+    /// (100, 0, 0), which skinning ignores. `skin` and `animated` toggle the skin binding and a
+    /// one-key translation animation on node 1.
+    fn skinned_triangle(skin: bool, animated: bool) -> Vec<u8> {
+        skinned_triangle_with(skin, animated, |_| {})
+    }
+
+    /// [`skinned_triangle`] with a last edit to its JSON document.
+    fn skinned_triangle_with(
+        skin: bool,
+        animated: bool,
+        tweak: impl FnOnce(&mut serde_json::Value),
+    ) -> Vec<u8> {
+        use serde_json::json;
+        let mut binary = Vec::new();
+        let mut floats = |values: &[f32]| {
+            for value in values {
+                binary.extend_from_slice(&value.to_le_bytes());
+            }
+        };
+        floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]); // positions, 0
+        floats(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]); // normals, 36
+        floats(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]); // uvs, 72
+        binary.extend_from_slice(&[0, 0, 1, 0, 2, 0, 0, 0]); // u16 indices + pad, 96
+        binary.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0]); // joints, 104
+        let mut floats = |values: &[f32]| {
+            for value in values {
+                binary.extend_from_slice(&value.to_le_bytes());
+            }
+        };
+        floats(&[1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]); // weights, 116
+        let identity: Vec<f32> = IDENTITY.iter().flatten().copied().collect();
+        floats(&identity); // inverse bind slot 0, 164
+        let mut untranslate = identity.clone();
+        untranslate[14] = -10.0;
+        floats(&untranslate); // inverse bind slot 1, 228
+        floats(&[0.0]); // animation key time, 292
+        let view = |offset: usize, length: usize| json!({"buffer": 0, "byteOffset": offset, "byteLength": length});
+        let mut mesh_node = json!({"mesh": 0, "translation": [100.0, 0.0, 0.0]});
+        if skin {
+            mesh_node["skin"] = json!(0);
+        }
+        let mut document = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": binary.len()}],
+            "bufferViews": [view(0, 36), view(36, 36), view(72, 24), view(96, 6), view(104, 12),
+                view(116, 48), view(164, 128), view(292, 4)],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                    "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"},
+                {"bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR"},
+                {"bufferView": 4, "componentType": 5121, "count": 3, "type": "VEC4"},
+                {"bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC4"},
+                {"bufferView": 6, "componentType": 5126, "count": 2, "type": "MAT4"},
+                {"bufferView": 7, "componentType": 5126, "count": 1, "type": "SCALAR",
+                    "min": [0.0], "max": [0.0]},
+                {"bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1,
+                "TEXCOORD_0": 2, "JOINTS_0": 4, "WEIGHTS_0": 5}, "indices": 3, "material": 0}]}],
+            "materials": [{"extras": {"openSkyrim": {"shaderFamily": "lighting",
+                "lightingShaderType": "default", "normalConvention": "directx"}}}],
+            "nodes": [
+                {"translation": [0.0, 0.0, 10.0], "children": [1, 2]},
+                {"translation": [5.0, 0.0, 0.0]},
+                mesh_node
+            ],
+            "skins": [{"joints": [1, 0], "inverseBindMatrices": 6}],
+            "scene": 0,
+            "scenes": [{"nodes": [0]}]
+        });
+        if animated {
+            document["animations"] = json!([{
+                "channels": [{"sampler": 0, "target": {"node": 1, "path": "translation"}}],
+                "samplers": [{"input": 7, "output": 8}]
+            }]);
+        }
+        tweak(&mut document);
+        crate::cluster::test_support::glb(&document, &binary)
+    }
+
+    fn skin_reject(bytes: &[u8]) -> Option<Reject> {
+        load_model(bytes, "meshes/x/tree.glb").unwrap()[0]
+            .reject
+            .clone()
+    }
+
+    #[test]
+    fn a_rotated_joint_turns_positions_and_normals_with_it() {
+        use serde_json::json;
+        // Joint slot 0 also turns 90 degrees about Y: +Z normals face +X, (1, 0, 0) goes to (0, 0, -1).
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let bytes = skinned_triangle_with(true, false, |document| {
+            document["nodes"][1]["rotation"] = json!([0.0, half, 0.0, half]);
+        });
+        let loaded = load_model(&bytes, "meshes/x/tree.glb").unwrap();
+        assert_eq!(loaded[0].reject, None);
+        let geometry = &loaded[0].geometry;
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-5);
+        assert!(close(geometry.positions[0], [5.0, 0.0, 10.0]));
+        assert!(
+            close(geometry.normals[0], [1.0, 0.0, 0.0]),
+            "{:?}",
+            geometry.normals[0]
+        );
+        // Half joint 0, half identity: the blended linear part is not a rotation, and the
+        // normal follows its inverse transpose, renormalised.
+        assert!(
+            close(geometry.positions[1], [3.0, 0.0, 4.5]),
+            "{:?}",
+            geometry.positions[1]
+        );
+        assert!(close(geometry.normals[2], [0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn unbakeable_skins_stay_refused_with_their_cause() {
+        use serde_json::json;
+        type Tweak = fn(&mut serde_json::Value);
+        let cases: [(&str, Tweak); 3] = [
+            ("mirrored", |document| {
+                document["nodes"][2]["scale"] = json!([-1.0, 1.0, 1.0]);
+            }),
+            ("joint is not in the scene", |document| {
+                document["nodes"][0]["children"] = json!([2]);
+                document["scenes"][0]["nodes"] = json!([0]);
+            }),
+            ("more than four joint influences", |document| {
+                let attributes = &mut document["meshes"][0]["primitives"][0]["attributes"];
+                attributes["JOINTS_1"] = json!(4);
+                attributes["WEIGHTS_1"] = json!(5);
+            }),
+        ];
+        for (cause, tweak) in cases {
+            let reject = skin_reject(&skinned_triangle_with(true, false, tweak)).unwrap();
+            assert_eq!(reject.reason, RejectReason::Skinned, "{cause}");
+            assert!(reject.detail.contains(cause), "{cause}: {}", reject.detail);
+        }
+    }
+
+    #[test]
+    fn a_resting_skin_is_posed_like_the_stock_skinning_shader() {
+        let loaded = load_model(&skinned_triangle(true, false), "meshes/x/tree.glb").unwrap();
+        assert_eq!(loaded[0].reject, None);
+        let positions = &loaded[0].geometry.positions;
+        let expected = [[5.0, 0.0, 10.0], [3.5, 0.0, 5.0], [0.0, 1.0, 0.0]];
+        for (actual, expected) in positions.iter().zip(expected) {
+            for axis in 0..3 {
+                assert!(
+                    (actual[axis] - expected[axis]).abs() < 1e-5,
+                    "{positions:?} != {expected:?}"
+                );
+            }
+        }
+        assert_eq!(loaded[0].bounds, ([0.0, 0.0, 0.0], [5.0, 1.0, 10.0]));
+    }
+
+    #[test]
+    fn a_skin_in_an_animated_model_stays_refused() {
+        let loaded = load_model(&skinned_triangle(true, true), "meshes/x/tree.glb").unwrap();
+        let reject = loaded[0].reject.as_ref().unwrap();
+        assert_eq!(reject.reason, RejectReason::Skinned);
+        assert!(loaded[0].geometry.positions.is_empty());
+    }
+
+    #[test]
+    fn joint_influences_without_a_skin_stay_refused() {
+        let loaded = load_model(&skinned_triangle(false, false), "meshes/x/tree.glb").unwrap();
+        assert_eq!(
+            loaded[0].reject.as_ref().map(|reject| reject.reason),
+            Some(RejectReason::Skinned)
+        );
     }
 
     fn point(position: [f32; 3], normal: [f32; 3]) -> PrimitiveGeometry {

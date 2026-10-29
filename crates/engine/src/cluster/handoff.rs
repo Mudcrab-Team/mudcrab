@@ -674,7 +674,7 @@ type NodeState = (
     Option<&'static ChildOf>,
     Option<&'static bevy::gltf::GltfExtras>,
     Has<crate::billboard::Billboard>,
-    Has<bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
     Has<bevy::mesh::morph::MorphWeights>,
     Has<bevy::animation::AnimationTargetId>,
     Has<bevy::mesh::morph::MeshMorphWeights>,
@@ -1235,6 +1235,8 @@ impl ReferenceRootMemo {
 
 /// The model-space matrix uses exactly the same parent-first products as the
 /// loader baseline. A changed local pose or a changed hierarchy revokes binding.
+/// A skinned node also needs every joint at its loaded pose: the cluster holds
+/// the skin baked at rest, and the joints, not this chain, place its vertices.
 fn model_matrix(entity: Entity, root: Entity, nodes: &Query<NodeState>) -> Option<Mat4> {
     let mut at = entity;
     let mut matrix = Mat4::IDENTITY;
@@ -1245,8 +1247,10 @@ fn model_matrix(entity: Entity, root: Entity, nodes: &Query<NodeState>) -> Optio
         }
         let (pose, baseline, parent, extras, billboard, skin, morph, _animation, mesh_morph) =
             nodes.get(at).ok()?;
+        if skin.is_some_and(|skin| !joints_at_rest(skin, root, nodes)) {
+            return None;
+        }
         if billboard
-            || skin
             || morph
             || mesh_morph
             || extras.is_some_and(|extras| {
@@ -1262,6 +1266,59 @@ fn model_matrix(entity: Entity, root: Entity, nodes: &Query<NodeState>) -> Optio
         at = parent?.parent();
     }
     matrix.is_finite().then_some(matrix)
+}
+
+/// Every joint reaches `root` through nodes at their loaded poses.
+fn joints_at_rest(
+    skin: &bevy::mesh::skinning::SkinnedMesh,
+    root: Entity,
+    nodes: &Query<NodeState>,
+) -> bool {
+    skin.joints.iter().all(|&joint| {
+        let mut at = joint;
+        let mut seen = HashSet::new();
+        while at != root {
+            if !seen.insert(at) {
+                return false;
+            }
+            let Ok((pose, baseline, parent, ..)) = nodes.get(at) else {
+                return false;
+            };
+            if baseline.is_none_or(|baseline| baseline.0 != *pose) {
+                return false;
+            }
+            let Some(parent) = parent else {
+                return false;
+            };
+            at = parent.parent();
+        }
+        true
+    })
+}
+
+/// [`joints_at_rest`] on a scene template, whose joints end at a parentless node.
+fn template_joints_at_rest(world: &World, skin: &bevy::mesh::skinning::SkinnedMesh) -> bool {
+    skin.joints.iter().all(|&joint| {
+        let mut at = joint;
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(at) {
+                return false;
+            }
+            let (Some(pose), Some(baseline)) =
+                (world.get::<Transform>(at), world.get::<SourceNodePose>(at))
+            else {
+                return false;
+            };
+            if baseline.0 != *pose {
+                return false;
+            }
+            match world.get::<ChildOf>(at) {
+                Some(parent) => at = parent.parent(),
+                None => return true,
+            }
+        }
+    })
 }
 
 fn template_primitive_valid(
@@ -1299,7 +1356,9 @@ fn template_primitive_valid(
             .get::<SourceNodePose>(at)
             .is_none_or(|baseline| baseline.0 != *pose)
             || world.get::<crate::billboard::Billboard>(at).is_some()
-            || world.get::<bevy::mesh::skinning::SkinnedMesh>(at).is_some()
+            || world
+                .get::<bevy::mesh::skinning::SkinnedMesh>(at)
+                .is_some_and(|skin| !template_joints_at_rest(world, skin))
             || world.get::<bevy::mesh::morph::MorphWeights>(at).is_some()
             || world
                 .get::<bevy::mesh::morph::MeshMorphWeights>(at)
@@ -4646,8 +4705,17 @@ mod source_proof_tests {
                             authored: Quat::IDENTITY,
                         });
                     }
+                    // A joint with no loaded pose can be anywhere.
                     1 => {
-                        primitive.insert(SkinnedMesh::default());
+                        let joint = primitive.world_scope(|world| {
+                            world
+                                .spawn((Transform::default(), ChildOf(input.root)))
+                                .id()
+                        });
+                        primitive.insert(SkinnedMesh {
+                            joints: vec![joint],
+                            ..default()
+                        });
                     }
                     2 => {
                         primitive.insert(MorphWeights::new(vec![0.5], None).unwrap());
@@ -4689,6 +4757,43 @@ mod source_proof_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_skin_qualifies_only_while_every_joint_keeps_its_loaded_pose() {
+        let mut input = fixture();
+        let pose = Transform::from_xyz(0.0, 0.0, 4.0);
+        let joint = input
+            .asset
+            .world
+            .spawn((pose, SourceNodePose(pose), ChildOf(input.parent)))
+            .id();
+        input
+            .asset
+            .world
+            .entity_mut(input.primitive)
+            .insert(SkinnedMesh {
+                joints: vec![joint, input.root],
+                ..default()
+            });
+        assert!(template_valid(&input.asset, &HashSet::new()));
+        let wrapper = add_wrapper(&mut input);
+        assert_eq!(
+            evaluate_model(&mut input.asset.world, input.primitive, wrapper),
+            Some(input.model_matrix)
+        );
+        input
+            .asset
+            .world
+            .get_mut::<Transform>(joint)
+            .unwrap()
+            .translation
+            .z += 1.0;
+        assert!(!template_valid(&input.asset, &HashSet::new()));
+        assert_eq!(
+            evaluate_model(&mut input.asset.world, input.primitive, wrapper),
+            None
+        );
     }
 
     #[test]
@@ -7041,6 +7146,41 @@ mod extract_source_tests {
             .world_mut()
             .entity_mut(input.root)
             .insert(input.root_pose);
+        input.assert_bound(primitive);
+    }
+
+    #[test]
+    fn a_skinned_source_binds_at_rest_and_moving_a_meshless_joint_unbinds_it() {
+        let mut input = Fixture::pending();
+        let primitive = input.spawn_stock();
+        input.assert_bound(primitive);
+        let pose = Transform::from_xyz(0.0, 0.0, 4.0);
+        let joint = input
+            .app
+            .world_mut()
+            .spawn((pose, SourceNodePose(pose), ChildOf(input.root)))
+            .id();
+        input
+            .app
+            .world_mut()
+            .entity_mut(primitive)
+            .insert(bevy::mesh::skinning::SkinnedMesh {
+                joints: vec![joint],
+                ..default()
+            });
+        input.assert_bound(primitive);
+        // The joint is not on the primitive's ancestor chain; only its skin dependency
+        // can bring this change to the primitive.
+        input
+            .app
+            .world_mut()
+            .get_mut::<Transform>(joint)
+            .unwrap()
+            .translation
+            .x += 1.0;
+        input.extract();
+        assert!(input.sources().bound.is_empty());
+        input.app.world_mut().entity_mut(joint).insert(pose);
         input.assert_bound(primitive);
     }
 
