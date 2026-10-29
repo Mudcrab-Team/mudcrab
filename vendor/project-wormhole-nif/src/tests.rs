@@ -572,20 +572,18 @@ mod multi_bound {
     fn shapes_under_ordered_billboard_and_value_nodes_keep_their_parents() {
         // root -> ordered -> billboard -> value -> shape, as in the forge's fire and glow.
         let quarter_turn = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let nif = nif_file(
             vec![
+                // Skyrim places a model by replacing the root block's transform, and the
+                // converter publishes the root without one. Keep it identity here so the
+                // expected placement below never encodes a transform the model drops.
                 parse_block(
-                    &node_bytes_with_transform(0, 1, [10.0, 20.0, 30.0], 2.0, quarter_turn),
+                    &node_bytes_with_transform(0, 1, [0.0; 3], 1.0, identity),
                     "NiNode",
                 ),
                 parse_block(
-                    &ordered_node_bytes_with_transform(
-                        1,
-                        2,
-                        [1.0, 0.0, 0.0],
-                        1.0,
-                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                    ),
+                    &ordered_node_bytes_with_transform(1, 2, [10.0, 20.0, 30.0], 2.0, quarter_turn),
                     "BSOrderedNode",
                 ),
                 {
@@ -678,8 +676,10 @@ mod multi_bound {
             * local(billboard_index)
             * local(value_index)
             * local(shape_index);
+        // Shape at the origin through value (0, 0, 4) and billboard (0, 3, 0), then the ordered
+        // node's quarter turn, double scale and (10, 20, 30) placement: (4, 20, 38).
         let placement = inherited.transform_point3(glam::Vec3::ZERO);
-        assert!((placement - glam::Vec3::new(4.0, 22.0, 38.0)).length() < 1.0e-4);
+        assert!((placement - glam::Vec3::new(4.0, 20.0, 38.0)).length() < 1.0e-4);
     }
 }
 
