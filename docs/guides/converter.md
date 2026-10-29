@@ -10,6 +10,7 @@ launcher's settings.
 - [Repair a failed conversion](#repair-a-failed-conversion)
 - [GPU texture encoding](#gpu-texture-encoding)
 - [Archive extraction](#archive-extraction)
+- [Cluster geometry](#cluster-geometry)
 - [Asset compatibility notes](#asset-compatibility-notes)
 
 For the format-level design, see the [converter specs](../specs/converters/) and
@@ -116,6 +117,64 @@ fresh extraction flushes and requires verified reuse. Resuming validates those b
 reconstructs missing or damaged files; archive ordering still determines
 which override wins. Containing directories are also flushed on Unix;
 portable directory flushing remains a Windows limitation.
+
+## Cluster geometry
+
+Cluster geometry is an optional way to prepare distant opaque static objects and terrain: the
+converter builds meshlet clusters instead of baked object LOD, tree billboards and terrain LOD
+chunks. The format is described in
+[ADR-0013](../adr/0013-cluster-lod-payload-format.md).
+
+The `meshopt-cluster` crate, used only by the converter, compiles the vendored meshoptimizer 1.3
+(`vendor/meshoptimizer`) as C++17 through the `cc` crate. No CMake, system library or download is
+involved; the C and C++ compiler already listed in the
+[README prerequisites](../../README.md#prerequisites) is enough: Visual Studio Build Tools on
+Windows, Xcode Command Line Tools on macOS, GCC or Clang on Linux.
+
+Choose the mode with `--lod-mode`:
+
+```bash
+cargo run --release -p converter --bin converter -- "<Skyrim Data>" "<output directory>" --lod-mode cluster
+```
+
+- `baked` (default) keeps native object and tree LOD and baked terrain; nothing else changes.
+- `cluster` builds a cluster-only conversion that always includes trees and terrain and omits the
+  baked products. It cannot be combined with `--no-lod` or `--extract-all-archive-files`.
+- `auto` keeps the baked base and derives a cluster overlay after publishing it. The converting
+  machine's GPU adapter is probed once and recorded; derivation runs even when the probe reports
+  missing runtime features. `--cluster-terrain` adds terrain to the overlay, and
+  `--cluster-triangle-threshold N` sets the smallest primitive that gets clusters (default 1024;
+  `cluster` mode always uses 1).
+
+What `cluster` mode omits and retains is listed in
+[`CLUSTER-GEOMETRY.md`](../../crates/converter/CLUSTER-GEOMETRY.md).
+
+The overlay is written to `<output directory>/derived/clusters-<settings id>`. In `cluster` mode
+the base `conversion-manifest.json` records `geometry_mode` and the relative `cluster_package`
+before the base is published, and the engine selects that package from it. A failed derivation
+leaves the base valid and prints the command that retries only the overlay.
+
+An overlay can also be derived, or rebuilt with other settings, from an existing base:
+
+```bash
+cargo run --release -p converter --bin converter -- derive-clusters "<output directory>" --terrain --include-trees --jobs 8
+```
+
+- `--terrain` and `--include-trees` add the terrain and tree clusters the engine requires.
+- `--terrain-sources "<raw DDS root>"` supplies the landscape textures; it requires `--terrain` and
+  is needed only when the base has no `vfs` folder.
+- `--triangle-threshold N` (default 1024) must be 1 for a base converted with `--lod-mode cluster`.
+- `--jobs N` sets the worker count (default: available parallelism).
+- `--replace` overwrites an existing overlay with the same settings; without it the command refuses.
+- `--label L` names the overlay for `--clusters` (default `default`), and `--keep-failed-staging`
+  keeps a failed run's staging folder.
+
+`refresh-extensions "<output directory>"` recomputes the manifest's extension list (content hash and
+stats) from the folder. It repairs a stale list only and refuses anything it cannot prove; a
+normal conversion does this by itself.
+
+A reconversion keeps the previous derived overlays. Add `--discard-derived` to retire them once the
+new base has published successfully.
 
 ## Asset compatibility notes
 
