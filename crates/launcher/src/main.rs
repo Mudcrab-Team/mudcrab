@@ -55,46 +55,65 @@ pub struct LauncherPlugin;
 impl Plugin for LauncherPlugin {
     /// Configures launcher system ordering, UI setup, MO2 settings, and engine launch handling.
     fn build(&self, app: &mut App) {
-        app.configure_sets(
-            Update,
-            (
-                LauncherSet::Input,
-                LauncherSet::Logic,
-                LauncherSet::Actuate,
-                LauncherSet::Draw,
+        app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin)
+            .configure_sets(
+                Update,
+                (
+                    LauncherSet::Input,
+                    LauncherSet::Logic,
+                    LauncherSet::Actuate,
+                    LauncherSet::Draw,
+                )
+                    .chain(),
             )
-                .chain(),
-        )
-        .init_state::<LauncherState>()
-        .add_plugins(ConversionPanelPlugin)
-        .add_systems(Startup, setup_ui)
-        .add_systems(
-            Update,
-            (handle_play_button_click, handle_mod_drag_and_drop).in_set(LauncherSet::Input),
-        )
-        .add_systems(
-            Update,
-            (sync_launcher_state, draw_play).in_set(LauncherSet::Draw),
-        )
-        .add_systems(Update, watch_engine_process)
-        .add_systems(OnEnter(LauncherState::LaunchingEngine), launch_engine);
+            .init_state::<LauncherState>()
+            .add_plugins(ConversionPanelPlugin)
+            .add_systems(Startup, setup_ui)
+            .add_systems(
+                PostStartup,
+                clear_initial_window_focus.after(bevy::input_focus::set_initial_focus),
+            )
+            .add_systems(
+                Update,
+                (handle_play_button_click, handle_mod_drag_and_drop).in_set(LauncherSet::Input),
+            )
+            .add_systems(
+                Update,
+                (sync_launcher_state, draw_play).in_set(LauncherSet::Draw),
+            )
+            .add_systems(Update, watch_engine_process)
+            .add_systems(OnEnter(LauncherState::LaunchingEngine), launch_engine);
         mo2_settings::install(app);
     }
 }
 
+// A window is the keyboard dispatch fallback, not a UI tab stop. Leaving it
+// focused makes the first Tab report NoTabGroupForCurrentFocus before recovering.
+fn clear_initial_window_focus(
+    focus: Option<ResMut<bevy::input_focus::InputFocus>>,
+    windows: Query<Entity, With<bevy::window::PrimaryWindow>>,
+) {
+    if let Some(mut focus) = focus
+        && windows.iter().any(|window| focus.get() == Some(window))
+    {
+        focus.clear();
+    }
+}
+
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Mudcrab Launcher & Mod Manager".into(),
-                resolution: WindowResolution::new(900, 600),
-                resizable: false,
-                ..default()
-            }),
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Mudcrab Launcher & Mod Manager".into(),
+            // Leave room for the geometry option and the existing notice/control rows.
+            resolution: WindowResolution::new(900, 660),
+            resizable: false,
             ..default()
-        }))
-        .add_plugins(LauncherPlugin)
-        .run();
+        }),
+        ..default()
+    }))
+    .add_plugins(LauncherPlugin);
+    app.run();
 }
 
 #[cfg(test)]

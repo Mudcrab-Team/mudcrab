@@ -50,12 +50,43 @@ const CHECK_PROGRESS_STEPS: usize = 200;
 /// the pipeline waits rather than dropping anything.
 const CHANNEL_DEPTH: usize = 256;
 
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct StartedConfiguration {
+    pub(super) lod_mode: converter::cluster::LodMode,
+    pub(super) cluster_terrain: bool,
+    pub(super) data_dir: PathBuf,
+    pub(super) output_dir: PathBuf,
+    pub(super) resume_staging: Option<PathBuf>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static STARTED_CONFIGURATIONS: std::cell::RefCell<Vec<StartedConfiguration>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(super) fn take_started_configurations() -> Vec<StartedConfiguration> {
+    STARTED_CONFIGURATIONS.with(|started| std::mem::take(&mut *started.borrow_mut()))
+}
+
 /// Starts `config` on its own thread and returns the run's stop button. Every message the run
 /// produces arrives on `tx`; the thread ends when the pipeline does, however it ends.
 ///
 /// A run that cannot even start (no runtime, no thread) reports that as a failure on the same
 /// channel, so the window has one path for everything that goes wrong.
 pub fn spawn(config: PipelineConfig, tx: Sender<RunMessage>) -> Cancellation {
+    #[cfg(test)]
+    STARTED_CONFIGURATIONS.with(|started| {
+        started.borrow_mut().push(StartedConfiguration {
+            lod_mode: config.lod_mode,
+            cluster_terrain: config.cluster_terrain,
+            data_dir: config.data_dir.clone(),
+            output_dir: config.output_dir.clone(),
+            resume_staging: config.resume_staging.clone(),
+        });
+    });
     let cancellation = Cancellation::new();
     let stopped = cancellation.clone();
     let failure_tx = tx.clone();
