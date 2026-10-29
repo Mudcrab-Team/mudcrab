@@ -23,17 +23,23 @@ refuses merged terrain for the whole run, deliberately: the converter transcodes
 into the BC7 class, so a table that still names one is a converter fault, not content to work
 around one cell at a time.
 
-Null or absent base assignments use Skyrim's default land diffuse and normal, never a white
-base. The quadrant path binds `textures/landscape/dirt02.ktx2` and
-`textures/landscape/dirt02_n.ktx2`, including quadrants without stored texture layers. Zero
-overlays remain unresolved slots with their existing weights and no image requests. Missing
-nonzero LTEX diffuse images retain the existing validation error.
+The quadrant path corrects null or absent base assignments by binding
+`textures/landscape/dirt02.ktx2` and `textures/landscape/dirt02_n.ktx2`, including quadrants
+without stored texture layers. Both images participate in streaming resource reservations.
+Zero overlays retain their existing unresolved slots and weights without image requests;
+missing nonzero LTEX diffuse images retain the existing validation error.
 
-Merged tables must record a `skyrim_ini` default with diffuse and normal paths, and entry 0
-must bind a normal as well as a diffuse. Generated-white, fallback-white, legacy tables without
-settings, and incomplete default pairs are refused and use the quadrant path. This also applies
-to tables produced with an explicit converter `white` request: runtime gameplay has no white
-base override. Tables with a recorded Skyrim.ini default pair keep their configured arrays.
+This correction does not change merged table admission or replace baked array entry 0. Existing
+merged packs with a white default need compatible arrays regenerated with the converter's
+`--merged-terrain --terrain-default-texture skyrim-ini` options. Without `--terrain-ini FILE`,
+that option uses the built-in Dirt02 diffuse and normal; with it, the converter reads
+`[Landscape]` `sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture`. Confirm the rebuilt
+table records `settings.default = "skyrim_ini"`, both default paths, and an entry-zero normal
+binding: a requested default whose assets cannot be converted can still fall back to white.
+Regenerate and publish the table, arrays and cell chunks as one compatible pack; editing the
+JSON provenance alone cannot correct baked pixels. The runtime adds no fallback from usable
+merged terrain to the ordinary six-layer cache, which could discard painted layers. This is a
+quadrant null-base correction, not complete merged-terrain coverage of #386.
 
 ## Per cell
 
