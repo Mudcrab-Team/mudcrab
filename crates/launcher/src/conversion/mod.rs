@@ -167,6 +167,7 @@ impl Plugin for ConversionLogicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConversionStatus>()
             .init_resource::<GamePathConfig>()
+            .init_resource::<settings::UserChosenPaths>()
             .init_resource::<settings::ConversionSettings>()
             .init_resource::<crate::mo2_settings::SourceSettings>()
             .init_resource::<CurrentConversion>()
@@ -408,6 +409,7 @@ pub fn output_is_complete(output: &Path) -> bool {
         .is_some_and(|manifest| {
             manifest.complete
                 && manifest.failures.is_empty()
+                && validate_output_geometry(output, &manifest.geometry).is_ok()
                 && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
                     ..=converter::cache::CONVERTER_SCHEMA_VERSION)
                     .contains(&manifest.schema_version)
@@ -430,6 +432,20 @@ pub fn output_is_complete(output: &Path) -> bool {
                                 })
                     })
         })
+}
+
+/// Checks the already parsed geometry selector and its recorded package metadata.
+/// Runtime payload certification remains with the engine.
+pub fn validate_output_geometry(
+    output: &Path,
+    geometry: &shared::geometry::GeometryManifest,
+) -> Result<(), String> {
+    geometry.validate().map_err(|error| format!("{error:#}"))?;
+    if let Some(package) = &geometry.cluster_package {
+        shared::cluster_overlay::read_metadata(&output.join(package))
+            .map_err(|error| format!("{error:#}"))?;
+    }
+    Ok(())
 }
 
 /// Keeps [`OutputReady`] and [`OutputHasManifest`] up to date. The check reads the output's
