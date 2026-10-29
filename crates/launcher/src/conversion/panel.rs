@@ -543,6 +543,7 @@ pub fn click_controls(
     engine: Option<Res<EngineProcess>>,
     mut source: Option<ResMut<crate::mo2_settings::SourceSettings>>,
     mut paths: ResMut<GamePathConfig>,
+    mut chosen: Option<ResMut<super::settings::UserChosenPaths>>,
     mut inputs: ResMut<PendingInputs>,
     mut status: ResMut<ConversionStatus>,
 ) {
@@ -573,9 +574,19 @@ pub fn click_controls(
         }
         match control {
             ControlButton::Detect => match game_detection::find_skyrim_data_dir() {
-                Some(data) => {
-                    paths.skyrim_data_path = Some(data);
-                    status.push_notice("Found Skyrim's Data folder.");
+                Some(data) => match std::path::absolute(&data) {
+                    Ok(data) => {
+                        // Detect is an explicit folder choice; keep the next launch on
+                        // the same Data folder that Start and Resume now use.
+                        if let Some(chosen) = &mut chosen {
+                            chosen.skyrim_data_path = Some(data.clone());
+                        }
+                        paths.skyrim_data_path = Some(data);
+                        status.push_notice("Found Skyrim's Data folder.");
+                    }
+                    Err(error) => status.push_notice(&format!(
+                        "Cannot resolve detected Data folder {}: {error}", data.display()
+                    )),
                 }
                 None => status.push_notice(
                     "Skyrim Special Edition was not found: drop its Data folder onto the launcher instead.",
@@ -629,6 +640,7 @@ pub fn accept_dropped_folder(
     state: Res<CurrentConversion>,
     mut source: Option<ResMut<crate::mo2_settings::SourceSettings>>,
     mut paths: ResMut<GamePathConfig>,
+    mut chosen: Option<ResMut<super::settings::UserChosenPaths>>,
     mut status: ResMut<ConversionStatus>,
 ) {
     for event in dropped.read() {
@@ -658,14 +670,31 @@ pub fn accept_dropped_folder(
             );
             continue;
         }
+        let absolute = match std::path::absolute(path_buf) {
+            Ok(path) => path,
+            Err(error) => {
+                status.push_notice(&format!(
+                    "Cannot resolve folder {}: {error}",
+                    path_buf.display()
+                ));
+                continue;
+            }
+        };
+        let path_buf = &absolute;
         if let Some(data) = game_detection::data_dir_from_drop(path_buf) {
             status.push_notice(&format!("Data folder: {}", data.display()));
+            if let Some(chosen) = &mut chosen {
+                chosen.skyrim_data_path = Some(data.clone());
+            }
             paths.skyrim_data_path = Some(data);
         } else {
             // Publishing replaces the Output folder, so a folder of other things is never taken.
             match output_is_safe_target(path_buf) {
                 Ok(()) => {
                     status.push_notice(&format!("Output folder: {}", path_buf.display()));
+                    if let Some(chosen) = &mut chosen {
+                        chosen.converted_assets_path = Some(path_buf.clone());
+                    }
                     paths.converted_assets_path = path_buf.clone();
                 }
                 Err(reason) => status.push_notice(&reason),
@@ -1908,6 +1937,98 @@ mod tests {
         std::fs::remove_dir_all(&data).unwrap();
         for file in [log, second_log] {
             let _ = std::fs::remove_file(file);
+        }
+    }
+
+    #[test]
+    fn complete_output_requires_metadata_for_recorded_cluster_geometry() {
+        use shared::cluster_overlay::{OverlayMetadata, ResolvedBuildSettings};
+        let data = data_folder("metadata-preservation-data");
+        let output = crate::conversion::tests::complete_output("metadata-preservation-output");
+        for folder in [data.clone(), output.clone(), output.join("meshes")] {
+            std::fs::write(folder.join("OWNER.txt"), "launcher mode switch fixture\n").unwrap();
+        }
+        let manifest_path = output.join("conversion-manifest.json");
+        let baked_manifest = std::fs::read(&manifest_path).unwrap();
+        for recorded_cluster in [false, true] {
+            let mut manifest: serde_json::Value = serde_json::from_slice(&baked_manifest).unwrap();
+            if recorded_cluster {
+                let settings =
+                    ResolvedBuildSettings::new("fixture", "ab".repeat(32), 1, true, true);
+                let package = format!("derived/clusters-{}", settings.settings_id());
+                let overlay = output.join(&package);
+                std::fs::create_dir_all(&overlay).unwrap();
+                for folder in [output.join("derived"), overlay.clone()] {
+                    std::fs::write(folder.join("OWNER.txt"), "launcher mode switch fixture\n")
+                        .unwrap();
+                }
+                let metadata = OverlayMetadata {
+                    schema_version: shared::cluster_overlay::OVERLAY_SCHEMA_VERSION,
+                    kind: shared::cluster_overlay::OVERLAY_KIND.into(),
+                    label: "fixture".into(),
+                    settings_id: settings.settings_id(),
+                    builder_identity: settings.builder_identity.clone(),
+                    build_settings: settings,
+                    terrain_sources: None,
+                    base_core_identity: "cd".repeat(32),
+                    base_fingerprint: "ef".repeat(32),
+                    base_failure_count: 0,
+                    created: "fixture".into(),
+                    owner: "launcher fixture".into(),
+                    extensions: [
+                        shared::extensions::CLUSTERS,
+                        shared::extensions::CLUSTER_TERRAIN,
+                    ]
+                    .into_iter()
+                    .map(|id| shared::extensions::ExtensionEntry {
+                        id: id.into(),
+                        version: 1,
+                        owns: Default::default(),
+                        sha256: "ab".repeat(32),
+                        built_from: "cd".repeat(32),
+                        stats: Default::default(),
+                    })
+                    .collect(),
+                };
+                std::fs::write(
+                    overlay.join("overlay.json"),
+                    serde_json::to_vec(&metadata).unwrap(),
+                )
+                .unwrap();
+                manifest["geometry_mode"] = "cluster".into();
+                manifest["cluster_package"] = package.into();
+            }
+            std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            if recorded_cluster {
+                let overlay_metadata = output
+                    .join(manifest["cluster_package"].as_str().unwrap())
+                    .join("overlay.json");
+                let metadata = std::fs::read(&overlay_metadata).unwrap();
+                std::fs::remove_file(&overlay_metadata).unwrap();
+                assert!(
+                    !crate::conversion::output_is_complete(&output),
+                    "a complete base cannot stand in for the requested cluster products"
+                );
+                std::fs::write(overlay_metadata, metadata).unwrap();
+            }
+            assert!(crate::conversion::output_is_complete(&output));
+            if recorded_cluster {
+                manifest["schema_version"] = (shared::LOD_CONVERTER_SCHEMA_VERSION - 1).into();
+                std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                assert!(
+                    !crate::conversion::output_is_complete(&output),
+                    "stale producer"
+                );
+                manifest.as_object_mut().unwrap().remove("schema_version");
+                std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                assert!(
+                    !crate::conversion::output_is_complete(&output),
+                    "missing producer"
+                );
+            }
+        }
+        for folder in [data, output] {
+            std::fs::remove_dir_all(folder).unwrap();
         }
     }
 }

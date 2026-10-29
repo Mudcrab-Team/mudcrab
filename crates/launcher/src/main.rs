@@ -113,6 +113,7 @@ fn main() {
         ..default()
     }))
     .add_plugins(LauncherPlugin);
+    conversion::settings::install(&mut app);
     app.run();
 }
 
