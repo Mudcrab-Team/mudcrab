@@ -467,6 +467,11 @@ fn bethesda_skin_fixture(dynamic: bool, mixed: bool) -> NifFile {
     };
     fs::write(&path, bytes).unwrap();
     let mut nif = NifFile::open(path.to_str().unwrap()).unwrap();
+    let NifBlock::BSFadeNode(root) = &mut nif.blocks[0] else {
+        panic!("fixture must have a scene root");
+    };
+    // Reuse the non-joint shape name: strict skeleton loading requires a named root.
+    root.av.object.name = 0;
     let (index, instance) = nif
         .blocks
         .iter()
@@ -483,7 +488,7 @@ fn bethesda_skin_fixture(dynamic: bool, mixed: bool) -> NifFile {
         .bones
         .iter()
         .map(|bone| BSSkinBoneTrans {
-            bounding_sphere: bone.bounding_sphere.clone(),
+            bounding_sphere: bone.bounding_sphere,
             rotation: bone.skin_transform.rotation,
             translation: bone.skin_transform.translation,
             scale: bone.skin_transform.scale,
