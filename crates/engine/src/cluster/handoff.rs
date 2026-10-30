@@ -3036,6 +3036,9 @@ type ReadinessDependencies<'a> = (
 struct BatchMaterialNow<'a> {
     material: &'a PreparedMaterial,
     shadow_ok: bool,
+    /// The prepared material's own revision. Its address is no identity: the collection's hash
+    /// map moves every entry when it grows, with no change to any material.
+    revision: u64,
 }
 
 /// The inputs a view's batch readiness was computed from. Equal keys mean an equal result: every
@@ -3242,6 +3245,7 @@ fn batch_material<'a>(
     Some(BatchMaterialNow {
         material,
         shadow_ok,
+        revision: materials.asset_revision(asset).unwrap_or(0),
     })
 }
 
@@ -3285,6 +3289,7 @@ fn batch_ready_with(
         Some(BatchMaterialNow {
             material,
             shadow_ok,
+            revision,
         }),
         Some(asset),
     ) = (material, gpu.batches[batch].material)
@@ -3306,7 +3311,7 @@ fn batch_ready_with(
     if memo.asset_id != asset
         || memo.material_group != material.binding.group.0
         || memo.material_slot != u32::from(material.binding.slot)
-        || memo.material_address != std::ptr::from_ref(material) as usize
+        || memo.material_revision != revision
         || memo.alpha_mode != material.properties.alpha_mode
     {
         return false;

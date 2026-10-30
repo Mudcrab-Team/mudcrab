@@ -2628,14 +2628,15 @@ fn queue_cluster_batches(
                 tangents,
             };
             // What this batch resolved to last time, when none of its inputs has changed since:
-            // the same material instance, prepared material (by address, which moves when the
-            // asset is prepared again) and mesh, under the same view key.
-            let material_address = std::ptr::from_ref(material) as usize;
+            // the same material instance, prepared material (by revision, which moves when the
+            // asset is prepared again; its address also moves when the collection grows) and
+            // mesh, under the same view key.
+            let material_revision = materials.asset_revision(asset_id).unwrap_or(0);
             let properties = material_properties_hash(material);
             let cached = gpu.views[&key].memo[index].filter(|memo| {
                 memo.properties == properties
                     && memo.asset_id == asset_id
-                    && memo.material_address == material_address
+                    && memo.material_revision == material_revision
                     && memo.material_slot == u32::from(material.binding.slot)
                     && memo.material_group == material.binding.group.0
                     && memo.alpha_mode == material.properties.alpha_mode
@@ -2733,7 +2734,7 @@ fn queue_cluster_batches(
                         *entry = Some(BatchMemo {
                             properties,
                             asset_id,
-                            material_address,
+                            material_revision,
                             material_slot: u32::from(material.binding.slot),
                             material_group: material.binding.group.0,
                             alpha_mode: material.properties.alpha_mode,
@@ -2956,7 +2957,7 @@ struct BatchMemo {
     /// replaced in place with other ones.
     properties: u64,
     asset_id: bevy::asset::UntypedAssetId,
-    material_address: usize,
+    material_revision: u64,
     material_slot: u32,
     material_group: u32,
     alpha_mode: AlphaMode,
@@ -4778,9 +4779,11 @@ fn note_terrain_views(
                         .iter()
                         .any(|rep| rep.pipeline == memo.resolved.pipeline && rep.alpha_mask),
                 );
-                causes[6] += usize::from(materials.get(memo.asset_id).is_some_and(|material| {
-                    memo.material_address != std::ptr::from_ref(material) as usize
-                }));
+                causes[6] += usize::from(
+                    materials
+                        .asset_revision(memo.asset_id)
+                        .is_some_and(|revision| memo.material_revision != revision),
+                );
             }
             [
                 usize::from(opaque_prepass.contains_key(key)),
