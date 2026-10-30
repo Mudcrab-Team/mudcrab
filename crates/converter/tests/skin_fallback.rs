@@ -12,6 +12,11 @@ use dummy_content::{
         legacy_skinned_shapes, static_shape,
     },
 };
+use project_wormhole_nif::{
+    bs::prelude::BSDynamicTriShape,
+    nif_block::{BSSkinBoneData, BSSkinBoneTrans, BSSkinInstance, NifBlock},
+    nif_file::{NifFile, nif_to_model, nif_to_model_with_skin_fallback},
+};
 use project_wormhole_shared::glam::{Mat4, Quat, Vec3};
 use serde_json::Value;
 use std::{
@@ -449,6 +454,141 @@ fn unresolved_skeleton_discovery_retains_geometry() {
         healthy.get("skin").is_none(),
         "unresolved rig must be rigid"
     );
+}
+
+/// Model the parsed Bethesda skin variants without claiming Fallout 4 parser coverage.
+fn bethesda_skin_fixture(dynamic: bool, mixed: bool) -> NifFile {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("bethesda.nif");
+    let bytes = if mixed {
+        fixture(&GOOD, false)
+    } else {
+        legacy_skinned_shapes(&[skin("Affected", &GOOD)]).unwrap()
+    };
+    fs::write(&path, bytes).unwrap();
+    let mut nif = NifFile::open(path.to_str().unwrap()).unwrap();
+    let (index, instance) = nif
+        .blocks
+        .iter()
+        .enumerate()
+        .find_map(|(index, block)| match block {
+            NifBlock::NiSkinInstance(instance) => Some((index, instance.clone())),
+            _ => None,
+        })
+        .unwrap();
+    let NifBlock::NiSkinData(data) = &nif.blocks[instance.data as usize] else {
+        panic!("fixture must have legacy skin data");
+    };
+    let bone_list = data
+        .bones
+        .iter()
+        .map(|bone| BSSkinBoneTrans {
+            bounding_sphere: bone.bounding_sphere.clone(),
+            rotation: bone.skin_transform.rotation,
+            translation: bone.skin_transform.translation,
+            scale: bone.skin_transform.scale,
+        })
+        .collect();
+    nif.blocks[instance.data as usize] = NifBlock::BSSkinBoneData(BSSkinBoneData { bone_list });
+    nif.blocks[index] = NifBlock::BSSkinInstance(BSSkinInstance {
+        skeleton_root: instance.skeleton_root,
+        data: instance.data,
+        bones: instance.bones,
+        scales: Vec::new(),
+    });
+    if dynamic {
+        let block = nif
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block, NifBlock::BSTriShape(_)))
+            .unwrap();
+        let NifBlock::BSTriShape(shape) = block else {
+            unreachable!();
+        };
+        let dynamic_vertices = shape
+            .vertex_data
+            .iter()
+            .map(|vertex| vertex.position.unwrap().extend(1.0))
+            .collect();
+        *block = NifBlock::BSDynamicTriShape(BSDynamicTriShape {
+            dynamic_data_size: u32::from(shape.num_vertices) * 16,
+            dynamic_vertices,
+            bs_tri_shape: shape.clone(),
+        });
+    }
+    nif
+}
+
+/// Unresolved Bethesda and legacy neighbours must both retain geometry with one cause each.
+#[test]
+fn unresolved_bethesda_skins_recover_rigid_geometry_and_diagnostics() {
+    for dynamic in [false, true] {
+        let nif = bethesda_skin_fixture(dynamic, true);
+        let reason = "unresolved Bethesda test rig";
+        let (model, diagnostics) =
+            nif_to_model_with_skin_fallback(&nif, None, Some(reason)).unwrap();
+        assert!(model.skeletal_meshes.is_empty());
+        assert_eq!(model.static_meshes.len(), 2);
+        assert_eq!(diagnostics.len(), 2);
+        for block in [3, 9] {
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .filter(|(index, cause)| *index == block && cause.contains(reason))
+                    .count(),
+                1
+            );
+        }
+        model.validate().unwrap();
+        let (json, bin) = model.to_gltf("unresolved-bethesda".into()).unwrap();
+        let glb = Glb {
+            json: serde_json::to_value(json).unwrap(),
+            bin,
+        };
+        for name in ["Affected", "Healthy"] {
+            let (_, node) = mesh_node(&glb, name);
+            assert!(node.get("skin").is_none());
+            let primitive =
+                &glb.json["meshes"][node["mesh"].as_u64().unwrap() as usize]["primitives"][0];
+            let attributes = &primitive["attributes"];
+            assert!(attributes.get("JOINTS_0").is_none());
+            assert!(attributes.get("WEIGHTS_0").is_none());
+            for channel in ["POSITION", "NORMAL", "TEXCOORD_0"] {
+                assert_eq!(
+                    glb.json["accessors"][attributes[channel].as_u64().unwrap() as usize]["count"],
+                    4
+                );
+            }
+            assert_eq!(
+                glb.json["accessors"][primitive["indices"].as_u64().unwrap() as usize]["count"],
+                6
+            );
+        }
+    }
+}
+
+/// A resolved Bethesda rig must still export a real skin through both public APIs.
+#[test]
+fn resolved_bethesda_skins_keep_the_existing_skeletal_path() {
+    for dynamic in [false, true] {
+        let nif = bethesda_skin_fixture(dynamic, false);
+        let (model, diagnostics) = nif_to_model_with_skin_fallback(&nif, Some(&nif), None).unwrap();
+        assert!(diagnostics.is_empty());
+        assert!(model.static_meshes.is_empty());
+        assert_eq!(model.skeletal_meshes.len(), 1);
+        let (json, _) = model.to_gltf("resolved-bethesda".into()).unwrap();
+        assert_eq!(json.skins.len(), 1);
+        let strict = nif_to_model(&nif, Some(&nif)).unwrap();
+        assert_eq!(
+            strict
+                .to_gltf("strict-bethesda".into())
+                .unwrap()
+                .0
+                .skins
+                .len(),
+            1
+        );
+    }
 }
 
 /// Publish a fresh synthetic pack without GPU LOD and drain progress while conversion runs.

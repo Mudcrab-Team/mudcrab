@@ -447,7 +447,8 @@ fn nif_to_model_inner(
             None => {}
         }
 
-        let (meshes, material_indices) = if nif.get_skins().is_empty() {
+        let (meshes, material_indices) = if nif.get_skins().is_empty() || unresolved_skin.is_some()
+        {
             legacy_skinned_meshes(nif, &mesh.bones, recover_skin, unresolved_skin, diagnostics)?
         } else {
             (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
@@ -672,9 +673,13 @@ fn legacy_skinned_meshes(
             SkinInstanceRef::Ni(instance) => instance,
             SkinInstanceRef::Dismember(instance) => &instance.skin_instance,
             SkinInstanceRef::Bs(_) => {
-                warn!(
-                    "shape block {shape_index} ({block_type}, {name:?}) references BSSkinInstance block {instance_block}; the SSE BSSkin path handles those shapes"
-                );
+                if let Some(reason) = unresolved_skin {
+                    diagnostics.push((shape_index, format!("static skin fallback: {reason}")));
+                } else {
+                    warn!(
+                        "shape block {shape_index} ({block_type}, {name:?}) references BSSkinInstance block {instance_block}; the SSE BSSkin path handles those shapes"
+                    );
+                }
                 continue;
             }
         };
