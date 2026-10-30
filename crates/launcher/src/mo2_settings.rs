@@ -21,6 +21,31 @@ pub struct SourceSettings {
 }
 
 impl SourceSettings {
+    /// Restores the exact saved profile. Missing profiles require an explicit new choice.
+    pub fn restore_selection(&mut self, selection: Option<mo2::Selection>) -> Result<(), String> {
+        self.selection = selection;
+        self.profiles.clear();
+        self.error.clear();
+        self.dropdown = false;
+        let Some(selection) = &self.selection else {
+            return Ok(());
+        };
+        let restored = mo2::Instance::open(&selection.instance_path).and_then(|instance| {
+            self.profiles = instance.profiles.clone();
+            instance.profile_dir(&selection.profile).map(|_| ())
+        });
+        if let Err(error) = restored
+            && self.use_mo2
+        {
+            self.error = format!(
+                "Saved MO2 selection is unavailable: {error:#}. Choose a profile before converting."
+            );
+            self.open = self.use_mo2;
+            return Err(self.error.clone());
+        }
+        Ok(())
+    }
+
     /// Loads an MO2 instance and its profiles, retaining the selected profile when still valid.
     ///
     /// Otherwise prefers the INI's active profile, then the first sorted profile.
@@ -154,6 +179,9 @@ fn click_source(
             }
             SourceButton::Mo2 => {
                 source.use_mo2 = true;
+                let selection = source.selection.clone();
+                // Refresh profiles and surface stale selections when MO2 becomes active.
+                let _ = source.restore_selection(selection);
                 if source.selection.is_none() {
                     source.open = true;
                 }
@@ -279,6 +307,41 @@ fn spawn_dialog_button(
 mod tests {
     use super::*;
 
+    #[test]
+    fn disabled_mo2_retains_a_missing_selection_without_reporting_a_source_error() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("OWNER.txt"),
+            "launcher disabled MO2 fixture\n",
+        )
+        .unwrap();
+        let selection = mo2::Selection {
+            instance_path: folder.path().join("missing-instance"),
+            profile: "missing-profile".into(),
+        };
+        let mut source = SourceSettings::default();
+        source.restore_selection(Some(selection.clone())).unwrap();
+        assert_eq!(
+            source.selection.as_ref().unwrap().instance_path,
+            selection.instance_path
+        );
+        assert_eq!(
+            source.selection.as_ref().unwrap().profile,
+            selection.profile
+        );
+        assert!(source.error.is_empty() && !source.open);
+        let mut config = converter::PipelineConfig::new("Data", "out");
+        source.apply(&mut config).unwrap();
+        assert!(config.mo2.is_none());
+        source.use_mo2 = true;
+        assert!(
+            source.apply(&mut config).is_err(),
+            "enabling MO2 must revalidate the saved source"
+        );
+        assert!(source.restore_selection(Some(selection)).is_err());
+        assert!(source.open);
+    }
+
     /// Verifies source controls open settings, select profiles, and prevent source changes during conversion.
     #[test]
     fn source_buttons_open_settings_select_profiles_and_lock_during_conversion() {
@@ -364,6 +427,18 @@ mod tests {
         settings.selection.as_mut().unwrap().profile = "Alpha".into();
         settings.set_instance(root);
         assert_eq!(settings.selection.as_ref().unwrap().profile, "Alpha");
+        settings.use_mo2 = true;
+        let restored = settings.restore_selection(Some(mo2::Selection {
+            instance_path: root.to_path_buf(),
+            profile: "Deleted profile".into(),
+        }));
+        assert!(restored.is_err());
+        assert_eq!(
+            settings.selection.as_ref().unwrap().profile,
+            "Deleted profile"
+        );
+        assert!(settings.apply(&mut config).is_err());
+        assert!(settings.open);
         settings.selection.as_mut().unwrap().profile = "Zed".into();
         settings.apply(&mut config).unwrap();
         assert_eq!(config.mo2.as_ref().unwrap().profile, "Zed");
@@ -379,5 +454,101 @@ mod tests {
         .unwrap();
         settings.set_instance(root);
         assert_eq!(settings.selection.as_ref().unwrap().profile, "Alpha");
+    }
+
+    fn valid_restore_fixture() -> tempfile::TempDir {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path();
+        std::fs::write(root.join("OWNER.txt"), "launcher MO2 restore fixture\n").unwrap();
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        std::fs::create_dir_all(root.join("overwrite")).unwrap();
+        for name in ["Zed", "Alpha"] {
+            std::fs::create_dir_all(root.join("profiles").join(name)).unwrap();
+        }
+        std::fs::write(
+            root.join("ModOrganizer.ini"),
+            "[General]\ngameName=Skyrim\nselected_profile=Zed\n",
+        )
+        .unwrap();
+        folder
+    }
+
+    #[test]
+    fn valid_restore_repopulates_profiles_even_while_disabled() {
+        let folder = valid_restore_fixture();
+        for enabled in [false, true] {
+            let mut source = SourceSettings {
+                use_mo2: enabled,
+                ..default()
+            };
+            source
+                .restore_selection(Some(mo2::Selection {
+                    instance_path: folder.path().to_path_buf(),
+                    profile: "Alpha".into(),
+                }))
+                .unwrap();
+            assert_eq!(source.profiles, vec!["Alpha", "Zed"]);
+            assert_eq!(source.selection.as_ref().unwrap().profile, "Alpha");
+            assert!(source.error.is_empty());
+        }
+    }
+
+    #[test]
+    fn mo2_button_refreshes_a_valid_disabled_restored_selection() {
+        let folder = valid_restore_fixture();
+        let mut source = SourceSettings::default();
+        source
+            .restore_selection(Some(mo2::Selection {
+                instance_path: folder.path().to_path_buf(),
+                profile: "Alpha".into(),
+            }))
+            .unwrap();
+        // A profile added after restoration must appear when the user enables MO2.
+        std::fs::create_dir_all(folder.path().join("profiles").join("New")).unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(source)
+            .init_resource::<CurrentConversion>()
+            .add_systems(Update, click_source);
+        app.world_mut()
+            .spawn((SourceButton::Mo2, Interaction::Pressed));
+        app.update();
+        let source = app.world().resource::<SourceSettings>();
+        assert!(source.use_mo2);
+        assert_eq!(source.profiles, vec!["Alpha", "New", "Zed"]);
+        assert_eq!(source.selection.as_ref().unwrap().profile, "Alpha");
+        assert!(source.error.is_empty());
+    }
+
+    #[test]
+    fn mo2_button_opens_correction_for_a_disabled_missing_restore() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("OWNER.txt"),
+            "launcher missing MO2 fixture\n",
+        )
+        .unwrap();
+        let path = folder.path().join("unavailable");
+        let mut source = SourceSettings::default();
+        source
+            .restore_selection(Some(mo2::Selection {
+                instance_path: path.clone(),
+                profile: "Missing".into(),
+            }))
+            .unwrap();
+        assert!(source.error.is_empty() && !source.open);
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(source)
+            .init_resource::<CurrentConversion>()
+            .add_systems(Update, click_source);
+        app.world_mut()
+            .spawn((SourceButton::Mo2, Interaction::Pressed));
+        app.update();
+        let source = app.world().resource::<SourceSettings>();
+        assert!(source.use_mo2 && source.open);
+        assert!(!source.error.is_empty());
+        assert_eq!(source.selection.as_ref().unwrap().instance_path, path);
+        assert_eq!(source.selection.as_ref().unwrap().profile, "Missing");
     }
 }
