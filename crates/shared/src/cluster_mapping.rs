@@ -534,6 +534,27 @@ struct CoverageGroup {
     identity: Option<(u32, u32, String)>,
 }
 
+/// Immutable bytes and the SHA-256 computed from those exact bytes.
+/// This records content identity only; it is not mapping/source authority.
+#[derive(Clone)]
+pub struct HashedPayload {
+    bytes: std::sync::Arc<[u8]>,
+    digest: [u8; 32],
+}
+
+impl HashedPayload {
+    pub fn new(bytes: std::sync::Arc<[u8]>) -> Self {
+        let digest = Sha256::digest(&bytes).into();
+        Self { bytes, digest }
+    }
+    pub fn bytes(&self) -> &std::sync::Arc<[u8]> {
+        &self.bytes
+    }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+}
+
 /// Freshly checked package structure, not yet authorized by source inputs. Retain the dataset
 /// source lock and use the same dataset connection/root through the consuming validation call.
 /// This opaque value must never authorize runtime ownership by itself or survive a launch.
@@ -566,6 +587,29 @@ pub fn prepare_mapping<'a>(
 ) -> Result<PreparedMapping<'a>, MappingError> {
     let (instances, groups) =
         check_structure_impl(connection, package, expected_built_from, false)?;
+    Ok(PreparedMapping {
+        connection,
+        instances,
+        groups,
+    })
+}
+
+/// Prepare using the exact launch-local payload snapshot already hashed by
+/// the caller's envelope. Missing entries refuse; this path never rereads disk.
+/// Every digest, header, record, coverage and source-authority check still runs.
+pub fn prepare_mapping_with_payloads<'a>(
+    connection: &'a Connection,
+    package: &Path,
+    expected_built_from: Option<&str>,
+    payloads: &HashMap<String, HashedPayload>,
+) -> Result<PreparedMapping<'a>, MappingError> {
+    let (instances, groups) = check_structure_with_payloads(
+        connection,
+        package,
+        expected_built_from,
+        false,
+        Some(payloads),
+    )?;
     Ok(PreparedMapping {
         connection,
         instances,
@@ -1158,6 +1202,16 @@ fn check_structure_impl(
     expected_built_from: Option<&str>,
     parallel: bool,
 ) -> Result<(Vec<MappedInstance>, BTreeMap<u32, CoverageGroup>), MappingError> {
+    check_structure_with_payloads(connection, package, expected_built_from, parallel, None)
+}
+
+fn check_structure_with_payloads(
+    connection: &Connection,
+    package: &Path,
+    expected_built_from: Option<&str>,
+    parallel: bool,
+    payloads: Option<&HashMap<String, HashedPayload>>,
+) -> Result<(Vec<MappedInstance>, BTreeMap<u32, CoverageGroup>), MappingError> {
     let (map_version, coverage_version, built_from, builder_identity): (u32, u32, String, String) =
         connection
             .query_row(
@@ -1231,7 +1285,7 @@ fn check_structure_impl(
             count: row.get(6)?,
         });
     }
-    let read_chunk = |chunk: &Chunk| -> Result<Vec<u8>, MappingError> {
+    let read_chunk = |chunk: &Chunk| -> Result<std::sync::Arc<[u8]>, MappingError> {
         // Payload names are portable relative paths, independent of the reader's OS.
         // Refuse aliases before joining: they can disguise terrain ownership or escape the package.
         if chunk.path.contains('\\')
@@ -1256,12 +1310,23 @@ fn check_structure_impl(
         {
             return Err(MappingError::TerrainInObjectChunks(chunk.path.clone()));
         }
-        let bytes = fs::read(package.join(&chunk.path))
-            .map_err(|error| MappingError::ChunkFile(format!("{}: {error}", chunk.path)))?;
-        if hex(&Sha256::digest(&bytes)) != chunk.hash {
+        let payload = match payloads {
+            Some(payloads) => payloads.get(&chunk.path).cloned().ok_or_else(|| {
+                MappingError::ChunkFile(format!(
+                    "{}: payload missing from certified snapshot",
+                    chunk.path
+                ))
+            })?,
+            None => HashedPayload::new(
+                fs::read(package.join(&chunk.path))
+                    .map_err(|error| MappingError::ChunkFile(format!("{}: {error}", chunk.path)))?
+                    .into(),
+            ),
+        };
+        if hex(&payload.digest()) != chunk.hash {
             return Err(MappingError::ChunkHashMismatch(chunk.hash.clone()));
         }
-        Ok(bytes)
+        Ok(payload.bytes().clone())
     };
     // Bound retained payload buffers by CPU-sized batches, including for larger mod worlds.
     let chunk_batch_size = if parallel {
@@ -1288,7 +1353,7 @@ fn check_structure_impl(
          ORDER BY ordinal",
     )?;
     for chunk_batch in chunks.chunks(chunk_batch_size) {
-        // Every byte is freshly read and hashed; parsing consumes those exact same bytes.
+        // Parse the exact bytes whose digest was checked, from disk or the supplied snapshot.
         let mut verified_bytes = if parallel {
             Some(parallel_ordered(chunk_batch, read_chunk)?.into_iter())
         } else {
@@ -1699,6 +1764,228 @@ mod parallel_tests {
     fn prepared(fixture: &Fixture) -> Result<ValidatedMapping, MappingError> {
         let prepared = prepare_mapping(&fixture.connection, &fixture.root, None)?;
         validate_prepared_mapping_parallel(prepared, &fixture.authority)
+    }
+
+    // Snapshot regression tests: use the real writer, SQL rows and source authority.
+    // The public snapshot API is deliberately used here; no digest can be injected.
+    mod retained_payload_tests {
+        use super::*;
+        use std::sync::Arc;
+
+        fn capture(fixture: &Fixture) -> HashMap<String, HashedPayload> {
+            let mut statement = fixture
+                .connection
+                .prepare("SELECT payload_path FROM cluster_chunks ORDER BY payload_path")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(|path| {
+                    let path = path.unwrap();
+                    let bytes: Arc<[u8]> = fs::read(fixture.root.join(&path)).unwrap().into();
+                    (path, HashedPayload::new(bytes))
+                })
+                .collect()
+        }
+
+        #[test]
+        fn hashed_payload_binds_sha256_to_the_retained_allocation() {
+            let bytes: Arc<[u8]> = Arc::from(&b"abc"[..]);
+            let payload = HashedPayload::new(bytes.clone());
+            // Published SHA-256 test vector, independent of the constructor's hashing code.
+            assert_eq!(
+                hex(&payload.digest()),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
+            assert_eq!(payload.bytes().as_ref(), b"abc");
+            assert!(Arc::ptr_eq(payload.bytes(), &bytes));
+        }
+
+        #[test]
+        fn retained_good_mci_survives_disk_replacement_and_deletion() {
+            for mutation in ["replace", "delete"] {
+                let fixture = mapped_fixture();
+                let payloads = capture(&fixture);
+                let good = payloads["chunk-0.mci"].bytes().clone();
+                match mutation {
+                    "replace" => {
+                        fs::write(fixture.root.join("chunk-0.mci"), b"replacement A").unwrap();
+                    }
+                    "delete" => fs::remove_file(fixture.root.join("chunk-0.mci")).unwrap(),
+                    _ => unreachable!(),
+                }
+                // This control proves the disk mutation is observable to the old API.
+                assert!(prepare_mapping(&fixture.connection, &fixture.root, None).is_err());
+                let prepared = prepare_mapping_with_payloads(
+                    &fixture.connection,
+                    &fixture.root,
+                    None,
+                    &payloads,
+                )
+                .unwrap();
+                let validated =
+                    validate_prepared_mapping_parallel(prepared, &fixture.authority).unwrap();
+                assert_eq!(
+                    validated
+                        .instances
+                        .iter()
+                        .map(|instance| (instance.block, instance.ordinal, instance.reference_id))
+                        .collect::<Vec<_>>(),
+                    vec![((7, 16, 0, 0), 0, 1), ((7, 16, 0, 0), 1, 2)],
+                    "{mutation}: retain the complete certified record membership"
+                );
+                let original = read_mci(&good).unwrap();
+                for instance in &validated.instances {
+                    assert_eq!(
+                        instance.transform.map(f32::to_bits),
+                        original
+                            .instance(instance.ordinal as usize)
+                            .transform
+                            .map(f32::to_bits),
+                        "{mutation}: transform must come from retained B"
+                    );
+                }
+                let coverage = validated.coverage.unwrap();
+                for id in [1, 2] {
+                    assert_eq!(coverage[&id].state, CoverageState::Complete);
+                    assert!(coverage[&id].unclustered_primitives.is_empty());
+                }
+                assert!(Arc::ptr_eq(payloads["chunk-0.mci"].bytes(), &good));
+            }
+        }
+
+        #[test]
+        fn retained_altered_legal_mci_is_refused_after_good_disk_bytes_are_restored() {
+            use crate::cluster::{MCI_HEADER_BYTES, MCI_MESH_ENTRY_BYTES, SECTION_ALIGNMENT};
+            let fixture = mapped_fixture();
+            let good = fs::read(fixture.root.join("chunk-0.mci")).unwrap();
+            let good_view = read_mci(&good).unwrap();
+            let start = (MCI_HEADER_BYTES + good_view.mesh_count as usize * MCI_MESH_ENTRY_BYTES)
+                .next_multiple_of(SECTION_ALIGNMENT);
+            let original_record = good_view.instance(0);
+            let original_encoded = original_record.to_bytes();
+            // Verify the format-derived location before altering a typed record.
+            assert_eq!(
+                &good[start..start + original_encoded.len()],
+                &original_encoded
+            );
+            let mut altered_record = original_record;
+            altered_record.transform[3] += 0.5;
+            let mut altered = good.clone();
+            altered[start..start + original_encoded.len()]
+                .copy_from_slice(&altered_record.to_bytes());
+            let altered_view = read_mci(&altered).expect("A must remain structurally legal MCI");
+            assert_eq!(altered_view.instance_count, good_view.instance_count);
+            assert_ne!(
+                altered_view.instance(0).transform.map(f32::to_bits),
+                good_view.instance(0).transform.map(f32::to_bits)
+            );
+            fs::write(fixture.root.join("chunk-0.mci"), &altered).unwrap();
+            let payloads = capture(&fixture); // Capture A, not B.
+            assert_eq!(payloads["chunk-0.mci"].bytes().as_ref(), altered.as_slice());
+            let expected_hash: String = fixture
+                .connection
+                .query_row(
+                    "SELECT content_hash FROM cluster_chunks WHERE anchor_x=0",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_ne!(hex(&payloads["chunk-0.mci"].digest()), expected_hash);
+            fs::write(fixture.root.join("chunk-0.mci"), &good).unwrap();
+            // Both old disk validation and the source authority accept B. They cannot vouch for A.
+            assert_eq!(sequential(&fixture), Ok(()));
+            let result =
+                prepare_mapping_with_payloads(&fixture.connection, &fixture.root, None, &payloads);
+            assert_eq!(
+                result.map(|_| ()),
+                Err(MappingError::ChunkHashMismatch(expected_hash))
+            );
+        }
+
+        #[test]
+        fn missing_retained_key_refuses_even_when_good_payload_is_on_disk() {
+            let fixture = mapped_fixture();
+            let mut payloads = capture(&fixture);
+            assert!(payloads.remove("chunk-0.mci").is_some());
+            assert_eq!(sequential(&fixture), Ok(()));
+            let result =
+                prepare_mapping_with_payloads(&fixture.connection, &fixture.root, None, &payloads);
+            assert!(
+                result.is_err(),
+                "a missing retained key must never fall back to disk"
+            );
+        }
+
+        #[test]
+        fn retained_mapping_preserves_structural_and_authority_refusals() {
+            for attack in [
+                "ordinal",
+                "coverage",
+                "material",
+                "authority",
+                "terrain_path",
+                "noncanonical_path",
+            ] {
+                let mut fixture = mapped_fixture();
+                let mut payloads = capture(&fixture);
+                match attack {
+                    "ordinal" => {
+                        fixture
+                            .connection
+                            .execute("DELETE FROM cluster_instance_map WHERE ordinal=0", [])
+                            .unwrap();
+                    }
+                    "coverage" => {
+                        fixture.connection.execute(
+                                "DELETE FROM cluster_reference_coverage WHERE reference_id=1 AND scope='primitive'", [],
+                            ).unwrap();
+                    }
+                    "material" => {
+                        fixture
+                            .connection
+                            .execute("UPDATE cluster_meshes SET material_key='wrong'", [])
+                            .unwrap();
+                    }
+                    "authority" => {
+                        fixture.authority.references.get_mut(&1).unwrap().digest = "stale".into();
+                    }
+                    "terrain_path" | "noncanonical_path" => {
+                        let path = if attack == "terrain_path" {
+                            "clusters/terrain/chunk.mci"
+                        } else {
+                            "../outside.mci"
+                        };
+                        fixture
+                            .connection
+                            .execute(
+                                "UPDATE cluster_chunks SET payload_path=?1 WHERE anchor_x=0",
+                                [path],
+                            )
+                            .unwrap();
+                        let payload = payloads.remove("chunk-0.mci").unwrap();
+                        payloads.insert(path.into(), payload);
+                    }
+                    _ => unreachable!(),
+                }
+                let original = prepared(&fixture).map(|_| ());
+                assert!(original.is_err(), "negative control: {attack}");
+                let retained = prepare_mapping_with_payloads(
+                    &fixture.connection,
+                    &fixture.root,
+                    None,
+                    &payloads,
+                )
+                .and_then(|prepared| {
+                    validate_prepared_mapping_parallel(prepared, &fixture.authority)
+                })
+                .map(|_| ());
+                assert_eq!(
+                    retained, original,
+                    "preserve the original refusal: {attack}"
+                );
+            }
+        }
     }
 
     #[test]

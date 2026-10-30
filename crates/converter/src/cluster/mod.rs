@@ -26,7 +26,7 @@ pub mod terrain_geometry;
 pub mod terrain_publish;
 pub(crate) mod terrain_sources;
 pub mod terrain_stage;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 
 pub use report::StageReport;

@@ -403,7 +403,7 @@ fn native_uv_transform(material: &gltf::Material<'_>) -> Option<bevy::math::Affi
     ))
 }
 
-fn needs_native_material(material: &gltf::Material<'_>) -> bool {
+pub(crate) fn needs_native_material(material: &gltf::Material<'_>) -> bool {
     let alpha_mode = match material.alpha_mode() {
         GltfAlphaMode::Opaque => AlphaMode::Opaque,
         GltfAlphaMode::Mask => AlphaMode::Mask(material.alpha_cutoff().unwrap_or(0.5)),

@@ -422,6 +422,9 @@ impl Plugin for SwapBridgePlugin {
     }
 }
 
+pub mod destination;
+pub mod systems;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1083,3 +1083,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "cluster/model_animation_source_readiness_tests.rs"]
+mod source_readiness_tests;

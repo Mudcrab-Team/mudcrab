@@ -18,8 +18,8 @@ use crate::{
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
         components::{
             CELL_SIZE, CellRef, ExpectedModelBounds, ExteriorCellGrid, FormId, InstanceBounds,
-            MeshHandle, StreamedCellRoot, StreamingCamera, TerrainPatch, WaterSurface,
-            WorldPosition, WorldTransform,
+            MeshHandle, StreamedCellKey, StreamedCellRoot, StreamingCamera, TerrainPatch,
+            WaterSurface, WorldTransform,
         },
         database::{AssetCatalog, CellKey, CellPayload, DatabaseRequest, WorldDatabase},
     },
@@ -407,6 +407,12 @@ impl StreamingCommitBudget {
 
 #[derive(Resource, Debug, Clone, Default, Serialize)]
 pub struct StreamingMetrics {
+    /// Cluster batches whose material is wanted by a view but not yet loaded, so a view with
+    /// one is not settled for the selected package.
+    pub pending_cluster_batches: usize,
+    /// Demanded cluster source/material loads that failed permanently; never readiness.
+    pub failed_cluster_batches: usize,
+
     pub requests_submitted: u64,
     pub responses_received: u64,
     pub stale_responses: u64,
@@ -1519,6 +1525,7 @@ fn spawn_cell(
     let mut root_commands = commands.spawn((
         Name::new(format!("Cell {:08X}", payload.cell_id)),
         CellRef(payload.cell_id),
+        StreamedCellKey(payload.key),
         StreamedCellRoot,
         Transform::from_translation(root_translation),
         Visibility::default(),
@@ -1549,6 +1556,9 @@ fn spawn_cell(
                 ));
                 if let Some(grid) = terrain_grid {
                     patch.insert(MergedTerrainCoverage { grid });
+                    if let CellKey::Exterior { worldspace_id, .. } = payload.key {
+                        patch.insert(TerrainWorldspace(worldspace_id));
+                    }
                 }
                 if let Some(collider) = collider {
                     patch.insert((
@@ -1567,7 +1577,7 @@ fn spawn_cell(
                 let material = terrain_materials.add(TerrainMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
-                        perceptual_roughness: 0.92,
+                        perceptual_roughness: shared::terrain::ATLAS_ROUGHNESS as f32,
                         cull_mode: None,
                         double_sided: true,
                         ..default()
@@ -1611,6 +1621,9 @@ fn spawn_cell(
                         quadrant,
                         tier: None,
                     });
+                    if let CellKey::Exterior { worldspace_id, .. } = payload.key {
+                        patch.insert(TerrainWorldspace(worldspace_id));
+                    }
                 }
                 if let Some(collider) = collider {
                     patch.insert((
@@ -1703,19 +1716,12 @@ fn spawn_cell(
             if !reference.initially_enabled {
                 continue;
             }
-            let creation_position = Vec3::from_array(reference.position);
-            let world_position = WorldPosition::from_creation_units(creation_position);
-            let translation = match payload.key {
-                CellKey::Exterior { grid_x, grid_y, .. } => {
-                    let cell_origin = IVec2::new(grid_x, grid_y);
-                    creation_to_bevy(world_position.relative_to(cell_origin))
-                }
-                CellKey::Interior(_) => creation_to_bevy(creation_position),
-            };
-            let rotation = creation_rotation_to_bevy(reference.rotation);
-            let transform = Transform::from_translation(translation)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(reference.scale));
+            let (world_position, transform) = reference_placement(
+                reference.position,
+                reference.rotation,
+                reference.scale,
+                payload.key,
+            );
             let model_bounds = reference.bounds_valid.then(|| {
                 ExpectedModelBounds::new(
                     Vec3::from_array(reference.bounds_min),
@@ -2943,6 +2949,7 @@ fn track_asset_readiness(
                 note_static_proxy_skip(&mut metrics, &mut profiler);
             }
             hide_partial_scene(&mut commands, entity, &children);
+            commands.entity(entity).try_insert(AssetFailed);
             if config.diagnostic_asset_fallbacks {
                 spawn_diagnostic_fallback(
                     &mut commands,
@@ -2981,6 +2988,7 @@ fn track_asset_readiness(
                         note_static_proxy_skip(&mut metrics, &mut profiler);
                     }
                     hide_partial_scene(&mut commands, entity, &children);
+                    commands.entity(entity).try_insert(AssetFailed);
                     if config.diagnostic_asset_fallbacks {
                         spawn_diagnostic_fallback(
                             &mut commands,
@@ -3029,6 +3037,7 @@ fn track_asset_readiness(
                         note_static_proxy_skip(&mut metrics, &mut profiler);
                     }
                     hide_partial_scene(&mut commands, entity, &children);
+                    commands.entity(entity).try_insert(AssetFailed);
                     if config.diagnostic_asset_fallbacks {
                         spawn_diagnostic_fallback(
                             &mut commands,
@@ -4454,21 +4463,7 @@ pub(crate) fn build_terrain_quadrant_mesh(
     Ok(mesh)
 }
 
-/// The largest difference between an arriving cell's edge and a resident neighbour's that is still
-/// treated as a seam to weld.
-///
-/// Real seams are small: the worst measured on `Skyrim.esm` is 24 units, on one of 33 points of
-/// Tamriel's (18,18) north edge against (18,19), and 16 units on one point of (18,20)'s east edge.
-/// The bound, 64 units (half the height field's 128-unit sample spacing), leaves the measured seams
-/// almost three times the room they need while staying small next to the terrain's own detail. A
-/// larger difference is not a crack but two landscapes that were authored apart - the city
-/// worldspaces' sculpted cells against the copies of Tamriel's land beside them (Markarth 520-2520
-/// units, Solitude 560-2352) - which Skyrim draws as authored, so that edge is left alone.
-const MAX_WELDABLE_EDGE_DELTA: f32 = 64.0;
-
-/// Edge heights closer than this are already the same point: the tolerance the strict comparison
-/// used before edges were welded.
-const EDGE_MATCH_TOLERANCE: f32 = 0.01;
+use shared::terrain::{EDGE_MATCH_TOLERANCE, MAX_WELDABLE_EDGE_DELTA};
 
 /// One side of the arriving cell that a resident neighbour can be welded onto.
 struct WeldableEdge {
@@ -6393,6 +6388,51 @@ mod tests {
         // 128-unit interval at a corner: ((10 - 34) / 128, (10 - 10) / 128, 1) normalized and
         // scaled by 127, rather than the [0, 0, 127] it was loaded with.
         assert_eq!(&arriving.normals[..3], &[-23, 0, 125]);
+    }
+
+    #[test]
+    fn runtime_terrain_welding_obeys_the_shared_boundary() {
+        for delta in [
+            0.0,
+            24.0,
+            MAX_WELDABLE_EDGE_DELTA - 1.0,
+            MAX_WELDABLE_EDGE_DELTA,
+            MAX_WELDABLE_EDGE_DELTA + 1.0,
+            MAX_WELDABLE_EDGE_DELTA * 8.0,
+        ] {
+            for (x, y) in [(1, 0), (0, 1)] {
+                let mut continuity = TerrainContinuity::default();
+                let mut metrics = StreamingMetrics::default();
+                validate_and_register_terrain_edges(
+                    exterior_cell(0, 0),
+                    &mut terrain_fixture(1, 0.0),
+                    &mut continuity,
+                    &mut metrics,
+                )
+                .unwrap();
+                let mut arriving = terrain_fixture(2, delta);
+                validate_and_register_terrain_edges(
+                    exterior_cell(x, y),
+                    &mut arriving,
+                    &mut continuity,
+                    &mut metrics,
+                )
+                .unwrap();
+                let expected = if delta <= MAX_WELDABLE_EDGE_DELTA {
+                    0.0
+                } else {
+                    delta
+                };
+                for sample in 0..33 {
+                    let index = if x == 1 { sample * 33 } else { sample };
+                    assert_eq!(arriving.heights[index], expected, "delta {delta}");
+                }
+                assert_eq!(
+                    metrics.terrain_edges_left_as_authored,
+                    u64::from(delta > MAX_WELDABLE_EDGE_DELTA)
+                );
+            }
+        }
     }
 
     /// Past the bound the edge is not a seam: it is left as authored, the way Skyrim draws every
@@ -9667,6 +9707,35 @@ mod tests {
         );
     }
 }
+
+pub(crate) mod identity_changes;
+mod terrain_identity;
+pub(crate) use terrain_identity::{TerrainIdentityAccess, TerrainPrimitiveIdentity};
+mod reference_spawn;
+pub(crate) mod terrain_handoff;
+pub(crate) use reference_spawn::reference_placement;
+
+/// Stays on a model, terrain or water entity whose load or validation failed for good. The pending
+/// markers are removed when the failure is recorded and the scene is hidden, so without this a
+/// resident cell holding a failed model looks finished and fully drawn; readiness reads it to report
+/// the destination failed instead of ready.
+#[derive(Component)]
+pub(crate) struct AssetFailed;
+
+/// Grid-to-render translation, taking the whole-cell difference before scaling.
+/// Creation x is east and y is north; Bevy x is east and -z is north.
+/// Source qualification uses this exact offset to distinguish rebases from authored motion.
+pub(crate) fn grid_translation(grid: IVec2, origin: IVec2) -> Vec3 {
+    let offset = grid - origin;
+    Vec3::new(
+        offset.x as f32 * CELL_SIZE,
+        0.0,
+        -offset.y as f32 * CELL_SIZE,
+    )
+}
+
+#[derive(Component)]
+pub(crate) struct TerrainWorldspace(u32);
 
 #[cfg(test)]
 mod authored_billboard_proxy_tests {

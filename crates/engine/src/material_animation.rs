@@ -679,7 +679,21 @@ fn animate_materials(
     mut animated: ResMut<AnimatedStandardMaterials>,
     index: Res<MaterialUsers>,
     visibility: Query<&ViewVisibility>,
+    cluster: Option<Res<crate::cluster::render::ClusterBatchHandles>>,
+    mut clustered: Local<HashSet<AssetId<StandardMaterial>>>,
 ) {
+    if let Some(cluster) = cluster.as_ref() {
+        if cluster.is_changed() {
+            clustered.clear();
+            clustered.extend(
+                cluster
+                    .ids()
+                    .filter_map(|id| id.try_typed::<StandardMaterial>().ok()),
+            );
+        }
+    } else {
+        clustered.clear();
+    }
     let AnimatedStandardMaterials {
         animated,
         own_modified,
@@ -701,7 +715,7 @@ fn animate_materials(
                 .iter()
                 .any(|entity| visibility.get(*entity).is_ok_and(|v| v.get()))
         });
-        if !visible {
+        if !visible && !clustered.contains(id) {
             continue;
         }
         if let Some(mut material) = standard.get_mut(*id) {
@@ -857,6 +871,73 @@ mod tests {
                     .derived_by_source
                     .get(&source.id())
                     .is_some_and(|variants| variants.contains(&removed))
+            );
+        }
+    }
+
+    #[test]
+    fn removing_or_rebinding_cluster_users_stops_writing_an_undrawn_animation() {
+        use crate::cluster::render::ClusterBatchHandles;
+        for remove in [false, true] {
+            let mut app = App::new();
+            app.init_resource::<Time>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<AnimatedStandardMaterials>()
+                .init_resource::<MaterialUsers>()
+                .init_resource::<ClusterBatchHandles>()
+                .add_observer(on_material_insert)
+                .add_observer(on_material_discard)
+                .add_systems(Update, (index_material_users, animate_materials).chain());
+            let animated = app
+                .world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial::default());
+            let unanimated = app
+                .world_mut()
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial::default());
+            app.world_mut()
+                .resource_mut::<AnimatedStandardMaterials>()
+                .animated
+                .insert(
+                    animated.id(),
+                    MaterialAnimation::from_extensions(&flame(), bevy::math::Affine2::IDENTITY)
+                        .unwrap(),
+                );
+            app.world_mut()
+                .resource_mut::<ClusterBatchHandles>()
+                .set(0, animated.clone());
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs(1));
+            app.update();
+            let played = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&animated)
+                .unwrap()
+                .uv_transform;
+            assert_ne!(played, bevy::math::Affine2::IDENTITY);
+            if remove {
+                app.world_mut().remove_resource::<ClusterBatchHandles>();
+            } else {
+                app.world_mut()
+                    .resource_mut::<ClusterBatchHandles>()
+                    .set(0, unanimated.clone());
+            }
+            app.world_mut()
+                .resource_mut::<Time>()
+                .advance_by(std::time::Duration::from_secs(1));
+            app.update();
+            let materials = app.world().resource::<Assets<StandardMaterial>>();
+            assert_eq!(
+                materials.get(&animated).unwrap().uv_transform,
+                played,
+                "undrawn animated material must stop receiving writes (removed: {remove})"
+            );
+            assert_eq!(
+                materials.get(&unanimated).unwrap().uv_transform,
+                bevy::math::Affine2::IDENTITY
             );
         }
     }

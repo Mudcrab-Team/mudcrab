@@ -21,7 +21,7 @@ pub(crate) const EXTERIOR_CELL_ID_SQL: &str = "SELECT c.id FROM cells c
      ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC
      LIMIT 1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bevy::prelude::Reflect)]
 pub enum CellKey {
     Exterior {
         worldspace_id: u32,
@@ -1169,7 +1169,7 @@ fn load_cell(
     })
 }
 
-fn map_enable_inputs(
+pub(crate) fn map_enable_inputs(
     row: &rusqlite::Row<'_>,
     start: usize,
 ) -> rusqlite::Result<InitialEnableInputs> {

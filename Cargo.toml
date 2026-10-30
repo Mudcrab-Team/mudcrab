@@ -20,6 +20,7 @@ authors = ["Mudcrab Team"]
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
 # Engine & Rendering
 # Preserve Bevy's default capabilities while replacing its vulnerable Rust Zstd decoder.
 # Recheck this feature expansion when upgrading Bevy.
