@@ -2,14 +2,16 @@
 //! shows a destination, per view, world and generation.
 //!
 //! This shared protocol names views,
-//! worlds, generations, pass families and four facts.
+//! worlds, generations, pass families and five facts.
 //!
-//! The four facts, in the order a report names the first one missing:
+//! The five facts, in the order a report names the first one missing:
 //!
 //! 1. residency of the coverage cells (a failed cell is a [`Failure`], never "settled so ready");
 //! 2. main-world assets loaded under the destination;
 //! 3. geometry and material drawable in the render world for every entity the view will draw;
-//! 4. a queued pipeline for every **enabled** pass of the view and its dependent shadow views.
+//! 4. a queued pipeline for every **enabled** pass of the view and its dependent shadow views;
+//! 5. the handoff: the renderer's one shared decision between stock and replacement geometry,
+//!    supplied by whoever owns the replacement ([`HandoffReports`]).
 //!
 //! "Proof" means the renderer holds the entity ready and queued (buffers, bind groups, pipelines,
 //! membership), never GPU completion or readback.
@@ -53,6 +55,23 @@ impl WorldId {
     /// An interior cell, by its id, with the top bit set so an interior can never meet an exterior.
     pub const fn interior(cell: u32) -> Self {
         Self((1 << 63) | cell as u64)
+    }
+}
+
+/// Present (inserted by the owner of a replacement representation, when that option is on) means
+/// admission-created destination requests carry [`Handoff::Required`]. Crossings read the policy
+/// when creating a request; without it they request ordinary native proof.
+#[derive(Resource, Default, Debug, Clone, Copy)]
+pub struct RequiredHandoff;
+
+impl Handoff {
+    /// The handoff a new request carries, from whether [`RequiredHandoff`] is present.
+    pub fn for_policy(policy: Option<&RequiredHandoff>) -> Self {
+        if policy.is_some() {
+            Self::Required
+        } else {
+            Self::NotRequired
+        }
     }
 }
 
@@ -206,6 +225,17 @@ impl PassFamilies {
     }
 }
 
+/// Whether the destination needs a replacement-geometry handoff to be ready.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Handoff {
+    /// Stock geometry only (the replacement is off, or the request's coverage is an explicit
+    /// stock-only scope): the handoff fact is not required.
+    NotRequired,
+    /// A replacement is on: the destination is not ready until its owner reports the handoff for
+    /// exactly this key ([`HandoffReports`]).
+    Required,
+}
+
 /// What a report is about: one view, one world, one generation of it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DestinationKey {
@@ -222,6 +252,7 @@ pub struct DestinationRequest {
     pub passes: PassFamilies,
     /// The destination's cells.
     pub coverage: Arc<[CellKey]>,
+    pub handoff: Handoff,
 }
 
 /// Identifies a request so its consumer can withdraw it.
@@ -250,7 +281,7 @@ impl DestinationRequests {
     }
 
     /// Changes a pending request and returns its key. If anything that decides what a report is
-    /// about changed (the view, the passes or the coverage) the world's
+    /// about changed (the view, the passes, the coverage or the handoff requirement) the world's
     /// generation is bumped and the key carries the new one, so a report made for the old request
     /// can never satisfy the new one. An unchanged request keeps its key and bumps nothing.
     pub fn update(
@@ -260,16 +291,20 @@ impl DestinationRequests {
         view: ViewKey,
         passes: PassFamilies,
         coverage: Arc<[CellKey]>,
+        handoff: Handoff,
     ) -> Option<DestinationKey> {
         let request = self.requests.get_mut(&id)?;
-        let changed =
-            request.key.view != view || request.passes != passes || request.coverage != coverage;
+        let changed = request.key.view != view
+            || request.passes != passes
+            || request.coverage != coverage
+            || request.handoff != handoff;
         if changed {
             request.key.generation =
                 generations.bump(request.key.world, InvalidationCause::Composition);
             request.key.view = view;
             request.passes = passes;
             request.coverage = coverage;
+            request.handoff = handoff;
             self.revision += 1;
         }
         Some(request.key)
@@ -328,6 +363,8 @@ pub enum Missing {
     Material,
     /// Fact 4: no queued pipeline for an enabled pass.
     Pass(PassFamily),
+    /// Fact 5: the replacement owner has not reported the handoff for this key.
+    Handoff,
     /// The render world has not evaluated this request yet.
     NotEvaluated,
 }
@@ -337,6 +374,10 @@ pub enum Missing {
 pub enum Failure {
     /// A coverage cell failed to load for good and no other representation keeps its coverage.
     CellFailed(CellKey),
+    /// A coverage cell is resident but an asset under it failed for good.
+    AssetFailed(CellKey),
+    /// The replacement owner reported that it cannot supply the handoff.
+    HandoffFailed(String),
 }
 
 /// A destination's state, as of the evaluated render frame.
@@ -365,6 +406,54 @@ pub struct RenderProof {
     pub pass_missing: Option<PassFamily>,
     /// How many entities the proof visited (for the log of a hold that timed out).
     pub checked: usize,
+}
+
+/// One handoff decision by the replacement owner (fact 5), for one key and one render frame.
+///
+/// `state` means **fact 5 only**, never the whole destination: [`DestinationState::Ready`] says that
+/// for every candidate, stock or the exact replacement is selected and drawable in this view and
+/// pass family; [`DestinationState::Waiting`] with [`Missing::Handoff`], [`DestinationState::Failed`]
+/// with [`Failure::HandoffFailed`] and [`DestinationState::Stale`] are the others. Any other
+/// state is read as "not reported".
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HandoffReport {
+    pub key: DestinationKey,
+    /// The render frame whose queue and planning step made the decision. The bridge accepts it only
+    /// for the frame it evaluates itself: a report for frame N-1 never stands in for frame N.
+    pub evaluated_render_frame: RenderFrame,
+    pub state: DestinationState,
+}
+
+/// The handoff reports, a render-world resource, one per key. The replacement owner publishes for
+/// frame N after the queue and planning steps it depends on and before the bridge evaluates frame N
+/// (the order is [`super::systems::DestinationSystems`]); this module only stores and reads them.
+#[derive(Resource, Default, Debug)]
+pub struct HandoffReports {
+    reports: HashMap<DestinationKey, HandoffReport>,
+}
+
+impl HandoffReports {
+    /// Stores the report for its key (the frame stamp always advances). Returns whether its **state**
+    /// differs from the one stored before, so an owner bumps a generation or revokes only on an
+    /// actual change and not on an unchanged republication every frame.
+    pub fn publish(&mut self, report: HandoffReport) -> bool {
+        let changed = self
+            .reports
+            .get(&report.key)
+            .is_none_or(|previous| previous.state != report.state);
+        self.reports.insert(report.key, report);
+        changed
+    }
+
+    /// Drops the report for `key` (the key is no longer wanted).
+    pub fn clear(&mut self, key: &DestinationKey) {
+        self.reports.remove(key);
+    }
+
+    /// The report for `key`, whatever frame it describes.
+    pub fn get(&self, key: &DestinationKey) -> Option<&HandoffReport> {
+        self.reports.get(key)
+    }
 }
 
 /// A destination's report: the state and the render frame it was evaluated in. It is **not** the
@@ -441,7 +530,9 @@ impl DestinationReports {
     }
 }
 
-pub use super::destination_evaluation::{DestinationFacts, Residency, destination_state};
+pub use super::destination_evaluation::{
+    DestinationFacts, Residency, destination_state, handoff_for_frame,
+};
 
 #[cfg(test)]
 mod tests {
@@ -460,6 +551,30 @@ mod tests {
             world: WorldId(7),
             generation: Generation(generation),
         }
+    }
+
+    fn handoff_report(key: DestinationKey, frame: u64, state: DestinationState) -> HandoffReport {
+        HandoffReport {
+            key,
+            evaluated_render_frame: RenderFrame(frame),
+            state,
+        }
+    }
+
+    /// An owner learns whether a republication changed anything, so it bumps or revokes only then.
+    #[test]
+    fn publishing_reports_whether_the_state_changed() {
+        let mut reports = HandoffReports::default();
+        assert!(reports.publish(handoff_report(key(3), 1, DestinationState::Ready)));
+        assert!(
+            !reports.publish(handoff_report(key(3), 2, DestinationState::Ready)),
+            "the same state again, a newer frame"
+        );
+        assert_eq!(
+            reports.get(&key(3)).unwrap().evaluated_render_frame,
+            RenderFrame(2)
+        );
+        assert!(reports.publish(handoff_report(key(3), 3, DestinationState::Stale)));
     }
 
     #[test]
@@ -537,29 +652,54 @@ mod tests {
             },
             passes,
             coverage: coverage.clone(),
+            handoff: Handoff::NotRequired,
         });
         let same = requests
-            .update(id, &mut generations, view(), passes, coverage.clone())
+            .update(
+                id,
+                &mut generations,
+                view(),
+                passes,
+                coverage.clone(),
+                Handoff::NotRequired,
+            )
             .unwrap();
         assert_eq!(same.generation, first);
         assert_eq!(generations.current(world), first, "nothing changed");
         let more_passes = passes.with(PassFamily::Shadow);
         let widened: Arc<[CellKey]> = Arc::from(vec![CellKey::Interior(1), CellKey::Interior(2)]);
         let mut last = first;
-        for (view, passes, coverage) in [
-            (view_with(1), passes, coverage.clone()),
-            (view_with(1), more_passes, coverage.clone()),
-            (view_with(1), more_passes, widened.clone()),
+        for (view, passes, coverage, handoff) in [
+            (view_with(1), passes, coverage.clone(), Handoff::NotRequired),
+            (
+                view_with(1),
+                more_passes,
+                coverage.clone(),
+                Handoff::NotRequired,
+            ),
+            (
+                view_with(1),
+                more_passes,
+                widened.clone(),
+                Handoff::NotRequired,
+            ),
         ] {
             let key = requests
-                .update(id, &mut generations, view, passes, coverage)
+                .update(id, &mut generations, view, passes, coverage, handoff)
                 .unwrap();
             assert!(key.generation > last, "each change moves the generation");
             assert_eq!(generations.current(world), key.generation);
             last = key.generation;
         }
         assert_eq!(
-            requests.update(RequestId(999), &mut generations, view(), passes, coverage),
+            requests.update(
+                RequestId(999),
+                &mut generations,
+                view(),
+                passes,
+                coverage,
+                Handoff::NotRequired
+            ),
             None
         );
     }
@@ -584,6 +724,7 @@ mod tests {
                 .with(PassFamily::Forward)
                 .with(PassFamily::Shadow),
             coverage: Arc::from(vec![CellKey::Interior(1)]),
+            handoff: Handoff::NotRequired,
         });
         assert!(!requests.is_empty());
         let (_, request) = requests.iter().next().unwrap();
@@ -594,5 +735,58 @@ mod tests {
         assert!(requests.withdraw(id));
         assert!(!requests.withdraw(id));
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn changing_only_handoff_policy_rekeys_the_request() {
+        let mut generations = Generations::default();
+        let world = WorldId(7);
+        let generation = generations.bump(world, InvalidationCause::Composition);
+        let passes = PassFamilies::NONE.with(PassFamily::Forward);
+        let coverage: Arc<[CellKey]> = Arc::from(vec![CellKey::Interior(1)]);
+        let mut requests = DestinationRequests::default();
+        let id = requests.request(DestinationRequest {
+            key: DestinationKey {
+                view: view(),
+                world,
+                generation,
+            },
+            passes,
+            coverage: coverage.clone(),
+            handoff: Handoff::NotRequired,
+        });
+        let mut last = generation;
+        for handoff in [Handoff::Required, Handoff::NotRequired] {
+            let key = requests
+                .update(
+                    id,
+                    &mut generations,
+                    view(),
+                    passes,
+                    coverage.clone(),
+                    handoff,
+                )
+                .unwrap();
+            assert!(key.generation > last, "each change moves the generation");
+            assert_eq!(generations.current(world), key.generation);
+            let revision = requests.revision();
+            assert_eq!(
+                requests.update(
+                    id,
+                    &mut generations,
+                    view(),
+                    passes,
+                    coverage.clone(),
+                    handoff
+                ),
+                Some(key)
+            );
+            assert_eq!(
+                requests.revision(),
+                revision,
+                "an unchanged policy does not mutate the request"
+            );
+            last = key.generation;
+        }
     }
 }

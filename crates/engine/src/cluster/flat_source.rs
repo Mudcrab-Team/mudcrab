@@ -11,9 +11,39 @@ pub(crate) struct FlatSourceOwner(pub Entity);
 pub(crate) struct FlatSourcePrimitives(Vec<Entity>);
 
 impl FlatSourcePrimitives {
-    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = Entity> + '_ {
         self.0.iter().copied()
+    }
+}
+
+/// Visit actual cell descendants, including unparented primitives whose lifetime belongs
+/// to a flat source. Use the ordinary hierarchy iterator when no flat relationships exist.
+/// Relationship writers, rather than a second ancestry cache, determine current membership.
+pub(crate) fn visit_entities_under(
+    root: Entity,
+    children: &Query<&Children>,
+    flat: &Query<&FlatSourcePrimitives>,
+    mut visit: impl FnMut(Entity),
+) {
+    if flat.is_empty() {
+        for entity in std::iter::once(root).chain(children.iter_descendants(root)) {
+            visit(entity);
+        }
+        return;
+    }
+    let mut pending = vec![root];
+    let mut visited = bevy::ecs::entity::EntityHashSet::default();
+    while let Some(entity) = pending.pop() {
+        if !visited.insert(entity) {
+            continue;
+        }
+        visit(entity);
+        if let Ok(children) = children.get(entity) {
+            pending.extend(children.iter());
+        }
+        if let Ok(primitives) = flat.get(entity) {
+            pending.extend(primitives.iter());
+        }
     }
 }
 

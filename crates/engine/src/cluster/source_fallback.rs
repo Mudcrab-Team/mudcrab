@@ -15,11 +15,15 @@ pub(crate) struct SourceFallbackDemand {
     certificate: Option<Weak<CertifiedPackage>>,
     revision: u64,
     refs: BTreeSet<u32>,
-    #[cfg(test)]
     fresh: bool,
 }
 
 impl SourceFallbackDemand {
+    /// Whether a publication attempt still needs its one-use acknowledgement.
+    pub(crate) fn has_fresh(&self) -> bool {
+        self.fresh
+    }
+
     /// Publish the exact negative set; an absent package always withdraws all references.
     /// Equal sets under a different certificate allocation are still a new publication.
     pub(crate) fn update(
@@ -29,10 +33,7 @@ impl SourceFallbackDemand {
     ) -> bool {
         // Fresh feedback is required even when its certificate and negative set are unchanged.
         // Freshness is one-use delivery state, not a new demand revision or draw permission.
-        #[cfg(test)]
-        {
-            self.fresh = true;
-        }
+        self.fresh = true;
         if package.is_none() {
             refs.clear();
         }
@@ -65,16 +66,12 @@ impl SourceFallbackDemand {
         Arc::ptr_eq(&certificate, package).then_some((self.revision, &self.refs))
     }
 
-    #[cfg(test)]
     /// Redeliver unchanged demand without cloning its set or advancing its revision.
     pub(crate) fn refresh_for_package(&mut self, package: &Arc<CertifiedPackage>) -> bool {
         if self.for_package(package).is_none() {
             return false;
         }
-        #[cfg(test)]
-        {
-            self.fresh = true;
-        }
+        self.fresh = true;
         true
     }
 
@@ -89,10 +86,7 @@ impl SourceFallbackDemand {
         if self.for_package(package).is_none() {
             return false;
         }
-        #[cfg(test)]
-        {
-            self.fresh = true;
-        }
+        self.fresh = true;
         let mut changed = false;
         for reference in removed {
             changed |= self.refs.remove(reference);
@@ -109,7 +103,6 @@ impl SourceFallbackDemand {
         changed
     }
 
-    #[cfg(test)]
     /// Consume one publication attempt, including attempts for the wrong or expired certificate.
     /// Absence means no fresh feedback, never a proven empty fallback set or draw readiness.
     pub(crate) fn consume_for_package(

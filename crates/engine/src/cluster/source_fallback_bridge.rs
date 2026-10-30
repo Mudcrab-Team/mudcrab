@@ -347,8 +347,6 @@ fn publish(sources: Res<Sources>, mut main: ResMut<MainWorld>, mut previous: Loc
             .get_resource::<OwnershipFacts>()
             .filter(|facts| facts.package_matches(&certificate))
             .map(|facts| facts.refusal_revision());
-        #[cfg(test)]
-        let refresh_delivery = revision == previous.refusal_revision && !update.reset;
         if revision != previous.refusal_revision || update.reset {
             let refused = main
                 .get_resource::<OwnershipFacts>()
@@ -360,11 +358,7 @@ fn publish(sources: Res<Sources>, mut main: ResMut<MainWorld>, mut previous: Loc
                 demand.update(Some(&certificate), refused);
             }
             previous.refusal_revision = revision;
-        }
-        #[cfg(test)]
-        if refresh_delivery
-            && let Some(mut demand) = main.get_resource_mut::<SourceFallbackDemand>()
-        {
+        } else if let Some(mut demand) = main.get_resource_mut::<SourceFallbackDemand>() {
             demand.refresh_for_package(&certificate);
         }
         return;
@@ -377,7 +371,6 @@ fn publish(sources: Res<Sources>, mut main: ResMut<MainWorld>, mut previous: Loc
                     previous.reference_counts.keys().copied().collect(),
                 )
             } else if update.added.is_empty() && update.removed.is_empty() {
-                #[cfg(test)]
                 demand.refresh_for_package(&certificate);
                 false
             } else {

@@ -20,6 +20,7 @@ pub mod emittance;
 pub mod extensions;
 pub mod fingerprint;
 pub mod frame_budget;
+pub(crate) mod geometry;
 pub mod graphics_settings;
 pub mod indirect_metrics;
 pub mod lights;

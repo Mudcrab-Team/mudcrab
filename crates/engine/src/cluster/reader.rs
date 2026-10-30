@@ -177,6 +177,8 @@ pub struct CertifiedPackage {
     /// Separate from mapped-only replacement membership above; contains the full examined scope.
     placed_references: BTreeMap<u32, PlacedReference>,
     placed_reference_cells: BTreeMap<(u32, i32, i32), Vec<u32>>,
+    /// Winning-record enable definitions, retained under the same dataset lock as placement.
+    enable_catalog: std::sync::Arc<crate::world::reference_state::EnableCatalog>,
 }
 
 impl CertifiedPackage {
@@ -198,7 +200,9 @@ impl CertifiedPackage {
         bevy::log::debug!("cluster payload checks passed; opening the source authority");
         // The base with the overlay attached read-only: cluster tables and core tables, one view.
         let connection = envelope.connection()?;
-        crate::world::reference_state::EnableCatalog::read(&connection)?;
+        let enable_catalog = std::sync::Arc::new(
+            crate::world::reference_state::EnableCatalog::read(&connection)?,
+        );
         let declared: String = connection.query_row(
             "SELECT classifier_scope FROM cluster_provenance WHERE id = 1",
             [],
@@ -461,6 +465,7 @@ impl CertifiedPackage {
             unclustered_primitives,
             placed_references,
             placed_reference_cells,
+            enable_catalog,
         })
     }
 
@@ -490,6 +495,34 @@ impl CertifiedPackage {
     /// None means absent from this declared scope, not known empty or eligible.
     pub fn placed_reference(&self, id: u32) -> Option<&PlacedReference> {
         self.placed_references.get(&id)
+    }
+    pub(crate) fn enable_catalog(
+        &self,
+    ) -> &std::sync::Arc<crate::world::reference_state::EnableCatalog> {
+        &self.enable_catalog
+    }
+    /// Nonempty position cells in exactly this placing world, in grid order.
+    /// None selects the whole worldspace, matching owned clusters' unbounded object reach.
+    pub(crate) fn placed_cells_in_window(
+        &self,
+        world: u32,
+        center: IVec2,
+        radius: Option<i32>,
+    ) -> impl Iterator<Item = (IVec2, &[u32])> {
+        let (low, high) = radius.map_or((IVec2::splat(i32::MIN), IVec2::splat(i32::MAX)), |r| {
+            let r = r.max(0);
+            (
+                IVec2::new(center.x.saturating_sub(r), center.y.saturating_sub(r)),
+                IVec2::new(center.x.saturating_add(r), center.y.saturating_add(r)),
+            )
+        });
+        // Walk indexed cells, not every possible x coordinate of an unbounded/sparse world.
+        self.placed_reference_cells
+            .range((world, low.x, i32::MIN)..=(world, high.x, i32::MAX))
+            .filter(move |((_, _, y), _)| {
+                radius.is_none_or(|r| r >= 0) && *y >= low.y && *y <= high.y
+            })
+            .map(|((_, x, y), ids)| (IVec2::new(*x, *y), ids.as_slice()))
     }
 
     /// Every examined reference placed in this position cell of this placing worldspace,
@@ -1408,6 +1441,23 @@ pub(crate) mod producer_fixture_tests {
         })
     }
 
+    pub(crate) fn published_for_inventory() -> tempfile::TempDir {
+        published_inputs_with_inventory(true, true)
+    }
+
+    /// Legacy package with below-threshold static primitives and no replacement records.
+    pub(crate) fn published_for_legacy_threshold_inventory() -> tempfile::TempDir {
+        published_options(FixtureOptions {
+            with_texture_and_rejected_primitive: false,
+            inventory: true,
+            triangle_threshold: 1024,
+            single_triangle: false,
+            billboard: false,
+            runtime_inventory: false,
+            base_record_type: "STAT",
+        })
+    }
+
     /// Inventory plus initially-disabled STAT reference 0x109, in WORLD at (-2, 1),
     /// with the same model path and pose as the other refused inventory references.
     pub(crate) fn published_for_runtime_inventory() -> tempfile::TempDir {
@@ -1420,6 +1470,40 @@ pub(crate) mod producer_fixture_tests {
             runtime_inventory: true,
             base_record_type: "STAT",
         })
+    }
+
+    /// Runtime-state refusals with a model-less parent outside the drawn reference scope.
+    pub(crate) fn published_for_runtime_draw_states() -> tempfile::TempDir {
+        published_options_with_inputs(
+            FixtureOptions {
+                with_texture_and_rejected_primitive: true,
+                inventory: true,
+                triangle_threshold: 1,
+                single_triangle: false,
+                billboard: false,
+                runtime_inventory: true,
+                base_record_type: "STAT",
+            },
+            |db| {
+                // All children share the distant placement. The parent has no render model.
+                for (reference, base, parent, opposite) in [
+                    (0x110, 0x15, None, 0),
+                    (0x111, 0x11, Some(0x110), 0),
+                    (0x112, 0x11, Some(0x110), 1),
+                    (0x113, 0x11, None, 0),
+                ] {
+                    db.execute(
+                        "INSERT INTO \"references\" (id,cell_id,worldspace_id,base_form_id,is_exterior,
+                         pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,header_flags,data,
+                         enable_parent_id,enable_parent_flags)
+                         SELECT ?1,cell_id,worldspace_id,?2,is_exterior,pos_x,pos_y,pos_z,
+                         rot_x,rot_y,rot_z,scale,0,data,?3,?4 FROM \"references\" WHERE id=?5",
+                        params![reference, base, parent, opposite, RUNTIME_REF],
+                    ).unwrap();
+                }
+                db.execute("INSERT INTO scripts(form_id,script_name,vmad,properties_json) VALUES(0x113,'InventedStateScript',X'','{}')", []).unwrap();
+            },
+        )
     }
 
     fn published_inputs(with_texture_and_rejected_primitive: bool) -> tempfile::TempDir {

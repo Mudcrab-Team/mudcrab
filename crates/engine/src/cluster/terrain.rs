@@ -230,7 +230,6 @@ impl CanonicalTerrainHeights {
 #[derive(Resource)]
 pub struct ClusterTerrain {
     pub blocks: Vec<TerrainBlock>,
-    #[cfg(test)]
     worldspaces: HashSet<u32>,
     heights: CanonicalTerrainHeights,
     by_mesh: HashMap<String, Vec<(u32, usize)>>,
@@ -354,7 +353,6 @@ impl ClusterTerrain {
                 .push((block.primitive_index, index));
         }
         Ok(Self {
-            #[cfg(test)]
             worldspaces: blocks.iter().map(|block| block.worldspace_id).collect(),
             blocks,
             heights: CanonicalTerrainHeights(Arc::new(metadata.heights)),
@@ -430,9 +428,28 @@ impl ClusterTerrain {
     }
 
     /// Source availability is indexed once, including constant-time negative lookups.
-    #[cfg(test)]
     pub(crate) fn has_world(&self, world: u32) -> bool {
         self.worldspaces.contains(&world)
+    }
+
+    /// A terrain with exactly `blocks` and no heights, meshes or near coverage, for tests of
+    /// the readers of `blocks` in other modules.
+    #[cfg(test)]
+    pub(crate) fn for_blocks_test(blocks: Vec<TerrainBlock>) -> Self {
+        Self {
+            worldspaces: blocks
+                .iter()
+                .filter(|block| !block.cells.is_empty())
+                .map(|block| block.worldspace_id)
+                .collect(),
+            blocks,
+            heights: CanonicalTerrainHeights(Arc::new(HashMap::new())),
+            by_mesh: HashMap::new(),
+            build: TerrainBuild {
+                cell_cache_hash: [0; 32],
+            },
+            near: None,
+        }
     }
 
     /// Sets what each block clips.
@@ -1171,6 +1188,18 @@ impl TerrainViewBlock {
     ) {
         self.append_clip_record(world, origin, forward_covered, ready, output);
         self.append_clip_record(world, origin, depth_covered, ready, output);
+    }
+}
+
+#[cfg(test)]
+impl ClusterTerrain {
+    pub(crate) fn for_heights_test(world: u32, grid: IVec2, heights: Vec<f32>) -> Self {
+        let mut terrain = Self::for_blocks_test(Vec::new());
+        terrain.heights = CanonicalTerrainHeights(Arc::new(HashMap::from([(
+            (world, grid.x, grid.y),
+            heights,
+        )])));
+        terrain
     }
 }
 
