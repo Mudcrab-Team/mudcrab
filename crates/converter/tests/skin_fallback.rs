@@ -572,27 +572,27 @@ fn unresolved_bethesda_skins_recover_rigid_geometry_and_diagnostics() {
     }
 }
 
-/// A resolved Bethesda rig must still export a real skin through both public APIs.
+/// A resolved Bethesda rig must keep a bound skin through both public APIs.
 #[test]
 fn resolved_bethesda_skins_keep_the_existing_skeletal_path() {
     for dynamic in [false, true] {
         let nif = bethesda_skin_fixture(dynamic, false);
         let (model, diagnostics) = nif_to_model_with_skin_fallback(&nif, Some(&nif), None).unwrap();
         assert!(diagnostics.is_empty());
-        assert!(model.static_meshes.is_empty());
-        assert_eq!(model.skeletal_meshes.len(), 1);
-        let (json, _) = model.to_gltf("resolved-bethesda".into()).unwrap();
-        assert_eq!(json.skins.len(), 1);
         let strict = nif_to_model(&nif, Some(&nif)).unwrap();
-        assert_eq!(
-            strict
-                .to_gltf("strict-bethesda".into())
-                .unwrap()
-                .0
-                .skins
-                .len(),
-            1
-        );
+        // Per-shape material association belongs to the converter's finishing step.
+        for candidate in [&model, &strict] {
+            candidate.validate().unwrap();
+            assert!(candidate.static_meshes.is_empty());
+            assert_eq!(candidate.skeletal_meshes.len(), 1);
+            let mesh = &candidate.skeletal_meshes[0];
+            assert_eq!(mesh.skin.len(), 2);
+            assert_eq!(mesh.weights.len(), 4);
+            assert_eq!(mesh.joints.len(), 4);
+            for joint in &mesh.skin {
+                assert!(mesh.bones.bones.contains_key(joint));
+            }
+        }
     }
 }
 
