@@ -104,7 +104,7 @@ commit_parsers = [
   { message = "^test", group = "Tests" },
   { message = "^fix", group = "Fixed" },
   { message = "^.*: fix", group = "Fixed" },
-  { message = "^chore\\(release\\): prepare for", skip = true },
+  { message = "^chore\\(release\\): prepare", skip = true },
   { message = "^chore\\(deps.*\\)", skip = true },
   { message = "^chore\\(pr\\)", skip = true },
   { message = "^chore\\(pull\\)", skip = true },

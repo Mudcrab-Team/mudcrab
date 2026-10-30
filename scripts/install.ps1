@@ -70,6 +70,7 @@ try {
 
 # 4.1 Verify Checksum
 Write-Host "==> Verifying SHA256 checksum..." -ForegroundColor Cyan
+$ChecksumMismatch = $false
 try {
     Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction SilentlyContinue
     if (Test-Path $TempChecksums) {
@@ -84,10 +85,10 @@ try {
         if ($ExpectedHash) {
             $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
             if ($ActualHash -ne $ExpectedHash) {
-                Write-Error "Checksum verification failed!`nExpected: $ExpectedHash`nGot:      $ActualHash"
-                exit 1
+                $ChecksumMismatch = $true
+            } else {
+                Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
             }
-            Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
         } else {
             Write-Warning "No entry for $ArchiveFileName in SHA256SUMS.txt; skipping verification."
         }
@@ -98,6 +99,11 @@ try {
     if (Test-Path $TempChecksums) {
         Remove-Item -Path $TempChecksums -Force -ErrorAction SilentlyContinue
     }
+}
+
+if ($ChecksumMismatch) {
+    Write-Error "Checksum verification failed!`nExpected: $ExpectedHash`nGot:      $ActualHash"
+    exit 1
 }
 
 # 5. Extract Binaries

@@ -122,7 +122,8 @@ ARCHIVE="${TMP_DIR}/${ARCHIVE_FILENAME}"
 CHECKSUMS="${TMP_DIR}/SHA256SUMS.txt"
 
 if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "$ARCHIVE"; then
-    error "Failed to download Mudcrab from: $DOWNLOAD_URL\nCheck that the release tag '${TAG}' and target '${TARGET}' exist."
+    error "Failed to download Mudcrab from: $DOWNLOAD_URL
+Check that the release tag '${TAG}' and target '${TARGET}' exist."
 fi
 
 info "Verifying SHA256 checksum..."
@@ -140,7 +141,9 @@ if curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUMS" 2>/dev/null; then
             fi
 
             if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
-                error "Checksum verification failed!\nExpected: ${EXPECTED_HASH}\nGot:      ${ACTUAL_HASH}"
+                error "Checksum verification failed!
+Expected: ${EXPECTED_HASH}
+Got:      ${ACTUAL_HASH}"
             fi
             success "Checksum verified ($EXPECTED_HASH)"
         else

@@ -79,7 +79,7 @@ jobs:
           echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
 
           # Verify tag commit is reachable from origin/main or origin/release/*
-          git fetch origin main 'release/*:refs/remotes/origin/release/*' --depth=1000
+          git fetch origin main 'release/*:refs/remotes/origin/release/*'
           if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
             if ! git branch -r --contains "$COMMIT" | grep -q 'origin/release/'; then
               echo "::error::Release commit $COMMIT is not reachable from origin/main or origin/release/*!"
@@ -199,7 +199,11 @@ jobs:
           cd "target/${TARGET}/staging"
           tar -czf "../../../${ARCHIVE}" *
           cd ../../..
-          sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          else
+            shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          fi
 
       - name: Package binaries (Windows)
         if: runner.os == 'Windows'
