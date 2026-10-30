@@ -96,12 +96,15 @@ impl StockDrawable<'_> {
         let Some(material) = self.materials.get(instance.asset_id) else {
             return false;
         };
+        // The slab must exist; its bind group need not yet. This proof runs before
+        // `PrepareBindGroups`, which gives every slab its group before Render, and a slab
+        // that any material re-prepares every frame (an animated one) never has it here.
         if self
             .bind_groups
             .as_ref()
             .and_then(|allocators| allocators.get(&instance.asset_id.type_id()))
             .and_then(|allocator| allocator.get(material.binding.group))
-            .is_none_or(|slab| slab.bind_group().is_none())
+            .is_none()
         {
             return false;
         }

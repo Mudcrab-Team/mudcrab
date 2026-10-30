@@ -2709,7 +2709,6 @@ impl ViewDomain {
 struct PreparedMaterialInputs {
     scope: u64,
     revision: u64,
-    allocators: Vec<(std::any::TypeId, u64)>,
 }
 
 #[derive(Resource, Default)]
@@ -3153,7 +3152,7 @@ fn batch_materials_now<'a>(
 ) -> Vec<Option<BatchMaterialNow<'a>>> {
     // Sequential: the pool's tasks cannot hold borrows of the render world's assets.
     (0..gpu.batches.len())
-        .map(|batch| batch_material(gpu, batch, materials, allocators))
+        .map(|batch| batch_material(gpu, batch, materials, allocators, false))
         .collect()
 }
 
@@ -3205,18 +3204,24 @@ fn par_batches<T: Send + 'static>(batches: usize, f: impl Fn(usize) -> T + Sync)
     .collect()
 }
 
+/// `bind_group_required` is false for the Queue-time readiness proof. Queue runs before
+/// `PrepareBindGroups`, which gives every slab its bind group before Render, and the draw skips a
+/// group that is missing. A slab that any other material re-prepares every frame (an animated
+/// stock material) has no bind group at Queue in any frame, so requiring it there would leave
+/// every batch sharing that slab unready for good. Proofs run after `PrepareBindGroups` require it.
 fn batch_material<'a>(
     gpu: &ClusterGpu,
     batch: usize,
     materials: &'a ErasedRenderAssets<PreparedMaterial>,
     allocators: &MaterialBindGroupAllocators,
+    bind_group_required: bool,
 ) -> Option<BatchMaterialNow<'a>> {
     let asset = gpu.batches[batch].material?;
     let material = materials.get(asset)?;
     if allocators
         .get(&asset.type_id())
         .and_then(|allocator| allocator.get(material.binding.group))
-        .is_none_or(|slab| slab.bind_group().is_none())
+        .is_none_or(|slab| bind_group_required && slab.bind_group().is_none())
     {
         return None;
     }
@@ -3253,7 +3258,7 @@ fn batch_ready(
         gpu,
         view,
         batch,
-        batch_material(gpu, batch, materials, allocators),
+        batch_material(gpu, batch, materials, allocators, true),
         shadow,
         prepass,
         cache,
@@ -3855,15 +3860,9 @@ fn select_instances(
         (None, None) => true,
         _ => false,
     };
-    let mut allocator_revisions: Vec<_> = allocators
-        .iter()
-        .map(|(kind, allocator)| (*kind, allocator.readiness_revision()))
-        .collect();
-    allocator_revisions.sort_unstable_by_key(|(kind, _)| *kind);
     let material_inputs = PreparedMaterialInputs {
         scope: materials.change_scope(),
         revision: materials.revision(),
-        allocators: allocator_revisions,
     };
     if filters.material_inputs.as_ref() != Some(&material_inputs) {
         filters.material_inputs = Some(material_inputs);
