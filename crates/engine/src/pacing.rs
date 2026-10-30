@@ -19,6 +19,7 @@ use crate::{
     config::EngineConfig,
     profiling::ProfilingState,
     streaming::{ActiveSpace, RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
+    swap_bridge::{WaitingVisibility, pending_drawn},
     world::{cache::CellCache, components::CELL_SIZE, components::StreamingCamera},
 };
 use bevy::prelude::*;
@@ -35,8 +36,10 @@ pub struct WorldReadyInputs {
     pub window_cells: usize,
     /// Cells of that window resident at full detail.
     pub resident_window_cells: usize,
-    /// Cells of that window that failed to load (map edge, missing data). A failed cell never
-    /// becomes resident and is never retried, so it counts as settled.
+    /// Wanted exterior squares successfully proven to have no cell record.
+    pub absent_window_cells: usize,
+    /// Cells whose full-cell loads failed permanently or exhausted their bounded retries.
+    /// Retryable failures remain pending; terminal failures count as settled and are reported.
     pub failed_window_cells: usize,
     pub loading_cells: usize,
     pub active_requests: usize,
@@ -44,6 +47,13 @@ pub struct WorldReadyInputs {
     pub arming_queue_depth: usize,
     pub pending_asset_instances: usize,
     pub pending_surface_instances: usize,
+    /// Surfaces a view can see that the render world has not confirmed drawn: the
+    /// world is not ready while the ground it shows may be a stand-in or a hole.
+    pub pending_drawn: usize,
+    /// LOD queries submitted but not answered, and LOD chunks requested but not resident: work that
+    /// will still change the frame, so the world is not ready while either is nonzero.
+    pub pending_lod_queries: usize,
+    pub pending_lod_chunks: usize,
 }
 
 impl WorldReadyInputs {
@@ -52,29 +62,39 @@ impl WorldReadyInputs {
     /// becomes resident, so resident plus failed cells must cover the window.
     pub fn is_ready(&self) -> bool {
         self.window_cells > 0
-            && self.resident_window_cells + self.failed_window_cells >= self.window_cells
+            && self.resident_window_cells + self.absent_window_cells + self.failed_window_cells
+                >= self.window_cells
             && self.loading_cells == 0
             && self.active_requests == 0
             && self.arming_queue_depth == 0
             && self.pending_asset_instances == 0
             && self.pending_surface_instances == 0
+            && self.pending_drawn == 0
+            && self.pending_lod_queries == 0
+            && self.pending_lod_chunks == 0
     }
 
     fn from_streaming(
         metrics: &StreamingMetrics,
+        pending_drawn: usize,
         window_cells: usize,
         resident_window_cells: usize,
         failed_window_cells: usize,
+        absent_window_cells: usize,
     ) -> Self {
         Self {
             window_cells,
             resident_window_cells,
             failed_window_cells,
+            absent_window_cells,
             loading_cells: metrics.loading_cells,
             active_requests: metrics.active_requests,
             arming_queue_depth: metrics.arming_queue_depth,
             pending_asset_instances: metrics.pending_asset_instances,
             pending_surface_instances: metrics.pending_surface_instances,
+            pending_drawn,
+            pending_lod_queries: metrics.pending_lod_queries,
+            pending_lod_chunks: metrics.pending_lod_chunks,
         }
     }
 }
@@ -414,6 +434,54 @@ pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     Vec2::new(a.x - b.x, a.z - b.z).length()
 }
 
+/// Evaluate readiness for the active space using this frame's real pending counters.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn world_ready_at_frame_end(
+    config: &EngineConfig,
+    origin: IVec2,
+    streaming: &StreamingWorld,
+    space: &ActiveSpace,
+    metrics: &StreamingMetrics,
+    camera: Vec3,
+    pending_drawn: usize,
+) -> (bool, usize) {
+    let inputs = world_ready_inputs_at_frame_end(
+        config,
+        origin,
+        streaming,
+        space,
+        metrics,
+        camera,
+        pending_drawn,
+    );
+    (inputs.is_ready(), inputs.failed_window_cells)
+}
+
+/// The facts [`world_ready_at_frame_end`] decides on, for a caller that also needs to tell
+/// the exact pending inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn world_ready_inputs_at_frame_end(
+    config: &EngineConfig,
+    origin: IVec2,
+    streaming: &StreamingWorld,
+    space: &ActiveSpace,
+    metrics: &StreamingMetrics,
+    camera: Vec3,
+    pending_drawn: usize,
+) -> WorldReadyInputs {
+    let center = window_center(config, camera, origin);
+    let (window_cells, resident, failed, absent) =
+        streaming.active_residency(space, config.worldspace_id, center, config.stream_radius);
+    WorldReadyInputs::from_streaming(
+        metrics,
+        pending_drawn,
+        window_cells,
+        resident,
+        failed,
+        absent,
+    )
+}
+
 /// The frame delta the loading frame-time windows are measured with: the real wall-clock delta,
 /// never the virtual clock. Bevy clamps `Time<Virtual>` at 250 ms, so a one-second hitch would
 /// otherwise be recorded as 250 ms, which is exactly the stall those windows exist to catch. The
@@ -434,6 +502,7 @@ pub(crate) fn track_world_ready(
     metrics: Res<StreamingMetrics>,
     cache: Res<CellCache>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    waiting: WaitingVisibility,
     mut tracker: ResMut<PacingTracker>,
     mut profiler: ResMut<ProfilingState>,
     // The window frame times come from the real clock; `window_delta_ms` is the one place that
@@ -444,16 +513,16 @@ pub(crate) fn track_world_ready(
         return;
     };
     let started = *tracker.started.get_or_insert_with(Instant::now);
-    let center = window_center(&config, camera.translation, origin.0);
-    let (window_cells, resident, failed) = streaming.active_residency(
+    let (ready, failed) = world_ready_at_frame_end(
+        &config,
+        origin.0,
+        &streaming,
         &space.as_deref().copied().unwrap_or_default(),
-        config.worldspace_id,
-        center,
-        config.stream_radius,
+        &metrics,
+        camera.translation,
+        pending_drawn(&waiting),
     );
-    let inputs = WorldReadyInputs::from_streaming(&metrics, window_cells, resident, failed);
     let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
-    let ready = inputs.is_ready();
     // Frame-time windows are for benchmark runs; an ordinary session runs unbounded.
     tracker.record_frame_windows = config.is_benchmark_run();
     tracker.window_failed_cells = failed;
@@ -511,13 +580,16 @@ mod tests {
 
     #[test]
     fn each_condition_alone_holds_the_world_back() {
-        let holds_back: [fn(&mut WorldReadyInputs); 7] = [
+        let holds_back: [fn(&mut WorldReadyInputs); 10] = [
             |i| i.resident_window_cells = 24,
             |i| i.loading_cells = 1,
             |i| i.active_requests = 1,
             |i| i.arming_queue_depth = 1,
             |i| i.pending_asset_instances = 1,
             |i| i.pending_surface_instances = 1,
+            |i| i.pending_drawn = 1,
+            |i| i.pending_lod_queries = 1,
+            |i| i.pending_lod_chunks = 1,
             |i| i.window_cells = 0,
         ];
         for (index, hold) in holds_back.iter().enumerate() {
@@ -954,5 +1026,91 @@ mod tests {
             horizontal_distance(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 500.0, -4.0)),
             5.0
         );
+    }
+    /// "Ready" means drawn, not validated: a surface a view can see that the render
+    /// world has not confirmed drawn holds the mark, so the benchmark does not time a stand-in or a
+    /// hole - and, on its own, nothing else can be the reason.
+    #[test]
+    fn world_ready_waits_for_drawn() {
+        let drawn = ready_inputs();
+        assert!(drawn.is_ready());
+
+        let waiting = WorldReadyInputs {
+            pending_drawn: 1,
+            ..ready_inputs()
+        };
+        assert!(
+            !waiting.is_ready(),
+            "a visible surface the render world has not confirmed drawn holds the world-ready mark"
+        );
+        assert!(
+            WorldReadyInputs {
+                pending_drawn: 0,
+                ..waiting
+            }
+            .is_ready(),
+            "and once it is drawn the mark latches: nothing else about the view changed"
+        );
+    }
+
+    #[test]
+    fn stock_ready_inputs_require_actual_batch_and_draw_completion() {
+        let metrics = StreamingMetrics::default();
+        let ready = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0);
+        assert!(
+            ready.is_ready(),
+            "global legacy terrain readiness is not current-view demand"
+        );
+        let undrawn = WorldReadyInputs::from_streaming(&metrics, 1, 25, 25, 0, 0);
+        assert!(
+            !undrawn.is_ready(),
+            "current-view actual draw readiness remains required"
+        );
+    }
+
+    #[test]
+    fn existing_pending_metrics_block_the_world_ready_mark() {
+        for metrics in [
+            StreamingMetrics {
+                pending_lod_queries: 1,
+                ..default()
+            },
+            StreamingMetrics {
+                pending_lod_chunks: 1,
+                ..default()
+            },
+        ] {
+            let (_cache_directory, cache) = empty_cell_cache();
+            let mut app = thousand_millisecond_frames();
+            let mut streaming = StreamingWorld::default();
+            streaming.set_failed_for_test(crate::world::database::CellKey::Interior(77));
+            app.insert_resource(EngineConfig {
+                stream_radius: 0,
+                ..default()
+            })
+            .insert_resource(ActiveSpace {
+                interior: Some(77),
+                worldspace_id: None,
+            })
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(streaming)
+            .insert_resource(metrics)
+            .insert_resource(cache)
+            .init_resource::<PacingTracker>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, track_world_ready);
+            app.world_mut()
+                .spawn((Transform::default(), StreamingCamera));
+            for _ in 0..3 {
+                app.update();
+            }
+            assert!(
+                app.world()
+                    .resource::<PacingTracker>()
+                    .first_ready
+                    .latched
+                    .is_none()
+            );
+        }
     }
 }

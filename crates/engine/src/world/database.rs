@@ -125,7 +125,7 @@ pub enum DatabaseRequest {
 pub struct DatabaseResponse {
     pub generation: u64,
     pub key: CellKey,
-    pub result: std::result::Result<CellPayload, String>,
+    pub result: std::result::Result<Option<CellPayload>, String>,
     pub query_micros: u64,
     pub queue_wait_micros: u64,
     pub total_request_micros: u64,
@@ -578,9 +578,11 @@ fn worker(
                     Err(error) => Err(error.clone()),
                 };
                 let query_micros = elapsed_micros(started);
-                let row_count = result
-                    .as_ref()
-                    .map_or(0, |payload| payload.references.len());
+                let row_count = result.as_ref().map_or(0, |payload| {
+                    payload
+                        .as_ref()
+                        .map_or(0, |payload| payload.references.len())
+                });
                 if responses
                     .send(DatabaseResponse {
                         generation,
@@ -1093,18 +1095,25 @@ fn load_cell(
     query: &mut ReferenceQuery,
     generation: u64,
     key: CellKey,
-) -> Result<CellPayload> {
-    let cell_id: u32 = match key {
+) -> Result<Option<CellPayload>> {
+    let cell_id: Option<u32> = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
             grid_y,
-        } => connection.query_row(
-            EXTERIOR_CELL_ID_SQL,
-            params![worldspace_id, grid_x, grid_y],
-            |row| row.get(0),
-        )?,
-        CellKey::Interior(cell_id) => cell_id,
+        } => connection
+            .query_row(
+                EXTERIOR_CELL_ID_SQL,
+                params![worldspace_id, grid_x, grid_y],
+                |row| row.get(0),
+            )
+            .optional()?,
+        CellKey::Interior(cell_id) => Some(cell_id),
+    };
+    // Only this optional exterior record lookup establishes successful absence.
+    // Schema, I/O, reference and decode failures still propagate as real errors.
+    let Some(cell_id) = cell_id else {
+        return Ok(None);
     };
     let columns = &query.columns;
     let joins = &query.joins;
@@ -1161,12 +1170,12 @@ fn load_cell(
         };
         references.push(reference);
     }
-    Ok(CellPayload {
+    Ok(Some(CellPayload {
         generation,
         key,
         cell_id,
         references,
-    })
+    }))
 }
 
 pub(crate) fn map_enable_inputs(
@@ -1289,7 +1298,8 @@ mod tests {
             &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
             generation,
             key,
-        )
+        )?
+        .ok_or_else(|| color_eyre::eyre::eyre!("fixture expected a recorded exterior cell"))
     }
 
     fn fixture(connection: &Connection) {
@@ -1351,7 +1361,9 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let payload = super::load_cell(&connection, &mut denied, 1, CellKey::Interior(99)).unwrap();
+        let payload = super::load_cell(&connection, &mut denied, 1, CellKey::Interior(99))
+            .unwrap()
+            .expect("fixture cell must be recorded");
         assert!(
             payload
                 .references
@@ -1421,7 +1433,9 @@ mod tests {
                 grid_y: -3,
             },
         ] {
-            let payload = super::load_cell(&connection, &mut query, 1, key).unwrap();
+            let payload = super::load_cell(&connection, &mut query, 1, key)
+                .unwrap()
+                .expect("fixture cell must be recorded");
             let child = payload
                 .references
                 .iter()
@@ -1446,8 +1460,9 @@ mod tests {
         let mut query =
             ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         for _ in 0..2 {
-            let interior =
-                super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
+            let interior = super::load_cell(&connection, &mut query, 1, CellKey::Interior(99))
+                .unwrap()
+                .expect("fixture cell must be recorded");
             assert_eq!(interior.references.len(), 1);
             assert!(!interior.references[0].initially_enabled);
             let exterior = super::load_cell(
@@ -1460,7 +1475,8 @@ mod tests {
                     grid_y: -3,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .expect("fixture cell must be recorded");
             assert_eq!(
                 exterior.references.len(),
                 2,
@@ -1513,7 +1529,8 @@ mod tests {
                         grid_y: -3,
                     },
                 )
-                .unwrap();
+                .unwrap()
+                .expect("fixture cell must be recorded");
                 assert_eq!(payload.references.len(), 2);
                 assert!(payload.references.iter().all(|row| !row.initially_enabled));
                 assert_eq!(query.enable_errors.len(), 1);
@@ -2844,5 +2861,46 @@ mod tests {
                 .iter()
                 .all(|reference| reference.door.is_none())
         );
+    }
+
+    #[test]
+    fn an_absent_exterior_record_is_a_successful_empty_lookup() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        let result = super::load_cell(
+            &connection,
+            &mut query,
+            7,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 120,
+                grid_y: -80,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "an unrecorded square is valid empty space, not a database error: {result:?}"
+        );
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn exterior_absence_classification_does_not_swallow_real_read_errors() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        connection.execute_batch("DROP TABLE cells;").unwrap();
+        let result = load_cell(
+            &connection,
+            7,
+            CellKey::Exterior {
+                worldspace_id: 60,
+                grid_x: 120,
+                grid_y: -80,
+            },
+        );
+        let error = result.expect_err("an unreadable cell table is never successful absence");
+        assert!(format!("{error:#}").contains("cells"));
     }
 }

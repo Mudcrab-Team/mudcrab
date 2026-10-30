@@ -589,6 +589,48 @@ impl LodBatchActivation<'_, '_> {
     }
 }
 
+/// The outer selector condition uses shared batch state. Readiness is shared
+/// with the render world through a mutex, so resource change ticks cannot detect
+/// acknowledgments. Ready initial transfers remain wakeful across exhausted
+/// frame budgets until the existing finalizer succeeds or withdraws them.
+#[derive(SystemParam)]
+pub(in crate::streaming) struct LodBatchVisibilityWake<'w, 's> {
+    chunks: Query<
+        'w,
+        's,
+        (
+            &'static LodTerrainBatches,
+            Option<&'static TerrainSurfaceReady>,
+        ),
+    >,
+    removed: RemovedComponents<'w, 's, LodTerrainBatches>,
+    readiness: Option<Res<'w, TerrainMeshUploadReadiness>>,
+}
+
+impl LodBatchVisibilityWake<'_, '_> {
+    pub(super) fn has_work(&mut self) -> bool {
+        if self.removed.read().count() != 0 {
+            return true;
+        }
+        let Some(readiness) = self.readiness.as_deref() else {
+            return false;
+        };
+        if !readiness.has_ready_uploads() {
+            return false;
+        }
+        self.chunks.iter().any(|(chunk, ready)| {
+            if chunk.source_children.is_some() {
+                ready.is_some() && readiness.has_render_backend()
+            } else {
+                chunk
+                    .batches
+                    .iter()
+                    .any(|batch| batch.pending_upload && readiness.is_ready(batch.mesh.id()))
+            }
+        })
+    }
+}
+
 #[derive(SystemParam)]
 pub(crate) struct LodBatchVisibility<'w, 's> {
     chunks: Query<
@@ -601,6 +643,7 @@ pub(crate) struct LodBatchVisibility<'w, 's> {
         ),
     >,
     removed: RemovedComponents<'w, 's, LodTerrainBatches>,
+    roots: Query<'w, 's, &'static super::LodChunkRoot>,
     source_states: Query<'w, 's, (&'static TerrainCoverage, Has<TerrainSurfaceReady>)>,
     meshes: Option<ResMut<'w, Assets<Mesh>>>,
     commands: Commands<'w, 's>,
@@ -608,21 +651,20 @@ pub(crate) struct LodBatchVisibility<'w, 's> {
 }
 
 impl LodBatchVisibility<'_, '_> {
-    pub(super) fn pending_count(&self) -> usize {
-        self.chunks
-            .iter()
-            .filter(|(_, chunk, _)| chunk.source_children.is_some())
-            .count()
-    }
-
-    /// Immutable selection meshes still awaiting activation after their initial hierarchy transfer.
+    /// Active mask replacements still awaiting upload/activation, excluding initial transfer.
+    /// Read only when selection/upload/removal work changes the reporting contract.
     pub(super) fn pending_selection_uploads(&self) -> usize {
         self.chunks
             .iter()
             .filter(|(_, chunk, _)| chunk.source_children.is_none())
-            .flat_map(|(_, chunk, _)| &chunk.batches)
-            .filter(|batch| batch.pending_upload)
-            .count()
+            .map(|(_, chunk, _)| {
+                chunk
+                    .batches
+                    .iter()
+                    .filter(|batch| batch.pending_upload)
+                    .count()
+            })
+            .sum()
     }
 
     /// Run after semantic selection has updated every inactive mask. A transfer changes the
@@ -632,7 +674,7 @@ impl LodBatchVisibility<'_, '_> {
         let Some(readiness) = self.readiness.as_deref() else {
             return false;
         };
-        if !readiness.has_render_backend() {
+        if !readiness.has_render_backend() || !readiness.has_ready_uploads() {
             return false;
         }
         let candidate = self.chunks.iter().find_map(|(entity, chunk, ready)| {
@@ -707,33 +749,25 @@ impl LodBatchVisibility<'_, '_> {
         })
     }
 
-    pub(super) fn coverage(&self) -> impl Iterator<Item = TerrainCoverage> + '_ {
+    pub(super) fn coverage_for_world(
+        &self,
+        world: Option<u32>,
+    ) -> impl Iterator<Item = TerrainCoverage> + '_ {
         self.chunks
             .iter()
-            .filter(|(_, chunk, ready)| ready.is_some() && chunk.source_children.is_none())
+            .filter(move |(entity, chunk, ready)| {
+                ready.is_some()
+                    && chunk.source_children.is_none()
+                    && self
+                        .roots
+                        .get(*entity)
+                        .is_ok_and(|root| Some(root.terrain_key().worldspace_id) == world)
+            })
             .flat_map(|(_, chunk, _)| {
                 chunk
                     .batches
                     .iter()
                     .flat_map(|batch| batch.members.iter().map(|member| member.coverage))
-            })
-    }
-
-    /// Inventory uses saved masks and member counts; it never visits vertex streams or tier maps.
-    pub(super) fn counts(&self) -> (usize, usize, usize, usize) {
-        self.chunks
-            .iter()
-            .fold((0, 0, 0, 0), |mut counts, (_, chunk, ready)| {
-                let active = ready.is_some() && chunk.source_children.is_none();
-                for batch in &chunk.batches {
-                    counts.0 += batch.members.len();
-                    counts.1 += 1;
-                    if active {
-                        counts.2 += batch.selected.count_ones() as usize;
-                        counts.3 += usize::from(batch.selected != 0 && !batch.pending_upload);
-                    }
-                }
-                counts
             })
     }
 
@@ -758,9 +792,27 @@ impl LodBatchVisibility<'_, '_> {
         }
     }
 
+    /// Selects one world's coverage and clears masks in every other retained world.
+    pub(super) fn update_for_world<S: std::hash::BuildHasher>(
+        &mut self,
+        selected_tiers: &HashMap<(IVec2, u8), Option<LodTier>, S>,
+        world: Option<u32>,
+    ) -> (usize, usize, usize) {
+        self.update_scoped(selected_tiers, Some(world))
+    }
+
+    #[cfg(test)]
     pub(super) fn update<S: std::hash::BuildHasher>(
         &mut self,
         selected_tiers: &HashMap<(IVec2, u8), Option<LodTier>, S>,
+    ) -> (usize, usize, usize) {
+        self.update_scoped(selected_tiers, None)
+    }
+
+    fn update_scoped<S: std::hash::BuildHasher>(
+        &mut self,
+        selected_tiers: &HashMap<(IVec2, u8), Option<LodTier>, S>,
+        world: Option<Option<u32>>,
     ) -> (usize, usize, usize) {
         let Some(meshes) = self.meshes.as_deref_mut() else {
             return (0, 0, 0);
@@ -772,6 +824,11 @@ impl LodBatchVisibility<'_, '_> {
         let mut visible_batches = 0;
         let mut changed_batches = 0;
         for (root, mut chunk, ready) in &mut self.chunks {
+            let in_world = world.is_none_or(|world| {
+                self.roots
+                    .get(root)
+                    .is_ok_and(|root| Some(root.terrain_key().worldspace_id) == world)
+            });
             let initial_upload = chunk.source_children.is_some();
             for batch in &mut chunk.batches {
                 let selected =
@@ -780,7 +837,8 @@ impl LodBatchVisibility<'_, '_> {
                         .iter()
                         .enumerate()
                         .fold(0u16, |mask, (index, member)| {
-                            if ready.is_some()
+                            if in_world
+                                && ready.is_some()
                                 && selected_tiers
                                     .get(&(member.coverage.grid, member.coverage.quadrant))
                                     == Some(&member.coverage.tier)
@@ -912,7 +970,9 @@ impl LodTerrainBatches {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{LodStreaming, update_terrain_lod_visibility};
+    use super::super::{
+        LodStreaming, terrain_lod_visibility_has_work, update_terrain_lod_visibility,
+    };
     use super::*;
     use crate::{
         config::EngineConfig,
@@ -938,6 +998,7 @@ mod tests {
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<WorldAsset>>()
             .init_resource::<LodStreaming>()
+            .init_resource::<super::super::visibility::TerrainLodIndex>()
             .init_resource::<TerrainMeshUploadReadiness>();
         app.world()
             .resource::<TerrainMeshUploadReadiness>()
@@ -996,6 +1057,24 @@ mod tests {
         ))
     }
 
+    fn fixture_chunk_owner(app: &App, tier: LodTier, grid: IVec2) -> super::super::LodChunkRoot {
+        let world = app.world().get_resource::<EngineConfig>().map_or_else(
+            || EngineConfig::default().worldspace_id,
+            |config| config.worldspace_id,
+        );
+        let origin = shared::lod::LodOrigin::new(0, 0);
+        super::super::LodChunkRoot {
+            key: shared::lod::ChunkKey::new(
+                world,
+                tier,
+                origin.chunk_for_cell(tier, grid.x, grid.y),
+            ),
+            generation: 1,
+            origin,
+            retry_count: 0,
+        }
+    }
+
     fn fixture(app: &mut App, grids: &[IVec2], tier: LodTier) -> Fixture {
         let material = app
             .world_mut()
@@ -1008,6 +1087,9 @@ mod tests {
                 Visibility::Hidden,
             ))
             .id();
+        // Real LOD roots have authority before source readiness or batch conversion.
+        let owner = fixture_chunk_owner(app, tier, grids.first().copied().unwrap_or_default());
+        app.world_mut().entity_mut(root).insert(owner);
         let loader_scene = app
             .world_mut()
             .spawn((
@@ -1201,7 +1283,7 @@ mod tests {
             (
                 reset_submission_budget,
                 batch_ready_lod_chunks,
-                update_terrain_lod_visibility,
+                update_terrain_lod_visibility.run_if(terrain_lod_visibility_has_work),
             )
                 .chain(),
         );
@@ -1230,9 +1312,13 @@ mod tests {
         use super::super::LodChunkRoot;
         use shared::lod::{ChunkAnchor, ChunkKey, LodOrigin};
         let tier = fixture.patches[0].1.tier.unwrap();
+        let worldspace_id = app
+            .world()
+            .get_resource::<EngineConfig>()
+            .map_or(60, |config| config.worldspace_id);
         app.world_mut().entity_mut(fixture.root).insert((
             LodChunkRoot {
-                key: ChunkKey::new(1, tier, ChunkAnchor::new(0, 0)),
+                key: ChunkKey::new(worldspace_id, tier, ChunkAnchor::new(0, 0)),
                 generation: 1,
                 origin: LodOrigin::new(0, 0),
                 retry_count: 0,
@@ -1245,8 +1331,10 @@ mod tests {
     }
 
     fn full_quadrant(app: &mut App, grid: IVec2, quadrant: u8) -> Entity {
+        let worldspace_id = app.world().resource::<EngineConfig>().worldspace_id;
         app.world_mut()
             .spawn((
+                crate::streaming::TerrainWorldspace(worldspace_id),
                 TerrainPatch,
                 TerrainCoverage {
                     grid,
@@ -1262,35 +1350,19 @@ mod tests {
     fn selection_upload_gauge_separates_initial_chunks_and_tracks_activation() {
         let mut app = selection_app();
         let fixture = fixture(&mut app, &[IVec2::ZERO, IVec2::new(3, 0)], LodTier::Tier4);
-        let output = tempfile::tempdir().unwrap();
-        let assert_gauges = |app: &App, initial: f64, selection: f64| {
-            let config = EngineConfig {
-                profile_output_dir: Some(output.path().to_owned()),
-                ..default()
+        let assert_pending_uploads = |app: &App, initial: usize, selection: usize| {
+            let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+            assert_eq!(usize::from(chunk.source_children.is_some()), initial);
+            let pending = if chunk.source_children.is_none() {
+                chunk
+                    .batches
+                    .iter()
+                    .filter(|batch| batch.pending_upload)
+                    .count()
+            } else {
+                0
             };
-            app.world()
-                .resource::<ProfilingState>()
-                .write_bundle(
-                    &config,
-                    &serde_json::json!({"average_fps": 90.0, "frame_ms_p95": 14.0, "passed": true}),
-                    Some(app.world().resource::<StreamingMetrics>()),
-                    &crate::render::RendererMetrics::default(),
-                    None,
-                    None,
-                )
-                .unwrap();
-            let report: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(output.path().join("cpu-spans.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                report["gauges"]["lod/pending_initial_terrain_upload_chunks"],
-                initial
-            );
-            assert_eq!(
-                report["gauges"]["lod/pending_terrain_selection_uploads"],
-                selection
-            );
+            assert_eq!(pending, selection);
         };
 
         ready_source(&mut app, &fixture);
@@ -1299,27 +1371,27 @@ mod tests {
         // Preparation consumes this frame's commit slot; sample the retained initial queue
         // on the next update while all mesh acknowledgments are still withheld.
         app.update();
-        assert_gauges(&app, 1.0, 0.0);
+        assert_pending_uploads(&app, 1, 0);
         acknowledge_uploads(&app, fixture.root);
         app.update();
-        assert_gauges(&app, 0.0, 0.0);
+        assert_pending_uploads(&app, 0, 0);
 
         full_quadrant(&mut app, IVec2::ZERO, 0);
         app.world_mut()
             .resource_mut::<LodStreaming>()
             .visibility_dirty = true;
         app.update();
-        assert_gauges(&app, 0.0, 1.0);
+        assert_pending_uploads(&app, 0, 1);
         full_quadrant(&mut app, IVec2::new(3, 0), 0);
         app.world_mut()
             .resource_mut::<LodStreaming>()
             .visibility_dirty = true;
         app.update();
-        assert_gauges(&app, 0.0, 2.0);
+        assert_pending_uploads(&app, 0, 2);
         let revision = app.world().resource::<LodStreaming>().visibility_revision;
         acknowledge_uploads(&app, fixture.root);
         app.update();
-        assert_gauges(&app, 0.0, 0.0);
+        assert_pending_uploads(&app, 0, 0);
         assert_eq!(
             app.world().resource::<LodStreaming>().visibility_revision,
             revision
@@ -1692,9 +1764,12 @@ mod tests {
         let mut app = selection_app();
         let fixture = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
         // A coarser unbatched neighbour lives in the same quadrant as the Tier4 sources.
+        let owner = fixture_chunk_owner(&app, LodTier::Tier8, IVec2::ZERO);
+        let held_root = app.world_mut().spawn(owner).id();
         let held = app
             .world_mut()
             .spawn((
+                ChildOf(held_root),
                 TerrainCoverage {
                     grid: IVec2::ZERO,
                     quadrant: 0,
@@ -1763,6 +1838,49 @@ mod tests {
                 .is_empty(),
             "neither stream produced an event, so no tracking survives"
         );
+        let worldspace_id = app.world().resource::<EngineConfig>().worldspace_id;
+        let lod_patch = |app: &mut App, worldspace_id| {
+            let owner = app
+                .world_mut()
+                .spawn((
+                    super::super::LodChunkRoot {
+                        key: shared::lod::ChunkKey::new(
+                            worldspace_id,
+                            LodTier::Tier4,
+                            shared::lod::ChunkAnchor::new(0, 0),
+                        ),
+                        generation: 0,
+                        origin: shared::lod::LodOrigin::new(0, 0),
+                        retry_count: 0,
+                    },
+                    Visibility::Inherited,
+                ))
+                .id();
+            app.world_mut()
+                .spawn((
+                    ChildOf(owner),
+                    TerrainCoverage {
+                        grid: IVec2::ZERO,
+                        quadrant: 0,
+                        tier: Some(LodTier::Tier4),
+                    },
+                    TerrainSurfaceReady,
+                    Visibility::Inherited,
+                ))
+                .id()
+        };
+        let coarse = lod_patch(&mut app, worldspace_id);
+        let foreign = lod_patch(&mut app, worldspace_id.wrapping_add(1));
+        let real = full_quadrant(&mut app, IVec2::ZERO, 0);
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(coarse),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(foreign),
+            Some(&Visibility::Hidden)
+        );
         app.world_mut()
             .resource_mut::<LodStreaming>()
             .replaced_source_quadrants
@@ -1772,7 +1890,6 @@ mod tests {
             .query_filtered::<Entity, With<StreamingCamera>>();
         let camera = cameras.single(app.world()).unwrap();
         app.world_mut().entity_mut(camera).despawn();
-        let real = full_quadrant(&mut app, IVec2::ZERO, 0);
         app.world_mut()
             .entity_mut(real)
             .remove::<TerrainSurfaceReady>();
@@ -1783,9 +1900,60 @@ mod tests {
                 .replaced_source_quadrants
                 .is_empty()
         );
+        // The maintained selector may consume invalidation without a camera. Its observable
+        // obligation is exact coverage on the first resumed frame, without stale ownership.
+        let camera = app
+            .world_mut()
+            .spawn((
+                StreamingCamera,
+                Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(coarse),
+            Some(&Visibility::Inherited)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(foreign),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            1
+        );
+
+        app.world_mut().entity_mut(camera).despawn();
+        app.world_mut()
+            .entity_mut(coarse)
+            .remove::<TerrainSurfaceReady>();
+        app.update();
+        app.world_mut().spawn((
+            StreamingCamera,
+            Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
+        ));
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(coarse),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(foreign),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .visible_lod_terrain_patches,
+            0
+        );
         assert!(
-            app.world().resource::<LodStreaming>().visibility_dirty,
-            "real removals remain pending semantically when no camera can run selection"
+            app.world()
+                .resource::<LodStreaming>()
+                .replaced_source_quadrants
+                .is_empty()
         );
     }
 
@@ -2036,7 +2204,10 @@ mod tests {
             .init_resource::<LodStreaming>()
             .init_resource::<StreamingMetrics>()
             .init_resource::<ProfilingState>()
-            .add_systems(Update, update_terrain_lod_visibility);
+            .add_systems(
+                Update,
+                update_terrain_lod_visibility.run_if(terrain_lod_visibility_has_work),
+            );
         app.world_mut().spawn((
             StreamingCamera,
             Transform::from_xyz(CELL_SIZE * 0.5, 0.0, -CELL_SIZE * 0.5),
@@ -2098,9 +2269,11 @@ mod tests {
         assert_eq!(app.world().get::<Children>(fixture.root).unwrap().len(), 1);
         assert!(app.world().get::<WorldAssetRoot>(fixture.root).is_none());
         let original = app.world().get::<Mesh3d>(entity).unwrap().0.clone();
+        let worldspace_id = app.world().resource::<EngineConfig>().worldspace_id;
         let full_detail = app
             .world_mut()
             .spawn((
+                crate::streaming::TerrainWorldspace(worldspace_id),
                 TerrainPatch,
                 TerrainCoverage {
                     grid: IVec2::ZERO,
@@ -2517,5 +2690,838 @@ mod tests {
                 .resource::<LodStreaming>()
                 .terrain_batch_controls_warned
         );
+    }
+
+    #[test]
+    fn same_grid_batches_are_selected_only_in_the_demanded_world() {
+        let mut app = test_app();
+        let first = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+        let second = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier8);
+        for (root, tier) in [(first.root, LodTier::Tier4), (second.root, LodTier::Tier8)] {
+            app.world_mut()
+                .entity_mut(root)
+                .insert(super::super::LodChunkRoot {
+                    key: shared::lod::ChunkKey::new(60, tier, shared::lod::ChunkAnchor::new(0, 0)),
+                    generation: 1,
+                    origin: shared::lod::LodOrigin::new(0, 0),
+                    retry_count: 0,
+                });
+        }
+        app.world_mut()
+            .get_mut::<super::super::LodChunkRoot>(second.root)
+            .unwrap()
+            .key
+            .worldspace_id = 61;
+        let prepared = prepare(&mut app, &first).unwrap();
+        install_fixture(&mut app, &first, prepared);
+        let prepared = prepare(&mut app, &second).unwrap();
+        install_fixture(&mut app, &second, prepared);
+        // Retain both representations, exactly as an interior/destination crossing can.
+        acknowledge_uploads(&app, first.root);
+        acknowledge_uploads(&app, second.root);
+        assert!(finalize_initial(&mut app));
+        assert!(finalize_initial(&mut app));
+        for (world, tier, expected) in [
+            (Some(60), LodTier::Tier4, (15, 0)),
+            (Some(60), LodTier::Tier8, (0, 0)),
+            (Some(61), LodTier::Tier8, (0, 15)),
+            (None, LodTier::Tier8, (0, 0)),
+        ] {
+            let coverage = app
+                .world_mut()
+                .run_system_once(move |mut batches: LodBatchVisibility| {
+                    let coverage: Vec<_> = batches.coverage_for_world(world).collect();
+                    let selected: HashMap<_, _> = (0..4u8)
+                        .map(|quadrant| ((IVec2::ZERO, quadrant), Some(tier)))
+                        .collect();
+                    batches.update_for_world(&selected, world);
+                    coverage
+                })
+                .unwrap();
+            assert!(coverage.iter().all(|coverage| coverage.tier
+                == world.map(|world| if world == 60 {
+                    LodTier::Tier4
+                } else {
+                    LodTier::Tier8
+                })));
+            assert_eq!(coverage.len(), if world.is_some() { 4 } else { 0 });
+            let mask = |root| {
+                app.world()
+                    .get::<LodTerrainBatches>(root)
+                    .unwrap()
+                    .batches
+                    .iter()
+                    .fold(0u16, |mask, batch| mask | batch.selected)
+            };
+            assert_eq!((mask(first.root), mask(second.root)), expected);
+        }
+    }
+
+    #[test]
+    fn actual_source_transfer_keeps_equal_grids_in_separate_worlds() {
+        use super::super::LodChunkRoot;
+        use shared::lod::{ChunkKey, LodOrigin};
+        for journal in [false, true] {
+            let mut app = selection_app();
+            if journal {
+                crate::streaming::identity_changes::install_terrain(app.world_mut());
+            }
+            let active_world = app.world().resource::<EngineConfig>().worldspace_id;
+            let other_world = active_world.wrapping_add(1);
+            let active = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+            let foreign = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+            for (source, world) in [(&active, active_world), (&foreign, other_world)] {
+                let origin = LodOrigin::new(0, 0);
+                app.world_mut().entity_mut(source.root).insert((
+                    LodChunkRoot {
+                        key: ChunkKey::new(
+                            world,
+                            LodTier::Tier4,
+                            origin.chunk_for_cell(LodTier::Tier4, 0, 0),
+                        ),
+                        generation: 1,
+                        origin,
+                        retry_count: 0,
+                    },
+                    TerrainSurfaceReady,
+                ));
+                let prepared = prepare(&mut app, source).unwrap();
+                install_fixture(&mut app, source, prepared);
+            }
+            app.update();
+            let masks = |app: &App, root| {
+                app.world()
+                    .get::<LodTerrainBatches>(root)
+                    .unwrap()
+                    .batches
+                    .iter()
+                    .map(|batch| batch.selected.count_ones() as usize)
+                    .sum::<usize>()
+            };
+            assert_eq!(masks(&app, active.root), 4, "active source mask");
+            assert_eq!(
+                masks(&app, foreign.root),
+                0,
+                "equal grids cannot borrow another world's mask"
+            );
+            acknowledge_uploads(&app, active.root);
+            acknowledge_uploads(&app, foreign.root);
+            // One real shared-budget hierarchy transfer per frame, in either query order.
+            app.update();
+            app.update();
+            for source in [&active, &foreign] {
+                assert!(
+                    app.world()
+                        .get::<LodTerrainBatches>(source.root)
+                        .unwrap()
+                        .source_children
+                        .is_none()
+                );
+                assert!(
+                    source
+                        .primitives
+                        .iter()
+                        .all(|&entity| app.world().get_entity(entity).is_err())
+                );
+                assert!(app.world().get::<WorldAssetRoot>(source.root).is_none());
+            }
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                4
+            );
+            // Same grid and tier become ready in a second world through real retained rows.
+            app.world_mut()
+                .get_mut::<LodChunkRoot>(foreign.root)
+                .unwrap()
+                .key
+                .worldspace_id = active_world;
+            app.update();
+            assert_eq!(masks(&app, foreign.root), 4);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                8
+            );
+            // The union of grid/tier bits stays identical; each actual root must still update.
+            app.world_mut()
+                .get_mut::<LodChunkRoot>(active.root)
+                .unwrap()
+                .key
+                .worldspace_id = other_world;
+            app.update();
+            assert_eq!(
+                masks(&app, active.root),
+                0,
+                "in-place world change revokes this batch only"
+            );
+            assert_eq!(masks(&app, foreign.root), 4);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                4
+            );
+            app.world_mut()
+                .entity_mut(foreign.root)
+                .remove::<LodChunkRoot>();
+            app.update();
+            assert_eq!(
+                masks(&app, foreign.root),
+                0,
+                "lost identity revokes retained coverage"
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                0
+            );
+        }
+    }
+
+    fn activated_selection_fixture(grids: &[IVec2]) -> (App, Fixture) {
+        let mut app = selection_app();
+        let fixture = fixture(&mut app, grids, LodTier::Tier4);
+        ready_source(&mut app, &fixture);
+        queue_source(&mut app, &fixture);
+        app.update();
+        app.update();
+        acknowledge_uploads(&app, fixture.root);
+        app.update();
+        app.update();
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert!(chunk.source_children.is_none());
+        assert!(chunk.batches.iter().all(|batch| !batch.pending_upload));
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            0
+        );
+        (app, fixture)
+    }
+
+    fn assert_selection_upload_gauge(app: &App, expected: usize) {
+        // Read the exact production contract used by shots/capture/console. This
+        // helper never publishes a gauge or substitutes zero for a missing producer.
+        let profiler = app.world().resource::<ProfilingState>();
+        assert_eq!(
+            profiler.gauge("lod/pending_terrain_selection_uploads"),
+            Some(expected as f64)
+        );
+        assert_eq!(
+            profiler
+                .terrain_gauges()
+                .get("lod/pending_terrain_selection_uploads")
+                .copied(),
+            Some(expected as f64)
+        );
+    }
+
+    #[test]
+    fn settled_batch_chain_preserves_real_state_and_isolates_selector_change_ticks() {
+        use super::super::batch_ready_lod_chunks;
+
+        // Passive native tick snapshots, never inputs to production decisions.
+        #[derive(Resource, Default, Debug)]
+        struct NativeTicks {
+            before_batching: u32,
+            before_selector: u32,
+            after_selector: u32,
+        }
+        let (mut app, fixture) = activated_selection_fixture(&[IVec2::ZERO, IVec2::new(3, 0)]);
+        full_quadrant(&mut app, IVec2::ZERO, 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        acknowledge_uploads(&app, fixture.root);
+        app.update();
+        app.update();
+        app.init_resource::<NativeTicks>().add_systems(
+            Update,
+            (
+                (|streaming: Res<LodStreaming>, mut ticks: ResMut<NativeTicks>| {
+                    ticks.before_batching = streaming.last_changed().get();
+                })
+                .after(reset_submission_budget)
+                .before(batch_ready_lod_chunks),
+                (|streaming: Res<LodStreaming>, mut ticks: ResMut<NativeTicks>| {
+                    ticks.before_selector = streaming.last_changed().get();
+                })
+                .after(batch_ready_lod_chunks)
+                .before(update_terrain_lod_visibility),
+                (|streaming: Res<LodStreaming>, mut ticks: ResMut<NativeTicks>| {
+                    ticks.after_selector = streaming.last_changed().get();
+                })
+                .after(update_terrain_lod_visibility),
+            ),
+        );
+        let snapshot = |app: &App| {
+            let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+            chunk
+                .batches
+                .iter()
+                .map(|batch| {
+                    (
+                        batch.entity,
+                        batch.mesh.id(),
+                        app.world().get::<Mesh3d>(batch.entity).unwrap().0.id(),
+                        batch.selected,
+                        batch.pending_upload,
+                        batch.fallback_entities.clone(),
+                        *app.world().get::<Visibility>(batch.entity).unwrap(),
+                        batch
+                            .members
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| batch.selected & (1u16 << *index) != 0)
+                            .map(|(_, member)| member.coverage.tier)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot(&app);
+        assert_eq!(before.len(), 2);
+        assert_eq!((before[0].3, before[1].3), (0b1110, 0b1111));
+        for batch in &before {
+            assert_eq!(batch.1, batch.2);
+            assert!(!batch.4);
+            assert!(batch.5.is_empty());
+            assert_eq!(batch.6, Visibility::Inherited);
+            assert_eq!(
+                batch.7,
+                vec![Some(LodTier::Tier4); batch.3.count_ones() as usize]
+            );
+        }
+        let revision = app.world().resource::<LodStreaming>().visibility_revision;
+        let activated = app
+            .world()
+            .resource::<LodStreaming>()
+            .terrain_batch_activated_chunks;
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(snapshot(&app), before);
+            assert!(
+                app.world()
+                    .get::<LodTerrainBatches>(fixture.root)
+                    .unwrap()
+                    .source_children
+                    .is_none()
+            );
+            assert_eq!(
+                app.world().resource::<LodStreaming>().visibility_revision,
+                revision
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<LodStreaming>()
+                    .terrain_batch_activated_chunks,
+                activated
+            );
+            assert_eq!(app.world().resource::<StreamingCommitBudget>().remaining, 4);
+            assert_eq!(app.world().resource::<StreamingCommitBudget>().commits, 0);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .visible_lod_terrain_patches,
+                7
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<TerrainMeshUploadReadiness>()
+                    .outstanding(),
+                0
+            );
+            let ticks = app.world().resource::<NativeTicks>();
+            assert_eq!(
+                ticks.after_selector, ticks.before_selector,
+                "selector added a write after the real batch producer; ticks before batching={}, before selector={}, after selector={}",
+                ticks.before_batching, ticks.before_selector, ticks.after_selector
+            );
+        }
+    }
+
+    #[test]
+    fn selection_upload_gauge_tracks_real_masks_acknowledgment_activation_and_removal() {
+        let (mut app, fixture) = activated_selection_fixture(&[IVec2::ZERO, IVec2::new(3, 0)]);
+        let original = app
+            .world()
+            .get::<LodTerrainBatches>(fixture.root)
+            .unwrap()
+            .batches[0]
+            .mesh
+            .id();
+        full_quadrant(&mut app, IVec2::ZERO, 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let (pending, entity, fallbacks) = {
+            let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+            assert!(chunk.source_children.is_none());
+            assert_eq!(
+                chunk
+                    .batches
+                    .iter()
+                    .filter(|batch| batch.pending_upload)
+                    .count(),
+                1
+            );
+            let batch = &chunk.batches[0];
+            assert_eq!(batch.selected, 0b1110);
+            assert_ne!(batch.mesh.id(), original);
+            assert_eq!(batch.fallback_entities.len(), 3);
+            (
+                batch.mesh.id(),
+                batch.entity,
+                batch.fallback_entities.clone(),
+            )
+        };
+        assert_eq!(
+            *app.world().get::<Visibility>(entity).unwrap(),
+            Visibility::Hidden
+        );
+        assert_eq!(app.world().get::<Mesh3d>(entity).unwrap().0.id(), pending);
+        assert!(fallbacks.iter().all(
+            |&entity| *app.world().get::<Visibility>(entity).unwrap() == Visibility::Inherited
+        ));
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            1
+        );
+        // The production gauge must reflect the changed mask on this active batch.
+        assert_selection_upload_gauge(&app, 1);
+        app.update();
+        assert_selection_upload_gauge(&app, 1);
+        let revision = app.world().resource::<LodStreaming>().visibility_revision;
+        acknowledge_uploads(&app, fixture.root);
+        assert!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .is_ready(pending)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            1
+        );
+        assert!(
+            app.world()
+                .get::<LodTerrainBatches>(fixture.root)
+                .unwrap()
+                .batches[0]
+                .pending_upload
+        );
+        assert_eq!(
+            *app.world().get::<Visibility>(entity).unwrap(),
+            Visibility::Hidden
+        );
+        assert_selection_upload_gauge(&app, 1);
+        app.update();
+        let batch = &app
+            .world()
+            .get::<LodTerrainBatches>(fixture.root)
+            .unwrap()
+            .batches[0];
+        assert!(!batch.pending_upload);
+        assert_eq!(batch.mesh.id(), pending);
+        assert_eq!(batch.selected, 0b1110);
+        assert!(batch.fallback_entities.is_empty());
+        assert!(
+            fallbacks
+                .iter()
+                .all(|&entity| app.world().get_entity(entity).is_err())
+        );
+        assert_eq!(
+            *app.world().get::<Visibility>(entity).unwrap(),
+            Visibility::Inherited
+        );
+        assert_eq!(
+            app.world().resource::<LodStreaming>().visibility_revision,
+            revision
+        );
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            0
+        );
+        assert_selection_upload_gauge(&app, 0);
+
+        full_quadrant(&mut app, IVec2::ZERO, 1);
+        full_quadrant(&mut app, IVec2::new(3, 0), 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert_eq!(
+            chunk
+                .batches
+                .iter()
+                .filter(|batch| batch.pending_upload)
+                .count(),
+            2
+        );
+        assert_eq!(
+            (chunk.batches[0].selected, chunk.batches[1].selected),
+            (0b1100, 0b1110)
+        );
+        let retired: Vec<_> = chunk.batches.iter().map(|batch| batch.mesh.id()).collect();
+        assert_selection_upload_gauge(&app, 2);
+        app.world_mut().entity_mut(fixture.root).despawn();
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            0
+        );
+        for id in retired {
+            assert!(
+                !app.world()
+                    .resource::<TerrainMeshUploadReadiness>()
+                    .acknowledge(id)
+            );
+            assert!(app.world().resource::<Assets<Mesh>>().get(id).is_none());
+        }
+        app.update();
+        assert_selection_upload_gauge(&app, 0);
+    }
+
+    #[test]
+    fn selection_upload_gauge_cancels_superseded_and_empty_masks() {
+        let (mut app, fixture) = activated_selection_fixture(&[IVec2::ZERO]);
+        full_quadrant(&mut app, IVec2::ZERO, 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let first = app
+            .world()
+            .get::<LodTerrainBatches>(fixture.root)
+            .unwrap()
+            .batches[0]
+            .mesh
+            .id();
+        assert!(
+            app.world()
+                .get::<LodTerrainBatches>(fixture.root)
+                .unwrap()
+                .batches[0]
+                .pending_upload
+        );
+        assert_selection_upload_gauge(&app, 1);
+        full_quadrant(&mut app, IVec2::ZERO, 1);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let second = {
+            let batch = &app
+                .world()
+                .get::<LodTerrainBatches>(fixture.root)
+                .unwrap()
+                .batches[0];
+            assert_eq!(batch.selected, 0b1100);
+            assert!(batch.pending_upload);
+            assert_eq!(batch.fallback_entities.len(), 2);
+            assert_ne!(batch.mesh.id(), first);
+            batch.mesh.id()
+        };
+        assert!(
+            !app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .acknowledge(first)
+        );
+        assert!(app.world().resource::<Assets<Mesh>>().get(first).is_none());
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            1
+        );
+        assert_selection_upload_gauge(&app, 1);
+        for quadrant in [2, 3] {
+            full_quadrant(&mut app, IVec2::ZERO, quadrant);
+        }
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let batch = &app
+            .world()
+            .get::<LodTerrainBatches>(fixture.root)
+            .unwrap()
+            .batches[0];
+        assert_eq!(batch.selected, 0);
+        assert!(!batch.pending_upload);
+        assert!(batch.fallback_entities.is_empty());
+        assert_eq!(
+            *app.world().get::<Visibility>(batch.entity).unwrap(),
+            Visibility::Hidden
+        );
+        assert!(
+            !app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .acknowledge(second)
+        );
+        assert!(app.world().resource::<Assets<Mesh>>().get(second).is_none());
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            0
+        );
+        assert_selection_upload_gauge(&app, 0);
+    }
+
+    #[test]
+    fn initial_upload_gauge_is_distinct_from_selection_uploads_until_transfer() {
+        let mut app = selection_app();
+        let fixture = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+        ready_source(&mut app, &fixture);
+        queue_source(&mut app, &fixture);
+        app.update();
+        app.update();
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert!(chunk.source_children.is_some());
+        assert_eq!(chunk.batches.len(), 1);
+        assert!(chunk.batches[0].pending_upload);
+        assert_eq!(chunk.batches[0].selected, 0b1111);
+        assert!(
+            fixture
+                .primitives
+                .iter()
+                .all(|&entity| app.world().get_entity(entity).is_ok())
+        );
+        assert_eq!(
+            app.world()
+                .resource::<ProfilingState>()
+                .gauge("lod/pending_initial_terrain_upload_chunks"),
+            Some(1.0)
+        );
+        assert_selection_upload_gauge(&app, 0);
+        acknowledge_uploads(&app, fixture.root);
+        assert!(
+            app.world()
+                .get::<LodTerrainBatches>(fixture.root)
+                .unwrap()
+                .source_children
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<LodTerrainBatches>(fixture.root)
+                .unwrap()
+                .batches[0]
+                .pending_upload
+        );
+        assert_selection_upload_gauge(&app, 0);
+        app.update();
+        app.update(); // Existing initial gauge is sampled before this frame's activation.
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert!(chunk.source_children.is_none());
+        assert!(!chunk.batches[0].pending_upload);
+        assert_eq!(
+            *app.world()
+                .get::<Visibility>(chunk.batches[0].entity)
+                .unwrap(),
+            Visibility::Inherited
+        );
+        assert!(
+            fixture
+                .primitives
+                .iter()
+                .all(|&entity| app.world().get_entity(entity).is_err())
+        );
+        assert_eq!(
+            app.world()
+                .resource::<TerrainMeshUploadReadiness>()
+                .outstanding(),
+            0
+        );
+        assert_eq!(
+            app.world()
+                .resource::<ProfilingState>()
+                .gauge("lod/pending_initial_terrain_upload_chunks"),
+            Some(0.0)
+        );
+        assert_selection_upload_gauge(&app, 0);
+    }
+
+    fn selector_last_run(app: &App) -> bevy::ecs::change_detection::Tick {
+        let selector = bevy::ecs::system::IntoSystem::into_system(update_terrain_lod_visibility);
+        let selector_type = bevy::ecs::system::System::system_type(&selector);
+        app.world()
+            .resource::<bevy::ecs::schedule::Schedules>()
+            .get(Update)
+            .unwrap()
+            .systems()
+            .unwrap()
+            .find(|(_, system)| system.system_type() == selector_type)
+            .unwrap()
+            .1
+            .get_last_run()
+    }
+
+    #[test]
+    fn outer_selector_gate_sleeps_after_batch_activation_and_wakes_on_acknowledgment() {
+        let (mut app, fixture) = activated_selection_fixture(&[IVec2::new(3, 0)]);
+        for _ in 0..4 {
+            app.update();
+        }
+        let last_run = selector_last_run(&app);
+        let before = {
+            let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+            chunk
+                .batches
+                .iter()
+                .map(|batch| {
+                    (
+                        batch.mesh.id(),
+                        batch.selected,
+                        batch.pending_upload,
+                        batch.fallback_entities.clone(),
+                        *app.world().get::<Visibility>(batch.entity).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(before.len(), 1);
+        assert_eq!((before[0].1, before[0].2), (0b1111, false));
+        assert!(before[0].3.is_empty());
+        assert_eq!(before[0].4, Visibility::Inherited);
+        app.update();
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert_eq!(chunk.batches[0].mesh.id(), before[0].0);
+        assert_eq!(chunk.batches[0].selected, 0b1111);
+        assert!(!chunk.batches[0].pending_upload);
+        assert_eq!(
+            selector_last_run(&app),
+            last_run,
+            "preceding batching writes must not keep the settled selector running"
+        );
+
+        full_quadrant(&mut app, IVec2::new(3, 0), 0);
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .visibility_dirty = true;
+        app.update();
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert_ne!(chunk.batches[0].mesh.id(), before[0].0);
+        assert_eq!(chunk.batches[0].selected, 0b1110);
+        assert!(chunk.batches[0].pending_upload);
+        assert_selection_upload_gauge(&app, 1);
+        let revision = app.world().resource::<LodStreaming>().visibility_revision;
+        for _ in 0..4 {
+            app.update();
+        }
+        let last_run = selector_last_run(&app);
+        app.update();
+        assert_eq!(selector_last_run(&app), last_run);
+        assert_selection_upload_gauge(&app, 1);
+        acknowledge_uploads(&app, fixture.root);
+        // Acknowledgment changes mutex-owned state, not the resource's Bevy tick.
+        let readiness_tick = app
+            .world()
+            .get_resource_ref::<TerrainMeshUploadReadiness>()
+            .unwrap()
+            .last_changed();
+        app.update();
+        assert_ne!(selector_last_run(&app), last_run);
+        assert_eq!(
+            app.world()
+                .get_resource_ref::<TerrainMeshUploadReadiness>()
+                .unwrap()
+                .last_changed(),
+            readiness_tick
+        );
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert_eq!(chunk.batches[0].selected, 0b1110);
+        assert!(!chunk.batches[0].pending_upload);
+        assert!(chunk.batches[0].fallback_entities.is_empty());
+        assert_eq!(
+            *app.world()
+                .get::<Visibility>(chunk.batches[0].entity)
+                .unwrap(),
+            Visibility::Inherited
+        );
+        assert_selection_upload_gauge(&app, 0);
+        assert_eq!(
+            app.world().resource::<LodStreaming>().visibility_revision,
+            revision
+        );
+    }
+
+    #[test]
+    fn outer_selector_gate_retries_initial_activation_after_a_budget_only_deferral() {
+        #[derive(Resource)]
+        struct HoldActivation(bool);
+        let mut app = selection_app();
+        app.insert_resource(HoldActivation(true));
+        app.add_systems(
+            Update,
+            (|hold: Res<HoldActivation>, mut budget: ResMut<StreamingCommitBudget>| {
+                if hold.0 {
+                    budget.remaining = 0;
+                }
+            })
+            .after(super::super::batch_ready_lod_chunks)
+            .before(update_terrain_lod_visibility),
+        );
+        let fixture = fixture(&mut app, &[IVec2::new(3, 0)], LodTier::Tier4);
+        ready_source(&mut app, &fixture);
+        queue_source(&mut app, &fixture);
+        app.update();
+        acknowledge_uploads(&app, fixture.root);
+        for _ in 0..4 {
+            app.update();
+        }
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert!(chunk.source_children.is_some());
+        assert_eq!(chunk.batches[0].selected, 0b1111);
+        assert!(
+            fixture
+                .primitives
+                .iter()
+                .all(|entity| app.world().get_entity(*entity).is_ok())
+        );
+        let mesh = chunk.batches[0].mesh.id();
+        let revision = app.world().resource::<LodStreaming>().visibility_revision;
+        let last_run = selector_last_run(&app);
+        app.world_mut().resource_mut::<HoldActivation>().0 = false;
+        app.update();
+        assert_ne!(selector_last_run(&app), last_run);
+        let chunk = app.world().get::<LodTerrainBatches>(fixture.root).unwrap();
+        assert!(chunk.source_children.is_none());
+        assert_eq!(chunk.batches[0].mesh.id(), mesh);
+        assert_eq!(chunk.batches[0].selected, 0b1111);
+        assert!(!chunk.batches[0].pending_upload);
+        assert_eq!(
+            *app.world()
+                .get::<Visibility>(chunk.batches[0].entity)
+                .unwrap(),
+            Visibility::Inherited
+        );
+        assert!(
+            fixture
+                .primitives
+                .iter()
+                .all(|entity| app.world().get_entity(*entity).is_err())
+        );
+        assert_eq!(
+            app.world().resource::<LodStreaming>().visibility_revision,
+            revision
+        );
+        assert_selection_upload_gauge(&app, 0);
     }
 }
