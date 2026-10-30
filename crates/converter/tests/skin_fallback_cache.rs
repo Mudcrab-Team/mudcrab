@@ -445,6 +445,15 @@ async fn repair_rejects_old_mesh_contract_even_with_matching_schema_and_configur
             "facegen-tint-slot",
         ][..],
         &["legacy-skin-export", "skin-static-fallback"][..],
+        &[
+            "legacy-skin-export",
+            "msn-vertex-normals",
+            "facegen-tint-slot",
+            "lighting-type-data",
+            "msn-specular-default",
+            "hidden-niavobject-excluded",
+            "nif-root-transform-ignored",
+        ][..],
     ] {
         assert_repair_rejects_stale_contract(contracts).await;
     }

@@ -581,6 +581,15 @@ async fn old_skin_output_is_rejected_for_retention_and_rebuilt_from_warm_cache()
             "facegen-tint-slot",
         ][..],
         &["legacy-skin-export", "skin-static-fallback"][..],
+        &[
+            "legacy-skin-export",
+            "msn-vertex-normals",
+            "facegen-tint-slot",
+            "lighting-type-data",
+            "msn-specular-default",
+            "hidden-niavobject-excluded",
+            "nif-root-transform-ignored",
+        ][..],
     ] {
         assert_stale_mixed_output_rebuilds(contracts).await;
     }

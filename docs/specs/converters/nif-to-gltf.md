@@ -315,8 +315,8 @@ Strict animated actor composition continues to require bindable skin data and us
 substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
 and `WEIGHTS_0`.
 
-The mesh settings contract appends `skin-static-fallback` after the existing `legacy-skin-export`,
-`msn-vertex-normals` and `facegen-tint-slot` contracts. Normal caches
+The mesh settings contract appends `skin-static-fallback` after the existing contracts in
+`MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
 rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
 until normal conversion regenerates it. Texture/script producer identities are unchanged.
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
