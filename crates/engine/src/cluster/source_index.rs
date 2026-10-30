@@ -153,6 +153,23 @@ impl SourceIndex {
                 }
                 at = parent;
             }
+            // A skinned primitive also depends on its joints' poses and their ancestry up to
+            // where it meets the chain above.
+            if let Ok((.., Some(skin), _, _, _)) = queries.nodes.get(entity) {
+                for &joint in &skin.joints {
+                    let mut at = joint;
+                    while visited.insert(at) {
+                        path.push(at);
+                        affected.nodes.insert(at);
+                        let Some(parent) =
+                            flat_source::logical_parent(at, &queries.parents, &queries.flat_owners)
+                        else {
+                            break;
+                        };
+                        at = parent;
+                    }
+                }
+            }
             let mut references = HashSet::new();
             references.extend(nearest);
             if let Some(history) = seen.get(&entity) {
