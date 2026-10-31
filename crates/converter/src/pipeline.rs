@@ -172,6 +172,25 @@ pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
 }
 
+/// One line per projection omission category (#297): a lost light row warns, so the run is
+/// incomplete; an unresolved emittance target keeps the model's emission and is only noted.
+pub(crate) fn report_projection_omissions(
+    report: &mut PipelineReport,
+    omissions: &crate::esm::projection_omissions::ProjectionOmissions,
+) {
+    use crate::esm::projection_omissions::{Severity, summary_line};
+    for (category, outcome) in &omissions.categories {
+        let message = format!(
+            "world database projection left rows out: {}",
+            summary_line(category, outcome)
+        );
+        match outcome.severity {
+            Severity::DataLoss => report.warnings.push(message),
+            Severity::Fallback => report.notices.push(message),
+        }
+    }
+}
+
 /// A run's stop button. The command line sets it when the user interrupts (Ctrl+C); the pipeline
 /// checks it between units of work, finishes the asset in flight, and leaves the staging folder
 /// behind so `--resume-staging` can pick the run up where it stopped.
@@ -1575,6 +1594,7 @@ impl AssetPipeline {
                     integration.cache_cells,
                 ));
             }
+            report_projection_omissions(&mut report, &integration.projection_omissions);
             report.integration = Some(integration);
             report
                 .artifacts
@@ -11122,6 +11142,38 @@ mod tests {
             ..PipelineReport::default()
         };
         assert!(!conversion_is_complete(&warned));
+    }
+
+    /// A lost light row makes the run incomplete; an unresolved emittance target is a notice.
+    #[test]
+    fn projection_omissions_warn_on_data_loss_and_note_fallbacks() {
+        use crate::esm::projection_omissions::{OmissionCategory, ProjectionOmissions};
+        let mut fallback_only = ProjectionOmissions::default();
+        fallback_only.record(OmissionCategory::EmittanceTargetAbsent, 0xDEAD, "absent");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &fallback_only);
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.notices.len(), 1);
+        assert!(
+            report.notices[0].contains("emittance_target_absent: 1 record (fallback)"),
+            "{:?}",
+            report.notices
+        );
+        assert!(conversion_is_complete(&report));
+
+        let mut with_loss = fallback_only;
+        with_loss.record(OmissionCategory::LightShortData, 0x802, "short");
+        with_loss.record(OmissionCategory::LightShortData, 0x803, "short");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &with_loss);
+        assert_eq!(report.notices.len(), 1);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("light_short_data: 2 records (data_loss), e.g. 00000802"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!conversion_is_complete(&report));
     }
 
     /// Notices never hide failures or affect completeness, regardless of insertion order.

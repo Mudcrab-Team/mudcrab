@@ -2,6 +2,7 @@
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
+    esm::projection_omissions::ProjectionOmissions,
     mesh::glb_bounds_from_bytes,
 };
 use color_eyre::{
@@ -39,6 +40,10 @@ pub struct IntegrationReport {
     /// Interior room graph counters (db-schema.md section 15); all zero without room data.
     #[serde(default)]
     pub room_graph: crate::esm::rooms::RoomGraphReport,
+    /// Plugin rows the light and emittance projections left out (db-schema.md section 18);
+    /// empty when nothing was left out or the database predates the tables.
+    #[serde(default, skip_serializing_if = "ProjectionOmissions::is_empty")]
+    pub projection_omissions: ProjectionOmissions,
     pub missing_texture_count: u64,
     pub unavailable_texture_source_count: u64,
     pub issues: Vec<String>,
@@ -188,6 +193,7 @@ pub fn finalize_world_database_with_sources(
     // Room membership by model bounds needs the bounds just written.
     crate::esm::rooms::add_overlap_rows(&mut connection)?;
     report.room_graph = crate::esm::rooms::RoomGraphReport::read(&connection)?;
+    report.projection_omissions = ProjectionOmissions::read(&connection)?;
 
     let diffuse_paths = {
         let mut statement = connection.prepare(

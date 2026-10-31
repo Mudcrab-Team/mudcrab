@@ -2,6 +2,7 @@ use crate::esm::{
     emittance,
     extractors::{SubrecordView, extract_cell_info, extract_land_data, serialize_subrecords},
     load_order::{LoadOrder, StableId},
+    projection_omissions::{OmissionCategory, ProjectionOmissions},
     records::{RawRecord, achr::SubrecordXESP},
 };
 use crate::{
@@ -305,6 +306,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    // Optional projection omission counters (db-schema.md section 18, #297).
+    conn.execute_batch(crate::esm::projection_omissions::PROJECTION_OMISSION_TABLES_SQL)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the optional
     // display-name columns (#269), so a subset export can still insert into it.
     for table in ["worldspaces", "cells", "statics"] {
@@ -556,6 +559,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     // Every complete snapshot owns these derived rows, including archive-only exports
     // that deliberately defer all runtime projections.
     crate::esm::rooms::clear(tx)?;
+    crate::esm::projection_omissions::clear(tx)?;
     super::doors::clear(tx)?;
     tx.execute("DELETE FROM schema_info", [])?;
     tx.execute(
@@ -631,6 +635,8 @@ fn export_records(
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
+    // Only a full load-order export writes these; a subset export keeps the stored ones.
+    let mut omissions = ProjectionOmissions::default();
     if order.is_some() {
         replace_complete_snapshot(&tx)?;
         if let Some(paths) = plugin_paths {
@@ -838,7 +844,7 @@ fn export_records(
                 let view = SubrecordView::new(&record.subrecords);
                 // Every `LIGH` lights the space whether or not it has
                 // geometry, so it gets a `lights` row regardless.
-                insert_light(&tx, master, form_id, &view)?;
+                insert_light(&tx, master, form_id, &view, &mut omissions)?;
                 // Most `LIGH` records carry no model: they light the space with
                 // nothing to draw. Storing one row per invisible light would put
                 // a meshless entry in `statics` for every candle in the game, so
@@ -993,7 +999,9 @@ fn export_records(
     if runtime_views && order.is_some() {
         insert_actor_models(&tx, master)?;
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
-        insert_emittance_sources(&tx, master)?;
+        insert_emittance_sources(&tx, master, &mut omissions)?;
+        omissions.write(&tx)?;
+        omissions.print_summary();
         // Read back from the canonical `records` and `references` rows just written, so the
         // legacy and in-house readers share one projection.
         super::doors::project_door_links(&tx)?;
@@ -1098,7 +1106,11 @@ fn report_actor_model_diagnostics(diagnostics: &[crate::actor_models::ActorModel
 /// or does not resolve gets no row, so the runtime keeps the model's own emission for its
 /// references. Rows from an earlier export into the same database are dropped first, so a target
 /// that no longer resolves loses its old colour.
-fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecord>) -> Result<()> {
+fn insert_emittance_sources(
+    tx: &Transaction<'_>,
+    master: &HashMap<u32, RawRecord>,
+    omissions: &mut ProjectionOmissions,
+) -> Result<()> {
     tx.execute("DELETE FROM emittance", [])?;
     let targets: Vec<u32> = tx
         .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL")?
@@ -1106,8 +1118,10 @@ fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecor
         .collect::<Result<_>>()?;
     for target in targets {
         let Some(record) = master.get(&target).filter(|record| !record.is_deleted()) else {
-            eprintln!(
-                "warning: emittance target {target:08X} is not in the load order; no emittance row"
+            omissions.record(
+                OmissionCategory::EmittanceTargetAbsent,
+                target,
+                "not in the load order; no emittance row",
             );
             continue;
         };
@@ -1118,8 +1132,10 @@ fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecor
                     .find(b"DATA")
                     .filter(|data| data.len() >= LIGHT_DATA_MIN)
                 else {
-                    eprintln!(
-                        "warning: emittance LIGH {target:08X} has no usable DATA; no emittance row"
+                    omissions.record(
+                        OmissionCategory::EmittanceLightUnusableData,
+                        target,
+                        "LIGH has no usable DATA; no emittance row",
                     );
                     continue;
                 };
@@ -1127,8 +1143,10 @@ fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecor
             }
             b"REGN" => {
                 let Some(weather) = view.find(b"RDWT").and_then(emittance::region_weather) else {
-                    eprintln!(
-                        "warning: emittance REGN {target:08X} names no weather; no emittance row"
+                    omissions.record(
+                        OmissionCategory::EmittanceRegionNoWeather,
+                        target,
+                        "REGN names no weather; no emittance row",
                     );
                     continue;
                 };
@@ -1138,17 +1156,25 @@ fn insert_emittance_sources(tx: &Transaction<'_>, master: &HashMap<u32, RawRecor
                     .and_then(|record| SubrecordView::new(&record.subrecords).find(b"NAM0"))
                     .and_then(emittance::weather_effect_lighting)
                 else {
-                    eprintln!(
-                        "warning: emittance REGN {target:08X} weather {weather:08X} has no Effect Lighting colours; no emittance row"
+                    omissions.record(
+                        OmissionCategory::EmittanceWeatherNoLighting,
+                        target,
+                        format!(
+                            "REGN weather {weather:08X} has no Effect Lighting colours; no emittance row"
+                        ),
                     );
                     continue;
                 };
                 ("REGN", Some(weather), colours)
             }
             other => {
-                eprintln!(
-                    "warning: emittance target {target:08X} is a {}, not a LIGH or REGN; no emittance row",
-                    String::from_utf8_lossy(other)
+                omissions.record(
+                    OmissionCategory::EmittanceTargetWrongType,
+                    target,
+                    format!(
+                        "is a {}, not a LIGH or REGN; no emittance row",
+                        String::from_utf8_lossy(other)
+                    ),
                 );
                 continue;
             }
@@ -1277,15 +1303,24 @@ fn insert_light(
     master: &HashMap<u32, RawRecord>,
     form_id: u32,
     view: &SubrecordView<'_>,
+    omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let Some(data) = view.find(b"DATA") else {
-        eprintln!("warning: LIGH {form_id:08X} has no DATA; no lights row");
+        omissions.record(
+            OmissionCategory::LightMissingData,
+            form_id,
+            "LIGH has no DATA; no lights row",
+        );
         return Ok(());
     };
     if data.len() < LIGHT_DATA_MIN {
-        eprintln!(
-            "warning: LIGH {form_id:08X} DATA is {} bytes, expected at least {LIGHT_DATA_MIN}; no lights row",
-            data.len()
+        omissions.record(
+            OmissionCategory::LightShortData,
+            form_id,
+            format!(
+                "LIGH DATA is {} bytes, expected at least {LIGHT_DATA_MIN}; no lights row",
+                data.len()
+            ),
         );
         return Ok(());
     }
@@ -2317,6 +2352,132 @@ mod tests {
         assert_eq!(radius(0x3000), None, "a two-byte XRDS holds no radius");
     }
 
+    fn omission_ids(conn: &Connection) -> Vec<(String, u64, Vec<u32>)> {
+        ProjectionOmissions::read(conn)
+            .unwrap()
+            .categories
+            .into_iter()
+            .map(|(category, outcome)| {
+                let ids = outcome
+                    .samples
+                    .iter()
+                    .map(|sample| sample.form_id)
+                    .collect();
+                (category, outcome.count, ids)
+            })
+            .collect()
+    }
+
+    /// Every light and emittance branch that writes no row is counted under its own category,
+    /// next to healthy rows that are still written (#297).
+    #[test]
+    fn records_light_and_emittance_omissions_beside_healthy_rows() {
+        use crate::esm::projection_omissions::Severity;
+        let order = LoadOrder::from_metadata(
+            vec!["Lights.esp".into()],
+            vec![crate::esm::binary::PluginMetadata {
+                masters: Vec::new(),
+                flags: 0,
+            }],
+        )
+        .unwrap();
+        let mut short = light_data_bytes(256, [1, 2, 3], 0, 1.0);
+        short.truncate(12);
+        let healthy = light(
+            0x700,
+            "Healthy",
+            light_data_bytes(256, [255, 200, 120], 0, 1.0),
+            None,
+            None,
+        );
+        let broken = [
+            record(
+                0x801,
+                b"LIGH",
+                None,
+                None,
+                vec![(b"EDID".to_vec(), cstr("NoData"))],
+            ),
+            light(0x802, "Short", short, None, None),
+        ];
+        let mut records = vec![
+            healthy.clone(),
+            emitting_reference(0x1000, 0x700),
+            emitting_reference(0x1001, 0xDEAD),
+            emitting_reference(0x1002, 0x900),
+            emitting_reference(0x1003, 0x600),
+            emitting_reference(0x1004, 0x610),
+            emitting_reference(0x1005, 0x802),
+            record(0x900, b"STAT", None, None, Vec::new()),
+            record(0x600, b"REGN", None, None, Vec::new()),
+            region(0x610, &[(0x611, 100)]),
+            record(0x611, b"WTHR", None, None, Vec::new()),
+        ];
+        records.extend(broken.iter().cloned());
+        let master: HashMap<u32, RawRecord> = records
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+
+        export_to_db_with_load_order(&conn, &master, &order).unwrap();
+
+        let lights: Vec<u32> = conn
+            .prepare("SELECT id FROM lights ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(lights, vec![0x700], "the healthy light keeps its row");
+        assert_eq!(
+            emittance_row(&conn, 0x700),
+            Some(("LIGH".into(), None, [[255, 200, 120]; 4]))
+        );
+        let expected = vec![
+            ("emittance_light_unusable_data".to_owned(), 1, vec![0x802]),
+            ("emittance_region_no_weather".to_owned(), 1, vec![0x600]),
+            ("emittance_target_absent".to_owned(), 1, vec![0xDEAD]),
+            ("emittance_target_wrong_type".to_owned(), 1, vec![0x900]),
+            ("emittance_weather_no_lighting".to_owned(), 1, vec![0x610]),
+            ("light_missing_data".to_owned(), 1, vec![0x801]),
+            ("light_short_data".to_owned(), 1, vec![0x802]),
+        ];
+        assert_eq!(omission_ids(&conn), expected);
+        let stored = ProjectionOmissions::read(&conn).unwrap();
+        for (category, outcome) in &stored.categories {
+            let data_loss = category.starts_with("light_");
+            assert_eq!(
+                outcome.severity == Severity::DataLoss,
+                data_loss,
+                "{category}"
+            );
+        }
+        assert!(
+            stored.categories["light_short_data"].samples[0]
+                .reason
+                .contains("12 bytes"),
+            "{stored:?}"
+        );
+
+        // Exporting the same load order again replaces the counts instead of adding to them.
+        export_to_db_with_load_order(&conn, &master, &order).unwrap();
+        assert_eq!(omission_ids(&conn), expected);
+
+        // A subset export does not own the snapshot, so it keeps the stored omissions.
+        export_to_db(&conn, &HashMap::new()).unwrap();
+        assert_eq!(omission_ids(&conn), expected);
+
+        // Once the data is repaired, a full export leaves nothing behind.
+        let repaired: HashMap<u32, RawRecord> = [healthy, emitting_reference(0x1000, 0x700)]
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+        export_to_db_with_load_order(&conn, &repaired, &order).unwrap();
+        assert!(omission_ids(&conn).is_empty());
+    }
+
     /// A reference lit by `source` through `XEMI`.
     fn emitting_reference(form_id: u32, source: u32) -> RawRecord {
         let mut reference = reference(form_id, 0x100, 0x900, [0.0; 3], [0.0; 3]);
@@ -2377,7 +2538,7 @@ mod tests {
     fn export_with_emittance(conn: &Connection, master: &HashMap<u32, RawRecord>) {
         export_to_db(conn, master).unwrap();
         let tx = conn.unchecked_transaction().unwrap();
-        insert_emittance_sources(&tx, master).unwrap();
+        insert_emittance_sources(&tx, master, &mut ProjectionOmissions::default()).unwrap();
         tx.commit().unwrap();
     }
 
@@ -2814,6 +2975,8 @@ mod tests {
             "room_links",
             "reference_rooms",
             "room_graph_stats",
+            "projection_omission_stats",
+            "projection_omission_samples",
             "cells",
             "references",
         ] {

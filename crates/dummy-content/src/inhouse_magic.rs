@@ -212,11 +212,24 @@ pub fn records() -> Vec<u8> {
         }
         bytes.extend(record(signature, id, 0, &payload));
     }
+    // The effect's associated light, with the 48-byte `DATA` every Skyrim light carries: time -1,
+    // radius 256, white, no flags, falloff 1 and the trailing fields clear.
+    let mut light_data = Vec::with_capacity(48);
+    light_data.extend((-1i32).to_le_bytes());
+    light_data.extend(256u32.to_le_bytes());
+    light_data.extend([255, 255, 255, 0]);
+    light_data.extend(0u32.to_le_bytes());
+    light_data.extend(1.0f32.to_le_bytes());
+    light_data.resize(48, 0);
     bytes.extend(record(
         b"LIGH",
         0x18F0,
         0,
-        &subrecord(b"EDID", &text("AssociatedLight")),
+        &[
+            subrecord(b"EDID", &text("AssociatedLight")),
+            subrecord(b"DATA", &light_data),
+        ]
+        .concat(),
     ));
     bytes.extend(record(
         b"MISC",
