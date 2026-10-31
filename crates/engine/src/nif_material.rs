@@ -379,6 +379,25 @@ fn has_model_space_normals(material: &gltf::Material<'_>) -> bool {
     native_tag(material, "normalConvention", "model_space")
 }
 
+/// Default lighting shaders add their own emittance to diffuse lighting before multiplying
+/// by the surface colour. glTF emission is additive instead. For the no-glow case, the stock
+/// emissive texture binding can supply that diffuse modulation without changing the authored
+/// tint or multiplier. Own_Emit does not make slot 2 a glow map.
+///
+/// Shader reference: Community Shaders e5ae2d0082469f92ac08dda89d230dc2d9328ba0,
+/// package/Shaders/Lighting.hlsl:2632-2657,2815-2821 (non-TRUE_PBR path).
+/// Glow-map, effect and specialised lighting shaders need their own evaluation; do not infer
+/// this path from a missing/pruned emissive texture alone.
+fn has_diffuse_modulated_emittance(material: &gltf::Material<'_>) -> bool {
+    const OWN_EMIT: u32 = 1 << 22;
+    const GLOW_MAP: u32 = 1 << 6;
+    native_tag(material, "shaderFamily", "lighting")
+        && native_tag(material, "lightingShaderType", "default")
+        && native_depth_flags(material)
+            .is_some_and(|(flags_1, flags_2)| flags_1 & OWN_EMIT != 0 && flags_2 & GLOW_MAP == 0)
+        && material.emissive_texture().is_none()
+}
+
 fn native_uv_transform(material: &gltf::Material<'_>) -> Option<bevy::math::Affine2> {
     let extras: serde_json::Value = serde_json::from_str(material.extras().as_ref()?.get()).ok()?;
     let transform = extras.pointer("/openSkyrim/uvTransform")?;
@@ -403,6 +422,7 @@ fn needs_native_material(material: &gltf::Material<'_>) -> bool {
     has_normal_alpha_mask(material)
         || native_tag(material, "normalConvention", "directx")
         || has_model_space_normals(material)
+        || has_diffuse_modulated_emittance(material)
         || nif_hair_tint(material).is_some()
         || native_uv_transform(material).is_some()
         || native_depth_state(material, alpha_mode).is_some()
@@ -432,6 +452,14 @@ fn native_material(
         return None;
     }
     let mut material = loaded.clone();
+    if has_diffuse_modulated_emittance(source) && material.emissive_texture.is_none() {
+        let tint = material.base_color.to_linear();
+        material.emissive.red *= tint.red;
+        material.emissive.green *= tint.green;
+        material.emissive.blue *= tint.blue;
+        material.emissive_texture = material.base_color_texture.clone();
+        material.emissive_channel = material.base_color_channel.clone();
+    }
     if has_normal_alpha_mask(source) && material.specular_texture.is_some() {
         // Bevy 0.19 multiplies sampled mask alpha by 0.5 in pbr_fragment.wgsl.
         // Compensate only on this fresh native material, leaving valid glTF factors
@@ -1223,6 +1251,80 @@ mod tests {
             .as_bytes(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn own_emittance_uses_diffuse_colour_without_mutating_the_loaded_material() {
+        let document = first_material(serde_json::json!({"extras":{"openSkyrim":{
+            "shaderFamily":"lighting", "lightingShaderType":"default",
+            "shaderFlags1": 1 << 22, "shaderFlags2": 0
+        }}}));
+        let source = document.materials().next().unwrap();
+        for multiple in [0.0, 0.25, 1.0, 4.0] {
+            for textured in [false, true] {
+                let loaded = StandardMaterial {
+                    base_color: Color::linear_rgb(0.2, 0.4, 0.8),
+                    base_color_texture: textured.then(Handle::default),
+                    base_color_channel: bevy::mesh::UvChannel::Uv1,
+                    emissive: LinearRgba::new(0.5 * multiple, 0.4 * multiple, 0.2 * multiple, 1.0),
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    ..default()
+                };
+                for _ in 0..2 {
+                    let native = native_material(&source, &loaded).unwrap();
+                    let expected = [0.1 * multiple, 0.16 * multiple, 0.16 * multiple];
+                    for (actual, expected) in
+                        native.emissive.to_f32_array()[..3].iter().zip(expected)
+                    {
+                        assert!((actual - expected).abs() < 1e-6);
+                    }
+                    assert_eq!(native.emissive.alpha, loaded.emissive.alpha);
+                    assert_eq!(native.emissive_texture, loaded.base_color_texture);
+                    assert_eq!(native.emissive_channel, loaded.base_color_channel);
+                    assert_eq!(native.alpha_mode, loaded.alpha_mode);
+                    assert_eq!(native.base_color_texture, loaded.base_color_texture);
+                }
+                assert!(loaded.emissive_texture.is_none());
+                assert_eq!(loaded.emissive.red, 0.5 * multiple);
+            }
+        }
+        let loaded = StandardMaterial {
+            emissive: LinearRgba::rgb(2.0, 1.0, 0.5),
+            emissive_texture: Some(Handle::default()),
+            ..default()
+        };
+        let native = native_material(&source, &loaded).unwrap();
+        assert_eq!(native.emissive, loaded.emissive);
+        assert_eq!(native.emissive_texture, loaded.emissive_texture);
+    }
+
+    #[test]
+    fn diffuse_emittance_requires_default_lighting_own_emit_and_no_glow_flag() {
+        for (family, shader, flags_1, flags_2, expected) in [
+            ("lighting", "default", 1 << 22, 0, true),
+            ("lighting", "default", 0, 0, false),
+            // A pruned glow texture must not silently switch to diffuse emission.
+            ("lighting", "default", 1 << 22, 1 << 6, false),
+            ("lighting", "glow", 1 << 22, 0, false),
+            ("lighting", "skin_tint", 1 << 22, 0, false),
+            ("effect", "default", 1 << 22, 0, false),
+            ("", "", 1 << 22, 0, false),
+        ] {
+            let document = first_material(serde_json::json!({"extras":{"openSkyrim":{
+                "shaderFamily":family, "lightingShaderType":shader,
+                "shaderFlags1":flags_1, "shaderFlags2":flags_2
+            }}}));
+            assert_eq!(
+                has_diffuse_modulated_emittance(&document.materials().next().unwrap()),
+                expected
+            );
+        }
+        assert!(!has_diffuse_modulated_emittance(
+            &first_material(serde_json::json!({}))
+                .materials()
+                .next()
+                .unwrap()
+        ));
     }
 
     /// The forge's `Flames` (both palette channels) and `JetBoost` (palette colour only) from
