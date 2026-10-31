@@ -307,6 +307,13 @@ fn ray_hits_door(
     reach: f32,
 ) -> Option<f32> {
     let inverse = door.affine().inverse();
+    // A reference whose `XSCL` is zero, infinite or NaN has a singular affine, whose inverse is
+    // NaN/infinite. The slab test below would then report a hit at distance 0 from any origin and
+    // direction, because `f32::min`/`max` drop a NaN argument; glam's `try_inverse` does not help,
+    // as it returns `Some(NaN)` when the determinant is NaN. Such a door is not activatable.
+    if !inverse.is_finite() {
+        return None;
+    }
     let local_origin = inverse.transform_point3(origin);
     // Not renormalised, so the ray parameter stays a world distance.
     let local_direction = inverse.transform_vector3(direction);
@@ -1662,5 +1669,31 @@ mod tests {
         assert!(
             ray_hits_door(Vec3::new(0.0, 20.0, 0.0), Vec3::NEG_Z, &door, &bounds, 50.0).is_none()
         );
+
+        // A load door whose reference scale (`XSCL`) is zero or not finite has a singular or NaN
+        // affine: no ray may use it. Without the finiteness check the slab test hits it at 0 for
+        // every origin and direction, which makes it the nearest door from anywhere.
+        for scale in [
+            Vec3::ZERO,
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::splat(f32::NAN),
+            Vec3::splat(f32::INFINITY),
+        ] {
+            let degenerate =
+                GlobalTransform::from(Transform::from_xyz(0.0, 0.0, -100.0).with_scale(scale));
+            for direction in [Vec3::NEG_Z, Vec3::Z, Vec3::X] {
+                assert!(
+                    ray_hits_door(
+                        Vec3::new(0.0, 20.0, 0.0),
+                        direction,
+                        &degenerate,
+                        &bounds,
+                        200.0,
+                    )
+                    .is_none(),
+                    "scale {scale:?} direction {direction:?}"
+                );
+            }
+        }
     }
 }
