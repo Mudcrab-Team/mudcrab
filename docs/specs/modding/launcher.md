@@ -102,7 +102,7 @@ pub fn run_conversion_job(game_dir: PathBuf, progress_tx: Sender<ProgressUpdate>
         TextureConverter::convert_all(&game_dir, &progress_tx);
         // Stage 2: Convert 3D Meshes
         NifConverter::convert_all(&game_dir, &progress_tx);
-        // Stage 3: Parse ESM to libSQL
+        // Stage 3: Parse ESM to SQLite
         EsmConverter::convert_all(&game_dir, &progress_tx);
     });
 }
