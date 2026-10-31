@@ -11,6 +11,7 @@ pub mod cell_commands;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
+mod console_selection;
 pub mod door_crossing;
 pub mod doors;
 pub mod emittance;
