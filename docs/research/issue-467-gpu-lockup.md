@@ -3,8 +3,10 @@
 Owner: issue467-implementation-5e2edc11. Source base:
 `b5259d33a73e1df730f0730866595fd4cdaae0e3`. Checkout:
 `/Users/taylor/.t3/worktrees/mudcrab/t3-5e2edc11`, branch
-`t3/investigate-gpu-lockup`. No production renderer or settings change is justified
-yet. This packet prepares the next experiment; it does not fix or reproduce #467.
+`t3/investigate-gpu-lockup`. The initial investigation commit is
+`f5950727c7c88809869467e235a937828bdae6fb`. The follow-up below bypasses the
+confirmed GPU bounds hazards on Metal; it does not reproduce #467 or establish
+its freeze cause.
 
 ## Preserved evidence
 
@@ -74,8 +76,37 @@ archive against Cargo.lock. It reads archives in place and uses no GPU.
    the failed binary's compiled Metal shader.
 
 These are concrete source hazards and discriminating experiment targets. Neither
-has been linked to a recorded failing GPU command. Do not change defaults, disable
-point lights globally, vendor Bevy or claim the freeze fixed on this evidence.
+has been linked to a recorded failing GPU command. These findings do not justify
+changing lighting defaults, disabling point lights globally or claiming the freeze fixed. The local Metal CPU fallback below
+avoids the confirmed unsafe shader paths without modifying Bevy.
+
+## Metal safety workaround
+
+The renderer selects Bevy's supported CPU clustering path when the actual selected adapter is Metal.
+It reuses #253's `GlobalClusterSettings::gpu_clustering = None` assignment without
+importing its other renderer tuning. The policy runs in `PreStartup`, after
+`PbrPlugin::finish` initializes capabilities and before first light assignment
+or render-world extraction. Both GPU bounds hazards above are excluded from the
+Metal render workload. Point lights, shadows, storage-buffer support and other
+cluster capabilities remain unchanged; settings files are not touched.
+
+CPU-only schedule tests check first-Startup ordering, preservation of light and
+shadow state, all other backends, an already selected CPU path, and apps without
+renderer/PBR resources. No GPU is requested by those tests. CPU clustering can
+change CPU time and cluster assignments; no performance or visual equivalence is
+claimed. The original freeze still needs the coordinated native experiment below.
+Remove or narrow the workaround only after the pinned GPU paths are bounded and
+native validation supports enabling them on Metal.
+
+Validation: `cargo check --locked -p engine --tests` passed through the installed
+isolated build wrapper; `rustfmt --check` and `git diff --check` passed. The
+focused CPU test run was stopped by preflight before compilation: existing
+managed builds used 56.16 GiB against the 60 GiB budget, with an 8 GiB full-build
+estimate. No test execution or native qualification is claimed. A temporary
+68 GiB validation budget was requested; the default was not bypassed. Validation
+logs and source receipts are retained at
+`/Users/taylor/Projects/mudcrab/.mudcrab-local/evidence/20261031-issue467-metal-cpu-safety`,
+owned by `issue467-coordination-metal-cpu-safety`.
 
 ## Executed check
 
@@ -129,9 +160,10 @@ If the safe probe supports the hazards, coordinate a separate Riverwood test:
 hold the original settings snapshot, pack `user-testing-main-b5259d33`,
 worldspace `0x3c`, grid `(5,-12)`, exact camera pose/input schedule, dimensions,
 point-light budget/shadows, reflections, culling and rendering workload fixed.
-Use baseline GPU clustering, CPU clustering with only #253's assignment, and GPU
+Use baseline GPU clustering, this Metal CPU-fallback candidate, and baseline GPU
 clustering with only `initial_z_slice_list_capacity = 4096` as three separate
-arms. Preserve the same frozen defaults patch on every arm only if needed; it was
+arms. Build GPU arms from the pre-workaround source in isolated checkouts; the
+production Metal policy deliberately cannot be re-enabled by a saved setting. Preserve the same frozen defaults patch on every arm only if needed; it was
 not needed for this source audit. Preallocation does not address the tail hazard.
 
 Use an explicit **session-only** settings snapshot path; the current macOS path
