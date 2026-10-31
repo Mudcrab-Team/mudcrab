@@ -188,7 +188,9 @@ pub fn parse_wstring(input: &[u8]) -> IResult<&[u8], String> {
 }
 
 /// Every array element takes at least one byte, so a count read from the
-/// field never needs more capacity than the bytes that remain.
+/// field never needs more capacity than the bytes that remain. Every
+/// count-derived reservation in this module reserves through this bound, not
+/// the raw count.
 fn bounded_capacity(count: u32, remaining: &[u8]) -> usize {
     (count as usize).min(remaining.len())
 }
@@ -325,7 +327,7 @@ pub fn parse_script_entry(
     };
 
     let (input, property_count) = le_u16(input)?;
-    let mut properties = Vec::with_capacity(property_count as usize);
+    let mut properties = Vec::with_capacity(bounded_capacity(u32::from(property_count), input));
     let mut curr = input;
 
     for _ in 0..property_count {
@@ -352,7 +354,7 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
     let (input, script_count) = le_u16(input)?;
 
     let mut curr = input;
-    let mut scripts = Vec::with_capacity(script_count as usize);
+    let mut scripts = Vec::with_capacity(bounded_capacity(u32::from(script_count), input));
 
     for _ in 0..script_count {
         let (next, script) = parse_script_entry(curr, version, obj_format)?;
@@ -436,7 +438,7 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
             let (i, file_name) = parse_wstring(i)?;
             let (i, frag_count) = le_u16(i)?;
 
-            let mut frags = Vec::with_capacity(frag_count as usize);
+            let mut frags = Vec::with_capacity(bounded_capacity(u32::from(frag_count), i));
             let mut c = i;
             for _ in 0..frag_count {
                 let (next, index) = le_u16(c)?;
@@ -467,7 +469,7 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
             let (i, frag_count) = le_u16(i)?;
             let (i, file_name) = parse_wstring(i)?;
 
-            let mut frags = Vec::with_capacity(frag_count as usize);
+            let mut frags = Vec::with_capacity(bounded_capacity(u32::from(frag_count), i));
             let mut c = i;
             for _ in 0..frag_count {
                 let (next, index) = le_u16(c)?;
@@ -488,7 +490,7 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
             }
 
             let (i, alias_count) = le_u16(c)?;
-            let mut aliases = Vec::with_capacity(alias_count as usize);
+            let mut aliases = Vec::with_capacity(bounded_capacity(u32::from(alias_count), i));
             let mut c_alias = i;
 
             for _ in 0..alias_count {
@@ -497,7 +499,8 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
                 let (next, a_obj_fmt) = le_i16(next)?;
                 let (next, a_script_count) = le_u16(next)?;
 
-                let mut a_scripts = Vec::with_capacity(a_script_count as usize);
+                let mut a_scripts =
+                    Vec::with_capacity(bounded_capacity(u32::from(a_script_count), next));
                 let mut c_script = next;
                 for _ in 0..a_script_count {
                     let (n, s) = parse_script_entry(c_script, a_ver, a_obj_fmt)?;
@@ -545,7 +548,7 @@ pub fn parse_vmad<'a>(input: &'a [u8], record_tag: &[u8; 4]) -> IResult<&'a [u8]
             }
 
             let (i, phase_count) = le_u16(c)?;
-            let mut phase_frags = Vec::with_capacity(phase_count as usize);
+            let mut phase_frags = Vec::with_capacity(bounded_capacity(u32::from(phase_count), i));
             let mut c_phase = i;
 
             for _ in 0..phase_count {
@@ -758,6 +761,56 @@ mod tests {
     use crate::test_strategies::{arbitrary_bytes, config};
     use proptest::prelude::*;
 
+    /// Counts the bytes the current thread allocates while a closure runs.
+    /// Other converter unit tests share this binary, so the counter is
+    /// thread-local and records only between `tracked`'s two writes.
+    mod allocation_probe {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static TRACKING: Cell<bool> = const { Cell::new(false) };
+            static ALLOCATED_BYTES: Cell<usize> = const { Cell::new(0) };
+        }
+
+        struct CountingAllocator;
+
+        // SAFETY: every method forwards its pointer and layout unchanged to the
+        // system allocator; the counters are thread-local `Cell`s that do not
+        // allocate, so the allocator cannot recurse into itself.
+        unsafe impl GlobalAlloc for CountingAllocator {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                // SAFETY: `layout` was passed to this allocator by the caller.
+                let pointer = unsafe { System.alloc(layout) };
+                if !pointer.is_null() {
+                    let _ = TRACKING.try_with(|tracking| {
+                        if tracking.get() {
+                            let _ = ALLOCATED_BYTES
+                                .try_with(|total| total.set(total.get() + layout.size()));
+                        }
+                    });
+                }
+                pointer
+            }
+
+            unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+                // SAFETY: `pointer` and `layout` come from this allocator's `alloc`.
+                unsafe { System.dealloc(pointer, layout) }
+            }
+        }
+
+        #[global_allocator]
+        static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+        pub(super) fn tracked<T>(body: impl FnOnce() -> T) -> (T, usize) {
+            ALLOCATED_BYTES.with(|total| total.set(0));
+            TRACKING.with(|tracking| tracking.set(true));
+            let value = body();
+            TRACKING.with(|tracking| tracking.set(false));
+            (value, ALLOCATED_BYTES.with(Cell::get))
+        }
+    }
+
     /// A VMAD with one script holding one array property of `property_type`
     /// whose element count is `count`, followed by `tail`.
     fn array_property_vmad(property_type: u8, count: u32, tail: &[u8]) -> Vec<u8> {
@@ -783,6 +836,39 @@ mod tests {
             let bytes = array_property_vmad(property_type, u32::MAX, &[0; 16]);
             assert!(parse_vmad(&bytes, b"STAT").is_err());
         }
+    }
+
+    /// A declared count may only size a reservation up to the bytes that remain:
+    /// 0xFFFF scripts or fragments behind one body byte reserve one element, not
+    /// the declared count.
+    #[test]
+    fn huge_declared_counts_reserve_only_the_remaining_bytes() {
+        let mut scripts = Vec::new();
+        scripts.extend_from_slice(&5i16.to_le_bytes());
+        scripts.extend_from_slice(&2i16.to_le_bytes());
+        scripts.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        scripts.push(0);
+        let (result, allocated) = allocation_probe::tracked(|| parse_vmad(&scripts, b"STAT"));
+        assert!(result.is_err(), "a truncated script list is rejected");
+        assert!(
+            allocated <= 1024,
+            "0xFFFF declared scripts reserved {allocated} bytes behind one body byte"
+        );
+
+        let mut qust = Vec::new();
+        qust.extend_from_slice(&5i16.to_le_bytes());
+        qust.extend_from_slice(&2i16.to_le_bytes());
+        qust.extend_from_slice(&0u16.to_le_bytes());
+        qust.push(0);
+        qust.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        qust.extend_from_slice(&0u16.to_le_bytes());
+        qust.push(0);
+        let (result, allocated) = allocation_probe::tracked(|| parse_vmad(&qust, b"QUST"));
+        assert!(result.is_err(), "a truncated fragment list is rejected");
+        assert!(
+            allocated <= 1024,
+            "0xFFFF declared fragments reserved {allocated} bytes behind one body byte"
+        );
     }
 
     proptest! {

@@ -196,7 +196,13 @@ fn quantized(
         ScalarQuantization::Bits8 => cursor.u8()? as f32 / 255.0,
         ScalarQuantization::Bits16 => cursor.u16()? as f32 / 65535.0,
     };
-    Ok(minimum + (maximum - minimum) * fraction)
+    let value = minimum + (maximum - minimum) * fraction;
+    ensure!(
+        value.is_finite(),
+        "spline value {value} from bounds [{minimum}, {maximum}] is not finite at {:#x}",
+        cursor.position
+    );
+    Ok(value)
 }
 
 fn read_vec3(
@@ -209,7 +215,13 @@ fn read_vec3(
         let mut value = [identity; 3];
         for (index, component) in value.iter_mut().enumerate() {
             if flags & STATIC[index] != 0 {
-                *component = cursor.f32()?;
+                let decoded = cursor.f32()?;
+                ensure!(
+                    decoded.is_finite(),
+                    "spline static value {decoded} is not finite at {:#x}",
+                    cursor.position
+                );
+                *component = decoded;
             }
         }
         return Ok(Vec3Track::Static(value));
@@ -245,9 +257,22 @@ fn read_vec3(
     let mut static_components = [identity; 3];
     for index in 0..3 {
         if flags & SPLINE[index] != 0 {
-            bounds[index] = (cursor.f32()?, cursor.f32()?);
+            let minimum = cursor.f32()?;
+            let maximum = cursor.f32()?;
+            ensure!(
+                minimum.is_finite() && maximum.is_finite(),
+                "spline bounds [{minimum}, {maximum}] are not finite at {:#x}",
+                cursor.position
+            );
+            bounds[index] = (minimum, maximum);
         } else if flags & STATIC[index] != 0 {
-            static_components[index] = cursor.f32()?;
+            let decoded = cursor.f32()?;
+            ensure!(
+                decoded.is_finite(),
+                "spline static value {decoded} is not finite at {:#x}",
+                cursor.position
+            );
+            static_components[index] = decoded;
         }
     }
     let mut components: [Vec<f32>; 3] = std::array::from_fn(|index| {
@@ -382,13 +407,45 @@ pub fn read_block(
         cursor.align(4);
         let scale = read_vec3(&mut cursor, mask.scale, mask.scale_q, 1.0)?;
         cursor.align(4);
-        decoded.push(Track {
+        let track = Track {
             translation,
             rotation,
             scale,
-        });
+        };
+        // Belt and braces before the clip GLB is written: every value a sample
+        // can interpolate from must be finite, including values a future
+        // quantization arm might produce.
+        ensure!(
+            track_values_are_finite(&track),
+            "decoded track {} at block offset {offset:#x} has a non-finite value",
+            decoded.len()
+        );
+        decoded.push(track);
     }
     Ok(decoded)
+}
+
+/// Whether every static value and control point a track can sample is finite.
+/// `find_span` only returns spans with a width, so a finite track
+/// yields finite samples across its knot domain.
+fn track_values_are_finite(track: &Track) -> bool {
+    fn vec3(track: &Vec3Track) -> bool {
+        match track {
+            Vec3Track::Static(value) => value.iter().all(|value| value.is_finite()),
+            Vec3Track::Spline { components, .. } => {
+                components.iter().flatten().all(|value| value.is_finite())
+            }
+        }
+    }
+    fn quat(track: &QuatTrack) -> bool {
+        match track {
+            QuatTrack::Static(value) => value.iter().all(|value| value.is_finite()),
+            QuatTrack::Spline { points, .. } => {
+                points.iter().flatten().all(|value| value.is_finite())
+            }
+        }
+    }
+    vec3(&track.translation) && quat(&track.rotation) && vec3(&track.scale)
 }
 
 /// NURBS book A2.1: span index for `u` with `n` control points.
@@ -396,12 +453,20 @@ fn find_span(degree: usize, u: f32, n: usize, knots: &[u8]) -> usize {
     if n <= 1 {
         return 0;
     }
-    // Frame 0 belongs to the first span; searching below the domain would not terminate.
+    // A frame at either end of the domain takes the nearest span with a width: a repeated end
+    // knot leaves the outermost span empty, and `basis` divides by the width of the span it is
+    // given. `read_knots` guarantees the domain itself has a width, so such a span exists.
+    // Searching below the domain would not terminate.
     if u <= knots[degree] as f32 {
-        return degree;
+        return (degree..n)
+            .find(|&span| knots[span] < knots[span + 1])
+            .unwrap_or(degree);
     }
     if u >= knots[n] as f32 {
-        return n - 1;
+        return (degree..n)
+            .rev()
+            .find(|&span| knots[span] < knots[span + 1])
+            .unwrap_or(n - 1);
     }
     let (mut low, mut high) = (degree, n);
     let mut mid = (low + high) / 2;
@@ -650,14 +715,28 @@ impl Decoded {
         (block, (frame - block * self.frames_per_block) as f32)
     }
 
-    pub fn sample(&self, track: usize, frame: usize) -> TransformSample {
+    /// Samples `track` at a global frame, refusing a non-finite result.
+    ///
+    /// Finite control points do not guarantee a finite sample: a frame past the knot domain
+    /// extrapolates, with basis weights above one, and can overflow `f32`.
+    pub fn sample(&self, track_index: usize, frame: usize) -> Result<TransformSample> {
         let (block, u) = self.locate(frame);
-        let track = &self.blocks[block][track];
-        TransformSample {
+        let track = &self.blocks[block][track_index];
+        let sample = TransformSample {
             translation: eval_vec3(&track.translation, u),
             rotation: eval_quat(&track.rotation, u),
             scale: eval_vec3(&track.scale, u),
-        }
+        };
+        ensure!(
+            sample
+                .translation
+                .iter()
+                .chain(&sample.rotation)
+                .chain(&sample.scale)
+                .all(|value| value.is_finite()),
+            "track {track_index} samples to a non-finite transform at frame {frame}: {sample:?}"
+        );
+        Ok(sample)
     }
 }
 
@@ -1095,6 +1174,132 @@ mod tests {
             .expect("large declared block rejected")
             .to_string();
         assert!(error.contains("supported limit of 256"), "{error}");
+    }
+
+    /// A bound or static value that is not finite quantises every sample to
+    /// NaN, so it is rejected where it enters rather than written to a GLB.
+    #[test]
+    fn read_vec3_rejects_non_finite_bounds_and_static_values() {
+        let mut spline = spline_fixture(2, 1);
+        spline.extend_from_slice(&f32::NAN.to_le_bytes());
+        spline.extend_from_slice(&1.0_f32.to_le_bytes());
+        spline.extend_from_slice(&[0, 255]);
+        let error = read_vec3(
+            &mut Cursor {
+                data: &spline,
+                position: 4,
+            },
+            SPLINE[0],
+            ScalarQuantization::Bits8,
+            0.0,
+        )
+        .expect_err("a NaN spline bound is rejected")
+        .to_string();
+        assert!(error.contains("not finite"), "got {error:?}");
+
+        let static_value = f32::INFINITY.to_le_bytes();
+        let error = read_vec3(
+            &mut cursor(&static_value),
+            STATIC[0],
+            ScalarQuantization::Bits8,
+            0.0,
+        )
+        .expect_err("an infinite static value is rejected")
+        .to_string();
+        assert!(error.contains("not finite"), "got {error:?}");
+    }
+
+    /// A repeated end knot leaves the outermost span zero-width. A frame at either end of the
+    /// domain must use the nearest span with a width, so its sample stays finite and lands on
+    /// the clamped end point instead of dividing by zero.
+    #[test]
+    fn frames_at_the_domain_ends_skip_an_empty_outermost_span() {
+        // Five control points at degree three; the last span (knots[4]..knots[5]) is empty.
+        let end = Knots {
+            degree: 3,
+            knots: vec![0, 0, 0, 0, 4, 4, 4, 4, 4],
+        };
+        assert!(read_knots(&mut cursor(&[4, 0, 3, 0, 0, 0, 0, 4, 4, 4, 4, 4])).is_ok());
+        let points = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let sample = eval_scalar(&end, &points, 4.0);
+        assert!(sample.is_finite(), "end sample {sample}");
+        assert!((sample - 4.0).abs() < 1e-5, "end sample {sample}");
+
+        // The mirror case: frame 0 sits where the first span (knots[3]..knots[4]) is empty.
+        let start = Knots {
+            degree: 3,
+            knots: vec![0, 0, 0, 0, 0, 1, 1, 1, 1],
+        };
+        let sample = eval_scalar(&start, &points, 0.0);
+        assert!(sample.is_finite(), "start sample {sample}");
+        assert!((sample - 2.0).abs() < 1e-5, "start sample {sample}");
+    }
+
+    #[test]
+    fn quantized_rejects_bounds_whose_range_overflows() {
+        let error = quantized(
+            &mut cursor(&[0]),
+            ScalarQuantization::Bits8,
+            -f32::MAX,
+            f32::MAX,
+        )
+        .expect_err("a range that overflows f32 is rejected")
+        .to_string();
+        assert!(error.contains("not finite"), "got {error:?}");
+    }
+
+    /// Belt and braces at the decode choke point: a track holding a non-finite
+    /// value is refused before any clip samples it.
+    #[test]
+    fn track_finiteness_check_rejects_a_non_finite_control_point() {
+        let finite = Track {
+            translation: Vec3Track::Spline {
+                knots: Knots {
+                    degree: 1,
+                    knots: vec![0, 0, 1, 1],
+                },
+                components: [vec![0.0, 1.0], vec![0.0], vec![0.0]],
+            },
+            rotation: QuatTrack::Static([0.0, 0.0, 0.0, 1.0]),
+            scale: Vec3Track::Static([1.0; 3]),
+        };
+        assert!(track_values_are_finite(&finite));
+
+        let non_finite = Track {
+            translation: Vec3Track::Static([f32::NAN, 0.0, 0.0]),
+            ..finite
+        };
+        assert!(!track_values_are_finite(&non_finite));
+    }
+
+    /// Finite control points can still extrapolate past `f32::MAX` at a frame beyond the knot
+    /// domain; that sample is refused rather than written into the clip.
+    #[test]
+    fn sample_past_the_knot_domain_that_overflows_is_refused() {
+        let track = Track {
+            translation: Vec3Track::Spline {
+                knots: Knots {
+                    degree: 1,
+                    knots: vec![0, 0, 1, 1],
+                },
+                components: [vec![0.0, 3.0e38], vec![0.0], vec![0.0]],
+            },
+            rotation: QuatTrack::Static([0.0, 0.0, 0.0, 1.0]),
+            scale: Vec3Track::Static([1.0; 3]),
+        };
+        let decoded = Decoded {
+            blocks: vec![vec![track]],
+            frames_per_block: 2,
+        };
+        assert_eq!(
+            decoded.sample(0, 1).unwrap().translation,
+            [3.0e38, 0.0, 0.0]
+        );
+        let error = decoded.sample(0, 2).unwrap_err().to_string();
+        assert!(
+            error.contains("track 0") && error.contains("frame 2"),
+            "{error}"
+        );
     }
 
     #[test]
