@@ -24,14 +24,58 @@
 //! emit one warning per variable name, including across repeated loads.
 //! Material handle swaps must use component insertion: Bevy lifecycle observers cannot see
 //! in-place mutation of the mutable `MeshMaterial3d` component.
-//! Draw paths other than the stock material need their own UV consumer.
+//! Native extensions tick the StandardMaterial base actually bound by each draw.
 
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock},
 };
 
-use bevy::prelude::*;
+use bevy::{
+    pbr::{ExtendedMaterial, MaterialExtension},
+    prelude::*,
+};
+
+/// The standard UV uniform used by stock PBR and the existing NIF shader extensions.
+/// Recursing through depth wrappers keeps playback on the material actually drawn.
+pub(crate) trait AnimatedMaterial: Material {
+    fn standard(&self) -> &StandardMaterial;
+    fn standard_mut(&mut self) -> &mut StandardMaterial;
+}
+
+impl AnimatedMaterial for StandardMaterial {
+    fn standard(&self) -> &StandardMaterial {
+        self
+    }
+    fn standard_mut(&mut self) -> &mut StandardMaterial {
+        self
+    }
+}
+
+impl<B: AnimatedMaterial, E: MaterialExtension> AnimatedMaterial for ExtendedMaterial<B, E> {
+    fn standard(&self) -> &StandardMaterial {
+        self.base.standard()
+    }
+    fn standard_mut(&mut self) -> &mut StandardMaterial {
+        self.base.standard_mut()
+    }
+}
+
+pub(crate) type AnimatedStandardMaterials = AnimatedMaterials<StandardMaterial>;
+
+/// One journal snapshot shared by all typed consumers, drained once per frame.
+#[derive(Resource, Default)]
+struct AnimationChanges(HashSet<String>);
+
+fn gather_animation_changes(
+    registry: Option<Res<MaterialAnimationRegistry>>,
+    mut changes: ResMut<AnimationChanges>,
+) {
+    changes.0 = registry
+        .as_deref()
+        .map(MaterialAnimationRegistry::take_changes)
+        .unwrap_or_default();
+}
 
 /// A shader value a channel drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,7 +363,7 @@ fn parse_channel(value: &serde_json::Value) -> Option<Channel> {
     })
 }
 
-/// Animation payloads recorded by the glTF handler, keyed by standard-material asset path.
+/// Animation payloads recorded by the glTF handlers, keyed by actual material asset path.
 /// Loader tasks share this registry without retaining otherwise unused labelled assets.
 #[derive(Resource, Clone, Default)]
 pub struct MaterialAnimationRegistry(Arc<Mutex<MaterialAnimationPayloads>>);
@@ -404,27 +448,36 @@ impl MaterialAnimationRegistry {
 }
 
 /// Asset IDs only: the registry must not keep unused materials alive.
-#[derive(Resource, Default)]
-pub(crate) struct AnimatedStandardMaterials {
-    resolved: HashSet<AssetId<StandardMaterial>>,
-    animated: HashMap<AssetId<StandardMaterial>, MaterialAnimation>,
+#[derive(Resource)]
+pub(crate) struct AnimatedMaterials<M: AnimatedMaterial> {
+    resolved: HashSet<AssetId<M>>,
+    animated: HashMap<AssetId<M>, MaterialAnimation>,
     /// Registration/removal events, never a per-frame component change query.
-    dirty_users: HashSet<AssetId<StandardMaterial>>,
+    dirty_users: HashSet<AssetId<M>>,
     /// One tracked write per material per playback call. AssetEventSystems
     /// flushes it before the next resolver call; extra Modified events are external.
-    own_modified: HashSet<AssetId<StandardMaterial>>,
+    own_modified: HashSet<AssetId<M>>,
     /// Pathless variants retain the authored source animation, including its static UV base.
-    derived_sources: HashMap<AssetId<StandardMaterial>, AssetId<StandardMaterial>>,
-    derived_by_source: HashMap<AssetId<StandardMaterial>, HashSet<AssetId<StandardMaterial>>>,
+    derived_sources: HashMap<AssetId<M>, AssetId<M>>,
+    derived_by_source: HashMap<AssetId<M>, HashSet<AssetId<M>>>,
 }
 
-impl AnimatedStandardMaterials {
-    /// Associate an emittance variant without retaining either asset's handle.
-    pub(crate) fn derive(
-        &mut self,
-        source: AssetId<StandardMaterial>,
-        derived: AssetId<StandardMaterial>,
-    ) {
+impl<M: AnimatedMaterial> Default for AnimatedMaterials<M> {
+    fn default() -> Self {
+        Self {
+            resolved: default(),
+            animated: default(),
+            dirty_users: default(),
+            own_modified: default(),
+            derived_sources: default(),
+            derived_by_source: default(),
+        }
+    }
+}
+
+impl<M: AnimatedMaterial> AnimatedMaterials<M> {
+    /// Associate an instance variant without retaining either asset's handle.
+    pub(crate) fn derive(&mut self, source: AssetId<M>, derived: AssetId<M>) {
         if let Some(previous) = self.derived_sources.insert(derived, source)
             && let Some(variants) = self.derived_by_source.get_mut(&previous)
         {
@@ -440,7 +493,7 @@ impl AnimatedStandardMaterials {
         self.refresh_derived_material(source, derived);
     }
 
-    fn refresh_derived(&mut self, source: AssetId<StandardMaterial>) {
+    fn refresh_derived(&mut self, source: AssetId<M>) {
         // Move the set while updating sibling fields, retaining its allocation.
         let Some(variants) = self.derived_by_source.remove(&source) else {
             return;
@@ -451,11 +504,7 @@ impl AnimatedStandardMaterials {
         self.derived_by_source.insert(source, variants);
     }
 
-    fn refresh_derived_material(
-        &mut self,
-        source: AssetId<StandardMaterial>,
-        derived: AssetId<StandardMaterial>,
-    ) {
+    fn refresh_derived_material(&mut self, source: AssetId<M>, derived: AssetId<M>) {
         self.resolved.remove(&derived);
         self.animated.remove(&derived);
         if let Some(animation) = self.animated.get(&source).cloned() {
@@ -467,9 +516,9 @@ impl AnimatedStandardMaterials {
 
     fn register(
         &mut self,
-        id: AssetId<StandardMaterial>,
+        id: AssetId<M>,
         path: Option<&str>,
-        material: Option<&StandardMaterial>,
+        material: Option<&M>,
         registry: Option<&MaterialAnimationRegistry>,
     ) {
         if let Some(&source) = self.derived_sources.get(&id) {
@@ -485,15 +534,15 @@ impl AnimatedStandardMaterials {
             return;
         };
         if let Some(mut animation) = registry.get(path) {
-            // StandardMaterial is authoritative after Bevy interprets texture infos.
-            animation.capture_base(material.uv_transform);
+            // The drawn base is authoritative after native and glTF texture interpretation.
+            animation.capture_base(material.standard().uv_transform);
             self.animated.insert(id, animation);
         }
         self.resolved.insert(id);
         self.refresh_derived(id);
     }
 
-    fn forget(&mut self, id: AssetId<StandardMaterial>) {
+    fn forget(&mut self, id: AssetId<M>) {
         self.resolved.remove(&id);
         self.animated.remove(&id);
         self.own_modified.remove(&id);
@@ -512,22 +561,33 @@ impl AnimatedStandardMaterials {
 
 /// Only animated component users are retained. New registrations find existing users
 /// in one event-driven scan; settled frames do not visit unrelated entities.
-#[derive(Resource, Default)]
-struct MaterialUsers {
-    entities: HashMap<Entity, AssetId<StandardMaterial>>,
-    materials: HashMap<AssetId<StandardMaterial>, HashSet<Entity>>,
+#[derive(Resource)]
+struct MaterialUsers<M: AnimatedMaterial = StandardMaterial> {
+    entities: HashMap<Entity, AssetId<M>>,
+    materials: HashMap<AssetId<M>, HashSet<Entity>>,
     /// Every entity examined by lifecycle indexing or registration scans.
     #[cfg(test)]
     entity_visits: usize,
 }
 
-impl MaterialUsers {
-    fn insert(&mut self, entity: Entity, id: AssetId<StandardMaterial>) {
+impl<M: AnimatedMaterial> Default for MaterialUsers<M> {
+    fn default() -> Self {
+        Self {
+            entities: default(),
+            materials: default(),
+            #[cfg(test)]
+            entity_visits: 0,
+        }
+    }
+}
+
+impl<M: AnimatedMaterial> MaterialUsers<M> {
+    fn insert(&mut self, entity: Entity, id: AssetId<M>) {
         self.entities.insert(entity, id);
         self.materials.entry(id).or_default().insert(entity);
     }
 
-    fn remove_material(&mut self, id: AssetId<StandardMaterial>) {
+    fn remove_material(&mut self, id: AssetId<M>) {
         if let Some(users) = self.materials.remove(&id) {
             for entity in users {
                 #[cfg(test)]
@@ -555,29 +615,49 @@ pub struct MaterialAnimationPlugin;
 
 impl Plugin for MaterialAnimationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AnimatedStandardMaterials>()
-            .init_resource::<MaterialUsers>()
-            .add_observer(on_material_insert)
-            .add_observer(on_material_discard)
-            .add_systems(
-                PostUpdate,
-                (
-                    find_animated_standard_materials,
-                    index_material_users,
-                    animate_materials,
-                )
-                    .chain()
-                    .after(bevy::asset::AssetEventSystems)
-                    .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
-            );
+        app.init_resource::<AnimationChanges>().add_systems(
+            PostUpdate,
+            gather_animation_changes.after(bevy::asset::AssetEventSystems),
+        );
+        install_consumer::<StandardMaterial>(app);
+        install_consumer::<crate::nif_depth::NifDepthMaterial>(app);
+        install_consumer::<crate::nif_material::EffectPaletteMaterial>(app);
+        install_consumer::<crate::nif_material::EffectPaletteDepthMaterial>(app);
+        install_consumer::<crate::skin_material::SkyrimSkinMaterial>(app);
+        install_consumer::<crate::skin_material::SkyrimSkinDepthMaterial>(app);
     }
 }
 
-fn on_material_insert(
-    event: On<Insert, MeshMaterial3d<StandardMaterial>>,
-    materials: Query<&MeshMaterial3d<StandardMaterial>>,
-    animated: Res<AnimatedStandardMaterials>,
-    mut index: ResMut<MaterialUsers>,
+fn install_consumer<M: AnimatedMaterial>(app: &mut App) {
+    // Headless asset apps may omit the native renderer plugins. A configuration-only
+    // app may omit AssetPlugin too; installing the capability must still be possible.
+    if app.world().contains_resource::<AssetServer>()
+        && !app.world().contains_resource::<Assets<M>>()
+    {
+        app.init_asset::<M>();
+    }
+    app.init_resource::<AnimatedMaterials<M>>()
+        .init_resource::<MaterialUsers<M>>()
+        .add_observer(on_material_insert::<M>)
+        .add_observer(on_material_discard::<M>)
+        .add_systems(
+            PostUpdate,
+            (
+                find_animated_materials::<M>,
+                index_material_users::<M>,
+                animate_materials::<M>,
+            )
+                .chain()
+                .after(gather_animation_changes)
+                .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+        );
+}
+
+fn on_material_insert<M: AnimatedMaterial>(
+    event: On<Insert, MeshMaterial3d<M>>,
+    materials: Query<&MeshMaterial3d<M>>,
+    animated: Res<AnimatedMaterials<M>>,
+    mut index: ResMut<MaterialUsers<M>>,
 ) {
     #[cfg(test)]
     {
@@ -590,9 +670,9 @@ fn on_material_insert(
     }
 }
 
-fn on_material_discard(
-    event: On<Discard, MeshMaterial3d<StandardMaterial>>,
-    mut index: ResMut<MaterialUsers>,
+fn on_material_discard<M: AnimatedMaterial>(
+    event: On<Discard, MeshMaterial3d<M>>,
+    mut index: ResMut<MaterialUsers<M>>,
 ) {
     #[cfg(test)]
     {
@@ -601,10 +681,10 @@ fn on_material_discard(
     index.remove(event.entity);
 }
 
-fn index_material_users(
-    materials: Query<(Entity, &MeshMaterial3d<StandardMaterial>)>,
-    mut animated: ResMut<AnimatedStandardMaterials>,
-    mut index: ResMut<MaterialUsers>,
+fn index_material_users<M: AnimatedMaterial>(
+    materials: Query<(Entity, &MeshMaterial3d<M>)>,
+    mut animated: ResMut<AnimatedMaterials<M>>,
+    mut index: ResMut<MaterialUsers<M>>,
 ) {
     if animated.dirty_users.is_empty() {
         return;
@@ -632,21 +712,26 @@ fn index_material_users(
 
 /// Resolve only after both the asset path and the loaded material exist. A later
 /// LoadedWithDependencies event retries an Added event that arrived too early.
-fn find_animated_standard_materials(
-    mut events: MessageReader<AssetEvent<StandardMaterial>>,
+fn find_animated_materials<M: AnimatedMaterial>(
+    mut events: MessageReader<AssetEvent<M>>,
     asset_server: Res<AssetServer>,
-    standard: Res<Assets<StandardMaterial>>,
+    standard: Res<Assets<M>>,
     registry: Option<Res<MaterialAnimationRegistry>>,
-    mut animated: ResMut<AnimatedStandardMaterials>,
+    changes: Option<Res<AnimationChanges>>,
+    mut animated: ResMut<AnimatedMaterials<M>>,
 ) {
     if let Some(registry) = registry.as_deref() {
         // Omitted labels do not emit an asset event while a strong handle survives.
         // Resolve only journaled paths; empty settled frames visit no assets or entities.
-        for path in registry.take_changes() {
-            if let Some(handle) = asset_server.get_handle::<StandardMaterial>(path.clone()) {
+        for path in changes
+            .as_deref()
+            .into_iter()
+            .flat_map(|changes| &changes.0)
+        {
+            if let Some(handle) = asset_server.get_handle::<M>(path.clone()) {
                 animated.register(
                     handle.id(),
-                    Some(&path),
+                    Some(path),
                     standard.get(handle.id()),
                     Some(registry),
                 );
@@ -673,14 +758,14 @@ fn find_animated_standard_materials(
 
 /// Touch only animated assets and their indexed users. Invisible materials retain
 /// their last value and catch up to the clock when they become visible.
-fn animate_materials(
+fn animate_materials<M: AnimatedMaterial>(
     time: Res<Time>,
-    mut standard: ResMut<Assets<StandardMaterial>>,
-    mut animated: ResMut<AnimatedStandardMaterials>,
-    index: Res<MaterialUsers>,
+    mut standard: ResMut<Assets<M>>,
+    mut animated: ResMut<AnimatedMaterials<M>>,
+    index: Res<MaterialUsers<M>>,
     visibility: Query<&ViewVisibility>,
 ) {
-    let AnimatedStandardMaterials {
+    let AnimatedMaterials {
         animated,
         own_modified,
         ..
@@ -693,7 +778,7 @@ fn animate_materials(
         // Check before visiting users and before acquiring a mutable asset.
         // Paused clocks, completed Clamp, STEP plateaus and constant channels
         // neither emit Modified nor visit entity visibility while settled.
-        if material.uv_transform == transform {
+        if material.standard().uv_transform == transform {
             continue;
         }
         let visible = index.materials.get(id).is_some_and(|users| {
@@ -705,7 +790,7 @@ fn animate_materials(
             continue;
         }
         if let Some(mut material) = standard.get_mut(*id) {
-            material.uv_transform = transform;
+            material.standard_mut().uv_transform = transform;
             own_modified.insert(*id);
         }
     }
@@ -868,9 +953,16 @@ mod tests {
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<AnimatedStandardMaterials>()
             .init_resource::<MaterialUsers>()
-            .add_observer(on_material_insert)
-            .add_observer(on_material_discard)
-            .add_systems(Update, (index_material_users, animate_materials).chain());
+            .add_observer(on_material_insert::<StandardMaterial>)
+            .add_observer(on_material_discard::<StandardMaterial>)
+            .add_systems(
+                Update,
+                (
+                    index_material_users::<StandardMaterial>,
+                    animate_materials::<StandardMaterial>,
+                )
+                    .chain(),
+            );
         let animated = app
             .world_mut()
             .resource_mut::<Assets<StandardMaterial>>()
@@ -1065,7 +1157,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<StandardMaterial>()
             .init_resource::<AnimatedStandardMaterials>()
-            .add_systems(Update, find_animated_standard_materials);
+            .add_systems(Update, find_animated_materials::<StandardMaterial>);
         for unused in [false, true] {
             let handle = app
                 .world_mut()
@@ -1098,9 +1190,9 @@ mod tests {
         app.init_resource::<Assets<StandardMaterial>>()
             .init_resource::<MaterialUsers>()
             .init_resource::<AnimatedStandardMaterials>()
-            .add_observer(on_material_insert)
-            .add_observer(on_material_discard)
-            .add_systems(Update, index_material_users);
+            .add_observer(on_material_insert::<StandardMaterial>)
+            .add_observer(on_material_discard::<StandardMaterial>)
+            .add_systems(Update, index_material_users::<StandardMaterial>);
         let handle = app
             .world_mut()
             .resource_mut::<Assets<StandardMaterial>>()
@@ -1129,9 +1221,16 @@ mod tests {
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<MaterialUsers>()
             .init_resource::<AnimatedStandardMaterials>()
-            .add_observer(on_material_insert)
-            .add_observer(on_material_discard)
-            .add_systems(Update, (index_material_users, animate_materials).chain());
+            .add_observer(on_material_insert::<StandardMaterial>)
+            .add_observer(on_material_discard::<StandardMaterial>)
+            .add_systems(
+                Update,
+                (
+                    index_material_users::<StandardMaterial>,
+                    animate_materials::<StandardMaterial>,
+                )
+                    .chain(),
+            );
         let handle = app
             .world_mut()
             .resource_mut::<Assets<StandardMaterial>>()
@@ -1498,3 +1597,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod load_tests;
