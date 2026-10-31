@@ -22,6 +22,7 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{AssetCatalog, CellKey, CellPayload, DatabaseRequest, WorldDatabase},
+        water::{FlatWater, FlatWaterBody},
     },
 };
 use bevy::{
@@ -1502,7 +1503,7 @@ fn spawn_cell(
     terrain_physics: bool,
     schedule_scenes: bool,
     payload: CellPayload,
-    terrain: Option<TerrainSnapshot>,
+    mut terrain: Option<TerrainSnapshot>,
     merged: Option<MergedSpawn>,
     model_sequence: &mut u64,
     profiler: &mut ProfilingState,
@@ -1520,6 +1521,11 @@ fn spawn_cell(
         CellKey::Exterior { grid_x, grid_y, .. } => Some(IVec2::new(grid_x, grid_y)),
         CellKey::Interior(_) => None,
     };
+    // The merged mesh may have welded edges different from the cached LAND. Query shorelines
+    // against the height field actually drawn, while keeping the cache's CELL/WRLD water data.
+    if let (Some(terrain), Some(merged)) = (&mut terrain, &merged) {
+        terrain.heights = crate::terrain_merge::mesh::cell_to_grid(&merged.cell)?.0;
+    }
     // The merged cell's one mesh and its one collider, built from the same buffers.
     let merged_cell = merged
         .map(|spawn| {
@@ -1657,15 +1663,12 @@ fn spawn_cell(
                     ));
                 }
             }
-            if let Some(height) = terrain
-                .water_height
-                .filter(|height| height.is_finite() && height.abs() < 1.0e7)
-            {
+            if let Some(surface) = FlatWater::from_terrain(&terrain) {
                 let water_mesh = meshes.add(Plane3d::default().mesh().size(CELL_SIZE, CELL_SIZE));
-                let water_colors = terrain
+                let water_colors = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_colors(form_id));
-                let flow_normal = terrain
+                let flow_normal = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_flow(form_id))
                     .map(|path| {
@@ -1713,13 +1716,13 @@ fn spawn_cell(
                             }),
                     ),
                 });
-                parent.spawn((
+                let mut water = parent.spawn((
                     Name::new("Water"),
                     Mesh3d(water_mesh),
                     MeshMaterial3d(water_material),
                     Transform::from_translation(Vec3::new(
                         CELL_SIZE * 0.5,
-                        height,
+                        surface.height,
                         -CELL_SIZE * 0.5,
                     )),
                     WaterSurface,
@@ -1730,6 +1733,9 @@ fn spawn_cell(
                     },
                     RenderLayers::layer(WATER_LAYER),
                 ));
+                if let Some(body) = FlatWaterBody::from_terrain(payload.key, &terrain) {
+                    water.insert(body);
+                }
             }
         }
         let references_started = Instant::now();
@@ -7673,6 +7679,65 @@ mod tests {
             .single(app.world())
             .expect("the cell has one water surface");
         assert_eq!(layers, &RenderLayers::layer(WATER_LAYER));
+    }
+
+    #[test]
+    fn flat_water_query_matches_spawned_surface_and_cell_unload() {
+        use crate::world::water::water_at_point;
+
+        let mut app = model_app();
+        app.init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(Update, spawn_test_cell);
+        app.update();
+
+        let point = WorldPosition::from_creation_units(Vec3::new(64.0, 64.0, 100.0));
+        let mut surfaces = app
+            .world_mut()
+            .query_filtered::<(&FlatWaterBody, &Transform, &ChildOf), With<WaterSurface>>();
+        let (body, transform, parent) = surfaces.single(app.world()).unwrap();
+        let root = parent.parent();
+        let sample = water_at_point([body], 60, point).unwrap();
+        assert_eq!(sample.cell_id, 0x02D4E0);
+        assert_eq!(sample.surface.height, transform.translation.y);
+        assert_eq!(sample.surface.water_type_form_id, None);
+
+        // A floating-origin shift changes rendering, not this Creation-space query.
+        app.world_mut()
+            .get_mut::<Transform>(root)
+            .unwrap()
+            .translation += Vec3::new(4096.0, 0.0, -8192.0);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+
+        // Retiring meshes remain queryable until the real unload removes their cell subtree.
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                CellStatus::Retiring { root },
+            );
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+        assert_eq!(unload_all_cells_now(app.world_mut()), 1);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
+        app.update();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
     }
 
     /// A model reference's meshes arrive from the converted glb, frames after the reference itself,
