@@ -5,6 +5,9 @@
 `GlobalAmbientLight` consume the selection in PostUpdate, after scene switches and interactive
 preferences, before sky updates, transform propagation and render extraction. Fixtures retain
 existing settings behavior. Point-light evaluation and color defaults are unchanged.
+Door crossings also run in PostUpdate: `DoorCrossingSet` precedes `EnvironmentSet`, including
+its deferred scene-switch commands, so arrival and failed-landing restoration apply light in
+the same frame as `ActiveSpace` changes.
 
 ## Selection and inheritance
 
@@ -29,6 +32,10 @@ existing settings behavior. Point-light evaluation and color defaults are unchan
   cells or flags select a closed interior with missing authored light, not the previous scene.
   Missing colors become black, missing fade becomes 1, missing angles use identity rotation.
   Exiting restores exterior settings/baseline and the original exterior light rotation.
+- Rejected XCLL blocks below 72 bytes retain their authored length (including zero), select no
+  implicit template groups, and report `MalformedCellXcll` sources with missing lighting fields.
+  An absent XCLL alone selects the LTMP-only policy. Older packs can have already collapsed these
+  cases; recovering that distinction requires regeneration from source, not a runtime guess.
 - Fog and light fade distances are resolved and inspectable, but their renderer consumers remain
   outside this slice. Interior weather fog remains disabled; showing sky alone does not add it.
 

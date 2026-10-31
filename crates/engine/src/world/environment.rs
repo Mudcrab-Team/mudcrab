@@ -69,7 +69,7 @@ pub struct Lighting {
 /// A cell's `XCLL` lighting and `LTMP` template.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CellLighting {
-    /// None when there is no usable XCLL block (an LTMP-only cell).
+    /// Authored XCLL length, including rejected blocks under 72 bytes. None means absent.
     pub xcll_size: Option<u32>,
     pub lighting_template: Option<u32>,
     pub lighting: Lighting,
