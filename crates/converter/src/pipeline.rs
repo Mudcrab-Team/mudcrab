@@ -24,7 +24,7 @@ use crate::{
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
-        albedo::{TerrainAtlas, TerrainTextureCache, TerrainTextures},
+        albedo::{LoadedDefault, TerrainAtlas, TerrainTextureCache, TerrainTextures},
         reuse::{LodManifest, LodReuse},
         terrain::{
             PreparedTerrainChunk, TerrainCellCache, TerrainChunk, exterior_terrain_cells,
@@ -4499,6 +4499,21 @@ async fn compile_lod_chunks_inline(
     };
     let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
     let mut texture_cache = TerrainTextureCache::default();
+    // Entry 0 of the land texture table, resolved exactly as the merged-terrain stage resolves it
+    // (#215), so a quadrant with no BTXT is painted the same texture at every distance. A
+    // configured default that cannot be used falls back to the generated white one, as entry 0
+    // does there, and the report names it instead of skipping the world.
+    let (default_diffuse, default_fallback) =
+        crate::terrain_pipeline::TerrainDefaultDiffuse::resolve(
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+        )?;
+    let (default_textures, default_error) =
+        LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
+    if let Some(reason) = default_fallback.or(default_error) {
+        report.lod_warnings.push(format!(
+            "terrain LOD default land texture falls back to the generated white one: {reason}"
+        ));
+    }
     let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
@@ -4613,6 +4628,7 @@ async fn compile_lod_chunks_inline(
             &connection,
             &staging.join("vfs"),
             &inputs,
+            &default_textures,
             &mut texture_cache,
         ) {
             Ok(textures) => textures,
@@ -6415,7 +6431,7 @@ mod tests {
     #[test]
     fn changed_default_bytes_change_persisted_lod_identity_and_only_defaulted_chunks() {
         use crate::lod::{
-            albedo::TerrainTextures,
+            albedo::{LoadedDefault, TerrainTextures},
             terrain::{TerrainCellInput, terrain_jobs},
         };
         use std::collections::HashMap;
@@ -6433,7 +6449,8 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let vfs = directory.path();
-        let default_path = vfs.join("textures/landscape/dirt02.dds");
+        let default_source = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
+        let default_path = vfs.join(&default_source);
         let grass_path = vfs.join("textures/landscape/grass.dds");
         fs::create_dir_all(default_path.parent().unwrap()).unwrap();
         let grass_bytes = dummy_content::dds::generate(
@@ -6494,7 +6511,13 @@ mod tests {
             )
             .unwrap();
             fs::write(&default_path, default_bytes).unwrap();
-            let textures = TerrainTextures::load(&connection, vfs, &cells).unwrap();
+            let (default, reason) = LoadedDefault::load(
+                &crate::terrain_pipeline::TerrainDefaultDiffuse::Image(default_source.clone()),
+                vfs,
+                &mut crate::lod::albedo::TerrainTextureCache::default(),
+            );
+            assert_eq!(reason, None);
+            let textures = TerrainTextures::load(&connection, vfs, &cells, &default).unwrap();
             let mut chunk_inputs = BTreeMap::new();
             let mut chunk_hashes = Vec::new();
             let mut default_inputs = BTreeMap::new();
