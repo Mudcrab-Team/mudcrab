@@ -101,6 +101,10 @@ pub struct RenderingSettings {
     pub diagnostic_asset_fallbacks: bool,
     /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
     pub visual_profile: usize,
+    /// Exact session-only dimensions from an interactive start shot. A window control edit or
+    /// reset returns to the selected preference size; this value is never serialized.
+    #[serde(skip)]
+    pub window_size_override: Option<(u32, u32)>,
 }
 
 impl Default for RenderingSettings {
@@ -169,6 +173,7 @@ impl Default for RenderingSettings {
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
             visual_profile: config.visual_profile.index(),
+            window_size_override: None,
         }
     }
 }
@@ -697,6 +702,24 @@ pub struct SettingsFile {
 }
 
 impl SettingsFile {
+    pub(crate) fn apply_start_shot(
+        &mut self,
+        settings: &mut RenderingSettings,
+        fov_degrees: f32,
+        dimensions: (u32, u32),
+    ) {
+        settings.fov_degrees = fov_degrees;
+        settings.window_mode = 0;
+        settings.window_size_override = Some(dimensions);
+        if !self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            self.launch_overrides.push("--start-shot".into());
+        }
+    }
+
     pub fn session_only() -> Self {
         Self {
             path: None,
@@ -736,7 +759,17 @@ impl SettingsFile {
     /// launch value stays in effect until the next run.
     fn persisted(&self, settings: &RenderingSettings) -> RenderingSettings {
         let mut persisted = settings.clone();
+        persisted.window_size_override = None;
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
+        if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            persisted.fov_degrees = self.stored.fov_degrees;
+            persisted.window_mode = self.stored.window_mode;
+            persisted.window_size = self.stored.window_size;
+        }
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
         }
@@ -762,7 +795,7 @@ pub(crate) fn prepare_settings(config: &mut EngineConfig) -> (RenderingSettings,
     prepare_settings_at(config, preferences_path())
 }
 
-fn prepare_settings_at(
+pub(crate) fn prepare_settings_at(
     config: &mut EngineConfig,
     path: Option<PathBuf>,
 ) -> (RenderingSettings, SettingsFile) {
@@ -896,6 +929,11 @@ pub(crate) fn apply_render_settings(
 ) {
     if !settings.is_changed() {
         return;
+    }
+    if previous.as_ref().is_some_and(|previous| {
+        previous.window_size != settings.window_size || previous.window_mode != settings.window_mode
+    }) {
+        settings.window_size_override = None;
     }
     let old_mode = current_mode
         .as_deref()
@@ -1052,12 +1090,17 @@ pub(crate) fn apply_render_settings(
                 WindowMode::BorderlessFullscreen(MonitorSelection::Current)
             };
         }
-        if previous
-            .as_ref()
-            .is_none_or(|previous| previous.window_size != settings.window_size)
-        {
-            let (width, height) = WINDOW_SIZES[settings.window_size];
-            window.resolution.set(width as f32, height as f32);
+        if previous.as_ref().is_none_or(|previous| {
+            previous.window_size != settings.window_size
+                || previous.window_size_override != settings.window_size_override
+        }) {
+            if let Some((width, height)) = settings.window_size_override {
+                window.resolution = bevy::window::WindowResolution::new(width, height)
+                    .with_scale_factor_override(1.0);
+            } else {
+                let (width, height) = WINDOW_SIZES[settings.window_size];
+                window.resolution.set(width as f32, height as f32);
+            }
         }
     }
     for mut node in &mut targets.hud {
