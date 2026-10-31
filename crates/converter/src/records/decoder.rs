@@ -51,6 +51,22 @@ thread_local! {
     static FIELD_DECODE_VISITS: std::cell::RefCell<Option<BTreeMap<(u32, String), usize>>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Opt-in catalogue snapshots stay isolated to the regression's own test thread.
+    static DEFERRED_CATALOGUE_BUILDS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Count deferred-recovery catalogue snapshots only while a focused test enables the probe.
+#[cfg(test)]
+fn record_deferred_catalogue_build() {
+    DEFERRED_CATALOGUE_BUILDS.with(|builds| {
+        if let Some(count) = builds.get() {
+            builds.set(Some(count + 1));
+        }
+    });
+}
+
 /// Count actual value-decoder entries only while a focused test enables the probe.
 #[cfg(test)]
 fn record_decode_visit(field: &FieldSchema, diagnostics: &PluginDiagnostics) {
@@ -1621,7 +1637,7 @@ fn array(
         }
         _ => return Err(format!("unsupported array count rule {kind}")),
     };
-    if count > 1_000_000 {
+    if count > super::schema_format::MAX_ARRAY_ELEMENTS {
         return Err("array exceeds one million elements".into());
     }
     if count
@@ -1697,11 +1713,15 @@ fn alternate_textures(
         let end = position
             .checked_add(size)
             .ok_or("alternate texture name overflow")?;
-        let name = decode_string(
-            bytes
-                .get(position..end)
-                .ok_or("truncated alternate texture name")?,
-        );
+        let name_bytes = bytes
+            .get(position..end)
+            .ok_or("truncated alternate texture name")?;
+        // The counted name is NUL-terminated inside its declared length.
+        let name_end = name_bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(name_bytes.len());
+        let name = decode_string(&name_bytes[..name_end]);
         position = end;
         let link = remap(read_u32(position)?, context, true, diagnostics)?;
         canonical[position..position + 4].copy_from_slice(&link.to_le_bytes());
@@ -2788,14 +2808,14 @@ fn verify_deferred_source(
 /// Change the exact physical occurrence while retaining its native source metadata.
 fn set_deferred_history(
     result: &mut ReadResult,
+    history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     accepted: bool,
     reason: String,
 ) {
-    if let Some(entry) = result.history.iter_mut().find(|entry| {
-        entry.plugin_index == record.load_order
-            && entry.source_record_offset == record.source_record_offset
-    }) {
+    if let Some(&position) = history_index.get(&(record.load_order, record.source_record_offset))
+        && let Some(entry) = result.history.get_mut(position)
+    {
         entry.accepted = accepted;
         entry.reason = Some(reason);
     }
@@ -2804,11 +2824,12 @@ fn set_deferred_history(
 /// Diagnose local candidate failure and revoke that occurrence's earlier admission.
 fn reject_deferred_candidate(
     result: &mut ReadResult,
+    history_index: &HashMap<(u32, u64), usize>,
     record: &DecodedRecord,
     order: &LoadOrder,
     reason: String,
 ) {
-    set_deferred_history(result, record, false, reason.clone());
+    set_deferred_history(result, history_index, record, false, reason.clone());
     let diagnostics = result
         .diagnostics
         .entry(order.names[record.load_order as usize].clone())
@@ -2857,6 +2878,28 @@ pub(crate) fn resolve_deferred(
             .sum::<usize>();
     let mut replay_diagnostics = HashMap::new();
     let mut changed_chains: HashMap<u32, Vec<super::RecordSource>> = HashMap::new();
+    // Only a fallback replaces a record, so the winning-kind map follows each
+    // catalogue mutation instead of being rebuilt at the start of every round.
+    let mut kinds: HashMap<u32, [u8; 4]> = HashMap::new();
+    // History is complete before resolution and only its entries change here, so
+    // one key index serves every acceptance and rejection without rescanning it.
+    let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
+    // A conversion with nothing deferred pays neither pass over its records.
+    if !pending.is_empty() {
+        kinds.extend(
+            result
+                .records
+                .iter()
+                .map(|(&id, record)| (id, record.record_type)),
+        );
+        for (index, entry) in result.history.iter().enumerate() {
+            history_index
+                .entry((entry.plugin_index, entry.source_record_offset))
+                .or_insert(index);
+        }
+        #[cfg(test)]
+        record_deferred_catalogue_build();
+    }
     // Every failure consumes a candidate or finishes its safe prefix. Stable
     // winners visit only their originally deferred leaves once more. A changed
     // winning kind necessarily revisits those leaves against the new catalogue;
@@ -2867,11 +2910,6 @@ pub(crate) fn resolve_deferred(
         if pending.is_empty() {
             break;
         }
-        let kinds: HashMap<_, _> = result
-            .records
-            .iter()
-            .map(|(&id, record)| (id, record.record_type))
-            .collect();
         let ids: Vec<_> = pending.keys().copied().collect();
         let mut recovered = false;
         for id in ids {
@@ -2905,7 +2943,9 @@ pub(crate) fn resolve_deferred(
             });
             let Some(reason) = failure else {
                 replay_diagnostics.insert(id, (baseline, replay));
+                let record_type = record.record_type;
                 result.records.insert(id, record);
+                kinds.insert(id, record_type);
                 continue;
             };
             merge_new_diagnostics(
@@ -2920,7 +2960,7 @@ pub(crate) fn resolve_deferred(
             changed_chains.entry(id).or_default();
             let source = pending.remove(&id).expect("selected deferred source");
             if let Some(mut previous) = predecessors.get_mut(&id).and_then(|chain| chain.pop()) {
-                reject_deferred_candidate(result, &record, order, reason);
+                reject_deferred_candidate(result, &history_index, &record, order, reason);
                 loop {
                     let failure = if !previous.payload_complete {
                         Some("deferred recovery predecessor has incomplete payload".to_owned())
@@ -2932,7 +2972,7 @@ pub(crate) fn resolve_deferred(
                             .map(|error| format!("deferred recovery predecessor unusable: {error}"))
                     };
                     if let Some(reason) = failure {
-                        reject_deferred_candidate(result, &previous, order, reason);
+                        reject_deferred_candidate(result, &history_index, &previous, order, reason);
                         if let Some(earlier) =
                             predecessors.get_mut(&id).and_then(|chain| chain.pop())
                         {
@@ -2943,7 +2983,9 @@ pub(crate) fn resolve_deferred(
                         if record_contains_deferred(&previous) {
                             pending.insert(id, DeferredSource::take(&mut previous));
                         }
+                        let record_type = previous.record_type;
                         result.records.insert(id, previous);
+                        kinds.insert(id, record_type);
                     }
                     break;
                 }
@@ -2989,14 +3031,21 @@ pub(crate) fn resolve_deferred(
                 if let Err(error) = validate(&record) {
                     reject_deferred_candidate(
                         result,
+                        &history_index,
                         &record,
                         order,
                         format!("{reason}; recovered prefix unusable: {error}"),
                     );
                 } else {
-                    set_deferred_history(result, &record, true, reason);
+                    set_deferred_history(result, &history_index, &record, true, reason);
+                    let record_type = record.record_type;
                     result.records.insert(id, record);
+                    kinds.insert(id, record_type);
                 }
+            }
+            // A record rejected without a successor leaves the winning catalogue.
+            if !result.records.contains_key(&id) {
+                kinds.remove(&id);
             }
             recovered = true;
             // A changed kind can affect a previously successful dependent. Restart
@@ -4984,5 +5033,368 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// Counted alternate-texture names end at their first zero like every other
+    /// plugin string, whether or not the counted span includes the terminator.
+    #[test]
+    fn alternate_texture_names_stop_at_the_first_zero() {
+        let schema = Schema::parse(
+            br#"{"version":1,"definitions":{
+                "alternate_textures":{"name":"alternate_textures","kind":"array","decider":"alternate_textures"}},
+                "records":[{"signature":"STAT","fields":[
+                    {"signature":"MODS","definition":"alternate_textures"}]}]}"#,
+        )
+        .unwrap();
+        let prepared = prepare_schema(&schema);
+        let directory = tempfile::tempdir().unwrap();
+        let owner = directory.path().join("Owner.esm");
+        std::fs::write(
+            &owner,
+            replay_probe_record(
+                b"TES4",
+                0,
+                1,
+                &replay_probe_subrecord(
+                    b"HEDR",
+                    &[
+                        1.7f32.to_le_bytes(),
+                        1u32.to_le_bytes(),
+                        0x800u32.to_le_bytes(),
+                    ]
+                    .concat(),
+                ),
+            ),
+        )
+        .unwrap();
+        let order = LoadOrder::read(std::slice::from_ref(&owner)).unwrap();
+        // The first name counts its terminator, the second omits it, and the
+        // third carries bytes after the zero.
+        let names: [&[u8]; 3] = [b"OddName\0", b"Uncounted", b"Cut\0tail"];
+        let mut payload = u32::try_from(names.len()).unwrap().to_le_bytes().to_vec();
+        for (index, name) in names.iter().enumerate() {
+            payload.extend(u32::try_from(name.len()).unwrap().to_le_bytes());
+            payload.extend(*name);
+            payload.extend(0x1401u32.to_le_bytes());
+            payload.extend(u32::try_from(index).unwrap().to_le_bytes());
+        }
+        let scan = ScannedRecord {
+            record_type: *b"STAT",
+            flags: 0,
+            version_control: 0x1357_2468,
+            form_version: 44,
+            header_unknown: 0xA571,
+            source_form_id: 0x1800,
+            cell_form_id: None,
+            worldspace_form_id: None,
+            source_topic_form_id: None,
+            topic_group_offset: None,
+            source_record_offset: 0,
+            payload: replay_probe_subrecord(b"MODS", &payload),
+        };
+        let context = Context {
+            order: &order,
+            plugin_index: 0,
+            localized: false,
+            winning_types: None,
+        };
+        let mut diagnostics = PluginDiagnostics::default();
+        let record =
+            decode_with_prepared(scan, &schema, &prepared, &context, &mut diagnostics).unwrap();
+        let Value::Array(textures) = &record.fields[0].value else {
+            panic!("alternate textures did not decode as an array");
+        };
+        let decoded = textures
+            .iter()
+            .map(|texture| {
+                let Value::Struct(members) = texture else {
+                    panic!("alternate texture is not a struct");
+                };
+                members
+                    .iter()
+                    .find(|(name, _)| name == "name")
+                    .expect("alternate texture name")
+                    .1
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decoded,
+            vec![
+                Value::String("OddName".into()),
+                Value::String("Uncounted".into()),
+                Value::String("Cut".into()),
+            ]
+        );
+    }
+
+    /// A failed replay restarts the pending scan, so the winning-kind catalogue and
+    /// the history keys are built once per resolution instead of once per round.
+    #[test]
+    fn deferred_recovery_builds_the_catalogue_once_per_resolution() {
+        let schema = Schema::parse(
+            br#"{"version":1,"records":[
+                {"signature":"NPC_","fields":[{"signature":"EDID","name":"owner_editor","kind":"zstring"}]},
+                {"signature":"TEST","fields":[
+                    {"signature":"EDID","name":"probe_editor","kind":"zstring"},
+                    {"signature":"COED","name":"probe_ownership","kind":"struct","size":16,"reject_record_on_error":true,"members":[
+                        {"name":"probe_owner","kind":"form_id","targets":["NPC_","FACT"]},
+                        {"name":"probe_deferred","kind":"union","offset":4,"size":4,"decider":"inventory_owner_condition","fields":[
+                            {"name":"unused","kind":"bytes","size":4},
+                            {"name":"global","kind":"form_id","size":8,"targets":["GLOB"]},
+                            {"name":"rank","kind":"i32"}]},
+                        {"name":"probe_later","kind":"form_id","offset":8,"targets":["NPC_"]},
+                        {"name":"probe_weight","kind":"f32","offset":12}]}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Owner.esm");
+        let ownership = |owner: u32| {
+            [
+                owner.to_le_bytes(),
+                0u32.to_le_bytes(),
+                0u32.to_le_bytes(),
+                0.375f32.to_le_bytes(),
+            ]
+            .concat()
+        };
+        let mut source = replay_probe_record(
+            b"TES4",
+            0,
+            1,
+            &replay_probe_subrecord(
+                b"HEDR",
+                &[
+                    1.7f32.to_le_bytes(),
+                    3u32.to_le_bytes(),
+                    0x800u32.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+        );
+        source.extend(replay_probe_record(
+            b"NPC_",
+            0x1900,
+            0,
+            &replay_probe_subrecord(b"EDID", b"Owner\0"),
+        ));
+        // Stable winners sort first, so every failing round re-replays them.
+        let stable_count = 10u32;
+        for index in 0..stable_count {
+            let payload = [
+                replay_probe_subrecord(b"EDID", format!("Stable{index}\0").as_bytes()),
+                replay_probe_subrecord(b"COED", &ownership(0)),
+            ]
+            .concat();
+            source.extend(replay_probe_record(b"TEST", 0x1800 + index, 0, &payload));
+        }
+        let failing_count = 40u32;
+        let first_failing = 0x1810;
+        for index in 0..failing_count {
+            let payload = [
+                replay_probe_subrecord(b"EDID", format!("Failing{index}\0").as_bytes()),
+                replay_probe_subrecord(b"COED", &ownership(0x1900)),
+            ]
+            .concat();
+            source.extend(replay_probe_record(
+                b"TEST",
+                first_failing + index,
+                0,
+                &payload,
+            ));
+        }
+        std::fs::write(&path, &source).unwrap();
+        let paths = vec![path];
+        let order = LoadOrder::read(&paths).unwrap();
+        DEFERRED_CATALOGUE_BUILDS.with(|builds| builds.set(Some(0)));
+        let result = super::super::read_plugins_with_validation_and_observer_with_schema(
+            &paths,
+            &order,
+            &schema,
+            |_| Ok(()),
+            |_| {},
+        )
+        .unwrap();
+        let builds = DEFERRED_CATALOGUE_BUILDS.with(|builds| builds.take().unwrap());
+        assert_eq!(
+            builds, 1,
+            "deferred recovery rebuilt the winning catalogue once per failed round"
+        );
+        assert_eq!(
+            result.records.len(),
+            (stable_count + failing_count + 1) as usize
+        );
+        for index in 0..stable_count {
+            let record = &result.records[&(0x1800 + index)];
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .map(|field| field.signature)
+                    .collect::<Vec<_>>(),
+                vec![*b"EDID", *b"COED"]
+            );
+            assert!(!record_contains_deferred(record));
+        }
+        for index in 0..failing_count {
+            let id = first_failing + index;
+            let record = &result.records[&id];
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .map(|field| field.signature)
+                    .collect::<Vec<_>>(),
+                vec![*b"EDID"],
+                "the mandatory anchor is omitted from {id:08X}"
+            );
+            assert_eq!(record.rejected_fields, vec![*b"COED"]);
+            let history = result
+                .history
+                .iter()
+                .find(|entry| entry.form_id == Some(id) && entry.record_type == *b"TEST")
+                .expect("recovered occurrence history");
+            assert!(history.accepted, "recovered winner {id:08X} is admitted");
+            assert!(
+                history
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("deferred recovery omitted COED")),
+                "recovered winner {id:08X} records its omission"
+            );
+        }
+    }
+
+    /// A winner rejected without a successor leaves the winning-kind catalogue
+    /// before the next replay, so a dependent naming it no longer selects the
+    /// alternative its former kind implied.
+    #[test]
+    fn deferred_recovery_drops_a_removed_winner_before_its_dependents_replay() {
+        let ownership = r#"{"signature":"COED","name":"probe_ownership","kind":"struct","size":16,"reject_record_on_error":true,"members":[
+                        {"name":"probe_owner","kind":"form_id","targets":["NPC_","FACT"]},
+                        {"name":"probe_deferred","kind":"union","offset":4,"size":4,"decider":"inventory_owner_condition","fields":[
+                            {"name":"unused","kind":"bytes","size":4},
+                            {"name":"global","kind":"form_id","size":8,"targets":["GLOB"]},
+                            {"name":"rank","kind":"i32"}]},
+                        {"name":"probe_later","kind":"form_id","offset":8,"targets":["NPC_"]},
+                        {"name":"probe_weight","kind":"f32","offset":12}]}"#;
+        let schema = Schema::parse(
+            format!(
+                r#"{{"version":1,"records":[
+                {{"signature":"NPC_","fields":[{{"signature":"EDID","name":"owner_editor","kind":"zstring"}},{ownership}]}},
+                {{"signature":"TEST","fields":[{{"signature":"EDID","name":"probe_editor","kind":"zstring"}},{ownership}]}}
+            ]}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Owner.esm");
+        let coed = |owner: u32| {
+            replay_probe_subrecord(
+                b"COED",
+                &[
+                    owner.to_le_bytes(),
+                    0u32.to_le_bytes(),
+                    0u32.to_le_bytes(),
+                    0.375f32.to_le_bytes(),
+                ]
+                .concat(),
+            )
+        };
+        let mut source = replay_probe_record(
+            b"TES4",
+            0,
+            1,
+            &replay_probe_subrecord(
+                b"HEDR",
+                &[
+                    1.7f32.to_le_bytes(),
+                    3u32.to_le_bytes(),
+                    0x800u32.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+        );
+        let anchor = 0x1900;
+        let removed = 0x1820;
+        let dependent = 0x1830;
+        source.extend(replay_probe_record(
+            b"NPC_",
+            anchor,
+            0,
+            &replay_probe_subrecord(b"EDID", b"Anchor\0"),
+        ));
+        // An NPC_ owner selects the oversized global alternative, so this winner
+        // fails its replay; it has no predecessor and its prefix is refused below.
+        source.extend(replay_probe_record(
+            b"NPC_",
+            removed,
+            0,
+            &[replay_probe_subrecord(b"EDID", b"Removed\0"), coed(anchor)].concat(),
+        ));
+        // Replayed after the removal, the dependent must see its owner as absent.
+        source.extend(replay_probe_record(
+            b"TEST",
+            dependent,
+            0,
+            &[
+                replay_probe_subrecord(b"EDID", b"Dependent\0"),
+                coed(removed),
+            ]
+            .concat(),
+        ));
+        std::fs::write(&path, &source).unwrap();
+        let paths = vec![path];
+        let order = LoadOrder::read(&paths).unwrap();
+        let result = super::super::read_plugins_with_validation_and_observer_with_schema(
+            &paths,
+            &order,
+            &schema,
+            |record| {
+                let owned = record
+                    .fields
+                    .iter()
+                    .any(|field| field.signature == *b"COED");
+                if record.form_id == removed && !owned {
+                    Err("probe owner needs its ownership".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert!(
+            !result.records.contains_key(&removed),
+            "the refused prefix leaves no winner"
+        );
+        let history = result
+            .history
+            .iter()
+            .find(|entry| entry.form_id == Some(removed))
+            .expect("removed occurrence history");
+        assert!(!history.accepted);
+        assert!(
+            history
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("recovered prefix unusable")),
+            "the removal records why its prefix was refused"
+        );
+        let record = &result.records[&dependent];
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .map(|field| field.signature)
+                .collect::<Vec<_>>(),
+            vec![*b"EDID", *b"COED"],
+            "the dependent replays against the catalogue without its removed owner"
+        );
+        assert!(record.rejected_fields.is_empty());
+        assert!(!record_contains_deferred(record));
     }
 }
