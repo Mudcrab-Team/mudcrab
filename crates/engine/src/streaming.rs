@@ -1820,11 +1820,14 @@ fn spawn_cell(
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
-            if let Some(light) = reference
+            let evaluated_light = reference
                 .light
                 .as_ref()
-                .and_then(|row| crate::lights::point_light(row, reference.light_radius_override))
-            {
+                .map(|row| crate::lights::evaluate_light(row, reference.light_radius_override));
+            if let Some(evaluation) = &evaluated_light {
+                entity.insert(evaluation.clone());
+            }
+            if let Some(light) = evaluated_light.and_then(|evaluation| evaluation.point_light()) {
                 let marker = crate::lights::SkyrimLight {
                     form_id: reference.form_id,
                     cell_id: reference.cell_id,
@@ -8474,6 +8477,11 @@ mod tests {
             radius,
             color,
             flags,
+            fade: None,
+            fade_status: None,
+            falloff: None,
+            reference_data: None,
+            radius_status: None,
         }
     }
 
@@ -9827,13 +9835,10 @@ mod tests {
         let (light_entity, light, marker) = lights[0];
         assert_eq!(marker.form_id, 0x100);
         assert_eq!(marker.cell_id, 99);
-        assert_eq!(
-            light.range, 850.8,
-            "the reference's XRDS radius wins over the record's 256"
-        );
+        assert_eq!(light.range, 1106.8, "signed XRDS adds to the record radius");
         assert_eq!(light.color, Color::srgb_u8(255, 200, 120));
         assert!(
-            (light.intensity - crate::lights::intensity_for_radius(850.8)).abs() < 1.0e3,
+            (light.intensity - crate::lights::intensity_for_radius(1106.8)).abs() < 1.0e3,
             "{}",
             light.intensity
         );

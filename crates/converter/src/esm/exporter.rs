@@ -319,12 +319,17 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a subset export can still insert into it.
     add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
+    add_missing_columns(conn, "lights", &[("fade_status", "INTEGER")])?;
 
     // Optional load-door table (db-schema.md section 17), added the same way.
     super::doors::ensure_table(conn)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a complete export can still insert into it.
-    add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
+    add_missing_columns(
+        conn,
+        "references",
+        &[("emittance_id", "INTEGER"), ("radius_status", "INTEGER")],
+    )?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
     add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;
     add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
@@ -1298,6 +1303,14 @@ fn insert_light(
         .find(b"FNAM")
         .filter(|bytes| bytes.len() >= 4)
         .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte light fade")));
+    // 0 absent, 1 valid finite nonnegative, 2 malformed/unsupported negative.
+    // Do not merge valid zero, missing FNAM and malformed FNAM into one state.
+    let fade_status = match view.find(b"FNAM") {
+        None => 0,
+        Some(bytes) if bytes.len() == 4 && fade.is_some_and(|v| v.is_finite() && v >= 0.0) => 1,
+        Some(_) => 2,
+    };
+    let fade = (fade_status == 1).then_some(fade).flatten();
     // The rest of the 48-byte DATA (xEdit 4.1.5f `wbDefinitionsTES5.pas`, LIGH): time, FOV, near
     // clip, the flicker period and amplitudes, value and weight. The in-house schema accepts only
     // the full 48 bytes, so a shorter DATA leaves them NULL for both readers.
@@ -1322,8 +1335,8 @@ fn insert_light(
             })
     };
     tx.prepare_cached(
-        "INSERT OR REPLACE INTO lights(id, editor_id, radius, color_r, color_g, color_b, flags, falloff, fade, time, field_of_view, near_clip, flicker_period, flicker_intensity_amplitude, flicker_movement_amplitude, value, weight, sound_id, lens_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?.execute(
+        "INSERT OR REPLACE INTO lights(id, editor_id, radius, color_r, color_g, color_b, flags, falloff, fade, time, field_of_view, near_clip, flicker_period, flicker_intensity_amplitude, flicker_movement_amplitude, value, weight, sound_id, lens_id, fade_status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?.execute(
         params![
             form_id,
             view.get_string(b"EDID"),
@@ -1344,6 +1357,7 @@ fn insert_light(
             real(44),
             link(b"SNAM", b"SNDR"),
             link(b"LNAM", b"LENS"),
+            fade_status,
         ],
     )?;
     Ok(())
@@ -1398,16 +1412,19 @@ fn insert_reference_with_canonical_data(
     let local_x = is_exterior.then(|| pos[0] - (pos[0] / CELL_SIZE).floor() * CELL_SIZE);
     let local_y = is_exterior.then(|| pos[1] - (pos[1] / CELL_SIZE).floor() * CELL_SIZE);
     let blob = serialize_subrecords(canonical_subrecords);
-    // `XRDS` is the reference's own radius, in the same Creation units as a
-    // light's `DATA` radius and usually different from it: 10,810 of the
-    // 12,148 `LIGH` references in Skyrim.esm carry one. It rides on glow and beam
-    // references as well, so a projected reference keeps its declared radius.
-    // The engine reads it for light references only, where it overrides the base
-    // light's radius. It is a single little-endian `f32` and may be negative.
+    // XRDS is a signed f32 radius offset. xEdit cce1c424, wbDefinitionsCommon.pas
+    // wbREFRRadiusToStr adds it to LIGH DATA radius when displaying/editing effective range.
+    // Keep the raw offset; the runtime evaluates and bounds the sum separately.
     let radius_override = view
         .find(b"XRDS")
         .filter(|bytes| bytes.len() >= 4)
         .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte XRDS radius")));
+    let radius_status = match view.find(b"XRDS") {
+        None => 0,
+        Some(bytes) if bytes.len() == 4 && radius_override.is_some_and(f32::is_finite) => 1,
+        Some(_) => 2,
+    };
+    let radius_override = (radius_status == 1).then_some(radius_override).flatten();
     let (enable_parent_id, enable_parent_flags) = view
         .find(b"XESP")
         // xEdit 4.1.5f, wbDefinitionsTES5.pas:5156 (wbXESP): FormID, one flags byte, three unused bytes.
@@ -1424,9 +1441,9 @@ fn insert_reference_with_canonical_data(
         .filter(|&id| id != 0);
 
     tx.prepare_cached(
-        "INSERT OR REPLACE INTO \"references\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, data)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?.execute(
-        params![form_id, cell_id, worldspace_id, base_form_id, is_exterior, pos[0], pos[1], pos[2], local_x, local_y, rot[0], rot[1], rot[2], scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, blob],
+        "INSERT OR REPLACE INTO \"references\"(id, cell_id, worldspace_id, base_form_id, is_exterior, pos_x, pos_y, pos_z, local_x, local_y, rot_x, rot_y, rot_z, scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, data, radius_status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?.execute(
+        params![form_id, cell_id, worldspace_id, base_form_id, is_exterior, pos[0], pos[1], pos[2], local_x, local_y, rot[0], rot[1], rot[2], scale, radius_override, header_flags, enable_parent_id, enable_parent_flags, emittance_id, blob, radius_status],
     )?;
     // A subset update can move an existing reference into an interior.
     tx.prepare_cached("DELETE FROM exterior_spatial WHERE id=?1")?

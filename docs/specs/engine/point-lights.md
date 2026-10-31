@@ -11,30 +11,29 @@ Lights are **opt-in**: nothing in this document happens unless the engine is run
 
 ## 1. What is read
 
-Two converter tables carry the data (`docs/specs/converters/db-schema.md`, §5 and §12). The engine
-reads them through the cell query it already runs, so a cell's lights arrive with the cell's
-references:
+The cell query joins `lights` to the reference's canonical winning base record. It reads radius,
+RGB, flags, FNAM fade/status and DATA falloff. `references.radius_override` retains the signed raw
+XRDS offset; `radius_status` distinguishes absent (0), finite (1), and malformed/non-finite (2).
+Despite the historical column name, XRDS is **not an absolute replacement radius**:
 
-| Source | Column | Used as |
-| :--- | :--- | :--- |
-| `lights` (joined on the reference's base record) | `radius` | `PointLight::range` and the intensity's reference distance |
-| `lights` | `color_r`, `color_g`, `color_b` | `PointLight::color`, as sRGB bytes |
-| `lights` | `flags` | whether the light is placed at all (two flag bits; see §3) |
-| `"references"` | `radius_override` | the reference's `XRDS` radius, which wins over the record's |
+```text
+authored_radius = LIGH.DATA.radius + REFR.XRDS (absent offset = 0)
+backend_range = min(authored_radius, 8192), if authored_radius > 0
+```
 
-The reference's `radius_override` is the placement's own size, and 10,810 of the 12,148 `LIGH`
-references in `Skyrim.esm` carry one. An override that is not a positive, finite number is ignored:
-`XRDS` has been seen negative, and a radius is a size, not a switch - the flags carry the on/off
-state - so a nonsense override leaves the record's radius in place rather than leaving the space dark.
-An override above `MAX_RADIUS_OVERRIDE` (8,192 units, two exterior cells) is ignored too: the base
-game's positive overrides run up to 6,919 and then jump to nine outliers (15,967 to 3,736,737) that
-would reach across many cells. The record's own radius is used when the reference has no usable
-override.
+Negative offsets are valid. Zero offset preserves the base radius. A nonpositive sum emits no
+light. An invalid present offset is rejected instead of silently using the base radius. The range
+limit applies to both base-only and offset radii; it does not overwrite the authored result.
 
-Both the table and the column are **probed for** once per connection, when the database worker opens it (`has_lights`, `has_radius_override`),
-so a database converted before lights were exported still loads: every reference then reads as unlit
-and no query fails. The `light` and `light_radius_override` fields of a reference row are `None` for
-an unlit reference.
+The optional `reference_light_data` table projects XLIG size and its four floats: FOV offset, fade
+offset, end-distance cap and shadow-depth bias. Valid shapes are 16/20 bytes. Missing XLIG has no
+row; invalid sizes retain a row with NULL fields, and non-finite floats become NULL individually.
+The canonical archive retains original bytes. These are raw inputs, **not effective multipliers**.
+
+All optional columns/tables are probed once per connection. Older packages still load; missing
+FNAM uses unit fade with a `legacy_fade` disposition. Missing reference projections cannot establish
+that the source lacked XLIG. Reconvert into a separate pack to obtain them; never repair a registered
+pack in place. No schema-version or asset-producer bump: these additive projections follow #278.
 
 ## 2. How a row becomes a light
 
@@ -44,7 +43,7 @@ world with, and `None` otherwise:
 - `range` is the effective radius in Creation units. This engine renders one Creation unit as one
   Bevy world unit, so no conversion is applied.
 - `color` is the record's colour, read as sRGB like every other colour of the game.
-- `intensity` comes from the effective radius (§4).
+- `intensity` comes from unit-fade backend conversion times finite, nonnegative FNAM (§4).
 - `shadow_maps_enabled` is **false**: one cube map per light is unaffordable at 64 lights. Skyrim
   does have shadow-casting lights (the record's shadow flags); honouring them is left for later.
 - the area `radius` stays 0, so there is no oversized specular highlight.
@@ -68,58 +67,73 @@ Format/LIGH"):
 Neither bit is set by any `LIGH` record in the shipped plugins, so skipping them cannot take a light
 out of the game's own world; they exist for mods and for scripts.
 
-## 4. The brightness
+## 4. Evaluation and bounded Bevy compatibility transform
 
-Bevy's point light contributes, at distance `d`,
+`evaluate_light` retains the raw `LightRow`, signed offset, authored sum, backend range, effective
+base fade and dispositions as a `LightEvaluation` component on the reference. Immediate and deferred
+spawning consume the same evaluated `PointLight`. `LightInputCoverage` counts dispositions once per
+spawn, including rejected/zero-light results; reloads count again. Debug logs report cumulative counts.
+Source identity remains the containing reference's form/base IDs, linked to the converter's existing
+records/formid map. This does not add missing field-level contributor history to old packages.
+
+Finite nonnegative FNAM scales luminous power linearly, including valid zero. Missing, malformed,
+non-finite and negative FNAM use unit fade with an explicit legacy/invalid disposition; `fade_status`
+keeps absent, valid and invalid distinct. This is a **compatibility adapter**, supported by Light
+Placer's direct base-fade -> NiLight fade assignment, not instruction-backed retail evaluation of all
+reference/controller inputs. In particular, XLIG's final fade equation is unresolved. Neither
+`FNAM * raw_XLIG_fade` nor an inferred `1.35 + raw_XLIG_fade` is implemented.
+
+Transform identity: `bevy-point-legacy-normalization-v1`:
 
 ```text
-Lout = albedo * NdotL * colour * intensity * window(d) / (4 * PI^2 * d^2)
-window(d) = (1 - (d / range)^4)^2
+legacy_radiance = 12000 / (PI * 2.8) * 10  (frozen b5259d33 input normalization)
+reference_distance = min(backend_range / 2, 256)
+unit_fade_lumens = 4 * PI^2 * legacy_radiance * reference_distance^2 / (225/256)
+intensity = min(unit_fade_lumens * effective_base_fade, f32::MAX)
 ```
 
-The `4*PI^2` is Bevy's, not this engine's: `bevy_pbr/src/render/light.rs` divides a point light's
-intensity by `4*PI` on the CPU (`ExtractedPointLight`) and `Fd_Burley` in
-`bevy_pbr/src/render/pbr_lighting.wgsl` supplies the Lambert `1/PI`. The ambient light contributes
-`albedo * ambient_colour * brightness`, with neither term (`bevy_pbr/src/render/light.rs`,
-`ambient_color: ... * ambient_light.brightness`, and `pbr_ambient.wgsl`).
+The frozen coefficient preserves this checkout's baseline scale; it is not a new dimming control or
+physical unit calibration. It no longer reads `AMBIENT_ILLUMINANCE`, `SUN_ILLUMINANCE` or environment
+state. **The inherited unmeasured normalization remains a legacy fallback.** This slice cannot claim
+to resolve the observed house overbrightness, close #264/#364, or establish a Skyrim rendered ratio.
+The earlier ambient change multiplied configured inputs by 8.526157665637252; that is not a visual ratio.
 
-A converted light is given the intensity that makes the two equal at **half its own radius**, times
-`LIGHT_EXPOSURE`:
+Bevy divides lumens by `4*PI` and its diffuse BRDF supplies `1/PI`. Its attenuation remains
+`window(d)/d²`, with `window(d) = max(1-(d/range)^4,0)^2`. The 256-unit anchor and 8192-unit range
+cap are inherited backend safeguards, not native semantics. The formula matches its stated target
+at half range only at ranges <=512; it does not match Skyrim's whole attenuation curve. Brightness
+above `f32::MAX` is explicitly backend-limited; raw fade/radius remain available for diagnosis.
 
-```text
-intensity = 4 * PI^2 * AMBIENT_ILLUMINANCE * LIGHT_EXPOSURE * (radius/2)^2 / window(radius/2)
-window(radius/2) = (1 - 1/16)^2 = 225/256
-```
+DATA falloff is retained and counted unsupported rather than applied as an invented inverse-square
+exponent. xEdit hides it on ordinary non-shadow point lights; Community Shaders' regular attenuation
+uses `1 - saturate(d/r)^2` without this field. Neither source establishes every retail shadow mode.
+XLIG is retained and counted unsupported even when its fields are zero. Malformed XLIG is counted
+separately. No global ambient policy, interior environment resolver, raw-colour Skyrim profile,
+shadow, flicker, pulse or camera/exposure change is included.
 
-with the constants of `crates/engine/src/lights.rs`:
+## 5. Evidence and remaining gates
 
-| Constant | Value | Meaning |
-| :--- | :--- | :--- |
-| `AMBIENT_ILLUMINANCE` | `160.0` | the brightness the engine's world path inserts into `GlobalAmbientLight` (`crates/engine/src/app.rs`) |
-| `LIGHT_EXPOSURE` | `10.0` | how many times the ambient a light delivers at half its radius |
-| `HALF_RADIUS_ILLUMINANCE` | `4*PI^2 * 160 * 10` = 63165.6 | the delivered illuminance the intensity is solved for |
-| `HALF_RADIUS_WINDOW` | `225/256` | Bevy's range window at half a range (`getRangeFalloff`) |
+Pinned upstream sources (format/community implementation evidence, not a retail measurement):
 
-**Ten is a round default, not a fitted number.** At half its radius a light delivers ten times the
-ambient illuminance, an order of magnitude, so a lamp's pool reads clearly against the room around it.
-It is not fitted to any image, and tuning it is a later pass (§7). The scale is per radius rather than
-per record, so one constant serves a 75-unit Dwarven lamp and a 3300-unit water light alike: every
-light delivers the same surface brightness at half its own reach. A 512-unit torch gets about
-`4.7e9`.
+- xEdit [`cce1c42403b279957e1e78bfe38100b29f39f72c`, wbDefinitionsCommon.pas,
+  `wbREFRRadiusToStr`, lines 5404-5453](https://github.com/TES5Edit/TES5Edit/blob/cce1c42403b279957e1e78bfe38100b29f39f72c/Core/wbDefinitionsCommon.pas#L5404):
+  adds signed XRDS to base radius for display/native values; editing subtracts base radius.
+- Same revision, [`wbDefinitionsTES5.pas`, REFR/XLIG](https://github.com/TES5Edit/TES5Edit/blob/cce1c42403b279957e1e78bfe38100b29f39f72c/Core/wbDefinitionsTES5.pas):
+  four float layout, optional tail, and `Fade 1.35+/-` label. The label does not prove an equation.
+- [CommonLibSSE-NG `b93280e832f263dbef44e44cbe2936622a02f91a`, TESObjectLIGH.h](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESObjectLIGH.h):
+  separate base fade and DATA falloff; its ExtraLightData.h describes reference floats, not evaluation.
+- [Light Placer `6b7c05894de17cb3e7f0b5169e82833c9244e1ed`, LightData.cpp](https://github.com/powerof3/LightPlacer/blob/6b7c05894de17cb3e7f0b5169e82833c9244e1ed/src/LightData.cpp):
+  `GetFade` selects base fade; `UpdateLight` assigns scaled fade to NiLight. This mod bypasses the
+  native placed-reference construction, so it does not establish XLIG precedence or composition.
+- [Community Shaders `e5ae2d0082469f92ac08dda89d230dc2d9328ba0`, Attenuation.hlsli](https://github.com/community-shaders/skyrim-community-shaders/blob/e5ae2d0082469f92ac08dda89d230dc2d9328ba0/features/Light%20Limit%20Fix/Shaders/LightLimitFix/Attenuation.hlsli):
+  ordinary versus inverse-square response. `LightLimitFix.cpp/CreatePointLight` calls the native
+  constructor before reading runtime data; it does not recover the native XLIG equation.
 
-## 5. The 256-unit intensity reference cap
-
-Sizing a light's intensity from its own `radius/2` treats the radius as brightness as well as reach,
-and a `LIGH` radius is only reach. A shipped record shows the size of the error: a radius of 4334 is
-71 times a 512-unit torch's reference radius, so a light sized from its own radius comes out 71 times
-a torch and washes out the space it hangs in.
-
-`INTENSITY_REFERENCE_RADIUS = 256.0` caps the reference distance: a light whose radius is up to
-`2 * 256 = 512` is lit at its own `radius/2`, byte for byte as the formula above, and a bigger light
-is lit at 256 units whatever its radius. The big light keeps its whole `range`, so it still *reaches*
-as far as the record says; what it loses is a brightness that grows with the square of that reach.
-512 units is the widest common `LIGH` radius, which is what makes the cap invisible to every ordinary
-torch, lamp and brazier.
+Required next evidence: version/hash-scoped native `CreatePointLight` dataflow and controlled radius,
+FNAM, XLIG and falloff probes; independent attenuation/unit measurements; fixed-camera interior
+comparison after the separate environment resolver lands. Tests prove source sensitivity, storage,
+explicit fallback/limit behavior and the actual CPU consumer, not native rendering, performance or
+Skyrim parity. The frozen normalization must be replaced only with that evidence.
 
 ## 6. The budget: 64 enabled lights
 
@@ -148,15 +162,8 @@ every frame.
 exactly as it did before this feature, and the acceptance, profiling and benchmark baselines that
 `scripts/phase2-*.ps1` take do not move.
 
-## 8. What is left for later
+## 8. Scope limits
 
-- **Tuning.** `LIGHT_EXPOSURE` is a documented round default; the exact value belongs with a
-  comparison of rendered frames, as does any per-space ambient.
-- **Skyrim's own attenuation.** The record's exponent column is published but not read, and Bevy's
-  inverse-square curve is used instead of the game's own falloff curve.
-- **Fade and flicker.** The converter publishes the `FNAM` fade and, since #269, the `DATA` time
-  field, flicker period and amplitudes, the `FOV` cone and the near clip in `lights`
-  (`db-schema.md` §12). The engine reads none of them: a converted torch burns steadily and lights
-  in every direction.
-- **Shadows.** Off for every converted light; a light therefore also lights the far side of the wall
-  it is mounted on.
+Native attenuation/units, XLIG evaluation, shadow modes, cone/near clip, flicker/pulse and full raw
+colour/exposure handling remain open under #133/#264/#364. The legacy normalization is visible and
+bounded, not qualified as a native solution. Interior environment selection is separately owned.
