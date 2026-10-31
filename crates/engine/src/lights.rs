@@ -689,11 +689,9 @@ mod tests {
         );
     }
 
-    /// The reference's `XRDS` radius replaces the record's, and the intensity scale has to follow
-    /// it: most `LIGH` references carry one (10,810 of the 12,148 in `Skyrim.esm`), and using the
-    /// record default would light them at the wrong size.
+    /// Signed XRDS adds to the base radius; negative offsets shrink rather than disable it.
     #[test]
-    fn a_reference_radius_override_replaces_the_record_radius() {
+    fn a_reference_radius_offset_adds_to_the_record_radius() {
         let record = light_row(256.0, 0);
         let overridden = point_light(&record, Some(850.8)).unwrap();
         assert_eq!(overridden.range, 1106.8);

@@ -154,7 +154,18 @@ fn signed_offsets_zero_and_backend_limits_survive_storage() {
         assert_eq!(evaluated.backend_limited, offset == 20_000.0);
     }
     for offset in [-512.0, -1024.0, f32::NAN, f32::INFINITY] {
-        let evaluated = consume(&records(1.0, 1.0, offset), false);
+        // The procedural writer rejects non-finite radii. Inject malformed raw fields after
+        // parsing, as the malformed FNAM cases do, so they reach storage and the consumer.
+        let mut source = records(1.0, 1.0, if offset.is_finite() { offset } else { 0.0 });
+        if !offset.is_finite() {
+            let field = light_reference(&mut source)
+                .subrecords
+                .iter_mut()
+                .find(|(tag, _)| tag == b"XRDS")
+                .unwrap();
+            field.1 = offset.to_le_bytes().to_vec();
+        }
+        let evaluated = consume(&source, false);
         assert!(evaluated.point_light().is_none());
         assert_eq!(evaluated.invalid_radius, !offset.is_finite());
     }

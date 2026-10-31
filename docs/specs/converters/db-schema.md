@@ -943,7 +943,7 @@ row either - there would be no mesh to draw.
 
 A reference that places a light usually carries a signed `XRDS` radius offset, stored in
 `references.radius_override` (10,810 of the 12,148 `LIGH` references in
-`Skyrim.esm`), which overrides the base record's radius for that placement.
+`Skyrim.esm`). Add this signed offset to the base radius for that placement.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lights (
