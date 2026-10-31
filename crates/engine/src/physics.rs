@@ -571,11 +571,11 @@ impl Plugin for PlayerControlsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                // Both hold release and movement pause while the destination is unloaded or
-                // gameplay input belongs to the console/settings menu.
+                // Input stays paused throughout a crossing. Placement and gravity settle behind
+                // black once destination assets are ready, before the crossing may fade in.
                 (release_walk_spawn_hold, walk_movement_system)
                     .chain()
-                    .run_if(crate::door_crossing::no_door_crossing)
+                    .run_if(crate::door_crossing::walk_physics_allowed)
                     .run_if(console_closed)
                     .before(PhysicsSet::SyncBackend),
             );
@@ -1494,6 +1494,13 @@ pub struct WalkSpawnHold {
     destination: bool,
 }
 
+impl WalkSpawnHold {
+    /// Whether safe placement still owns the walking body.
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
 /// Validated local terrain height for the initial interactive player pose.
 #[derive(Debug, Default, Resource)]
 pub struct WalkSpawnGroundHeight(pub Option<f32>);
@@ -1514,6 +1521,7 @@ fn release_walk_spawn_hold(
     mut player: Query<(Entity, &mut Transform, &Collider), With<PlayerBody>>,
     mut reset: MotionReset,
     mut commands: Commands,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
 ) {
     if !hold.active || *mode != MoveMode::Walk {
         return;
@@ -1564,9 +1572,19 @@ fn release_walk_spawn_hold(
     match result {
         Ok(position) => {
             body.translation = position;
+            // Support from before placement cannot prove the new capsule is grounded.
+            commands
+                .entity(entity)
+                .remove::<KinematicCharacterControllerOutput>();
             status.blocked_reason = None;
         }
         Err(reason) => {
+            // A door owns its bounded rollback/recovery. Do not turn a failed WALK landing
+            // into a successful NOCLIP arrival while the screen is still black.
+            if crossing.is_some_and(|crossing| crossing.is_active()) {
+                status.blocked_reason = Some(reason);
+                return;
+            }
             commands.entity(entity).insert(RigidBodyDisabled);
             *mode = MoveMode::Noclip;
             warn!("WALK collision fallback: {reason}");
@@ -1720,7 +1738,9 @@ pub fn walk_movement_system(
     if hold.as_ref().is_some_and(|hold| hold.active) {
         *state = WalkState::default();
         intent.jump_pressed = false;
-        controller.translation = Some(Vec3::ZERO);
+        // Even a zero move lets Rapier depenetrate an overlapping capsule. Only the bounded
+        // placement search may move a held body; do not run the controller until it succeeds.
+        controller.translation = None;
         return;
     }
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
@@ -1858,6 +1878,7 @@ type TeleportBodyQuery<'w, 's> = Query<
     'w,
     's,
     (
+        Entity,
         &'static mut Transform,
         Option<&'static mut WalkState>,
         Option<&'static mut KinematicCharacterController>,
@@ -1879,6 +1900,7 @@ fn apply_teleport_player(
     mut intent: ResMut<WalkIntent>,
     mut body: TeleportBodyQuery,
     mut camera: Query<&mut Transform, (With<StreamingCamera>, Without<PlayerBody>)>,
+    mut commands: Commands,
 ) {
     let Some(teleport) = teleports.read().last().copied() else {
         return;
@@ -1896,10 +1918,13 @@ fn apply_teleport_player(
     let rotation = Quat::from_euler(EulerRot::YXZ, teleport.yaw, 0.0, 0.0);
     let (body_position, camera_position) = body_and_camera_for_feet(&tuning, teleport.position);
     if *mode == MoveMode::Walk
-        && let Ok((mut transform, state, controller, velocity)) = body.single_mut()
+        && let Ok((entity, mut transform, state, controller, velocity)) = body.single_mut()
     {
         transform.translation = body_position;
         transform.rotation = rotation;
+        commands
+            .entity(entity)
+            .remove::<KinematicCharacterControllerOutput>();
         if let Some(mut state) = state {
             *state = WalkState::default();
         }
