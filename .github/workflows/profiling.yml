@@ -8,18 +8,30 @@ on:
         default: "120"
         required: true
 
+permissions:
+  contents: read
+
+# One campaign at a time: runs share the self-hosted runner's GPU and workspace.
+concurrency:
+  group: self-hosted-gpu
+  cancel-in-progress: false
+
 jobs:
   synthetic-baseline:
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
       - name: Profile synthetic renderer three times
         shell: pwsh
-        run: ./scripts/phase2-profile.ps1 -Scenario synthetic -Repetitions 3 -DurationSeconds ${{ inputs.duration_seconds }}
+        env:
+          PROFILE_DURATION_SECONDS: ${{ inputs.duration_seconds }}
+        run: ./scripts/phase2-profile.ps1 -Scenario synthetic -Repetitions 3 -DurationSeconds $env:PROFILE_DURATION_SECONDS
       - uses: actions/upload-artifact@v4
         with:
           name: phase2-profiling-${{ github.sha }}
