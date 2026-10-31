@@ -12,6 +12,7 @@ const USE_SKY_LIGHTING: u32 = 0x100;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum LightingSource {
     CellXcll,
+    MalformedCellXcll(u32),
     TemplateData(u32),
     TemplateDalc(u32),
     MissingTemplate(Option<u32>),
@@ -22,6 +23,7 @@ pub(crate) enum LightingSource {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct InteriorLighting {
     pub cell_id: u32,
+    pub xcll_size: Option<u32>,
     pub template_id: Option<u32>,
     pub inherit_flags: Option<u32>,
     pub template_only: bool,
@@ -44,6 +46,7 @@ impl EnvironmentCatalog {
         let flags = inherit_flags.unwrap_or(if template_only { 0x7ff } else { 0 });
         let mut result = InteriorLighting {
             cell_id,
+            xcll_size: cell.and_then(|cell| cell.xcll_size),
             template_id,
             inherit_flags,
             template_only,
@@ -65,6 +68,8 @@ impl EnvironmentCatalog {
                         (Some(id), Some(_)) => LightingSource::TemplateData(id),
                         _ => LightingSource::MissingTemplate(template_id),
                     }
+                } else if let Some(size) = result.xcll_size.filter(|size| *size < 72) {
+                    LightingSource::MalformedCellXcll(size)
                 } else if cell.is_some() {
                     LightingSource::CellXcll
                 } else {
@@ -157,12 +162,13 @@ impl Plugin for InteriorEnvironmentPlugin {
             PostUpdate,
             apply_environment
                 .in_set(EnvironmentSet)
+                .after(crate::door_crossing::DoorCrossingSet)
                 .before(TransformSystems::Propagate),
         );
     }
 }
 
-/// Runs after scene switches and preference writes in Update, before sky and render extraction.
+/// Runs after Update preferences and queued PostUpdate door switches, before sky and extraction.
 /// RGB preferences remain exterior overrides; interior authored RGB is not replaced by them.
 fn apply_environment(
     catalog: Res<EnvironmentCatalog>,
@@ -569,6 +575,61 @@ mod tests {
     }
 
     #[test]
+    fn individual_light_inheritance_bits_reach_independent_render_consumers() {
+        let mut catalog = fixture();
+        catalog
+            .cells
+            .get_mut(&10)
+            .unwrap()
+            .lighting
+            .directional_ambient = Some(super::super::DirectionalAmbient {
+            colors: [[255, 0, 0]; 6],
+            ..default()
+        });
+        catalog.templates.get_mut(&20).unwrap().directional_ambient =
+            Some(super::super::DirectionalAmbient {
+                colors: [[0, 255, 0]; 6],
+                ..default()
+            });
+        let (mut app, sun) = app(catalog);
+        for mask in [0, 1, 2, 0x20, 0x40, 0x61, 0x7ff, 0] {
+            app.world_mut()
+                .resource_mut::<EnvironmentCatalog>()
+                .cells
+                .get_mut(&10)
+                .unwrap()
+                .inherit_flags = Some(mask);
+            enter(&mut app, Some(10));
+            assert_eq!(
+                light(&app, sun).color,
+                rgb(if mask & 2 != 0 {
+                    [60, 70, 80]
+                } else {
+                    [210, 211, 212]
+                })
+            );
+            assert_eq!(
+                light(&app, sun).illuminance,
+                if mask & 0x40 != 0 { 9_000.0 } else { 3_000.0 }
+            );
+            let ambient = app
+                .world()
+                .resource::<GlobalAmbientLight>()
+                .color
+                .to_linear();
+            assert_eq!(ambient.red, if mask & 1 != 0 { 0.0 } else { 1.0 });
+            assert_eq!(ambient.green, if mask & 1 != 0 { 1.0 } else { 0.0 });
+            let expected_direction = if mask & 0x20 != 0 {
+                Vec3::new(0.0, -60f32.to_radians().sin(), -60f32.to_radians().cos())
+            } else {
+                Vec3::new(-30f32.to_radians().cos(), -0.5, 0.0)
+            };
+            let direction = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
+            assert!((direction - expected_direction).length() < 1e-5);
+        }
+    }
+
+    #[test]
     fn show_sky_and_use_sky_lighting_are_independent_runtime_choices() {
         let (mut app, sun) = app(fixture());
         for (cell, sky, sky_lighting) in [
@@ -729,6 +790,210 @@ mod plugin_tests {
             observed.push(app.world().resource::<GlobalAmbientLight>().color);
         }
         assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn absent_and_malformed_xcll_do_not_select_the_same_template_lighting() {
+        use converter::config::RecordReader;
+
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("Base.esm");
+            let mut data = [0u8; 92];
+            data[0..3].copy_from_slice(&[255, 0, 0]);
+            data[4..7].copy_from_slice(&[64, 96, 128]);
+            data[28..32].copy_from_slice(&0.5f32.to_le_bytes());
+            for face in data[40..64].chunks_exact_mut(4) {
+                face[..3].copy_from_slice(&[255, 0, 0]);
+            }
+            let template = group(
+                0,
+                u32::from_le_bytes(*b"LGTM"),
+                &record(b"LGTM", 0x800, &sub(b"DATA", &data)),
+            );
+            let mut cells = Vec::new();
+            for (index, size) in [None, Some(0), Some(71), Some(72), Some(92)]
+                .into_iter()
+                .enumerate()
+            {
+                let mut payload = [
+                    sub(b"DATA", &1u16.to_le_bytes()),
+                    sub(b"LTMP", &0x800u32.to_le_bytes()),
+                ]
+                .concat();
+                if let Some(size) = size {
+                    payload.extend(sub(b"XCLL", &data[..size]));
+                }
+                cells.extend(record(b"CELL", 0x801 + index as u32, &payload));
+            }
+            cells.extend(record(
+                b"CELL",
+                0x806,
+                &[sub(b"DATA", &[1, 0]), sub(b"XCLL", &data[..71])].concat(),
+            ));
+            let cells = group(
+                0,
+                u32::from_le_bytes(*b"CELL"),
+                &group(2, 0, &group(3, 0, &cells)),
+            );
+            std::fs::write(&path, [header(true), template, cells].concat()).unwrap();
+            let database = root.path().join("world.db");
+            converter::esm::EsmParser::convert_plugins_with_reader(
+                &[path],
+                &database,
+                reader,
+                root.path(),
+            )
+            .unwrap();
+            let catalog = EnvironmentCatalog::open(&database).unwrap();
+            for (index, size) in [None, Some(0), Some(71), Some(72), Some(92)]
+                .into_iter()
+                .enumerate()
+            {
+                let id = 0x801 + index as u32;
+                assert_eq!(catalog.cell_lighting(id).unwrap().xcll_size, size);
+                assert_eq!(catalog.resolve_interior(id).template_only, size.is_none());
+            }
+            assert_eq!(catalog.cell_lighting(0x806).unwrap().xcll_size, Some(71));
+            let (mut app, sun) = super::tests::app(catalog);
+            for cell in [0x801, 0x802, 0x803, 0x804, 0x805, 0x806, 0x801] {
+                super::tests::enter(&mut app, Some(cell));
+                let selected = app
+                    .world()
+                    .resource::<SceneEnvironment>()
+                    .interior
+                    .as_ref()
+                    .unwrap();
+                let malformed = matches!(cell, 0x802 | 0x803 | 0x806);
+                assert_eq!(
+                    selected.sources["directional"],
+                    if cell == 0x801 {
+                        LightingSource::TemplateData(0x800)
+                    } else if malformed {
+                        LightingSource::MalformedCellXcll(if cell == 0x802 { 0 } else { 71 })
+                    } else {
+                        LightingSource::CellXcll
+                    }
+                );
+                assert_eq!(selected.missing.contains(&"directional"), malformed);
+                assert_eq!(
+                    super::tests::light(&app, sun).color.to_linear(),
+                    if malformed {
+                        Color::BLACK
+                    } else {
+                        rgb([64, 96, 128])
+                    }
+                    .to_linear()
+                );
+                assert_eq!(
+                    app.world()
+                        .resource::<GlobalAmbientLight>()
+                        .color
+                        .to_linear(),
+                    if malformed {
+                        Color::BLACK
+                    } else {
+                        rgb([255, 0, 0])
+                    }
+                    .to_linear()
+                );
+            }
+            super::tests::enter(&mut app, None);
+            assert_eq!(
+                super::tests::light(&app, sun).color,
+                Color::srgb(0.8, 0.7, 0.6)
+            );
+        }
+    }
+
+    #[test]
+    fn procedural_dalc_overrides_change_ambient_without_replacing_directional_light() {
+        use converter::config::RecordReader;
+
+        for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = ["Base.esm", "Override.esp"].map(|name| root.path().join(name));
+            let mut data = [0u8; 92];
+            data[0..3].copy_from_slice(&[255; 3]);
+            data[4..7].copy_from_slice(&[40, 50, 60]);
+            data[28..32].copy_from_slice(&0.5f32.to_le_bytes());
+            let template = |cube: &[u8]| {
+                group(
+                    0,
+                    u32::from_le_bytes(*b"LGTM"),
+                    &record(
+                        b"LGTM",
+                        0x800,
+                        &[sub(b"DATA", &data), sub(b"DALC", cube)].concat(),
+                    ),
+                )
+            };
+            let mut local = data;
+            local[88..92].copy_from_slice(&0x43u32.to_le_bytes());
+            let cell = record(
+                b"CELL",
+                0x801,
+                &[
+                    sub(b"DATA", &[1, 0]),
+                    sub(b"LTMP", &0x800u32.to_le_bytes()),
+                    sub(b"XCLL", &local),
+                ]
+                .concat(),
+            );
+            let cells = group(
+                0,
+                u32::from_le_bytes(*b"CELL"),
+                &group(2, 0, &group(3, 0, &cell)),
+            );
+            std::fs::write(
+                &paths[0],
+                [header(true), template(&[0; 24]), cells].concat(),
+            )
+            .unwrap();
+            let (mut app, sun) = super::tests::app(EnvironmentCatalog::default());
+            for (index, face) in [[0, 255, 0], [0, 0, 0], [255, 0, 0]]
+                .into_iter()
+                .enumerate()
+            {
+                let cube: Vec<_> = (0..6)
+                    .flat_map(|_| [face[0], face[1], face[2], 0])
+                    .collect();
+                std::fs::write(&paths[1], [header(false), template(&cube)].concat()).unwrap();
+                let database = root.path().join(format!("{index}.db"));
+                converter::esm::EsmParser::convert_plugins_with_reader(
+                    &paths,
+                    &database,
+                    reader,
+                    root.path(),
+                )
+                .unwrap();
+                app.insert_resource(EnvironmentCatalog::open(&database).unwrap());
+                super::tests::enter(&mut app, Some(0x801));
+                let selected = app
+                    .world()
+                    .resource::<SceneEnvironment>()
+                    .interior
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    selected.sources["directional_ambient"],
+                    LightingSource::TemplateDalc(0x800)
+                );
+                assert_eq!(
+                    selected.lighting.directional_ambient.unwrap().colors,
+                    [face; 6]
+                );
+                assert_eq!(
+                    app.world()
+                        .resource::<GlobalAmbientLight>()
+                        .color
+                        .to_linear(),
+                    rgb(face).to_linear()
+                );
+                assert_eq!(super::tests::light(&app, sun).color, rgb([40, 50, 60]));
+                assert_eq!(super::tests::light(&app, sun).illuminance, 6_000.0);
+            }
+        }
     }
 
     #[test]
