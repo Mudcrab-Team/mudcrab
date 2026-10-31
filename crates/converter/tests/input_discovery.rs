@@ -1,4 +1,4 @@
-//! Discovery failures must stop conversion before publication.
+//! Inaccessible source descendants are isolated; internal staging failures remain fatal.
 #![cfg(unix)]
 
 use converter::{
@@ -98,7 +98,7 @@ fn assert_discovery_failure(
 }
 
 #[tokio::test]
-async fn unreadable_data_subtree_stops_conversion_and_preserves_published_output() {
+async fn unreadable_data_subtree_is_isolated_unless_fail_fast_is_requested() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path().join("Data");
     let output = directory.path().join("modern");
@@ -111,6 +111,11 @@ async fn unreadable_data_subtree_stops_conversion_and_preserves_published_output
     let unreadable = data.join("scripts/blocked");
     fs::create_dir_all(&unreadable).unwrap();
     fs::write(unreadable.join("hidden.pex"), b"hidden input").unwrap();
+    fs::write(
+        data.join("scripts/good.pex"),
+        dummy_content::pex::minimal("Good").unwrap(),
+    )
+    .unwrap();
     let permissions = fs::metadata(&unreadable).unwrap().permissions();
     let _restore_permissions = RestorePermissions {
         path: &unreadable,
@@ -121,12 +126,43 @@ async fn unreadable_data_subtree_stops_conversion_and_preserves_published_output
         // Privileged runners can bypass Unix permissions.
         return;
     }
-    let (result, events) = run(config).await;
+    config.fail_fast = true;
+    let (result, events) = run(config.clone()).await;
 
     assert_discovery_failure(result, &events, &data, &unreadable);
     assert_eq!(
         fs::read(output.join("conversion-manifest.json")).unwrap(),
         manifest
+    );
+
+    config.fail_fast = false;
+    let (result, events) = run(config).await;
+    let report = result.unwrap();
+    assert!(!report.complete);
+    assert_eq!(report.skipped, 1);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains(&unreadable.display().to_string()))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == ProgressStage::Publishing)
+    );
+    assert!(output.join("scripts/good.luau").is_file());
+    assert!(!output.join("scripts/blocked/hidden.luau").exists());
+    let published: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(published["complete"], false);
+    assert!(
+        published["failures"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|key| key.contains("blocked"))
     );
 }
 
