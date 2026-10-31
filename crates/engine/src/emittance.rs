@@ -77,7 +77,7 @@ type ExternalEmittanceSurfaces<'world, 'state> = Query<
     'state,
     (
         Entity,
-        &'static mut MeshMaterial3d<StandardMaterial>,
+        &'static MeshMaterial3d<StandardMaterial>,
         Option<&'static EmittanceSourceMaterial>,
     ),
     With<ExternalEmittance>,
@@ -111,11 +111,15 @@ fn apply_reference_emittance(
     mut commands: Commands,
     references: EmittingReferences,
     descendants: Query<&Children>,
-    mut surfaces: ExternalEmittanceSurfaces,
+    surfaces: ExternalEmittanceSurfaces,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut cache: ResMut<EmittanceMaterials>,
+    mut variants: (
+        ResMut<EmittanceMaterials>,
+        Option<ResMut<crate::material_animation::AnimatedStandardMaterials>>,
+    ),
     mut material_events: MessageReader<AssetEvent<StandardMaterial>>,
 ) {
+    let (cache, animations) = &mut variants;
     let material_arrived = material_events.read().any(|event| {
         matches!(
             event,
@@ -130,7 +134,7 @@ fn apply_reference_emittance(
         let colour = emittance.0;
         let colour_key = [colour.red, colour.green, colour.blue].map(f32::to_bits);
         for descendant in descendants.iter_descendants(reference) {
-            let Ok((surface, mut material, source)) = surfaces.get_mut(descendant) else {
+            let Ok((surface, material, source)) = surfaces.get(descendant) else {
                 continue;
             };
             let source = match source {
@@ -156,11 +160,15 @@ fn apply_reference_emittance(
                     };
                     let lit = materials.add(lit);
                     cache.0.insert(key, lit.id());
+                    if let Some(animations) = animations.as_deref_mut() {
+                        animations.derive(source.id(), lit.id());
+                    }
                     lit
                 }
             };
             if material.0 != lit {
-                material.0 = lit;
+                // Replacement must notify lifecycle consumers of material ownership.
+                commands.entity(surface).insert(MeshMaterial3d(lit));
             }
         }
         match (missing, awaiting) {
@@ -272,6 +280,41 @@ mod tests {
             glow,
             "the model's material is not changed in place"
         );
+    }
+
+    #[test]
+    fn derived_material_replacement_notifies_lifecycle_consumers_once() {
+        #[derive(Resource, Default)]
+        struct Replaced(Vec<Entity>);
+        let mut app = app();
+        app.init_resource::<Replaced>().add_observer(
+            |event: On<bevy::ecs::lifecycle::Insert, MeshMaterial3d<StandardMaterial>>,
+             mut replaced: ResMut<Replaced>| {
+                replaced.0.push(event.entity);
+            },
+        );
+        let material = glowing(&mut app, LinearRgba::new(3.0, 3.0, 3.0, 1.0));
+        let (_, window, wall) = reference(&mut app, Some([0, 0, 0]), &material);
+        app.world_mut().resource_mut::<Replaced>().0.clear();
+        app.update();
+        assert_eq!(app.world().resource::<Replaced>().0, vec![window]);
+        assert_ne!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(window)
+                .unwrap()
+                .0,
+            material
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(wall)
+                .unwrap()
+                .0,
+            material
+        );
+        app.world_mut().resource_mut::<Replaced>().0.clear();
+        app.update();
+        assert!(app.world().resource::<Replaced>().0.is_empty());
     }
 
     #[test]

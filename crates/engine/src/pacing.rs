@@ -14,11 +14,18 @@
 //! * **Lag at speed** (`--auto-fly-speed`): the horizontal distance from the camera at which each
 //!   model finished loading ([`FlyLag`]). A model that completes close to the camera arrived late.
 
+mod loading_cover;
+#[cfg(test)]
+pub(crate) use loading_cover::teleport_cover_count;
+pub(crate) use loading_cover::{LoadingCover, loading_controls_allowed};
+pub(crate) mod startup;
+
 use crate::{
     app::benchmark_jump_position,
     config::EngineConfig,
     profiling::ProfilingState,
     streaming::{ActiveSpace, RenderOrigin, StreamingMetrics, StreamingWorld, window_center},
+    swap_bridge::{WaitingVisibility, pending_drawn},
     world::{cache::CellCache, components::CELL_SIZE, components::StreamingCamera},
 };
 use bevy::prelude::*;
@@ -35,8 +42,10 @@ pub struct WorldReadyInputs {
     pub window_cells: usize,
     /// Cells of that window resident at full detail.
     pub resident_window_cells: usize,
-    /// Cells of that window that failed to load (map edge, missing data). A failed cell never
-    /// becomes resident and is never retried, so it counts as settled.
+    /// Wanted exterior squares successfully proven to have no cell record.
+    pub absent_window_cells: usize,
+    /// Cells whose full-cell loads failed permanently or exhausted their bounded retries.
+    /// Retryable failures remain pending; terminal failures count as settled and are reported.
     pub failed_window_cells: usize,
     pub loading_cells: usize,
     pub active_requests: usize,
@@ -44,6 +53,23 @@ pub struct WorldReadyInputs {
     pub arming_queue_depth: usize,
     pub pending_asset_instances: usize,
     pub pending_surface_instances: usize,
+    /// Surfaces a view can see that the render world has not confirmed drawn: the
+    /// world is not ready while the ground it shows may be a stand-in or a hole.
+    pub pending_drawn: usize,
+    /// LOD queries submitted but not answered, and LOD chunks requested but not resident: work that
+    /// will still change the frame, so the world is not ready while either is nonzero.
+    pub pending_lod_queries: usize,
+    pub pending_lod_chunks: usize,
+    /// Cluster batches a view wants whose material has not loaded.
+    pub pending_cluster_batches: usize,
+    pub failed_cluster_batches: usize,
+    /// Required owned batches/views without a current drawable render snapshot.
+    pub pending_cluster_drawability: usize,
+    /// Distant stock work and failures from the active providers.
+    pub queued_far_stock_queries: usize,
+    pub pending_far_stock_queries: usize,
+    pub pending_far_stock_qualification: usize,
+    pub failed_far_stock_sources: usize,
 }
 
 impl WorldReadyInputs {
@@ -52,29 +78,54 @@ impl WorldReadyInputs {
     /// becomes resident, so resident plus failed cells must cover the window.
     pub fn is_ready(&self) -> bool {
         self.window_cells > 0
-            && self.resident_window_cells + self.failed_window_cells >= self.window_cells
+            && self.resident_window_cells + self.absent_window_cells + self.failed_window_cells
+                >= self.window_cells
             && self.loading_cells == 0
             && self.active_requests == 0
             && self.arming_queue_depth == 0
             && self.pending_asset_instances == 0
             && self.pending_surface_instances == 0
+            && self.pending_drawn == 0
+            && self.pending_lod_queries == 0
+            && self.pending_lod_chunks == 0
+            && self.pending_cluster_batches == 0
+            && self.failed_cluster_batches == 0
+            && self.pending_cluster_drawability == 0
+            && self.queued_far_stock_queries == 0
+            && self.pending_far_stock_queries == 0
+            && self.pending_far_stock_qualification == 0
+            && self.failed_far_stock_sources == 0
     }
 
     fn from_streaming(
         metrics: &StreamingMetrics,
+        pending_drawn: usize,
         window_cells: usize,
         resident_window_cells: usize,
         failed_window_cells: usize,
+        absent_window_cells: usize,
+        pending_cluster_drawability: usize,
     ) -> Self {
         Self {
             window_cells,
             resident_window_cells,
             failed_window_cells,
+            absent_window_cells,
             loading_cells: metrics.loading_cells,
             active_requests: metrics.active_requests,
             arming_queue_depth: metrics.arming_queue_depth,
             pending_asset_instances: metrics.pending_asset_instances,
             pending_surface_instances: metrics.pending_surface_instances,
+            pending_drawn,
+            pending_lod_queries: metrics.pending_lod_queries,
+            pending_lod_chunks: metrics.pending_lod_chunks,
+            pending_cluster_batches: metrics.pending_cluster_batches,
+            failed_cluster_batches: metrics.failed_cluster_batches,
+            pending_cluster_drawability,
+            queued_far_stock_queries: metrics.queued_far_stock_queries,
+            pending_far_stock_queries: metrics.pending_far_stock_queries,
+            pending_far_stock_qualification: metrics.pending_far_stock_qualification,
+            failed_far_stock_sources: metrics.failed_far_stock_sources,
         }
     }
 }
@@ -414,6 +465,61 @@ pub fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     Vec2::new(a.x - b.x, a.z - b.z).length()
 }
 
+/// Evaluate readiness for the active space using this frame's real pending counters.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn world_ready_at_frame_end(
+    config: &EngineConfig,
+    origin: IVec2,
+    streaming: &StreamingWorld,
+    space: &ActiveSpace,
+    metrics: &StreamingMetrics,
+    camera: Vec3,
+    pending_drawn: usize,
+    gate: Option<&crate::cluster::loading::ClusterLoadingGate>,
+) -> (bool, usize) {
+    let inputs = world_ready_inputs_at_frame_end(
+        config,
+        origin,
+        streaming,
+        space,
+        metrics,
+        camera,
+        pending_drawn,
+        gate,
+    );
+    (inputs.is_ready(), inputs.failed_window_cells)
+}
+
+/// The facts [`world_ready_at_frame_end`] decides on, for a caller that also needs to tell
+/// the exact pending inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn world_ready_inputs_at_frame_end(
+    config: &EngineConfig,
+    origin: IVec2,
+    streaming: &StreamingWorld,
+    space: &ActiveSpace,
+    metrics: &StreamingMetrics,
+    camera: Vec3,
+    pending_drawn: usize,
+    gate: Option<&crate::cluster::loading::ClusterLoadingGate>,
+) -> WorldReadyInputs {
+    let center = window_center(config, camera, origin);
+    let (window_cells, resident, failed, absent) =
+        streaming.active_residency(space, config.worldspace_id, center, config.stream_radius);
+    let pending_cluster_drawability = usize::from(!crate::cluster::loading::ready_for_active(
+        config, space, gate,
+    ));
+    WorldReadyInputs::from_streaming(
+        metrics,
+        pending_drawn,
+        window_cells,
+        resident,
+        failed,
+        absent,
+        pending_cluster_drawability,
+    )
+}
+
 /// The frame delta the loading frame-time windows are measured with: the real wall-clock delta,
 /// never the virtual clock. Bevy clamps `Time<Virtual>` at 250 ms, so a one-second hitch would
 /// otherwise be recorded as 250 ms, which is exactly the stall those windows exist to catch. The
@@ -434,26 +540,51 @@ pub(crate) fn track_world_ready(
     metrics: Res<StreamingMetrics>,
     cache: Res<CellCache>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    waiting: WaitingVisibility,
     mut tracker: ResMut<PacingTracker>,
     mut profiler: ResMut<ProfilingState>,
     // The window frame times come from the real clock; `window_delta_ms` is the one place that
     // choice is made, so it is also the one place a test has to pin.
     real_time: Res<Time<Real>>,
+    mut gate: Option<ResMut<crate::cluster::loading::ClusterLoadingGate>>,
+    startup: Option<Res<startup::StartupLoad>>,
+    (mode, hold): (
+        Option<Res<crate::physics::MoveMode>>,
+        Option<Res<crate::physics::WalkSpawnHold>>,
+    ),
 ) {
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
+    let active_space = space.as_deref().copied().unwrap_or_default();
+    if config.clusters.is_some()
+        && (!tracker.world_ready_reached()
+            || tracker
+                .jump
+                .as_ref()
+                .is_some_and(|jump| jump.latch.latched.is_none()))
+        && let Some(gate) = gate.as_deref_mut()
+    {
+        // Controls and collision placement run before this end-of-streaming
+        // observation. Never latch first-ready using the previous camera pose.
+        gate.observe_loading_pose(&camera, origin.0, active_space);
+    }
     let started = *tracker.started.get_or_insert_with(Instant::now);
-    let center = window_center(&config, camera.translation, origin.0);
-    let (window_cells, resident, failed) = streaming.active_residency(
-        &space.as_deref().copied().unwrap_or_default(),
-        config.worldspace_id,
-        center,
-        config.stream_radius,
+    let (mut ready, failed) = world_ready_at_frame_end(
+        &config,
+        origin.0,
+        &streaming,
+        &active_space,
+        &metrics,
+        camera.translation,
+        pending_drawn(&waiting),
+        gate.as_deref(),
     );
-    let inputs = WorldReadyInputs::from_streaming(&metrics, window_cells, resident, failed);
+    ready &= config.clusters.is_none()
+        || crate::cluster::loading::physics_settled(mode.as_deref(), hold.as_deref());
+    // Admission begins the fade independently; measurement starts after the cover clears.
+    ready &= startup.as_deref().is_none_or(|load| !load.cover_pending());
     let elapsed_millis = started.elapsed().as_secs_f64() * 1000.0;
-    let ready = inputs.is_ready();
     // Frame-time windows are for benchmark runs; an ordinary session runs unbounded.
     tracker.record_frame_windows = config.is_benchmark_run();
     tracker.window_failed_cells = failed;
@@ -467,6 +598,13 @@ pub(crate) fn track_world_ready(
     if let Some(grid) = config.benchmark_jump.filter(|_| jump_now) {
         let position = benchmark_jump_position(&config, &cache, origin.0, grid);
         camera.translation = position;
+        if config.clusters.is_some()
+            && let Some(gate) = gate.as_deref_mut()
+        {
+            // The benchmark mutation occurs after first-ready's pose observation.
+            // Withdraw that proof immediately, including jumps inside a resident cell.
+            gate.observe_loading_pose(&camera, origin.0, active_space);
+        }
         profiler.event(
             "pacing",
             format!("benchmark_jump_{}_{}", grid.0, grid.1),
@@ -511,13 +649,23 @@ mod tests {
 
     #[test]
     fn each_condition_alone_holds_the_world_back() {
-        let holds_back: [fn(&mut WorldReadyInputs); 7] = [
+        let holds_back: [fn(&mut WorldReadyInputs); 17] = [
             |i| i.resident_window_cells = 24,
             |i| i.loading_cells = 1,
             |i| i.active_requests = 1,
             |i| i.arming_queue_depth = 1,
             |i| i.pending_asset_instances = 1,
             |i| i.pending_surface_instances = 1,
+            |i| i.pending_drawn = 1,
+            |i| i.pending_lod_queries = 1,
+            |i| i.pending_lod_chunks = 1,
+            |i| i.pending_cluster_batches = 1,
+            |i| i.failed_cluster_batches = 1,
+            |i| i.pending_cluster_drawability = 1,
+            |i| i.queued_far_stock_queries = 1,
+            |i| i.pending_far_stock_queries = 1,
+            |i| i.pending_far_stock_qualification = 7,
+            |i| i.failed_far_stock_sources = 1,
             |i| i.window_cells = 0,
         ];
         for (index, hold) in holds_back.iter().enumerate() {
@@ -761,7 +909,7 @@ mod tests {
 
     /// An empty `CellCache`: `track_world_ready` requires the resource, and a run with no jump
     /// configured never reads it. The directory is returned because the map must outlive the app.
-    fn empty_cell_cache() -> (tempfile::TempDir, CellCache) {
+    pub(super) fn empty_cell_cache() -> (tempfile::TempDir, CellCache) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cell_cache.rkyv");
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
@@ -953,6 +1101,515 @@ mod tests {
         assert_eq!(
             horizontal_distance(Vec3::new(0.0, 0.0, 0.0), Vec3::new(3.0, 500.0, -4.0)),
             5.0
+        );
+    }
+    /// "Ready" means drawn, not validated: a surface a view can see that the render
+    /// world has not confirmed drawn holds the mark, so the benchmark does not time a stand-in or a
+    /// hole - and, on its own, nothing else can be the reason.
+    #[test]
+    fn world_ready_waits_for_drawn() {
+        let drawn = ready_inputs();
+        assert!(drawn.is_ready());
+
+        let waiting = WorldReadyInputs {
+            pending_drawn: 1,
+            ..ready_inputs()
+        };
+        assert!(
+            !waiting.is_ready(),
+            "a visible surface the render world has not confirmed drawn holds the world-ready mark"
+        );
+        assert!(
+            WorldReadyInputs {
+                pending_drawn: 0,
+                ..waiting
+            }
+            .is_ready(),
+            "and once it is drawn the mark latches: nothing else about the view changed"
+        );
+    }
+
+    #[test]
+    fn stock_ready_inputs_require_actual_batch_and_draw_completion() {
+        let metrics = StreamingMetrics::default();
+        let ready = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert!(
+            ready.is_ready(),
+            "global legacy terrain readiness is not current-view demand"
+        );
+        let undrawn = WorldReadyInputs::from_streaming(&metrics, 1, 25, 25, 0, 0, 0);
+        assert!(
+            !undrawn.is_ready(),
+            "current-view actual draw readiness remains required"
+        );
+    }
+
+    #[test]
+    fn existing_pending_metrics_block_the_world_ready_mark() {
+        for metrics in [
+            StreamingMetrics {
+                pending_lod_queries: 1,
+                ..default()
+            },
+            StreamingMetrics {
+                pending_lod_chunks: 1,
+                ..default()
+            },
+            StreamingMetrics {
+                pending_cluster_batches: 1,
+                ..default()
+            },
+            StreamingMetrics {
+                failed_cluster_batches: 1,
+                ..default()
+            },
+        ] {
+            let (_cache_directory, cache) = empty_cell_cache();
+            let mut app = thousand_millisecond_frames();
+            let mut streaming = StreamingWorld::default();
+            streaming.set_failed_for_test(crate::world::database::CellKey::Interior(77));
+            app.insert_resource(EngineConfig {
+                stream_radius: 0,
+                ..default()
+            })
+            .insert_resource(ActiveSpace {
+                interior: Some(77),
+                worldspace_id: None,
+            })
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(streaming)
+            .insert_resource(metrics)
+            .insert_resource(cache)
+            .init_resource::<PacingTracker>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, track_world_ready);
+            app.world_mut()
+                .spawn((Transform::default(), StreamingCamera));
+            for _ in 0..3 {
+                app.update();
+            }
+            assert!(
+                app.world()
+                    .resource::<PacingTracker>()
+                    .first_ready
+                    .latched
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_readiness_is_unchanged_by_an_unready_cluster_gate() {
+        let config = EngineConfig {
+            worldspace_id: 42,
+            stream_radius: 0,
+            ..default()
+        };
+        let space = ActiveSpace::default();
+        let mut streaming = StreamingWorld::default();
+        streaming.set_failed_for_test(crate::world::database::CellKey::Exterior {
+            worldspace_id: 42,
+            grid_x: 0,
+            grid_y: 0,
+        });
+        let metrics = StreamingMetrics::default();
+        let gate = crate::cluster::loading::ClusterLoadingGate::default();
+        let inputs = |gate| {
+            world_ready_inputs_at_frame_end(
+                &config,
+                IVec2::ZERO,
+                &streaming,
+                &space,
+                &metrics,
+                Vec3::ZERO,
+                0,
+                gate,
+            )
+        };
+        let ordinary = inputs(None);
+        assert!(ordinary.is_ready());
+        assert_eq!(ordinary.failed_window_cells, 1);
+        assert_eq!(inputs(Some(&gate)), ordinary);
+    }
+
+    #[test]
+    fn absent_window_cells_and_cluster_drawability_are_independent() {
+        let metrics = StreamingMetrics::default();
+        let absent = WorldReadyInputs::from_streaming(&metrics, 0, 25, 24, 0, 1, 0);
+        assert_eq!(absent.absent_window_cells, 1);
+        assert_eq!(absent.failed_window_cells, 0);
+        assert!(absent.is_ready());
+        let waiting = WorldReadyInputs::from_streaming(&metrics, 0, 25, 24, 0, 1, 1);
+        assert_eq!(waiting.absent_window_cells, 1);
+        assert_eq!(waiting.pending_cluster_drawability, 1);
+        assert!(!waiting.is_ready());
+    }
+
+    #[test]
+    fn global_terrain_diagnostic_does_not_block_a_drawn_stock_view() {
+        let mut metrics = StreamingMetrics {
+            pending_cluster_terrain_blocks: 37,
+            ..default()
+        };
+        let ready = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert!(
+            ready.is_ready(),
+            "global legacy terrain readiness is not current-view demand"
+        );
+        metrics.pending_cluster_batches = 1;
+        let waiting = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert!(
+            !waiting.is_ready(),
+            "actual pending cluster batches still hold readiness"
+        );
+        metrics.pending_cluster_batches = 0;
+        metrics.failed_cluster_batches = 1;
+        assert!(!WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0).is_ready());
+        metrics.failed_cluster_batches = 0;
+        let undrawn = WorldReadyInputs::from_streaming(&metrics, 1, 25, 25, 0, 0, 0);
+        assert!(
+            !undrawn.is_ready(),
+            "current-view actual draw readiness remains required"
+        );
+    }
+
+    #[test]
+    fn world_ready_maps_current_distant_stock_work_and_failures() {
+        let metrics = StreamingMetrics {
+            queued_far_stock_queries: 2,
+            pending_far_stock_queries: 3,
+            pending_far_stock_qualification: 7,
+            failed_far_stock_sources: 5,
+            ..default()
+        };
+        let inputs = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert_eq!(inputs.queued_far_stock_queries, 2);
+        assert_eq!(inputs.pending_far_stock_queries, 3);
+        assert_eq!(inputs.pending_far_stock_qualification, 7);
+        assert_eq!(inputs.failed_far_stock_sources, 5);
+        assert!(!inputs.is_ready());
+        assert!(
+            WorldReadyInputs::from_streaming(&StreamingMetrics::default(), 0, 25, 25, 0, 0, 0)
+                .is_ready()
+        );
+    }
+
+    #[test]
+    fn first_ready_waits_for_the_current_owned_view_snapshot() {
+        use crate::cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness};
+        use crate::world::database::CellKey;
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let (_cache_directory, cache) = empty_cell_cache();
+        let mut app = thousand_millisecond_frames();
+        let mut streaming = StreamingWorld::default();
+        streaming.set_failed_for_test(CellKey::Exterior {
+            worldspace_id: 42,
+            grid_x: 0,
+            grid_y: 0,
+        });
+        app.insert_resource(EngineConfig {
+            worldspace_id: 42,
+            stream_radius: 0,
+            clusters: Some("selected".into()),
+            cluster_own_statics: true,
+            ..default()
+        })
+        .insert_resource(ActiveSpace::default())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(streaming)
+        .init_resource::<StreamingMetrics>()
+        .insert_resource(cache)
+        .init_resource::<PacingTracker>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<ClusterLoadingGate>()
+        .add_systems(Update, track_world_ready);
+        app.world_mut()
+            .spawn((Transform::default(), StreamingCamera));
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            !app.world()
+                .resource::<PacingTracker>()
+                .world_ready_reached()
+        );
+        let generation = app.world().resource::<ClusterLoadingGate>().generation();
+        app.world_mut()
+            .resource_mut::<ClusterLoadingGate>()
+            .publish(
+                &package,
+                7,
+                generation,
+                1,
+                std::collections::HashMap::from([(
+                    42,
+                    ClusterWorldReadiness {
+                        applicable_cameras: 1,
+                        needed_batches: 2,
+                        ..default()
+                    },
+                )]),
+            );
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<PacingTracker>()
+                .world_ready_reached()
+        );
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&mut Transform, With<StreamingCamera>>();
+        camera.single_mut(app.world_mut()).unwrap().translation.y += 10.0;
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<PacingTracker>()
+                .world_ready_reached(),
+            "first-ready must invalidate this frame's new pose before reading an old snapshot"
+        );
+        let current = app.world().resource::<ClusterLoadingGate>().generation();
+        assert_ne!(current, generation);
+        app.world_mut()
+            .resource_mut::<ClusterLoadingGate>()
+            .publish(
+                &package,
+                7,
+                current,
+                2,
+                std::collections::HashMap::from([(
+                    42,
+                    ClusterWorldReadiness {
+                        applicable_cameras: 1,
+                        needed_batches: 2,
+                        ..default()
+                    },
+                )]),
+            );
+        app.update();
+        app.update();
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .world_ready_reached()
+        );
+    }
+
+    fn benchmark_pose_app(clusters: bool) -> (tempfile::TempDir, App) {
+        use crate::cluster::loading::ClusterLoadingGate;
+        use crate::world::database::CellKey;
+        let (directory, cache) = empty_cell_cache();
+        let mut app = thousand_millisecond_frames();
+        assert_eq!(
+            crate::streaming::streaming_center(Vec3::new(100.0, 12_345.0, -200.0), IVec2::ZERO),
+            IVec2::ZERO
+        );
+        let root = app.world_mut().spawn_empty().id();
+        let mut streaming = StreamingWorld::default();
+        streaming.set_resident_for_test(
+            CellKey::Exterior {
+                worldspace_id: 42,
+                grid_x: 0,
+                grid_y: 0,
+            },
+            root,
+        );
+        app.insert_resource(EngineConfig {
+            worldspace_id: 42,
+            stream_radius: 0,
+            clusters: clusters.then(|| "selected".into()),
+            cluster_own_statics: clusters,
+            benchmark_jump: Some((0, 0)),
+            ..default()
+        })
+        .insert_resource(ActiveSpace::default())
+        .insert_resource(RenderOrigin(IVec2::ZERO))
+        .insert_resource(streaming)
+        .init_resource::<StreamingMetrics>()
+        .insert_resource(cache)
+        .init_resource::<PacingTracker>()
+        .init_resource::<ProfilingState>()
+        .init_resource::<ClusterLoadingGate>()
+        .add_systems(Update, track_world_ready);
+        app.world_mut().spawn((
+            Transform::from_xyz(100.0, 12_345.0, -200.0),
+            StreamingCamera,
+        ));
+        (directory, app)
+    }
+
+    #[test]
+    fn benchmark_jump_requires_fresh_render_proof_for_its_final_pose() {
+        use crate::cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness};
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let (_cache_directory, mut app) = benchmark_pose_app(true);
+        let publish = |app: &mut App, generation, frame| {
+            assert!(
+                app.world_mut()
+                    .resource_mut::<ClusterLoadingGate>()
+                    .publish(
+                        &package,
+                        7,
+                        generation,
+                        frame,
+                        std::collections::HashMap::from([(
+                            42,
+                            ClusterWorldReadiness {
+                                applicable_cameras: 1,
+                                needed_batches: 2,
+                                ..default()
+                            }
+                        )]),
+                    )
+            );
+        };
+        app.update();
+        let before = app.world().resource::<ClusterLoadingGate>().generation();
+        publish(&mut app, before, 1);
+        app.update();
+        app.update();
+        assert!(app.world().resource::<PacingTracker>().jump.is_some());
+        let jumped = app.world().resource::<ClusterLoadingGate>().generation();
+        assert_ne!(
+            jumped, before,
+            "the benchmark camera mutation must withdraw pre-jump proof immediately"
+        );
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .jump
+                .unwrap()
+                .latch
+                .latched
+                .is_none()
+        );
+        app.world_mut()
+            .query_filtered::<&mut Transform, With<StreamingCamera>>()
+            .single_mut(app.world_mut())
+            .unwrap()
+            .translation
+            .y += 10.0;
+        app.update();
+        let final_pose = app.world().resource::<ClusterLoadingGate>().generation();
+        assert_ne!(
+            final_pose, jumped,
+            "collision or camera placement while jump readiness is pending needs fresh proof"
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<ClusterLoadingGate>()
+                .publish(&package, 7, jumped, 2, std::collections::HashMap::new(),)
+        );
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .jump
+                .unwrap()
+                .latch
+                .latched
+                .is_none()
+        );
+        assert_eq!(
+            app.world().resource::<ClusterLoadingGate>().generation(),
+            final_pose
+        );
+        publish(&mut app, final_pose, 3);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .jump
+                .unwrap()
+                .latch
+                .latched
+                .is_none()
+        );
+        app.update();
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .jump
+                .unwrap()
+                .latch
+                .latched
+                .is_some()
+        );
+        app.world_mut()
+            .query_filtered::<&mut Transform, With<StreamingCamera>>()
+            .single_mut(app.world_mut())
+            .unwrap()
+            .translation
+            .y += 10.0;
+        app.update();
+        assert_eq!(
+            app.world().resource::<ClusterLoadingGate>().generation(),
+            final_pose,
+            "ordinary movement after measurement must not globally invalidate rendering"
+        );
+        assert!(!app.world().contains_resource::<LoadingCover>());
+    }
+
+    #[test]
+    fn ordinary_benchmark_jump_still_latches_without_cluster_publication_or_cover() {
+        use crate::cluster::loading::ClusterLoadingGate;
+        let (_directory, mut app) = benchmark_pose_app(false);
+        let before = app.world().resource::<ClusterLoadingGate>().generation();
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<PacingTracker>()
+                .jump
+                .unwrap()
+                .latch
+                .latched
+                .is_some()
+        );
+        assert_eq!(
+            app.world().resource::<ClusterLoadingGate>().generation(),
+            before
+        );
+        assert!(!app.world().contains_resource::<LoadingCover>());
+    }
+}
+
+#[cfg(test)]
+mod stock_ready_input_supplement {
+    use super::*;
+    #[test]
+    fn stock_ready_inputs_require_actual_batch_and_draw_completion() {
+        let mut metrics = StreamingMetrics::default();
+        let ready = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert!(
+            ready.is_ready(),
+            "global legacy terrain readiness is not current-view demand"
+        );
+        metrics.pending_cluster_batches = 1;
+        let waiting = WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0);
+        assert!(
+            !waiting.is_ready(),
+            "actual pending cluster batches still hold readiness"
+        );
+        metrics.pending_cluster_batches = 0;
+        metrics.failed_cluster_batches = 1;
+        assert!(!WorldReadyInputs::from_streaming(&metrics, 0, 25, 25, 0, 0, 0).is_ready());
+        metrics.failed_cluster_batches = 0;
+        let undrawn = WorldReadyInputs::from_streaming(&metrics, 1, 25, 25, 0, 0, 0);
+        assert!(
+            !undrawn.is_ready(),
+            "current-view actual draw readiness remains required"
         );
     }
 }

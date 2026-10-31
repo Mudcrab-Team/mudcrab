@@ -316,6 +316,14 @@ impl NifBlock {
                 Ok((i, NifBlock::NiNode(result)))
             }
 
+            "NiBillboardNode" => {
+                let (i, result) = NiBillboardNode::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing NiBillboardNode", i.len());
+                }
+                Ok((i, NifBlock::NiBillboardNode(result)))
+            }
+
             "BSFadeNode" => {
                 let (i, result) = NiNode::parse(i)?;
                 if !i.is_empty() {
@@ -377,14 +385,6 @@ impl NifBlock {
                     warn!("{} bytes left over after parsing BSOrderedNode", i.len());
                 }
                 Ok((i, NifBlock::BSOrderedNode(result)))
-            }
-
-            "NiBillboardNode" => {
-                let (i, result) = NiBillboardNode::parse(i)?;
-                if !i.is_empty() {
-                    warn!("{} bytes left over after parsing NiBillboardNode", i.len());
-                }
-                Ok((i, NifBlock::NiBillboardNode(result)))
             }
 
             "BSValueNode" => {
@@ -551,6 +551,58 @@ impl NifBlock {
                     );
                 }
                 Ok((i, NifBlock::BSLightingShaderPropertyFloatController(result)))
+            }
+
+            "BSEffectShaderPropertyColorController" => {
+                let (i, result) = BSEffectShaderPropertyColorController::parse(i)?;
+                if !i.is_empty() {
+                    warn!(
+                        "{} bytes left over after parsing BSEffectShaderPropertyColorController",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BSEffectShaderPropertyColorController(result)))
+            }
+
+            "BSLightingShaderPropertyColorController" => {
+                let (i, result) = BSLightingShaderPropertyColorController::parse(i)?;
+                if !i.is_empty() {
+                    warn!(
+                        "{} bytes left over after parsing BSLightingShaderPropertyColorController",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BSLightingShaderPropertyColorController(result)))
+            }
+
+            "NiPoint3Interpolator" => {
+                let (i, result) = NiPoint3Interpolator::parse(i)?;
+                if !i.is_empty() {
+                    warn!(
+                        "{} bytes left over after parsing NiPoint3Interpolator",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::NiPoint3Interpolator(result)))
+            }
+
+            "NiPosData" => {
+                let (i, result) = NiPosData::parse(i)?;
+                if !i.is_empty() {
+                    warn!("{} bytes left over after parsing NiPosData", i.len());
+                }
+                Ok((i, NifBlock::NiPosData(result)))
+            }
+
+            "BSEffectShaderPropertyFloatController" => {
+                let (i, result) = BSEffectShaderPropertyFloatController::parse(i)?;
+                if i.len() > 0 {
+                    warn!(
+                        "{} bytes left over after parsing BSEffectShaderPropertyFloatController",
+                        i.len()
+                    );
+                }
+                Ok((i, NifBlock::BSEffectShaderPropertyFloatController(result)))
             }
 
             "NiBlendFloatInterpolator" => {
@@ -765,9 +817,13 @@ impl Parse<&[u8]> for BSEffectShaderProperty {
     }
 }
 
-#[derive(Debug)]
+/// nif.xml `BSEffectShaderPropertyColorController`: an `NiPoint3InterpController` (which adds no
+/// fields to `NiSingleInterpController`) plus the colour it animates, kept as the raw
+/// `EffectShaderControlledColor` so an unknown value does not fail the block.
+#[derive(Debug, NomLE)]
 pub struct BSEffectShaderPropertyColorController {
-    // TODO
+    pub parent: NiSingleInterpController,
+    pub controlled_color: u32,
 }
 
 #[derive(Debug)]
@@ -964,9 +1020,12 @@ impl Fallout4ShaderPropertyFlags2 {
     }
 }
 
-#[derive(Debug)]
+/// nif.xml `BSLightingShaderPropertyColorController`: as the effect-shader one, with a raw
+/// `LightingShaderControlledColor`.
+#[derive(Debug, NomLE)]
 pub struct BSLightingShaderPropertyColorController {
-    // TODO
+    pub parent: NiSingleInterpController,
+    pub controlled_color: u32,
 }
 #[derive(Debug, NomLE)]
 pub struct BSLightingShaderPropertyFloatController {
@@ -1184,6 +1243,7 @@ pub struct BSXFlags {
 pub struct NiBillboardNode {
     /// The node fields the scene hierarchy consumes.
     pub node: NiNode,
+    /// nif.xml `BillboardMode`: how the node turns to face the camera each frame.
     pub billboard_mode: u16,
 }
 
@@ -1528,17 +1588,92 @@ pub struct NiParticleSystem {
 pub struct NiPathInterpolator {
     // TODO
 }
-#[derive(Debug)]
+/// nif.xml `NiPoint3Interpolator`: the pose value and its `NiPosData` keys.
+#[derive(Debug, NomLE)]
 pub struct NiPoint3Interpolator {
-    // TODO
+    pub value: [f32; 3],
+    pub data: u32,
 }
 #[derive(Debug)]
 pub struct NiPointLight {
     // TODO
 }
+/// nif.xml `NiPosData`: a `KeyGroup<Vector3>`.
 #[derive(Debug)]
 pub struct NiPosData {
-    // TODO
+    pub key_type: Option<KeyType>,
+    pub keys: Vec<Vec3Key>,
+}
+
+/// One `Key<Vector3>`. `forward`/`backward` are present for quadratic keys only.
+#[derive(Debug)]
+pub struct Vec3Key {
+    pub time: f32,
+    pub value: [f32; 3],
+    pub forward: Option<[f32; 3]>,
+    pub backward: Option<[f32; 3]>,
+}
+
+impl Parse<&[u8]> for NiPosData {
+    fn parse(i: &[u8]) -> IResult<&[u8], Self, nom::error::Error<&[u8]>> {
+        fn vec3(i: &[u8]) -> IResult<&[u8], [f32; 3]> {
+            let (i, x) = le_f32(i)?;
+            let (i, y) = le_f32(i)?;
+            let (i, z) = le_f32(i)?;
+            Ok((i, [x, y, z]))
+        }
+        let (i, num_keys) = le_u32(i)?;
+        // nif.xml: the interpolation is written only when there are keys.
+        if num_keys == 0 {
+            return Ok((
+                i,
+                Self {
+                    key_type: None,
+                    keys: Vec::new(),
+                },
+            ));
+        }
+        let (mut i, key_type) = KeyType::parse(i)?;
+        // The smallest key is 16 bytes; a count the remaining bytes cannot hold is corrupt.
+        if num_keys as usize > i.len() / 16 {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                i,
+                nom::error::ErrorKind::Count,
+            )));
+        }
+        let mut keys = Vec::with_capacity(num_keys as usize);
+        for _ in 0..num_keys {
+            let (next, time) = le_f32(i)?;
+            let (next, value) = vec3(next)?;
+            let (next, forward, backward) = match key_type {
+                KeyType::QuadraticKey => {
+                    let (next, forward) = vec3(next)?;
+                    let (next, backward) = vec3(next)?;
+                    (next, Some(forward), Some(backward))
+                }
+                KeyType::TbcKey => {
+                    // Tension, bias, continuity: parsed past, not published.
+                    let (next, _) = vec3(next)?;
+                    (next, None, None)
+                }
+                _ => (next, None, None),
+            };
+            i = next;
+            keys.push(Vec3Key {
+                time,
+                value,
+                forward,
+                backward,
+            });
+        }
+        Ok((
+            i,
+            Self {
+                key_type: Some(key_type),
+                keys,
+            },
+        ))
+    }
 }
 #[derive(Debug)]
 pub struct NiStringExtraData {
@@ -1675,6 +1810,12 @@ pub struct NiExtraData {
 #[derive(Debug)]
 pub struct NiProperty {
     pub parent: NiObjectNET,
+    /// Reference to this property's `NiTimeController` chain head, or
+    /// `NULL_REF` (`u32::MAX`) when the property is not animated. Every
+    /// `BSLightingShaderProperty` and `BSEffectShaderProperty` inherits this
+    /// field, which is how the converter finds a shader property's float
+    /// controllers without re-reading the block's raw bytes.
+    pub controller: u32,
 }
 
 impl Parse<&[u8]> for NiProperty {
@@ -1690,11 +1831,12 @@ impl Parse<&[u8]> for NiProperty {
         for _ in 0..extra_data_count {
             (i, _) = le_u32(i)?;
         }
-        let (i, _) = le_u32(i)?; // controller
+        let (i, controller) = le_u32(i)?;
         Ok((
             i,
             Self {
                 parent: NiObjectNET { name },
+                controller,
             },
         ))
     }
@@ -2062,6 +2204,10 @@ mod material_property_tests {
         assert_eq!(property.shader_flags_1.raw(), 0x8240_0302);
         assert_eq!(property.alpha, 1.0);
         assert_eq!(property.glossiness, 80.0);
+        // The inherited `NiProperty` keeps its controller reference instead of
+        // discarding it, so the converter can find a lighting shader's float
+        // controller chain without re-reading the block's raw bytes.
+        assert_eq!(property.ni_shader_property.controller, u32::MAX);
     }
 
     fn lighting_property_bytes(shader_type: u32, tail: &[f32]) -> Vec<u8> {
@@ -2166,6 +2312,41 @@ mod material_property_tests {
         assert_eq!(property.source_texture.0, r"textures\effects\a.dds");
         assert_eq!(property.greyscale_texture.0, r"textures\effects\mask.dds");
         assert_eq!(property.base_color.0.w, 0.75);
+        // Same inherited `NiProperty` as the lighting family; this is the field
+        // an effect shape's controller chain is found from.
+        assert_eq!(property.parent.controller, 20);
+    }
+
+    /// `BSEffectShaderPropertyFloatController` has a struct in this crate but
+    /// previously had no dispatch arm in `NifBlock::parse`, so the block always
+    /// arrived as `NifBlock::Unhandled` and the converter had to re-parse its
+    /// raw bytes with the struct directly. This proves the block now dispatches
+    /// like its lighting counterpart.
+    #[test]
+    fn effect_float_controller_dispatches_through_nif_block_parse() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&11u32.to_le_bytes()); // next_controller
+        bytes.extend_from_slice(&0x48u16.to_le_bytes()); // flags: cycle mode
+        push_f32(&mut bytes, &[1.0, 0.0, 0.0, 5.6667]); // frequency, phase, start, stop
+        bytes.extend_from_slice(&7u32.to_le_bytes()); // target: the shader property block
+        bytes.extend_from_slice(&9u32.to_le_bytes()); // interpolator
+        bytes.extend_from_slice(&8u32.to_le_bytes()); // controlled_variable: V Offset
+
+        let (remaining, block) =
+            NifBlock::parse(&bytes, "BSEffectShaderPropertyFloatController".to_owned()).unwrap();
+        assert!(remaining.is_empty());
+        let NifBlock::BSEffectShaderPropertyFloatController(controller) = block else {
+            panic!("expected BSEffectShaderPropertyFloatController, got {block:?}");
+        };
+        let time_controller = &controller.parent.parent.parent.parent;
+        assert_eq!(time_controller.next_controller, 11);
+        assert_eq!(time_controller.target, 7);
+        assert_eq!(time_controller.stop_time, 5.6667);
+        assert_eq!(controller.parent.parent.interpolator, 9);
+        assert!(matches!(
+            controller.controlled_variable,
+            EffectShaderControlledVariable::VOffset
+        ));
     }
 
     #[test]

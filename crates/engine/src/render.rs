@@ -5,13 +5,17 @@ use crate::{
 };
 use bevy::{
     app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
-    asset::embedded_asset,
+    asset::{LoadContext, embedded_asset},
     camera::{
-        Exposure, RenderTarget,
+        CameraProjection, Exposure, RenderTarget,
         primitives::{Aabb, Frustum},
         visibility::{Layer, RenderLayers, VisibilitySystems},
     },
     core_pipeline::{mip_generation::experimental::depth::ViewDepthPyramid, prepass::DepthPrepass},
+    gltf::{
+        GltfMaterial,
+        extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
+    },
     image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
     pbr::{
         ExtendedMaterial, ExtractedDirectionalLight, LightEntity, MaterialExtension, ShadowView,
@@ -126,6 +130,9 @@ pub struct VercidiumRendererPlugin;
 
 impl Plugin for VercidiumRendererPlugin {
     fn build(&self, app: &mut App) {
+        install_material_animation(app);
+        register_skyrim_material_handler(app);
+        app.add_plugins(crate::billboard::BillboardPlugin);
         embedded_asset!(app, "shaders/terrain.wgsl");
         embedded_asset!(app, "shaders/water.wgsl");
         app.add_plugins((
@@ -137,13 +144,13 @@ impl Plugin for VercidiumRendererPlugin {
         .add_systems(Startup, setup_water_reflection)
         .add_systems(
             Update,
-            (
-                animate_water_materials,
-                update_water_reflection_camera,
-                sync_renderer_metrics,
-            )
+            (animate_water_materials, sync_renderer_metrics)
                 .after(crate::settings_ui::SettingsUiSet),
         );
+
+        // Consume native propagated inputs, then publish this camera's final output before
+        // native frusta/visibility and the late temporal-origin repair.
+        install_water_reflection_update(app);
 
         add_placed_object_layer_propagation(app);
 
@@ -865,30 +872,254 @@ type WaterReflectionCameraParts = (
 /// What the gate reads off the world camera: its pose, the [`Frustum`] Bevy keeps in step with it,
 /// and the projection whose far distance the frustum itself does not carry.
 type WaterReflectionObserverView = (
-    &'static GlobalTransform,
+    Entity,
+    Option<Ref<'static, GlobalTransform>>,
+    Has<Transform>,
     Option<&'static Frustum>,
-    Option<&'static Projection>,
+    Option<Ref<'static, Projection>>,
     Option<&'static Exposure>,
 );
 
+/// Structural changes are rare; value changes use native ticks after propagation.
+/// This bit contains no per-entity input inventory.
+#[derive(Resource)]
+struct ReflectionStructureChanged(bool);
+
+/// Only computed output is retained, so output repair/settings/exposure need no geometry work.
+struct ReflectionGeometry {
+    main_entity: Entity,
+    origin_present: bool,
+    pose: Option<Transform>,
+    lens: Option<PerspectiveProjection>,
+    clip_from_view: Option<Mat4>,
+    surface_in_view: bool,
+}
+
+// Register after plugin construction, when all supported native default disablers are known.
+// Like Bevy query initialization, this follows the native startup-only registration contract.
+fn install_reflection_structure_observers(world: &mut World) {
+    let mut components = vec![
+        world.register_component::<crate::world::components::WaterSurface>(),
+        world.register_component::<crate::world::components::StreamingCamera>(),
+        world.register_component::<Transform>(),
+        world.register_component::<GlobalTransform>(),
+        world.register_component::<Aabb>(),
+        world.register_component::<Projection>(),
+        world.register_component::<Frustum>(),
+    ];
+    let disablers: Vec<_> = world
+        .resource::<bevy::ecs::entity_disabling::DefaultQueryFilters>()
+        .disabling_ids()
+        .collect();
+    components.extend(disablers.iter().copied());
+    world.spawn(
+        Observer::new(|event: On<Remove>, world: &World, mut commands: Commands| {
+            if world.get::<WaterReflectionCamera>(event.entity).is_none()
+                && (world
+                    .get::<crate::world::components::WaterSurface>(event.entity)
+                    .is_some()
+                    || world
+                        .get::<crate::world::components::StreamingCamera>(event.entity)
+                        .is_some())
+            {
+                let entity = event.entity;
+                commands.queue(move |world: &mut World| {
+                    // Native propagation skipped this disabled source. Re-admit its current
+                    // local transform before propagation, even if its value never changed.
+                    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+                        transform.set_changed();
+                    }
+                });
+            }
+        })
+        .with_components(disablers),
+    );
+    components.sort();
+    components.dedup();
+    world.spawn(
+        Observer::new(|event: On<Add>, world: &World, mut commands: Commands| {
+            if world.get::<WaterReflectionCamera>(event.entity).is_none()
+                && (world
+                    .get::<crate::world::components::WaterSurface>(event.entity)
+                    .is_some()
+                    || world
+                        .get::<crate::world::components::StreamingCamera>(event.entity)
+                        .is_some())
+            {
+                commands.queue(|world: &mut World| {
+                    world.resource_mut::<ReflectionStructureChanged>().0 = true;
+                });
+            }
+        })
+        .with_components(components.clone()),
+    );
+    world.spawn(
+        Observer::new(|event: On<Remove>, world: &World, mut commands: Commands| {
+            // Remove runs before removal/despawn; raw access includes every native disabler.
+            if world.get::<WaterReflectionCamera>(event.entity).is_none()
+                && (world
+                    .get::<crate::world::components::WaterSurface>(event.entity)
+                    .is_some()
+                    || world
+                        .get::<crate::world::components::StreamingCamera>(event.entity)
+                        .is_some())
+            {
+                commands.queue(|world: &mut World| {
+                    world.resource_mut::<ReflectionStructureChanged>().0 = true;
+                });
+            }
+        })
+        .with_components(components),
+    );
+}
+
+fn install_water_reflection_update(app: &mut App) {
+    app.insert_resource(ReflectionStructureChanged(true))
+        .add_systems(Startup, install_reflection_structure_observers)
+        .add_systems(
+            PostUpdate,
+            (update_water_reflection_camera, sync_water_reflection_global)
+                .chain()
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::CameraUpdateSystems)
+                .after(VisibilitySystems::CalculateBounds)
+                // Cascades are built per active camera; the reflection camera's active flag and
+                // transform must be final first, or a camera that turns on this frame reaches
+                // `prepare_lights` with no cascade entry.
+                .before(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                .before(VisibilitySystems::UpdateFrusta)
+                .before(VisibilitySystems::CheckVisibility),
+        );
+}
+
+#[cfg(test)]
+pub(crate) fn install_reflection_update_for_test(app: &mut App) {
+    install_water_reflection_update(app);
+}
+
+#[cfg(test)]
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct ReflectionWork {
+    transform_helpers: usize,
+    frusta: usize,
+    planes: usize,
+}
+
+type ReflectionWaterInputs<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Option<Ref<'static, GlobalTransform>>,
+        Option<Ref<'static, Aabb>>,
+        Has<Transform>,
+    ),
+    With<crate::world::components::WaterSurface>,
+>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bevy reflection system inputs and test-only work instrumentation"
+)]
 fn update_water_reflection_camera(
     mut commands: Commands,
     main_camera: Query<WaterReflectionObserverView, WaterReflectionObserver>,
-    water: Query<(&GlobalTransform, Option<&Aabb>), With<crate::world::components::WaterSurface>>,
-    mut reflection_camera: Query<WaterReflectionCameraParts, With<WaterReflectionCamera>>,
+    water: ReflectionWaterInputs,
+    mut reflections: Query<WaterReflectionCameraParts, With<WaterReflectionCamera>>,
     mut profiler: ResMut<ProfilingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    origin: Option<Res<crate::streaming::RenderOrigin>>,
+    mut structure: ResMut<ReflectionStructureChanged>,
+    mut geometry: Local<Option<ReflectionGeometry>>,
+    #[cfg(test)] mut work: Option<ResMut<ReflectionWork>>,
 ) {
     let started = std::time::Instant::now();
-    let (
-        Ok((main, frustum, projection, exposure)),
-        Ok((entity, mut reflection, mut camera, reflection_exposure, reflection_projection)),
-    ) = (main_camera.single(), reflection_camera.single_mut())
+    let structural_change = std::mem::take(&mut structure.0);
+    let Ok((main_entity, main, has_transform, frustum_provider, projection, exposure)) =
+        main_camera.single()
+    else {
+        *geometry = None;
+        return;
+    };
+    let Some(main) = main.filter(|_| has_transform) else {
+        *geometry = None;
+        warn_once!("water reflection camera has no valid current main-camera transform");
+        return;
+    };
+    // These are bounded O(water + camera) tick comparisons, like Changed<T>, not
+    // literal O(1) detection. No ancestor or per-water input-value cache is maintained.
+    let geometry_changed = structural_change
+        || geometry.as_ref().is_none_or(|previous| {
+            previous.main_entity != main_entity || previous.origin_present != origin.is_some()
+        })
+        || main.is_changed()
+        || projection.as_ref().is_some_and(|lens| lens.is_changed())
+        || origin.as_ref().is_some_and(|origin| origin.is_changed())
+        || water.iter().any(|(global, bounds, _)| {
+            global.as_ref().is_some_and(|global| global.is_changed())
+                || bounds.as_ref().is_some_and(|bounds| bounds.is_changed())
+        });
+    if geometry_changed {
+        let frustum = frustum_provider.and_then(|_| {
+            projection.as_ref().map(|lens| {
+                #[cfg(test)]
+                if let Some(work) = work.as_deref_mut() {
+                    work.frusta += 1;
+                }
+                lens.compute_frustum(&main)
+            })
+        });
+        let mut mirror_surface = None;
+        let mut mirror_distance = f32::INFINITY;
+        let mut surface_in_view = false;
+        for (surface, bounds, has_transform) in &water {
+            let Some(surface) = surface.filter(|_| has_transform) else {
+                warn_once!("water surface has no valid current transform for reflection");
+                continue;
+            };
+            let distance = (surface.translation().y - main.translation().y).abs();
+            if distance < mirror_distance {
+                mirror_distance = distance;
+                mirror_surface = Some(*surface);
+            }
+            #[cfg(test)]
+            if let Some(work) = work.as_deref_mut() {
+                work.planes += 1;
+            }
+            surface_in_view |= water_plane_in_view(
+                &main,
+                frustum.as_ref(),
+                projection.as_ref().map(|lens| lens.far()),
+                &surface,
+                bounds.as_deref(),
+            );
+        }
+        let pose = mirror_surface
+            .map(|surface| reflected_camera_transform(&main, surface.translation().y));
+        let lens = match (projection.as_deref(), pose, mirror_surface) {
+            (Some(Projection::Perspective(main_lens)), Some(pose), Some(surface)) => {
+                Some(reflection_lens(main_lens, &pose, surface.translation().y))
+            }
+            _ => None,
+        };
+        let clip_from_view = lens.as_ref().map(|lens| lens.get_clip_from_view());
+        *geometry = Some(ReflectionGeometry {
+            main_entity,
+            origin_present: origin.is_some(),
+            pose,
+            lens,
+            clip_from_view,
+            surface_in_view,
+        });
+    }
+    let Some(geometry) = geometry.as_ref() else {
+        return;
+    };
+    let Ok((entity, mut reflection, mut camera, reflection_exposure, reflection_projection)) =
+        reflections.single_mut()
     else {
         return;
     };
     // PBR lighting is already exposure-scaled when the reflection is sampled by water.
-    // Keep both views in the same domain, including explicit diagnostic exposure changes.
     let ev100 = exposure.map_or(DEFAULT_SCENE_EV100, |value| value.ev100);
     if let Some(mut reflection_exposure) = reflection_exposure {
         if reflection_exposure.ev100 != ev100 {
@@ -897,51 +1128,85 @@ fn update_water_reflection_camera(
     } else {
         commands.entity(entity).insert(Exposure { ev100 });
     }
-    // The surface nearest the main camera fixes the mirror plane; a further surface would put the
-    // reflection at the wrong height when more than one water level is streamed in.
-    let mut mirror_surface = None;
-    let mut mirror_distance = f32::INFINITY;
-    let mut surface_in_view = false;
-    for (surface, bounds) in &water {
-        let distance = (surface.translation().y - main.translation().y).abs();
-        if distance < mirror_distance {
-            mirror_distance = distance;
-            mirror_surface = Some(surface);
-        }
-        surface_in_view |= water_plane_in_view(
-            main,
-            frustum,
-            projection.map(|projection| projection.far()),
-            surface,
-            bounds,
-        );
+    // Keep the same current mirror pose while gated off; the nearest water selects its height.
+    if let Some(pose) = geometry.pose {
+        reflection.set_if_neq(pose);
     }
-    let Some(surface) = mirror_surface else {
-        if camera.is_active {
-            camera.is_active = false;
-        }
-        return;
-    };
-    // The mirror plane is refreshed even while the view is gated off, so the frame the gate reopens
-    // reflects the camera as it stands then rather than the last frame water was on screen.
-    reflection.set_if_neq(reflected_camera_transform(main, surface.translation().y));
-    // The reflection image is sampled with the main view's screen coordinates, so it has to be
-    // rendered with the main camera's lens, and with everything below the water out of it.
-    if let (Some(Projection::Perspective(main_lens)), Some(mut reflection_projection)) =
-        (projection, reflection_projection)
+    if let (Some(lens), Some(mut reflection_projection)) =
+        (geometry.lens.as_ref(), reflection_projection)
     {
-        *reflection_projection = Projection::Perspective(reflection_lens(
-            main_lens,
-            &reflection,
-            surface.translation().y,
-        ));
+        let lens_changed = !matches!(&*reflection_projection, Projection::Perspective(current)
+            if same_reflection_lens(current, lens));
+        if lens_changed {
+            // camera_system may have just resized this view's lens to its own target. Its
+            // existing tick already admits the final lens to downstream update_frusta.
+            // Preserve that tick rather than creating a later one which would ask native
+            // preparation to undo our managed aspect again next frame. With no existing
+            // signal, publish a new one. All native frustum consumers run after this writer.
+            let already_changed = reflection_projection.is_changed();
+            *reflection_projection.bypass_change_detection() =
+                Projection::Perspective(lens.clone());
+            if !already_changed {
+                reflection_projection.set_changed();
+            }
+        }
+        // Native camera_system has already prepared target/viewport metadata and the main lens.
+        // Publish this managed view's final clip matrix too: native preparation ran before our
+        // clipped lens, and extraction reads Camera.computed, not Projection directly.
+        let clip = match &camera.sub_camera_view {
+            Some(sub_view) if lens_changed || camera.is_changed() => {
+                Some(lens.get_clip_from_view_for_sub(sub_view))
+            }
+            Some(_) => None,
+            None => geometry.clip_from_view,
+        };
+        if let Some(clip) = clip
+            && camera.computed.clip_from_view != clip
+        {
+            camera.computed.clip_from_view = clip;
+        }
     }
-    // The Graphics setting switches the reflection off without touching the mirror plane above.
-    let active = surface_in_view && settings.is_none_or(|settings| settings.water_reflections);
+    let active =
+        geometry.surface_in_view && settings.is_none_or(|settings| settings.water_reflections);
     if camera.is_active != active {
         camera.is_active = active;
     }
     profiler.record_elapsed("render/water_reflection_camera", started);
+}
+
+fn same_reflection_lens(a: &PerspectiveProjection, b: &PerspectiveProjection) -> bool {
+    a.fov == b.fov
+        && a.aspect_ratio == b.aspect_ratio
+        && a.near_clip_plane == b.near_clip_plane
+        && a.near == b.near
+        && a.far == b.far
+}
+
+/// The local output is written after scene propagation. Refresh only this camera, using Bevy's
+/// native helper (including its parent contract), before frusta, visibility and temporal repair.
+/// This is not another scene propagation. Neither helper nor affine work runs on settled frames.
+fn sync_water_reflection_global(
+    helper: bevy::transform::helper::TransformHelper,
+    mut reflections: Query<
+        (Entity, Ref<Transform>, &mut GlobalTransform),
+        With<WaterReflectionCamera>,
+    >,
+    #[cfg(test)] mut work: Option<ResMut<ReflectionWork>>,
+) {
+    for (entity, transform, mut global) in &mut reflections {
+        if !transform.is_changed() && !global.is_changed() {
+            continue;
+        }
+        #[cfg(test)]
+        if let Some(work) = work.as_deref_mut() {
+            work.transform_helpers += 1;
+        }
+        let Ok(current) = helper.compute_global_transform(entity) else {
+            warn_once!("water reflection camera has no valid current output transform");
+            continue;
+        };
+        global.set_if_neq(current);
+    }
 }
 
 /// Whether a water plane's bounds reach the main camera's view, its bounds grown by
@@ -1018,6 +1283,495 @@ fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_manifest_validity_controls_animation_installation() {
+        use crate::extensions::{
+            DataSetExtensions,
+            fixtures::{data_set, manifest},
+            read_data_extensions,
+        };
+        use crate::material_animation::{MaterialAnimationPlugin, MaterialAnimationRegistry};
+        use shared::extensions::MATERIAL;
+        for (entries, expected) in [
+            (vec![], false),
+            (vec![(MATERIAL, 1, "core")], true),
+            (vec![(MATERIAL, 1, "older")], false),
+            (vec![(MATERIAL, 2, "core")], false),
+        ] {
+            let directory = data_set(&manifest(&entries), Some("core"), &[]);
+            let data = read_data_extensions(directory.path()).unwrap();
+            let mut app = App::new();
+            app.init_resource::<GltfExtensionHandlers>();
+            app.insert_resource(DataSetExtensions::new(data));
+            install_material_animation(&mut app);
+            register_skyrim_material_handler(&mut app);
+            assert_eq!(app.is_plugin_added::<MaterialAnimationPlugin>(), expected);
+            assert_eq!(
+                app.world().contains_resource::<MaterialAnimationRegistry>(),
+                expected
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<GltfExtensionHandlers>()
+                    .0
+                    .read_blocking()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn material_animation_updates_the_drawn_native_standard_material() {
+        for native_plugin_first in [false, true] {
+            check_drawn_native_material_animation(native_plugin_first, true);
+        }
+    }
+
+    #[test]
+    fn disabled_material_capability_leaves_drawn_native_uvs_static() {
+        for native_plugin_first in [false, true] {
+            check_drawn_native_material_animation(native_plugin_first, false);
+        }
+    }
+
+    fn check_drawn_native_material_animation(native_plugin_first: bool, enabled: bool) {
+        use crate::extensions::{
+            DataSetExtensions,
+            fixtures::{data_set, manifest},
+            read_data_extensions,
+        };
+        use crate::material_animation::MaterialAnimationRegistry;
+        use crate::nif_material::{NifMaterialPlugin, NifSourceMaterial};
+        use bevy::asset::{
+            AssetApp, LoadState,
+            io::{
+                AssetSourceBuilder, AssetSourceId,
+                memory::{Dir, MemoryAssetReader},
+            },
+        };
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+
+        // bevy_pbr's stock glTF handler is private and installed by PbrPlugin.
+        // As in nif_material::skin_load_tests, supply only its /std construction
+        // and binding contract. The glTF loader, native handler, scene spawner,
+        // material-user index, asset events and playback systems are production code.
+        #[derive(Clone)]
+        struct StandardMaterialFixtureHandler;
+
+        impl GltfExtensionHandler for StandardMaterialFixtureHandler {
+            fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+                Box::new(self.clone())
+            }
+
+            fn on_material(
+                &mut self,
+                context: &mut LoadContext<'_>,
+                _source: &bevy::gltf::gltf::Material,
+                _handle: Handle<GltfMaterial>,
+                loaded: &GltfMaterial,
+                label: &str,
+            ) {
+                context.add_labeled_asset(
+                    format!("{label}/std"),
+                    StandardMaterial {
+                        base_color_texture: loaded.base_color_texture.clone(),
+                        uv_transform: loaded.uv_transform,
+                        ..default()
+                    },
+                );
+            }
+
+            fn on_spawn_mesh_and_material(
+                &mut self,
+                context: &mut LoadContext<'_>,
+                _primitive: &bevy::gltf::gltf::Primitive,
+                _mesh: &bevy::gltf::gltf::Mesh,
+                _material: &bevy::gltf::gltf::Material,
+                entity: &mut EntityWorldMut,
+                label: &str,
+            ) {
+                entity.insert(MeshMaterial3d(
+                    context.get_label_handle::<StandardMaterial>(format!("{label}/std")),
+                ));
+            }
+        }
+
+        let entries = if enabled {
+            vec![(shared::extensions::MATERIAL, 1, "core")]
+        } else {
+            vec![]
+        };
+        let directory = data_set(&manifest(&entries), Some("core"), &[]);
+        let data = read_data_extensions(directory.path()).unwrap();
+        let files = Dir::default();
+        let floats: [f32; 24] = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // positions
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, // normals
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, // UVs
+        ];
+        let bytes: Vec<u8> = floats
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        files.insert_asset(std::path::Path::new("meshes/triangle.bin"), bytes);
+        files.insert_asset_text(
+            std::path::Path::new("meshes/animated.gltf"),
+            r#"{
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["OPEN_SKYRIM_material_animation", "KHR_texture_transform"],
+            "buffers": [{"uri": "triangle.bin", "byteLength": 96}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 24}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                 "min": [0, 0, 0], "max": [1, 1, 0]},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"}
+            ],
+            "images": [{"uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="}],
+            "textures": [{"source": 0}],
+            "materials": [
+                {"pbrMetallicRoughness": {"baseColorTexture": {
+                    "index": 0, "extensions": {"KHR_texture_transform": {
+                        "offset": [0.75, 0.875], "scale": [3.0, 4.0]
+                    }}
+                }}, "extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}, "extensions": {
+                    "OPEN_SKYRIM_material_animation": {"channels": [{
+                        "variable": "vOffset", "times": [0.0, 2.0], "values": [0.0, 1.0]
+                    }]}
+                }},
+                {"extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}, "extensions": {"OPEN_SKYRIM_material_animation": {"channels": [{
+                    "variable": "emissiveMultiple", "times": [0.0, 2.0], "values": [1.0, 3.0]
+                }]}}},
+                {"extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}}
+            ],
+            "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 0},
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 1},
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 2}
+            ]}],
+            "nodes": [{"mesh": 0}], "scenes": [{"nodes": [0]}], "scene": 0
+        }"#,
+        );
+        if enabled {
+            let path = std::path::Path::new("meshes/animated.gltf");
+            let mut document: serde_json::Value =
+                serde_json::from_slice(files.get_asset(path).unwrap().value()).unwrap();
+            let extra = document["materials"][0].clone();
+            document["materials"].as_array_mut().unwrap().push(extra);
+            let text = serde_json::to_string(&document).unwrap();
+            files.insert_asset_text(path, &text);
+            files.insert_asset_text(std::path::Path::new("meshes/other.gltf"), &text);
+        }
+        let reader = MemoryAssetReader {
+            root: files.clone(),
+        };
+        let mut app = App::new();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || Box::new(reader.clone())),
+        )
+        .add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::world_serialization::WorldSerializationPlugin,
+            bevy::mesh::MeshPlugin,
+            bevy::image::ImagePlugin::default(),
+            bevy::gltf::GltfPlugin::default(),
+        ))
+        .init_asset::<StandardMaterial>()
+        .register_asset_loader(bevy::image::ImageLoader::new(
+            bevy::image::CompressedImageFormats::NONE,
+        ))
+        .register_type::<MeshMaterial3d<StandardMaterial>>()
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO))
+        .insert_resource(DataSetExtensions::new(data));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .set_max_delta(Duration::from_secs(1));
+        app.world_mut()
+            .resource_mut::<GltfExtensionHandlers>()
+            .0
+            .write_blocking()
+            .push(Box::new(StandardMaterialFixtureHandler));
+        if native_plugin_first {
+            app.add_plugins(NifMaterialPlugin);
+        }
+        install_material_animation(&mut app);
+        register_skyrim_material_handler(&mut app);
+        if !native_plugin_first {
+            app.add_plugins(NifMaterialPlugin);
+        }
+        app.finish();
+        app.cleanup();
+        let server = app.world().resource::<AssetServer>().clone();
+        // Manual reload requires a live root when file watching is disabled.
+        let gltf_root = enabled.then(|| server.load::<bevy::gltf::Gltf>("meshes/animated.gltf"));
+        let held_materials = enabled.then(|| {
+            (
+                server.load::<StandardMaterial>("meshes/animated.gltf#Material3/nif"),
+                server.load::<StandardMaterial>("meshes/other.gltf#Material0/nif"),
+            )
+        });
+        let scene: Handle<WorldAsset> = server.load("meshes/animated.gltf#Scene0");
+        app.world_mut().spawn(WorldAssetRoot(scene.clone()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let drawn = loop {
+            app.update();
+            if let Some(LoadState::Failed(error)) = server.get_load_state(scene.id()) {
+                panic!("fixture glTF scene load failed: {error}");
+            }
+            let drawn: Vec<_> = app
+                .world_mut()
+                .query::<(
+                    Entity,
+                    &Mesh3d,
+                    &MeshMaterial3d<StandardMaterial>,
+                    &NifSourceMaterial,
+                )>()
+                .iter(app.world())
+                .map(|(entity, _, rendered, source)| (entity, rendered.0.clone(), source.0.clone()))
+                .collect();
+            if server.is_loaded_with_dependencies(scene.id())
+                && drawn.len() == 3
+                && gltf_root
+                    .as_ref()
+                    .is_none_or(|root| server.is_loaded_with_dependencies(root.id()))
+                && held_materials.as_ref().is_none_or(|(removed, other)| {
+                    server.is_loaded_with_dependencies(removed.id())
+                        && server.is_loaded_with_dependencies(other.id())
+                })
+            {
+                break drawn;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture scene spawn timed out"
+            );
+            std::thread::yield_now();
+        };
+        for (entity, rendered, source) in &drawn {
+            assert_ne!(
+                rendered, source,
+                "native handler must replace the stock draw handle"
+            );
+            app.world_mut()
+                .entity_mut(*entity)
+                .insert(ViewVisibility::VISIBLE);
+        }
+        if let Some((removed, other)) = &held_materials {
+            let mesh = app.world().get::<Mesh3d>(drawn[0].0).unwrap().clone();
+            // These visible users survive outside the scene that will reload.
+            for handle in [removed, other] {
+                app.world_mut().spawn((
+                    mesh.clone(),
+                    MeshMaterial3d(handle.clone()),
+                    ViewVisibility::VISIBLE,
+                ));
+            }
+        }
+        let native = |index| {
+            drawn
+                .iter()
+                .find(|(_, handle, _)| {
+                    server.get_path(handle.id()).unwrap().to_string()
+                        == format!("meshes/animated.gltf#Material{index}/nif")
+                })
+                .expect("spawned mesh must draw the actual /nif label")
+                .1
+                .clone()
+        };
+        let animated = native(0);
+        let unsupported = native(1);
+        let unanimated = native(2);
+        let base = bevy::math::Affine2::from_scale_angle_translation(
+            Vec2::splat(2.0),
+            0.0,
+            Vec2::new(0.25, 0.5),
+        );
+        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        assert_eq!(materials.get(&animated).unwrap().uv_transform, base);
+        let (_, _, stock) = drawn
+            .iter()
+            .find(|(_, handle, _)| *handle == animated)
+            .unwrap();
+        let stock_base = materials.get(stock).unwrap().uv_transform;
+        assert_eq!(stock_base.matrix2.x_axis, Vec2::new(3.0, 0.0));
+        assert_eq!(stock_base.matrix2.y_axis, Vec2::new(0.0, 4.0));
+        assert_ne!(
+            stock_base, base,
+            "native base must win over the stock UV transform"
+        );
+        if enabled {
+            let registry = app.world().resource::<MaterialAnimationRegistry>();
+            assert_eq!(
+                registry
+                    .get("meshes/animated.gltf#Material0/std")
+                    .unwrap()
+                    .base_scale,
+                Vec2::new(3.0, 4.0),
+            );
+            assert_eq!(
+                registry
+                    .get("meshes/animated.gltf#Material0/nif")
+                    .unwrap()
+                    .base_scale,
+                Vec2::splat(2.0),
+            );
+            for index in [1, 2] {
+                for suffix in ["std", "nif"] {
+                    assert!(
+                        registry
+                            .get(&format!("meshes/animated.gltf#Material{index}/{suffix}"))
+                            .is_none()
+                    );
+                }
+            }
+            assert!(registry.get("meshes/animated.gltf#Material0").is_none());
+        } else {
+            assert!(!app.world().contains_resource::<MaterialAnimationRegistry>());
+        }
+        *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
+            TimeUpdateStrategy::ManualDuration(Duration::from_millis(500));
+        for seconds in [0.5, 1.0, 1.5] {
+            app.update();
+            assert_eq!(app.world().resource::<Time>().elapsed_secs(), seconds);
+            let materials = app.world().resource::<Assets<StandardMaterial>>();
+            let uv = materials.get(&animated).unwrap().uv_transform;
+            assert_eq!(
+                uv.matrix2, base.matrix2,
+                "drawn native scale [2,2] must survive"
+            );
+            assert_eq!(
+                uv.translation,
+                Vec2::new(0.25, if enabled { seconds / 2.0 } else { 0.5 })
+            );
+            assert_eq!(materials.get(&unsupported).unwrap().uv_transform, base);
+            assert_eq!(materials.get(&unanimated).unwrap().uv_transform, base);
+            assert_eq!(materials.get(stock).unwrap().uv_transform, stock_base);
+            if let Some((removed, other)) = &held_materials {
+                for handle in [removed, other] {
+                    assert_eq!(
+                        materials.get(handle).unwrap().uv_transform.translation,
+                        Vec2::new(0.25, seconds / 2.0)
+                    );
+                }
+            }
+        }
+        if enabled {
+            // Exercise real loader reloads: remove the extension, including a label that
+            // disappeared from this source, without withdrawing another source's payload.
+            let registry = app.world().resource::<MaterialAnimationRegistry>().clone();
+            let payload = registry.get("meshes/animated.gltf#Material0/nif").unwrap();
+            for suffix in ["std", "nif"] {
+                registry.insert(
+                    format!("meshes/animated.gltf#Material9/{suffix}"),
+                    payload.clone(),
+                );
+            }
+            let source_path = std::path::Path::new("meshes/animated.gltf");
+            let mut document: serde_json::Value =
+                serde_json::from_slice(files.get_asset(source_path).unwrap().value()).unwrap();
+            for material in document["materials"].as_array_mut().unwrap() {
+                if let Some(extensions) = material
+                    .get_mut("extensions")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    extensions.remove(MATERIAL_ANIMATION_EXTENSION);
+                }
+            }
+            document["materials"].as_array_mut().unwrap().pop(); // Material3 vanishes.
+            files.insert_asset_text(source_path, &serde_json::to_string(&document).unwrap());
+            assert!(
+                server
+                    .get_handle::<bevy::gltf::Gltf>("meshes/animated.gltf")
+                    .is_some(),
+                "reload fixture has no live glTF root; label-only loads are not tracked without file watching"
+            );
+            server.reload("meshes/animated.gltf");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                app.update();
+                if let Some(LoadState::Failed(error)) = server.get_load_state(scene.id()) {
+                    panic!("fixture glTF reload failed: {error}");
+                }
+                let withdrawn = ["std", "nif"].into_iter().all(|suffix| {
+                    [0, 3, 9].into_iter().all(|index| {
+                        registry
+                            .get(&format!("meshes/animated.gltf#Material{index}/{suffix}"))
+                            .is_none()
+                    })
+                });
+                if withdrawn
+                    && app
+                        .world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .is_some_and(|material| material.uv_transform == base)
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "material reload did not withdraw animation and restore authored UVs: root={:?}, scene={:?}, registry/std={}, registry/nif={}, UV={:?}, expected={base:?}",
+                    server
+                        .get_handle::<bevy::gltf::Gltf>("meshes/animated.gltf")
+                        .is_some(),
+                    server.get_load_state(scene.id()),
+                    registry.get("meshes/animated.gltf#Material0/std").is_some(),
+                    registry.get("meshes/animated.gltf#Material0/nif").is_some(),
+                    app.world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .map(|material| material.uv_transform)
+                );
+                std::thread::yield_now();
+            }
+            assert!(registry.get("meshes/other.gltf#Material0/nif").is_some());
+            let (removed, other) = held_materials.as_ref().unwrap();
+            let stopped = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(removed)
+                .unwrap()
+                .uv_transform;
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .unwrap()
+                        .uv_transform,
+                    base,
+                    "removed animation must remain static after reload"
+                );
+                let materials = app.world().resource::<Assets<StandardMaterial>>();
+                assert_eq!(
+                    materials.get(removed).unwrap().uv_transform,
+                    stopped,
+                    "omitted label must stop while its visible strong owner survives"
+                );
+                let seconds = app.world().resource::<Time>().elapsed_secs();
+                assert_eq!(
+                    materials.get(other).unwrap().uv_transform.translation,
+                    Vec2::new(0.25, seconds.rem_euclid(2.0) / 2.0),
+                    "another source must keep playing"
+                );
+            }
+        }
+    }
 
     #[test]
     fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
@@ -1050,9 +1804,8 @@ mod tests {
     /// thickness at all.
     const CELL_WATER_HALF_EXTENTS: Vec3 = Vec3::new(2048.0, 0.0, 2048.0);
 
-    /// The main camera and the reflection camera the gate drives, with no plugins. The gate reads
-    /// the camera's pose, frustum and far distance and writes `Camera::is_active` on the reflection
-    /// camera, so a headless `App` is enough to run its frames.
+    /// Headless native propagation plus the production reflection installer. Individual tests
+    /// opt into native bounds/camera/frustum preparation without creating a render device.
     struct ReflectionHarness {
         app: App,
         main_camera: Entity,
@@ -1062,11 +1815,14 @@ mod tests {
     impl ReflectionHarness {
         fn new(main: Transform) -> Self {
             let mut app = App::new();
-            app.init_resource::<ProfilingState>()
-                .add_systems(Update, update_water_reflection_camera);
+            app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin))
+                .init_resource::<ProfilingState>()
+                .init_resource::<ReflectionWork>();
+            install_reflection_update_for_test(&mut app);
             let main_camera = app
                 .world_mut()
                 .spawn((
+                    main,
                     GlobalTransform::from(main),
                     main_camera_frustum(&main),
                     main_camera_projection(),
@@ -1096,14 +1852,16 @@ mod tests {
 
         /// Turns the main camera and the frustum Bevy keeps in step with it.
         fn aim(&mut self, main: Transform) {
-            self.app
-                .world_mut()
-                .entity_mut(self.main_camera)
-                .insert((GlobalTransform::from(main), main_camera_frustum(&main)));
+            self.app.world_mut().entity_mut(self.main_camera).insert((
+                main,
+                GlobalTransform::from(main),
+                main_camera_frustum(&main),
+            ));
         }
 
         fn spawn_water(&mut self, translation: Vec3, half_extents: Vec3) {
             self.app.world_mut().spawn((
+                Transform::from_translation(translation),
                 GlobalTransform::from(Transform::from_translation(translation)),
                 water_bounds(half_extents),
                 WaterSurface,
@@ -1120,6 +1878,816 @@ mod tests {
                 transform: *transform,
             }
         }
+    }
+
+    fn take_reflection_work(h: &mut ReflectionHarness) -> ReflectionWork {
+        std::mem::take(&mut *h.app.world_mut().resource_mut::<ReflectionWork>())
+    }
+
+    fn settle_reflection(h: &mut ReflectionHarness) {
+        // A post-propagation output write is also seen once by native propagation next frame.
+        // Discard initialization and that acknowledgement, then measure actual work.
+        for _ in 0..3 {
+            h.frame();
+        }
+        take_reflection_work(h);
+    }
+
+    fn assert_geometry_refreshed(h: &mut ReflectionHarness, planes: usize) {
+        let work = take_reflection_work(h);
+        assert_eq!(
+            work.frusta, 1,
+            "one actual main frustum construction: {work:?}"
+        );
+        assert_eq!(
+            work.planes, planes,
+            "one actual test per readable water: {work:?}"
+        );
+    }
+
+    #[test]
+    fn reflection_camera_gets_directional_cascades_the_frame_it_turns_on() {
+        use bevy::light::{
+            CascadeShadowConfig, Cascades, DirectionalLight, DirectionalLightShadowMap,
+            SimulationLightSystems, cascade::build_directional_light_cascades,
+        };
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app
+            .insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO))
+            .init_resource::<DirectionalLightShadowMap>()
+            .add_systems(
+                PostUpdate,
+                build_directional_light_cascades
+                    .in_set(SimulationLightSystems::UpdateDirectionalLightCascades)
+                    .after(bevy::transform::TransformSystems::Propagate),
+            );
+        let sun = h
+            .app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                CascadeShadowConfig::default(),
+                Cascades::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+
+        assert!(h.frame().active);
+        let cascades = h.app.world().get::<Cascades>(sun).unwrap();
+        assert!(
+            cascades.cascades.contains_key(&h.reflection_camera),
+            "the reflection camera turned on this frame must have cascades this frame"
+        );
+    }
+
+    #[test]
+    fn settled_many_waters_do_no_reflection_geometry_work() {
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app
+            .insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        for i in 0..256 {
+            h.spawn_water(Vec3::new(i as f32, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        }
+        h.frame();
+        assert_geometry_refreshed(&mut h, 256);
+        settle_reflection(&mut h);
+        for _ in 0..12 {
+            assert!(h.frame().active);
+            assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+        }
+        // An unrelated scene transform must not invalidate the water/camera tick domain.
+        let unrelated = h.app.world_mut().spawn(Transform::IDENTITY).id();
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(unrelated)
+            .unwrap()
+            .translation
+            .x = 7.0;
+        h.frame();
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(h.main_camera)
+            .unwrap()
+            .translation
+            .x += 1.0;
+        let moved = h.frame();
+        assert_eq!(moved.transform.translation.x, 1.0);
+        assert!(h.app.world().resource::<ReflectionWork>().transform_helpers > 0);
+        assert_geometry_refreshed(&mut h, 256);
+        let water = h
+            .app
+            .world_mut()
+            .query_filtered::<Entity, With<WaterSurface>>()
+            .iter(h.app.world())
+            .next()
+            .unwrap();
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(water)
+            .unwrap()
+            .translation
+            .y = 100.0;
+        assert_eq!(h.frame().transform.translation.y, 80.0);
+        assert!(h.app.world().resource::<ReflectionWork>().transform_helpers > 0);
+        assert_geometry_refreshed(&mut h, 256);
+        // Origin is an independent dependency, even when no local/global pose changes.
+        h.app
+            .world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = IVec2::X;
+        assert_eq!(h.frame().transform.translation.y, 80.0);
+        assert_geometry_refreshed(&mut h, 256);
+        let shift = crate::world::components::CELL_SIZE;
+        h.app
+            .world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = IVec2::new(2, 0);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(h.main_camera)
+            .unwrap()
+            .translation
+            .x -= shift;
+        let world = h.app.world_mut();
+        let mut waters = world.query_filtered::<&mut Transform, With<WaterSurface>>();
+        for mut water in waters.iter_mut(world) {
+            water.translation.x -= shift;
+        }
+        let rebased = h.frame();
+        assert_eq!(rebased.transform.translation.x, 1.0 - shift);
+        assert!(h.app.world().resource::<ReflectionWork>().transform_helpers > 0);
+        assert_geometry_refreshed(&mut h, 256);
+        h.app
+            .world_mut()
+            .remove_resource::<crate::streaming::RenderOrigin>();
+        h.frame();
+        assert_geometry_refreshed(&mut h, 256);
+        settle_reflection(&mut h);
+        h.frame();
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+    }
+
+    #[test]
+    fn reflection_structural_sources_and_disabled_membership_refresh_without_value_maps() {
+        use bevy::ecs::entity_disabling::Disabled;
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        let a = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 40.0, -800.0),
+                water_bounds(CELL_WATER_HALF_EXTENTS),
+            ))
+            .id();
+        let b = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 60.0, -800.0),
+                water_bounds(CELL_WATER_HALF_EXTENTS),
+                Disabled,
+            ))
+            .id();
+        settle_reflection(&mut h);
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+        // Same eligible count, different water; no leaf Transform is mutated.
+        h.app.world_mut().entity_mut(a).insert(Disabled);
+        h.app.world_mut().entity_mut(b).remove::<Disabled>();
+        assert_eq!(h.frame().transform.translation.y, 0.0);
+        assert_geometry_refreshed(&mut h, 1);
+        h.app.world_mut().entity_mut(b).remove::<Transform>();
+        assert!(!h.frame().active);
+        assert_geometry_refreshed(&mut h, 0);
+        h.app
+            .world_mut()
+            .entity_mut(b)
+            .insert(Transform::from_xyz(0.0, 50.0, -800.0));
+        assert_eq!(h.frame().transform.translation.y, -20.0);
+        assert_geometry_refreshed(&mut h, 1);
+        h.app.world_mut().entity_mut(b).remove::<GlobalTransform>();
+        assert!(!h.frame().active);
+        assert_geometry_refreshed(&mut h, 0);
+        h.app
+            .world_mut()
+            .entity_mut(b)
+            .insert(GlobalTransform::IDENTITY);
+        assert_eq!(h.frame().transform.translation.y, -20.0);
+        assert_geometry_refreshed(&mut h, 1);
+        h.app.world_mut().entity_mut(b).remove::<WaterSurface>();
+        assert!(!h.frame().active);
+        assert_geometry_refreshed(&mut h, 0);
+        h.app.world_mut().entity_mut(b).insert(WaterSurface);
+        assert!(h.frame().active);
+        assert_geometry_refreshed(&mut h, 1);
+        h.app.world_mut().despawn(b);
+        assert!(!h.frame().active);
+        assert_geometry_refreshed(&mut h, 0);
+        // An already existing camera can become the source without a new transform tick.
+        let next = h
+            .app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 200.0, 0.0),
+                main_camera_projection(),
+                main_camera_frustum(&Transform::IDENTITY),
+            ))
+            .id();
+        h.frame();
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .remove::<StreamingCamera>();
+        h.app.world_mut().entity_mut(next).insert(StreamingCamera);
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert_eq!(h.frame().transform.translation.y, -120.0);
+        assert_geometry_refreshed(&mut h, 1);
+    }
+
+    #[test]
+    fn reflection_output_repair_and_settings_exposure_do_not_recompute_geometry() {
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        h.app.init_resource::<crate::settings::RenderingSettings>();
+        settle_reflection(&mut h);
+        let expected_pose = *h.app.world().get::<Transform>(h.reflection_camera).unwrap();
+        let expected_clip = h
+            .app
+            .world()
+            .get::<Camera>(h.reflection_camera)
+            .unwrap()
+            .computed
+            .clip_from_view;
+        h.app
+            .world_mut()
+            .get_mut::<Camera>(h.reflection_camera)
+            .unwrap()
+            .computed
+            .clip_from_view = Mat4::ZERO;
+        h.app
+            .world_mut()
+            .entity_mut(h.reflection_camera)
+            .insert((
+                Transform::from_xyz(99.0, 88.0, 77.0),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .remove::<Exposure>();
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .insert(Exposure { ev100: 7.0 });
+        h.app
+            .world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .water_reflections = false;
+        let repaired = h.frame();
+        assert!(!repaired.active);
+        assert_eq!(repaired.transform, expected_pose);
+        assert_eq!(
+            h.app
+                .world()
+                .get::<GlobalTransform>(h.reflection_camera)
+                .unwrap()
+                .to_matrix(),
+            expected_pose.to_matrix()
+        );
+        assert_eq!(
+            h.app
+                .world()
+                .get::<Exposure>(h.reflection_camera)
+                .unwrap()
+                .ev100,
+            7.0
+        );
+        assert_eq!(
+            h.app
+                .world()
+                .get::<Camera>(h.reflection_camera)
+                .unwrap()
+                .computed
+                .clip_from_view,
+            expected_clip
+        );
+        let work = take_reflection_work(&mut h);
+        assert_eq!(work.frusta, 0);
+        assert_eq!(work.planes, 0);
+        assert!(
+            work.transform_helpers > 0,
+            "repair the actual output global in this frame"
+        );
+        settle_reflection(&mut h);
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .remove::<Exposure>();
+        h.app
+            .world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .water_reflections = true;
+        assert!(h.frame().active);
+        assert_eq!(
+            h.app
+                .world()
+                .get::<Exposure>(h.reflection_camera)
+                .unwrap()
+                .ev100,
+            DEFAULT_SCENE_EV100
+        );
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+        // Replacement output camera is initialized from cached computed output.
+        h.app.world_mut().despawn(h.reflection_camera);
+        h.reflection_camera = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterReflectionCamera,
+                Camera3d::default(),
+                Transform::IDENTITY,
+            ))
+            .id();
+        assert_eq!(h.frame().transform, expected_pose);
+        let work = take_reflection_work(&mut h);
+        assert_eq!(work.frusta, 0);
+        assert_eq!(work.planes, 0);
+    }
+
+    #[test]
+    fn reflection_uses_native_current_bounds_and_repairs_current_global_before_visibility() {
+        #[derive(Resource, Default)]
+        struct VisibilityProbe(Option<Mat4>);
+        fn at_visibility(
+            reflection: Query<(&Transform, &GlobalTransform), With<WaterReflectionCamera>>,
+            mut probe: ResMut<VisibilityProbe>,
+        ) {
+            let (local, global) = reflection.single().unwrap();
+            assert_eq!(
+                global.to_matrix(),
+                local.to_matrix(),
+                "current reflection global at native visibility boundary"
+            );
+            probe.0 = Some(global.to_matrix());
+        }
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<VisibilityProbe>()
+            .add_systems(
+                PostUpdate,
+                bevy::camera::visibility::calculate_bounds
+                    .in_set(VisibilitySystems::CalculateBounds)
+                    .after(bevy::transform::TransformSystems::Propagate),
+            )
+            .add_systems(
+                PostUpdate,
+                at_visibility.in_set(VisibilitySystems::CheckVisibility),
+            );
+        let small = h
+            .app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(20.0, 20.0));
+        let large = h
+            .app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Plane3d::default().mesh().size(10000.0, 10000.0));
+        let water = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Mesh3d(small),
+                Transform::from_xyz(0.0, 40.0, -4000.0),
+            ))
+            .id();
+        assert!(
+            !h.frame().active,
+            "new native Aabb must be visible to gate this frame"
+        );
+        assert!(h.app.world().get::<Aabb>(water).is_some());
+        h.app.world_mut().entity_mut(water).insert(Mesh3d(large));
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(h.main_camera)
+            .unwrap()
+            .translation
+            .x = 17.0;
+        assert!(
+            h.frame().active,
+            "mesh replacement refreshes native bounds before gate"
+        );
+        assert_eq!(
+            h.app
+                .world()
+                .resource::<VisibilityProbe>()
+                .0
+                .unwrap()
+                .w_axis
+                .x,
+            17.0
+        );
+    }
+
+    #[test]
+    fn reflection_native_camera_preparation_publishes_the_same_frame_clipped_matrix() {
+        use bevy::camera::{CameraUpdateSystems, SubCameraView, Viewport};
+        use bevy::window::{WindowCreated, WindowResized, WindowScaleFactorChanged};
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        h.app
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy::render::texture::ManualTextureViews>()
+            .add_message::<WindowCreated>()
+            .add_message::<WindowResized>()
+            .add_message::<WindowScaleFactorChanged>()
+            .add_message::<AssetEvent<Image>>()
+            .add_systems(
+                PostUpdate,
+                bevy::render::camera::camera_system.in_set(CameraUpdateSystems),
+            )
+            .add_systems(
+                PostUpdate,
+                bevy::camera::visibility::update_frusta.in_set(VisibilitySystems::UpdateFrusta),
+            );
+        h.app.world_mut().entity_mut(h.main_camera).insert((
+            Camera {
+                viewport: Some(Viewport {
+                    physical_size: UVec2::new(800, 600),
+                    ..default()
+                }),
+                ..default()
+            },
+            RenderTarget::None {
+                size: UVec2::new(1600, 900),
+            },
+        ));
+        h.app.world_mut().entity_mut(h.reflection_camera).insert((
+            RenderTarget::None {
+                size: UVec2::new(1024, 576),
+            },
+            Frustum::default(),
+        ));
+        for size in [UVec2::new(800, 600), UVec2::new(1200, 600)] {
+            h.app
+                .world_mut()
+                .get_mut::<Camera>(h.main_camera)
+                .unwrap()
+                .viewport
+                .as_mut()
+                .unwrap()
+                .physical_size = size;
+            h.frame();
+            let world = h.app.world();
+            let Projection::Perspective(main) = world.get::<Projection>(h.main_camera).unwrap()
+            else {
+                panic!("perspective main")
+            };
+            assert_eq!(main.aspect_ratio, size.x as f32 / size.y as f32);
+            let pose = world.get::<Transform>(h.reflection_camera).unwrap();
+            let expected = reflection_lens(main, pose, 40.0);
+            let Projection::Perspective(actual) =
+                world.get::<Projection>(h.reflection_camera).unwrap()
+            else {
+                panic!("perspective reflection")
+            };
+            assert_eq!(actual.aspect_ratio, expected.aspect_ratio);
+            assert_eq!(actual.near_clip_plane, expected.near_clip_plane);
+            assert_eq!(
+                world
+                    .get::<Camera>(h.reflection_camera)
+                    .unwrap()
+                    .computed
+                    .clip_from_view,
+                expected.get_clip_from_view()
+            );
+            let global = world.get::<GlobalTransform>(h.reflection_camera).unwrap();
+            assert_eq!(global.to_matrix(), pose.to_matrix());
+            let frustum = world.get::<Frustum>(h.reflection_camera).unwrap();
+            let expected_frustum = expected.compute_frustum(global);
+            for (actual, expected) in frustum
+                .half_spaces
+                .iter()
+                .zip(expected_frustum.half_spaces.iter())
+            {
+                assert_eq!(
+                    actual.normal_d().to_array().map(f32::to_bits),
+                    expected.normal_d().to_array().map(f32::to_bits)
+                );
+            }
+        }
+        h.app
+            .world_mut()
+            .get_mut::<Camera>(h.reflection_camera)
+            .unwrap()
+            .sub_camera_view = Some(SubCameraView {
+            full_size: UVec2::new(1200, 600),
+            size: UVec2::new(600, 600),
+            offset: Vec2::new(600.0, 0.0),
+        });
+        h.frame();
+        let camera = h.app.world().get::<Camera>(h.reflection_camera).unwrap();
+        let lens = h
+            .app
+            .world()
+            .get::<Projection>(h.reflection_camera)
+            .unwrap();
+        assert_eq!(
+            camera.computed.clip_from_view,
+            lens.get_clip_from_view_for_sub(camera.sub_camera_view.as_ref().unwrap())
+        );
+        settle_reflection(&mut h);
+        let projection_tick = h
+            .app
+            .world()
+            .entity(h.reflection_camera)
+            .get_ref::<Projection>()
+            .unwrap()
+            .last_changed();
+        let frustum_tick = h
+            .app
+            .world()
+            .entity(h.reflection_camera)
+            .get_ref::<Frustum>()
+            .unwrap()
+            .last_changed();
+        for _ in 0..4 {
+            h.frame();
+            assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+            assert_eq!(
+                h.app
+                    .world()
+                    .entity(h.reflection_camera)
+                    .get_ref::<Projection>()
+                    .unwrap()
+                    .last_changed(),
+                projection_tick
+            );
+            assert_eq!(
+                h.app
+                    .world()
+                    .entity(h.reflection_camera)
+                    .get_ref::<Frustum>()
+                    .unwrap()
+                    .last_changed(),
+                frustum_tick,
+                "native update_frusta must settle too, despite different target aspect ratios"
+            );
+        }
+    }
+
+    #[test]
+    fn reflection_cache_refreshes_for_parent_motion_reparenting_and_water_membership() {
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        let camera_parent = h.app.world_mut().spawn(Transform::IDENTITY).id();
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .insert(ChildOf(camera_parent));
+        let water_parent = h.app.world_mut().spawn(Transform::IDENTITY).id();
+        let water = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 40.0, -800.0),
+                water_bounds(Vec3::new(200.0, 0.0, 200.0)),
+                ChildOf(water_parent),
+            ))
+            .id();
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(camera_parent)
+            .unwrap()
+            .translation
+            .y = 10.0;
+        assert_eq!(h.frame().transform.translation.y, -50.0);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(water_parent)
+            .unwrap()
+            .translation
+            .y = 5.0;
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        let new_parent = h
+            .app
+            .world_mut()
+            .spawn(Transform::from_xyz(0.0, 20.0, 0.0))
+            .id();
+        h.app
+            .world_mut()
+            .entity_mut(water)
+            .insert(ChildOf(new_parent));
+        assert_eq!(h.frame().transform.translation.y, -10.0);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(new_parent)
+            .unwrap()
+            .scale
+            .y = 2.0;
+        assert_eq!(h.frame().transform.translation.y, 70.0);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(camera_parent)
+            .unwrap()
+            .rotation = Quat::from_rotation_y(std::f32::consts::PI);
+        assert!(!h.frame().active);
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(camera_parent)
+            .unwrap()
+            .rotation = Quat::IDENTITY;
+        assert!(h.frame().active);
+        h.app.world_mut().entity_mut(water).remove::<WaterSurface>();
+        assert!(!h.frame().active);
+        h.app.world_mut().entity_mut(water).insert(WaterSurface);
+        assert!(h.frame().active);
+        h.app.world_mut().despawn(water);
+        assert!(!h.frame().active);
+        h.spawn_water(Vec3::new(0.0, 30.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert_eq!(h.frame().transform.translation.y, -70.0);
+    }
+
+    #[test]
+    fn settled_reflection_preserves_projection_tick_and_refreshes_bounds_lens_and_origin() {
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app
+            .insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+        let water = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 40.0, -4000.0),
+                water_bounds(Vec3::new(10.0, 0.0, 10.0)),
+            ))
+            .id();
+        assert!(!h.frame().active);
+        let projection_tick = h
+            .app
+            .world()
+            .entity(h.reflection_camera)
+            .get_ref::<Projection>()
+            .unwrap()
+            .last_changed();
+        assert!(!h.frame().active);
+        assert_eq!(
+            h.app
+                .world()
+                .entity(h.reflection_camera)
+                .get_ref::<Projection>()
+                .unwrap()
+                .last_changed(),
+            projection_tick
+        );
+        h.app
+            .world_mut()
+            .entity_mut(water)
+            .insert(water_bounds(Vec3::splat(5000.0)));
+        assert!(h.frame().active);
+        h.app.world_mut().entity_mut(water).remove::<Aabb>();
+        assert!(h.frame().active);
+        h.app
+            .world_mut()
+            .entity_mut(water)
+            .insert(water_bounds(Vec3::splat(10.0)));
+        assert!(!h.frame().active);
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .insert(Projection::Perspective(PerspectiveProjection {
+                far: 10000.0,
+                ..default()
+            }));
+        assert!(h.frame().active);
+        h.app
+            .world_mut()
+            .resource_mut::<crate::streaming::RenderOrigin>()
+            .0 = IVec2::X;
+        let main_camera = h.main_camera;
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(main_camera)
+            .unwrap()
+            .translation
+            .x -= 100.0;
+        h.app
+            .world_mut()
+            .get_mut::<Transform>(water)
+            .unwrap()
+            .translation
+            .x -= 100.0;
+        let frame = h.frame();
+        assert!(frame.active);
+        assert_eq!(frame.transform.translation.x, -100.0);
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .remove::<Projection>();
+        assert!(
+            h.frame().active,
+            "missing lens preserves the existing visible-provider contract"
+        );
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .insert(main_camera_projection());
+        assert!(!h.frame().active);
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .remove::<Frustum>();
+        assert!(h.frame().active);
+        h.app
+            .world_mut()
+            .entity_mut(h.main_camera)
+            .insert(main_camera_frustum(&Transform::from_xyz(
+                -100.0, 120.0, 0.0,
+            )));
+        assert!(!h.frame().active);
+    }
+
+    #[test]
+    fn reflection_custom_native_disabler_swap_invalidates_same_count_membership() {
+        #[derive(Component)]
+        struct Hidden;
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.app.world_mut().register_disabling_component::<Hidden>();
+        let a = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 40.0, -800.0),
+                water_bounds(CELL_WATER_HALF_EXTENTS),
+            ))
+            .id();
+        let b = h
+            .app
+            .world_mut()
+            .spawn((
+                WaterSurface,
+                Transform::from_xyz(0.0, 60.0, -800.0),
+                water_bounds(CELL_WATER_HALF_EXTENTS),
+                Hidden,
+            ))
+            .id();
+        settle_reflection(&mut h);
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
+        h.app.world_mut().entity_mut(a).insert(Hidden);
+        h.app.world_mut().entity_mut(b).remove::<Hidden>();
+        assert_eq!(h.frame().transform.translation.y, 0.0);
+        assert_geometry_refreshed(&mut h, 1);
+        h.app.world_mut().entity_mut(a).remove::<Hidden>();
+        h.app.world_mut().entity_mut(b).insert(Hidden);
+        assert_eq!(h.frame().transform.translation.y, -40.0);
+        assert_geometry_refreshed(&mut h, 1);
+    }
+
+    #[test]
+    fn reflection_targeted_global_update_preserves_native_parent_composition_this_frame() {
+        let mut h = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        h.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        let parent = h
+            .app
+            .world_mut()
+            .spawn(Transform::from_xyz(3.0, 4.0, 5.0).with_rotation(Quat::from_rotation_y(0.3)))
+            .id();
+        h.app
+            .world_mut()
+            .entity_mut(h.reflection_camera)
+            .insert(ChildOf(parent));
+        for height in [120.0, 140.0, 160.0] {
+            h.app
+                .world_mut()
+                .get_mut::<Transform>(h.main_camera)
+                .unwrap()
+                .translation
+                .y = height;
+            h.frame();
+            let world = h.app.world();
+            let local = world.get::<Transform>(h.reflection_camera).unwrap();
+            let expected = world
+                .get::<GlobalTransform>(parent)
+                .unwrap()
+                .mul_transform(*local);
+            assert_eq!(
+                *world.get::<GlobalTransform>(h.reflection_camera).unwrap(),
+                expected
+            );
+        }
+        settle_reflection(&mut h);
+        h.frame();
+        assert_eq!(take_reflection_work(&mut h), ReflectionWork::default());
     }
 
     struct ReflectionFrame {
@@ -1256,7 +2824,12 @@ mod tests {
         let frame = harness.frame();
         assert_eq!(frame.transform.translation.y, -80.0);
         let changes = harness.app.world().resource::<Changes>();
-        assert!(changes.transform && !changes.camera && !changes.exposure);
+        // Moving the eye changes the oblique clip matrix. Extraction reads Camera.computed,
+        // so both the pose and camera must publish that real change in this frame.
+        assert!(changes.transform && changes.camera && !changes.exposure);
+        harness.frame();
+        let changes = harness.app.world().resource::<Changes>();
+        assert!(!changes.transform && !changes.camera && !changes.exposure);
 
         harness
             .app
@@ -1390,6 +2963,7 @@ mod tests {
     fn reflection_camera_renders_until_a_plane_reports_its_bounds() {
         let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
         harness.app.world_mut().spawn((
+            Transform::from_xyz(0.0, 40.0, -800.0),
             GlobalTransform::from(Transform::from_translation(Vec3::new(0.0, 40.0, -800.0))),
             WaterSurface,
         ));
@@ -2569,4 +4143,104 @@ mod tests {
             "the fragment's coordinate must be quadrant-local, on the grid's own scale"
         );
     }
+}
+
+const MATERIAL_ANIMATION_EXTENSION: &str = "OPEN_SKYRIM_material_animation";
+
+#[derive(Default, Clone)]
+struct SkyrimMaterialHandler {
+    material_extensions: bool,
+    animations: Option<crate::material_animation::MaterialAnimationRegistry>,
+}
+
+impl GltfExtensionHandler for SkyrimMaterialHandler {
+    fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+        Box::new(self.clone())
+    }
+
+    fn on_root(
+        &mut self,
+        context: &mut LoadContext<'_>,
+        _gltf: &bevy::gltf::gltf::Gltf,
+        _settings: &bevy::gltf::GltfLoaderSettings,
+    ) {
+        if let Some(registry) = &self.animations {
+            registry.clear_source(&context.path().to_string(), "/std");
+        }
+    }
+
+    fn on_material(
+        &mut self,
+        load_context: &mut LoadContext<'_>,
+        gltf_material: &bevy::gltf::gltf::Material,
+        _material: Handle<GltfMaterial>,
+        material_asset: &GltfMaterial,
+        material_label: &str,
+    ) {
+        if let Some(registry) = &self.animations {
+            let animation = material_animation_of(
+                gltf_material,
+                material_asset.uv_transform,
+                self.material_extensions,
+            );
+            registry.replace(
+                &format!("{}#{material_label}/std", load_context.path()),
+                animation,
+            );
+        }
+    }
+}
+
+/// Loader tasks may consume extension payloads only after validating the manifest capability.
+fn material_extensions_enabled(app: &App) -> bool {
+    app.world()
+        .get_resource::<crate::extensions::DataSetExtensions>()
+        .is_some_and(|extensions| {
+            extensions
+                .status(crate::extensions::Feature::Material)
+                .is_present()
+        })
+}
+
+fn install_material_animation(app: &mut App) {
+    if material_extensions_enabled(app) {
+        app.add_plugins(crate::material_animation::MaterialAnimationPlugin);
+    }
+}
+
+pub(crate) fn material_animation_of(
+    material: &bevy::gltf::gltf::Material,
+    base: bevy::math::Affine2,
+    material_extensions: bool,
+) -> Option<crate::material_animation::MaterialAnimation> {
+    if !material_extensions {
+        return None;
+    }
+    material
+        .extension_value(MATERIAL_ANIMATION_EXTENSION)
+        .and_then(|animation| {
+            crate::material_animation::MaterialAnimation::from_extensions(animation, base)
+        })
+}
+
+fn register_skyrim_material_handler(app: &mut App) {
+    let material_extensions = material_extensions_enabled(app);
+    let animations = material_extensions.then(|| {
+        let registry = crate::material_animation::MaterialAnimationRegistry::default();
+        app.insert_resource(registry.clone());
+        registry
+    });
+    let Some(handlers) = app.world().get_resource::<GltfExtensionHandlers>() else {
+        warn!(
+            "the glTF extension handlers are unavailable; published material animations cannot be registered"
+        );
+        return;
+    };
+    handlers
+        .0
+        .write_blocking()
+        .push(Box::new(SkyrimMaterialHandler {
+            material_extensions,
+            animations,
+        }));
 }

@@ -42,6 +42,9 @@ pub struct StagedOutput {
     pub source_hash: String,
     pub output_size: u64,
     pub output_hash: String,
+    /// Absent historical diagnostics are read once from verified retained GLB metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation_diagnostics: Option<AnimationDiagnostics>,
 }
 
 impl StagedOutput {
@@ -163,12 +166,30 @@ pub fn load_staged_outputs(staging: &Path) -> Result<BTreeMap<String, StagedOutp
     Ok(records)
 }
 
+/// Non-gating authored-animation diagnostics, carried with the output's hash provenance.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnimationDiagnostics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped_channels: BTreeMap<String, usize>,
+}
+
+impl AnimationDiagnostics {
+    pub fn is_empty(&self) -> bool {
+        self.notices.is_empty() && self.skipped_channels.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheEntry {
     pub source_hash: String,
     pub output: String,
     pub output_size: u64,
     pub output_hash: String,
+    /// Absent historical diagnostics are read once from verified retained GLB metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation_diagnostics: Option<AnimationDiagnostics>,
 }
 
 /// Body composition with thin morph inputs and effective catalog skin choices.
@@ -233,6 +254,24 @@ where
         .collect())
 }
 
+fn deserialize_extensions<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<shared::extensions::ExtensionEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let (entries, issues) = shared::extensions::parse_entries(&value);
+    for issue in issues {
+        log::warn!(
+            "ignored optional capability declaration {:?}: {}",
+            issue.id,
+            issue.reason
+        );
+    }
+    Ok(entries)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestedFile {
     pub path: String,
@@ -250,6 +289,10 @@ pub enum IngestionSelection {
     /// Runtime mesh/texture/script inputs, LOD settings, and English string banks.
     RuntimeEnglishV1,
     ConverterInputsV1,
+    /// Runtime inputs without native baked geometry or LOD texture namespaces.
+    ClusterEnglishV1,
+    /// All-language inputs without native baked geometry or LOD texture namespaces.
+    ClusterInputsV1,
 }
 
 impl IngestionSelection {
@@ -257,6 +300,10 @@ impl IngestionSelection {
         self == Self::All
             || self == requested
             || (self == Self::ConverterInputsV1 && requested == Self::RuntimeEnglishV1)
+            || (self == Self::ConverterInputsV1
+                && matches!(requested, Self::ClusterInputsV1 | Self::ClusterEnglishV1))
+            || (matches!(self, Self::RuntimeEnglishV1 | Self::ClusterInputsV1)
+                && requested == Self::ClusterEnglishV1)
     }
 }
 
@@ -344,6 +391,8 @@ impl IngestionJournal {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversionManifest {
+    #[serde(flatten)]
+    pub geometry: shared::geometry::GeometryManifest,
     pub schema_version: u32,
     /// Metadata-only rebuilds do not upgrade the retained mesh cache contract.
     /// Absent means the meshes follow `schema_version`.
@@ -362,6 +411,15 @@ pub struct ConversionManifest {
     /// Ordered identities of the runtime schema add-ons used by this pack.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schema_addons: Vec<crate::records::addons::SchemaAddonIdentity>,
+    /// Derived output beyond `main`'s core schema, each with a content hash
+    /// (`docs/specs/converters/extensions.md`). Absent when the data set has none, so a
+    /// data set without extensions has `main`'s manifest.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_extensions"
+    )]
+    pub extensions: Vec<shared::extensions::ExtensionEntry>,
     /// Original producer settings of each converted asset kind, independent of
     /// record-reader metadata. A metadata-only migration retains these values.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -438,6 +496,12 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
+    "authored-material-animation",
+    "authored-billboard-mode",
+    "reference-root-placement",
+    "collision-reference-root-placement",
+    "one-primitive-per-authored-shape",
+    "retained-transform-animation-warnings",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -663,6 +727,27 @@ pub(crate) fn legacy_projection_v2_configuration_hash(
     )
 }
 
+/// Retaining GLBs cannot upgrade their authored animation; require the current NIF producer proof.
+/// Packs without retained meshes still follow each caller's configuration, source and integrity checks.
+pub(crate) fn ensure_current_retained_mesh_proof(
+    config: &crate::config::PipelineConfig,
+    manifest: &ConversionManifest,
+) -> Result<()> {
+    if manifest
+        .entries
+        .values()
+        .any(|entry| entry.output.ends_with(".glb"))
+    {
+        let expected =
+            asset_configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION, "nif")?;
+        color_eyre::eyre::ensure!(
+            manifest.asset_configuration_hashes.get("nif") == Some(&expected),
+            "retained NIF proof predates the current authored mesh contract; run normal conversion to regenerate every NIF GLB before retaining converted meshes"
+        );
+    }
+    Ok(())
+}
+
 /// Settings that change one asset kind's bytes, excluding full reader metadata.
 ///
 /// Mesh conversion consumes NIF/skeleton/material source dependencies. Texture
@@ -677,6 +762,10 @@ pub fn asset_configuration_hash_for_schema(
     let mut relevant = match source_ext {
         "nif" => {
             let mut mesh = serde_json::json!({"mesh_producer": schema});
+            if schema == CONVERTER_SCHEMA_VERSION {
+                mesh["authored_transform_animation"] =
+                    serde_json::json!(crate::nif_animation::PRODUCER_VERSION);
+            }
             if mesh_output_contracts_apply(schema) {
                 mesh["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
             }
@@ -1294,6 +1383,53 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn optional_capability_parse_is_tolerant_per_entry() {
+        let good = shared::extensions::ExtensionEntry {
+            id: "example.valid".into(),
+            version: 1,
+            owns: Default::default(),
+            sha256: String::new(),
+            built_from: "core".into(),
+            stats: Default::default(),
+        };
+        let mut document = serde_json::to_value(ConversionManifest::default()).unwrap();
+        document["extensions"] = serde_json::json!([
+            {"id": "example.missing_fields"},
+            {"id": "example.float_stat", "version": 1, "sha256": "", "built_from": "core", "stats": {"rows": 1.5}},
+            good,
+        ]);
+        let manifest: ConversionManifest = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(manifest.extensions, vec![good]);
+        document["extensions"] = serde_json::Value::Null;
+        let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
+        assert!(manifest.extensions.is_empty());
+    }
+
+    #[test]
+    fn extensions_are_optional_and_round_trip_without_changing_core_fields() {
+        let mut manifest = ConversionManifest::default();
+        let before = serde_json::to_value(&manifest).unwrap();
+        assert!(before.get("extensions").is_none());
+        let legacy: ConversionManifest = serde_json::from_value(before.clone()).unwrap();
+        assert!(legacy.extensions.is_empty());
+        manifest
+            .extensions
+            .push(shared::extensions::ExtensionEntry {
+                id: "example.payload".to_owned(),
+                version: 1,
+                owns: shared::extensions::ExtensionOwns::default(),
+                sha256: "0".repeat(64),
+                built_from: "core".to_owned(),
+                stats: BTreeMap::new(),
+            });
+        let mut with_extension = serde_json::to_value(&manifest).unwrap();
+        let restored: ConversionManifest = serde_json::from_value(with_extension.clone()).unwrap();
+        assert_eq!(restored, manifest);
+        with_extension.as_object_mut().unwrap().remove("extensions");
+        assert_eq!(with_extension, before);
+    }
+
     use super::*;
 
     /// Legacy absence and malformed optional records do not poison neighboring proofs.
@@ -1336,6 +1472,20 @@ mod tests {
             let manifest: ConversionManifest = serde_json::from_value(json).unwrap();
             assert!(manifest.derived_outputs.is_empty());
         }
+    }
+
+    #[test]
+    fn authored_animation_changes_the_nif_asset_proof() {
+        let config = crate::config::PipelineConfig::new("Data", "output");
+        let mut previous = serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION});
+        if mesh_output_contracts_apply(CONVERTER_SCHEMA_VERSION) {
+            previous["mesh_contracts"] = serde_json::json!(MESH_OUTPUT_CONTRACTS);
+        }
+        let old = hash_bytes(&serde_json::to_vec(&previous).unwrap());
+        assert_ne!(
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, "nif").unwrap(),
+            old
+        );
     }
 
     /// Historical absence stays unknown while known loss and success round-trip distinctly.
@@ -2087,6 +2237,7 @@ mod tests {
             fs::write(&path, b"verified old bytes").unwrap();
             for schema_version in [17, 18, 19, 20, 21, 22, 23, 24, 25, 26] {
                 let record = StagedOutput {
+                    animation_diagnostics: None,
                     schema_version,
                     configuration_hash: "matching-config".to_owned(),
                     source_hash: "matching-source".to_owned(),
@@ -2236,6 +2387,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let staging = directory.path();
         let stale = StagedOutput {
+            animation_diagnostics: None,
             schema_version: CONVERTER_SCHEMA_VERSION,
             configuration_hash: "config".to_owned(),
             source_hash: "stale".to_owned(),
@@ -2243,6 +2395,7 @@ mod tests {
             output_hash: "stale".to_owned(),
         };
         let current = StagedOutput {
+            animation_diagnostics: None,
             source_hash: "current".to_owned(),
             ..stale.clone()
         };
@@ -2446,6 +2599,7 @@ mod tests {
         let path = directory.path().join("mesh.glb");
         fs::write(&path, b"verified mesh").unwrap();
         let record = StagedOutput {
+            animation_diagnostics: None,
             schema_version: CONVERTER_SCHEMA_VERSION,
             configuration_hash: "config".into(),
             source_hash: "source".into(),
@@ -2476,6 +2630,7 @@ mod tests {
                 manifest.entries.insert(
                     output.to_owned(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".to_owned(),
                         output: output.to_owned(),
                         output_size: 1,
@@ -2506,7 +2661,12 @@ mod tests {
             directory.path().join("output"),
         );
         let plain = |schema: u32| {
-            hash_bytes(&serde_json::to_vec(&serde_json::json!({"mesh_producer": schema})).unwrap())
+            let mut proof = serde_json::json!({"mesh_producer": schema});
+            if schema == CONVERTER_SCHEMA_VERSION {
+                proof["authored_transform_animation"] =
+                    serde_json::json!(crate::nif_animation::PRODUCER_VERSION);
+            }
+            hash_bytes(&serde_json::to_vec(&proof).unwrap())
         };
         let nif =
             |schema: u32| asset_configuration_hash_for_schema(&config, schema, "nif").unwrap();
@@ -2565,6 +2725,7 @@ mod tests {
                 manifest.entries.insert(
                     output.into(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".into(),
                         output: output.into(),
                         output_size: 1,
@@ -2617,6 +2778,7 @@ mod tests {
                 manifest.entries.insert(
                     output.to_owned(),
                     CacheEntry {
+                        animation_diagnostics: None,
                         source_hash: "source".to_owned(),
                         output: output.to_owned(),
                         output_size: 1,

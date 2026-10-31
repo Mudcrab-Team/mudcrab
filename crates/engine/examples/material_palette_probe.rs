@@ -287,6 +287,7 @@ fn effect_material(index: usize, case: &Case, palette: &str) -> NifShapeMaterial
         uv_scale: [1.0; 2],
         texture_clamp_mode: 3,
         tint_color: None,
+        animation: Default::default(),
         shader_family: NifShaderFamily::Effect,
         lighting_shader_type: None,
         shader_block: index as u32,

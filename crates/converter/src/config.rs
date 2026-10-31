@@ -86,6 +86,22 @@ pub struct PipelineConfig {
     /// are unchanged; generated database/LOD outputs are rebuilt on every run.
     #[serde(default)]
     pub no_lod: bool,
+    /// Explicitly discard overlays before replacing their base conversion.
+    #[serde(default)]
+    pub discard_derived: bool,
+    /// How distant opaque static objects are prepared (ADR-0013). `baked`, the default, adds
+    /// nothing to the output. Not part of the asset configuration hash: it selects regenerated
+    /// outputs only. Forced `cluster` omits baked products, includes trees and always
+    /// derives terrain. `auto` keeps a baked base and derives the historical optional overlay.
+    #[serde(default)]
+    pub lod_mode: crate::cluster::LodMode,
+    /// Smallest primitive, in triangles, for the optional auto-mode overlay.
+    /// Forced cluster mode resolves this to one because it has no baked size-refusal path.
+    #[serde(default = "default_cluster_triangle_threshold")]
+    pub cluster_triangle_threshold: u32,
+    /// Add clustered terrain in auto mode; forced cluster mode always includes it.
+    #[serde(default)]
+    pub cluster_terrain: bool,
     /// Build the merged-terrain outputs (#215) after the world database and the land textures:
     /// the land texture arrays, one merged mesh per exterior cell and the terrain chunk files.
     /// Off by default, because the engine half that reads them has not landed, and converted
@@ -151,6 +167,10 @@ fn default_texture_zstd_level() -> i32 {
     6
 }
 
+fn default_cluster_triangle_threshold() -> u32 {
+    crate::cluster::DEFAULT_TRIANGLE_THRESHOLD
+}
+
 impl PipelineConfig {
     /// Read all configured add-ons once, rejecting the batch before output work begins.
     pub(crate) fn freeze_schema_addons(&mut self) -> color_eyre::Result<()> {
@@ -190,6 +210,10 @@ impl PipelineConfig {
             skyrim_ini_file: None,
             lod_origins: BTreeMap::new(),
             no_lod: false,
+            discard_derived: false,
+            lod_mode: crate::cluster::LodMode::default(),
+            cluster_triangle_threshold: crate::cluster::DEFAULT_TRIANGLE_THRESHOLD,
+            cluster_terrain: false,
             merged_terrain: false,
             terrain_default_texture: TerrainDefaultTexture::default(),
             terrain_ini: None,
@@ -213,6 +237,68 @@ impl PipelineConfig {
             script_abi_version: 1,
             language: default_language(),
         }
+    }
+
+    /// Called under the base's exclusive writer lock, after publication recovery (which can
+    /// restore a last-good base together with its `derived/`) and before any output is written.
+    ///
+    /// Overlays are bound to the base they were derived from, so replacing the base retires
+    /// them. This only guards: nothing is deleted here. With `--discard-derived`, the old base
+    /// and its `derived/` stay together until the new base publishes; the existing atomic
+    /// publication then moves them aside and removes them, and a failed conversion leaves both
+    /// as they were. The command's own bookkeeping (owner note, lock files, the staging of a
+    /// dead derivation) needs no flag.
+    pub(crate) fn protect_derived(&self) -> color_eyre::Result<()> {
+        use color_eyre::eyre::ensure;
+        let derived = self.output_dir.join(shared::cluster_overlay::DERIVED_DIR);
+        let metadata = match std::fs::symlink_metadata(&derived) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "derived/ is not a regular directory"
+        );
+        let content = crate::derive_extensions::derived_content_to_discard(&derived)?;
+        if content.is_empty() {
+            return Ok(());
+        }
+        ensure!(
+            self.discard_derived,
+            "base {} has derived/ content ({}); refusing to replace it. Use --discard-derived to explicitly discard it when the new base publishes",
+            self.output_dir.display(),
+            content.join(", ")
+        );
+        for entry in walkdir::WalkDir::new(&derived).follow_links(false) {
+            let entry = entry?;
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            ensure!(
+                !metadata.file_type().is_symlink(),
+                "refusing linked derived path {}",
+                entry.path().display()
+            );
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                ensure!(
+                    metadata.file_attributes() & 0x400 == 0,
+                    "refusing reparse derived path {}",
+                    entry.path().display()
+                );
+            }
+        }
+        let base = std::fs::canonicalize(&self.output_dir)?;
+        let resolved = std::fs::canonicalize(&derived)?;
+        ensure!(
+            resolved.parent() == Some(base.as_path()),
+            "derived directory escaped base"
+        );
+        eprintln!(
+            "converter: derived overlays at {} will be discarded when the new base publishes (--discard-derived); a failed conversion keeps them",
+            resolved.display()
+        );
+        Ok(())
     }
 
     /// Resolves the persistent ingestion-cache root outside the published pack.
@@ -302,8 +388,8 @@ impl PipelineConfig {
         // Compared as resolved folders, not as spelled: the output is replaced
         // on publish, staging is deleted after it, and the cache is pruned, so
         // none of them may be, hold, or sit inside the game data.
-        let data = std::fs::canonicalize(&self.data_dir)?;
-        let mut sources = vec![data.clone()];
+        let cache = self.ingestion_cache_dir();
+        let mut sources = vec![self.data_dir.clone()];
         if let Some(selection) = &self.mo2 {
             color_eyre::eyre::ensure!(
                 self.plugins_file.is_none(),
@@ -319,25 +405,23 @@ impl PipelineConfig {
             );
         }
         let mut written = vec![
-            ("output directory", self.output_dir.clone()),
-            ("ingestion cache directory", self.ingestion_cache_dir()),
+            ("output directory", self.output_dir.as_path()),
+            ("ingestion cache directory", cache.as_path()),
         ];
         if let Some(staging) = &self.resume_staging {
-            written.push(("resume staging directory", staging.clone()));
+            written.push(("resume staging directory", staging.as_path()));
         }
-        for (role, path) in written {
-            let resolved = resolve_path(&path)?;
-            for source in &sources {
-                color_eyre::eyre::ensure!(
-                    !(resolved.starts_with(source) || source.starts_with(&resolved)),
-                    "the {role} {} overlaps the Skyrim Data directory or MO2 source {}; choose a folder outside it that does not contain it",
-                    path.display(),
-                    source.display()
-                );
-            }
-        }
+        check_folders_outside_sources(&sources, &written)?;
         check_output_dir(&self.output_dir)?;
         if let Some(staging) = &self.resume_staging {
+            match std::fs::symlink_metadata(staging.join(".base-published")) {
+                Ok(_) => color_eyre::eyre::bail!(
+                    "this conversion base is already published; derive only its overlay, do not resume {}",
+                    staging.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
             color_eyre::eyre::ensure!(
                 staging.is_dir(),
                 "resume staging directory does not exist: {}",
@@ -375,6 +459,48 @@ impl PipelineConfig {
         }
         Ok(())
     }
+}
+
+/// Whether `output_dir` and the ingestion cache a run would keep beside it
+/// (`<output>.assets-cache`) stay clear of the Skyrim Data folder: neither may
+/// be, hold, or sit inside it, compared as resolved folders. Publishing
+/// replaces the output and the cache is pruned, so an overlap would delete
+/// game data. The pipeline checks this before a run; front ends can call it
+/// when a folder is chosen. `data_dir` must exist.
+pub fn check_outside_data(data_dir: &Path, output_dir: &Path) -> color_eyre::Result<()> {
+    let cache = PipelineConfig::new(data_dir, output_dir).ingestion_cache_dir();
+    check_folders_outside_sources(
+        &[data_dir.to_path_buf()],
+        &[
+            ("output directory", output_dir),
+            ("ingestion cache directory", cache.as_path()),
+        ],
+    )
+}
+
+// Compared as resolved folders, not as spelled: the output is replaced on
+// publish, staging is deleted after it, and the cache is pruned, so none of
+// them may be, hold, or sit inside the game data or any MO2 source root.
+fn check_folders_outside_sources(
+    sources: &[PathBuf],
+    folders: &[(&str, &Path)],
+) -> color_eyre::Result<()> {
+    let sources = sources
+        .iter()
+        .map(|source| Ok((std::fs::canonicalize(source)?, source)))
+        .collect::<color_eyre::Result<Vec<_>>>()?;
+    for (role, path) in folders {
+        let resolved = resolve_path(path)?;
+        for (source, spelled) in &sources {
+            color_eyre::eyre::ensure!(
+                !(resolved.starts_with(source) || source.starts_with(&resolved)),
+                "the {role} {} overlaps the Skyrim Data directory or MO2 source {}; choose a folder outside it that does not contain it",
+                path.display(),
+                spelled.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Why [`check_output_dir`] refused a folder.
@@ -507,6 +633,10 @@ pub fn find_resumable_staging(output: &Path) -> Option<(PathBuf, usize)> {
         .ok()?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            std::fs::symlink_metadata(entry.path().join(".base-published"))
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        })
         .filter_map(|entry| {
             let name = entry.file_name();
             let suffix = name.to_str()?.strip_prefix(&prefix)?;
@@ -868,6 +998,19 @@ mod tests {
     }
 
     #[test]
+    fn published_staging_is_not_resumable_or_discoverable() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, mut config) = config_with_data(directory.path());
+        let staging = directory.path().join("modern.staging-1-1");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join(".base-published"), b"base already published\n").unwrap();
+        assert_eq!(find_resumable_staging(&config.output_dir), None);
+        config.resume_staging = Some(staging);
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("already published"), "{error}");
+    }
+
+    #[test]
     fn folders_the_run_writes_must_not_overlap_the_data_folder() {
         let directory = tempfile::tempdir().unwrap();
         let (data, config) = config_with_data(directory.path());
@@ -910,6 +1053,22 @@ mod tests {
         assert_eq!(std::fs::read(data.join("Skyrim.esm")).unwrap(), b"keep me");
     }
 
+    #[test]
+    fn check_outside_data_matches_the_run_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let (data, _) = config_with_data(directory.path());
+        assert!(check_outside_data(&data, &directory.path().join("modern")).is_ok());
+        let error = check_outside_data(&data, &data.join("modern"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("the output directory"), "{error}");
+        assert!(check_outside_data(&data, directory.path()).is_err());
+        // The default cache sits beside the output: an output named so that
+        // its cache lands inside Data is refused too.
+        let inside = data.join("x");
+        assert!(check_outside_data(&data, &inside).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_output_folder_that_cannot_be_listed_is_refused_even_with_a_manifest() {
@@ -944,5 +1103,95 @@ mod tests {
             Path::new("/data")
         );
         assert_eq!(parent_or_cwd(Path::new("/data")), Path::new("/"));
+    }
+}
+
+#[cfg(test)]
+mod derived_guard_tests {
+    use super::*;
+    use shared::asset_lock::AssetLock;
+
+    fn base_with(root: &std::path::Path) -> (PathBuf, PipelineConfig) {
+        let base = root.join("base");
+        std::fs::create_dir_all(base.join("derived")).unwrap();
+        std::fs::write(base.join("core"), b"base bytes").unwrap();
+        let config = PipelineConfig::new(root, &base);
+        (base, config)
+    }
+
+    #[test]
+    fn base_reconversion_refuses_derived_unless_explicitly_discarded_and_never_deletes() {
+        let root = tempfile::tempdir().unwrap();
+        let (base, mut config) = base_with(root.path());
+        std::fs::create_dir_all(base.join("derived/clusters-fixture")).unwrap();
+        std::fs::write(base.join("derived/clusters-fixture/sentinel"), b"overlay").unwrap();
+        assert!(
+            format!("{:#}", config.protect_derived().unwrap_err()).contains("--discard-derived")
+        );
+        config.discard_derived = true;
+        // The guard passes, yet the overlay stays until a new base publishes.
+        config.protect_derived().unwrap();
+        assert_eq!(
+            std::fs::read(base.join("derived/clusters-fixture/sentinel")).unwrap(),
+            b"overlay"
+        );
+        assert_eq!(std::fs::read(base.join("core")).unwrap(), b"base bytes");
+    }
+
+    #[test]
+    fn own_bookkeeping_alone_needs_no_discard() {
+        let root = tempfile::tempdir().unwrap();
+        let (base, config) = base_with(root.path());
+        let derived = base.join("derived");
+        std::fs::write(derived.join("OWNER.txt"), b"owner: note\n").unwrap();
+        std::fs::write(derived.join("clusters-abc.lock"), b"").unwrap();
+        // A staging whose derivation died: owner note, no lock file.
+        let dead = derived.join(".staging-1-2");
+        std::fs::create_dir(&dead).unwrap();
+        std::fs::write(
+            dead.join("OWNER.txt"),
+            b"owner: cluster overlay derivation\nbase: x\n",
+        )
+        .unwrap();
+        config.protect_derived().unwrap();
+        // The same staging with a lock file nobody holds is dead as well.
+        drop(AssetLock::acquire_exclusive(&dead).unwrap());
+        config.protect_derived().unwrap();
+        assert!(dead.is_dir());
+    }
+
+    #[test]
+    fn live_foreign_or_real_content_in_derived_needs_discard() {
+        let root = tempfile::tempdir().unwrap();
+        let (base, mut config) = base_with(root.path());
+        let derived = base.join("derived");
+        let live = derived.join(".staging-9-9");
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(
+            live.join("OWNER.txt"),
+            b"owner: cluster overlay derivation\nbase: x\n",
+        )
+        .unwrap();
+        let running = AssetLock::acquire_exclusive(&live).unwrap();
+        let error = format!("{:#}", config.protect_derived().unwrap_err());
+        assert!(error.contains("--discard-derived") && error.contains(".staging-9-9"));
+        drop(running);
+        config.protect_derived().unwrap();
+        // A staging this command did not write is somebody else's.
+        let foreign = derived.join(".staging-other-run");
+        std::fs::create_dir(&foreign).unwrap();
+        assert!(
+            format!("{:#}", config.protect_derived().unwrap_err()).contains(".staging-other-run")
+        );
+        std::fs::remove_dir(&foreign).unwrap();
+        // A retained previous overlay, and unknown files, count as content.
+        std::fs::create_dir(derived.join(".replaced-1-2")).unwrap();
+        assert!(config.protect_derived().is_err());
+        std::fs::remove_dir(derived.join(".replaced-1-2")).unwrap();
+        std::fs::write(derived.join("notes.txt"), b"mine").unwrap();
+        assert!(config.protect_derived().is_err());
+        config.discard_derived = true;
+        config.protect_derived().unwrap();
+        assert!(derived.join("notes.txt").is_file());
     }
 }

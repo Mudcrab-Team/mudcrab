@@ -19,6 +19,7 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+bytemuck.workspace = true
 ktx2.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libc = "0.2"
@@ -33,8 +34,10 @@ zip = { version = "9", default-features = false }
 windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+tokio.workspace = true
 tempfile = "3.20"
-converter = { path = "../converter" }
+converter = { path = "../converter", features = ["test-support"] }
 dummy-content = { path = "../dummy-content" }
 ddsfile = "0.5"
 # Compiles the terrain shaders in tests; the version Bevy 0.19's shader cache already builds.

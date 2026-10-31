@@ -10,6 +10,7 @@ mo2 = { path = "../mo2/" }
 shared = { path = "../shared/" }
 bevy.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 crossbeam-channel = "0.5.16"
 tokio.workspace = true
 

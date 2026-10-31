@@ -2,6 +2,7 @@ use crate::{
     color_pipeline::{SceneGradeSource, SkyrimCinematicPostPlugin},
     config::{EngineConfig, MAX_IO_THREADS},
     console::{ConsolePlugin, console_closed},
+    extensions::{open_features, read_data_extensions},
     metrics::AcceptanceMetricsPlugin,
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
@@ -167,17 +168,31 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             )
         })?;
     }
+    // Resolve geometry before opening runtime sources or constructing their plugins.
+    // Cluster conversions select their recorded package without requiring baked LOD inventory.
+    let cluster_overlay =
+        if reads_asset_tree && (!config.streaming_fixture || config.clusters.is_some()) {
+            crate::geometry::prepare(&mut config)?
+        } else {
+            None
+        };
     // The terrain heights along a route are read here, before the window opens, so that following
     // the ground costs nothing while the run is measured.
     let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
-            InitialCameraGroundHeight(0.0),
-            None,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
+                InitialCameraGroundHeight(0.0),
+                None,
+            ),
+            extensions,
+            notices,
         ))
     } else if config.benchmark_only
         || config.material_fixture
@@ -190,6 +205,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     } else {
         validate_runtime_assets(&config)?;
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
         let spawn_ground_height = if interactive_world_physics {
@@ -211,11 +228,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             )?);
         }
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            cache,
-            InitialCameraGroundHeight(ground_height),
-            spawn_ground_height,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                cache,
+                InitialCameraGroundHeight(ground_height),
+                spawn_ground_height,
+            ),
+            extensions,
+            notices,
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
@@ -296,6 +317,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    app.insert_resource(config.graphics.clone());
+    // Capability state must exist before any renderer plugin builds.
+    let runtime_data = runtime_data.map(|(runtime_data, extensions, notices)| {
+        app.insert_resource(extensions).insert_resource(notices);
+        runtime_data
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -421,6 +448,27 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             .insert_resource(ground_height)
             .insert_resource(crate::physics::WalkSpawnGroundHeight(spawn_ground_height))
             .add_plugins(StreamingPlugin);
+        app.add_plugins(crate::pacing::startup::StartupLoadPlugin);
+        if let Some(overlay) = cluster_overlay {
+            let config = app.world().resource::<EngineConfig>();
+            let base = config.assets_dir.clone();
+            let terrain = config.cluster_terrain;
+            let quality = config.graphics.clone();
+            // Owned render bodies are removed before spawning. Prepare their materials
+            // during covered startup, including batches outside the initial camera view.
+            app.insert_resource(crate::cluster::package::ClusterBatchPreload);
+            app.insert_resource(crate::cluster::render::ClusterSettings {
+                error_pixels: quality.cluster_error_pixels,
+                terrain_error_pixels: quality.cluster_terrain_error_pixels,
+                ..default()
+            });
+            app.add_plugins(crate::cluster::package::ClusterPackagePlugin {
+                base,
+                overlay,
+                terrain,
+                priority_point: None,
+            });
+        }
         if let (Some(plan), Some(ground)) = (route, route_ground) {
             info!(
                 route = %plan.source,
@@ -438,6 +486,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
             app.add_plugins((WorldPlayerPlugin, crate::door_crossing::DoorCrossingPlugin));
+            crate::model_animation::add_ordinary_animation_plugins(&mut app);
             // `coc`/`coe` move the player, so they come with it, as `tcl` does: a run without a
             // player (a benchmark, `--shots`, headless) lists neither in Help.
             crate::cell_commands::register_cell_commands(&mut app);
@@ -1426,7 +1475,7 @@ fn setup_terrain_water_fixture(
                 terrain_materials.add(TerrainMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
-                        perceptual_roughness: 0.92,
+                        perceptual_roughness: shared::terrain::ATLAS_ROUGHNESS as f32,
                         cull_mode: None,
                         double_sided: true,
                         ..default()
@@ -1944,7 +1993,7 @@ struct RuntimeIntegrationReport {
     passed: bool,
 }
 
-fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
+pub(crate) fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
     for required in ["skyrim_world.db", "cell_cache.rkyv"] {
         color_eyre::eyre::ensure!(
             config.assets_dir.join(required).is_file(),
@@ -1952,11 +2001,11 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             config.assets_dir.display()
         );
     }
+    // An old full-copy cluster dataset (cluster tables inside the base) has no reader, with or
+    // without --clusters: the message names the rebuild command.
+    shared::cluster_overlay::refuse_full_copy(&config.assets_dir)?;
     if config.allow_incomplete_assets {
-        crate::world::database::validate_lod_build_contract(
-            &config.assets_dir,
-            converter_schema_version(),
-        )?;
+        validate_runtime_database(config)?;
         return Ok(());
     }
     let manifest_path = config.assets_dir.join("conversion-manifest.json");
@@ -2017,16 +2066,26 @@ fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
             AssetSetRejection::IntegrationReportFailed
         )
     );
-    let database_schema = crate::world::database::validate_lod_build_contract(
-        &config.assets_dir,
-        converter_schema_version(),
-    )?;
+    let database_schema = validate_runtime_database(config)?;
     color_eyre::eyre::ensure!(
         database_schema == report.schema_version,
         "world database schema {database_schema} does not match integration report schema {}",
         report.schema_version
     );
     Ok(())
+}
+
+/// Cluster certification owns distant geometry integrity. Native LOD tables and manifests
+/// are outside that source contract, including on a legacy base with an explicit overlay.
+fn validate_runtime_database(config: &EngineConfig) -> Result<u32> {
+    if config.clusters.is_some() {
+        shared::world_assets::validate_world_database(&config.assets_dir.join("skyrim_world.db"))
+    } else {
+        crate::world::database::validate_lod_build_contract(
+            &config.assets_dir,
+            converter_schema_version(),
+        )
+    }
 }
 
 /// Why the runtime refused a converted asset set.
@@ -4724,6 +4783,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cluster_mode_runtime_gate_accepts_no_baked_lod_tables_or_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        Connection::open(root.join("skyrim_world.db"))
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES({});",
+                shared::WORLD_DATABASE_SCHEMA_VERSION,
+            ))
+            .unwrap();
+        fs::write(root.join("cell_cache.rkyv"), []).unwrap();
+        fs::write(
+            root.join("conversion-manifest.json"),
+            serde_json::json!({
+                "schema_version": converter_schema_version(), "complete": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("integration-report.json"),
+            serde_json::json!({
+                "schema_version": shared::WORLD_DATABASE_SCHEMA_VERSION, "passed": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut config = EngineConfig {
+            assets_dir: root.into(),
+            clusters: Some("fixture".into()),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        config.clusters = None;
+        assert!(
+            validate_runtime_assets(&config).is_err(),
+            "baked mode retains its LOD contract"
+        );
+    }
+
     /// Current, complete assets load, and an integration report newer than the engine is rejected.
     #[test]
     fn accepts_current_complete_runtime_assets() {
@@ -4837,6 +4937,82 @@ mod tests {
             .unwrap();
             validate_runtime_assets(&config).unwrap();
         }
+    }
+
+    #[test]
+    fn an_old_full_copy_cluster_dataset_is_refused_with_or_without_clusters() {
+        let directory = tempfile::tempdir().unwrap();
+        for required in ["skyrim_world.db", "cell_cache.rkyv"] {
+            std::fs::write(directory.path().join(required), []).unwrap();
+        }
+        write_runtime_asset_database(&directory.path().join("skyrim_world.db"));
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            format!(
+                r#"{{"schema_version":{},"complete":true}}"#,
+                converter_schema_version()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+        let mut config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        // Cluster tables inside the base database: there is no reader for this layout.
+        Connection::open(directory.path().join("skyrim_world.db"))
+            .unwrap()
+            .execute_batch("CREATE TABLE cluster_meshes(x INTEGER);")
+            .unwrap();
+        for clusters in [None, Some("default".into())] {
+            config.clusters = clusters;
+            let error = format!("{:#}", validate_runtime_assets(&config).unwrap_err());
+            assert!(
+                error.contains("old full-copy cluster dataset")
+                    && error.contains("converter derive-clusters")
+                    && error.contains(&directory.path().display().to_string()),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_a_passing_integration_report() {
+        let directory = tempfile::tempdir().unwrap();
+        for required in ["skyrim_world.db", "cell_cache.rkyv"] {
+            std::fs::write(directory.path().join(required), []).unwrap();
+        }
+        // The current schema with its (empty) LOD tables, as the converter writes it.
+        write_runtime_asset_database(&directory.path().join("skyrim_world.db"));
+        std::fs::write(
+            directory.path().join("conversion-manifest.json"),
+            format!(
+                r#"{{"schema_version":{},"complete":true}}"#,
+                converter_schema_version()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("integration-report.json"),
+            format!(
+                r#"{{"schema_version":{},"passed":true}}"#,
+                shared::WORLD_DATABASE_SCHEMA_VERSION
+            ),
+        )
+        .unwrap();
+        let config = EngineConfig {
+            assets_dir: directory.path().to_owned(),
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
     }
 
     #[test]
@@ -5086,5 +5262,95 @@ mod tests {
             app.update();
         }
         assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod optional_animation_dataset_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_optional_animation_keeps_a_converted_dataset_launchable() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let output = directory.path().join("output");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,esm").unwrap(),
+        )
+        .unwrap();
+        let good = [[0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]];
+        let bad = [[0.0, f32::NAN, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]];
+        let controller = |keys| dummy_content::nif::FloatController {
+            flags: 0x48,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            variable: 8,
+            key_type: 1,
+            keys,
+        };
+        let shape = dummy_content::nif::StaticShape {
+            name: "GeneratedAnimatedShape",
+            positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0]; 3],
+            indices: &[[0, 1, 2]],
+            diffuse: dummy_content::layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: dummy_content::layout::GENERATED_NORMAL_PATH,
+        };
+        let source = data.join(dummy_content::layout::GENERATED_MODEL_PATH);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(
+            source,
+            dummy_content::nif::effect_shape_with_controllers(
+                &shape,
+                &[controller(&good), controller(&bad)],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let report = runtime.block_on(async {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let report = converter::AssetPipeline::run_async(
+                converter::PipelineConfig::new(&data, &output),
+                tx,
+            )
+            .await
+            .unwrap();
+            drain.await.unwrap();
+            report
+        });
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(report.warnings.is_empty());
+        assert!(!report.animation_notices.is_empty());
+        assert_eq!(
+            report.animation_skipped_channels.get("non-finite key data"),
+            Some(&1)
+        );
+        let config = EngineConfig {
+            assets_dir: output,
+            ..default()
+        };
+        validate_runtime_assets(&config).unwrap();
+        let data_extensions = crate::extensions::read_data_extensions(&config.assets_dir).unwrap();
+        let material = data_extensions.get(shared::extensions::MATERIAL).unwrap();
+        assert!(!material.built_from.is_empty());
+        let (_, notices, database_features) = crate::extensions::open_features(data_extensions);
+        assert!(notices.is_empty());
+        crate::world::database::WorldDatabase::open_with(
+            &config.assets_dir.join("skyrim_world.db"),
+            database_features,
+        )
+        .unwrap();
     }
 }

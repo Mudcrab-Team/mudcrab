@@ -9,12 +9,14 @@
 //!    player is teleported to the door's `XTEL` arrival point.
 //! 3. **Hold black** until the landing cell is resident, nothing under its root is pending (models, surfaces) and
 //!    every mesh, material and texture under the cell's root has finished loading, then two more
-//!    frames so render extraction and preparation run, for at most 10 s per landing. While black,
+//!    frames so render extraction and preparation run. Ordinary landings wait at most 10 s; a
+//!    Required restore waits at most 10 s without progress, excluding deliberate pause. While black,
 //!    the per-frame upload budget is lifted (a stutter behind black is invisible) and the configured
 //!    value comes back when the fade-in starts. A landing cell that fails to load puts the player
 //!    back where they were, with a warning. A destination timeout also returns to the saved space.
-//!    If that return fails or times out, the screen fades in but movement stays paused until the
-//!    player presses V or uses `tcl` to recover in noclip.
+//!    If that return fails or times out, an ordinary crossing fades in with movement paused until
+//!    the player recovers in noclip: press V with the cursor captured, or enter `tcl` in the console.
+//!    A Required restore failure or deadline refuses the run with an error exit.
 //! 4. **Fade in** (0.25 s). The player is placed on the landing point once more as it starts.
 //!
 //! The player's walking and noclip systems pause for the whole crossing ([`no_door_crossing`]): nothing under
@@ -22,18 +24,26 @@
 //! would move it) while the screen is black.
 //!
 //! There is no preload: the fade simply holds until the destination is resident and uploaded.
+//!
 
 use crate::{
     doors::LoadDoor,
-    nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial},
     physics::{
         CursorCapture, MovementTuning, PlayerBody, TeleportPlayer, body_and_camera_for_feet,
     },
-    render::{TerrainMaterial, WaterMaterial},
     sky::CameraSpace,
     streaming::{
         ActiveSpace, PendingUnder, RenderOrigin, StreamingWorld, creation_rotation_to_bevy,
         creation_to_bevy, streaming_center, unload_all_cells_now,
+    },
+    swap_bridge::{
+        assets::LandingAssets,
+        destination::{
+            DestinationKey, DestinationReports, DestinationRequest, DestinationRequests,
+            DestinationState, Generations, Handoff, InvalidationCause, PassFamilies, PassFamily,
+            RequestId, RequiredHandoff, ViewKey, WorldId,
+        },
+        systems::{DestinationReadinessPlugin, DestinationReportsUpdated},
     },
     world::{
         components::{CELL_SIZE, ExpectedModelBounds, StreamingCamera, WorldPosition},
@@ -41,13 +51,13 @@ use crate::{
     },
 };
 use bevy::{
-    asset::{LoadState, UntypedAssetId},
-    ecs::system::SystemParam,
+    core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass},
     prelude::*,
-    render::render_asset::RenderAssetBytesPerFrame,
+    render::{
+        render_asset::RenderAssetBytesPerFrame, sync_world::MainEntity, view::RetainedViewEntity,
+    },
 };
 use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
-use std::collections::HashSet;
 
 /// How far from the camera a door can be and still be used, in Creation units.
 pub const DOOR_REACH: f32 = 200.0;
@@ -62,7 +72,7 @@ pub const FALLBACK_DOOR_MAX: Vec3 = Vec3::new(80.0, 200.0, 80.0);
 pub const DOOR_BLOCKER_SLACK: f32 = 15.0;
 /// Seconds to fade out, and to fade in.
 pub const FADE_SECONDS: f32 = 0.25;
-/// Longest the screen stays black waiting for the destination.
+/// Ordinary landing time limit, and Required restore inactivity limit, in seconds.
 pub const LANDING_TIMEOUT_SECONDS: f32 = 10.0;
 /// Frames to keep waiting once everything under the landing cell has loaded.
 const SETTLE_FRAMES: u32 = 2;
@@ -71,12 +81,32 @@ pub struct DoorCrossingPlugin;
 
 impl Plugin for DoorCrossingPlugin {
     fn build(&self, app: &mut App) {
+        // The destination readiness protocol the black hold waits on. The swap bridge installs it in
+        // a real run; a run or test without the bridge gets it here, with no renderer to prove.
+        if !app.is_plugin_added::<DestinationReadinessPlugin>() {
+            app.add_plugins(DestinationReadinessPlugin);
+        }
         app.init_resource::<DoorCrossing>()
             .init_resource::<CameraSpace>()
+            // Install landing eye height when no walking-player plugin provided it.
+            .init_resource::<MovementTuning>()
             .add_message::<TeleportPlayer>()
+            // One accepted activation requests authored door playback.
+            .add_message::<crate::doors::OpenDoor>()
             .add_systems(Startup, spawn_fade_overlay)
-            // After the streaming chain in `Update`, so the pending counts are this frame's.
-            .add_systems(PostUpdate, drive_door_crossing);
+            // Apply covered space switches before propagation and history compensation.
+            .add_systems(
+                Update,
+                (
+                    refresh_destination_request
+                        .run_if(|requests: Res<DestinationRequests>| !requests.is_empty()),
+                    drive_door_crossing,
+                )
+                    .chain()
+                    .after(crate::streaming::StreamingUpdate)
+                    .after(crate::settings_ui::SettingsUiSet)
+                    .after(DestinationReportsUpdated),
+            );
     }
 }
 
@@ -117,6 +147,8 @@ enum Stage {
         recovery: bool,
     },
     Recovery,
+    /// Terminal refusal; keep movement guarded until the error exit is handled.
+    Refused,
 }
 
 /// The player's own place before a crossing.
@@ -172,6 +204,23 @@ impl Restore {
     }
 }
 
+/// Landing-scoped facts that can change while a Required restore is doing useful work.
+/// A report's render-frame stamp is deliberately absent: republication alone is not progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoreProgress {
+    key: DestinationKey,
+    root: Option<Entity>,
+    pending_components: usize,
+    assets_loading: usize,
+    failed_assets: usize,
+    far_root: Option<Entity>,
+    far_pending: usize,
+    far_pending_components: usize,
+    far_assets_loading: usize,
+    far_failed_assets: usize,
+    destination: Option<DestinationState>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Crossing {
     door: LoadDoor,
@@ -182,7 +231,13 @@ struct Crossing {
     restore: Restore,
     /// Seconds since E was pressed.
     since_press: f32,
+    /// Required restores use real inactivity, separate from ordinary landing/fade virtual time.
+    restore_stalled_seconds: f64,
+    restore_last_progress: Option<RestoreProgress>,
     stage: Stage,
+    /// The destination the black hold waits for, made by [`switch_space`] for the space the player is
+    /// put in (the target, or the restore after a failure) and withdrawn when the hold ends.
+    request: Option<(RequestId, DestinationKey)>,
 }
 
 /// The crossing in progress, if any.
@@ -250,6 +305,9 @@ impl DoorCrossing {
                     yaw: 0.0,
                 },
                 since_press: 0.0,
+                restore_stalled_seconds: 0.0,
+                restore_last_progress: None,
+                request: None,
                 stage: Stage::Landing {
                     waited: 0.0,
                     restoring: false,
@@ -339,6 +397,29 @@ fn door_view_blocked(nearest_collider: Option<f32>, door_distance: f32) -> bool 
     nearest_collider.is_some_and(|hit| hit < door_distance - DOOR_BLOCKER_SLACK)
 }
 
+/// Whether a collider hides the door the camera ray met `distance` away: the same camera-ray test
+/// the tankard grab uses, so a door behind a wall is not reachable. Without a physics world (a run
+/// with no colliders) nothing can block.
+fn door_blocked(
+    physics: &ReadRapierContext,
+    player: &Query<Entity, With<PlayerBody>>,
+    view: &Transform,
+    direction: Vec3,
+    distance: f32,
+) -> bool {
+    let Ok(physics) = physics.single() else {
+        return false;
+    };
+    let filter = match player.single() {
+        Ok(player) => QueryFilter::default().exclude_rigid_body(player),
+        Err(_) => QueryFilter::default(),
+    };
+    let nearest = physics
+        .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
+        .map(|(_, distance)| distance);
+    door_view_blocked(nearest, distance)
+}
+
 /// The landing a door's destination describes, from the space the player is in now.
 fn landing_for(door: &LoadDoor, current: &ActiveSpace, configured_worldspace: u32) -> Landing {
     let destination = &door.destination;
@@ -381,10 +462,20 @@ fn landing_for(door: &LoadDoor, current: &ActiveSpace, configured_worldspace: u3
     }
 }
 
+/// The destination world identity of a space, for the readiness protocol: a worldspace's exterior is
+/// its form id, an interior cell is its id with the top bit set, so the two cannot meet.
+fn world_id(space: &ActiveSpace, configured_worldspace: u32) -> WorldId {
+    match space.interior {
+        Some(cell_id) => WorldId::interior(cell_id),
+        None => WorldId::exterior(space.exterior_worldspace(configured_worldspace)),
+    }
+}
+
 /// Switches the world to `landing` in one step. Runs as a command, so it applies before the next
 /// system that reads the cells and the old space is gone the same frame.
 fn switch_space(world: &mut World, landing: Landing) {
     unload_all_cells_now(world);
+    let left = *world.resource::<ActiveSpace>();
     *world.resource_mut::<ActiveSpace>() = landing.space;
     if let Some(grid) = landing.origin {
         world.resource_mut::<RenderOrigin>().0 = grid;
@@ -402,6 +493,155 @@ fn switch_space(world: &mut World, landing: Landing) {
         sampled_ground_y: None,
         yaw: landing.yaw,
     });
+    request_destination(world, &left, &landing);
+}
+
+/// Makes the destination request the black hold waits on: the space left is invalidated (what
+/// was proven about it is gone), the space entered gets a new generation, and a request for the main
+/// camera's view of the landing cell is stored on the crossing. The passes are the ones the camera
+/// and the lights run: forward always, each prepass the camera carries, shadows when a light casts
+/// them (a destination with no shadow view is vacuous for that family). Admission policy decides
+/// whether the request also requires its representation owner's handoff.
+fn request_destination(world: &mut World, left: &ActiveSpace, landing: &Landing) {
+    let configured = world
+        .resource::<crate::config::EngineConfig>()
+        .worldspace_id;
+    let entered = world_id(&landing.space, configured);
+    let generation = {
+        let mut generations = world.resource_mut::<Generations>();
+        generations.bump(world_id(left, configured), InvalidationCause::Composition);
+        generations.bump(entered, InvalidationCause::Composition)
+    };
+    let camera = world
+        .query_filtered::<Entity, With<StreamingCamera>>()
+        .iter(world)
+        .next();
+    let Some(camera) = camera else {
+        return;
+    };
+    let passes = destination_passes(world, camera);
+    let key = DestinationKey {
+        view: ViewKey {
+            view: RetainedViewEntity::new(MainEntity::from(camera), None, 0),
+            incarnation: 0,
+        },
+        world: entered,
+        generation,
+    };
+    let handoff = if world
+        .resource::<crate::config::EngineConfig>()
+        .clusters
+        .is_some()
+    {
+        Handoff::Required
+    } else {
+        Handoff::for_policy(world.get_resource::<RequiredHandoff>())
+    };
+    let id = world
+        .resource_mut::<DestinationRequests>()
+        .request(DestinationRequest {
+            key,
+            passes,
+            coverage: std::sync::Arc::from(vec![landing.key]),
+            handoff,
+        });
+    if let Some(active) = world.resource_mut::<DoorCrossing>().active.as_mut() {
+        if let Some((old, old_key)) = active.request.replace((id, key)) {
+            world.resource_mut::<DestinationRequests>().withdraw(old);
+            world.resource_mut::<DestinationReports>().remove(&old_key);
+        }
+    } else {
+        // No crossing owns it (a test calling the switch directly): nothing would withdraw it.
+        world.resource_mut::<DestinationRequests>().withdraw(id);
+    }
+}
+
+/// Read the passes actually enabled for this camera and the current lights.
+/// Creation and held-request refresh use the same scope discovery.
+fn destination_passes(world: &mut World, camera: Entity) -> PassFamilies {
+    let mut passes = PassFamilies::NONE.with(PassFamily::Forward);
+    let entity = world.entity(camera);
+    if entity.contains::<DepthPrepass>() {
+        passes = passes.with(PassFamily::DepthPrepass);
+    }
+    if entity.contains::<NormalPrepass>() {
+        passes = passes.with(PassFamily::NormalPrepass);
+    }
+    if entity.contains::<MotionVectorPrepass>() {
+        passes = passes.with(PassFamily::MotionPrepass);
+    }
+    if world
+        .query::<&DirectionalLight>()
+        .iter(world)
+        .any(|light| light.shadow_maps_enabled)
+        || world
+            .query::<&PointLight>()
+            .iter(world)
+            .any(|light| light.shadow_maps_enabled)
+        || world
+            .query::<&SpotLight>()
+            .iter(world)
+            .any(|light| light.shadow_maps_enabled)
+    {
+        passes = passes.with(PassFamily::Shadow);
+    }
+    passes
+}
+
+/// A held crossing must not accept an earlier, weaker render proof after settings change.
+/// The request owner preserves coverage and handoff while invalidating the old scope.
+fn refresh_destination_request(world: &mut World) {
+    let held = world
+        .resource::<DoorCrossing>()
+        .active
+        .as_ref()
+        .and_then(|active| {
+            matches!(active.stage, Stage::Landing { .. })
+                .then_some(active.request)
+                .flatten()
+        });
+    let Some((id, previous)) = held else {
+        return;
+    };
+    let Some(request) = world
+        .resource::<DestinationRequests>()
+        .iter()
+        .find_map(|(held, request)| (held == id).then(|| request.clone()))
+    else {
+        return;
+    };
+    let Some(camera) = world
+        .query_filtered::<Entity, With<StreamingCamera>>()
+        .iter(world)
+        .next()
+    else {
+        return;
+    };
+    let passes = destination_passes(world, camera);
+    let view = ViewKey {
+        view: RetainedViewEntity::new(MainEntity::from(camera), None, 0),
+        incarnation: 0,
+    };
+    let current = world.resource_scope(|world, mut requests: Mut<DestinationRequests>| {
+        requests.update(
+            id,
+            &mut world.resource_mut::<Generations>(),
+            view,
+            passes,
+            request.coverage,
+            request.handoff,
+        )
+    });
+    if current != Some(previous) {
+        world.resource_mut::<DestinationReports>().remove(&previous);
+        if let Some(active) = world.resource_mut::<DoorCrossing>().active.as_mut() {
+            active.request = current.map(|key| (id, key));
+            // Settled frames for the previous scope cannot count toward this one.
+            if let Stage::Landing { ready_frames, .. } = &mut active.stage {
+                *ready_frames = 0;
+            }
+        }
+    }
 }
 
 /// Places the player on `landing` again as the fade-in starts. The walking systems paused during
@@ -425,186 +665,6 @@ fn place_again(commands: &mut Commands, landing: &Landing) {
     });
 }
 
-/// What a landing cell is made of, for the readiness check.
-#[derive(SystemParam)]
-#[allow(clippy::type_complexity)]
-struct LandingAssets<'w, 's> {
-    server: Option<Res<'w, AssetServer>>,
-    children: Query<'w, 's, &'static Children>,
-    parts: Query<
-        'w,
-        's,
-        (
-            Option<&'static Mesh3d>,
-            Option<&'static MeshMaterial3d<StandardMaterial>>,
-            Option<&'static MeshMaterial3d<TerrainMaterial>>,
-            Option<&'static MeshMaterial3d<WaterMaterial>>,
-            Option<&'static MeshMaterial3d<EffectPaletteMaterial>>,
-            Option<&'static EffectPaletteDepthSource>,
-        ),
-    >,
-    meshes: Option<Res<'w, Assets<Mesh>>>,
-    images: Option<Res<'w, Assets<Image>>>,
-    standard: Option<Res<'w, Assets<StandardMaterial>>>,
-    terrain: Option<Res<'w, Assets<TerrainMaterial>>>,
-    water: Option<Res<'w, Assets<WaterMaterial>>>,
-    palette: Option<Res<'w, Assets<EffectPaletteMaterial>>>,
-}
-
-/// What the readiness check found under a landing root.
-#[derive(Debug, Default)]
-struct LandingReport {
-    /// Assets still loading.
-    waiting: usize,
-    /// The first of them, by asset path when the server knows one.
-    first_waiting: Option<String>,
-    /// Assets whose load failed. They count as done, so a missing texture cannot hold the screen.
-    failed: HashSet<UntypedAssetId>,
-}
-
-impl LandingAssets<'_, '_> {
-    /// Notes an asset that is still loading, or failed, in `report`. A finished asset is loaded,
-    /// or (no load tracked, as for an asset added directly) present in its store.
-    fn check(
-        &self,
-        id: UntypedAssetId,
-        present: impl FnOnce() -> bool,
-        report: &mut LandingReport,
-    ) {
-        let Some(server) = &self.server else {
-            return;
-        };
-        let waiting = match server.get_load_state(id) {
-            Some(LoadState::Loaded) => false,
-            Some(LoadState::Failed(_)) => {
-                report.failed.insert(id);
-                false
-            }
-            Some(_) => true,
-            None => !present(),
-        };
-        if waiting {
-            report.waiting += 1;
-            if report.first_waiting.is_none() {
-                report.first_waiting = Some(
-                    server
-                        .get_path(id)
-                        .map_or_else(|| format!("{id:?}"), |path| path.to_string()),
-                );
-            }
-        }
-    }
-
-    fn check_image(&self, id: UntypedAssetId, report: &mut LandingReport) {
-        self.check(
-            id,
-            || match (&self.images, id.try_typed::<Image>()) {
-                (Some(images), Ok(typed)) => images.contains(typed),
-                _ => true,
-            },
-            report,
-        );
-    }
-
-    /// Checks every dependency (the textures) of a material.
-    fn check_dependencies<A: Asset>(&self, material: &A, report: &mut LandingReport) {
-        material.visit_dependencies(&mut |id| self.check_image(id, report));
-    }
-
-    /// Checks a material handle and its textures.
-    fn check_material<A: Asset>(
-        &self,
-        handle: &Handle<A>,
-        store: &Option<Res<Assets<A>>>,
-        textures_of: impl FnOnce(&Self, &A, &mut LandingReport),
-        report: &mut LandingReport,
-    ) {
-        let present = || {
-            store
-                .as_ref()
-                .is_none_or(|assets| assets.contains(handle.id()))
-        };
-        let before = report.waiting;
-        self.check(handle.id().untyped(), present, report);
-        if report.waiting != before {
-            return;
-        }
-        if let Some(material) = store.as_ref().and_then(|assets| assets.get(handle.id())) {
-            textures_of(self, material, report);
-        }
-    }
-
-    /// Inspects every mesh, material and texture under `root`. Covered: `Mesh3d`,
-    /// `MeshMaterial3d<StandardMaterial>` and the effect palette material (directly or as the
-    /// source of its depth wrapper) with all their texture dependencies, and the terrain and water materials with their base-material textures. The
-    /// terrain and water extensions' own layer and reflection images are private to `render.rs`
-    /// and are not checked.
-    fn inspect_under(&self, root: Entity) -> LandingReport {
-        let mut report = LandingReport::default();
-        for entity in std::iter::once(root).chain(self.children.iter_descendants(root)) {
-            let Ok((mesh, standard, terrain, water, palette, palette_depth)) =
-                self.parts.get(entity)
-            else {
-                continue;
-            };
-            if let Some(Mesh3d(handle)) = mesh {
-                self.check(
-                    handle.id().untyped(),
-                    || {
-                        self.meshes
-                            .as_ref()
-                            .is_none_or(|meshes| meshes.contains(handle.id()))
-                    },
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = standard {
-                self.check_material(
-                    handle,
-                    &self.standard,
-                    |this, m, report| this.check_dependencies(m, report),
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = terrain {
-                self.check_material(
-                    handle,
-                    &self.terrain,
-                    |this, m, report| this.check_dependencies(&m.base, report),
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = water {
-                self.check_material(
-                    handle,
-                    &self.water,
-                    |this, m, report| this.check_dependencies(&m.base, report),
-                    &mut report,
-                );
-            }
-            // A palette surface under a depth override draws through a wrapper; its palette
-            // material is the source the wrapper was cloned from.
-            let palette = palette
-                .map(|material| &material.0)
-                .or_else(|| palette_depth.map(|source| &source.0));
-            if let Some(handle) = palette {
-                self.check_material(
-                    handle,
-                    &self.palette,
-                    // `ExtendedMaterial` reports no dependencies itself: its fields carry
-                    // no `#[dependency]`, so each half is visited on its own.
-                    |this, m, report| {
-                        this.check_dependencies(&m.base, report);
-                        this.check_dependencies(&m.extension, report);
-                    },
-                    &mut report,
-                );
-            }
-        }
-        report
-    }
-}
-
 /// Sets the per-frame render-asset upload budget, if the engine has one.
 fn set_upload_budget(
     budget: &mut Option<ResMut<RenderAssetBytesPerFrame>>,
@@ -621,11 +681,30 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+type TargetLoadDoors<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static LoadDoor,
+        &'static GlobalTransform,
+        Option<&'static ExpectedModelBounds>,
+    ),
+>;
+
+fn refuse_crossing(commands: &mut Commands, reason: String) {
+    commands
+        .queue(move |world: &mut World| crate::streaming::failure::refuse_loading(world, reason));
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    capture: Res<CursorCapture>,
-    time: Res<Time>,
+    (keyboard, capture, mut open): (
+        Res<ButtonInput<KeyCode>>,
+        Option<Res<CursorCapture>>,
+        MessageWriter<crate::doors::OpenDoor>,
+    ),
+    (time, real_time, virtual_time): (Res<Time>, Res<Time<Real>>, Res<Time<bevy::time::Virtual>>),
     config: Res<crate::config::EngineConfig>,
     tuning: Res<MovementTuning>,
     space: Res<ActiveSpace>,
@@ -633,51 +712,67 @@ fn drive_door_crossing(
     camera_space: Res<CameraSpace>,
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
-    doors: Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
-    (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
+    doors: TargetLoadDoors,
+    (physics, player, transforms): (
+        ReadRapierContext,
+        Query<Entity, With<PlayerBody>>,
+        bevy::transform::helper::TransformHelper,
+    ),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
-    (mut budget, landing_assets, pending_under): (
+    (
+        mut budget,
+        landing_assets,
+        pending_under,
+        mut requests,
+        mut reports,
+        generations,
+        required_handoff,
+        mut loading_cover,
+        far_stock,
+    ): (
         Option<ResMut<RenderAssetBytesPerFrame>>,
         LandingAssets,
         PendingUnder,
+        ResMut<DestinationRequests>,
+        ResMut<DestinationReports>,
+        Res<Generations>,
+        Option<Res<RequiredHandoff>>,
+        Option<ResMut<crate::pacing::LoadingCover>>,
+        Option<Res<crate::streaming::far_stock::FarStock>>,
     ),
     mut commands: Commands,
 ) {
+    if let Some(cover) = loading_cover.as_mut()
+        && cover.crossing_pending() != crossing.is_active()
+    {
+        cover.set_crossing_pending(crossing.is_active());
+    }
     let delta = time.delta_secs();
     let Some(active) = crossing.active.as_mut() else {
-        // Idle: E at a door starts a crossing.
-        if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
-            return;
-        }
         let Ok(view) = camera.single() else {
             return;
         };
+        if !keyboard.just_pressed(KeyCode::KeyE)
+            || !capture.is_some_and(|capture| *capture == CursorCapture::Captured)
+        {
+            return;
+        }
         let direction = view.forward().as_vec3();
-        let Some((door, distance)) = doors
+        let Some((door_entity, door, distance)) = doors
             .iter()
-            .filter_map(|(door, transform, bounds)| {
+            .filter_map(|(entity, door, _, bounds)| {
+                let transform = transforms.compute_global_transform(entity).ok()?;
                 let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
-                ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
-                    .map(|distance| (door, distance))
+                ray_hits_door(view.translation, direction, &transform, &bounds, DOOR_REACH)
+                    .map(|distance| (entity, door, distance))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .min_by(|a, b| a.2.total_cmp(&b.2))
         else {
             return;
         };
-        // The same camera-ray test the tankard grab uses: a door behind a wall is not reachable.
-        // Without a physics world (a run with no colliders) nothing can block.
-        if let Ok(physics) = physics.single() {
-            let filter = match player.single() {
-                Ok(player) => QueryFilter::default().exclude_rigid_body(player),
-                Err(_) => QueryFilter::default(),
-            };
-            let nearest = physics
-                .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
-                .map(|(_, distance)| distance);
-            if door_view_blocked(nearest, distance) {
-                return;
-            }
+        if door_blocked(&physics, &player, view, direction, distance) {
+            return;
         }
         let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
         // The camera sits an eye height above the body, and the body a capsule half-extent above
@@ -700,14 +795,23 @@ fn drive_door_crossing(
             door = format_args!("{:08X}", door.ref_id),
             "door crossing started"
         );
+        open.write(crate::doors::OpenDoor { door: door_entity });
         crossing.active = Some(Crossing {
             door: door.clone(),
             target,
             restore,
             since_press: 0.0,
+            restore_stalled_seconds: 0.0,
+            restore_last_progress: None,
+            request: None,
             stage: Stage::FadeOut { elapsed: 0.0 },
         });
         set_alpha(&mut overlay, 0.0);
+        if let Some(cover) = loading_cover.as_mut()
+            && !cover.crossing_pending()
+        {
+            cover.set_crossing_pending(true);
+        }
         return;
     };
     active.since_press += delta;
@@ -741,8 +845,51 @@ fn drive_door_crossing(
             } else {
                 active.target
             };
-            if streaming.is_failed(landing.key) {
-                if restoring {
+            // A destination whose request requires a replacement handoff is never certified by a
+            // clock or by a failure: the timeout cannot say the replacement is drawable, so fading
+            // in would show an unproved landing. A crossing that fails or times out puts the player
+            // back instead; a required restore that fails or times out refuses the run.
+            let handoff_required = config.clusters.is_some()
+                || required_handoff.is_some()
+                || active.request.is_some_and(|(id, _)| {
+                    requests
+                        .iter()
+                        .any(|(held, request)| held == id && request.handoff == Handoff::Required)
+                });
+            let key = if let Some((id, previous)) = active.request {
+                let current = requests.rebase(id, &generations);
+                if current != Some(previous) {
+                    reports.remove(&previous);
+                    active.request = current.map(|key| (id, key));
+                }
+                current
+            } else {
+                None
+            };
+            let destination_failed = key.is_some_and(|key| {
+                reports
+                    .get(&key)
+                    .is_some_and(|report| matches!(report.state, DestinationState::Failed(_)))
+            });
+            if streaming.is_failed(landing.key) || destination_failed {
+                if restoring && handoff_required {
+                    let reason = format!(
+                        "door crossing refused: required restore for door {:08X} to {} failed to reload: {}",
+                        active.door.ref_id,
+                        describe_destination(&landing.key),
+                        key.map_or_else(
+                            || "cell loading failed".to_owned(),
+                            |key| reports.describe(&key)
+                        )
+                    );
+                    set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                    if let Some((id, key)) = active.request.take() {
+                        requests.withdraw(id);
+                        reports.remove(&key);
+                    }
+                    active.stage = Stage::Refused;
+                    refuse_crossing(&mut commands, reason);
+                } else if restoring {
                     warn!(
                         door = format_args!("{:08X}", active.door.ref_id),
                         "door crossing: the player's own space could not be reloaded; movement stays paused; press V or use tcl to recover in noclip"
@@ -756,6 +903,10 @@ fn drive_door_crossing(
                     );
                     set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
                     place_again(&mut commands, &landing);
+                    if let Some((id, key)) = active.request.take() {
+                        requests.withdraw(id);
+                        reports.remove(&key);
+                    }
                     active.stage = Stage::FadeIn {
                         elapsed: 0.0,
                         recovery: true,
@@ -781,34 +932,99 @@ fn drive_door_crossing(
             let root = streaming.resident_root(landing.key);
             let pending = root.map_or(0, |root| pending_under.count(root));
             let report = root.map(|root| landing_assets.inspect_under(root));
-            let loaded = report
-                .as_ref()
-                .is_some_and(|report| pending == 0 && report.waiting == 0);
+            // What the hold waits for is the destination report for the main view of the landing
+            // cell (`crate::swap_bridge::destination`): residency, assets, geometry and material in
+            // the render world and a queued pipeline in each pass the view runs. The request
+            // follows the world's generation, so a change under it (a role flip, a candidate) asks
+            // again instead of leaving an old report to answer; the report describes the render
+            // frame it was evaluated in, one extract ago.
+            let loaded = key.is_some_and(|key| reports.is_ready(&key, &generations));
             // Once loaded, a few more frames let extraction and preparation upload with the budget
             // still lifted: the fade-in starts on the SETTLE_FRAMES-th loaded frame.
             let ready_frames = if loaded { ready_frames + 1 } else { 0 };
             let ready = ready_frames >= SETTLE_FRAMES;
-            if !ready && waited >= LANDING_TIMEOUT_SECONDS && !restoring {
-                warn!(
-                    door = format_args!("{:08X}", active.door.ref_id),
-                    "door crossing: the destination was not ready in time; putting the player back"
-                );
-                let restore = active.restore.landing();
-                commands.queue(move |world: &mut World| switch_space(world, restore));
-                active.stage = Stage::Landing {
-                    waited: 0.0,
-                    restoring: true,
-                    ready_frames: 0,
-                };
+            let required_restore = restoring && handoff_required;
+            if required_restore {
+                let far = far_stock.as_deref().map(|far| far.cell_state(landing.key));
+                let far_root = far.as_ref().and_then(|far| far.holder);
+                let far_report = far_root.map(|root| landing_assets.inspect_under(root));
+                let progress = key.map(|key| RestoreProgress {
+                    key,
+                    root,
+                    pending_components: pending,
+                    assets_loading: report.as_ref().map_or(0, |report| report.waiting),
+                    failed_assets: report.as_ref().map_or(0, |report| report.failed.len()),
+                    far_root,
+                    far_pending: far.as_ref().map_or(0, |far| far.pending),
+                    far_pending_components: far_root.map_or(0, |root| pending_under.count(root)),
+                    far_assets_loading: far_report.as_ref().map_or(0, |report| report.waiting),
+                    far_failed_assets: far_report.as_ref().map_or(0, |report| report.failed.len()),
+                    destination: reports.get(&key).map(|report| report.state.clone()),
+                });
+                // As in teleport admission, reset on changed valid facts, not elapsed total time.
+                // Missing request context ages, and a deliberate Virtual pause does not.
+                if progress.is_some() && progress != active.restore_last_progress {
+                    active.restore_stalled_seconds = 0.0;
+                } else if !virtual_time.is_paused() {
+                    active.restore_stalled_seconds += real_time.delta_secs_f64();
+                }
+                active.restore_last_progress = progress;
+            }
+            let expired = if required_restore {
+                active.restore_stalled_seconds >= f64::from(LANDING_TIMEOUT_SECONDS)
+            } else {
+                waited >= LANDING_TIMEOUT_SECONDS
+            };
+            // A destination that is not ready in time puts the player back. A Required restore
+            // refuses only after inactivity; the ordinary return retains its total-time recovery.
+            if !ready && expired && (handoff_required || !restoring) {
+                let destination =
+                    key.map_or_else(|| "no request".to_owned(), |key| reports.describe(&key));
+                if restoring {
+                    let reason = format!(
+                        "door crossing refused: required restore for door {:08X} to {} reached its loading inactivity deadline: stalled_seconds={:.3} pending_components={} progress={:?}; {}",
+                        active.door.ref_id,
+                        describe_destination(&landing.key),
+                        active.restore_stalled_seconds,
+                        pending,
+                        active.restore_last_progress,
+                        destination
+                    );
+                    set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
+                    if let Some((id, key)) = active.request.take() {
+                        requests.withdraw(id);
+                        reports.remove(&key);
+                    }
+                    active.stage = Stage::Refused;
+                    refuse_crossing(&mut commands, reason);
+                } else {
+                    warn!(
+                        door = format_args!("{:08X}", active.door.ref_id),
+                        waited_seconds = waited,
+                        %destination,
+                        "door crossing: the destination was not ready in time; putting the player back"
+                    );
+                    let restore = active.restore.landing();
+                    commands.queue(move |world: &mut World| switch_space(world, restore));
+                    active.stage = Stage::Landing {
+                        waited: 0.0,
+                        restoring: true,
+                        ready_frames: 0,
+                    };
+                }
                 return;
             }
-            if ready || waited >= LANDING_TIMEOUT_SECONDS {
+            if ready || (!handoff_required && waited >= LANDING_TIMEOUT_SECONDS) {
                 if !ready {
                     warn!(
                         door = format_args!("{:08X}", active.door.ref_id),
                         waited_seconds = waited,
                         resident = root.is_some(),
                         pending_components = pending,
+                        destination = %key.map_or_else(
+                            || "no request".to_owned(),
+                            |key| reports.describe(&key)
+                        ),
                         assets_loading = report.as_ref().map_or(0, |report| report.waiting),
                         first_not_loaded = report
                             .as_ref()
@@ -840,6 +1056,10 @@ fn drive_door_crossing(
                 );
                 set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
                 place_again(&mut commands, &landing);
+                if let Some((id, key)) = active.request.take() {
+                    requests.withdraw(id);
+                    reports.remove(&key);
+                }
                 active.stage = Stage::FadeIn {
                     elapsed: 0.0,
                     recovery: !ready,
@@ -866,19 +1086,27 @@ fn drive_door_crossing(
             }
         }
         Stage::Recovery => {}
+        Stage::Refused => {}
+    }
+    if let Some(cover) = loading_cover.as_mut()
+        && cover.crossing_pending() != crossing.is_active()
+    {
+        cover.set_crossing_pending(crossing.is_active());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    include!("door_crossing_inactivity_tests.rs");
     use super::*;
+    use crate::nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial};
     use crate::{
         doors::DoorDestination,
         physics::MoveMode,
         profiling::ProfilingState,
         streaming::{StreamingMetrics, StreamingWorld, pending_marker_for_test},
     };
-    use bevy::ecs::system::RunSystemOnce;
+    use bevy::ecs::{message::Messages, system::RunSystemOnce};
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
 
@@ -922,8 +1150,17 @@ mod tests {
     /// A headless world with the crossing registered, the camera 100 units in front of a door
     /// whose bounds are a 100-unit cube, and one resident old-space cell.
     fn app_with(door: LoadDoor) -> (App, Entity) {
+        app_with_physics(door, false)
+    }
+
+    fn app_with_physics(door: LoadDoor, physics: bool) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()));
+        if physics {
+            app.add_plugins(bevy_rapier3d::prelude::RapierPhysicsPlugin::<
+                bevy_rapier3d::prelude::NoUserData,
+            >::default());
+        }
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
@@ -971,6 +1208,140 @@ mod tests {
         app.finish();
         app.update();
         (app, old_root)
+    }
+
+    #[test]
+    fn e_opens_the_nearest_door_in_walk_and_noclip() {
+        for mode in [MoveMode::Walk, MoveMode::Noclip] {
+            let (mut app, _) = app_with(interior_door());
+            app.insert_resource(mode);
+            let mut nearer = interior_door();
+            nearer.ref_id = 91;
+            let near = app
+                .world_mut()
+                .spawn((
+                    nearer,
+                    ExpectedModelBounds::new(Vec3::splat(-20.0), Vec3::splat(20.0)).unwrap(),
+                    Transform::from_xyz(0.0, 0.0, -70.0),
+                ))
+                .id();
+            app.update();
+            let mut opens = app
+                .world()
+                .resource::<Messages<crate::doors::OpenDoor>>()
+                .get_cursor_current();
+            press_e(&mut app);
+            let opened: Vec<_> = opens
+                .read(app.world().resource::<Messages<crate::doors::OpenDoor>>())
+                .map(|message| message.door)
+                .collect();
+            assert_eq!(opened, vec![near]);
+            assert_eq!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .door
+                    .ref_id,
+                91
+            );
+        }
+    }
+
+    #[test]
+    fn released_or_missing_cursor_prevents_e_activation() {
+        for missing in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+
+            if missing {
+                app.world_mut().remove_resource::<CursorCapture>();
+            } else {
+                app.insert_resource(CursorCapture::Released);
+            }
+            press_e(&mut app);
+
+            assert!(!app.world().resource::<DoorCrossing>().is_active());
+        }
+    }
+
+    #[test]
+    fn enabled_wall_blocks_e_but_disabled_wall_does_not() {
+        let (mut app, _) = app_with_physics(interior_door(), true);
+        let wall = app
+            .world_mut()
+            .spawn((
+                bevy_rapier3d::prelude::Collider::cuboid(50.0, 50.0, 5.0),
+                Transform::from_xyz(0.0, 0.0, -35.0),
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut()
+            .entity_mut(wall)
+            .insert(bevy_rapier3d::prelude::ColliderDisabled);
+        for _ in 0..3 {
+            app.update();
+        }
+
+        press_e(&mut app);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    #[test]
+    fn e_uses_current_ancestor_transforms_before_propagation() {
+        let (mut app, _) = app_with(interior_door());
+        let door = app
+            .world_mut()
+            .query_filtered::<Entity, With<LoadDoor>>()
+            .single(app.world())
+            .unwrap();
+        let parent = app
+            .world_mut()
+            .spawn(Transform::from_xyz(10_000.0, 0.0, 0.0))
+            .id();
+        app.world_mut().entity_mut(door).insert(ChildOf(parent));
+        app.update();
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        app.world_mut()
+            .get_mut::<Transform>(parent)
+            .unwrap()
+            .translation = Vec3::ZERO;
+        // Invoke selection before any schedule can refresh the cached global.
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.world_mut()
+            .run_system_once(drive_door_crossing)
+            .unwrap();
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        assert!(app.world().resource::<DoorCrossing>().is_active());
     }
 
     fn press_e(app: &mut App) {
@@ -1346,6 +1717,161 @@ mod tests {
         assert!(alpha(&mut app) < 1.0, "the fade shows");
     }
 
+    /// A landing whose assets are all loaded still holds the black while a surface a camera can see
+    /// has not been confirmed drawable by the render world, and fades in once it has.
+    #[test]
+    fn the_fade_in_waits_for_a_visible_surface_the_render_world_has_not_drawn() {
+        let (mut app, _) = app_with(interior_door());
+        // Protocol fixture: model the renderer and its completed native proof explicitly.
+        // The surface's waiting marker remains the one unfinished readiness fact.
+        app.add_systems(
+            First,
+            |requests: Res<DestinationRequests>,
+             mut results: ResMut<crate::swap_bridge::systems::RenderResults>| {
+                results.renderer = true;
+                for (id, request) in requests.iter() {
+                    let frame = results.frame;
+                    results.insert_for_test(
+                        id,
+                        crate::swap_bridge::systems::EvaluatedProof {
+                            key: request.key,
+                            frame,
+                            extracted_generation: request.key.generation,
+                            proof: crate::swap_bridge::destination::RenderProof::default(),
+                            handoff: None,
+                        },
+                    );
+                }
+            },
+        );
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let root = app.world_mut().spawn_empty().id();
+        let surface = app
+            .world_mut()
+            .spawn((
+                crate::swap_bridge::SwapWaiting,
+                crate::swap_bridge::SwapInCameraView,
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(
+            alpha(&mut app) >= 0.99,
+            "a visible surface is still waiting on the render world"
+        );
+        assert_eq!(budget(&app), None);
+        // The render world confirms it drawn: the waiting marker leaves.
+        app.world_mut()
+            .entity_mut(surface)
+            .remove::<crate::swap_bridge::SwapWaiting>();
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_eq!(budget(&app), configured_budget(), "the fade-in started");
+    }
+
+    /// The hold waits on one destination request for the landing cell, and withdraws it, with its
+    /// report, when the hold ends.
+    #[test]
+    fn the_hold_requests_the_destination_and_withdraws_it_when_it_ends() {
+        use crate::swap_bridge::destination::DestinationRequests;
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        {
+            let requests = app.world().resource::<DestinationRequests>();
+            let (_, request) = requests.iter().next().expect("the hold made a request");
+            assert_eq!(request.coverage.as_ref(), &[CellKey::Interior(77)]);
+            assert_eq!(requests.iter().count(), 1);
+        }
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        for _ in 0..8 {
+            app.update();
+        }
+        assert_eq!(budget(&app), configured_budget(), "the fade-in started");
+        assert!(
+            app.world().resource::<DestinationRequests>().is_empty(),
+            "the request left with the hold"
+        );
+    }
+
+    #[test]
+    fn ordinary_destination_hold_creates_a_request() {
+        use crate::swap_bridge::destination::DestinationRequests;
+
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        let requests = app.world().resource::<DestinationRequests>();
+        requests.iter().next().expect("the hold made a request");
+    }
+
+    #[test]
+    fn ordinary_destination_requests_remain_stock_only() {
+        use crate::swap_bridge::destination::DestinationRequests;
+
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        for _ in 0..3 {
+            app.update();
+        }
+        let requests = app.world().resource::<DestinationRequests>();
+        let (_, request) = requests.iter().next().expect("the hold made a request");
+        assert_eq!(request.handoff, Handoff::NotRequired);
+    }
+
+    #[test]
+    fn ordinary_restore_failure_fades_in_with_movement_paused() {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let restore_key = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .expect("a crossing is active")
+            .restore
+            .landing()
+            .key;
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_failed_for_test(CellKey::Interior(77));
+        // The switch back unloads every cell (and so clears failure marks), so the restore's
+        // own cell fails only once the player has been put back.
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_failed_for_test(restore_key);
+        for _ in 0..60 {
+            app.update();
+        }
+        let still_black = alpha(&mut app) >= 0.99;
+
+        assert!(
+            !still_black && app.world().resource::<DoorCrossing>().needs_recovery(),
+            "stock: the failed restore fades in with movement paused"
+        );
+    }
+
     #[test]
     fn the_fade_in_waits_for_an_effect_palette_materials_source_texture_and_palette() {
         fade_in_waits_for_effect_palette_images(false);
@@ -1661,6 +2187,897 @@ mod tests {
         assert!(ray_hits_door(Vec3::new(0.0, 20.0, 0.0), Vec3::Z, &door, &bounds, 200.0).is_none());
         assert!(
             ray_hits_door(Vec3::new(0.0, 20.0, 0.0), Vec3::NEG_Z, &door, &bounds, 50.0).is_none()
+        );
+    }
+
+    #[test]
+    fn the_timeout_fades_in_anyway() {
+        // The timeout may clear the screen only after restoring, and never releases movement
+        // into an unproved destination.
+        a_return_timeout_fades_in_without_releasing_the_movement_guard();
+    }
+    #[test]
+    fn an_unspecified_destination_world_uses_active_then_configured_exterior() {
+        let mut door = exterior_door();
+        door.destination.worldspace_id = None;
+        for (active, expected) in [(None, 42), (Some(60), 60)] {
+            let space = ActiveSpace {
+                worldspace_id: active,
+                interior: Some(77),
+            };
+            let landing = landing_for(&door, &space, 42);
+            assert_eq!(landing.space.worldspace_id, Some(expected));
+            assert_eq!(landing.space.interior, None);
+            assert!(
+                matches!(landing.key, CellKey::Exterior { worldspace_id, .. } if worldspace_id == expected)
+            );
+            assert_eq!(world_id(&landing.space, 42), WorldId::exterior(expected));
+            let restore = Restore {
+                space,
+                camera_space: CameraSpace::Interior,
+                configured_worldspace: 42,
+                feet: Vec3::new(1.0, 2.0, 3.0),
+                yaw: 0.25,
+            };
+            let returned = restore.landing();
+            assert_eq!(returned.space, space);
+            assert_eq!(returned.key, CellKey::Interior(77));
+            assert_eq!(returned.position, restore.feet);
+        }
+    }
+
+    #[test]
+    fn a_rebased_hold_withdraws_its_current_report_and_drops_the_old_one() {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let (id, old) = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .unwrap()
+            .request
+            .unwrap();
+        app.world_mut().resource_mut::<DestinationReports>().set(
+            crate::swap_bridge::destination::DestinationReport {
+                key: old,
+                evaluated_render_frame: crate::swap_bridge::destination::RenderFrame(1),
+                state: DestinationState::Ready,
+            },
+        );
+        app.world_mut()
+            .resource_mut::<Generations>()
+            .bump(old.world, InvalidationCause::Candidate);
+        app.update();
+        let (held, current) = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .unwrap()
+            .request
+            .unwrap();
+        assert_eq!(held, id);
+        assert_ne!(current, old);
+        assert!(
+            app.world()
+                .resource::<DestinationReports>()
+                .get(&old)
+                .is_none()
+        );
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(app.world().resource::<DestinationRequests>().is_empty());
+        assert!(
+            app.world()
+                .resource::<DestinationReports>()
+                .get(&current)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn space_switch_leaves_camera_rotation_to_the_teleport_consumer() {
+        let (mut app, _) = app_with(interior_door());
+        let camera = {
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            cameras.single(app.world()).unwrap()
+        };
+        let mut players = app.world_mut().query_filtered::<(), With<PlayerBody>>();
+        assert!(
+            players.iter(app.world()).next().is_none(),
+            "this fixture exercises the camera-only path"
+        );
+        let original_rotation = Quat::from_rotation_y(0.1);
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .rotation = original_rotation;
+        let space = *app.world().resource::<ActiveSpace>();
+        let configured_worldspace = app
+            .world()
+            .resource::<crate::config::EngineConfig>()
+            .worldspace_id;
+        let landing = landing_for(&interior_door(), &space, configured_worldspace);
+        let mut teleports = app
+            .world()
+            .resource::<Messages<TeleportPlayer>>()
+            .get_cursor_current();
+        switch_space(app.world_mut(), landing);
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().rotation,
+            original_rotation,
+            "the space switch must not apply heading behind the teleport consumer's back"
+        );
+        let headings: Vec<_> = teleports
+            .read(app.world().resource::<Messages<TeleportPlayer>>())
+            .map(|message| message.yaw)
+            .collect();
+        assert_eq!(
+            headings,
+            vec![landing.yaw],
+            "authored heading is still delivered to its owner"
+        );
+    }
+
+    #[test]
+    fn ordinary_failed_landing_asset_stays_hidden_without_refusing_or_restoring() {
+        let (mut app, _) = app_with(interior_door());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let root = app.world_mut().spawn_empty().id();
+        let failed = app
+            .world_mut()
+            .spawn((
+                crate::streaming::AssetFailed,
+                Visibility::Hidden,
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        for _ in 0..SETTLE_FRAMES + 1 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<ActiveSpace>().interior,
+            Some(77),
+            "an ordinary hidden asset failure must not send the player back"
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(failed),
+            Some(&Visibility::Hidden)
+        );
+        assert!(
+            app.world()
+                .get::<crate::streaming::AssetFailed>(failed)
+                .is_some(),
+            "the explicit failed-asset diagnostic remains available"
+        );
+        assert!(
+            !app.world()
+                .contains_resource::<crate::streaming::failure::LoadingRefusal>()
+        );
+        let crossing = app.world().resource::<DoorCrossing>();
+        assert!(!crossing.needs_recovery());
+        assert!(matches!(
+            crossing.active.as_ref().map(|active| active.stage),
+            Some(Stage::FadeIn {
+                recovery: false,
+                ..
+            }) | None
+        ));
+    }
+
+    #[test]
+    fn a_destination_asset_failure_starts_the_restore_without_waiting_for_the_deadline() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            crate::streaming::AssetFailed,
+            Visibility::Hidden,
+            ChildOf(root),
+        ));
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(CellKey::Interior(77), root);
+        app.update();
+        let crossing = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .unwrap();
+        assert!(matches!(
+            crossing.stage,
+            Stage::Landing {
+                restoring: true,
+                ..
+            }
+        ));
+        assert_eq!(app.world().resource::<Teleports>().0.len(), 2);
+        assert_eq!(alpha(&mut app), 1.0);
+    }
+
+    #[test]
+    fn destination_requests_include_camera_prepasses_and_each_stock_light_family() {
+        for light_kind in 0..3 {
+            let (mut app, _) = app_with(interior_door());
+            let camera = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().entity_mut(camera).insert((
+                DepthPrepass,
+                NormalPrepass,
+                MotionVectorPrepass,
+            ));
+            match light_kind {
+                0 => {
+                    app.world_mut().spawn(DirectionalLight {
+                        shadow_maps_enabled: true,
+                        ..default()
+                    });
+                }
+                1 => {
+                    app.world_mut().spawn(PointLight {
+                        shadow_maps_enabled: true,
+                        ..default()
+                    });
+                }
+                _ => {
+                    app.world_mut().spawn(SpotLight {
+                        shadow_maps_enabled: true,
+                        ..default()
+                    });
+                }
+            }
+            press_e(&mut app);
+            run_until_black(&mut app);
+            let requests = app.world().resource::<DestinationRequests>();
+            let (_, request) = requests.iter().next().unwrap();
+            assert_eq!(request.key.world, WorldId::interior(77));
+            assert_eq!(request.passes.iter().collect::<Vec<_>>(), PassFamily::ALL);
+        }
+    }
+
+    #[test]
+    fn late_camera_and_light_passes_rekey_the_hold_before_any_old_proof_can_release_it() {
+        use crate::swap_bridge::{
+            destination::{RenderFrame, RenderProof},
+            systems::{EvaluatedProof, RenderResults},
+        };
+        for family in [
+            PassFamily::DepthPrepass,
+            PassFamily::NormalPrepass,
+            PassFamily::MotionPrepass,
+            PassFamily::Shadow,
+        ] {
+            let (mut app, _) = app_with(interior_door());
+            press_e(&mut app);
+            run_until_black(&mut app);
+            let (id, old) = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .request
+                .unwrap();
+            assert!(
+                !app.world()
+                    .resource::<DestinationRequests>()
+                    .iter()
+                    .find(|(held, _)| *held == id)
+                    .unwrap()
+                    .1
+                    .passes
+                    .contains(family)
+            );
+            let camera = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>()
+                .single(app.world())
+                .unwrap();
+            match family {
+                PassFamily::DepthPrepass => {
+                    app.world_mut().entity_mut(camera).insert(DepthPrepass);
+                }
+                PassFamily::NormalPrepass => {
+                    app.world_mut().entity_mut(camera).insert(NormalPrepass);
+                }
+                PassFamily::MotionPrepass => {
+                    app.world_mut()
+                        .entity_mut(camera)
+                        .insert(MotionVectorPrepass);
+                }
+                PassFamily::Shadow => {
+                    app.world_mut().spawn(PointLight {
+                        shadow_maps_enabled: true,
+                        ..default()
+                    });
+                }
+                PassFamily::Forward => unreachable!(),
+            }
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(CellKey::Interior(77), root);
+            let old_proof = EvaluatedProof {
+                key: old,
+                frame: RenderFrame(10),
+                extracted_generation: old.generation,
+                proof: RenderProof::default(),
+                handoff: None,
+            };
+            {
+                let mut results = app.world_mut().resource_mut::<RenderResults>();
+                results.renderer = true;
+                results.insert_for_test(id, old_proof.clone());
+            }
+            app.update();
+            let (held, current) = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .request
+                .unwrap();
+            assert_eq!(held, id);
+            assert!(
+                app.world()
+                    .resource::<DestinationRequests>()
+                    .iter()
+                    .find(|(held, _)| *held == id)
+                    .unwrap()
+                    .1
+                    .passes
+                    .contains(family),
+                "newly enabled pass escaped the held request: {family:?}"
+            );
+            assert_ne!(current, old, "a weaker old proof must have a different key");
+            assert!(
+                app.world()
+                    .resource::<DestinationReports>()
+                    .get(&old)
+                    .is_none()
+            );
+            assert!(alpha(&mut app) >= 0.99);
+            let mut current_proof = old_proof;
+            current_proof.key = current;
+            current_proof.extracted_generation = current.generation;
+            current_proof.proof.pass_missing = Some(family);
+            app.world_mut()
+                .resource_mut::<RenderResults>()
+                .insert_for_test(id, current_proof.clone());
+            for _ in 0..SETTLE_FRAMES + 2 {
+                app.update();
+            }
+            assert!(
+                alpha(&mut app) >= 0.99,
+                "a missing new pass released the cover"
+            );
+            assert_eq!(budget(&app), None);
+            current_proof.proof.pass_missing = None;
+            app.world_mut()
+                .resource_mut::<RenderResults>()
+                .insert_for_test(id, current_proof);
+            for _ in 0..SETTLE_FRAMES + 2 {
+                app.update();
+            }
+            assert_eq!(
+                budget(&app),
+                configured_budget(),
+                "matching complete proof must release the hold"
+            );
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+        }
+    }
+
+    /// A replacement owner's policy resource makes the hold's request require its handoff; without
+    /// it the request is stock-only. The crossing names neither the owner nor the replacement.
+    #[test]
+    fn the_hold_requires_a_handoff_only_when_the_policy_says_so() {
+        use crate::swap_bridge::destination::DestinationRequests;
+        for required in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            if required {
+                app.insert_resource(RequiredHandoff);
+            }
+            press_e(&mut app);
+            run_until_black(&mut app);
+            for _ in 0..3 {
+                app.update();
+            }
+            let requests = app.world().resource::<DestinationRequests>();
+            let (_, request) = requests.iter().next().expect("the hold made a request");
+            assert_eq!(
+                request.handoff,
+                if required {
+                    Handoff::Required
+                } else {
+                    Handoff::NotRequired
+                }
+            );
+        }
+    }
+
+    /// With a required handoff the clock never certifies a landing: the crossing that times out puts
+    /// the player back, and a restore that times out refuses the run while remaining covered.
+    /// (Without the policy,
+    /// `a_destination_timeout_returns_to_the_saved_space_before_resuming` keeps the stock rule.)
+    #[test]
+    fn a_required_handoff_past_the_timeout_never_fades_into_the_landing() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let frames = (LANDING_TIMEOUT_SECONDS / DT) as usize;
+        for _ in 0..frames + 20 {
+            app.update();
+        }
+        let space = *app.world().resource::<ActiveSpace>();
+        assert_eq!(space, ActiveSpace::default(), "the player was put back");
+        assert_eq!(app.world().resource::<Teleports>().0.len(), 2);
+        // A refused Required restore stays covered until its error exit is handled.
+        for _ in 0..2 * frames {
+            app.update();
+        }
+        assert!(
+            alpha(&mut app) >= 0.99,
+            "still black, never faded into an unproved place"
+        );
+        assert!(
+            app.world().resource::<DoorCrossing>().active.is_some(),
+            "the crossing is still holding"
+        );
+    }
+
+    /// A restore whose own space failed to reload fades in with movement paused without the policy
+    /// (stock), but with a required handoff it refuses the run without exposing unproved geometry.
+    #[test]
+    fn a_required_handoff_does_not_fade_into_a_restore_that_failed_to_reload() {
+        for required in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            if required {
+                app.insert_resource(RequiredHandoff);
+            }
+            press_e(&mut app);
+            run_until_black(&mut app);
+            let restore_key = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .expect("a crossing is active")
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(CellKey::Interior(77));
+            // The switch back unloads every cell (and so clears failure marks), so the restore's
+            // own cell fails only once the player has been put back.
+            for _ in 0..3 {
+                app.update();
+            }
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore_key);
+            for _ in 0..60 {
+                app.update();
+            }
+            let still_black = alpha(&mut app) >= 0.99;
+            let holding = app.world().resource::<DoorCrossing>().active.is_some();
+            if required {
+                assert!(
+                    still_black && holding,
+                    "no fade-in into an unproved restore"
+                );
+            } else {
+                assert!(
+                    !still_black && app.world().resource::<DoorCrossing>().needs_recovery(),
+                    "stock: the failed restore fades in with movement paused"
+                );
+            }
+        }
+    }
+
+    fn required_restore_app(request_policy: bool) -> App {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        press_e(&mut app);
+        run_until_black(&mut app);
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_failed_for_test(CellKey::Interior(77));
+        app.update();
+        // The restore request retains Required even if the resource is withdrawn.
+        if request_policy {
+            let requests = app.world().resource::<DestinationRequests>();
+            assert!(
+                requests
+                    .iter()
+                    .any(|(_, request)| request.handoff == Handoff::Required)
+            );
+            app.world_mut().remove_resource::<RequiredHandoff>();
+        }
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::Landing {
+                restoring: true,
+                ..
+            }
+        ));
+        assert!(
+            !app.world()
+                .contains_resource::<crate::streaming::failure::LoadingRefusal>()
+        );
+        app
+    }
+
+    #[test]
+    fn required_restore_load_failure_refuses_once_and_restores_the_upload_budget() {
+        for request_policy in [false, true] {
+            let mut app = required_restore_app(request_policy);
+            let restore = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore);
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            app.update();
+            let refusal = &app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0;
+            assert!(
+                refusal.contains("restore") && refusal.contains("failed"),
+                "{refusal}"
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+            assert!(alpha(&mut app) >= 0.99, "never expose an unproved restore");
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn required_restore_deadline_refuses_once_without_granting_readiness() {
+        for request_policy in [false, true] {
+            let mut app = required_restore_app(request_policy);
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            // First valid observation seeds progress; then ten real seconds stall.
+            for _ in 0..=(LANDING_TIMEOUT_SECONDS / DT).ceil() as usize {
+                app.update();
+            }
+            let refusal = &app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0;
+            assert!(
+                refusal.contains("restore") && refusal.contains("deadline"),
+                "{refusal}"
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+            assert!(alpha(&mut app) >= 0.99);
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_required_restore_without_a_request_cannot_timeout_into_recovery() {
+        let (mut app, _) = app_with(interior_door());
+        app.insert_resource(RequiredHandoff);
+        let mut crossing = DoorCrossing::holding_for_test();
+        crossing.active.as_mut().unwrap().stage = Stage::Landing {
+            waited: 0.0,
+            restoring: true,
+            ready_frames: 0,
+        };
+        app.insert_resource(crossing);
+        // Missing context cannot reset progress; the actual driver ages it to refusal.
+        for _ in 0..=(LANDING_TIMEOUT_SECONDS / DT).ceil() as usize {
+            app.update();
+        }
+        assert!(matches!(
+            app.world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .stage,
+            Stage::Refused
+        ));
+        assert!(!app.world_mut().run_system_once(no_door_crossing).unwrap());
+        assert!(alpha(&mut app) >= 0.99);
+    }
+
+    #[test]
+    fn combined_required_restore_failures_preserve_the_first_reason_and_one_exit() {
+        for earlier_failure in [false, true] {
+            let mut app = required_restore_app(true);
+            let restore = app
+                .world()
+                .resource::<DoorCrossing>()
+                .active
+                .as_ref()
+                .unwrap()
+                .restore
+                .landing()
+                .key;
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(restore);
+            app.world_mut()
+                .resource_mut::<DoorCrossing>()
+                .active
+                .as_mut()
+                .unwrap()
+                .stage = Stage::Landing {
+                waited: LANDING_TIMEOUT_SECONDS,
+                restoring: true,
+                ready_frames: 0,
+            };
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            if earlier_failure {
+                crate::streaming::failure::refuse_loading(
+                    app.world_mut(),
+                    "earlier cell failure".to_owned(),
+                );
+            }
+            app.update();
+            let reason = app
+                .world()
+                .resource::<crate::streaming::failure::LoadingRefusal>()
+                .0
+                .clone();
+            if earlier_failure {
+                assert_eq!(reason, "earlier cell failure");
+            } else {
+                assert!(reason.contains("failed to reload"), "{reason}");
+            }
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::Refused
+            ));
+            assert!(alpha(&mut app) >= 0.99);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<crate::streaming::failure::LoadingRefusal>()
+                    .0,
+                reason
+            );
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn selected_package_requests_required_handoff_without_a_policy_resource() {
+        let (mut app, _) = app_with(interior_door());
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .clusters = Some("selected".into());
+        assert!(!app.world().contains_resource::<RequiredHandoff>());
+        press_e(&mut app);
+        run_until_black(&mut app);
+        let requests = app.world().resource::<DestinationRequests>();
+        assert!(!requests.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|(_, request)| request.handoff == Handoff::Required),
+            "selected-package policy must apply at the actual request factory without its optional resource"
+        );
+    }
+
+    #[test]
+    fn selected_package_restore_without_a_request_refuses_on_failure_or_deadline() {
+        for failed in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+            app.world_mut()
+                .resource_mut::<crate::config::EngineConfig>()
+                .clusters = Some("selected".into());
+            assert!(!app.world().contains_resource::<RequiredHandoff>());
+            press_e(&mut app);
+            run_until_black(&mut app);
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_failed_for_test(CellKey::Interior(77));
+            app.update();
+            let restore;
+            let request;
+            {
+                let mut crossing = app.world_mut().resource_mut::<DoorCrossing>();
+                let active = crossing.active.as_mut().unwrap();
+                assert!(matches!(
+                    active.stage,
+                    Stage::Landing {
+                        restoring: true,
+                        ..
+                    }
+                ));
+                restore = active.restore.landing().key;
+                request = active.request.take();
+            }
+            if let Some((id, key)) = request {
+                app.world_mut()
+                    .resource_mut::<DestinationRequests>()
+                    .withdraw(id);
+                app.world_mut()
+                    .resource_mut::<DestinationReports>()
+                    .remove(&key);
+            }
+            if failed {
+                app.world_mut()
+                    .resource_mut::<StreamingWorld>()
+                    .set_failed_for_test(restore);
+            }
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            // Failed sources refuse immediately; missing request context ages in real time.
+            let updates = if failed {
+                1
+            } else {
+                (LANDING_TIMEOUT_SECONDS / DT).ceil() as usize
+            };
+            for _ in 0..updates {
+                app.update();
+            }
+            let refusal = app
+                .world()
+                .get_resource::<crate::streaming::failure::LoadingRefusal>();
+            assert!(
+                refusal.is_some(),
+                "config-only Required restore must refuse even when its request is missing: failed={failed}"
+            );
+            assert!(refusal.unwrap().0.contains(if failed {
+                "failed to reload"
+            } else {
+                "deadline"
+            }));
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .filter(|exit| exit.is_error())
+                    .count(),
+                1
+            );
+            assert_eq!(budget(&app), configured_budget());
+            assert!(app.world().resource::<DestinationRequests>().is_empty());
+            assert!(matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::Refused
+            ));
+            assert!(alpha(&mut app) >= 0.99);
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_black_crossing_projects_its_control_hold_to_the_neutral_owner() {
+        let (mut app, _) = app_with(interior_door());
+        crate::cluster::loading::install(&mut app);
+        app.world_mut()
+            .resource_mut::<crate::config::EngineConfig>()
+            .clusters = Some("selected".into());
+        assert!(
+            !app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .controls_blocked()
+        );
+        press_e(&mut app);
+        run_until_black(&mut app);
+        assert!(alpha(&mut app) >= 0.99);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .controls_blocked(),
+            "physics must see the actual crossing cover through its neutral contract"
         );
     }
 }

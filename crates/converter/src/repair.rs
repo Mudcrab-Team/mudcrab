@@ -3,8 +3,8 @@ use crate::{
     archive::{ArchiveExtractor, archive_reader_version, safe_relative_path},
     asset_path::{AssetKind, canonical_asset_path, is_authoring_resource, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, configuration_hash, hash_file,
-        link_or_copy,
+        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, configuration_hash,
+        ensure_current_retained_mesh_proof, hash_file, link_or_copy,
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
@@ -44,6 +44,9 @@ pub struct RepairReport {
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
     pub failures: BTreeMap<String, String>,
+    /// Optional capability declarations dropped because their payload is no longer valid.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -145,15 +148,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         manifest.configuration_hash == configuration_hash(config)?,
         "repair configuration differs from the original conversion; use the same Data, MO2 instance/profile and encoding settings"
     );
-    ensure!(
-        manifest.asset_configuration_hashes.get("nif")
-            == Some(&crate::cache::asset_configuration_hash_for_schema(
-                config,
-                CONVERTER_SCHEMA_VERSION,
-                "nif"
-            )?),
-        "repair mesh output contract is stale or missing; run normal conversion to regenerate models"
-    );
+    ensure_current_retained_mesh_proof(config, &manifest)?;
     check_existing(
         &config.output_dir,
         if apply {
@@ -203,6 +198,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         published: false,
         record_data_complete: manifest.record_data_complete == Some(true),
         failures: BTreeMap::new(),
+        warnings: Vec::new(),
     };
 
     let mut selection_notices = Vec::new();
@@ -663,6 +659,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     report.failures = manifest.failures.clone();
     manifest.complete = false;
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            &mut manifest,
+            &staged,
+        )?);
     manifest.save(&staged.join("conversion-manifest.json"))?;
     fs::write(
         directory.join("repair-report.json"),
@@ -913,9 +915,15 @@ fn record_output(
     root: &Path,
 ) -> Result<()> {
     let path = checked_destination(root, &output)?;
+    let animation_diagnostics = if output.ends_with(".glb") {
+        Some(crate::mesh::glb_animation_diagnostics(&path)?)
+    } else {
+        None
+    };
     manifest.entries.insert(
         key,
         CacheEntry {
+            animation_diagnostics,
             source_hash,
             output,
             output_size: fs::metadata(&path)?.len(),
@@ -1340,6 +1348,7 @@ mod tests {
                 published: false,
                 record_data_complete: false,
                 failures: BTreeMap::new(),
+                warnings: Vec::new(),
             };
             attempt(
                 &config,

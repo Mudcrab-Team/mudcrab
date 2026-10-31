@@ -69,6 +69,7 @@ impl Fixture {
     /// current source, schema and script ABI settings, and the marker's own bytes.
     fn marker_record(&self) -> StagedOutput {
         StagedOutput {
+            animation_diagnostics: None,
             schema_version: CONVERTER_SCHEMA_VERSION,
             configuration_hash: asset_configuration_hash_for_schema(
                 &self.config,
@@ -155,6 +156,7 @@ async fn reconverts_a_staged_output_written_under_an_older_schema() {
     fixture.write_source("One");
     fixture.stage_marker();
     let stale = StagedOutput {
+        animation_diagnostics: None,
         schema_version: CONVERTER_SCHEMA_VERSION.saturating_sub(1),
         ..fixture.marker_record()
     };
@@ -333,6 +335,7 @@ async fn changed_malformed_nif_does_not_publish_the_previous_staged_glb() {
         .record(
             "meshes/one.nif",
             &StagedOutput {
+                animation_diagnostics: None,
                 schema_version: CONVERTER_SCHEMA_VERSION,
                 configuration_hash: asset_configuration_hash_for_schema(
                     &config,

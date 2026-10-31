@@ -13,6 +13,7 @@
 
 pub mod panel;
 pub mod runner;
+pub mod settings;
 pub mod state;
 pub mod status;
 
@@ -166,6 +167,8 @@ impl Plugin for ConversionLogicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ConversionStatus>()
             .init_resource::<GamePathConfig>()
+            .init_resource::<settings::UserChosenPaths>()
+            .init_resource::<settings::ConversionSettings>()
             .init_resource::<crate::mo2_settings::SourceSettings>()
             .init_resource::<CurrentConversion>()
             .init_resource::<PendingInputs>()
@@ -188,6 +191,7 @@ pub struct ConversionPanelPlugin;
 impl Plugin for ConversionPanelPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ConversionLogicPlugin)
+            .add_observer(panel::change_cluster_geometry)
             .init_resource::<OutputReady>()
             .init_resource::<OutputHasManifest>()
             .add_systems(Startup, panel::detect_skyrim_at_start)
@@ -209,6 +213,7 @@ impl Plugin for ConversionPanelPlugin {
                     panel::draw_bar,
                     panel::draw_labels,
                     panel::draw_controls,
+                    panel::draw_cluster_geometry,
                 )
                     .in_set(LauncherSet::Draw),
             )
@@ -305,11 +310,13 @@ pub fn actuate_effects(
     mut status: ResMut<ConversionStatus>,
     mut handle: ResMut<RunHandle>,
     source: Res<crate::mo2_settings::SourceSettings>,
+    settings: Res<settings::ConversionSettings>,
 ) {
     for effect in effects.drain() {
         match effect {
             Effect::None => {}
             Effect::Begin(mut config) => {
+                settings.apply(&mut config);
                 let (tx, rx) = crossbeam_channel::unbounded();
                 match source.apply(&mut config) {
                     Ok(()) => handle.cancellation = Some(runner::spawn(*config, tx)),
@@ -402,6 +409,7 @@ pub fn output_is_complete(output: &Path) -> bool {
         .is_some_and(|manifest| {
             manifest.complete
                 && manifest.failures.is_empty()
+                && validate_output_geometry(output, &manifest.geometry).is_ok()
                 && (shared::MIN_RUNTIME_CONVERTER_SCHEMA_VERSION
                     ..=converter::cache::CONVERTER_SCHEMA_VERSION)
                     .contains(&manifest.schema_version)
@@ -416,7 +424,7 @@ pub fn output_is_complete(output: &Path) -> bool {
                                 .and_then(serde_json::Value::as_u64)
                                 .and_then(|version| u32::try_from(version).ok())
                                 .is_some_and(|schema| {
-                                    shared::world_assets::validate_lod_build_contract(
+                                    shared::world_assets::validate_geometry_build_contract(
                                         output,
                                         shared::LOD_CONVERTER_SCHEMA_VERSION,
                                     )
@@ -424,6 +432,20 @@ pub fn output_is_complete(output: &Path) -> bool {
                                 })
                     })
         })
+}
+
+/// Checks the already parsed geometry selector and its recorded package metadata.
+/// Runtime payload certification remains with the engine.
+pub fn validate_output_geometry(
+    output: &Path,
+    geometry: &shared::geometry::GeometryManifest,
+) -> Result<(), String> {
+    geometry.validate().map_err(|error| format!("{error:#}"))?;
+    if let Some(package) = &geometry.cluster_package {
+        shared::cluster_overlay::read_metadata(&output.join(package))
+            .map_err(|error| format!("{error:#}"))?;
+    }
+    Ok(())
 }
 
 /// Keeps [`OutputReady`] and [`OutputHasManifest`] up to date. The check reads the output's
@@ -529,11 +551,165 @@ fn offer_leftover_staging(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
     use bevy::MinimalPlugins;
     use converter::{CheckMode, ProgressEvent, ProgressStage};
     use crossbeam_channel::unbounded;
     use state::{FailureReport, RunReport};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn start_and_resume_deliver_checked_and_unchecked_choices_to_the_real_pipeline() {
+        use super::settings::ConversionSettings;
+        use std::time::Duration;
+
+        for (resume, requested_cluster) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let folder = tempfile::tempdir().unwrap();
+            std::fs::write(
+                folder.path().join("OWNER.txt"),
+                "Owner: launcher Start/Resume pipeline validation fixture; lifetime: test.\n",
+            )
+            .unwrap();
+            let data = folder.path().join("data");
+            std::fs::create_dir(&data).unwrap();
+            std::fs::write(
+                data.join("OWNER.txt"),
+                "Owner: launcher synthetic empty data fixture; lifetime: test.\n",
+            )
+            .unwrap();
+            let output = folder.path().join("output");
+            let staging = folder.path().join("output.staging-fixture");
+            let staging_owner =
+                "Owner: launcher synthetic Resume staging fixture; lifetime: test.\n";
+            if resume {
+                std::fs::create_dir(&staging).unwrap();
+                std::fs::write(staging.join("OWNER.txt"), staging_owner).unwrap();
+            }
+            let absent_schema = folder.path().join("absent-schema.json");
+            assert!(!absent_schema.exists());
+
+            let mut app = test_app();
+            app.edit_schedule(Update, |schedule| {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+            });
+            assert!(runner::take_started_configurations().is_empty());
+            app.insert_resource(ConversionSettings {
+                clustered_geometry: requested_cluster,
+            });
+            if resume {
+                app.world_mut().resource_mut::<CurrentConversion>().0 = ConversionState::Stopped {
+                    staging: Some(staging.clone()),
+                    cancelled: true,
+                };
+            }
+            app.world_mut()
+                .resource_mut::<PendingInputs>()
+                .push(if resume {
+                    Input::Resume {
+                        data: data.clone(),
+                        output: output.clone(),
+                    }
+                } else {
+                    Input::Start {
+                        data: data.clone(),
+                        output: output.clone(),
+                    }
+                });
+            app.update();
+            assert_eq!(
+                app.world().resource::<CurrentConversion>().0,
+                ConversionState::Running
+            );
+            let mut effects = take_effects(&mut app);
+            assert_eq!(effects.len(), 1, "resume={resume}: {effects:?}");
+            let Effect::Begin(mut config) = effects.pop().unwrap() else {
+                panic!("resume={resume} did not queue Begin");
+            };
+            assert_eq!(config.resume_staging, resume.then(|| staging.clone()));
+            assert_eq!(config.data_dir, data);
+            assert_eq!(config.output_dir, output);
+            // Seed the opposite request so omitting the actuator application fails for both choices.
+            config.lod_mode = if requested_cluster {
+                converter::cluster::LodMode::Baked
+            } else {
+                converter::cluster::LodMode::Cluster
+            };
+            config.cluster_terrain = !requested_cluster;
+            // Cluster must fail request validation. An unchecked request must clear cluster terrain
+            // and get as far as the deliberately missing add-on, before any output work.
+            config.no_lod = true;
+            config.record_reader = converter::config::RecordReader::Inhouse;
+            // Stop before output creation even if this request is interpreted as baked geometry.
+            config.schema_addons = vec![absent_schema.clone()];
+            app.world_mut()
+                .resource_mut::<PendingEffects>()
+                .push(Effect::Begin(config));
+            app.add_systems(Update, actuate_effects.after(LauncherSet::Logic));
+            app.update();
+
+            let started = runner::take_started_configurations();
+            assert_eq!(
+                started,
+                vec![runner::StartedConfiguration {
+                    lod_mode: if requested_cluster {
+                        converter::cluster::LodMode::Cluster
+                    } else {
+                        converter::cluster::LodMode::Baked
+                    },
+                    cluster_terrain: requested_cluster,
+                    data_dir: data.clone(),
+                    output_dir: output.clone(),
+                    resume_staging: resume.then(|| staging.clone()),
+                }],
+                "resume={resume}, requested_cluster={requested_cluster}"
+            );
+
+            // Receive directly so the next frame's drain_run_messages cannot consume it.
+            let receiver = app.world().resource::<RunChannel>().receiver.clone();
+            let message = receiver
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the real runner must report its before-work validation result");
+            let RunMessage::Failed(failure) = message else {
+                panic!("resume={resume} unexpectedly began work: {message:?}");
+            };
+            let expected = if requested_cluster {
+                "--lod-mode cluster requires LOD enabled".to_owned()
+            } else {
+                format!("schema add-on {}:", absent_schema.display())
+            };
+            assert!(
+                failure.message.contains(&expected),
+                "resume={resume}, requested_cluster={requested_cluster}: expected {expected:?}, got {}",
+                failure.message
+            );
+            assert!(!failure.cancelled);
+            assert_eq!(failure.staging, None);
+            assert!(!output.exists(), "validation must precede output creation");
+            assert!(!folder.path().join("output.assets-cache").exists());
+            if resume {
+                assert_eq!(
+                    std::fs::read_to_string(staging.join("OWNER.txt")).unwrap(),
+                    staging_owner
+                );
+                let entries: Vec<_> = std::fs::read_dir(&staging)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect();
+                assert_eq!(
+                    entries,
+                    vec![std::ffi::OsString::from("OWNER.txt")],
+                    "validation must leave the existing Resume staging unchanged"
+                );
+            } else {
+                assert!(
+                    !staging.exists(),
+                    "validation must precede staging creation"
+                );
+            }
+        }
+    }
 
     fn test_app() -> App {
         let mut app = App::new();

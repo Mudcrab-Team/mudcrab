@@ -8,11 +8,12 @@ use crate::{
     AssetPipeline, PipelineConfig, PipelineReport, ProgressEvent, ProgressStage,
     archive::ArchiveExtractor,
     asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
+    baked_sources,
     cache::{
         BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, ConversionManifest,
         DEFAULT_GAIT_RECIPE, body_compose_inputs, can_reuse_meshes_for_producer,
-        configuration_hash, default_gait_inputs, hash_bytes, hash_file,
-        retained_configuration_matches_for_reader,
+        configuration_hash, default_gait_inputs, ensure_current_retained_mesh_proof, hash_bytes,
+        hash_file, retained_configuration_matches_for_reader,
     },
     esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
     integration::finalize_world_database,
@@ -75,15 +76,33 @@ impl AssetPipeline {
     /// Reader data-loss warnings keep the rebuilt report and manifest incomplete;
     /// successful compatibility notices do not affect their shared completeness rule.
     pub async fn rebuild_metadata_async(
+        config: PipelineConfig,
+        source_assets: &Path,
+        progress_tx: Sender<ProgressEvent>,
+    ) -> Result<PipelineReport> {
+        Self::rebuild_metadata_with_post_publish(
+            config,
+            source_assets,
+            progress_tx,
+            crate::cluster::PostPublish::REAL,
+        )
+        .await
+    }
+
+    /// The rebuild with its post-publish overlay step injectable (tests only substitute the
+    /// environment, never the base publication or the derivation).
+    pub(crate) async fn rebuild_metadata_with_post_publish(
         mut config: PipelineConfig,
         source_assets: &Path,
         progress_tx: Sender<ProgressEvent>,
+        post_publish: crate::cluster::PostPublish,
     ) -> Result<PipelineReport> {
         ensure!(
             config.mo2.is_none(),
             "metadata rebuild does not support MO2 selection; use normal conversion"
         );
         config.validate()?;
+        crate::cluster::validate_request(&config)?;
         config.freeze_schema_addons()?;
         ensure!(
             config.resume_staging.is_none()
@@ -99,10 +118,17 @@ impl AssetPipeline {
         // Both leases stay with the rebuild until publication; the terrain worker holds clones.
         let source_lock = Arc::new(AssetLock::acquire_shared(&source)?);
         let output_lock = Arc::new(AssetLock::acquire_exclusive(&config.output_dir)?);
+        config.protect_derived()?;
         let source_manifest = fs::read(source.join("conversion-manifest.json"))?;
         // Read the original version; normal cache loading deliberately invalidates
         // incompatible assets during migration, which this explicit route verifies instead.
         let mut manifest: ConversionManifest = serde_json::from_slice(&source_manifest)?;
+        manifest.geometry.validate()?;
+        ensure!(
+            manifest.geometry.geometry_mode != shared::geometry::GeometryMode::Cluster
+                || crate::cluster::cluster_only(&config),
+            "metadata rebuild cannot restore baked products omitted by cluster conversion; run normal conversion"
+        );
         let source_reader = source_reader_identity(&source)?;
         let retained_reader = retained_reader_identity(&source, &source_reader)?;
         let source_schemas = source_reader_schemas(&source, &source_reader)?;
@@ -175,18 +201,14 @@ impl AssetPipeline {
             )?,
             "retained producer configuration does not match rebuild settings"
         );
-        ensure!(
-            manifest.asset_configuration_hashes.get("nif")
-                == Some(&crate::cache::asset_configuration_hash_for_schema(
-                    &config,
-                    mesh_schema,
-                    "nif",
-                )?),
-            "retained mesh settings predate the current mesh output contract; run normal conversion to regenerate models"
-        );
+        // Preserve specific schema/settings refusals before the current NIF proof.
+        ensure_current_retained_mesh_proof(&config, &manifest)?;
         let plugins = matched_plugins(&source, &config.data_dir)?;
         let staging = staging_path(&config.output_dir);
         fs::create_dir(&staging)?;
+        // The one adapter probe of this run, asked before any LOD work; the overlay derivation
+        // after publication receives it instead of probing again.
+        let early_probe = (post_publish.probe)(&config);
         let result = rebuild_into(
             &config,
             &source,
@@ -227,6 +249,26 @@ impl AssetPipeline {
             return Err(error);
         }
         report.publication_elapsed_ms = publication_started.elapsed().as_millis();
+        // The rebuilt base is published and valid, with no cluster data. Release its exclusive
+        // writer lock so the derivation takes its own shared lock; the published output keeps its
+        // `vfs`, which holds the raw terrain DDS the derivation reads in place.
+        drop(output_lock);
+        if crate::cluster::derive_requested(&config) {
+            progress_event(
+                &progress_tx,
+                ProgressStage::Publishing,
+                "Deriving cluster overlay",
+            )
+            .await;
+        }
+        crate::cluster::derive_after_publish(
+            &config,
+            &config.output_dir,
+            None,
+            early_probe,
+            &post_publish,
+        )?
+        .record(&mut report);
         report.elapsed_ms = started.elapsed().as_millis();
         Ok(report)
     }
@@ -419,6 +461,7 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
 }
 
 /// Rebuild requested metadata while publishing the already verified original asset provenance.
+#[allow(clippy::too_many_arguments)]
 async fn rebuild_into(
     config: &PipelineConfig,
     source: &Path,
@@ -435,32 +478,6 @@ async fn rebuild_into(
         retained_schemas,
     } = metadata;
     let (plugins, plugin_hashes) = matched;
-    progress_event(
-        progress,
-        ProgressStage::Validating,
-        "Verifying and copying retained assets",
-    )
-    .await;
-    let mut reuse_notices = Vec::new();
-    let (retained, replay_verified_pruned_assets) =
-        copy_verified_assets(source, staging, manifest, &mut reuse_notices)?;
-    let provenance = MetadataProvenance {
-        record_reader: crate::esm::inhouse::configured_reader_identity(config)?,
-        retained_asset_record_reader: retained_reader.clone(),
-        retained_asset_schema_json: retained_schemas.addon_bytes().map(<[u8]>::to_vec).collect(),
-        source_converter_schema: manifest.schema_version,
-        source_retained_mesh_schema: manifest
-            .retained_mesh_schema_version
-            .unwrap_or(manifest.schema_version),
-        source_manifest_hash: hash_bytes(source_manifest),
-        source_configuration_hash: manifest.configuration_hash.clone(),
-        retained_asset_configuration_hash: manifest
-            .retained_asset_configuration_hash
-            .clone()
-            .unwrap_or_else(|| manifest.configuration_hash.clone()),
-        retained_asset_hashes: retained.clone(),
-        replay_verified_pruned_assets,
-    };
     let mut report = PipelineReport {
         load_order: plugins
             .iter()
@@ -471,21 +488,8 @@ async fn rebuild_into(
                     .into_owned()
             })
             .collect(),
-        cache_hits: retained.len() as u64,
-        notices: reuse_notices,
-        pruned_texture_references: manifest
-            .pruned_texture_references
-            .values()
-            .map(|references| references.len() as u64)
-            .sum(),
-        artifacts: retained.keys().map(PathBuf::from).collect(),
         ..Default::default()
     };
-    if provenance.record_reader != provenance.retained_asset_record_reader {
-        let notice = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
-        eprintln!("note: {notice}");
-        report.notices.push(notice.to_owned());
-    }
     progress_event(
         progress,
         ProgressStage::Extracting,
@@ -571,6 +575,76 @@ async fn rebuild_into(
     let phases = conversion.phases;
     let merged = conversion.records;
     validate_database(&Connection::open(&database)?)?;
+    // Reader migrations can correct record texture paths. Classify retained assets only
+    // after rebuilding the current graph; source GLBs still own their retained dependencies.
+    progress_event(
+        progress,
+        ProgressStage::Validating,
+        "Verifying and copying retained assets",
+    )
+    .await;
+    let (retained, replay_verified_pruned_assets) = copy_verified_assets_for_geometry(
+        source,
+        staging,
+        manifest,
+        crate::cluster::cluster_only(config),
+        &crate::terrain_pipeline::configured_default_sources(config)?,
+        &mut report.notices,
+    )?;
+    let animation_by_output: BTreeMap<_, _> = manifest
+        .entries
+        .values()
+        .filter_map(|entry| {
+            entry
+                .animation_diagnostics
+                .as_ref()
+                .map(|diagnostics| (entry.output.as_str(), diagnostics))
+        })
+        .collect();
+    for relative in retained.keys().filter(|name| name.ends_with(".glb")) {
+        if let Some(diagnostics) = animation_by_output.get(relative.as_str()) {
+            crate::pipeline::record_animation_diagnostics(
+                diagnostics,
+                Path::new(relative),
+                &mut report,
+            );
+        } else {
+            crate::pipeline::record_mesh_animation_notices(
+                &staging.join(relative),
+                Path::new(relative),
+                &mut report,
+            )?;
+        }
+    }
+    let provenance = MetadataProvenance {
+        record_reader: crate::esm::inhouse::configured_reader_identity(config)?,
+        retained_asset_record_reader: retained_reader.clone(),
+        retained_asset_schema_json: retained_schemas.addon_bytes().map(<[u8]>::to_vec).collect(),
+        source_converter_schema: manifest.schema_version,
+        source_retained_mesh_schema: manifest
+            .retained_mesh_schema_version
+            .unwrap_or(manifest.schema_version),
+        source_manifest_hash: hash_bytes(source_manifest),
+        source_configuration_hash: manifest.configuration_hash.clone(),
+        retained_asset_configuration_hash: manifest
+            .retained_asset_configuration_hash
+            .clone()
+            .unwrap_or_else(|| manifest.configuration_hash.clone()),
+        retained_asset_hashes: retained.clone(),
+        replay_verified_pruned_assets,
+    };
+    report.cache_hits += retained.len() as u64;
+    report.pruned_texture_references = manifest
+        .pruned_texture_references
+        .values()
+        .map(|references| references.len() as u64)
+        .sum();
+    report.artifacts.extend(retained.keys().map(PathBuf::from));
+    if provenance.record_reader != provenance.retained_asset_record_reader {
+        let notice = "Metadata reader changed; retained models and textures keep their verified source producer bytes, including earlier texture-role encodings. Use normal conversion to regenerate those assets.";
+        eprintln!("note: {notice}");
+        report.notices.push(notice.to_owned());
+    }
     if config.record_reader == crate::config::RecordReader::Inhouse {
         crate::esm::inhouse::write_database_profile(staging, &database, &phases)?;
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
@@ -672,6 +746,17 @@ async fn rebuild_into(
         )
         .await?;
     }
+    // Retained assets keep their original producer provenance, while metadata
+    // and the DDS source contract below describe this current-schema rebuild.
+    manifest.schema_version = CONVERTER_SCHEMA_VERSION;
+    manifest.geometry = crate::cluster::geometry_manifest(config, staging)?;
+    manifest.retained_mesh_schema_version = Some(provenance.source_retained_mesh_schema);
+    manifest.retained_asset_configuration_hash =
+        Some(provenance.retained_asset_configuration_hash.clone());
+    manifest.configuration_hash = configuration_hash(config)?;
+    manifest.schema_addons = config.schemas()?.identities().to_vec();
+    // No archive extraction cache is copied by this route.
+    manifest.archives.clear();
     let integration = finalize_world_database(staging)?
         .ok_or_else(|| color_eyre::eyre::eyre!("missing rebuilt world database"))?;
     ensure!(
@@ -707,6 +792,8 @@ async fn rebuild_into(
         hash_file(&source.join("conversion-manifest.json"))? == provenance.source_manifest_hash,
         "source manifest changed during metadata rebuild"
     );
+    report.complete = conversion_is_complete(&report);
+    manifest.complete = report.complete;
     manifest.schema_version = CONVERTER_SCHEMA_VERSION;
     manifest.retained_mesh_schema_version = Some(provenance.source_retained_mesh_schema);
     manifest.retained_asset_configuration_hash =
@@ -715,6 +802,11 @@ async fn rebuild_into(
     manifest.schema_addons = config.schemas()?.identities().to_vec();
     // No archive extraction cache is copied by this route.
     manifest.archives.clear();
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            manifest, staging,
+        )?);
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
     manifest.save(&staging.join("conversion-manifest.json"))?;
@@ -900,12 +992,89 @@ pub(crate) fn supported_derived_proof(path: &str, proof: &crate::cache::DerivedO
 /// Unproven or unreadable optional derived outputs and strays are omitted with a bounded notice;
 /// metadata retention never invents a producer proof from observed file bytes.
 /// Repair presence bits come from the complete source manifest rather than current Data.
+#[cfg(test)]
 fn copy_verified_assets(
     source: &Path,
     staging: &Path,
     manifest: &mut ConversionManifest,
     notices: &mut Vec<String>,
 ) -> Result<(BTreeMap<String, String>, BTreeSet<String>)> {
+    copy_verified_assets_for_geometry(source, staging, manifest, false, &[], notices)
+}
+
+fn copy_verified_assets_for_geometry(
+    source: &Path,
+    staging: &Path,
+    manifest: &mut ConversionManifest,
+    cluster_only: bool,
+    additional_textures: &[PathBuf],
+    notices: &mut Vec<String>,
+) -> Result<(BTreeMap<String, String>, BTreeSet<String>)> {
+    let mut shared_lod_textures = BTreeSet::new();
+    if cluster_only {
+        shared_lod_textures.extend(
+            additional_textures
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned()),
+        );
+        for (key, entry) in &manifest.entries {
+            if !key.ends_with(".nif") {
+                continue;
+            }
+            let glb = source.join(&entry.output);
+            for dependency in MeshConverter::glb_texture_dependencies(&glb)? {
+                let resolved = resolve_asset_uri(source, &glb, &dependency.uri)?;
+                let relative = resolved
+                    .strip_prefix(source)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let runtime_source = crate::asset_path::runtime_texture_source(&relative)
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!(
+                            "unsupported retained texture dependency: {relative}"
+                        )
+                    })?;
+                shared_lod_textures.insert(canonical_asset_path(
+                    &runtime_source,
+                    AssetKind::Texture,
+                    "dds",
+                )?);
+            }
+        }
+        shared_lod_textures.extend(
+            crate::pipeline::collect_database_texture_semantics(staging)?
+                .keys()
+                .map(|key| canonical_asset_path(key, AssetKind::Texture, "dds"))
+                .collect::<Result<Vec<_>>>()?,
+        );
+        shared_lod_textures.extend(
+            terrain_diffuse_paths(&Connection::open_with_flags(
+                staging.join("skyrim_world.db"),
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?)?
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned()),
+        );
+    }
+    let omitted: BTreeSet<_> = if cluster_only {
+        manifest
+            .entries
+            .iter()
+            .filter(|(key, _)| {
+                baked_sources::is_baked_geometry_input(Path::new(key))
+                    && !shared_lod_textures.contains(*key)
+            })
+            .map(|(_, entry)| entry.output.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    manifest
+        .entries
+        .retain(|_, entry| !omitted.contains(&entry.output));
+    manifest
+        .pruned_texture_references
+        .retain(|path, _| !omitted.contains(path));
     // Reuse requires a complete package with no failed assets. Its successful DDS entries
     // therefore preserve the producer's texture-source presence even without a raw VFS.
     let source_textures = manifest
@@ -1010,6 +1179,9 @@ fn copy_verified_assets(
             } else {
                 Some(relative.clone())
             };
+            if key.as_ref().is_some_and(|key| omitted.contains(key)) {
+                continue;
+            }
             let Some((hash, size)) = key.as_ref().and_then(|key| expected.get(key)) else {
                 unproven.record(&relative);
                 continue;
@@ -1198,6 +1370,7 @@ mod tests {
         manifest.entries.insert(
             "scripts/neighbor.pex".into(),
             CacheEntry {
+                animation_diagnostics: None,
                 source_hash: hash_bytes(b"source"),
                 output: neighbor.into(),
                 output_size: bytes.len() as u64,
@@ -1359,6 +1532,17 @@ mod tests {
         set_readonly(parent.as_path(), true);
         #[cfg(not(windows))]
         set_readonly(destination.as_path(), true);
+        #[cfg(windows)]
+        let occupant_guard = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&destination)
+                .unwrap()
+        };
         // Root can unlink through a read-only parent; skip rather than assert rejection.
         #[cfg(unix)]
         if fs::remove_file(&destination).is_ok() {
@@ -1366,19 +1550,9 @@ mod tests {
             eprintln!("skipping: Unix permissions allow root to remove the fixture");
             return;
         }
-        #[cfg(windows)]
-        let removal_guard = {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-            fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .open(&destination)
-                .unwrap()
-        };
         let result = copy_verified_assets(&source, &staging, &mut manifest, &mut Vec::new());
         #[cfg(windows)]
-        drop(removal_guard);
+        drop(occupant_guard);
         set_readonly(destination.as_path(), false);
         set_readonly(parent.as_path(), false);
         assert!(result.is_err(), "unremovable occupant must fail closed");
@@ -1404,6 +1578,7 @@ mod tests {
         manifest.entries.insert(
             "textures/shared.dds".into(),
             CacheEntry {
+                animation_diagnostics: None,
                 source_hash: "source".into(),
                 output: "textures/shared.ktx2".into(),
                 output_size: 16,
@@ -1797,6 +1972,7 @@ mod metadata_schema_controls {
         manifest.entries.insert(
             "meshes/missing.nif".into(),
             crate::cache::CacheEntry {
+                animation_diagnostics: None,
                 source_hash: "synthetic_source".into(),
                 output: "meshes/missing.glb".into(),
                 output_size: 7,

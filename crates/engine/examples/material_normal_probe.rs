@@ -114,6 +114,7 @@ fn fixtures(output: &std::path::Path, legacy: bool) -> PathBuf {
                     path: format!("textures/mask{index}_n.dds"),
                     required: false,
                 }],
+                animation: Vec::new(),
             };
             NifShapeMaterial {
                 shape_block: index as u32,

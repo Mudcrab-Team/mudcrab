@@ -164,6 +164,24 @@ fn assert_asset_bytes(output: &Path, expected: &BTreeMap<String, Vec<u8>>) {
     }
 }
 
+/// Captures directories and file bytes so a refused rebuild cannot leave partial publication.
+fn output_tree(output: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    walkdir::WalkDir::new(output)
+        .into_iter()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let bytes = entry
+                .file_type()
+                .is_file()
+                .then(|| fs::read(entry.path()).unwrap());
+            (
+                entry.path().strip_prefix(output).unwrap().to_path_buf(),
+                bytes,
+            )
+        })
+        .collect()
+}
+
 /// Resolves the content-addressed persistent blob recorded for an archive's first entry.
 fn archive_blob(config: &PipelineConfig, archive: &str) -> PathBuf {
     let entry = &manifest(&config.output_dir).archives[archive].files[0];
@@ -360,6 +378,8 @@ async fn known_legacy_full_hashes_reuse_dds_and_pex_but_regenerate_nif_without_k
         }
         let report = publish(config.clone()).await;
         let rejected = matches!(contract, "unproven" | "projection-3-nonenglish");
+        // A legacy combined proof cannot attest the authored transform clips a mesh now carries
+        // (`reusable_manifest`), so the one mesh is rebuilt even when the proof is known.
         assert_eq!(report.converted, if rejected { 5 } else { 1 });
         assert_eq!(report.cache_hits, if rejected { 1 } else { 5 });
         assert_asset_bytes(&fixture.output, &expected);
@@ -763,16 +783,91 @@ async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repea
             original.configuration_hash
         );
         let report = publish(second_config).await;
+        // Current NIF proof survives reader migration; only the uncopied archive cache rebuilds.
         assert_eq!(
             report.converted, 1,
             "metadata retention did not copy the archive cache"
         );
         assert_eq!(
             report.cache_hits, 5,
-            "original current-producer asset settings remain proven"
+            "current NIF proof and historical texture and script settings remain proven"
         );
         assert_asset_bytes(&second_output, &expected);
     }
+}
+
+/// Valid metadata and settings cannot replace missing or stale proof for retained NIF GLBs.
+#[tokio::test]
+async fn metadata_rebuild_refuses_missing_or_stale_nif_proof_before_staging() {
+    let fixture = Fixture::new(true);
+    let config = fixture.config(RecordReader::Legacy);
+    publish(config.clone()).await;
+    let original = manifest(&fixture.output);
+    assert!(
+        original
+            .entries
+            .values()
+            .any(|entry| entry.output.ends_with(".glb"))
+    );
+    let rejected_output = fixture.sibling_output("metadata-proof-refusal");
+    for proof in [None, Some("stale-authored-mesh-proof")] {
+        let mut source = original.clone();
+        if let Some(proof) = proof {
+            source
+                .asset_configuration_hashes
+                .insert("nif".into(), proof.into());
+        } else {
+            source.asset_configuration_hashes.remove("nif");
+        }
+        source
+            .save(&fixture.output.join("conversion-manifest.json"))
+            .unwrap();
+        let before = output_tree(&fixture.output);
+        let mut rebuild_config = config.clone();
+        rebuild_config.output_dir = rejected_output.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+        let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+        let error = AssetPipeline::rebuild_metadata_async(rebuild_config, &fixture.output, sender)
+            .await
+            .unwrap_err()
+            .to_string();
+        drain.await.unwrap();
+        assert!(error.contains("retained NIF proof"), "{proof:?}: {error}");
+        assert!(
+            error.contains("run normal conversion"),
+            "{proof:?}: {error}"
+        );
+        assert!(
+            error.contains("regenerate every NIF GLB"),
+            "{proof:?}: {error}"
+        );
+        assert!(!rejected_output.exists(), "{proof:?} published output");
+        assert!(
+            fs::read_dir(rejected_output.parent().unwrap())
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("metadata-proof-refusal.staging-")),
+            "{proof:?} left a staging directory"
+        );
+        assert_eq!(output_tree(&fixture.output), before, "{proof:?}");
+    }
+    // Restore the sole changed input and prove this same pack remains eligible.
+    original
+        .save(&fixture.output.join("conversion-manifest.json"))
+        .unwrap();
+    let before = output_tree(&fixture.output);
+    let mut rebuild_config = config;
+    rebuild_config.output_dir = rejected_output.clone();
+    publish_metadata(rebuild_config, &fixture.output).await;
+    assert_eq!(output_tree(&fixture.output), before);
+    assert_asset_bytes(&rejected_output, &asset_bytes(&fixture.output));
+    assert_eq!(
+        manifest(&rejected_output).asset_configuration_hashes,
+        original.asset_configuration_hashes
+    );
 }
 
 /// Explicit historical byte retention does not upgrade old meshes or textures into normal hits.

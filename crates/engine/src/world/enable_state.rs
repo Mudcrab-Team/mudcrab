@@ -2,18 +2,18 @@ use std::collections::{HashMap, HashSet};
 
 const INITIALLY_DISABLED: u32 = 0x800;
 const OPPOSITE_OF_PARENT: u32 = 1;
-const PLAYER_REFERENCE: u32 = 0x14;
+pub(crate) const PLAYER_REFERENCE: u32 = 0x14;
 
 /// Immutable inputs from a winning reference record, separate from runtime state.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct InitialEnableInputs {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InitialEnableInputs {
     pub header_flags: u32,
     pub parent_id: Option<u32>,
     pub parent_flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum EnableStateError {
+pub(crate) enum EnableStateError {
     MissingParent(u32),
     Cycle(u32),
 }
@@ -27,10 +27,11 @@ impl std::fmt::Display for EnableStateError {
     }
 }
 
-pub(super) type EnableState = Result<bool, EnableStateError>;
+pub(crate) type EnableState = Result<bool, EnableStateError>;
 
-/// Memoizes initial state for the immutable package, including unresolved chains.
-pub(super) struct EnableStateResolver {
+/// Memoizes resolved state, including unresolved chains, until explicitly invalidated.
+#[derive(Clone)]
+pub(crate) struct EnableStateResolver {
     resolved: HashMap<u32, EnableState>,
 }
 
@@ -45,6 +46,20 @@ impl Default for EnableStateResolver {
 }
 
 impl EnableStateResolver {
+    /// The caller owns dependency invalidation; unrelated cached references remain valid.
+    pub fn invalidate(&mut self, reference: u32) {
+        self.resolved.remove(&reference);
+    }
+
+    /// Explicit runtime state terminates parent traversal, including a cyclic chain.
+    pub fn seed(&mut self, reference: u32, state: EnableState) {
+        self.resolved.insert(reference, state);
+    }
+
+    pub fn cached(&self, reference: u32) -> Option<EnableState> {
+        self.resolved.get(&reference).copied()
+    }
+
     pub fn resolve<E>(
         &mut self,
         mut form_id: u32,
@@ -86,6 +101,17 @@ impl EnableStateResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_cache_invalidation_and_explicit_seed_replace_initial_state() {
+        let mut resolver = EnableStateResolver::default();
+        resolver.seed(1, Ok(false));
+        assert_eq!(resolver.cached(1), Some(Ok(false)));
+        resolver.invalidate(1);
+        assert_eq!(resolver.cached(1), None);
+        resolver.seed(PLAYER_REFERENCE, Ok(false));
+        assert_eq!(resolver.cached(PLAYER_REFERENCE), Some(Ok(false)));
+    }
 
     fn inputs(flags: u32, parent: Option<(u32, u32)>) -> InitialEnableInputs {
         InitialEnableInputs {
