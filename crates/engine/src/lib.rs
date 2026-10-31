@@ -50,6 +50,7 @@ pub mod terrain_merge;
 pub mod terrain_upload;
 pub mod tone_mapping;
 pub mod visibility_optimization;
+mod water_depth;
 pub mod world;
 
 pub use app::run;
