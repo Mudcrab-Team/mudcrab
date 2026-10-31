@@ -84,7 +84,7 @@ pub fn records(first: u32) -> Vec<Vec<u8>> {
                     fields.push((b"ANAM", text("Sound\\asymmetric_one.wav")));
                     fields.push((b"ANAM", text("Sound\\asymmetric_two.wav")));
                     fields.push((b"ONAM", (first + 2).to_le_bytes().to_vec()));
-                    fields.push((b"FNAM", text("Independent subtitle")));
+                    fields.push((b"FNAM", 0x11u32.to_le_bytes().to_vec()));
                     fields.push((b"LNAM", vec![0xa3, 0x20, 0x7d, 0x51]));
                     fields.push((b"BNAM", vec![0xf3, 0xf9, 37, 11, 0x35, 0x01]));
                 }

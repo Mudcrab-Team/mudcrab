@@ -110,6 +110,49 @@ async fn failed_rebuild_leaves_the_damaged_previous_pack_untouched() {
 }
 
 #[test]
+fn cleanup_retries_remove_ordinary_leftovers_but_keep_unusable_originals() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("modern");
+    let staging = directory.path().join("staging");
+    pack(&output);
+    pack(&staging);
+    FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+    let published = publish_directory(&staging, &output);
+    FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+    published.unwrap();
+    let leftovers = read_publication_leftovers(&output).unwrap();
+    assert_eq!(leftovers.len(), 1);
+    let ordinary_backup = directory.path().join(&leftovers[0]);
+
+    fs::write(output.join("conversion-manifest.json"), b"torn manifest").unwrap();
+    fs::write(output.join("original-only"), b"preserved bytes").unwrap();
+    pack(&staging);
+    FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+    let published = publish_directory(&staging, &output);
+    FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+    published.unwrap();
+    assert_eq!(read_publication_leftovers(&output).unwrap(), leftovers);
+    let preserved = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_dir() && path.join("original-only").is_file())
+        .unwrap();
+
+    recover_interrupted_publication(&output).unwrap();
+    assert!(!ordinary_backup.exists());
+    assert!(read_publication_leftovers(&output).unwrap().is_empty());
+    assert_eq!(
+        fs::read(preserved.join("original-only")).unwrap(),
+        b"preserved bytes"
+    );
+    assert_eq!(
+        fs::read(preserved.join("conversion-manifest.json")).unwrap(),
+        b"torn manifest"
+    );
+    validate_publication_package(&output).unwrap();
+}
+
+#[test]
 fn unusable_manifest_recovery_preserves_exact_bytes_at_each_publication_boundary() {
     for boundary in 0..3 {
         let directory = tempfile::tempdir().unwrap();
