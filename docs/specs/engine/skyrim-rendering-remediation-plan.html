@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Skyrim remediation dependencies</title>
+<style>
+body{margin:0;color:var(--foreground,#222);font:14px/1.5 var(--font-sans,system-ui)}
+*{box-sizing:border-box}h2{font-size:19px;margin:0 0 6px}p{margin:0 0 15px}
+.muted{color:var(--muted-foreground,#687078)}.status{font-size:12px;margin-bottom:14px}
+nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0}
+button{font:inherit;text-align:left;cursor:pointer;border:1px solid var(--border,#ccc);border-radius:var(--radius,8px);padding:12px;color:inherit;background:var(--card,#f5f5f5)}
+button[aria-pressed="true"]{background:var(--accent-surface,#e7efff);color:var(--accent-surface-foreground,#214583);border-color:var(--ring,#507cc1)}
+button:focus-visible{outline:2px solid var(--ring,#507cc1);outline-offset:3px}
+button small{display:block;font-size:11px;margin-bottom:2px}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+article{padding:16px;border:1px solid var(--border,#ccc);border-radius:var(--radius,8px);background:var(--card,#f6f6f6)}
+article h3{font-size:14px;margin:0 0 7px}article p{font-size:13px;margin:0}
+.exit{margin-top:14px;padding:16px;border-left:3px solid var(--chart-1,#5c85c1);background:var(--muted,#f1f3f5);border-radius:var(--radius,8px)}
+.exit strong{display:block;margin-bottom:4px}.exit p{margin:0;font-size:13px}
+#dependency{font-size:13px;margin:0 0 12px}.footer{margin:14px 0 0;font-size:12px}
+@media(max-width:480px){nav{gap:5px}button{padding:10px 7px;font-size:12px}.cards{grid-template-columns:1fr}h2{font-size:18px}}
+</style>
+<main>
+<h2>Remediation order</h2>
+<p class="muted">Select a phase to see parallel work and the evidence needed to advance.</p>
+<div class="status muted">Planning checkpoint · Retail parity remains pending</div>
+<nav aria-label="Implementation phases">
+<button type="button" data-phase="0" aria-pressed="true"><small>Phase A</small>Record</button>
+<button type="button" data-phase="1" aria-pressed="false"><small>Phase B</small>Resolve</button>
+<button type="button" data-phase="2" aria-pressed="false"><small>Phase C</small>Integrate</button>
+<button type="button" data-phase="3" aria-pressed="false"><small>Phase D</small>Validate</button>
+</nav>
+<section id="panel" aria-live="polite">
+<p id="dependency" class="muted"></p>
+<div class="cards" id="cards"></div>
+<div class="exit"><strong>Required to advance</strong><p id="exit"></p></div>
+</section>
+<p class="footer muted">Each scoped correction can advance when its own contract closes. Missing required captures, unsupported cases and timeouts keep the corresponding gate pending.</p>
+</main>
+<script>
+const phases=[
+{dependency:'Start here. Diagnostics, retail tracing and data preservation can proceed together.',cards:[
+['R0 · Preserve controls','Hash the brighter checkpoint, each candidate, source patch, assets, settings and shot fixture.'],
+['R1 · Capture coherent frames','Join pixels, draws, constants, resources and history to one rendered frame and view.'],
+['R2 · Observe retail','Verify a session and capture selected original bindings, intermediate stages and repeated matched frames.'],
+['R3 · Preserve source inputs','Publish source-qualified DDS views and retain Lighting Effect 1/2 and authored frame data.']
+],exit:'The first Riverwood case identifies an ordinary primitive, a terrain/fallback primitive and the output chain. Missing retail observations leave retail gates pending.'},
+{dependency:'Use the recorded inputs. Shadow and specialized-family research can run in parallel.',cards:[
+['R4 · Resolve numeric domains','Trace transfer, exposure, clamp and output ownership before changing brightness.'],
+['R5 · Resolve effective lighting','Recover sun, ambient, room inheritance and per-draw local-light selection.'],
+['R6 · Qualify materials','Prove authored frames and each diffuse, specular, alpha, emission and soft/rim/back permutation.']
+],exit:'For each correction, source-to-stage evidence closes, an independent production-path probe passes, and its relevant negative control fails.'},
+{dependency:'Integrate only the qualified inputs, resource domains and per-view/per-draw state.',cards:[
+['R7 · Atmosphere and HDR','Validate fog blending and finishing separately, then sky, adaptation, bloom, tone and history.'],
+['R8 · Visibility and interiors','Recover shadows, terrain/LOD participation, room transitions and lifecycle behavior.'],
+['R9 · Remaining families','Close skin, foliage, snow, water, effects, AO, temporal effects and UI independently.']
+],exit:'Selected branches, resources, intermediate outputs, visibility and temporal resets agree. Unimplemented required families remain explicit gaps.'},
+{dependency:'Compare intermediate values first, then matched displayed output and whole views.',cards:[
+['R10 · Combined acceptance','Run the scene matrix, lifecycle checks and target-hardware release campaign for the exact rendering profile.'],
+['Promote after review','Record separate build, numeric, capture, visual, retail and performance verdicts; preserve rollback.']
+],exit:'Every required case passes its applicable gates and visual review. A better scoped image does not establish full Skyrim parity.'}
+];
+const buttons=[...document.querySelectorAll('button[data-phase]')];
+function show(index){
+ const phase=phases[index];
+ buttons.forEach((b,i)=>b.setAttribute('aria-pressed',String(i===index)));
+ document.getElementById('dependency').textContent=phase.dependency;
+ const cards=document.getElementById('cards');cards.replaceChildren();
+ for(const [title,description] of phase.cards){const a=document.createElement('article');const h=document.createElement('h3');const p=document.createElement('p');h.textContent=title;p.textContent=description;a.append(h,p);cards.append(a);}
+ document.getElementById('exit').textContent=phase.exit;
+}
+buttons.forEach(b=>b.addEventListener('click',()=>show(Number(b.dataset.phase))));
+for(let i=0;i<phases.length;i++){show(i);console.assert(document.querySelectorAll('article').length===phases[i].cards.length,'Phase cards missing');console.assert(buttons.filter(b=>b.getAttribute('aria-pressed')==='true').length===1,'Phase selection invalid');}
+show(0);
+console.info('Checked four phases and selection state.');
+requestAnimationFrame(()=>console.assert(document.documentElement.scrollWidth<=window.innerWidth,'Horizontal overflow'));
+</script>
+</html>

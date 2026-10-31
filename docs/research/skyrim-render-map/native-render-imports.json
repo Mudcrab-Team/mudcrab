@@ -1,0 +1,1755 @@
+{
+  "schema": "mudcrab-render-imports/v1",
+  "target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "imports": [
+    {
+      "dll": "d3dx9_42.dll",
+      "descriptor": {
+        "file_offset": "0x206f054",
+        "rva": "0x2070654",
+        "va": "0x142070654"
+      },
+      "entries": [
+        {
+          "iat_va": "0x1417c92f0",
+          "iat_file_offset": "0x17c7cf0",
+          "name": "D3DXMatrixInverse"
+        },
+        {
+          "iat_va": "0x1417c92f8",
+          "iat_file_offset": "0x17c7cf8",
+          "name": "D3DXVec3TransformCoord"
+        },
+        {
+          "iat_va": "0x1417c9300",
+          "iat_file_offset": "0x17c7d00",
+          "name": "D3DXMatrixMultiplyTranspose"
+        },
+        {
+          "iat_va": "0x1417c9308",
+          "iat_file_offset": "0x17c7d08",
+          "name": "D3DXVec3TransformNormal"
+        },
+        {
+          "iat_va": "0x1417c9310",
+          "iat_file_offset": "0x17c7d10",
+          "name": "D3DXVec3Normalize"
+        },
+        {
+          "iat_va": "0x1417c9318",
+          "iat_file_offset": "0x17c7d18",
+          "name": "D3DXPlaneTransform"
+        },
+        {
+          "iat_va": "0x1417c9320",
+          "iat_file_offset": "0x17c7d20",
+          "name": "D3DXPlaneNormalize"
+        },
+        {
+          "iat_va": "0x1417c9328",
+          "iat_file_offset": "0x17c7d28",
+          "name": "D3DXMatrixMultiply"
+        },
+        {
+          "iat_va": "0x1417c9330",
+          "iat_file_offset": "0x17c7d30",
+          "name": "D3DXMatrixTranspose"
+        }
+      ]
+    },
+    {
+      "dll": "d3d11.dll",
+      "descriptor": {
+        "file_offset": "0x206f068",
+        "rva": "0x2070668",
+        "va": "0x142070668"
+      },
+      "entries": [
+        {
+          "iat_va": "0x1417c92e0",
+          "iat_file_offset": "0x17c7ce0",
+          "name": "D3D11CreateDeviceAndSwapChain"
+        }
+      ]
+    },
+    {
+      "dll": "dxgi.dll",
+      "descriptor": {
+        "file_offset": "0x206f0a4",
+        "rva": "0x20706a4",
+        "va": "0x1420706a4"
+      },
+      "entries": [
+        {
+          "iat_va": "0x1417c9340",
+          "iat_file_offset": "0x17c7d40",
+          "name": "CreateDXGIFactory"
+        }
+      ]
+    }
+  ],
+  "validated_embedded_dxbc_candidates": [
+    {
+      "file_offset": "0x1a9ccf0",
+      "rva": "0x1a9e2f0",
+      "va": "0x141a9e2f0",
+      "length": 884,
+      "sha256": "a6abb6b7f54f19c0682011a9969beb441f87b953e251e306bc5763c816de6fd3",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 192
+        },
+        {
+          "tag": "ISGN",
+          "length": 104
+        },
+        {
+          "tag": "OSGN",
+          "length": 108
+        },
+        {
+          "tag": "SHDR",
+          "length": 272
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9d070",
+      "rva": "0x1a9e670",
+      "va": "0x141a9e670",
+      "length": 840,
+      "sha256": "6d4dafbfc9265947e60769a235e4f3e339a48ca0998cb0164c54a771fea7fa72",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 192
+        },
+        {
+          "tag": "ISGN",
+          "length": 104
+        },
+        {
+          "tag": "OSGN",
+          "length": 108
+        },
+        {
+          "tag": "SHDR",
+          "length": 228
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9d3c0",
+      "rva": "0x1a9e9c0",
+      "va": "0x141a9e9c0",
+      "length": 784,
+      "sha256": "b621a774eca59f68af528e13b6e429906ef8cabc9c378ec7e033a335ee4a2783",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 192
+        },
+        {
+          "tag": "ISGN",
+          "length": 76
+        },
+        {
+          "tag": "OSGN",
+          "length": 80
+        },
+        {
+          "tag": "SHDR",
+          "length": 228
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9d6d0",
+      "rva": "0x1a9ecd0",
+      "va": "0x141a9ecd0",
+      "length": 860,
+      "sha256": "bc490a8cd50ee25f235d04d454d3ccfed7cc2e0e61f0ee73c8e6d178d351c168",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 80
+        },
+        {
+          "tag": "SHDR",
+          "length": 288
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9da30",
+      "rva": "0x1a9f030",
+      "va": "0x141a9f030",
+      "length": 960,
+      "sha256": "c50604ceabd17c2cdba2a3468bccea29c418805f9cf2bde1a0dfc363761468ce",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 108
+        },
+        {
+          "tag": "SHDR",
+          "length": 332
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9ddf0",
+      "rva": "0x1a9f3f0",
+      "va": "0x141a9f3f0",
+      "length": 1052,
+      "sha256": "522edd1161c5f4ab4ca5463be9fdd8d26589876525d2210862ecb14eb892a0ec",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 132
+        },
+        {
+          "tag": "SHDR",
+          "length": 376
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9e210",
+      "rva": "0x1a9f810",
+      "va": "0x141a9f810",
+      "length": 1152,
+      "sha256": "527a4e24f7fea1ed34ccbcbf521f8e8eb427f4dfc37462f59f7e70374b0c74f4",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 156
+        },
+        {
+          "tag": "SHDR",
+          "length": 452
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9e690",
+      "rva": "0x1a9fc90",
+      "va": "0x141a9fc90",
+      "length": 816,
+      "sha256": "a1ba59eb3e3827d8866bd4cf61d6ff911a849f2436c607225f70b17c56578bc6",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 80
+        },
+        {
+          "tag": "SHDR",
+          "length": 244
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9e9c0",
+      "rva": "0x1a9ffc0",
+      "va": "0x141a9ffc0",
+      "length": 916,
+      "sha256": "16b0dbf8bfe797d31b477f6921a56ec524f83a977d8069c6bed4ab73ad2257e6",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 108
+        },
+        {
+          "tag": "SHDR",
+          "length": 288
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9ed60",
+      "rva": "0x1aa0360",
+      "va": "0x141aa0360",
+      "length": 1008,
+      "sha256": "69096099f094260a9ca8a3413f518dbfe96c04214778df75ae1c90db517cdafc",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 132
+        },
+        {
+          "tag": "SHDR",
+          "length": 332
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9f150",
+      "rva": "0x1aa0750",
+      "va": "0x141aa0750",
+      "length": 1108,
+      "sha256": "dd13cc166ebcb39b14c4b30ebf238d30f0ca7788a99a5ff0c8e8705fcabcfebd",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 240
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 156
+        },
+        {
+          "tag": "SHDR",
+          "length": 408
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9f5b0",
+      "rva": "0x1aa0bb0",
+      "va": "0x141aa0bb0",
+      "length": 1020,
+      "sha256": "c47e89c5d3db289db0b61410efb77d5812a9d932eb11baca5fcfb174f9478a87",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 336
+        },
+        {
+          "tag": "ISGN",
+          "length": 120
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 312
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9f9b0",
+      "rva": "0x1aa0fb0",
+      "va": "0x141aa0fb0",
+      "length": 704,
+      "sha256": "2764a9d7f39555ee4203d6b18012c9a8ffb8527fc8853f2c7df3512d3bd5b857",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 224
+        },
+        {
+          "tag": "ISGN",
+          "length": 64
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 164
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9fc70",
+      "rva": "0x1aa1270",
+      "va": "0x141aa1270",
+      "length": 772,
+      "sha256": "7e857c5006d92bc3d22319c190e50a0ae29618e3b64d60b2e97e13925f4bc383",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 224
+        },
+        {
+          "tag": "ISGN",
+          "length": 64
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 232
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1a9ff80",
+      "rva": "0x1aa1580",
+      "va": "0x141aa1580",
+      "length": 708,
+      "sha256": "0ea1058d6a62e3504dd56ad074c7cf6feeb5f37c39546114a4db53c71bc37cc8",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 224
+        },
+        {
+          "tag": "ISGN",
+          "length": 40
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 192
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa0250",
+      "rva": "0x1aa1850",
+      "va": "0x141aa1850",
+      "length": 1024,
+      "sha256": "aadefd9149f4f87db4566372b3486aa2d1ba3995ba41d78496001e91bb6b3f7b",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 376
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa0650",
+      "rva": "0x1aa1c50",
+      "va": "0x141aa1c50",
+      "length": 612,
+      "sha256": "a49129c8c31e36d01f288bec4a9ca43a11745d7da6e34db52ec61163316e9332",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 224
+        },
+        {
+          "tag": "ISGN",
+          "length": 40
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 96
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa08c0",
+      "rva": "0x1aa1ec0",
+      "va": "0x141aa1ec0",
+      "length": 956,
+      "sha256": "c7cda4c24ce64de42a057a9a54cd717e58b950da881b2e0467c7045884b8a3b6",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 96
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 308
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa0c80",
+      "rva": "0x1aa2280",
+      "va": "0x141aa2280",
+      "length": 1108,
+      "sha256": "d878da97f674a40cd96021b734e302a00a66c0d73c0ea11deb3f8785cc3c5948",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 336
+        },
+        {
+          "tag": "ISGN",
+          "length": 120
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 400
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa10e0",
+      "rva": "0x1aa26e0",
+      "va": "0x141aa26e0",
+      "length": 764,
+      "sha256": "47f920fa061b87b92bf2adb48bfe93c999385cad5743b9f04d1e8fa780d14ad6",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 168
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa13e0",
+      "rva": "0x1aa29e0",
+      "va": "0x141aa29e0",
+      "length": 852,
+      "sha256": "54d213d7f9da6474e3fcc7d2aef5268b963e3d15911dbe5113fb0f18cb111953",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 256
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa1740",
+      "rva": "0x1aa2d40",
+      "va": "0x141aa2d40",
+      "length": 1124,
+      "sha256": "d6825444c2dc980b67f9191e423b9a6c533d4532d7034a432be7629fd272b189",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 384
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 444
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa1bb0",
+      "rva": "0x1aa31b0",
+      "va": "0x141aa31b0",
+      "length": 1212,
+      "sha256": "048b464f8ef426a9f237d7921743c1bb0b213f8cb11617fde47e4e0d2ac07cdf",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 384
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 532
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa2070",
+      "rva": "0x1aa3670",
+      "va": "0x141aa3670",
+      "length": 1312,
+      "sha256": "75c55ad91fd7beb14675a978dc6fb00c798b3c970552490459003ed47ad93678",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 384
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 632
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa2590",
+      "rva": "0x1aa3b90",
+      "va": "0x141aa3b90",
+      "length": 1400,
+      "sha256": "91dc4f94ab9c731419c7996f40d5dda787a71823cd9cc8ef2851274d2ebb4127",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 384
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 720
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa2b10",
+      "rva": "0x1aa4110",
+      "va": "0x141aa4110",
+      "length": 1740,
+      "sha256": "4a99191cd7482e879766341c2253c6eab461098f90ac347666df0c264488bc43",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 852
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa31e0",
+      "rva": "0x1aa47e0",
+      "va": "0x141aa47e0",
+      "length": 2040,
+      "sha256": "d27b2a873cf2dd9311b161307c84d6456728c09693a88cec97e10e63386ee5a9",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1152
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa39e0",
+      "rva": "0x1aa4fe0",
+      "va": "0x141aa4fe0",
+      "length": 2040,
+      "sha256": "d27b2a873cf2dd9311b161307c84d6456728c09693a88cec97e10e63386ee5a9",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1152
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa41e0",
+      "rva": "0x1aa57e0",
+      "va": "0x141aa57e0",
+      "length": 1708,
+      "sha256": "d0c8ce94032b1ea041d243e44ebd387125b2f04bc73fe395b46c7e59f2e11c56",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 820
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa4890",
+      "rva": "0x1aa5e90",
+      "va": "0x141aa5e90",
+      "length": 1828,
+      "sha256": "af20dd6bb4fb5a163450212962f5155adf6fa00f1e36eea2cf422531d905f1cf",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 940
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa4fc0",
+      "rva": "0x1aa65c0",
+      "va": "0x141aa65c0",
+      "length": 2128,
+      "sha256": "670d1d42e3614ff265b258f3399440b3d056ed3bdda85eac59ccf42d5a3bf761",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1240
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa5810",
+      "rva": "0x1aa6e10",
+      "va": "0x141aa6e10",
+      "length": 2128,
+      "sha256": "670d1d42e3614ff265b258f3399440b3d056ed3bdda85eac59ccf42d5a3bf761",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1240
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa6060",
+      "rva": "0x1aa7660",
+      "va": "0x141aa7660",
+      "length": 1796,
+      "sha256": "a88ca1bb755d6980c68816635c909aa0f2f4b8186b6993ce479f8e39ff20e506",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 908
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa6770",
+      "rva": "0x1aa7d70",
+      "va": "0x141aa7d70",
+      "length": 1728,
+      "sha256": "45c5e32e15861418c00fde73a71af5d9a9bef2e61a941a449b5370adeaffefd4",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 840
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa6e30",
+      "rva": "0x1aa8430",
+      "va": "0x141aa8430",
+      "length": 1896,
+      "sha256": "cd202a0bbc246bec8bbffa2998a6cc705133752aa502669cd25c7a8eb5793efb",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1008
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa75a0",
+      "rva": "0x1aa8ba0",
+      "va": "0x141aa8ba0",
+      "length": 1924,
+      "sha256": "c876ef61446168e77b4b2f561068a80c769ca7ff2e0c88385289889dfc4fb5d5",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1036
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa7d30",
+      "rva": "0x1aa9330",
+      "va": "0x141aa9330",
+      "length": 1756,
+      "sha256": "461178a1ceb0f78d88440a317be9bb81a96c805934762c6e1a2125bf951dfeee",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 868
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa8410",
+      "rva": "0x1aa9a10",
+      "va": "0x141aa9a10",
+      "length": 1816,
+      "sha256": "a4298ecf9c6dce105e69b2f90d4526b8bfbf18f5a68538e9905ef07b231d038a",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 928
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa8b30",
+      "rva": "0x1aaa130",
+      "va": "0x141aaa130",
+      "length": 1984,
+      "sha256": "60211f7ff98d1a5e2aa561310349e5bc5f3ce53e21fb26366df42a9214bfeb8c",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1096
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa92f0",
+      "rva": "0x1aaa8f0",
+      "va": "0x141aaa8f0",
+      "length": 2012,
+      "sha256": "a10916fedeed2778c95d019eedbde269502a95ee6edeade5062a7b8607b53201",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 1124
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aa9ad0",
+      "rva": "0x1aab0d0",
+      "va": "0x141aab0d0",
+      "length": 1844,
+      "sha256": "1ce3120d5adfb3b2b5bff3401c59465497bc2493ae9237e30da2403839bdb32a",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 592
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 956
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aaa210",
+      "rva": "0x1aab810",
+      "va": "0x141aab810",
+      "length": 1416,
+      "sha256": "e8d58355ab27f9a90fb2493c2e92e29c6aa51adfcd3d8f59f9ec5580f0c12669",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 444
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 676
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aaa7a0",
+      "rva": "0x1aabda0",
+      "va": "0x141aabda0",
+      "length": 1416,
+      "sha256": "e8d58355ab27f9a90fb2493c2e92e29c6aa51adfcd3d8f59f9ec5580f0c12669",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 444
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 676
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aaad30",
+      "rva": "0x1aac330",
+      "va": "0x141aac330",
+      "length": 1504,
+      "sha256": "48b2a6838ffa31cd12010e32c5badeadc61919a8840964052d8dd1677bb66dfa",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 444
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 764
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aab310",
+      "rva": "0x1aac910",
+      "va": "0x141aac910",
+      "length": 1504,
+      "sha256": "48b2a6838ffa31cd12010e32c5badeadc61919a8840964052d8dd1677bb66dfa",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 444
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 764
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aab8f0",
+      "rva": "0x1aacef0",
+      "va": "0x141aacef0",
+      "length": 940,
+      "sha256": "aadc3169dc4d714ba47530e97e2cb73507cedb87b045fc914946499fdea28024",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 320
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 324
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aabca0",
+      "rva": "0x1aad2a0",
+      "va": "0x141aad2a0",
+      "length": 1028,
+      "sha256": "61c3f144fdb386f3ae4beef1dcaf7d568722547537d52096da78589659322168",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 320
+        },
+        {
+          "tag": "ISGN",
+          "length": 44
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 412
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aac0b0",
+      "rva": "0x1aad6b0",
+      "va": "0x141aad6b0",
+      "length": 520,
+      "sha256": "b51a71e09c56b8695d16363571e14fc398c098ef6bf227e3aadc4b9503f898a3",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 196
+        },
+        {
+          "tag": "ISGN",
+          "length": 8
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 64
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aac2c0",
+      "rva": "0x1aad8c0",
+      "va": "0x141aad8c0",
+      "length": 852,
+      "sha256": "5f6cce03a3c7d9141c7a1daac0e21d3142569427fce9b222f1a7091327b3b98e",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 228
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aac620",
+      "rva": "0x1aadc20",
+      "va": "0x141aadc20",
+      "length": 792,
+      "sha256": "97574487eed338e2fc5dc50361fe8d9b552af3d050d797e618fd757ae5e806af",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 168
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aac940",
+      "rva": "0x1aadf40",
+      "va": "0x141aadf40",
+      "length": 880,
+      "sha256": "c682534a383361c3be71d96d465a618d5f43e44ae4a86b3e6af3d747b5833bd1",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 300
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 256
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aaccb0",
+      "rva": "0x1aae2b0",
+      "va": "0x141aae2b0",
+      "length": 1396,
+      "sha256": "a57e6fbde9575bbc505be2254fec8a7c6c34ec296bcbfc04d30d90997f68ec14",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 456
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 616
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aad230",
+      "rva": "0x1aae830",
+      "va": "0x141aae830",
+      "length": 1516,
+      "sha256": "9c3e177c56338a711b0ad19f072239553ae94f7cbc272c5c216c22bbdf833c52",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 532
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 660
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aad820",
+      "rva": "0x1aaee20",
+      "va": "0x141aaee20",
+      "length": 1604,
+      "sha256": "2b5c3075755768adc9a52a907c18cf9dae1c68ed30acfb5d98f46e34707b1350",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 532
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 748
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x1aade70",
+      "rva": "0x1aaf470",
+      "va": "0x141aaf470",
+      "length": 1484,
+      "sha256": "d3f4e0d08d9ce81d9b713a1eca2ab4b9de569a29d58380b18d368103c600b82f",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 456
+        },
+        {
+          "tag": "ISGN",
+          "length": 72
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHDR",
+          "length": 704
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x20d1570",
+      "rva": "0x20d3770",
+      "va": "0x1420d3770",
+      "length": 568,
+      "sha256": "8c44de3d68af5e896b82e2643b0ddf6e832693d24fb83db7e8ce8ff9e4db144d",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 80
+        },
+        {
+          "tag": "ISGN",
+          "length": 76
+        },
+        {
+          "tag": "OSGN",
+          "length": 80
+        },
+        {
+          "tag": "SHDR",
+          "length": 124
+        },
+        {
+          "tag": "STAT",
+          "length": 116
+        }
+      ]
+    },
+    {
+      "file_offset": "0x20d17b0",
+      "rva": "0x20d39b0",
+      "va": "0x1420d39b0",
+      "length": 696,
+      "sha256": "c2014fae16e5647c03d41fbd0d964484a571e90a815a072aac8922aaa0af7dc1",
+      "chunks": [
+        {
+          "tag": "RDEF",
+          "length": 192
+        },
+        {
+          "tag": "ISGN",
+          "length": 80
+        },
+        {
+          "tag": "OSGN",
+          "length": 44
+        },
+        {
+          "tag": "SHEX",
+          "length": 140
+        },
+        {
+          "tag": "STAT",
+          "length": 148
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Import presence does not prove a call path executes.",
+    "COM methods are not imported symbols.",
+    "Delay-loaded APIs and GetProcAddress-resolved functions require separate native traces.",
+    "No bounded DXBC candidate does not prove there are no embedded or generated shaders."
+  ],
+  "scope": "Selected rendering-related import DLLs; complete parsed normal-import table remains private",
+  "all_normal_import_dll_count": 32,
+  "all_normal_import_entry_count": 606
+}

@@ -1,0 +1,189 @@
+{
+  "format_version": 1,
+  "scope": "earlier brighter checkpoint recovery after rejected visual regressions",
+  "source_rolled_back": false,
+  "launcher": "scripts/skyrim-world-lighting-baseline.sh",
+  "inputs": {
+    "engine_sha256": "7860c796a0fba9f240c22aa830d9c16dc54424048359079400217943884a05c3",
+    "asset_manifest_sha256": "5109ab4009b427fd75a62d90620940130471b506d605f48e0ae4e2fc9f5c9ba6",
+    "fixture_sha256": "1dd33ff311976ad366d95b793398e75f7c4cfb4a76d959ee458e903e8c769336",
+    "fog_enabled": true,
+    "image_space_enabled": true
+  },
+  "weather": "0x81a",
+  "game_hour": 12,
+  "native_pre_fog_factor": {
+    "expression": "(12000/pi)*Exposure(EV100=9.7)",
+    "approximate_value": 3.827
+  },
+  "fallback_camera_ev100": 9.7,
+  "native_sunlight_scale": 2.8,
+  "sunlight_scale_applied_once": true,
+  "replay": {
+    "exit_code": 0,
+    "settled": true,
+    "frames": 584,
+    "size": [
+      1920,
+      1080
+    ],
+    "unavailable_or_pending_dependencies": 0,
+    "visible_meshes": 15077,
+    "shadow_casters": 88,
+    "pipelines": 112,
+    "pixel_comparison": {
+      "original_png_sha256": "b690e40c71495f542de096a448586711bad1b1717fdcfe2ace8f977c81f835b1",
+      "recovery_png_sha256": "2acc3f9d304cc30260558881302d0e9ef737e1540035b34c8b99abd64845c11a",
+      "png_file_exact_match": false,
+      "pixel_exact_match": false,
+      "changed_pixels": 59400,
+      "max_channel_difference": 82,
+      "regions": {
+        "sunlit_thatch": {
+          "box": [
+            800,
+            190,
+            1100,
+            340
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "shaded_wood": {
+          "box": [
+            930,
+            470,
+            1050,
+            600
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "stone_wall": {
+          "box": [
+            1080,
+            665,
+            1240,
+            730
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "foreground_grass_soil": {
+          "box": [
+            210,
+            960,
+            510,
+            1050
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "foreground_fern": {
+          "box": [
+            1510,
+            980,
+            1610,
+            1060
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "sapling": {
+          "box": [
+            410,
+            680,
+            540,
+            765
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "distant_mountain": {
+          "box": [
+            170,
+            180,
+            340,
+            290
+          ],
+          "pixel_exact_match": false,
+          "changed_pixels": 667,
+          "max_channel_difference": 17
+        },
+        "sky": {
+          "box": [
+            440,
+            5,
+            530,
+            55
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "roof_background_near": {
+          "box": [
+            1180,
+            112,
+            1240,
+            124
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "roof_background_far": {
+          "box": [
+            1180,
+            80,
+            1240,
+            96
+          ],
+          "pixel_exact_match": false,
+          "changed_pixels": 5,
+          "max_channel_difference": 1
+        },
+        "eave_shadow": {
+          "box": [
+            930,
+            460,
+            1050,
+            470
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        },
+        "stone_adjacent_wood": {
+          "box": [
+            1060,
+            630,
+            1140,
+            650
+          ],
+          "pixel_exact_match": true,
+          "changed_pixels": 0,
+          "max_channel_difference": 0
+        }
+      }
+    }
+  },
+  "launcher_validation": {
+    "shell_syntax": "passed",
+    "help": "passed",
+    "interactive_session_started": false
+  },
+  "visual_acceptance": false,
+  "remaining": [
+    "oversaturation",
+    "clipped highlights",
+    "retail capture-state and output-transfer limits"
+  ],
+  "retail_parity": false
+}

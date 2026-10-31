@@ -63,6 +63,8 @@ jobs:
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/lod-experiment/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_docs" '(\.md$|^scripts/check-docs-links\.py$|^scripts/tests/test_check_docs_links\.py$|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_script_audit" '^(scripts/.*\.(py|sh|ps1)$|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
@@ -71,6 +73,8 @@ jobs:
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_docs: ${{ steps.filter.outputs.check_docs }}
+      check_script_audit: ${{ steps.filter.outputs.check_script_audit }}
       check_lod_experiment: ${{ steps.filter.outputs.check_lod_experiment }}
       check_native_profiling: ${{ steps.filter.outputs.check_native_profiling }}
       check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
@@ -140,6 +144,72 @@ jobs:
           git clone --depth 1 --branch v1.3 https://github.com/zeux/meshoptimizer.git "$RUNNER_TEMP/meshoptimizer"
           python3 scripts/lod-experiment/build.py --meshoptimizer "$RUNNER_TEMP/meshoptimizer" --output "$RUNNER_TEMP/lod-builder"
           LOD_EXPERIMENT_BUILDER="$RUNNER_TEMP/lod-builder" python3 -m unittest discover -s scripts/lod-experiment/tests -p 'test_*.py' -v
+
+  docs:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check relative Markdown links
+        run: python3 scripts/check-docs-links.py
+
+      - name: Test the docs link checker
+        run: python3 -m unittest discover -s scripts/tests -p test_check_docs_links.py -v
+
+  script_audit:
+    needs: [orchestrate]
+    if: needs.orchestrate.outputs.check_script_audit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            mesa-vulkan-drivers \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98.1"
+
+      - name: Set up mold linker
+        uses: rui314/setup-mold@v1
+
+      - name: Setup kache compiler cache
+        uses: kunobi-ninja/kache-action@v1
+        with:
+          # Share the test job's artifacts: this job builds the same engine test binary.
+          cache-key-prefix: kache-test
+
+      # `scripts/` is only read by this audit when the Rust matrix runs, which a
+      # scripts-only change does not trigger. Run the audit on its own so a new
+      # launcher flag cannot wait for the next Rust change to turn main red.
+      - name: Audit the flags scripts pass to the engine
+        run: |
+          set -euo pipefail
+          output="$(cargo test -p engine --lib config::tests::the_script 2>&1)"
+          printf '%s\n' "$output"
+          # `cargo test` exits 0 when the filter matches nothing, so a renamed or
+          # removed audit test would leave this job green with nothing run.
+          if ! grep -qE 'test result: ok\. [1-9][0-9]* passed' <<<"$output"; then
+            echo "::error::the script-flag audit tests did not run; the filter config::tests::the_script matched no passing test"
+            exit 1
+          fi
 
   native_profiling:
     needs: [orchestrate]
@@ -360,6 +430,8 @@ jobs:
       - orchestrate
       - format
       - scripts
+      - docs
+      - script_audit
       - native_profiling
       - z_fighting_audit
       - enable_observations
@@ -387,6 +459,8 @@ jobs:
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
+          check_result "docs" "$RESULT_DOCS"
+          check_result "script_audit" "$RESULT_SCRIPT_AUDIT"
           check_result "native_profiling" "$RESULT_NATIVE_PROFILING"
           check_result "z_fighting_audit" "$RESULT_Z_FIGHTING_AUDIT"
           check_result "enable_observations" "$RESULT_ENABLE_OBSERVATIONS"
@@ -401,6 +475,8 @@ jobs:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
+          RESULT_DOCS: ${{ needs.docs.result }}
+          RESULT_SCRIPT_AUDIT: ${{ needs.script_audit.result }}
           RESULT_NATIVE_PROFILING: ${{ needs.native_profiling.result }}
           RESULT_Z_FIGHTING_AUDIT: ${{ needs.z_fighting_audit.result }}
           RESULT_ENABLE_OBSERVATIONS: ${{ needs.enable_observations.result }}

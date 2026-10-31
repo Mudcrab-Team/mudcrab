@@ -1,0 +1,1043 @@
+{
+  "schema": "mudcrab-reference-import-provenance/v1",
+  "date": "2026-10-10",
+  "status": "import bytes verified; sampled source histories checked; camera/edition/render-state parity open",
+  "scope": "Imported reference set and 14 named UESP file histories only. No game launch, GPU capture, renderer default change or whole-set edition claim.",
+  "private_import": {
+    "root": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/imports/chef-reference-shots-2026-10-10/chef-reference-shots-2026-10-10",
+    "receipt_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/imports/chef-reference-shots-2026-10-10/import-receipt.json",
+    "receipt_sha256": "787ed6c00be1617e950c6ed7a61318df4625059a5e9487d93ccfb147cf3f374b",
+    "inventory_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/imports/chef-reference-shots-2026-10-10/pose-inventory.json",
+    "inventory_sha256": "79504e4219a9c06b106bc5975f02df24e893ce70835c348f4d54761e522a44b4",
+    "unique_files": 91,
+    "jpeg_images": 78,
+    "poses": 84,
+    "pose_files": 6,
+    "archive_count": 3,
+    "archive_and_91_file_hashes_reverified": true,
+    "original_receipt_provenance_status": "pending",
+    "original_receipt_retail_status": "pending"
+  },
+  "archives": [
+    {
+      "path": "/Users/taylor/Downloads/chef-reference-shots-2026-10-10-part1of3.zip",
+      "sha256": "da1ba92360119a4d2c18fdfe4a1c08ba8567f43606d04b4fa3eaeb8f9e2f415f",
+      "bytes": 7314798
+    },
+    {
+      "path": "/Users/taylor/Downloads/chef-reference-shots-2026-10-10-part2of3.zip",
+      "sha256": "495115ca7d6abc7f52060b2a11b79eb8d6317d1ba006d66fbc66247f3050ae9f",
+      "bytes": 5854705
+    },
+    {
+      "path": "/Users/taylor/Downloads/chef-reference-shots-2026-10-10-part3of3.zip",
+      "sha256": "5f21af3c37120df7a36735ab89c6497e57387bfc6c1ae8001e9e5062dedf8dc2",
+      "bytes": 5722379
+    }
+  ],
+  "uesp_history_query": {
+    "url": "https://en.uesp.net/w/api.php?action=query&titles=File%3ASR-place-Guardian_Stones.jpg%7CFile%3ASR-place-Riverwood_Trader.jpg%7CFile%3ASR-interior-Faendal%27s_House.jpg%7CFile%3ASR-interior-Sleeping_Giant_Inn_Common_Room.jpg%7CFile%3ASR-place-Faendal%27s_House.jpg%7CFile%3ASR-place-Sleeping_Giant_Inn.jpg%7CFile%3ASR-interior-Riverwood_Trader.jpg%7CFile%3ASR-interior-Alvor_and_Sigrid%27s_House.jpg%7CFile%3ASR-place-Riverwood_02.jpg%7CFile%3ASR-place-Riverwood.jpg%7CFile%3ASR-place-Solitude_02.jpg%7CFile%3ASR-place-Hjaalmarch.jpg%7CFile%3ASR-place-Falkreath.jpg%7CFile%3ASR-place-Whiterun_Hold.jpg&prop=imageinfo%7Crevisions&iiprop=timestamp%7Cuser%7Ccomment%7Csize%7Csha1%7Curl&iilimit=3&rvprop=content&rvslots=main&format=json",
+    "private_response_path": "/Users/taylor/.local/share/mudcrab-research/lighting-remediation-20261010/imports/chef-reference-shots-2026-10-10/uesp-file-histories-sampled-20261010.json",
+    "response_sha256": "1519a2d492c7a4068257d232adc93f411a862b9ba804607f4dc6cda51a804c67",
+    "sampled_files": 14,
+    "current_original_byte_matches": 1,
+    "nonidentical_imported_bytes": 13,
+    "current_named_source_uploads_before_se": 10,
+    "later_named_source_uploads_edition_unverified": 4,
+    "web_page_fetch_limit": "web tool returned403; primary MediaWiki API returned200 via read-only HTTP"
+  },
+  "edition_release_anchor": {
+    "edition": "Skyrim Special Edition",
+    "date": "2016-10-28",
+    "source_url": "https://bethesda.net/en-US/news/skyrim-special-edition-now-available",
+    "date_comparison_is_inference": true
+  },
+  "source_history_samples": [
+    {
+      "imported_path": "images/riverwood/SR-interior-Alvor_and_Sigrid's_House.jpg",
+      "imported_sha256": "e7f12ba387ad0dad4137b494e122813186a55dc6a518a88e2450687ab03778d8",
+      "imported_sha1": "e73b264c0e59ae38f1eecb8449ac857790f5a5aa",
+      "source_title": "File:SR-interior-Alvor and Sigrid's House.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-interior-Alvor_and_Sigrid%27s_House.jpg",
+      "uesp_current_original": {
+        "timestamp": "2013-11-18T13:03:26Z",
+        "user": "Psylocke",
+        "size": 1432944,
+        "width": 1200,
+        "height": 900,
+        "comment": "Ground level of Alvor and Sigrid's House. [[Category:Skyrim-Interior Images]]",
+        "url": "https://images.uesp.net/8/87/SR-interior-Alvor_and_Sigrid%27s_House.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Alvor_and_Sigrid%27s_House.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=157030",
+        "sha1": "120cbf4442b5507cc27b3a200ceca6363cca7905"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2013-11-18T13:03:26Z",
+          "user": "Psylocke",
+          "size": 1432944,
+          "width": 1200,
+          "height": 900,
+          "comment": "Ground level of Alvor and Sigrid's House. [[Category:Skyrim-Interior Images]]",
+          "url": "https://images.uesp.net/8/87/SR-interior-Alvor_and_Sigrid%27s_House.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Alvor_and_Sigrid%27s_House.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=157030",
+          "sha1": "120cbf4442b5507cc27b3a200ceca6363cca7905"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-interior-Faendal's_House.jpg",
+      "imported_sha256": "f67513be9fabeb11468111fed38995436b81584e1eeb941686c2a46ad71881c2",
+      "imported_sha1": "5b59270dd890323d16f7be444e1af6b589bfd023",
+      "source_title": "File:SR-interior-Faendal's House.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-interior-Faendal%27s_House.jpg",
+      "uesp_current_original": {
+        "timestamp": "2013-08-24T04:57:21Z",
+        "user": "Xyzzy",
+        "size": 284866,
+        "width": 1200,
+        "height": 900,
+        "comment": "Screenshot of interior of Faendal's House\n[[Category:Skyrim-Interior Images]]",
+        "url": "https://images.uesp.net/d/d3/SR-interior-Faendal%27s_House.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Faendal%27s_House.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=155730",
+        "sha1": "8cd3c8c571623dce9c27ee23daeae8a658e0dc43"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2013-08-24T04:57:21Z",
+          "user": "Xyzzy",
+          "size": 284866,
+          "width": 1200,
+          "height": 900,
+          "comment": "Screenshot of interior of Faendal's House\n[[Category:Skyrim-Interior Images]]",
+          "url": "https://images.uesp.net/d/d3/SR-interior-Faendal%27s_House.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Faendal%27s_House.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=155730",
+          "sha1": "8cd3c8c571623dce9c27ee23daeae8a658e0dc43"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-interior-Riverwood_Trader.jpg",
+      "imported_sha256": "9ea91bcc586ba5b86d6f3fcf9c076b938e501c8a3ea73f3dde6ac20a00fc0212",
+      "imported_sha1": "0bc381cdbdb3cd630001605fa52e70c55ddaf7f4",
+      "source_title": "File:SR-interior-Riverwood Trader.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-interior-Riverwood_Trader.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-02-04T22:57:13Z",
+        "user": "Thuraya Salaris",
+        "size": 429699,
+        "width": 1440,
+        "height": 1080,
+        "comment": "4:3 version of original",
+        "url": "https://images.uesp.net/4/42/SR-interior-Riverwood_Trader.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Riverwood_Trader.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109338",
+        "sha1": "709df931e4c4dc1940d7181310148b35ed9af0a1"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-02-04T22:57:13Z",
+          "user": "Thuraya Salaris",
+          "size": 429699,
+          "width": 1440,
+          "height": 1080,
+          "comment": "4:3 version of original",
+          "url": "https://images.uesp.net/4/42/SR-interior-Riverwood_Trader.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Riverwood_Trader.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109338",
+          "sha1": "709df931e4c4dc1940d7181310148b35ed9af0a1"
+        },
+        {
+          "timestamp": "2011-11-15T06:28:53Z",
+          "user": "Roland Thompson",
+          "size": 1637580,
+          "width": 1920,
+          "height": 1080,
+          "comment": "Skyrim, Riverwood Traders shop downstairs",
+          "url": "https://images.uesp.net/archive/4/42/20120204225713%21SR-interior-Riverwood_Trader.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Riverwood_Trader.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109338",
+          "sha1": "532ec650b659291b63c084047858928cf273a97a"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+      "imported_sha256": "9b7fad25b5c019b533cf5311c80f08885d4815d8c493b16f76eaf23718b675b3",
+      "imported_sha1": "b1dbb80de18b81ed48cdad700770ba8eb41bec03",
+      "source_title": "File:SR-interior-Sleeping Giant Inn Common Room.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+      "uesp_current_original": {
+        "timestamp": "2017-01-31T06:14:31Z",
+        "user": "Jake-518",
+        "size": 337790,
+        "width": 1440,
+        "height": 1080,
+        "comment": "Uploaded proper format.",
+        "url": "https://images.uesp.net/4/42/SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=225806",
+        "sha1": "3546ecaa104b8e68378e54be2113628a2b705b6c"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2017-01-31T06:14:31Z",
+          "user": "Jake-518",
+          "size": 337790,
+          "width": 1440,
+          "height": 1080,
+          "comment": "Uploaded proper format.",
+          "url": "https://images.uesp.net/4/42/SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=225806",
+          "sha1": "3546ecaa104b8e68378e54be2113628a2b705b6c"
+        },
+        {
+          "timestamp": "2017-01-27T05:00:31Z",
+          "user": "Jake-518",
+          "size": 398328,
+          "width": 1920,
+          "height": 1080,
+          "comment": "Sven gives a performance inside the Sleeping Giant Inn.",
+          "url": "https://images.uesp.net/archive/4/42/20170131061431%21SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=225806",
+          "sha1": "16b72bb0645b37afb9cce368e75d7cd344854971"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": false,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Faendal's_House.jpg",
+      "imported_sha256": "787fbee0588fc6e006503b1155f6e15592411b2a2bab47d2e1c58d4a878b01eb",
+      "imported_sha1": "cc40150a37bcd4cd0e669caa686ae9195fa670fa",
+      "source_title": "File:SR-place-Faendal's House.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Faendal%27s_House.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-05-04T17:36:29Z",
+        "user": "Holomay",
+        "size": 605196,
+        "width": 1400,
+        "height": 1050,
+        "comment": "4:3",
+        "url": "https://images.uesp.net/a/a3/SR-place-Faendal%27s_House.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Faendal%27s_House.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=122097",
+        "sha1": "09e7e226004f48ea19fc2fe20c5583322b3ee9fc"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-05-04T17:36:29Z",
+          "user": "Holomay",
+          "size": 605196,
+          "width": 1400,
+          "height": 1050,
+          "comment": "4:3",
+          "url": "https://images.uesp.net/a/a3/SR-place-Faendal%27s_House.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Faendal%27s_House.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=122097",
+          "sha1": "09e7e226004f48ea19fc2fe20c5583322b3ee9fc"
+        },
+        {
+          "timestamp": "2012-03-05T21:51:06Z",
+          "user": "Krusty",
+          "size": 394541,
+          "width": 1360,
+          "height": 768,
+          "comment": "jpg version of image originally uploaded by [[User:Bethras]]; \n[[Category:Skyrim-Place Images]]",
+          "url": "https://images.uesp.net/archive/a/a3/20120504173629%21SR-place-Faendal%27s_House.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Faendal%27s_House.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=122097",
+          "sha1": "0f15cab9ad862b1a07c08b32b06bc8425238f7a9"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Guardian_Stones.jpg",
+      "imported_sha256": "c83a7122c067f3ff4321d68233f837556f6dbc9a2aefbe08af5231920846ccba",
+      "imported_sha1": "ea37ec401df5c527611c813cb5bb8c7e160113e2",
+      "source_title": "File:SR-place-Guardian Stones.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Guardian_Stones.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-10-28T15:28:10Z",
+        "user": "Psylocke",
+        "size": 830965,
+        "width": 1200,
+        "height": 900,
+        "comment": "Better angle?",
+        "url": "https://images.uesp.net/3/35/SR-place-Guardian_Stones.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Guardian_Stones.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109321",
+        "sha1": "379a6a0aed8c8c8dea7e3679103963b404a0b10d"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-10-28T15:28:10Z",
+          "user": "Psylocke",
+          "size": 830965,
+          "width": 1200,
+          "height": 900,
+          "comment": "Better angle?",
+          "url": "https://images.uesp.net/3/35/SR-place-Guardian_Stones.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Guardian_Stones.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109321",
+          "sha1": "379a6a0aed8c8c8dea7e3679103963b404a0b10d"
+        },
+        {
+          "timestamp": "2011-11-15T04:16:49Z",
+          "user": "Rpeh",
+          "size": 263023,
+          "width": 1333,
+          "height": 1000,
+          "comment": "Guardian Stones\n[[Category:Skyrim-Place Images]]",
+          "url": "https://images.uesp.net/archive/3/35/20121028152810%21SR-place-Guardian_Stones.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Guardian_Stones.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109321",
+          "sha1": "a5d1d8ece4aaacdc2552b2376dc9e83ea817f170"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Riverwood.jpg",
+      "imported_sha256": "0e4228566e34e429eb03eafe3021e44d1bde786d0123312ab55b5c81942caab8",
+      "imported_sha1": "63c30723056cb8e17113d3665395acfa9e81c5ed",
+      "source_title": "File:SR-place-Riverwood.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Riverwood.jpg",
+      "uesp_current_original": {
+        "timestamp": "2021-09-04T16:30:35Z",
+        "user": "Imperialbattlespire",
+        "size": 1888291,
+        "width": 3840,
+        "height": 2160,
+        "comment": "",
+        "url": "https://images.uesp.net/5/5f/SR-place-Riverwood.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109343",
+        "sha1": "8ec3adf91d3c16c69526192191929a36be12d330"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2021-09-04T16:30:35Z",
+          "user": "Imperialbattlespire",
+          "size": 1888291,
+          "width": 3840,
+          "height": 2160,
+          "comment": "",
+          "url": "https://images.uesp.net/5/5f/SR-place-Riverwood.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109343",
+          "sha1": "8ec3adf91d3c16c69526192191929a36be12d330"
+        },
+        {
+          "timestamp": "2012-04-21T11:23:41Z",
+          "user": "Kimi the Elf",
+          "size": 1120149,
+          "width": 1440,
+          "height": 1080,
+          "comment": "",
+          "url": "https://images.uesp.net/archive/5/5f/20210904163035%21SR-place-Riverwood.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109343",
+          "sha1": "8d23c426f3e3e5e05cf714d9733023ce7b97967a"
+        },
+        {
+          "timestamp": "2012-02-24T14:58:39Z",
+          "user": "TheRealLurlock",
+          "size": 493932,
+          "width": 1920,
+          "height": 1080,
+          "comment": "Color corrected",
+          "url": "https://images.uesp.net/archive/5/5f/20120421112341%21SR-place-Riverwood.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=109343",
+          "sha1": "e39fc9d68a8835eb34db4e91f03dab20d65683e9"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": false,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Riverwood_02.jpg",
+      "imported_sha256": "86b51f677942803e883e998203ba18cd6b3485c2a0da5b0b7ecd8aa56eece563",
+      "imported_sha1": "7ee2fce014455561e54dbe6027f00000781422d5",
+      "source_title": "File:SR-place-Riverwood 02.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Riverwood_02.jpg",
+      "uesp_current_original": {
+        "timestamp": "2022-11-07T10:56:22Z",
+        "user": "Imperialbattlespire",
+        "size": 2553719,
+        "width": 3840,
+        "height": 2160,
+        "comment": "[[Category:Skyrim-Place Images]]",
+        "url": "https://images.uesp.net/b/b0/SR-place-Riverwood_02.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_02.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=391091",
+        "sha1": "8ab0f6327414feda4a31f74deb410f7b1f3cf088"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2022-11-07T10:56:22Z",
+          "user": "Imperialbattlespire",
+          "size": 2553719,
+          "width": 3840,
+          "height": 2160,
+          "comment": "[[Category:Skyrim-Place Images]]",
+          "url": "https://images.uesp.net/b/b0/SR-place-Riverwood_02.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_02.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=391091",
+          "sha1": "8ab0f6327414feda4a31f74deb410f7b1f3cf088"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": false,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Riverwood_Trader.jpg",
+      "imported_sha256": "c54ec09aa496407f51593e6a40f1f44f24cce2e7f860713929cad34204234672",
+      "imported_sha1": "28ced3003badf394252990ad4dffa868d17f170b",
+      "source_title": "File:SR-place-Riverwood Trader.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Riverwood_Trader.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-02-04T22:58:34Z",
+        "user": "Thuraya Salaris",
+        "size": 321891,
+        "width": 1200,
+        "height": 900,
+        "comment": "4:3 version of original",
+        "url": "https://images.uesp.net/7/78/SR-place-Riverwood_Trader.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_Trader.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=113654",
+        "sha1": "978d4e3748db7038a333ed197b9dc52b25111eb9"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-02-04T22:58:34Z",
+          "user": "Thuraya Salaris",
+          "size": 321891,
+          "width": 1200,
+          "height": 900,
+          "comment": "4:3 version of original",
+          "url": "https://images.uesp.net/7/78/SR-place-Riverwood_Trader.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_Trader.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=113654",
+          "sha1": "978d4e3748db7038a333ed197b9dc52b25111eb9"
+        },
+        {
+          "timestamp": "2011-12-01T03:23:31Z",
+          "user": "LJGB",
+          "size": 406368,
+          "width": 1440,
+          "height": 900,
+          "comment": "The exterior of the Riverwood Trader.",
+          "url": "https://images.uesp.net/archive/7/78/20120204225834%21SR-place-Riverwood_Trader.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_Trader.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=113654",
+          "sha1": "97dc6e9edcf05ae207143d1c25c374fe16d58c68"
+        },
+        {
+          "timestamp": "2011-11-15T06:06:21Z",
+          "user": "Roland Thompson",
+          "size": 1372803,
+          "width": 1920,
+          "height": 1080,
+          "comment": "Riverwood Traders shop in Riverwood",
+          "url": "https://images.uesp.net/archive/7/78/20120107202115%21SR-place-Riverwood_Trader.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Riverwood_Trader.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=113654",
+          "sha1": "4d9e3fbe9ed136a0a4407932af0d999066d9d7c6"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/riverwood/SR-place-Sleeping_Giant_Inn.jpg",
+      "imported_sha256": "4569cc9f32b5c9fe6e0bf02c82796fa415780fb9acd7512da557d8a1392f47ac",
+      "imported_sha1": "b8fdf39f349b2bdf2a32201e1f83260bc9c8037e",
+      "source_title": "File:SR-place-Sleeping Giant Inn.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Sleeping_Giant_Inn.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-04-08T02:24:25Z",
+        "user": "Coronus",
+        "size": 258254,
+        "width": 1024,
+        "height": 768,
+        "comment": "No UI, better lighting",
+        "url": "https://images.uesp.net/4/44/SR-place-Sleeping_Giant_Inn.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Sleeping_Giant_Inn.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=107869",
+        "sha1": "b8fdf39f349b2bdf2a32201e1f83260bc9c8037e"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-04-08T02:24:25Z",
+          "user": "Coronus",
+          "size": 258254,
+          "width": 1024,
+          "height": 768,
+          "comment": "No UI, better lighting",
+          "url": "https://images.uesp.net/4/44/SR-place-Sleeping_Giant_Inn.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Sleeping_Giant_Inn.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=107869",
+          "sha1": "b8fdf39f349b2bdf2a32201e1f83260bc9c8037e"
+        },
+        {
+          "timestamp": "2011-11-12T21:57:58Z",
+          "user": "Ijiero",
+          "size": 560321,
+          "width": 1920,
+          "height": 1080,
+          "comment": "The Sleeping Giant Inn by night.",
+          "url": "https://images.uesp.net/archive/4/44/20120408022424%21SR-place-Sleeping_Giant_Inn.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Sleeping_Giant_Inn.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=107869",
+          "sha1": "6a83ee1125d4cb63d221394bf6e2616fdf2ad56e"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": true,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "pre-SE dated source bytes; mod/settings state unverified",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/world/SR-place-Falkreath.jpg",
+      "imported_sha256": "a6c91bed636046cc7de6c3d700f9e6ddc929ea0a0a75a387d4359c4cef17a4c3",
+      "imported_sha1": "7996568624601022feaca8d4114348a19b383f3e",
+      "source_title": "File:SR-place-Falkreath.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Falkreath.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-05-04T09:22:32Z",
+        "user": "Holomay",
+        "size": 604459,
+        "width": 1400,
+        "height": 1050,
+        "comment": "",
+        "url": "https://images.uesp.net/6/6a/SR-place-Falkreath.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Falkreath.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111175",
+        "sha1": "cf2a4e9a51903869e763d188cc865f63ed2d5337"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-05-04T09:22:32Z",
+          "user": "Holomay",
+          "size": 604459,
+          "width": 1400,
+          "height": 1050,
+          "comment": "",
+          "url": "https://images.uesp.net/6/6a/SR-place-Falkreath.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Falkreath.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111175",
+          "sha1": "cf2a4e9a51903869e763d188cc865f63ed2d5337"
+        },
+        {
+          "timestamp": "2011-11-22T04:17:53Z",
+          "user": "Roland Thompson",
+          "size": 1489327,
+          "width": 1920,
+          "height": 1080,
+          "comment": "new image w/o hud elements",
+          "url": "https://images.uesp.net/archive/6/6a/20120504092231%21SR-place-Falkreath.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Falkreath.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111175",
+          "sha1": "7be44ca394f97688b3d4296ccd45ab9ea77990a7"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/world/SR-place-Hjaalmarch.jpg",
+      "imported_sha256": "514ed1b98dda949ab9c34e2a26b36112f210339b185f016b97d6bdec35a4fa6a",
+      "imported_sha1": "06ed98b493e47b042a761e018b56fd6fdf92f247",
+      "source_title": "File:SR-place-Hjaalmarch.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Hjaalmarch.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-02-18T02:22:28Z",
+        "user": "Shezzarine",
+        "size": 387353,
+        "width": 1440,
+        "height": 1080,
+        "comment": "Cropped instead of stretched. Sorry for the 6:9 aspect ratio.",
+        "url": "https://images.uesp.net/d/d2/SR-place-Hjaalmarch.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Hjaalmarch.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=121184",
+        "sha1": "fdf2adddd931c897b9218219f3d87b657744438a"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-02-18T02:22:28Z",
+          "user": "Shezzarine",
+          "size": 387353,
+          "width": 1440,
+          "height": 1080,
+          "comment": "Cropped instead of stretched. Sorry for the 6:9 aspect ratio.",
+          "url": "https://images.uesp.net/d/d2/SR-place-Hjaalmarch.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Hjaalmarch.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=121184",
+          "sha1": "fdf2adddd931c897b9218219f3d87b657744438a"
+        },
+        {
+          "timestamp": "2012-02-18T01:54:24Z",
+          "user": "Thuraya Salaris",
+          "size": 273854,
+          "width": 1440,
+          "height": 1080,
+          "comment": "Correct aspect ratio for place page is 4:3",
+          "url": "https://images.uesp.net/archive/d/d2/20120218022228%21SR-place-Hjaalmarch.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Hjaalmarch.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=121184",
+          "sha1": "14f7ad53fe1b7b5e0ad62425fb243a9b4bc0efa1"
+        },
+        {
+          "timestamp": "2012-02-18T01:27:20Z",
+          "user": "Shezzarine",
+          "size": 821251,
+          "width": 1920,
+          "height": 1080,
+          "comment": "A little image summarization of the gorgeous low-lying eerie salt marshes to compliment the wonderful description. ",
+          "url": "https://images.uesp.net/archive/d/d2/20120218015424%21SR-place-Hjaalmarch.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Hjaalmarch.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=121184",
+          "sha1": "c7b641a92d7c711eb016accbae72c365e1eb3f81"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/world/SR-place-Solitude_02.jpg",
+      "imported_sha256": "c48cd0403d05a299833839f605a6b2fb23c1f3bf48a8426e42a71ce42e460552",
+      "imported_sha1": "ecd736e4e5e2a90cecbb7116baca3f2f690ce59c",
+      "source_title": "File:SR-place-Solitude 02.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Solitude_02.jpg",
+      "uesp_current_original": {
+        "timestamp": "2020-06-30T22:32:17Z",
+        "user": "Imperialbattlespire",
+        "size": 1564208,
+        "width": 3840,
+        "height": 2160,
+        "comment": "",
+        "url": "https://images.uesp.net/9/98/SR-place-Solitude_02.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Solitude_02.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111512",
+        "sha1": "8f5e80aade1d49e6dbf010046788ea0c79340d79"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2020-06-30T22:32:17Z",
+          "user": "Imperialbattlespire",
+          "size": 1564208,
+          "width": 3840,
+          "height": 2160,
+          "comment": "",
+          "url": "https://images.uesp.net/9/98/SR-place-Solitude_02.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Solitude_02.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111512",
+          "sha1": "8f5e80aade1d49e6dbf010046788ea0c79340d79"
+        },
+        {
+          "timestamp": "2012-02-03T14:07:27Z",
+          "user": "Thuraya Salaris",
+          "size": 243043,
+          "width": 1440,
+          "height": 1080,
+          "comment": "4:3, no UI",
+          "url": "https://images.uesp.net/archive/9/98/20200630223217%21SR-place-Solitude_02.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Solitude_02.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111512",
+          "sha1": "f0b28523ecbe3d2cc673af040df747480c875e09"
+        },
+        {
+          "timestamp": "2011-11-23T12:31:06Z",
+          "user": "Kentarion",
+          "size": 342646,
+          "width": 1680,
+          "height": 1050,
+          "comment": "",
+          "url": "https://images.uesp.net/archive/9/98/20120203140727%21SR-place-Solitude_02.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Solitude_02.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=111512",
+          "sha1": "1d0516745d5b7d10fd435fdeeeedb3415a8a852c"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": false,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    },
+    {
+      "imported_path": "images/world/SR-place-Whiterun_Hold.jpg",
+      "imported_sha256": "559d100dc2843597bd0b50d39a2515ded46dad32336d11896334ef594ad8a5b4",
+      "imported_sha1": "ea4098c1d32a1328b6fb898219988cf380f993b3",
+      "source_title": "File:SR-place-Whiterun Hold.jpg",
+      "source_page_url": "https://en.uesp.net/wiki/File:SR-place-Whiterun_Hold.jpg",
+      "uesp_current_original": {
+        "timestamp": "2012-04-27T17:46:57Z",
+        "user": "Holomay",
+        "size": 663057,
+        "width": 1400,
+        "height": 1050,
+        "comment": "no UI",
+        "url": "https://images.uesp.net/f/f7/SR-place-Whiterun_Hold.jpg",
+        "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Whiterun_Hold.jpg",
+        "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=108909",
+        "sha1": "789d2b2d6ff43b1fce83e311fc665d95bf427b3a"
+      },
+      "sampled_uesp_history": [
+        {
+          "timestamp": "2012-04-27T17:46:57Z",
+          "user": "Holomay",
+          "size": 663057,
+          "width": 1400,
+          "height": 1050,
+          "comment": "no UI",
+          "url": "https://images.uesp.net/f/f7/SR-place-Whiterun_Hold.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Whiterun_Hold.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=108909",
+          "sha1": "789d2b2d6ff43b1fce83e311fc665d95bf427b3a"
+        },
+        {
+          "timestamp": "2011-11-13T19:00:36Z",
+          "user": "Cokeman",
+          "size": 504874,
+          "width": 1920,
+          "height": 1080,
+          "comment": "",
+          "url": "https://images.uesp.net/archive/f/f7/20120427174657%21SR-place-Whiterun_Hold.jpg",
+          "descriptionurl": "https://en.uesp.net/wiki/File:SR-place-Whiterun_Hold.jpg",
+          "descriptionshorturl": "https://en.uesp.net/w/index.php?curid=108909",
+          "sha1": "f1b5e1cea3bb16a06a2c879781e09f3816630e9d"
+        }
+      ],
+      "imported_bytes_match_current_uesp_original": false,
+      "current_uesp_upload_predates_se_release": true,
+      "imported_edition_status": "unverified; filename/source history is not an imported-byte identity receipt",
+      "source_page_explicitly_identifies_se_or_ae": false,
+      "retail_camera_or_rendering_state_observed": false
+    }
+  ],
+  "source_list_gap": {
+    "path": "images/riverwood/SOURCES.txt",
+    "actual_images_missing_from_list": [
+      "SR-interior-Alvor_and_Sigrid's_House.jpg",
+      "SR-interior-Sleeping_Giant_Inn_Common_Room.jpg",
+      "SR-place-Faendal's_House.jpg",
+      "SR-place-Riverwood_02.jpg"
+    ],
+    "listed_image_absent_from_import": [
+      "SR-place-Riverwood_Fishing.jpg"
+    ]
+  },
+  "aspect_mismatches": [
+    {
+      "set": "riverwood_shots.json",
+      "name": "RW-01-village-from-the-south",
+      "fixture_size": [
+        1400,
+        1050
+      ],
+      "reference_size": [
+        1400,
+        788
+      ],
+      "aspect_match": false,
+      "reference": "images/riverwood/SR-place-Riverwood.jpg"
+    },
+    {
+      "set": "riverwood_shots.json",
+      "name": "RW-02-street-to-the-inn",
+      "fixture_size": [
+        1400,
+        1050
+      ],
+      "reference_size": [
+        1400,
+        788
+      ],
+      "aspect_match": false,
+      "reference": "images/riverwood/SR-place-Riverwood_02.jpg"
+    },
+    {
+      "set": "world_shots_wide.json",
+      "name": "SR-photo-White_Run,_Red_Sky",
+      "fixture_size": [
+        1400,
+        788
+      ],
+      "reference_size": [
+        1400,
+        875
+      ],
+      "aspect_match": false,
+      "reference": "images/world/SR-photo-White_Run,_Red_Sky.jpg"
+    }
+  ],
+  "rw02_conflicts": {
+    "imported_pose_file": "poses/riverwood_shots.json",
+    "sha256": "253e652820974860a6a98965473e43a08dd3764c4fd63a7ed8696db95a5c688e",
+    "numeric_pose": {
+      "name": "RW-02-street-to-the-inn",
+      "worldspace_id": 60,
+      "interior_cell_id": null,
+      "position": [
+        18742.6,
+        -46745.8,
+        2.6
+      ],
+      "yaw": 87.3,
+      "pitch": -4.5,
+      "hfov": 75.0
+    },
+    "same_json_note_positions_xy": [
+      [
+        18700,
+        -46700
+      ],
+      [
+        17500,
+        -47500
+      ]
+    ],
+    "older_document_path": "docs/riverwood-reference-poses.md",
+    "older_document_sha256": "42fb58b11acd15fbb27d78fd8b20bd79e36536abe09dce65bf8aa2a0725e1a0d",
+    "older_document_date": "2026-09-23",
+    "older_document_proposed_pose": {
+      "position": [
+        18700,
+        -46700,
+        -62
+      ],
+      "yaw": 75.5,
+      "pitch": -0.6,
+      "hfov": 75
+    },
+    "later_json_hand_fit_date_from_note": "2026-09-24",
+    "conflict_resolved": false,
+    "fixture_policy": "Keep imported numeric values, document contradictions, change only output aspect in the wide fixture.",
+    "hfov_degrees": 75,
+    "original_vfov_degrees": 59.84044400898544,
+    "wide_vfov_degrees": 46.71859475762148
+  },
+  "hjaalmarch_space_conflict": {
+    "pose_file": "poses/world_shots_4x3.json",
+    "name": "SR-place-Hjaalmarch",
+    "worldspace_id": null,
+    "interior_cell_id": 50418004,
+    "position": [
+      599.2,
+      -2829.6,
+      149.8
+    ],
+    "source_subject": "exterior saltmarsh",
+    "pose_note_subject": "entrance to BYOHHouse2Hjaalmarch; unchecked ball-park",
+    "corrected_or_verified": false,
+    "use_as_fog_validation_view": false
+  },
+  "repository_fixtures": [
+    {
+      "path": "crates/engine/tests/fixtures/lighting-reference-riverwood-shots.json",
+      "sha256": "b8c0bc9b6455e2764ae2f67c7392d3c5a2d9df227cfad5c84c7865dbdc95e29f",
+      "width": 1400,
+      "height": 1050,
+      "shots": [
+        {
+          "name": "RW-04-inn-front",
+          "worldspace_id": 60,
+          "interior_cell_id": null,
+          "position": [
+            22073.9,
+            -44520.5,
+            458.7
+          ],
+          "yaw": 87.4,
+          "pitch": 11.7,
+          "hfov": 75.0,
+          "reference": "images/riverwood/SR-place-Sleeping_Giant_Inn.jpg",
+          "confidence": "hand-fit",
+          "note": "Unchanged imported pose. The source notes grade the framing as close, with a nearer, more downward reference camera. The 4:3 aspect matches the reference."
+        },
+        {
+          "name": "RW-07-village-from-the-south-hill",
+          "worldspace_id": 60,
+          "interior_cell_id": null,
+          "position": [
+            21956.1,
+            -47114.6,
+            89.4
+          ],
+          "yaw": 195.9,
+          "pitch": 0.6,
+          "hfov": 75.0,
+          "reference": "images/riverwood/SR-place-Faendal's_House.jpg",
+          "confidence": "hand-fit",
+          "note": "Unchanged imported pose and name. This is Faendal's house front, despite the historical shot name. The source notes grade it as close, with a nearer reference camera. The 4:3 aspect matches the reference."
+        }
+      ],
+      "qualitative_only": true,
+      "source_numeric_pose_and_angles_preserved": true,
+      "engine_execution_observed": false,
+      "retail_pose_match_verified": false
+    },
+    {
+      "path": "crates/engine/tests/fixtures/lighting-reference-riverwood-wide-shots.json",
+      "sha256": "89f4fd3ff485e5a0c0ed44ed76e9e891a952b050fdce8fc3f8b073361551e007",
+      "width": 1400,
+      "height": 788,
+      "shots": [
+        {
+          "name": "RW-02-street-to-the-inn",
+          "worldspace_id": 60,
+          "interior_cell_id": null,
+          "position": [
+            18742.6,
+            -46745.8,
+            2.6
+          ],
+          "yaw": 87.3,
+          "pitch": -4.5,
+          "hfov": 75.0,
+          "reference": "images/riverwood/SR-place-Riverwood_02.jpg",
+          "confidence": "hand-fit",
+          "note": "Camera values and name are unchanged. The source notes grade the subject and side as close, with a nearer reference camera. Its prose mentions different coordinates from its JSON; the JSON values are retained without resolving that discrepancy."
+        }
+      ],
+      "qualitative_only": true,
+      "source_numeric_pose_and_angles_preserved": true,
+      "engine_execution_observed": false,
+      "retail_pose_match_verified": false
+    }
+  ],
+  "unrecorded_reference_state": [
+    "exact edition/build except the byte-matched pre-SE-era source boundary",
+    "plugin and resource winners",
+    "mod/ENB/ReShade state",
+    "weather ID and transition",
+    "game hour and sun trajectory",
+    "IMGS/IMAD and adaptation history",
+    "INI/settings and output gamma",
+    "actual retail camera pose/projection",
+    "display/capture transfer and post-editing history"
+  ],
+  "acceptance_limits": {
+    "matched_retail_frame": false,
+    "se_ae_pixel_parity": false,
+    "all_imported_images_identified_as_se": false,
+    "weather_or_time_defaults_inferred": false,
+    "reference_camera_numeric_values_retail_measured": false,
+    "proposed_use": "Landmark fitting, subject/layout review and qualitative appearance comparisons. Native/default calibration remains gated on original state and selected output receipts."
+  },
+  "validation_scope": {
+    "all_three_archives_and_complete_91_file_import_inventory_reverified": true,
+    "jpeg_sof_headers_read": 78,
+    "pose_dimension_rows_checked": 84,
+    "pose_rows_with_imported_reference": 78,
+    "pose_rows_without_imported_reference": 6,
+    "recorded_aspect_mismatch_count_preserved": 3,
+    "recorded_mismatch_dimensions_reverified": 3,
+    "strict_integer_dimension_ratio_differences": 5,
+    "additional_small_ratio_differences_labeled_matching_by_inventory": [
+      {
+        "set": "uesp_shots_blackreach_04.json",
+        "name": "SR-place-Blackreach_04",
+        "reference": "images/uesp/SR-place-Blackreach_04.jpg",
+        "fixture_size": [
+          1718,
+          1080
+        ],
+        "reference_size": [
+          1400,
+          880
+        ],
+        "inventory_aspect_match": true,
+        "exact_dimension_ratio_match": false,
+        "relative_ratio_difference": 0.00010582010582005363
+      },
+      {
+        "set": "world_shots_4x3.json",
+        "name": "SR-place-Whiterun",
+        "reference": "images/world/SR-place-Whiterun.jpg",
+        "fixture_size": [
+          1400,
+          1050
+        ],
+        "reference_size": [
+          1333,
+          1000
+        ],
+        "inventory_aspect_match": true,
+        "exact_dimension_ratio_match": false,
+        "relative_ratio_difference": 0.0002500625156289793
+      }
+    ],
+    "inventory_aspect_match_threshold_verified": false,
+    "jpeg_header_check_is_full_visual_decode": false,
+    "full_visual_decodes_in_this_audit": [
+      "images/riverwood/SR-place-Faendal's_House.jpg"
+    ],
+    "uesp_sample_imported_file_sha1_and_sha256_checked": 14,
+    "repository_fixture_shots_compared": 3,
+    "repository_fixture_fields_compared": [
+      "name",
+      "worldspace_id",
+      "interior_cell_id",
+      "position",
+      "yaw",
+      "pitch",
+      "hfov",
+      "reference",
+      "confidence"
+    ],
+    "engine_or_retail_capture_validation_performed": false,
+    "scope_note": "JPEG headers establish dimensions only. One Faendal image was visually decoded; the 78-image set was not fully decoded or visually graded. The inventory records three aspect mismatches; two further integer-dimension rounding differences fail exact ratio equality, and the inventory matching threshold was not independently established. The 14 named UESP source histories do not identify every imported image or its rendering state."
+  }
+}

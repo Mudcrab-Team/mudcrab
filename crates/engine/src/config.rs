@@ -3449,6 +3449,19 @@ mod tests {
         paths
     }
 
+    /// Documentation checkers read the repository and write reports. They never
+    /// launch the engine, so only a line that names it is an engine invocation.
+    /// Keeping the list explicit means a new launcher-shaped script is still
+    /// audited in full.
+    const OWN_OPTIONS_SCRIPTS: &[&str] = &[
+        "build-skyrim-render-map.py",
+        "build-skyrim-research-notes-viewer.py",
+        "check-distance-fog-spec.py",
+        "check-docs-links.py",
+        "check-skyrim-render-map.py",
+        "check-skyrim-research-notes.py",
+    ];
+
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
@@ -3461,8 +3474,11 @@ mod tests {
                 Some("lod-performance" | "lod-experiment")
             )
         });
+        let document_tool = path
+            .file_name()
+            .is_some_and(|name| OWN_OPTIONS_SCRIPTS.contains(&name.to_string_lossy().as_ref()));
         let engine_lines: String;
-        let scanned = if converter_tool {
+        let scanned = if converter_tool || document_tool {
             engine_lines = script
                 .lines()
                 .filter(|line| {
@@ -3492,6 +3508,34 @@ mod tests {
             checked += 1;
         }
         checked
+    }
+
+    #[test]
+    fn the_script_audit_scopes_documentation_options_to_engine_lines() {
+        let checker = std::path::Path::new("check-skyrim-render-map.py");
+        // The checker's own --target names an executable it reads, not an engine
+        // option, so a file that never invokes the engine costs nothing.
+        assert_eq!(
+            checked_script_engine_flags("--target SkyrimSE.exe --research-evidence x", checker),
+            0
+        );
+        // Naming the engine on the same line keeps the audit in force.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --target SkyrimSE.exe", checker)
+            })
+            .is_err()
+        );
+        // A script outside the list is still audited in full.
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags(
+                    "--target SkyrimSE.exe",
+                    std::path::Path::new("launch-world.sh"),
+                )
+            })
+            .is_err()
+        );
     }
 
     #[test]
