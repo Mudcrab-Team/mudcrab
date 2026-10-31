@@ -958,6 +958,21 @@ struct ReferenceQuery {
 }
 
 impl ReferenceQuery {
+    fn exterior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!(
+            "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
+             WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
+        )
+    }
+
+    fn interior_sql(&self) -> String {
+        let columns = &self.columns;
+        let joins = &self.joins;
+        format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1")
+    }
+
     fn for_connection(connection: &Connection) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
@@ -1052,18 +1067,13 @@ fn load_cell(
         )?,
         CellKey::Interior(cell_id) => cell_id,
     };
-    let columns = &query.columns;
-    let joins = &query.joins;
     let rows = match key {
         CellKey::Exterior {
             worldspace_id,
             grid_x,
             grid_y,
         } => {
-            let sql = format!(
-                "SELECT {columns} FROM exterior_spatial x JOIN \"references\" r ON r.id=x.id{joins} \
-                 WHERE x.worldspace_id=?1 AND x.minX>=?2 AND x.minX<?3 AND x.minY>=?4 AND x.minY<?5"
-            );
+            let sql = query.exterior_sql();
             let min_x = grid_x as f32 * 4096.0;
             let min_y = grid_y as f32 * 4096.0;
             connection
@@ -1075,7 +1085,7 @@ fn load_cell(
                 .collect::<rusqlite::Result<Vec<_>>>()?
         }
         CellKey::Interior(_) => {
-            let sql = format!("SELECT {columns} FROM \"references\" r{joins} WHERE r.cell_id=?1");
+            let sql = query.interior_sql();
             connection
                 .prepare_cached(&sql)?
                 .query_map([cell_id], map_reference)?
@@ -1205,6 +1215,10 @@ fn map_reference(row: &rusqlite::Row<'_>) -> rusqlite::Result<(ReferenceRow, Ini
         map_enable_inputs(row, REFERENCE_ENABLE_START)?,
     ))
 }
+
+#[cfg(test)]
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
 
 #[cfg(test)]
 mod tests {

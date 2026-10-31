@@ -62,7 +62,8 @@ jobs:
           }
 
           check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
@@ -71,6 +72,7 @@ jobs:
     outputs:
       check_rust: ${{ steps.filter.outputs.check_rust }}
       check_scripts: ${{ steps.filter.outputs.check_scripts }}
+      check_world_data: ${{ steps.filter.outputs.check_world_data }}
       check_lod_experiment: ${{ steps.filter.outputs.check_lod_experiment }}
       check_native_profiling: ${{ steps.filter.outputs.check_native_profiling }}
       check_z_fighting_audit: ${{ steps.filter.outputs.check_z_fighting_audit }}
@@ -134,6 +136,12 @@ jobs:
 
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
+
+      - name: Test world-data evidence inventory and source drift
+        if: needs.orchestrate.outputs.check_world_data == 'true'
+        run: |
+          python3 -B -m unittest discover -s tools/world_data_inventory -p 'test_*.py' -v
+          python3 -B tools/world_data_inventory/inventory.py --check
 
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
@@ -325,6 +333,15 @@ jobs:
         run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
+          WORLD_DATA_INVENTORY_OUTPUT: ${{ runner.temp }}/world-data-inventory
+
+      - name: Upload emitted schema, query and inventory evidence
+        if: needs.orchestrate.outputs.check_world_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-data-inventory
+          path: ${{ runner.temp }}/world-data-inventory/
+          if-no-files-found: error
 
       - name: Test GPU texture encoder on software Vulkan
         run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots)'
