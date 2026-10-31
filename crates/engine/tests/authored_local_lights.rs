@@ -166,7 +166,12 @@ fn signed_offsets_zero_and_backend_limits_survive_storage() {
             field.1 = offset.to_le_bytes().to_vec();
         }
         let evaluated = consume(&source, false);
-        assert!(evaluated.point_light().is_none());
+        if offset.is_finite() {
+            assert_eq!(evaluated.point_light().unwrap().range, 0.1);
+            assert!(evaluated.native_radius_fallback);
+        } else {
+            assert!(evaluated.point_light().is_none());
+        }
         assert_eq!(evaluated.invalid_radius, !offset.is_finite());
     }
 }
@@ -198,7 +203,7 @@ fn absent_malformed_negative_and_nonfinite_fade_remain_distinct_from_valid_zero(
 }
 
 #[test]
-fn xlig_is_projected_without_inventing_a_fade_equation_and_falloff_is_explicitly_unsupported() {
+fn native_additive_xlig_fade_and_nonshadow_falloff_dispatch_survive_storage() {
     let baseline = consume(&records(1.0, 1.0, 0.0), false)
         .point_light()
         .unwrap();
@@ -219,8 +224,14 @@ fn xlig_is_projected_without_inventing_a_fade_equation_and_falloff_is_explicitly
             Some(fade_offset)
         );
         assert_eq!(actual.source.falloff, Some(4.0));
-        assert!(actual.unsupported_falloff);
-        assert_eq!(actual.point_light().unwrap().intensity, baseline.intensity);
+        assert!(!actual.unsupported_falloff);
+        assert_eq!(actual.native_falloff, Some(1.0));
+        assert!(actual.reference_fade_applied);
+        assert_eq!(actual.authored_fade, 1.0 + f64::from(fade_offset));
+        let expected = (1.0 + fade_offset).max(0.0);
+        assert!(
+            (actual.point_light().unwrap().intensity / baseline.intensity - expected).abs() < 1e-5
+        );
     }
     for bytes in [
         vec![0; 15],
@@ -237,7 +248,9 @@ fn xlig_is_projected_without_inventing_a_fade_equation_and_falloff_is_explicitly
             .push((b"XLIG".to_vec(), bytes));
         let actual = consume(&source, false);
         assert_eq!(actual.malformed_reference_data, malformed);
-        assert!(actual.unsupported_reference_data);
+        assert_eq!(actual.unsupported_reference_data, malformed);
+        assert_eq!(actual.invalid_reference_fade, malformed);
+        assert_eq!(actual.reference_fade_applied, !malformed);
         assert_eq!(actual.source.falloff, Some(0.0));
     }
 }
@@ -294,4 +307,62 @@ fn backend_saturates_extreme_fade_and_consumes_authored_flags() {
     let actual = consume(&source, false);
     assert!(actual.suppressed_flags);
     assert!(actual.point_light().is_none());
+}
+
+#[test]
+fn native_fade_sentinel_signed_offsets_and_shadow_falloff_have_explicit_backend_bounds() {
+    let baseline = consume(&records(2.0, 1.0, 0.0), false)
+        .point_light()
+        .unwrap();
+    for (offset, expected) in [
+        (0.5f32, 2.5),
+        (2.0, 4.0),
+        (-1.0, 1.0),
+        (-2.0, 0.0),
+        (-3.0, 0.0),
+        (f32::MAX, f32::MAX),
+    ] {
+        let mut source = records(2.0, 4.0, 0.0);
+        let data = [0.0f32, offset, 0.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        light_reference(&mut source)
+            .subrecords
+            .push((b"XLIG".to_vec(), data));
+        let actual = consume(&source, false);
+        assert_eq!(actual.effective_fade, expected);
+        assert_eq!(
+            actual.authored_fade,
+            if offset == f32::MAX {
+                f64::from(f32::MAX)
+            } else {
+                2.0 + f64::from(offset)
+            }
+        );
+        assert!(!actual.unsupported_reference_data);
+        assert_eq!(actual.backend_limited, offset < -2.0 || offset == f32::MAX);
+        if offset != f32::MAX {
+            assert!(
+                (actual.point_light().unwrap().intensity / baseline.intensity - expected / 2.0)
+                    .abs()
+                    < 1e-5
+            );
+        } else {
+            assert_eq!(actual.point_light().unwrap().intensity, f32::MAX);
+        }
+    }
+    for flags in [0x400u32, 0x800, 0x1000] {
+        let mut source = records(1.0, 4.0, 0.0);
+        let data = &mut light_record(&mut source)
+            .subrecords
+            .iter_mut()
+            .find(|(tag, _)| tag == b"DATA")
+            .unwrap()
+            .1;
+        data[12..16].copy_from_slice(&flags.to_le_bytes());
+        let actual = consume(&source, false);
+        assert_eq!(actual.native_falloff, Some(4.0));
+        assert!(actual.unsupported_falloff); // Bevy retains its own attenuation; no invented exponent.
+    }
 }

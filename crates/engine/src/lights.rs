@@ -11,8 +11,8 @@
 //! how many lights are enabled at once.
 //!
 //! Authored inputs and the Bevy compatibility transform are separate. Signed XRDS is added to
-//! the base radius; FNAM scales luminous power. XLIG and DATA falloff remain inspectable but
-//! unsupported by this adapter. See the spec for pinned sources and unresolved native equations.
+//! the base radius; FNAM plus XLIG fade scales luminous power. DATA falloff applies only to
+//! native shadow modes, which this point-light adapter does not reproduce. See the spec for pinned sources and unresolved native equations.
 //!
 //! The backend retains the baseline's intensity normalization, frozen independently of global
 //! ambient. This is a compatibility fallback, not a calibrated Skyrim radiometric conversion.
@@ -69,7 +69,16 @@ pub struct LightEvaluation {
     pub radius_offset: Option<f32>,
     pub authored_radius: Option<f64>,
     pub backend_range: Option<f32>,
+    /// Base FNAM after legacy/malformed fallback, before the additive reference offset.
+    pub base_fade: f32,
+    /// Native base-plus-reference fade before the backend's nonnegative finite bound.
+    pub authored_fade: f64,
     pub effective_fade: f32,
+    pub reference_fade_applied: bool,
+    pub invalid_reference_fade: bool,
+    pub native_radius_fallback: bool,
+    /// Native constructor uses DATA falloff only for flags 0x1c00, otherwise 1.
+    pub native_falloff: Option<f32>,
     pub legacy_fade: bool,
     pub invalid_fade: bool,
     pub invalid_radius: bool,
@@ -105,26 +114,54 @@ impl LightEvaluation {
 
 /// Resolve supported inputs without modifying their stored values. XRDS is an additive signed
 /// offset (xEdit wbREFRRadiusToStr). Invalid present offsets are rejected, not replaced by base
-/// radius. Zero/negative effective ranges produce no light. XLIG is never a raw multiplier.
+/// radius. The native constructor replaces nonpositive sums with 0.1. XLIG fade is an additive
+/// offset, with f32::MAX as the native sentinel. Native 1.7.104 evidence is pinned in the spec.
 pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEvaluation {
     let authored_radius = (light.radius_status != Some(2)
         && light.radius.is_finite()
         && radius_offset.is_none_or(f32::is_finite))
     .then(|| f64::from(light.radius) + f64::from(radius_offset.unwrap_or(0.0)));
-    let backend_range = authored_radius
-        .filter(|radius| *radius > 0.0)
-        .map(|radius| radius.min(f64::from(MAX_RADIUS_OVERRIDE)) as f32);
+    let native_radius_fallback = authored_radius.is_some_and(|radius| radius <= 0.0);
+    let backend_range = authored_radius.map(|radius| {
+        if radius <= 0.0 {
+            NATIVE_NONPOSITIVE_RADIUS
+        } else {
+            radius.min(f64::from(MAX_RADIUS_OVERRIDE)) as f32
+        }
+    });
     let invalid_fade = light.fade_status == Some(2)
         || light
             .fade
             .is_some_and(|fade| !fade.is_finite() || fade < 0.0);
-    let effective_fade = if invalid_fade {
+    let base_fade = if invalid_fade {
         1.0
     } else {
         light
             .fade
             .filter(|fade| fade.is_finite() && *fade >= 0.0)
             .unwrap_or(1.0)
+    };
+    let reference_fade = light.reference_data.as_ref().and_then(|data| {
+        [16, 20]
+            .contains(&data.data_size)
+            .then_some(data.fade_offset)
+            .flatten()
+            .filter(|fade| fade.is_finite())
+    });
+    let invalid_reference_fade = light.reference_data.is_some() && reference_fade.is_none();
+    // Native 1.7.104: RVA 0x300020 returns the MAX sentinel unchanged; otherwise adds FNAM.
+    // Keep the authored signed result. Bevy's additive light backend cannot emit negative power.
+    let authored_fade = match reference_fade {
+        Some(f32::MAX) => f64::from(f32::MAX),
+        Some(offset) => f64::from(base_fade) + f64::from(offset),
+        None => f64::from(base_fade),
+    };
+    let effective_fade = authored_fade.clamp(0.0, f64::from(f32::MAX)) as f32;
+    let shadow_mode = light.flags & LIGHT_FLAG_SHADOW_MODES != 0;
+    let native_falloff = if shadow_mode {
+        light.falloff.filter(|value| value.is_finite())
+    } else {
+        Some(1.0)
     };
     let malformed_reference_data = light.reference_data.as_ref().is_some_and(|data| {
         ![16, 20].contains(&data.data_size)
@@ -142,18 +179,34 @@ pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEval
         radius_offset,
         authored_radius,
         backend_range,
+        base_fade,
+        authored_fade,
         effective_fade,
+        reference_fade_applied: reference_fade.is_some(),
+        invalid_reference_fade,
+        native_radius_fallback,
+        native_falloff,
         legacy_fade: light.fade.is_none() || invalid_fade,
         invalid_fade,
         invalid_radius: authored_radius.is_none(),
-        backend_limited: authored_radius
-            .is_some_and(|radius| radius > f64::from(MAX_RADIUS_OVERRIDE))
+        backend_limited: authored_fade < 0.0
+            || authored_fade > f64::from(f32::MAX)
+            || authored_radius.is_some_and(|radius| radius > f64::from(MAX_RADIUS_OVERRIDE))
             || f64::from(intensity_for_radius(backend_range.unwrap_or(0.0)))
                 * f64::from(effective_fade)
                 > f64::from(f32::MAX),
-        unsupported_reference_data: light.reference_data.is_some(),
+        // Fade is consumed. Other nonzero/invalid fields still require their own native path.
+        unsupported_reference_data: light.reference_data.as_ref().is_some_and(|data| {
+            [
+                data.fov_offset,
+                data.end_distance_cap,
+                data.shadow_depth_bias,
+            ]
+            .iter()
+            .any(|value| value.is_none_or(|value| value != 0.0))
+        }),
         malformed_reference_data,
-        unsupported_falloff: light.falloff.is_some(),
+        unsupported_falloff: shadow_mode,
         suppressed_flags: light.flags & (LIGHT_FLAG_NEGATIVE | LIGHT_FLAG_OFF_BY_DEFAULT) != 0,
         transform: LIGHT_TRANSFORM,
     }
@@ -166,6 +219,9 @@ pub struct LightInputCoverage {
     pub evaluated: u64,
     pub legacy_normalization: u64,
     pub legacy_fade: u64,
+    pub reference_fade_applied: u64,
+    pub invalid_reference_fade: u64,
+    pub native_radius_fallback: u64,
     pub invalid_fade: u64,
     pub invalid_radius: u64,
     pub backend_limited: u64,
@@ -183,6 +239,9 @@ fn record_light_coverage(
         coverage.evaluated += 1;
         coverage.legacy_normalization += 1;
         coverage.legacy_fade += u64::from(light.legacy_fade);
+        coverage.reference_fade_applied += u64::from(light.reference_fade_applied);
+        coverage.invalid_reference_fade += u64::from(light.invalid_reference_fade);
+        coverage.native_radius_fallback += u64::from(light.native_radius_fallback);
         coverage.invalid_fade += u64::from(light.invalid_fade);
         coverage.invalid_radius += u64::from(light.invalid_radius);
         coverage.backend_limited += u64::from(light.backend_limited);
@@ -213,6 +272,11 @@ pub fn point_light(light: &LightRow, radius_offset: Option<f32>) -> Option<Point
 /// Maximum backend range for both base radius and signed XRDS result. Preserve the authored
 /// result on LightEvaluation and clamp explicitly instead of silently substituting base radius.
 pub const MAX_RADIUS_OVERRIDE: f32 = 8_192.0;
+
+/// Native 1.7.104 CreatePointLight, RVA 0x2746d2; not an editor hint or arbitrary range knob.
+pub const NATIVE_NONPOSITIVE_RADIUS: f32 = 0.1;
+/// Native constructor dispatches DATA falloff only for spot/hemi/omni shadow modes.
+pub const LIGHT_FLAG_SHADOW_MODES: u32 = 0x1c00;
 
 /// Bounded compatibility lumens for unit fade. The normalization is frozen at b5259d33 and is
 /// not a native calibration. Bevy divides lumens by 4*PI; the diffuse BRDF adds another 1/PI.
@@ -677,12 +741,9 @@ mod tests {
         assert!(point_light(&light_row(512.0, LIGHT_FLAG_NEGATIVE), None).is_none());
         assert!(point_light(&light_row(512.0, LIGHT_FLAG_OFF_BY_DEFAULT), None).is_none());
         assert!(point_light(&light_row(512.0, 0x0001 | 0x0008), None).is_some());
-        assert!(
-            point_light(&light_row(0.0, 0), None).is_none(),
-            "a light with no radius lights nothing"
-        );
+        assert_eq!(point_light(&light_row(0.0, 0), None).unwrap().range, 0.1);
         assert!(point_light(&light_row(f32::NAN, 0), None).is_none());
-        assert!(point_light(&light_row(-64.0, 0), None).is_none());
+        assert_eq!(point_light(&light_row(-64.0, 0), None).unwrap().range, 0.1);
         assert!(
             point_light(&light_row(0.0, 0), Some(512.0)).is_some(),
             "an override rescues a record whose own radius is unusable"
@@ -703,7 +764,10 @@ mod tests {
 
         assert_eq!(point_light(&record, Some(-100.0)).unwrap().range, 156.0);
         assert_eq!(point_light(&record, Some(0.0)).unwrap().range, 256.0);
-        for offset in [-256.0, -300.0, f32::NAN, f32::INFINITY] {
+        for offset in [-256.0, -300.0] {
+            assert_eq!(point_light(&record, Some(offset)).unwrap().range, 0.1);
+        }
+        for offset in [f32::NAN, f32::INFINITY] {
             assert!(point_light(&record, Some(offset)).is_none());
         }
     }
