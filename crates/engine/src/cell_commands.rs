@@ -597,6 +597,7 @@ mod tests {
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
             1.0 / 60.0,
         )))
+        .init_resource::<crate::visual_profile::VisualProfile>()
         // Match app::run: streaming is registered before the player controls.
         .add_plugins(StreamingPlugin)
         .add_systems(PreUpdate, execute_queued_command);

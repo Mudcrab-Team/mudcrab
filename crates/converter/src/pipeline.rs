@@ -3269,7 +3269,7 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
                 // companion path as well, retaining `.opensky-wrapN` so clamp/repeat images keep
                 // distinct AssetServer identities and sampler settings.
                 if let Some(linear) = runtime_key.strip_suffix(".ktx2") {
-                    let linear = linear.replace(".opensky-srgb", "");
+                    let linear = linear.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     let linear = format!("{linear}.ktx2");
                     // The canonical source is already the default linear path. Never republish
                     // it over itself; only sampler-specific companion aliases need a file.
@@ -6567,13 +6567,9 @@ mod tests {
 
     #[test]
     fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
-        for mode in 0..=3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let sampler = if mode == 3 {
-                    String::new()
-                } else {
-                    format!(".opensky-wrap{mode}")
-                };
+        for mode in 0..=shared::texture_aliases::WRAP_TEXTURE_SUFFIX_NONE {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let sampler = shared::texture_aliases::wrap_texture_suffix(mode).unwrap_or("");
                 let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
                 assert_eq!(
@@ -6597,12 +6593,12 @@ mod tests {
                 glb.extend_from_slice(b"JSON");
                 glb.extend_from_slice(&json);
                 fs::write(root.join("meshes/alias.glb"), glb).unwrap();
-                let expected = if transfer.is_empty() && mode == 3 {
+                let expected = if transfer.is_empty() && sampler.is_empty() {
                     vec![]
-                } else if transfer.is_empty() || mode == 3 {
+                } else if transfer.is_empty() || sampler.is_empty() {
                     vec![PathBuf::from(&alias)]
                 } else {
-                    let linear = alias.replace(".opensky-srgb", "");
+                    let linear = alias.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     vec![PathBuf::from(&alias), PathBuf::from(linear)]
                 };
                 let published = publish_texture_aliases(root).unwrap();

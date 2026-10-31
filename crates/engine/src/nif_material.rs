@@ -59,12 +59,18 @@ impl Plugin for NifMaterialPlugin {
             .world()
             .get_resource::<DefaultGltfImageSampler>()
             .map(DefaultGltfImageSampler::get_internal);
+        let profile = app
+            .world()
+            .get_resource::<crate::visual_profile::VisualProfile>()
+            .copied()
+            .unwrap_or_default();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
             .write_blocking()
             .push(Box::new(NativeMaterialHandler {
                 default_sampler,
+                raw_colour_texels: !profile.decodes_colour_srgb(),
                 ..default()
             }));
     }
@@ -113,6 +119,7 @@ pub(crate) struct EffectPaletteDepthSource(pub Handle<EffectPaletteMaterial>);
 /// The palette half of an [`EffectPaletteMaterial`]; the standard half carries the source
 /// texture, base colour, UV transform and blending as for every other converted material.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(EffectPaletteKey)]
 pub struct EffectPalette {
     #[uniform(100)]
     settings: EffectPaletteSettings,
@@ -120,6 +127,23 @@ pub struct EffectPalette {
     #[sampler(102)]
     #[dependency]
     palette: Handle<Image>,
+    /// The source texture (the palette index) holds authored bytes rather than an sRGB-decoded
+    /// colour, so the shader must not encode it again before indexing the palette.
+    raw_colour_texels: bool,
+}
+
+/// The part of an [`EffectPalette`] its pipelines specialise on.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub struct EffectPaletteKey {
+    raw_colour_texels: bool,
+}
+
+impl From<&EffectPalette> for EffectPaletteKey {
+    fn from(extension: &EffectPalette) -> Self {
+        Self {
+            raw_colour_texels: extension.raw_colour_texels,
+        }
+    }
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, PartialEq)]
@@ -132,7 +156,13 @@ struct EffectPaletteSettings {
 impl EffectPalette {
     /// `color` and `alpha` say which channels the palette supplies; `scale` is the shader's base
     /// colour scale.
-    pub fn new(palette: Handle<Image>, color: bool, alpha: bool, scale: f32) -> Self {
+    pub fn new(
+        palette: Handle<Image>,
+        color: bool,
+        alpha: bool,
+        scale: f32,
+        raw_colour_texels: bool,
+    ) -> Self {
         Self {
             settings: EffectPaletteSettings {
                 lookup: Vec4::new(
@@ -143,6 +173,7 @@ impl EffectPalette {
                 ),
             },
             palette,
+            raw_colour_texels,
         }
     }
 
@@ -158,6 +189,18 @@ impl MaterialExtension for EffectPalette {
 
     fn prepass_fragment_shader() -> ShaderRef {
         "embedded://engine/shaders/effect_palette_prepass.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if key.bind_group_data.raw_colour_texels {
+            crate::raw_texel::specialize_raw_colour_texels(descriptor);
+        }
+        Ok(())
     }
 }
 
@@ -231,11 +274,18 @@ fn effect_palette_material(
     lookup: PaletteLookup,
     base: StandardMaterial,
     palette: Handle<Image>,
+    raw_colour_texels: bool,
 ) -> EffectPaletteMaterial {
     let scale = base_color_scale(&base);
     EffectPaletteMaterial {
         base,
-        extension: EffectPalette::new(palette, lookup.color, lookup.alpha, scale),
+        extension: EffectPalette::new(
+            palette,
+            lookup.color,
+            lookup.alpha,
+            scale,
+            raw_colour_texels,
+        ),
     }
 }
 
@@ -255,6 +305,9 @@ struct NativeMaterialHandler {
     /// Materials given a `"{label}/skin"` [`SkyrimSkinMaterial`], or with a depth state a
     /// `"{label}/skin-depth"` [`SkyrimSkinDepthMaterial`].
     skin_labels: HashSet<String>,
+    /// The profile reads colour textures as authored bytes, so the materials built here must tell
+    /// their shaders not to undo an sRGB decode that never happened.
+    raw_colour_texels: bool,
 }
 
 impl NativeMaterialHandler {
@@ -318,6 +371,7 @@ impl NativeMaterialHandler {
             // QNAM enables SKIN_TINT; actor_skin_tone derives that material per actor.
             None,
             shader_flags_1,
+            self.raw_colour_texels,
         );
         let Ok(_) = context.labeled_asset_scope(format!("{label}/skin"), |scope| {
             material.extension.images = Some(scope.get_label_handle::<SkyrimSkinImages>(holder));
@@ -510,7 +564,8 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                     },
                 );
                 let depth = native_depth_state(source, material.alpha_mode);
-                let material = effect_palette_material(lookup, material, image);
+                let material =
+                    effect_palette_material(lookup, material, image, self.raw_colour_texels);
                 if let Some(state) = depth {
                     self.depth_states.insert(label.to_owned(), state);
                     let depth_material = depth_material(material.clone(), state);
@@ -536,7 +591,10 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         self.skin_labels.insert(label.to_owned());
                         context.add_labeled_asset(
                             format!("{label}/skin-depth"),
-                            depth_material(hair_material(material.clone(), tint), state),
+                            depth_material(
+                                hair_material(material.clone(), tint, self.raw_colour_texels),
+                                state,
+                            ),
                         );
                     } else {
                         // A model-space surface among these keeps the vertex-normal shading of
@@ -551,7 +609,7 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                     self.skin_labels.insert(label.to_owned());
                     context.add_labeled_asset(
                         format!("{label}/skin"),
-                        hair_material(material.clone(), tint),
+                        hair_material(material.clone(), tint, self.raw_colour_texels),
                     );
                 } else if has_model_space_normals(source)
                     && let Some(model_space_normal) = model_space_normal
@@ -672,6 +730,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_colour_texels_reaches_the_palette_pipeline() {
+        let raw = EffectPalette::new(Handle::default(), true, true, 1.0, true);
+        assert!(EffectPaletteKey::from(&raw).raw_colour_texels);
+        let decoded = EffectPalette::new(Handle::default(), true, true, 1.0, false);
+        assert!(!EffectPaletteKey::from(&decoded).raw_colour_texels);
+    }
+
+    #[test]
     fn nif_plugin_registers_palette_asset_types_without_a_renderer() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -722,6 +788,7 @@ mod tests {
                 },
                 StandardMaterial::default(),
                 Handle::default(),
+                false,
             ));
         let palette_asset = app
             .world()
@@ -780,6 +847,7 @@ mod tests {
             },
             StandardMaterial::default(),
             Handle::default(),
+            false,
         );
         let material = app
             .world_mut()
@@ -831,6 +899,7 @@ mod tests {
             },
             StandardMaterial::default(),
             Handle::default(),
+            false,
         );
         let image = app
             .world_mut()
@@ -1155,7 +1224,7 @@ mod tests {
             ..default()
         };
         let wrapped = depth_material(
-            effect_palette_material(lookup, base, palette.clone()),
+            effect_palette_material(lookup, base, palette.clone(), false),
             state,
         );
         assert_eq!(wrapped.extension.state, state);
@@ -1177,7 +1246,7 @@ mod tests {
             .register_type::<NotShadowCaster>();
         let palette = EffectPaletteMaterial {
             base: StandardMaterial::default(),
-            extension: EffectPalette::new(Handle::default(), true, true, 1.0),
+            extension: EffectPalette::new(Handle::default(), true, true, 1.0, false),
         };
         let state = NifDepthState::from_flags(DEPTH_TEST | DECAL, 0, AlphaMode::Opaque).unwrap();
         let wrapped = app

@@ -16,6 +16,7 @@ pub mod doors;
 pub mod emittance;
 pub mod fingerprint;
 pub mod frame_budget;
+pub mod hdr_probe;
 pub mod indirect_metrics;
 pub mod lights;
 mod live_console;
@@ -29,6 +30,7 @@ pub mod papyrus_runtime;
 pub mod physics;
 pub mod prepass_vertex_alpha;
 pub mod profiling;
+pub mod raw_texel;
 pub mod render;
 pub mod render_timing;
 mod renderer_init;
@@ -48,8 +50,11 @@ mod streaming_trace;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
+#[cfg(test)]
+mod test_support;
 pub mod tone_mapping;
 pub mod visibility_optimization;
+pub mod visual_profile;
 pub mod world;
 
 pub use app::run;

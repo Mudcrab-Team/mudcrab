@@ -130,6 +130,9 @@ jobs:
       - name: Verify LOD acceptance summary checks
         run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
 
+      - name: Verify stage receipt comparison
+        run: python3 -m unittest discover -s scripts/tests -p test_compare_stage_receipts.py -v
+
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v
 

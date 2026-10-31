@@ -1409,9 +1409,9 @@ mod tests {
             },
         );
         let mut aliases = Vec::new();
-        for mode in 0..3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+        for sampler in shared::texture_aliases::WRAP_TEXTURE_SUFFIXES {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 fs::write(source.join(&alias), b"verified texture").unwrap();
                 aliases.push(alias);
             }

@@ -336,6 +336,24 @@ fn actual_palette_shaders_compose_with_shadow_discard_enabled_and_disabled() {
             .iter()
             .any(|name| name.contains("effect_color"))
     );
+
+    compose(
+        MAIN,
+        "effect_palette.wgsl",
+        &["VERTEX_UVS_A", "VERTEX_COLORS", "RAW_COLOUR_TEXELS"],
+    )
+    .unwrap_or_else(|error| panic!("raw-texel forward composition failed:\n{error}"));
+    compose(
+        PREPASS,
+        "effect_palette_prepass.wgsl",
+        &[
+            "MAY_DISCARD",
+            "VERTEX_UVS_A",
+            "VERTEX_COLORS",
+            "RAW_COLOUR_TEXELS",
+        ],
+    )
+    .unwrap_or_else(|error| panic!("raw-texel prepass composition failed:\n{error}"));
 }
 
 #[test]

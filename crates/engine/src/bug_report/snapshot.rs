@@ -426,6 +426,7 @@ fn configured_rendering(config: Option<&EngineConfig>) -> Value {
         return json!({"value": null, "unavailable": {"value": "EngineConfig absent"}});
     };
     let mut configured = Section::default();
+    configured.text("visual_profile", config.visual_profile.name());
     configured.set("lighting", config.lights);
     configured.set(
         "diagnostic_asset_fallbacks",

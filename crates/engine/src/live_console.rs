@@ -157,6 +157,9 @@ fn prepare_scene_shot(
 fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::Value {
     let mode = *world.resource::<SceneGradeMode>();
     let preset = *world.resource::<SceneVisualPreset>();
+    let profile = world
+        .get_resource::<crate::visual_profile::VisualProfile>()
+        .map(|profile| profile.name());
     let streaming = world.get_resource::<StreamingMetrics>();
     let pending_terrain = world
         .get_resource::<TerrainMeshUploadReadiness>()
@@ -214,7 +217,7 @@ fn scene_state(world: &World, baseline: crate::shots::Failures) -> serde_json::V
         .expect("validated scene grade source");
     let grade = resolved.grade;
     serde_json::json!({
-        "ready": ready, "grade": mode.name(), "preset": preset.name(),
+        "ready": ready, "visual_profile": profile, "grade": mode.name(), "preset": preset.name(),
         "saturation": grade.saturation, "brightness": grade.brightness, "contrast": grade.contrast,
         "tint_amount": grade.tint_amount, "tint_rgb": grade.tint_rgb,
         "tone_map": tone.mode.name(),
@@ -289,6 +292,7 @@ mod tests {
             },
             terrain_coverage: default(),
             terrain_gauges: default(),
+            visual_profile: Some(crate::visual_profile::VisualProfile::Mudcrab),
             grading: Some(CaptureGrade {
                 color_grade: "snapshot-srgb".into(),
                 visual_preset: "cool-gray".into(),
