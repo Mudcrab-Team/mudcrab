@@ -58,6 +58,8 @@ class RunnerEvidenceTests(unittest.TestCase):
             calls = {'xprop': 0, 'search': 0}
 
             def fake_run(*command, env=None, check=True):
+                # Compare basenames: Path() renders with backslashes on Windows.
+                executable = Path(command[0]).name
                 if command[:3] == ('systemctl', '--user', 'start') and command[-1] == runner.DISPLAY_SERVICE:
                     display_file.write_text('DISPLAY=:99\nINVOCATION_ID=current\n')
                     return subprocess.CompletedProcess(command, 0, '', '')
@@ -65,16 +67,16 @@ class RunnerEvidenceTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, 'current\n', '')
                 if command[:3] == ('systemctl', '--user', 'is-active'):
                     return subprocess.CompletedProcess(command, 0, 'active\n', '')
-                if command[0].endswith('/xdotool') and command[1] == 'search':
+                if executable == 'xdotool' and command[1] == 'search':
                     calls['search'] += 1
                     if calls['search'] <= 2:
                         self.assertEqual(calls['xprop'], 0)
                         return subprocess.CompletedProcess(command, 0,
                                                            '' if calls['search'] == 1 else '  \n', '')
                     return subprocess.CompletedProcess(command, 0, '99\n100\n', '')
-                if command[0].endswith('/tesseract'):
+                if executable == 'tesseract':
                     return subprocess.CompletedProcess(command, 0, '', '')
-                if command[0].endswith('/xprop'):
+                if executable == 'xprop':
                     calls['xprop'] += 1
                     if calls['xprop'] == 1:
                         source.write_bytes(png)
