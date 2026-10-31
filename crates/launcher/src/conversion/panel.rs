@@ -121,6 +121,9 @@ pub struct DataPathText;
 #[derive(Component, Default, Clone)]
 pub struct OutputPathText;
 
+#[derive(Component, Default, Clone)]
+pub struct OutputLocationsText;
+
 /// The fill inside the progress bar's track.
 #[derive(Component, Default, Clone)]
 pub struct BarFill;
@@ -181,6 +184,7 @@ pub fn conversion_panel() -> impl Scene {
             crate::mo2_settings::source_row(),
             ui_data_row(),
             ui_output_row(),
+            ui_output_locations(),
             ui_progress_row(),
             ui_stage_line(),
             ui_clock_line(),
@@ -240,21 +244,31 @@ fn ui_output_row() -> impl Scene {
             column_gap: Val::Px(10.0),
         }
         Children [
-            row_label("Output"),
+            row_label("Mudcrab data"),
             (
                 OutputPathText
-                Text::new("modern_assets")
+                Text::new(".")
                 TextFont { font_size: FontSize::Px(14.0) }
                 TextColor(TEXT_COLOR)
                 Node { flex_grow: 1.0 }
             ),
             (
-                Text::new("(drop a folder)")
+                Text::new("(drop parent)")
                 TextFont { font_size: FontSize::Px(13.0) }
                 TextColor(LABEL_COLOR)
                 Node { width: Val::Px(90.0) }
             )
         ]
+    }
+}
+
+fn ui_output_locations() -> impl Scene {
+    bsn! {
+        OutputLocationsText
+        Text::new("")
+        TextFont { font_size: FontSize::Px(12.0) }
+        TextColor(LABEL_COLOR)
+        Node { flex_shrink: 0.0 }
     }
 }
 
@@ -474,7 +488,7 @@ pub fn click_controls(
                     Err(reason) => status.push_notice(&reason),
                 },
                 None => status.push_notice(
-                    "Choose a Skyrim Data folder (one holding Skyrim.esm) and an output folder first.",
+                    "Choose a Skyrim Data folder (one holding Skyrim.esm) and a Mudcrab data parent folder first.",
                 ),
             },
             ControlButton::Stop => inputs.push(Input::Stop),
@@ -499,7 +513,8 @@ pub fn click_controls(
 }
 
 /// A dropped folder fills a path row: a Skyrim `Data` folder (or an installation root) becomes the
-/// Data folder, and any other folder becomes the output. Dropping is the only way to choose a
+/// Data folder, and any other folder becomes the data parent (or an existing package, recognized
+/// by its manifest or resumable staging beside it). Dropping is the only way to choose a
 /// folder, so nothing new has to be learned from a file dialog. Dropped files belong to the mod
 /// manager ([`handlers::handle_mod_drag_and_drop`]); a file that is not a mod is refused here.
 pub fn accept_dropped_folder(
@@ -541,10 +556,12 @@ pub fn accept_dropped_folder(
             paths.skyrim_data_path = Some(data);
         } else {
             // Publishing replaces the Output folder, so a folder of other things is never taken.
-            match output_is_safe_target(path_buf) {
+            match paths.choose_data_folder(path_buf) {
                 Ok(()) => {
-                    status.push_notice(&format!("Output folder: {}", path_buf.display()));
-                    paths.converted_assets_path = path_buf.clone();
+                    status.push_notice(&format!(
+                        "Mudcrab data folder: {}",
+                        paths.data_folder_label()
+                    ));
                 }
                 Err(reason) => status.push_notice(&reason),
             }
@@ -557,6 +574,7 @@ type PathTexts = (
     Query<'static, 'static, &'static mut Text, With<DataPathText>>,
     Query<'static, 'static, &'static mut Text, With<OutputPathText>>,
     Query<'static, 'static, &'static mut Text, With<DataPathLabel>>,
+    Query<'static, 'static, &'static mut Text, With<OutputLocationsText>>,
 );
 
 /// The status lines' texts; see `draw_labels`.
@@ -588,7 +606,7 @@ pub fn draw_paths(
         };
     }
     for mut text in &mut texts.p1() {
-        text.0 = paths.output_label();
+        text.0 = paths.data_folder_label();
     }
     for mut text in &mut texts.p2() {
         text.0 = if mo2.is_some() {
@@ -597,6 +615,9 @@ pub fn draw_paths(
             "Skyrim Data"
         }
         .into();
+    }
+    for mut text in &mut texts.p3() {
+        text.0 = paths.locations_label();
     }
 }
 
@@ -990,6 +1011,7 @@ mod tests {
         // Every line and row the drawing systems update is on exactly one entity.
         assert_eq!(count::<DataPathText>(world), 1);
         assert_eq!(count::<OutputPathText>(world), 1);
+        assert_eq!(count::<OutputLocationsText>(world), 1);
         assert_eq!(count::<BarFill>(world), 1);
         assert_eq!(count::<OverallText>(world), 1);
         assert_eq!(count::<StageText>(world), 1);
@@ -1033,7 +1055,8 @@ mod tests {
         let paths = app.world().resource::<GamePathConfig>().clone();
         assert_eq!(paths.skyrim_data_path, Some(data.clone()));
         assert_eq!(
-            paths.converted_assets_path, output,
+            paths.converted_assets_path,
+            output.join("assets"),
             "a mod file is not an output"
         );
 
@@ -1046,7 +1069,7 @@ mod tests {
             app.world()
                 .resource::<GamePathConfig>()
                 .converted_assets_path,
-            output
+            output.join("assets")
         );
         assert!(
             app.world()
@@ -1091,14 +1114,14 @@ mod tests {
         app.world().resource::<ConversionStatus>().notice_text()
     }
 
-    /// A folder that holds other things (a games folder, Documents) is never taken as the Output:
-    /// publishing would rename it aside and delete it.
+    /// A parent whose package child holds other things is refused: publishing would replace them.
     #[test]
-    fn a_dropped_folder_of_other_things_is_not_taken_as_the_output() {
+    fn a_dropped_parent_with_an_unsafe_package_child_is_refused() {
         let data = data_folder("unsafe-drop-data");
         let games = temp_dir("unsafe-drop-games");
-        std::fs::create_dir_all(games.join("SomeGame")).unwrap();
-        std::fs::write(games.join("save.dat"), b"precious").unwrap();
+        let child = games.join("assets");
+        std::fs::create_dir_all(child.join("SomeGame")).unwrap();
+        std::fs::write(child.join("save.dat"), b"precious").unwrap();
         let before = PathBuf::from("modern_assets");
         let mut app = input_app(GamePathConfig {
             skyrim_data_path: Some(data.clone()),
@@ -1121,16 +1144,131 @@ mod tests {
         assert!(
             notices(&app).contains(&format!(
                 "{} is not empty and is not a Mudcrab conversion; choose an empty or new folder.",
-                games.display()
+                child.display()
             )),
             "{}",
             notices(&app)
         );
-        assert!(games.join("save.dat").is_file(), "nothing was touched");
+        assert!(child.join("save.dat").is_file(), "nothing was touched");
 
         for dir in [data, games] {
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn parent_selection_reaches_start_and_resume_without_replacing_the_parent() {
+        for resume in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let parent = root.path().join("Mudcrab data");
+            let output = parent.join("assets");
+            let staging = parent.join("assets.staging-1-1");
+            let cache = parent.join("assets.assets-cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(parent.join("keep.txt"), b"parent contents").unwrap();
+            if resume {
+                std::fs::create_dir(&staging).unwrap();
+            }
+            let data = data_folder("parent-start-resume");
+            let mut app = input_app(GamePathConfig {
+                skyrim_data_path: Some(data.clone()),
+                ..default()
+            });
+            app.init_resource::<OutputReady>().add_systems(
+                Update,
+                super::super::refresh_output_ready.after(super::super::process_inputs),
+            );
+            app.world_mut().write_message(FileDragAndDrop::DroppedFile {
+                window: Entity::PLACEHOLDER,
+                path_buf: parent.clone(),
+            });
+            app.update();
+            if resume {
+                assert!(matches!(
+                    &app.world().resource::<CurrentConversion>().0,
+                    state::ConversionState::Stopped { staging: Some(found), .. } if found == &staging
+                ));
+            } else {
+                assert_eq!(
+                    app.world().resource::<CurrentConversion>().0,
+                    state::ConversionState::Idle,
+                    "the cache alone is not resumable staging"
+                );
+            }
+            let effects = press(
+                &mut app,
+                if resume {
+                    ControlButton::Resume
+                } else {
+                    ControlButton::Start
+                },
+            );
+            let [state::Effect::Begin(config)] = effects.as_slice() else {
+                panic!("unexpected effects: {effects:?}");
+            };
+            assert_eq!(config.output_dir, output);
+            assert_eq!(config.ingestion_cache_dir(), cache);
+            assert_eq!(config.resume_staging, resume.then_some(staging));
+            assert_eq!(
+                std::fs::read(parent.join("keep.txt")).unwrap(),
+                b"parent contents"
+            );
+            assert!(
+                !output.exists(),
+                "selection and input handling do not convert"
+            );
+            std::fs::remove_dir_all(data).unwrap();
+        }
+    }
+
+    #[test]
+    fn dropping_an_existing_package_preserves_its_exact_path() {
+        let root = tempfile::tempdir().unwrap();
+        let package = root.path().join("Skyrim.Converted");
+        std::fs::create_dir(&package).unwrap();
+        std::fs::write(package.join(MANIFEST_FILE), b"{}").unwrap();
+        let mut app = input_app(GamePathConfig::default());
+        app.world_mut().write_message(FileDragAndDrop::DroppedFile {
+            window: Entity::PLACEHOLDER,
+            path_buf: package.clone(),
+        });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<GamePathConfig>()
+                .converted_assets_path,
+            package
+        );
+        assert!(!package.join("assets").exists());
+    }
+
+    #[test]
+    fn dropping_an_unfinished_legacy_output_finds_its_original_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("Skyrim.Converted");
+        let staging = root.path().join("Skyrim.Converted.staging-1-1");
+        std::fs::create_dir(&output).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        let mut app = input_app(GamePathConfig::default());
+        app.init_resource::<OutputReady>().add_systems(
+            Update,
+            super::super::refresh_output_ready.after(super::super::process_inputs),
+        );
+        app.world_mut().write_message(FileDragAndDrop::DroppedFile {
+            window: Entity::PLACEHOLDER,
+            path_buf: output.clone(),
+        });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<GamePathConfig>()
+                .converted_assets_path,
+            output
+        );
+        assert!(matches!(
+            &app.world().resource::<CurrentConversion>().0,
+            state::ConversionState::Stopped { staging: Some(found), .. } if found == &staging
+        ));
     }
 
     /// The states Start, Start over and Resume are pressed in by the tests below.
