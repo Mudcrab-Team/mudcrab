@@ -182,6 +182,133 @@ fn word(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes[..4].try_into().unwrap())
 }
 
+/// Legacy flags must survive typed/runtime publication even in a localized plugin with no bank.
+#[test]
+fn r10_sndr_fnam_flags_publish_without_localization() {
+    let mut fixture = Fixture::new();
+    let flags = [0x11u32, 0x12, 0x8000_0014];
+    let mut body = Vec::new();
+    for (index, bits) in flags.into_iter().enumerate() {
+        let mut bytes = native_record(
+            b"SNDR",
+            0x900 + index as u32,
+            0,
+            &sub(b"FNAM", &bits.to_le_bytes()),
+        );
+        bytes[20..22].copy_from_slice(&34u16.to_le_bytes());
+        body.extend(bytes);
+    }
+    fixture.add("Flags.esm", &[], 0x81, &body);
+    let order = LoadOrder::read(&fixture.paths).unwrap();
+    let result = records::read_plugins(&fixture.paths, &order).unwrap();
+    assert_eq!(result.diagnostics["flags.esm"].skipped_fields, 0);
+    for (index, bits) in flags.into_iter().enumerate() {
+        let decoded = &result.records[&(0x900 + index as u32)];
+        let value = field(decoded, b"FNAM");
+        assert_eq!(value.name, "legacy_flags");
+        assert_eq!(value.value, records::Value::Unsigned(u64::from(bits)));
+        assert_eq!(value.canonical_bytes, bits.to_le_bytes());
+        assert!(value.localized_bank.is_none());
+        assert_eq!(decoded.raw_payload, sub(b"FNAM", &bits.to_le_bytes()));
+    }
+    let (_, db, output) = fixture.publish(None, &[*b"SNDR"]);
+    let localized: u32 = db
+        .query_row("SELECT count(*) FROM inhouse_localized_fields", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(localized, 0);
+    let typed = fs::read_to_string(output.join("typed-records.jsonl")).unwrap();
+    let rows: Vec<Json> = typed
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for (index, bits) in flags.into_iter().enumerate() {
+        let id = 0x900 + index as u32;
+        let runtime = canonical(&db, id);
+        assert_eq!(runtime.subrecords[0].tag, *b"FNAM");
+        assert_eq!(runtime.subrecords[0].data, bits.to_le_bytes());
+        let row = rows.iter().find(|row| row["form_id"] == id).unwrap();
+        assert_eq!(row["fields"][0]["value"]["Unsigned"], bits);
+        assert_eq!(row["localization"], serde_json::json!({}));
+    }
+}
+
+/// Unrestricted still means a live link: retain REFR remapping and diagnose missing targets.
+#[test]
+fn r10_navm_onam_reference_remaps_and_preserves_source() {
+    let mut fixture = Fixture::new();
+    fixture.add("Base.esm", &[], 1, &[]);
+    fixture.add("Gap.esm", &[], 1, &[]);
+    let source_link = 0x0100_0920u32;
+    let payload = sub(b"ONAM", &source_link.to_le_bytes());
+    let mut body = native_record(b"REFR", source_link, 0, &sub(b"EDID", b"LiveReference\0"));
+    body.extend(native_record(b"NAVM", 0x0100_0930, 0, &payload));
+    body.extend(native_record(
+        b"NAVM",
+        0x0100_0931,
+        0,
+        &sub(b"ONAM", &0x0100_0999u32.to_le_bytes()),
+    ));
+    fixture.add("Navigation.esp", &["Base.esm"], 0, &body);
+    let result =
+        records::read_plugins(&fixture.paths, &LoadOrder::read(&fixture.paths).unwrap()).unwrap();
+    let decoded = &result.records[&0x0200_0930];
+    let onam = field(decoded, b"ONAM");
+    assert_eq!(
+        onam.value.array_element(0),
+        Some(records::Value::FormId(0x0200_0920))
+    );
+    assert_eq!(onam.canonical_bytes, 0x0200_0920u32.to_le_bytes());
+    assert_eq!(decoded.raw_payload, payload);
+    assert_eq!(
+        field(&result.records[&0x0200_0931], b"ONAM").canonical_bytes,
+        [0; 4]
+    );
+    assert_eq!(result.diagnostics["navigation.esp"].invalid_links, 1);
+    let (_, db, _) = fixture.publish(None, &[*b"NAVM"]);
+    let runtime = canonical(&db, 0x0200_0930);
+    assert_eq!(runtime.subrecords[0].tag, *b"ONAM");
+    assert_eq!(runtime.subrecords[0].data, 0x0200_0920u32.to_le_bytes());
+    let source: Vec<u8> = db
+        .query_row(
+            "SELECT payload FROM inhouse_source_records WHERE form_id=?1",
+            [0x0200_0930],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, payload);
+}
+
+/// Correct primitive/target contracts do not accept malformed widths or invalid master indices.
+#[test]
+fn r10_malformed_flags_and_onam_still_diagnose() {
+    let mut fixture = Fixture::new();
+    let body = [
+        native_record(b"SNDR", 0x900, 0, &sub(b"FNAM", &[0x11, 0, 0])),
+        native_record(b"NAVM", 0x901, 0, &sub(b"ONAM", &[0x11, 0, 0])),
+        native_record(
+            b"NAVM",
+            0x902,
+            0,
+            &sub(b"ONAM", &0x0500_0920u32.to_le_bytes()),
+        ),
+    ]
+    .concat();
+    fixture.add("Malformed.esm", &[], 1, &body);
+    let result =
+        records::read_plugins(&fixture.paths, &LoadOrder::read(&fixture.paths).unwrap()).unwrap();
+    let diagnostics = &result.diagnostics["malformed.esm"];
+    assert_eq!(diagnostics.skipped_fields, 2);
+    assert!(diagnostics.invalid_links >= 1);
+    assert_eq!(result.records[&0x900].rejected_fields, [*b"FNAM"]);
+    assert_eq!(result.records[&0x901].rejected_fields, [*b"ONAM"]);
+    assert_eq!(
+        field(&result.records[&0x902], b"ONAM").canonical_bytes,
+        [0; 4]
+    );
+}
+
 /// Keep a missing base, missing/wrong-kind overlays and native null distinct before target clearing.
 fn invariant_fixture(speed_count: usize) -> Fixture {
     let mut fixture = Fixture::new();

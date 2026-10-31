@@ -117,6 +117,12 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let mut preferences = config
         .interactive_world_physics()
         .then(|| crate::settings::prepare_settings(&mut config));
+    // A saved profile can disagree with an explicit launch option the parser already accepted.
+    config.check_visual_profile()?;
+    info!(
+        profile = config.visual_profile.name(),
+        "visual profile active; changing it requires a restart"
+    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
@@ -317,7 +323,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
-    app.insert_resource(config.color_grade)
+    app.insert_resource(config.visual_profile)
+        .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
         .insert_resource(sky_palette)
         .insert_resource(grade_source)
@@ -4967,6 +4974,7 @@ mod tests {
             hfov: 60.0,
             reference: None,
             note: None,
+            probes: Vec::new(),
         };
 
         assert_eq!(

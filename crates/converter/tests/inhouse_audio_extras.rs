@@ -105,6 +105,7 @@ fn all_audio_misc_types_preserve_packed_layouts_and_nonidentity_links() {
         &Value::FormId(0x0200_5901)
     );
     let descriptor = &result.records[&0x0200_5901];
+    assert_eq!(named(descriptor, "legacy_flags"), &Value::Unsigned(0x11));
     assert_eq!(named(descriptor, "category"), &Value::FormId(0x0200_5903));
     assert_eq!(
         named(descriptor, "output_model"),

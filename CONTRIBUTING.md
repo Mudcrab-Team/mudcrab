@@ -17,7 +17,7 @@ Here are some areas where you can make an immediate impact:
 1. **Asset Converters (`crates/converter`)**
    - `.nif` parser improvements and glTF 2.0 export optimization (`mesh-tools`).
    - `.dds` to KTX2 / Basis Universal texture compression pipeline (`ddsfile`, `basis-universal`).
-   - `.esm` binary parsing into libSQL / SQLite database structures (`nom`, `rkyv`).
+   - `.esm` binary parsing into SQLite database structures (`nom`, `rusqlite`, `rkyv`).
    - Papyrus (`.pex`) decompilation and transpilation to Luau (`mlua`).
 
 2. **Engine Subsystems (`crates/engine`)**
@@ -41,7 +41,8 @@ Here are some areas where you can make an immediate impact:
 Ensure you have the following installed:
 * **Rust** (2024 Edition)
 * **Git**
-* **CMake** & **Ninja** / **GCC** (required for compiling native `libSQL` / `sqlite3` dependencies)
+* **A C and C++ compiler** for the bundled SQLite, Luau and Basis Universal sources: Visual Studio
+  Build Tools on Windows, Xcode Command Line Tools on macOS, GCC or Clang on Linux
 
 ### 2. Fork and Clone
 Fork [Mudcrab-Team/mudcrab](https://github.com/Mudcrab-Team/mudcrab) on GitHub, then clone

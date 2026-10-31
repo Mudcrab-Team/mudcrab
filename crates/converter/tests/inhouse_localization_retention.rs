@@ -78,12 +78,12 @@ fn write_strings(data: &Path, plugin: &str, bank: &str, bytes: &[u8]) {
     fs::write(folder.join(format!("{stem}_english.{bank}")), bytes).unwrap();
 }
 
-/// One independently framed subtitle with an unrelated editor ID preceding it.
-fn sound(id: u32, string_id: u32) -> Vec<u8> {
+/// One independently framed message name with an unrelated editor ID preceding it.
+fn message(id: u32, string_id: u32) -> Vec<u8> {
     native::named(
-        b"SNDR",
+        b"MESG",
         id,
-        &[native::subrecord(b"FNAM", &string_id.to_le_bytes())],
+        &[native::subrecord(b"FULL", &string_id.to_le_bytes())],
     )
 }
 
@@ -178,7 +178,7 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
     let ids = [17, 0, 18, 100, 101, 42, 100];
     let mut records = Vec::new();
     for (index, string_id) in ids.into_iter().enumerate() {
-        records.extend(sound(
+        records.extend(message(
             0x0100_3500 + u32::try_from(index).unwrap(),
             string_id,
         ));
@@ -222,7 +222,7 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
     let plugins = temp.path().join("plugins.txt");
     fs::write(&plugins, "*Skyrim.esm\n*LocalizedFields.esp\n").unwrap();
     let output = temp.path().join("bundle");
-    inhouse::export_record_bundle_typed(&data, &plugins, &output, &[*b"SNDR", *b"INFO"]).unwrap();
+    inhouse::export_record_bundle_typed(&data, &plugins, &output, &[*b"MESG", *b"INFO"]).unwrap();
     let database = Connection::open(output.join("skyrim_world.db")).unwrap();
     for (index, string_id) in ids.into_iter().enumerate() {
         let rid = 0x0100_3500 + u32::try_from(index).unwrap();
@@ -239,14 +239,14 @@ fn localized_fields_preserve_zero_missing_resolved_and_repeated_keys() {
             "missing"
         };
         let runtime = [text.unwrap_or_default().as_bytes(), &[0]].concat();
-        assert_eq!(runtime_fields(&database, rid, b"FNAM"), [runtime]);
+        assert_eq!(runtime_fields(&database, rid, b"FULL"), [runtime]);
         assert_eq!(
             localized(&database, rid),
             [expected(
-                1, "FNAM", "subtitle", "strings", string_id, text, status
+                1, "FULL", "name", "strings", string_id, text, status
             )]
         );
-        let framed = sound(rid, string_id);
+        let framed = message(rid, string_id);
         assert_eq!(source(&database, rid), (rid, 1, framed[24..].to_vec()));
     }
     assert_eq!(
@@ -345,7 +345,12 @@ fn english_text_encoding_is_explicit_and_distinct_from_vmad() {
     .unwrap();
     fs::write(
         data.join("BankEncoding.esp"),
-        native::plugin(&generated, &["Skyrim.esm"], 0x80, &sound(0x0100_3F02, 100)),
+        native::plugin(
+            &generated,
+            &["Skyrim.esm"],
+            0x80,
+            &message(0x0100_3F02, 100),
+        ),
     )
     .unwrap();
     let bank = [
@@ -372,7 +377,7 @@ fn english_text_encoding_is_explicit_and_distinct_from_vmad() {
         vec![[expected.as_bytes(), &[0]].concat()]
     );
     assert_eq!(
-        runtime_fields(&db, 0x0200_3F02, b"FNAM"),
+        runtime_fields(&db, 0x0200_3F02, b"FULL"),
         vec![[expected.as_bytes(), &[0]].concat()]
     );
     let resolved: String = db
@@ -426,7 +431,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
     )
     .unwrap();
     let generated = fs::read(data.join("Skyrim.esm")).unwrap();
-    let earlier = [sound(0x0100_3500, 100), sound(0x0100_3501, 100)].concat();
+    let earlier = [message(0x0100_3500, 100), message(0x0100_3501, 100)].concat();
     fs::write(
         data.join("EarlierFull.esm"),
         native::plugin(&generated, &["Skyrim.esm"], 0x81, &earlier),
@@ -443,14 +448,14 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
             &generated,
             &["Skyrim.esm"],
             0x280,
-            &[sound(0x0100_0ABA, 100), sound(0x0100_0ABB, 0)].concat(),
+            &[message(0x0100_0ABA, 100), message(0x0100_0ABB, 0)].concat(),
         ),
     )
     .unwrap();
     let mut winning = [
-        sound(0x0100_3500, 17),
-        sound(0x0200_0ABA, 18),
-        sound(0x0300_3501, 100),
+        message(0x0100_3500, 17),
+        message(0x0200_0ABA, 18),
+        message(0x0300_3501, 100),
         native::record(
             b"CELL",
             0x0300_3510,
@@ -464,7 +469,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
     ]
     .concat();
     for index in 0..128 {
-        winning.extend(sound(0x0300_3600 + index, 17));
+        winning.extend(message(0x0300_3600 + index, 17));
     }
     fs::write(
         data.join("WinnerFull.esp"),
@@ -476,7 +481,7 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
         ),
     )
     .unwrap();
-    let second_light = [sound(0x0100_3500, 17), sound(0x0400_0ABA, 100)].concat();
+    let second_light = [message(0x0100_3500, 17), message(0x0400_0ABA, 100)].concat();
     fs::write(
         data.join("SecondLight.esl"),
         native::plugin(
@@ -592,16 +597,14 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
         ),
     ] {
         assert_eq!(
-            runtime_fields(&database, rid, b"FNAM"),
+            runtime_fields(&database, rid, b"FULL"),
             [[text.unwrap_or_default().as_bytes(), &[0]].concat()]
         );
         assert_eq!(
             localized(&database, rid),
-            [expected(
-                1, "FNAM", "subtitle", "strings", key, text, status
-            )]
+            [expected(1, "FULL", "name", "strings", key, text, status)]
         );
-        let framed = sound(raw, key);
+        let framed = message(raw, key);
         assert_eq!(
             source(&database, rid),
             (raw, priority, framed[24..].to_vec())
@@ -609,12 +612,10 @@ async fn winning_full_and_light_banks_preserve_ids_and_bound_missing_text_notice
     }
     for index in 0..128 {
         let rid = 0x0300_3600 + index;
-        assert_eq!(runtime_fields(&database, rid, b"FNAM"), [b"\0".to_vec()]);
+        assert_eq!(runtime_fields(&database, rid, b"FULL"), [b"\0".to_vec()]);
         assert_eq!(
             localized(&database, rid),
-            [expected(
-                1, "FNAM", "subtitle", "strings", 17, None, "missing"
-            )]
+            [expected(1, "FULL", "name", "strings", 17, None, "missing")]
         );
     }
     // A retained empty wire field must still project an unresolved runtime name as SQL NULL.
@@ -737,7 +738,7 @@ fn moved_localized_projection_complete_public_bundle_and_work_copy_remain_exact(
     let ids = [100u32, 0, 17, 101];
     let mut body = Vec::new();
     for (index, string_id) in ids.into_iter().enumerate() {
-        body.extend(sound(0x0100_5500 + index as u32, string_id));
+        body.extend(message(0x0100_5500 + index as u32, string_id));
     }
     let native_plugin = native::plugin(&generated, &["Skyrim.esm"], 0x80, &body);
     fs::write(data.join("MoveFixture.esp"), &native_plugin).unwrap();
@@ -772,7 +773,7 @@ fn moved_localized_projection_complete_public_bundle_and_work_copy_remain_exact(
         .iter()
         .map(|record| record.signature.as_bytes().try_into().unwrap())
         .collect::<Vec<[u8; 4]>>();
-    assert!(signatures.contains(b"SNDR"));
+    assert!(signatures.contains(b"MESG"));
     let normal = root.join("default-output");
     let copied = root.join("copied-output");
     let work = root.join("fresh-database-work");
@@ -836,18 +837,18 @@ fn moved_localized_projection_complete_public_bundle_and_work_copy_remain_exact(
             "missing"
         };
         assert_eq!(
-            runtime_fields(&copied_db, rid, b"FNAM"),
+            runtime_fields(&copied_db, rid, b"FULL"),
             vec![runtime_string_for_move_test(text.unwrap_or_default())]
         );
         assert_eq!(
             localized(&copied_db, rid),
             vec![expected(
-                1, "FNAM", "subtitle", "strings", string_id, text, status
+                1, "FULL", "name", "strings", string_id, text, status
             )]
         );
         assert_eq!(
             source(&copied_db, rid),
-            (rid, 1, sound(rid, string_id)[24..].to_vec())
+            (rid, 1, message(rid, string_id)[24..].to_vec())
         );
         let typed = &copied_typed[&rid];
         assert_eq!(
@@ -862,7 +863,7 @@ fn moved_localized_projection_complete_public_bundle_and_work_copy_remain_exact(
         assert_eq!(typed["localization"]["1"]["text"], serde_json::json!(text));
         assert_eq!(
             typed["source_payload_sha256"],
-            format!("{:x}", Sha256::digest(&sound(rid, string_id)[24..]))
+            format!("{:x}", Sha256::digest(&message(rid, string_id)[24..]))
         );
     }
     for name in [
@@ -919,7 +920,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
     fs::write(data.join("Skyrim.esm"), &generated).unwrap();
     let mut body = Vec::new();
     for (id, key) in [(0x0100_5500, 100), (0x0100_5501, 0), (0x0100_5502, 17)] {
-        body.extend(sound(id, key));
+        body.extend(message(id, key));
     }
     let mut vmad = Vec::new();
     vmad.extend(5u16.to_le_bytes());
@@ -1033,6 +1034,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "room_links",
             "reference_rooms",
             "room_graph_stats",
+            "projection_omission_stats",
+            "projection_omission_samples",
             "cell_environment",
             "cell_regions",
             "cell_lighting",

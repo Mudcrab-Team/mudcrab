@@ -1,6 +1,6 @@
 #![allow(unused)]
-// This crate is vendored compatibility code. Keep workspace Clippy focused on
-// OpenSkyrim changes while upstream's legacy style is incrementally replaced.
+// This crate is Mudcrab's fork of project-wormhole-nif (see README.mudcrab.md). Keep
+// workspace Clippy focused on Mudcrab's own crates while upstream's style is replaced.
 #![allow(clippy::all)]
 pub mod export;
 pub mod legacy;
