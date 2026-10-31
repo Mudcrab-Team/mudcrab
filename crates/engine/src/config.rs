@@ -1686,6 +1686,9 @@ mod tests {
         "--workspace",           // cargo build, cargo test, cargo clippy
         "--ignore-submodules",   // git diff
         "--quiet",               // git diff
+        "--progress-bar",        // curl in install.sh
+        "--dest",                // stage-release.sh
+        "--target",              // stage-release.sh, cargo build
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py

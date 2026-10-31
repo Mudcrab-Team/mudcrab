@@ -9,9 +9,10 @@ env:
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
+    types: [ opened, synchronize, reopened ]
   workflow_dispatch:
 
 permissions:
@@ -378,7 +379,6 @@ jobs:
           # Fixture generation syncs every file. Keep runner disk-flush latency
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
-
   tests_pass:
     needs:
       - orchestrate
