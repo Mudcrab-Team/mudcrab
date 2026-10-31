@@ -16,6 +16,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use shared::collision::CollisionBody;
 use std::path::Path;
 
+#[cfg(test)]
+mod stair_tests;
+
 use crate::{
     console::{AppConsoleExt, ConsoleCommand, ConsoleState, console_closed},
     profiling::ProfilingState,
@@ -25,6 +28,7 @@ use crate::{
 
 /// Fixed physics step: 60 Hz Rapier simulation (V15, V18).
 pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
+const PLAYER_CONTROLLER_OFFSET: f32 = 2.0;
 const NPC_DEFAULT_MOVT_FORM_ID: u32 = 0x0003_580D;
 /// Shared downward gravity in Creation units/s^2 for WALK and tankards (V11, V15).
 pub const GRAVITY_CREATION_UNITS: f32 = 900.0;
@@ -1637,13 +1641,10 @@ pub fn player_controller_bundle(tuning: &MovementTuning) -> impl Bundle {
         player_collision_groups(),
         KinematicCharacterController {
             up: Vect::Y,
-            offset: CharacterLength::Absolute(2.0),
+            offset: CharacterLength::Absolute(PLAYER_CONTROLLER_OFFSET),
             slide: true,
-            autostep: Some(CharacterAutostep {
-                max_height: CharacterLength::Absolute(tuning.autostep_height),
-                min_width: CharacterLength::Absolute(tuning.capsule_radius),
-                include_dynamic_bodies: false,
-            }),
+            // WALK resolves steps with bounded capsule sweeps before SyncBackend.
+            autostep: None,
             max_slope_climb_angle: tuning.slope_climb_degrees.to_radians(),
             min_slope_slide_angle: tuning.slope_slide_degrees.to_radians(),
             // NOTE: upstream Rapier 0.35 manifold-transfer panic (see T4 gate
@@ -1705,7 +1706,11 @@ pub fn walk_movement_system(
     hold: Option<Res<WalkSpawnHold>>,
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
+    context: ReadRapierContext,
     mut player: Query<(
+        Entity,
+        &mut Transform,
+        &Collider,
         &mut KinematicCharacterController,
         &mut WalkState,
         Option<&KinematicCharacterControllerOutput>,
@@ -1714,9 +1719,11 @@ pub fn walk_movement_system(
     if *mode != MoveMode::Walk {
         return;
     }
-    let Ok((mut controller, mut state, output)) = player.single_mut() else {
+    let Ok((entity, mut body, capsule, mut controller, mut state, output)) = player.single_mut()
+    else {
         return;
     };
+    controller.custom_shape = None;
     if hold.as_ref().is_some_and(|hold| hold.active) {
         *state = WalkState::default();
         intent.jump_pressed = false;
@@ -1726,9 +1733,153 @@ pub fn walk_movement_system(
     let grounded = output.map(|o| o.grounded).unwrap_or(false);
     integrate_walk(&mut state, &intent, &tuning, PHYSICS_TIMESTEP, grounded);
     intent.jump_pressed = false;
-    let displacement =
+    let mut displacement =
         (state.horizontal_velocity + Vec3::Y * state.vertical_velocity) * PHYSICS_TIMESTEP;
+    if state.grounded
+        && !state.jump_active
+        && let Ok(context) = context.single()
+        && let Some(rise) = walk_step_rise(
+            &context,
+            entity,
+            &body,
+            capsule,
+            &controller,
+            &tuning,
+            displacement.reject_from_normalized(Vec3::Y),
+        )
+    {
+        // The upward sweep validated this segment. Rapier runs the controller
+        // before syncing transforms, so override this tick's query pose too.
+        // Do not subtract the lift from the horizontal tick: built-in autostep
+        // does so, undoing the step at narrow treads and coplanar landing joins.
+        body.translation.y += rise;
+        controller.custom_shape = Some((
+            capsule.clone(),
+            body.rotation.inverse() * (Vec3::Y * rise),
+            Quat::IDENTITY,
+        ));
+        state.grounded = false;
+        state.vertical_velocity = 0.0;
+        displacement.y = 0.0;
+    }
     controller.translation = Some(displacement);
+}
+
+/// Find a supported step without changing the requested horizontal distance.
+/// All casts use the full capsule and exclude dynamic bodies only for stepping.
+#[allow(clippy::too_many_arguments)]
+fn walk_step_rise(
+    context: &RapierContext,
+    entity: Entity,
+    body: &Transform,
+    capsule: &Collider,
+    controller: &KinematicCharacterController,
+    tuning: &MovementTuning,
+    horizontal: Vec3,
+) -> Option<f32> {
+    let distance = horizontal.length();
+    if distance <= f32::EPSILON {
+        return None;
+    }
+    let direction = horizontal / distance;
+    let filter = QueryFilter {
+        flags: QueryFilterFlags::EXCLUDE_SENSORS,
+        ..QueryFilter::default()
+            .groups(player_collision_groups())
+            .exclude_rigid_body(entity)
+    };
+    let static_filter = QueryFilter {
+        flags: filter.flags | QueryFilterFlags::EXCLUDE_DYNAMIC,
+        ..filter
+    };
+    let cast = |position, direction, distance, filter| {
+        context
+            .cast_shape(
+                position,
+                body.rotation,
+                direction,
+                &*capsule.raw,
+                ShapeCastOptions {
+                    target_distance: PLAYER_CONTROLLER_OFFSET,
+                    stop_at_penetration: false,
+                    max_time_of_impact: distance,
+                    compute_impact_geometry_on_penetration: true,
+                },
+                filter,
+            )
+            .map(|(_, hit)| hit)
+    };
+    let blocking_hit = cast(body.translation, direction, distance, static_filter)?;
+    let obstacle = blocking_hit.details?;
+    let walkable = controller.max_slope_climb_angle.cos();
+    if obstacle.normal1.y > walkable {
+        // A zero-distance floor hit can consume all 20 move-and-slide iterations
+        // while the default 1e-4 normal nudge cannot recover the lost skin gap.
+        // Repair only measured skin overlap, with an upward clearance sweep;
+        // ordinary slope contacts continue through Rapier without a step.
+        let capsule_point = body.translation + body.rotation * obstacle.witness2;
+        let gap = (capsule_point - obstacle.witness1).dot(obstacle.normal1);
+        if blocking_hit.time_of_impact > f32::EPSILON || gap >= PLAYER_CONTROLLER_OFFSET {
+            return None;
+        }
+        let lift = (PLAYER_CONTROLLER_OFFSET + 0.05 - gap) / obstacle.normal1.y;
+        return (lift > 0.0
+            && lift <= tuning.autostep_height
+            && cast(body.translation, Vec3::Y, lift, filter).is_none())
+        .then_some(lift);
+    }
+    if obstacle.normal1.y < 0.0 {
+        return None;
+    }
+    let approach = -direction.dot(obstacle.normal1.with_y(0.0).normalize_or_zero());
+    if approach <= f32::EPSILON {
+        return None;
+    }
+    // Advance far enough to probe a walkable capsule-edge contact, including an
+    // oblique approach. A radius-wide probe instead hits the next 24-unit riser.
+    let corner_advance = tuning.capsule_radius * (1.0 - controller.max_slope_climb_angle.sin());
+    let probe = (corner_advance / approach + PLAYER_CONTROLLER_OFFSET).max(distance);
+    if probe > tuning.capsule_radius + distance + PLAYER_CONTROLLER_OFFSET {
+        return None; // A glancing contact cannot borrow support beyond the capsule's reach.
+    }
+    let budget = tuning.autostep_height;
+    if cast(body.translation, Vec3::Y, budget, filter).is_some() {
+        return None;
+    }
+    let raised = body.translation + Vec3::Y * budget;
+    if cast(raised, direction, probe, filter).is_some() {
+        return None;
+    }
+    let landing = cast(
+        raised + direction * probe,
+        Vec3::NEG_Y,
+        budget,
+        static_filter,
+    )?
+    .details?;
+    if landing.normal1.y < walkable {
+        return None;
+    }
+    // Use the obstacle surface height, not the rounded capsule's hypothetical
+    // position at the lookahead point. Rapier 0.35 predicts ground at offset+0.05;
+    // that same slop keeps a new landing outside numerical skin penetration.
+    let rise = landing.witness1.y + tuning.capsule_standing_height * 0.5 + PLAYER_CONTROLLER_OFFSET
+        - body.translation.y;
+    if rise <= 0.05 || rise > budget {
+        return None;
+    }
+    let lift = (rise + 0.05).min(budget);
+    if cast(
+        body.translation + Vec3::Y * lift,
+        direction,
+        distance,
+        filter,
+    )
+    .is_some()
+    {
+        return None;
+    }
+    Some(lift)
 }
 
 /// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
