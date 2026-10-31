@@ -463,6 +463,7 @@ mod tests {
                     output: "meshes/wall.glb".to_owned(),
                     output_size: bytes as u64,
                     output_hash: "0".repeat(64),
+                    animation_diagnostics: Default::default(),
                 },
             )]),
             ..Default::default()

@@ -1624,7 +1624,7 @@ mod tests {
 
     #[test]
     fn a_consistent_package_reads() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let path = fixture(directory.path(), |_| {});
         let metadata = read_metadata_at(&path).unwrap();
         assert_eq!(metadata.blocks.len(), 1);
@@ -1639,7 +1639,7 @@ mod tests {
 
     #[test]
     fn cluster_sources_load_terrain_without_baked_sources_and_reject_missing_inputs() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let root = directory.path();
         std::fs::write(
             root.join("OWNER.txt"),
@@ -1720,7 +1720,7 @@ mod tests {
             ("DELETE FROM cluster_terrain", "no rows"),
         ];
         for (statement, expected) in cases {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::cluster::overlay_fixture::tempdir();
             let path = fixture(directory.path(), |connection| {
                 connection.execute_batch(statement).unwrap();
             });
@@ -1731,7 +1731,7 @@ mod tests {
 
     #[test]
     fn two_blocks_may_not_claim_one_cell() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let path = fixture(directory.path(), |connection| {
             connection
                 .execute_batch(
@@ -1746,7 +1746,7 @@ mod tests {
 
     #[test]
     fn the_same_cell_may_exist_in_two_worldspaces() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let path = fixture(directory.path(), |connection| {
             connection
                 .execute_batch(
@@ -1761,7 +1761,7 @@ mod tests {
 
     #[test]
     fn a_missing_table_is_named() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let path = directory.path().join("clusters.db");
         Connection::open(&path)
             .unwrap()
@@ -1776,7 +1776,7 @@ mod tests {
         assert_eq!(parse_hash("AB".repeat(32).as_bytes()).unwrap(), [0xab; 32]);
         assert!(parse_hash(b"abc").is_err());
         assert!(parse_hash("zz".repeat(32).as_bytes()).is_err());
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let path = fixture(directory.path(), |connection| {
             connection
                 .execute(
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn the_dataset_must_be_the_one_the_package_was_built_from() {
-        let dataset = tempfile::tempdir().unwrap();
+        let dataset = crate::cluster::overlay_fixture::tempdir();
         std::fs::write(dataset.path().join(CELL_CACHE_FILE), b"cell cache bytes").unwrap();
         let digest: [u8; 32] = Sha256::digest(b"cell cache bytes").into();
         let mut terrain = ClusterTerrain {
@@ -1811,7 +1811,7 @@ mod tests {
         terrain.build.cell_cache_hash[0] ^= 1;
         let error = terrain.validate_dataset(dataset.path()).unwrap_err();
         assert!(error.contains("was built from cell cache"), "{error}");
-        let empty = tempfile::tempdir().unwrap();
+        let empty = crate::cluster::overlay_fixture::tempdir();
         assert!(terrain.validate_dataset(empty.path()).is_err());
     }
 

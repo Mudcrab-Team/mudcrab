@@ -80,6 +80,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "movement_types",
     "npcs",
     "plugins",
+    "projection_omission_samples",
+    "projection_omission_stats",
     "race_movement_links",
     "record_diagnostics",
     "record_overrides",

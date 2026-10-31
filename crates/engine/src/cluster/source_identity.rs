@@ -956,7 +956,7 @@ pub(crate) mod actual_loader_tests {
 
     #[test]
     fn actual_gltf_callbacks_match_converter_dfs_and_survive_world_asset_instancing() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let bytes = invented_glb();
         fs::write(directory.path().join("identity.glb"), &bytes).unwrap();
         let expected = [(0, 0), (0, 1), (1, 0), (0, 0), (0, 1)];

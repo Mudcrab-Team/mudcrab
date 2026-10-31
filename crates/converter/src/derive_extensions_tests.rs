@@ -768,9 +768,12 @@ mod terrain_input_verification_tests {
             "owner: terrain input helper test\n",
         )
         .unwrap();
-        let raw = directory.path().join("raw");
-        let converted = directory.path().join("converted");
-        let staging = directory.path().join("staging");
+        // The production verifier rejects linked ancestors. macOS exposes its temporary
+        // directory through /var, so use the physical fixture root without weakening that check.
+        let root = directory.path().canonicalize().unwrap();
+        let raw = root.join("raw");
+        let converted = root.join("converted");
+        let staging = root.join("staging");
         for path in [&raw, &converted, &staging] {
             fs::create_dir(path).unwrap();
             fs::write(

@@ -51,7 +51,7 @@ fn mixed_fixture() -> Fixture {
         "the sibling is converter-refused"
     );
 
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::cluster::overlay_fixture::tempdir();
     let root = directory.path();
     fs::write(
         root.join("OWNER.txt"),

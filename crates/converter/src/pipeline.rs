@@ -7156,8 +7156,6 @@ mod tests {
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         // A historical combined proof cannot attest authored transform clips, so the mesh is
         // rebuilt; the texture and script candidates stay eligible.
-        let mut eligible = manifest.entries.clone();
-        eligible.remove("meshes/prior.nif");
         assert_eq!(
             reused.entries,
             [
@@ -7168,6 +7166,7 @@ mod tests {
                         output: "textures/prior.ktx2".into(),
                         output_hash: "texture-byte-proof".into(),
                         output_size: 251,
+                        animation_diagnostics: None,
                     },
                 ),
                 (
@@ -7177,6 +7176,7 @@ mod tests {
                         output: "scripts/prior.luau".into(),
                         output_hash: "script-byte-proof".into(),
                         output_size: 389,
+                        animation_diagnostics: None,
                     },
                 ),
             ]
@@ -7230,6 +7230,7 @@ mod tests {
             output: output.into(),
             output_hash: "output-proof".into(),
             output_size: 1,
+            animation_diagnostics: Default::default(),
         };
         let manifest = ConversionManifest {
             schema_version: CONVERTER_SCHEMA_VERSION,
@@ -7262,6 +7263,7 @@ mod tests {
             source_hash: "source-proof".into(),
             output_size: 3,
             output_hash: hash_file(&staged).unwrap(),
+            animation_diagnostics: Default::default(),
         };
         assert!(!record(before).is_current(&staged, "source-proof", &current("nif")));
         assert!(record(current("nif")).is_current(&staged, "source-proof", &current("nif")));

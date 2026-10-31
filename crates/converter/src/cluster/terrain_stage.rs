@@ -51,7 +51,7 @@ use super::{
 use crate::{
     cache::{hash_bytes, hash_file},
     lod::{
-        albedo::{TerrainAtlas, TerrainTextures},
+        albedo::{LoadedDefault, TerrainAtlas, TerrainTextureCache, TerrainTextures},
         terrain::{TerrainCellCache, TerrainCellInput, exterior_terrain_cells},
     },
 };
@@ -572,8 +572,21 @@ fn process_world(
         .into_iter()
         .filter(|input| emitted_cells.contains(&(input.grid_x, input.grid_y)))
         .collect();
-    let textures = TerrainTextures::load(source, vfs, &emitted_inputs)
-        .wrap_err_with(|| format!("worldspace {worldspace_id:08X}: terrain textures"))?;
+    // Preserve this stage's generated-white default while using the shared texture cache API.
+    let mut texture_cache = TerrainTextureCache::default();
+    let (default_textures, _) = LoadedDefault::load(
+        &crate::terrain_pipeline::TerrainDefaultDiffuse::GeneratedWhite,
+        vfs,
+        &mut texture_cache,
+    );
+    let textures = TerrainTextures::load_with_cache(
+        source,
+        vfs,
+        &emitted_inputs,
+        &default_textures,
+        &mut texture_cache,
+    )
+    .wrap_err_with(|| format!("worldspace {worldspace_id:08X}: terrain textures"))?;
     if let Some(contract) = source_contract {
         contract.validate_actual(&textures.source_hashes)?;
     }

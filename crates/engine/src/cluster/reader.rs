@@ -1595,7 +1595,7 @@ pub(crate) mod producer_fixture_tests {
             runtime_inventory,
             base_record_type,
         } = options;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let root = directory.path();
         fs::write(
             root.join("OWNER.txt"),

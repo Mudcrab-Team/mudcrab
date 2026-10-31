@@ -197,7 +197,7 @@ fn conversion_places_render_collision_com_and_inertia_in_one_reference_frame() {
         ])),
     );
     let directory = tempfile::tempdir().unwrap();
-    // Extension is the production policy boundary. LOD roots must survive, including case.
+    // Reference placement replaces block 0 for every extension, including mixed-case LOD files.
     for extension in ["nif", "btr", "BTO"] {
         let input = directory.path().join(format!("placement.{extension}"));
         let output = directory.path().join(format!("placement-{extension}.glb"));
@@ -217,12 +217,7 @@ fn conversion_places_render_collision_com_and_inertia_in_one_reference_frame() {
         };
         assert_eq!(points.len(), 8);
         assert_eq!(rendered.len(), 8);
-        let retained_root = if extension == "nif" {
-            Mat4::IDENTITY
-        } else {
-            root
-        };
-        let frame = retained_root * child * body_frame;
+        let frame = child * body_frame;
         for corner in &corners {
             let expected = (basis * frame).transform_point3(*corner);
             assert!(
@@ -333,7 +328,7 @@ fn parsed_skin_keeps_its_bone_tree_under_a_nonidentity_mesh_root() {
     let (nif, _, _) = open_nif_resilient(&input).unwrap();
     assert!(nif.has_skeleton());
     let placement = crate::nif_placement::PlacementFrame::from_nif(&input, &nif);
-    assert!(!placement.replaces_block(0));
+    assert!(placement.replaces_block(0));
     let mut model = nif_to_model(&nif, None).unwrap();
     assert!(!model.skeletal_meshes.is_empty());
     assert!(model.static_nodes.is_empty());

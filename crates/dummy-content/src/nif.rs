@@ -1480,8 +1480,6 @@ fn skin_partition(
     Ok(block)
 }
 
-
-
 fn validate(shape: &StaticShape<'_>) -> Result<()> {
     ensure!(!shape.name.is_empty(), "NIF shape name is empty");
     ensure!(

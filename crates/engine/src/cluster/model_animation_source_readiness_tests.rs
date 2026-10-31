@@ -78,7 +78,7 @@ struct Loaded {
 }
 
 fn loaded_bytes(path: &'static str, bytes: Vec<u8>) -> Loaded {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::cluster::overlay_fixture::tempdir();
     fs::write(directory.path().join(path), bytes).unwrap();
     // Register the real extension BEFORE the real loader starts; injecting an inventory after
     // loading would erase precisely the evidence these regressions must retain.
@@ -751,7 +751,7 @@ mod named_actual_loader {
     }
 
     fn directory() -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         fs::write(
             directory.path().join("OWNER.txt"),
             "Real named animation loader test fixture.\n",

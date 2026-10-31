@@ -75,7 +75,7 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "8026bcfca3b98e134750136b0c1ad65180b8e1a0ffb1e0cd70daeab7b63198b1",
+    "nif": "676580c2241f7431e1df5472e56d7b9d5b5450529dd174d6879311eb89f5b0a1",
     "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
   },
   "complete": true,

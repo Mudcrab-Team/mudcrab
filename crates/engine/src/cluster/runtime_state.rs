@@ -555,7 +555,7 @@ mod tests {
 
             // Author the extra occurrence before staging. The producer writes every
             // replacement certificate, coverage row and payload hash itself.
-            let directory = tempfile::tempdir().unwrap();
+            let directory = crate::cluster::overlay_fixture::tempdir();
             let root = directory.path();
             fs::write(
                 root.join("OWNER.txt"),

@@ -6978,6 +6978,8 @@ mod tests {
                 Visibility::default(),
             ))
             .id();
+        // This fixture injects only a window leak, not a second terrain-loss violation.
+        world.spawn((Transform::default(), TerrainPatch, ChildOf(root)));
         world
             .resource_mut::<StreamingWorld>()
             .cells

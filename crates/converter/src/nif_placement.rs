@@ -12,20 +12,13 @@ impl PlacementFrame {
         Self::new(path, nif.has_skeleton())
     }
 
-    fn new(path: &Path, skeletal: bool) -> Self {
-        let distant_lod = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("btr") || extension.eq_ignore_ascii_case("bto")
-            });
-        Self {
-            replace_root: !distant_lod && !skeletal,
-        }
+    fn new(_path: &Path, _skeletal: bool) -> Self {
+        Self { replace_root: true }
     }
 
-    /// A reference replaces block 0's local transform in an ordinary static scene.
-    /// LOD uses a grid placement; skeletal export takes its transforms from the bone tree.
+    /// Reference placement replaces block 0's local transform regardless of file extension.
+    /// Skeletal export still takes bone transforms from the bone tree; static scene nodes use
+    /// the same root normalization, including rigid fallback nodes in a skinned NIF.
     /// Collision applies this before composing the target/body frame, so shapes, COM and
     /// inertia all receive the same policy through their existing frame conversion.
     pub(crate) fn replaces_block(self, block: usize) -> bool {
@@ -45,12 +38,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_ordinary_static_block_zero_is_replaced() {
+    fn block_zero_placement_is_independent_of_extension_and_skin_declaration() {
         for extension in ["nif", "NIF", "btr", "BTR", "bto", "BTO"] {
             for skeletal in [false, true] {
                 let frame = PlacementFrame::new(Path::new(&format!("model.{extension}")), skeletal);
-                let lod = !extension.eq_ignore_ascii_case("nif");
-                assert_eq!(frame.replaces_block(0), !lod && !skeletal);
+                assert!(frame.replaces_block(0));
                 assert!(!frame.replaces_block(1));
             }
         }

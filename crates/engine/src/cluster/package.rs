@@ -2561,7 +2561,7 @@ mod tests {
     #[test]
     fn speculative_requests_obey_the_loader_limit_and_lazy_launches_bound_total_residency() {
         use bevy::ecs::system::RunSystemOnce;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         std::fs::write(
             directory.path().join("OWNER.txt"),
             "owner: prefetch fixture\n",
@@ -2933,7 +2933,7 @@ mod empty_certified_loader_tests {
         };
         use rusqlite::OpenFlags;
         use shared::asset_lock::AssetLock;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let root = directory.path();
         let lock = AssetLock::acquire_exclusive(root).unwrap();
         let db = Connection::open(root.join("skyrim_world.db")).unwrap();
@@ -3542,7 +3542,7 @@ mod native_material_metadata_tests {
 
     #[test]
     fn native_material_metadata_refuses_missing_short_and_non_glb_files() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::cluster::overlay_fixture::tempdir();
         let path = root.path().join("model.glb");
         assert!(native_materials(&path).is_err());
         for bytes in [b"short".as_slice(), &[0u8; 20]] {
@@ -3554,7 +3554,7 @@ mod native_material_metadata_tests {
 
     #[test]
     fn checked_glb_metadata_retains_ordinary_material_slots() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::cluster::overlay_fixture::tempdir();
         let path = root.path().join("model.glb");
         let mut json = br#"{"asset":{"version":"2.0"},"materials":[{}]}"#.to_vec();
         while !json.len().is_multiple_of(4) {

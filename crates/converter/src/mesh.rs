@@ -3997,7 +3997,8 @@ mod tests {
                     alpha_property: shape.alpha_property,
                 });
             }
-            let contract = build_nif_material_contract(&nif, &input).unwrap();
+            let contract =
+                build_nif_material_contract(&nif, &input, &mut Default::default()).unwrap();
             let hidden = node_hidden || shape_hidden;
             match &contract[0].disposition {
                 NifMaterialDisposition::Excluded { reason } => {
