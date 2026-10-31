@@ -573,7 +573,7 @@ CREATE TABLE IF NOT EXISTS "references" (
     rot_y REAL NOT NULL,                -- Rotation Y (Radians)
     rot_z REAL NOT NULL,                -- Rotation Z (Radians)
     scale REAL NOT NULL DEFAULT 1.0,    -- Scale multiplier
-    radius_override REAL,               -- XRDS radius in Creation units (NULL when the REFR has none)
+    radius_override REAL,               -- signed XRDS radius offset in Creation units (NULL when absent/invalid)
     header_flags INTEGER NOT NULL DEFAULT 0, -- Winning record header flags, stored raw
     enable_parent_id INTEGER,           -- Remapped XESP parent FormID; NULL when absent
     enable_parent_flags INTEGER,        -- XESP byte 4 (0 through 255); NULL when absent
@@ -941,9 +941,9 @@ the space, and most `LIGH` records in `Skyrim.esm` are invisible. A record whose
 row rather than invented values, and a `LIGH` without a `MODL` gets no `statics`
 row either - there would be no mesh to draw.
 
-A reference that places a light usually carries its own `XRDS` radius, stored in
+A reference that places a light usually carries a signed `XRDS` radius offset, stored in
 `references.radius_override` (10,810 of the 12,148 `LIGH` references in
-`Skyrim.esm`), which overrides the base record's radius for that placement.
+`Skyrim.esm`). Add this signed offset to the base radius for that placement.
 
 ```sql
 CREATE TABLE IF NOT EXISTS lights (
@@ -1602,3 +1602,21 @@ omissions. A database without the tables reports none.
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
 add tables, `create_tables` adds them to an older reused database, and the engine does not read
 them.
+
+### 20. Authored local-light projections (#264/#364)
+
+Optional additions preserve compatibility with schema 3–9 packages. `lights.fade_status` and
+`references.radius_status` are nullable INTEGER columns: NULL means an older projection, 0 absent,
+1 valid (including zero; signed XRDS is legal), 2 malformed/non-finite (negative FNAM unsupported).
+For a valid LIGH reference the effective radius is base DATA radius plus raw XRDS, not replacement.
+Invalid inputs retain their original bytes in the existing canonical record archive.
+
+`reference_light_data(reference_id INTEGER PRIMARY KEY, data_size INTEGER NOT NULL, fov_offset REAL,
+fade_offset REAL, end_distance_cap REAL, shadow_depth_bias REAL)` projects REFR XLIG without
+evaluating it. Missing XLIG has no row. Only 16/20-byte layouts yield floats; non-finite values are
+NULL. A complete export recreates the table; subset export removes/replaces rows for each exported
+reference. No FormIDs occur within XLIG, so remapping is unnecessary.
+
+See [point-lights.md](../engine/point-lights.md) for pinned layout sources, the bounded backend
+transform, fallback dispositions and unresolved native equations. Reconversion into a new pack is
+required for new columns; registered packs remain immutable.
