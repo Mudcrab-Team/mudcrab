@@ -98,15 +98,17 @@ claimed. The original freeze still needs the coordinated native experiment below
 Remove or narrow the workaround only after the pinned GPU paths are bounded and
 native validation supports enabling them on Metal.
 
-Validation: `cargo check --locked -p engine --tests` passed through the installed
-isolated build wrapper; `rustfmt --check` and `git diff --check` passed. The
-focused CPU test run was stopped by preflight before compilation: existing
-managed builds used 56.16 GiB against the 60 GiB budget, with an 8 GiB full-build
-estimate. No test execution or native qualification is claimed. A temporary
-68 GiB validation budget was requested; the default was not bypassed. Validation
-logs and source receipts are retained at
+Validation: `cargo check --locked -p engine --tests`, `rustfmt --check` and
+`git diff --check` passed. All six focused `renderer_init::tests` passed at
+`4ca9d4168d3ae4348aa9f9327f265ae84f97f6a7` with a clean tracked tree. They
+exercise CPU schedules and synthetic adapter metadata; they request no GPU.
+The first full-build attempt was blocked by the 60 GiB storage budget. Taylor
+approved a process-local 68 GiB allowance for the successful run, retaining the
+20 GiB reserve and two-build limit. No persistent storage policy changed.
+Detailed commands, output and the test-binary checksum are retained at
 `/Users/taylor/Projects/mudcrab/.mudcrab-local/evidence/20261031-issue467-metal-cpu-safety`,
-owned by `issue467-coordination-metal-cpu-safety`.
+owned by `issue467-coordination-metal-cpu-safety`. Native freeze confirmation,
+performance and Skyrim visual parity remain unvalidated.
 
 ## Executed check
 
