@@ -1881,6 +1881,7 @@ fn spawn_cell(
                         collision_candidate: terrain_physics
                             && fixed_collision_record_eligible(
                                 reference.base_record_type.as_deref(),
+                                &path,
                             ),
                         handle: None,
                         started: Instant::now(),
@@ -1967,20 +1968,35 @@ enum FixedCollisionTier {
     Full,
     /// Authored fixed/keyframed bodies only; no render proxy; dynamic bodies ignored.
     AuthoredOnly,
+    /// Audited container models with one intact, static-layer body on the root only.
+    VerifiedContainer,
 }
 
-fn fixed_collision_tier(record_type: Option<&str>) -> Option<FixedCollisionTier> {
+/// Container paths are a positive audited subset, not a filename prefix or a record-wide grant.
+/// See `docs/riverwood-static-collision.md` for the source inventory and deferred moving lids.
+fn fixed_collision_tier(record_type: Option<&str>, path: &str) -> Option<FixedCollisionTier> {
     match record_type {
         Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
         Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
+        Some("CONT")
+            if matches!(
+                path,
+                "meshes/clutter/barrel01.glb"
+                    | "meshes/clutter/tgbarrel01.glb"
+                    | "meshes/clutter/sovngarde/sovbarrel01.glb"
+                    | "meshes/clutter/sburialurn01.glb"
+            ) =>
+        {
+            Some(FixedCollisionTier::VerifiedContainer)
+        }
         _ => None,
     }
 }
 
 /// Placed furniture is fixed in the world, but may use only its authored NIF shape.
 /// Render proxies remain restricted to the verified STAT/TREE families above.
-fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
-    fixed_collision_tier(record_type).is_some()
+fn fixed_collision_record_eligible(record_type: Option<&str>, path: &str) -> bool {
+    fixed_collision_tier(record_type, path).is_some()
 }
 
 /// Base record types whose placed references may become dynamic bodies (#104 phase a). These are
@@ -2189,11 +2205,14 @@ fn collider_parts_from_authored(
 /// `Full` keeps every authored shape, whatever its body's kind, which is what fixed record types
 /// have always done. `AuthoredOnly` keeps a shape unless every body that owns it is dynamic, so a
 /// prop's fixed and keyframed bodies stay solid while its simulated parts are left to nothing.
+/// `VerifiedContainer` requires complete ownership by one static-layer root body; unowned shapes
+/// and animated components cannot inherit ACTI's rest-pose fallback.
 fn static_decision_from_asset(
     tier: FixedCollisionTier,
     asset: &CollisionAsset,
 ) -> StaticCollisionDecision {
     match tier {
+        FixedCollisionTier::VerifiedContainer => verified_container_collision(asset),
         FixedCollisionTier::Full => match collider_parts_from_authored(asset) {
             Ok(parts) if !parts.is_empty() => {
                 StaticCollisionDecision::Authored(parts, asset.skipped.clone())
@@ -2264,6 +2283,59 @@ fn static_decision_from_asset(
                 StaticCollisionDecision::Skipped(asset.skipped.join("; "))
             }
         }
+    }
+}
+
+/// The admitted container models were audited without node animation and with collision on their
+/// root. Keep that narrow contract even when an existing pack has lost body bindings, or a model
+/// override changes the authored body kind, layer, node or shape ownership.
+fn verified_container_collision(asset: &CollisionAsset) -> StaticCollisionDecision {
+    if !asset.skipped.is_empty() {
+        return StaticCollisionDecision::Skipped(asset.skipped.join("; "));
+    }
+    if asset.shapes.is_empty() {
+        return StaticCollisionDecision::AuthoredAbsent;
+    }
+    if asset.version < 2 {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires version 2 body ownership".to_owned(),
+        );
+    }
+    let [body] = asset.bodies.as_slice() else {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires one intact root body".to_owned(),
+        );
+    };
+    if body.kind != BodyKind::Fixed
+        || body.node != 0
+        || body.target.is_empty()
+        || body.mass != 0.0
+        || body.havok.collision_layer != 1
+    {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires a massless fixed STATIC-layer root body".to_owned(),
+        );
+    }
+    let mut owned = vec![false; asset.shapes.len()];
+    for index in &body.shapes {
+        let Some(shape) = usize::try_from(*index)
+            .ok()
+            .and_then(|index| owned.get_mut(index))
+        else {
+            return StaticCollisionDecision::Skipped(
+                "fixed container body lists a shape that does not exist".to_owned(),
+            );
+        };
+        *shape = true;
+    }
+    if owned.contains(&false) {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision has shapes without root-body ownership".to_owned(),
+        );
+    }
+    match collider_parts_from_authored(asset) {
+        Ok(parts) => StaticCollisionDecision::Authored(parts, Vec::new()),
+        Err(reason) => StaticCollisionDecision::Skipped(reason),
     }
 }
 
@@ -2598,7 +2670,7 @@ fn static_collision_from_hierarchy(
         // rather than a case to fall back on: the fallback would hand a record the shapes its
         // tier exists to withhold.
         Ok(Some(asset)) => static_decision_from_asset(
-            fixed_collision_tier(record_type)
+            fixed_collision_tier(record_type, path)
                 .expect("static collision is only built for a tiered record type"),
             &asset,
         ),
@@ -3078,7 +3150,7 @@ fn track_asset_readiness(
             break;
         }
         let static_candidate = pending.static_physics
-            && fixed_collision_record_eligible(pending.base_record_type.as_deref());
+            && fixed_collision_record_eligible(pending.base_record_type.as_deref(), &pending.path);
         let load_failure =
             asset_server
                 .get_load_states(root.0.id())
@@ -3332,7 +3404,8 @@ fn track_asset_readiness(
             // A record type outside every tier used to drop authored collision without a trace.
             // Report the placements that do carry it so the exclusion is visible in metrics.
             if pending.static_physics
-                && fixed_collision_tier(pending.base_record_type.as_deref()).is_none()
+                && fixed_collision_tier(pending.base_record_type.as_deref(), &pending.path)
+                    .is_none()
                 && !dynamic_clutter_record_eligible(pending.base_record_type.as_deref())
             {
                 let key = (pending.base_record_type.clone(), pending.path.clone());
@@ -5334,8 +5407,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
-        assert!(fixed_collision_record_eligible(Some("FURN")));
-        assert!(!fixed_collision_record_eligible(Some("MISC")));
+        assert!(fixed_collision_record_eligible(Some("FURN"), ""));
+        assert!(!fixed_collision_record_eligible(Some("MISC"), ""));
         assert!(!static_proxy_eligible(
             Some("FURN"),
             "meshes/furniture/clutter/milllogpile.glb"
@@ -5439,21 +5512,379 @@ mod tests {
     #[test]
     fn fixed_collision_tier_splits_fixed_and_authored_only_records() {
         assert_eq!(
-            fixed_collision_tier(Some("ACTI")),
+            fixed_collision_tier(Some("ACTI"), ""),
             Some(FixedCollisionTier::AuthoredOnly)
         );
         for record in ["STAT", "TREE", "FURN"] {
             assert_eq!(
-                fixed_collision_tier(Some(record)),
+                fixed_collision_tier(Some(record), ""),
                 Some(FixedCollisionTier::Full),
                 "{record}"
             );
         }
         for record in ["DOOR", "MSTT", "FLOR", "CONT", "MISC"] {
-            assert_eq!(fixed_collision_tier(Some(record)), None, "{record}");
+            assert_eq!(fixed_collision_tier(Some(record), ""), None, "{record}");
         }
-        assert_eq!(fixed_collision_tier(None), None);
-        assert!(fixed_collision_record_eligible(Some("ACTI")));
+        assert_eq!(fixed_collision_tier(None, ""), None);
+        assert!(fixed_collision_record_eligible(Some("ACTI"), ""));
+    }
+
+    fn verified_container_asset() -> CollisionAsset {
+        let mut body = clutter_body(BodyKind::Fixed, vec![0], true);
+        body.node = 0;
+        body.target = "Barrel01".to_owned();
+        body.mass = 0.0;
+        body.havok.motion_system = 5;
+        body.havok.quality_type = 0;
+        body.havok.collision_layer = 1;
+        authored_asset(vec![authored_box_shape()], vec![body])
+    }
+
+    #[test]
+    fn container_collision_tier_requires_an_audited_model_and_cont_base() {
+        for path in [
+            "meshes/clutter/barrel01.glb",
+            "meshes/clutter/tgbarrel01.glb",
+            "meshes/clutter/sovngarde/sovbarrel01.glb",
+            "meshes/clutter/sburialurn01.glb",
+        ] {
+            assert_eq!(
+                fixed_collision_tier(Some("CONT"), path),
+                Some(FixedCollisionTier::VerifiedContainer)
+            );
+            assert!(!dynamic_clutter_record_eligible(Some("CONT")));
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+            for record in ["MISC", "MSTT", "FLOR", "DOOR", "TACT", "LIGH"] {
+                assert_eq!(fixed_collision_tier(Some(record), path), None);
+            }
+        }
+        for path in [
+            "meshes/clutter/upperclass/upperchest01.glb",
+            "meshes/clutter/ruins/ruinslargeurnwithstand01.glb",
+            "meshes/clutter/barrel01extra.glb",
+            "meshes/architecture/barrel01.glb",
+        ] {
+            assert_eq!(fixed_collision_tier(Some("CONT"), path), None);
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+        }
+    }
+
+    #[test]
+    fn container_collision_keeps_all_shapes_of_the_verified_root_body() {
+        let mut asset = verified_container_asset();
+        asset.shapes.push(authored_hull_shape());
+        asset.bodies[0].shapes.push(1);
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty());
+            }
+            _ => panic!("an intact audited root body must be solid"),
+        }
+    }
+
+    #[test]
+    fn container_collision_defers_ambiguous_moving_or_nonphysical_assets() {
+        let asset = verified_container_asset();
+        let mut cases = Vec::new();
+        let mut legacy = asset.clone();
+        legacy.version = 1;
+        legacy.bodies.clear();
+        cases.push(("legacy", legacy));
+        let mut unbound = asset.clone();
+        unbound.bodies.clear();
+        cases.push(("lost body", unbound));
+        let mut unowned = asset.clone();
+        unowned.shapes.push(authored_box_shape());
+        cases.push(("unowned shape", unowned));
+        let mut invalid = asset.clone();
+        invalid.bodies[0].shapes.push(u32::MAX);
+        cases.push(("missing shape", invalid));
+        let mut mixed = asset.clone();
+        mixed.shapes.push(authored_box_shape());
+        mixed
+            .bodies
+            .push(clutter_body(BodyKind::Dynamic, vec![1], true));
+        cases.push(("mixed bodies", mixed));
+        for kind in [BodyKind::Dynamic, BodyKind::Keyframed] {
+            let mut changed = asset.clone();
+            changed.bodies[0].kind = kind;
+            cases.push(("moving body", changed));
+        }
+        for layer in [2, 4, 12, 15] {
+            let mut changed = asset.clone();
+            changed.bodies[0].havok.collision_layer = layer;
+            cases.push(("different layer", changed));
+        }
+        let mut child_body = asset.clone();
+        child_body.bodies[0].node = 1;
+        cases.push(("child body", child_body));
+        let mut unnamed = asset.clone();
+        unnamed.bodies[0].target.clear();
+        cases.push(("unnamed target", unnamed));
+        let mut massive = asset.clone();
+        massive.bodies[0].mass = 1.0;
+        cases.push(("massive body", massive));
+        let mut skipped = asset;
+        skipped.skipped.push("lost animated lid".to_owned());
+        cases.push(("conversion skip", skipped));
+        for (case, asset) in cases {
+            assert!(
+                matches!(
+                    static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+                    StaticCollisionDecision::Skipped(_)
+                ),
+                "{case} must stay excluded and counted as a skip"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_preserves_authored_absence_and_conversion_failures() {
+        let mut asset = authored_asset(Vec::new(), Vec::new());
+        assert!(matches!(
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+            StaticCollisionDecision::AuthoredAbsent
+        ));
+        asset.skipped.push("unsupported shape".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Skipped(reason) => assert_eq!(reason, "unsupported shape"),
+            _ => panic!("a conversion failure is not authored absence"),
+        }
+    }
+
+    #[test]
+    fn container_collision_readiness_attaches_once_and_counts_deferred_assets() {
+        for (path, physics, valid, attached, skipped, excluded) in [
+            ("meshes/clutter/barrel01.glb", true, true, 1, 0, 0),
+            ("meshes/clutter/barrel01.glb", false, true, 0, 0, 0),
+            ("meshes/clutter/barrel01.glb", true, false, 0, 1, 0),
+            (
+                "meshes/clutter/upperclass/upperchest01.glb",
+                true,
+                true,
+                0,
+                0,
+                1,
+            ),
+        ] {
+            let mut app = model_app();
+            let mut asset = verified_container_asset();
+            if !valid {
+                asset.bodies.clear();
+            }
+            let (reference, metrics) =
+                ready_clutter_reference_with(&mut app, "CONT", path, physics, &asset);
+            assert_eq!(metrics.static_colliders_authored, attached);
+            assert_eq!(metrics.static_colliders_skipped, skipped);
+            assert_eq!(metrics.static_colliders_excluded_authored, excluded);
+            assert_eq!(metrics.static_colliders_proxy, 0);
+            assert_eq!(metrics.dynamic_clutter_bodies, 0);
+            assert_eq!(
+                app.world().get::<RigidBody>(reference),
+                (attached == 1).then_some(&RigidBody::Fixed)
+            );
+            let mut colliders = app.world_mut().query_filtered::<Entity, With<Collider>>();
+            assert_eq!(colliders.iter(app.world()).count(), attached as usize);
+            settle_readiness(&mut app);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .static_colliders_authored,
+                attached,
+                "a settled reference must not get another collider"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_without_metadata_has_no_render_proxy() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let root = app.world_mut().spawn_empty().id();
+        let decision = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      extras: Query<&GltfSceneExtras>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_collision_from_hierarchy(
+                        Some("CONT"),
+                        "meshes/clutter/barrel01.glb",
+                        root,
+                        &children,
+                        &extras,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap();
+        assert!(matches!(decision, StaticCollisionDecision::LegacyExcluded));
+    }
+
+    #[test]
+    fn container_collision_preserves_scaled_pose_rebase_unload_and_reload() {
+        let mut app = crate::physics::headless::fixture_app();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
+            .add_systems(Update, update_render_origin);
+        let cell = app
+            .world_mut()
+            .spawn((ExteriorCellGrid(IVec2::ZERO), Transform::default()))
+            .id();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 10.0, 0.0],
+            half_extents: [10.0, 10.0, 20.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) = static_decision_from_asset(
+            fixed_collision_tier(Some("CONT"), "meshes/clutter/barrel01.glb").unwrap(),
+            &asset,
+        ) else {
+            panic!("verified container must supply the fixture collider");
+        };
+        let transform = Transform::from_xyz(700.0, 100.0, 700.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::splat(2.0));
+        let root = app.world_mut().spawn((transform, ChildOf(cell))).id();
+        let attach = |app: &mut App, entity, parts: Vec<AuthoredColliderPart>| {
+            app.world_mut()
+                .run_system_once(move |mut commands: Commands| {
+                    attach_authored_collision(&mut commands, entity, &parts);
+                })
+                .unwrap();
+        };
+        attach(&mut app, root, parts.clone());
+        for _ in 0..3 {
+            app.update();
+        }
+        let hit = |app: &mut App, x: f32| {
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    context.single().unwrap().cast_ray(
+                        Vec3::new(x, 200.0, 700.0),
+                        Vec3::NEG_Y,
+                        100.0,
+                        true,
+                        QueryFilter::default().groups(crate::physics::player_collision_groups()),
+                    )
+                })
+                .unwrap()
+        };
+        // Rotation makes the 20-unit local Z half-extent the 40-unit world X half-extent.
+        let (collider, distance) = hit(&mut app, 730.0).expect("scaled container has contact");
+        assert!((distance - 60.0).abs() < 0.01, "contact at {distance}");
+        assert!(
+            hit(&mut app, 750.0).is_none(),
+            "container grew beyond authored extent"
+        );
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x += CELL_SIZE;
+        app.update();
+        let rebased_body_x = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                context.rigidbody_set.bodies[context.entity2body()[&root]]
+                    .translation()
+                    .x
+            })
+            .unwrap();
+        assert!((rebased_body_x - (700.0 - CELL_SIZE)).abs() < 0.01);
+        assert!(
+            (app.world()
+                .get::<GlobalTransform>(root)
+                .unwrap()
+                .translation()
+                .x
+                - rebased_body_x)
+                .abs()
+                < 0.01
+        );
+        // Rebasing runs in Update, after the fixed physics step. The following fixed step
+        // refreshes Rapier's broad phase before spatial queries use the new collider bounds.
+        app.update();
+        let (rebased, distance) = hit(&mut app, 730.0 - CELL_SIZE).expect("rebased contact");
+        assert_eq!(rebased, collider);
+        assert!((distance - 60.0).abs() < 0.01);
+        assert!(
+            hit(&mut app, 730.0).is_none(),
+            "stale collider at the old origin"
+        );
+        app.world_mut().entity_mut(cell).despawn();
+        app.update();
+        assert!(app.world().get_entity(collider).is_err());
+        assert!(
+            hit(&mut app, 730.0 - CELL_SIZE).is_none(),
+            "unloaded collider remains"
+        );
+        let reloaded = app.world_mut().spawn(transform).id();
+        attach(&mut app, reloaded, parts);
+        for _ in 0..3 {
+            app.update();
+        }
+        let (_, distance) = hit(&mut app, 730.0).expect("reloaded contact");
+        assert!((distance - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn container_collision_blocks_the_fixture_player() {
+        let mut app = crate::physics::headless::fixture_app();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 150.0, 0.0],
+            half_extents: [10.0, 150.0, 250.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) =
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset)
+        else {
+            panic!("verified container must supply the blocking collider");
+        };
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(250.0, 0.0, 750.0))
+            .id();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                attach_authored_collision(&mut commands, root, &parts);
+            })
+            .unwrap();
+        crate::physics::headless::place_player(&mut app, Vec3::new(0.0, 200.0, 900.0));
+        app.insert_resource(crate::physics::WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: crate::physics::MovementTuning::default().run_speed,
+            jump_pressed: false,
+        });
+        for _ in 0..180 {
+            app.update();
+        }
+        let (player, _) = crate::physics::headless::player_pose(&mut app);
+        assert!(
+            player.x > 100.0,
+            "player never approached the container: {player:?}"
+        );
+        assert!(player.x < 225.0, "player crossed the container: {player:?}");
+        assert!(
+            app.world()
+                .get::<crate::physics::DynamicClutter>(root)
+                .is_none()
+        );
     }
 
     #[test]
@@ -9051,6 +9482,7 @@ mod tests {
     fn ready_clutter_reference_with(
         app: &mut App,
         record_type: &str,
+        path: &str,
         static_physics: bool,
         asset: &CollisionAsset,
     ) -> (Entity, StreamingMetrics) {
@@ -9076,7 +9508,7 @@ mod tests {
         {
             let mut entity_mut = app.world_mut().entity_mut(reference);
             let mut pending = entity_mut.get_mut::<PendingAssetProfile>().unwrap();
-            pending.path = "meshes/clutter/test/clutter01.glb".to_owned();
+            pending.path = path.to_owned();
             pending.base_record_type = Some(record_type.to_owned());
             pending.static_physics = static_physics;
         }
@@ -9100,8 +9532,13 @@ mod tests {
         asset: &CollisionAsset,
     ) -> (App, Entity, StreamingMetrics) {
         let mut app = model_app();
-        let (reference, metrics) =
-            ready_clutter_reference_with(&mut app, record_type, static_physics, asset);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            record_type,
+            "meshes/clutter/test/clutter01.glb",
+            static_physics,
+            asset,
+        );
         (app, reference, metrics)
     }
 
@@ -9540,7 +9977,13 @@ mod tests {
                 max_angular_velocity: 0.0,
             });
         }
-        let (reference, metrics) = ready_clutter_reference_with(&mut app, "MISC", true, &dynamic);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            "MISC",
+            "meshes/clutter/test/clutter01.glb",
+            true,
+            &dynamic,
+        );
         assert_eq!(metrics.dynamic_clutter_bodies, 0);
         assert_eq!(metrics.dynamic_clutter_overflow, 1);
         assert!(app.world().get::<RigidBody>(reference).is_none());
