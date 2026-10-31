@@ -2,6 +2,7 @@ use crate::{
     color_pipeline::{SCENE_GRADE_VALUES, SceneGradeMode, SceneVisualPreset},
     skyrim_ini::SkyrimIni,
     tone_mapping::SceneToneMapMode,
+    visual_profile::{VISUAL_PROFILE_VALUES, VisualProfile},
     world::components::CELL_SIZE,
     world::imagespace::{ImageSpaceSelection, ImageSpaceSlot},
 };
@@ -122,6 +123,8 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Whole color pipeline; fixed for the run because stages never mix across profiles.
+    pub visual_profile: VisualProfile,
     /// Select the cinematic A/B experiment without changing scene lighting.
     pub color_grade: SceneGradeMode,
     /// Named sky, fog and grading look; Vivid preserves the approved configuration.
@@ -258,6 +261,7 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            visual_profile: VisualProfile::Mudcrab,
             color_grade: SceneGradeMode::SnapshotSrgb,
             visual_preset: SceneVisualPreset::CoolGray,
             grade_preset: None,
@@ -392,6 +396,7 @@ Benchmark and profiling:
   --acceptance-screenshot <file>        write a screenshot when the run ends
   --screenshot-camera-offset <x,y,z>    camera offset for the acceptance screenshot
   --matched-route <file>                execute exact route steps with transition and settled checkpoints
+  --visual-profile <mudcrab|skyrim>    color pipeline (default: mudcrab); changing it requires a restart
   --color-grade <mode>                 off|saturation|full|snapshot-srgb|snapshot-linear|record-srgb (default: snapshot-srgb)
   --grade-preset <json>                approved-look JSON override (snapshot-srgb and Cool Gray sky)
   --tone-map <tony|retail-curve>       display transform (default: tony); retail curve is experimental
@@ -464,6 +469,12 @@ pub enum ConfigError {
         option: &'static str,
         requires: &'static str,
     },
+    /// An option that steers a pipeline the selected visual profile does not run.
+    ForeignToProfile {
+        option: &'static str,
+        profile: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -513,6 +524,15 @@ impl fmt::Display for ConfigError {
             Self::UnexpectedArgument { argument } => write!(
                 formatter,
                 "unexpected argument '{argument}'. Run with --help to list every option."
+            ),
+            Self::ForeignToProfile {
+                option,
+                profile,
+                reason,
+            } => write!(
+                formatter,
+                "option '{option}' does not apply under --visual-profile {profile}: {reason}. \
+                 Remove it, or select --visual-profile mudcrab."
             ),
             Self::MissingRequirement { option, requires } => write!(
                 formatter,
@@ -619,6 +639,19 @@ impl EngineConfig {
             "retail-curve requires an explicit --image-space or --image-space-weather with --image-space-slot"
         );
         Ok(selection)
+    }
+
+    /// Refuses launch options that steer a pipeline the selected profile does not run. Saved
+    /// settings may select the profile too, so this runs again once they are applied.
+    pub fn check_visual_profile(&self) -> Result<(), ConfigError> {
+        match self.visual_profile.foreign_option(&self.settings_overrides) {
+            Some((option, reason)) => Err(ConfigError::ForeignToProfile {
+                option,
+                profile: self.visual_profile.name(),
+                reason,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The per-frame render-asset upload budget in bytes, or `None` when
@@ -1190,6 +1223,16 @@ impl EngineConfig {
                             )
                         })?);
                 }
+                "--visual-profile" => {
+                    let raw = take_raw("--visual-profile", VISUAL_PROFILE_VALUES, args.next())?;
+                    config.visual_profile = VisualProfile::parse(&raw).ok_or_else(|| {
+                        ConfigError::invalid_value(
+                            "--visual-profile",
+                            Some(raw),
+                            VISUAL_PROFILE_VALUES,
+                        )
+                    })?;
+                }
                 "--visual-preset" => {
                     let raw = take_raw("--visual-preset", "vivid or cool-gray", args.next())?;
                     config.visual_preset = SceneVisualPreset::parse(&raw).ok_or_else(|| {
@@ -1314,6 +1357,7 @@ impl EngineConfig {
                 requires: "--profile-output",
             });
         }
+        config.check_visual_profile()?;
         config.drop_jump_the_run_would_overwrite();
         Ok(ConfigAction::Run(Box::new(config)))
     }
@@ -1769,6 +1813,8 @@ mod tests {
         "--pixel",  // sample_skyrim_tonemap_gpu.py
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
+        "--stage3-relative", // compare_stage_receipts.py
+        "--stage4-bytes", // compare_stage_receipts.py
     ];
 
     fn run_config(arguments: &[&str]) -> EngineConfig {
@@ -2230,6 +2276,57 @@ mod tests {
         ] {
             assert!(EngineConfig::from_args(args.iter().map(|v| (*v).into())).is_err());
         }
+    }
+
+    #[test]
+    fn visual_profile_defaults_to_mudcrab_and_parses_both_profiles() {
+        assert_eq!(
+            EngineConfig::default().visual_profile,
+            VisualProfile::Mudcrab
+        );
+        for (value, expected) in [
+            ("mudcrab", VisualProfile::Mudcrab),
+            ("skyrim", VisualProfile::Skyrim),
+            ("Skyrim", VisualProfile::Skyrim),
+        ] {
+            assert_eq!(
+                run_config(&["--visual-profile", value]).visual_profile,
+                expected
+            );
+        }
+        for args in [
+            &["--visual-profile"][..],
+            &["--visual-profile", "vanilla"][..],
+        ] {
+            assert!(parse_error(args).to_string().contains("--visual-profile"));
+        }
+    }
+
+    #[test]
+    fn skyrim_profile_refuses_each_mudcrab_only_option_by_name() {
+        for (option, value) in [
+            ("--tone-map", "tony"),
+            ("--tone-map-params", "curve.json"),
+            ("--color-grade", "full"),
+            ("--grade-preset", "look.json"),
+            ("--visual-preset", "vivid"),
+        ] {
+            let error = parse_error(&["--visual-profile", "skyrim", option, value]);
+            assert!(
+                matches!(error, ConfigError::ForeignToProfile { option: named, profile: "skyrim", .. } if named == option),
+                "{option}: {error}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains(option) && message.contains("skyrim"),
+                "{message}"
+            );
+            // The same option stays valid under the profile it belongs to.
+            if option != "--tone-map-params" {
+                run_config(&["--visual-profile", "mudcrab", option, value]);
+            }
+        }
+        run_config(&["--visual-profile", "skyrim", "--image-space", "0x1"]);
     }
 
     #[test]
