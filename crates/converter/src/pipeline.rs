@@ -72,6 +72,10 @@ mod database_cache;
 #[path = "pipeline/rv_b_tests.rs"]
 mod rv_b_tests;
 
+#[cfg(test)]
+#[path = "pipeline/recovery_tests.rs"]
+mod recovery_tests;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineReport {
     pub complete: bool,
@@ -374,10 +378,22 @@ impl AssetPipeline {
             "Discovering Skyrim assets",
         )
         .await;
+        let mut manifest_notice = None;
         let loaded_manifest = if config.invalidate_cache {
             ConversionManifest::default()
         } else {
-            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))?
+            match ConversionManifest::load(&config.output_dir.join("conversion-manifest.json")) {
+                Ok(manifest) => manifest,
+                Err(error) if error.downcast_ref::<serde_json::Error>().is_some() => {
+                    let message = format!(
+                        "previous conversion manifest is unusable; rebuilding without previous-pack asset reuse and preserving the previous pack: {error:#}"
+                    );
+                    send_notice(&progress_tx, ProgressStage::Discovering, None, &message).await;
+                    manifest_notice = Some(message);
+                    ConversionManifest::default()
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
         let previous_manifest = reusable_manifest(&config, loaded_manifest)?;
         let staging = config
@@ -413,6 +429,7 @@ impl AssetPipeline {
             Ok(report) => report,
             Err(error) => return Err(failure(error, &staging, &cancellation)),
         };
+        report.notices.extend(manifest_notice);
         report
             .phase_elapsed_ms
             .insert("run_setup".into(), setup_elapsed_ms);
@@ -432,9 +449,17 @@ impl AssetPipeline {
             return Err(failure(Interrupted::new().into(), &staging, &cancellation));
         }
         let publication_started = Instant::now();
-        report.publication_phase_elapsed_ms =
-            publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
-                .map_err(|error| failure(error, &staging, &cancellation))?;
+        let published = publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
+            .map_err(|error| failure(error, &staging, &cancellation))?;
+        report.publication_phase_elapsed_ms = published.elapsed_ms;
+        if let Some(backup) = published.preserved_previous {
+            let message = format!(
+                "previous pack with an unusable manifest preserved at {}",
+                backup.display()
+            );
+            send_notice(&progress_tx, ProgressStage::Publishing, None, &message).await;
+            report.notices.push(message);
+        }
         report.artifacts.push(PathBuf::from(
             shared::streaming_costs::STREAMING_COST_FILE_NAME,
         ));
@@ -601,10 +626,18 @@ impl AssetPipeline {
             );
             resolved_files = resolved.files;
         }
+        let mut undiscovered = Vec::new();
         let files = if config.mo2.is_some() {
             resolved_files.values().cloned().collect()
         } else {
-            discover(&config.data_dir)?
+            discover_inputs(&config.data_dir, |path, error| {
+                if config.fail_fast {
+                    return Err(error);
+                }
+                undiscovered.push(path.to_path_buf());
+                record_input_failure(&mut report, &mut manifest, path, error);
+                Ok(())
+            })?
         };
         let archive_keys: BTreeMap<_, _> = resolved_files
             .iter()
@@ -910,7 +943,19 @@ impl AssetPipeline {
         }
 
         if config.mo2.is_none() {
-            overlay_loose_assets(&config.data_dir, &staging.join("vfs"), &files)?;
+            mask_undiscovered_inputs(&config.data_dir, &vfs_dir, &undiscovered)?;
+            overlay_loose_assets_with_recovery(
+                &config.data_dir,
+                &vfs_dir,
+                &files,
+                |source, key, error| {
+                    if config.fail_fast {
+                        return Err(error);
+                    }
+                    record_input_failure(&mut report, &mut manifest, key.unwrap_or(source), error);
+                    Ok(())
+                },
+            )?;
         }
         report.phase_elapsed_ms.insert(
             "archive_ingestion_and_loose_overlay".into(),
@@ -1182,7 +1227,14 @@ impl AssetPipeline {
             } else {
                 continue;
             };
-            let canonical = canonical_asset_path(relative, kind, ext)?;
+            let canonical = match canonical_asset_path(relative, kind, ext) {
+                Ok(canonical) => canonical,
+                Err(error) if !config.fail_fast => {
+                    record_input_failure(&mut report, &mut manifest, Path::new(relative), error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             ensure!(
                 loose_keys.insert(canonical.clone()),
                 "loose assets contain normalized path collision for {canonical}"
@@ -1885,6 +1937,12 @@ impl ConversionBatch<'_> {
         let rayon_handle = spawn_blocking(move || -> Result<()> {
             use rayon::prelude::*;
 
+            // Reserve the required CPU workers before optional GPU workers consume thread
+            // resources, so a GPU startup failure still has a working fallback pool.
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(cpu_jobs)
+                .build()
+                .wrap_err("failed to create asset conversion worker pool")?;
             let gpu = if source_kind == "dds" {
                 if let TextureEncoder::Gpu { quality, batch_mb } = texture_encoder {
                     match GpuUastc::new(quality, batch_mb) {
@@ -1926,7 +1984,9 @@ impl ConversionBatch<'_> {
                 let stopped = move || {
                     gpu_cancelled.load(Ordering::Relaxed) || gpu_run_cancelled.is_cancelled()
                 };
-                let handle = std::thread::spawn(move || {
+                let handle = std::thread::Builder::new()
+                    .name("texture-gpu-batcher".into())
+                    .spawn(move || {
                     // Called on the batcher's writer threads, so the writes
                     // run in parallel.
                     let finish = |tag: GpuTag, result: Result<texture_gpu::EncodedTexture>| {
@@ -1995,15 +2055,17 @@ impl ConversionBatch<'_> {
                         stats.source_bytes as f64 / 1e9
                     );
                 });
-                (Some(sender), Some(handle))
+                match handle {
+                    Ok(handle) => (Some(sender), Some(handle)),
+                    Err(error) => {
+                        eprintln!("GPU texture worker unavailable ({error}); using CPU encoder");
+                        (None, None)
+                    }
+                }
             } else {
                 (None, None)
             };
 
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(cpu_jobs)
-                .build()
-                .wrap_err("failed to create asset conversion worker pool")?;
             pool.install(|| {
                 selected.into_par_iter().enumerate().for_each(
                     |(index, (source, relative, target_rel, key, encoding))| {
@@ -3306,16 +3368,95 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn discover(root: &Path) -> Result<Vec<PathBuf>> {
+    discover_inputs(root, |_, error| Err(error))
+}
+
+/// Source discovery can skip inaccessible descendants; the source root itself is required.
+/// Internal output scans use `discover`, which remains strict about staging integrity.
+fn discover_inputs(
+    root: &Path,
+    mut failed: impl FnMut(&Path, color_eyre::Report) -> Result<()>,
+) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
-        let entry =
-            entry.wrap_err_with(|| format!("failed to discover inputs in {}", root.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                let path = error.path().unwrap_or(root).to_path_buf();
+                let required = error.depth() == 0;
+                let error = color_eyre::Report::from(error)
+                    .wrap_err(format!("failed to discover inputs in {}", root.display()));
+                if required {
+                    return Err(error);
+                }
+                failed(&path, error)?;
+                continue;
+            }
+        };
         if entry.file_type().is_file() {
             files.push(entry.into_path());
         }
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+fn record_input_failure(
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+    path: &Path,
+    error: color_eyre::Report,
+) {
+    let key = normalize_separators(path);
+    let message = format!("skipped input {key}: {error:#}");
+    eprintln!("warning: {message}");
+    report.skipped += 1;
+    report.warnings.push(message.clone());
+    manifest.failures.insert(key, message);
+}
+
+/// An unseen loose winner must not expose an older archive version. Remove only the
+/// affected logical paths, including canonical prefixes whose physical spelling differs.
+fn mask_undiscovered_inputs(data: &Path, vfs: &Path, blocked: &[PathBuf]) -> Result<()> {
+    let mut prefixes = BTreeSet::new();
+    for path in blocked {
+        let relative = path.strip_prefix(data)?;
+        prefixes.insert(PathBuf::from(
+            normalize_separators(relative).to_ascii_lowercase(),
+        ));
+        let directory = !fs::metadata(path).is_ok_and(|metadata| metadata.is_file());
+        for (kind, ext) in [
+            (AssetKind::Texture, "dds"),
+            (AssetKind::Mesh, "nif"),
+            (AssetKind::Script, "pex"),
+            (AssetKind::LodSettings, "lod"),
+            (AssetKind::Animation, "hkx"),
+        ] {
+            let candidate = if directory {
+                relative.join(format!("__unreadable__.{ext}"))
+            } else {
+                relative.to_path_buf()
+            };
+            if let Ok(key) = canonical_asset_path(&candidate.to_string_lossy(), kind, ext) {
+                let key = PathBuf::from(key);
+                prefixes.insert(if directory {
+                    key.parent().unwrap().to_path_buf()
+                } else {
+                    key
+                });
+            }
+        }
+    }
+    if prefixes.is_empty() {
+        return Ok(());
+    }
+    for path in discover(vfs)? {
+        let relative = path.strip_prefix(vfs)?;
+        if prefixes.iter().any(|prefix| relative.starts_with(prefix)) {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether two paths hold byte-identical files. Used to decide whether a prune
@@ -3474,6 +3615,15 @@ pub(crate) fn validate_artifact(
 }
 
 pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -> Result<()> {
+    overlay_loose_assets_with_recovery(data, vfs, files, |_, _, error| Err(error))
+}
+
+fn overlay_loose_assets_with_recovery(
+    data: &Path,
+    vfs: &Path,
+    files: &[PathBuf],
+    mut failed: impl FnMut(&Path, Option<&Path>, color_eyre::Report) -> Result<()>,
+) -> Result<()> {
     let mut seen = BTreeMap::<String, PathBuf>::new();
     for source in files
         .iter()
@@ -3494,7 +3644,13 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
         } else {
             (AssetKind::LodSettings, "lod")
         };
-        let canonical = canonical_asset_path(&relative.to_string_lossy(), kind, extension)?;
+        let canonical = match canonical_asset_path(&relative.to_string_lossy(), kind, extension) {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                failed(source, None, error)?;
+                continue;
+            }
+        };
         if let Some(previous) = seen.insert(canonical.clone(), source.to_owned()) {
             bail!(
                 "loose assets contain normalized path collision for {canonical}: {} and {}",
@@ -3502,17 +3658,31 @@ pub(crate) fn overlay_loose_assets(data: &Path, vfs: &Path, files: &[PathBuf]) -
                 source.display()
             );
         }
-        let destination = vfs.join(canonical);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let destination = vfs.join(&canonical);
         // A reused archive entry links its `vfs` file to the cache blob, so this override has to
         // replace the path rather than write through it: copying over the link would truncate the
         // file every other name shares, the blob and the previous output included.
-        if destination.exists() {
-            fs::remove_file(&destination)?;
+        let copied = (|| -> Result<()> {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if destination.exists() {
+                fs::remove_file(&destination)?;
+            }
+            fs::copy(source, &destination)
+                .wrap_err_with(|| format!("failed to copy loose input {}", source.display()))?;
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            // A partial copy or lower-priority archive file is not this winning input.
+            // If it cannot be removed, stopping is safer than publishing the wrong bytes.
+            match fs::remove_file(&destination) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).wrap_err("failed to discard unusable loose input"),
+            }
+            failed(source, Some(Path::new(&canonical)), error)?;
         }
-        fs::copy(source, destination)?;
     }
     Ok(())
 }
@@ -4078,6 +4248,12 @@ fn staged_output(entry: &CacheEntry, configuration_hash: &str) -> StagedOutput {
 struct PublicationTimings {
     enabled: bool,
     elapsed_ms: BTreeMap<String, u128>,
+    preserved_previous: Option<PathBuf>,
+}
+
+struct PublishedPack {
+    elapsed_ms: BTreeMap<String, u128>,
+    preserved_previous: Option<PathBuf>,
 }
 
 impl PublicationTimings {
@@ -4099,7 +4275,7 @@ fn publish_runtime_pack(
     output: &Path,
     report: &PipelineReport,
     lock: &AssetLock,
-) -> Result<BTreeMap<String, u128>> {
+) -> Result<PublishedPack> {
     let mut timings = PublicationTimings {
         enabled: true,
         ..Default::default()
@@ -4163,7 +4339,10 @@ fn publish_runtime_pack(
         let _ = fs::remove_dir_all(&pack_staging);
     }
     published?;
-    Ok(timings.elapsed_ms)
+    Ok(PublishedPack {
+        elapsed_ms: timings.elapsed_ms,
+        preserved_previous: timings.preserved_previous,
+    })
 }
 
 /// Writes the streaming cost sidecar for an assembled, immutable-until-published pack. Call only
@@ -5115,12 +5294,23 @@ fn publish_directory_locked_with_timings(
     timings.measure("ownership_recovery", || {
         recover_interrupted_publication(output)
     })?;
+    let preserve_previous = unusable_publication_manifest(output)?;
     let (backup, _backup_lock, record_path) = timings.measure("backup_setup", || {
-        let backup = output.with_file_name(format!(
+        let mut name = format!(
             "{}{}",
             publication_backup_prefix(output)?,
             std::process::id()
-        ));
+        );
+        if preserve_previous {
+            name.push_str(&format!(
+                "-unusable-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+        }
+        let backup = output.with_file_name(name);
         if backup.exists() {
             bail!("refusing to overwrite stale backup {}", backup.display());
         }
@@ -5168,9 +5358,13 @@ fn publish_directory_locked_with_timings(
         return Err(error).wrap_err("failed to publish converted assets");
     }
     if backup.exists() {
-        timings.measure("previous_pack_cleanup", || {
-            fs::remove_dir_all(backup).map_err(Into::into)
-        })?;
+        if preserve_previous {
+            timings.preserved_previous = Some(backup);
+        } else {
+            timings.measure("previous_pack_cleanup", || {
+                fs::remove_dir_all(backup).map_err(Into::into)
+            })?;
+        }
     }
     if record_path.is_file() {
         timings.measure("ownership_record_cleanup", || {
@@ -5188,9 +5382,13 @@ struct PublicationRecord {
     next_manifest_hash: Option<String>,
     generated_artifacts: BTreeMap<String, ArtifactSeal>,
     next_generated_artifacts: BTreeMap<String, ArtifactSeal>,
+    /// An unusable previous manifest cannot prove a runnable pack. Seal all its files and
+    /// retain it after replacement; interrupted publication can restore only those exact bytes.
+    #[serde(default)]
+    preserve_previous: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct ArtifactSeal {
     size: u64,
     sha256: String,
@@ -5212,16 +5410,31 @@ fn manifest_hash(root: &Path) -> Result<Option<String>> {
     }
 }
 
+fn unusable_publication_manifest(output: &Path) -> Result<bool> {
+    let path = output.join("conversion-manifest.json");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    Ok(serde_json::from_slice::<ConversionManifest>(&fs::read(path)?).is_err())
+}
+
 // Seal only generated files here; converted outputs already have manifest hashes.
-fn seal_generated_artifacts(output: &Path) -> Result<BTreeMap<String, ArtifactSeal>> {
+// An unusable manifest provides no converted-output proof, so its entire tree is sealed.
+fn seal_generated_artifacts(
+    output: &Path,
+    allow_unusable_manifest: bool,
+) -> Result<BTreeMap<String, ArtifactSeal>> {
     let manifest_path = output.join("conversion-manifest.json");
     let converted: BTreeSet<String> = if manifest_path.is_file() {
-        let manifest: ConversionManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
-        manifest
-            .entries
-            .values()
-            .map(|entry| entry.output.clone())
-            .collect()
+        match serde_json::from_slice::<ConversionManifest>(&fs::read(&manifest_path)?) {
+            Ok(manifest) => manifest
+                .entries
+                .values()
+                .map(|entry| entry.output.clone())
+                .collect(),
+            Err(_) if allow_unusable_manifest => BTreeSet::new(),
+            Err(error) => return Err(error.into()),
+        }
     } else {
         BTreeSet::new()
     };
@@ -5230,7 +5443,8 @@ fn seal_generated_artifacts(output: &Path) -> Result<BTreeMap<String, ArtifactSe
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| {
-            entry.depth() == 0
+            allow_unusable_manifest
+                || entry.depth() == 0
                 || !matches!(entry.file_name().to_str(), Some("vfs" | ".ingestion-cache"))
         })
     {
@@ -5292,11 +5506,12 @@ fn write_publication_record_with_timings(
     let previous_manifest_hash =
         timings.measure("previous_manifest_hash", || manifest_hash(output))?;
     let next_manifest_hash = timings.measure("next_manifest_hash", || manifest_hash(staging))?;
+    let preserve_previous = unusable_publication_manifest(output)?;
     let generated_artifacts = timings.measure("previous_generated_artifact_sealing", || {
-        seal_generated_artifacts(output)
+        seal_generated_artifacts(output, preserve_previous)
     })?;
     let next_generated_artifacts = timings.measure("next_generated_artifact_sealing", || {
-        seal_generated_artifacts(staging)
+        seal_generated_artifacts(staging, false)
     })?;
     let record = PublicationRecord {
         destination,
@@ -5305,6 +5520,7 @@ fn write_publication_record_with_timings(
         next_manifest_hash,
         generated_artifacts,
         next_generated_artifacts,
+        preserve_previous,
     };
     let (record_path, mut file) = timings.measure("ownership_record_file_creation", || {
         let record_path = publication_record_path(output)?;
@@ -5388,7 +5604,9 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
                 validate_publication_package(output)?;
                 verify_publication_seal(&backup, &record)?;
                 crate::config::check_output_dir(&backup)?;
-                fs::remove_dir_all(&backup)?;
+                if !record.preserve_previous {
+                    fs::remove_dir_all(&backup)?;
+                }
             }
         } else {
             ensure!(
@@ -5398,7 +5616,11 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         }
     } else {
         verify_publication_seal(&backup, &record)?;
-        validate_publication_package(&backup)?;
+        if record.preserve_previous {
+            crate::config::check_output_dir(&backup)?;
+        } else {
+            validate_publication_package(&backup)?;
+        }
         fs::rename(&backup, output).wrap_err("failed to restore owned last-good assets")?;
     }
     fs::remove_file(record_path)?;
@@ -5410,7 +5632,16 @@ fn verify_publication_seal(backup: &Path, record: &PublicationRecord) -> Result<
         backup,
         &record.previous_manifest_hash,
         &record.generated_artifacts,
-    )
+    )?;
+    if record.preserve_previous {
+        // No readable manifest can validate this tree. Check its complete inventory and
+        // reject new paths or symlinks before restoring or retaining the sealed original.
+        ensure!(
+            seal_generated_artifacts(backup, true)? == record.generated_artifacts,
+            "preserved previous pack changed since publication began"
+        );
+    }
+    Ok(())
 }
 
 fn verify_package_seal(
