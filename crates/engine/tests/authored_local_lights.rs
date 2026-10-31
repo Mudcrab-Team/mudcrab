@@ -322,7 +322,10 @@ fn native_fade_sentinel_signed_offsets_and_shadow_falloff_have_explicit_backend_
         (-3.0, 0.0),
         (f32::MAX, f32::MAX),
     ] {
-        let mut source = records(2.0, 4.0, 0.0);
+        // MAX + MAX would overflow without the native sentinel bypass. A small base fade
+        // cannot distinguish the sentinel branch from ordinary rounded floating addition.
+        let base_fade = if offset == f32::MAX { f32::MAX } else { 2.0 };
+        let mut source = records(base_fade, 4.0, 0.0);
         let data = [0.0f32, offset, 0.0, 0.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)

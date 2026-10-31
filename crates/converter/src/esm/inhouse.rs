@@ -125,6 +125,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "reference_linked_refs",
     "reference_activate_parents",
     "reference_details",
+    "reference_light_data",
     "door_links",
     "emittance",
 ];

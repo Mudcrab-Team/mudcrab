@@ -52,6 +52,8 @@ use std::time::Instant;
 
 pub(crate) mod admission;
 pub(crate) mod control;
+#[cfg(test)]
+mod local_light_tests;
 pub(crate) mod lod;
 #[cfg(test)]
 mod merged_tests;
@@ -8860,6 +8862,9 @@ mod tests {
         mut water_materials: ResMut<Assets<WaterMaterial>>,
         mut profiler: ResMut<ProfilingState>,
     ) {
+        if root.0.is_some() {
+            return;
+        }
         root.0 = Some(
             spawn_cell(
                 &mut commands,
@@ -8903,7 +8908,7 @@ mod tests {
 
     /// An app that spawns one interior cell holding `references` through the real [`spawn_cell`],
     /// with the engine's lights flag set as `lights`.
-    fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
+    pub(super) fn spawn_reference_cell_app(references: Vec<ReferenceRow>, lights: bool) -> App {
         spawn_reference_cell_app_with_catalog(references, lights, ActorCatalog::default())
     }
 
@@ -9683,7 +9688,7 @@ mod tests {
     }
 
     /// Every reference the cell spawned, by the form id it was placed with.
-    fn reference_entity(app: &App, form_id: u32) -> Entity {
+    pub(super) fn reference_entity(app: &App, form_id: u32) -> Entity {
         let root = app
             .world()
             .resource::<SpawnedCellRoot>()
