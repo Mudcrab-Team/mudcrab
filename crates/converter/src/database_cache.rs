@@ -81,12 +81,12 @@ fn outputs(reader: RecordReader) -> Vec<&'static str> {
     let mut files = vec![
         "skyrim_world.db",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
         "record-reader.json",
         CONVERSION_NOTES_FILE,
     ];
     if reader == RecordReader::Inhouse {
         files.extend([
-            "cell_cache_preserved.rkyv",
             "inhouse-reader-diagnostics.json",
             inhouse::DATABASE_PROFILE_FILE,
         ]);
@@ -368,8 +368,8 @@ fn validate_bundle(directory: &Path, identity: &Identity) -> Result<()> {
                     .all(|name| profile["counts"][name].is_u64()),
             "incomplete database profile"
         );
-        validate_cell_cache(&directory.join("cell_cache_preserved.rkyv"))?;
     }
+    validate_cell_cache(&directory.join("cell_cache_preserved.rkyv"))?;
     validate_cell_cache(&directory.join("cell_cache.rkyv"))?;
     let reader: serde_json::Value =
         serde_json::from_slice(&fs::read(directory.join("record-reader.json"))?)?;

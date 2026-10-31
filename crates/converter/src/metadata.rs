@@ -14,7 +14,12 @@ use crate::{
         configuration_hash, default_gait_inputs, hash_bytes, hash_file,
         retained_configuration_matches_for_reader,
     },
-    esm::{EsmParser, cell_cache::write_cell_cache, exporter::validate_database},
+    esm::{
+        EsmParser,
+        cell_cache::{write_cell_cache, write_preserved_cell_cache},
+        exporter::validate_database,
+        grass_cache::write_grass_cache,
+    },
     integration::finalize_world_database,
     lod::albedo::terrain_diffuse_paths,
     mesh::{MeshConverter, nif_source_hash, nif_unrepaired_source_hash, prune_glb_texture_bytes},
@@ -57,6 +62,10 @@ struct MetadataProvenance {
     retained_asset_configuration_hash: String,
     retained_asset_hashes: BTreeMap<String, String>,
     replay_verified_pruned_assets: BTreeSet<String>,
+    /// Grass cells newly baked during this metadata rebuild.
+    grass_baked_cells: usize,
+    /// Unchanged cells reused from the source package's valid grass cache.
+    grass_reused_cells: usize,
 }
 
 /// Frozen source and original-asset schema facts validated before staging is created.
@@ -71,7 +80,7 @@ impl AssetPipeline {
     /// Publishes only to a new, disjoint directory. The source package and its
     /// retained GLB/KTX2/Luau bytes are never modified or relabeled in place.
     /// MO2 source selection is unsupported by this package-matched Data route.
-    /// Reader data-loss warnings keep the rebuilt report and manifest incomplete;
+    /// Reader and grass data-loss warnings keep the rebuilt report and manifest incomplete;
     /// successful compatibility notices do not affect their shared completeness rule.
     pub async fn rebuild_metadata_async(
         mut config: PipelineConfig,
@@ -443,7 +452,7 @@ async fn rebuild_into(
     let mut reuse_notices = Vec::new();
     let (retained, replay_verified_pruned_assets) =
         copy_verified_assets(source, staging, manifest, &mut reuse_notices)?;
-    let provenance = MetadataProvenance {
+    let mut provenance = MetadataProvenance {
         record_reader: crate::esm::inhouse::configured_reader_identity(config)?,
         retained_asset_record_reader: retained_reader.clone(),
         retained_asset_schema_json: retained_schemas.addon_bytes().map(<[u8]>::to_vec).collect(),
@@ -459,6 +468,8 @@ async fn rebuild_into(
             .unwrap_or_else(|| manifest.configuration_hash.clone()),
         retained_asset_hashes: retained.clone(),
         replay_verified_pruned_assets,
+        grass_baked_cells: 0,
+        grass_reused_cells: 0,
     };
     let mut report = PipelineReport {
         load_order: plugins
@@ -575,6 +586,7 @@ async fn rebuild_into(
         crate::esm::inhouse::write_terrain_caches(&merged, &database, staging)?;
     } else {
         write_cell_cache(&merged, &staging.join("cell_cache.rkyv"))?;
+        write_preserved_cell_cache(&merged, &staging.join("cell_cache_preserved.rkyv"))?;
     }
     crate::esm::inhouse::write_configured_reader_identity(staging, config)?;
     report.artifacts.push(PathBuf::from("record-reader.json"));
@@ -585,10 +597,10 @@ async fn rebuild_into(
         report
             .artifacts
             .push(PathBuf::from("inhouse-reader-diagnostics.json"));
-        report
-            .artifacts
-            .push(PathBuf::from("cell_cache_preserved.rkyv"));
     }
+    report
+        .artifacts
+        .push(PathBuf::from("cell_cache_preserved.rkyv"));
     // Merged terrain (#215) keeps only the records its stage reads. The LAND each cell keeps is
     // checked here, before the texture, mesh and LOD stages, so a bad load order fails in minutes;
     // the positions are the ones the cell cache above was ordered by.
@@ -679,19 +691,45 @@ async fn rebuild_into(
         integration.issues
     );
     report.integration = Some(integration);
+    let grass = write_grass_cache(
+        &Connection::open(&database)?,
+        staging,
+        &staging.join("cell_cache_preserved.rkyv"),
+        Some(&source.join("grass_cache.rkyv")),
+        &staging.join("grass_cache.rkyv"),
+    )?;
+    provenance.grass_baked_cells = grass.baked_cells;
+    provenance.grass_reused_cells = grass.reused_cells;
+    // Unavailable geometry only limits the optional obstruction mask.
+    report.notices.extend(grass.notices());
+    let grass_warnings = grass.warnings();
+    if !grass_warnings.is_empty() {
+        // Retained asset repair cannot restore grass data omitted by this rebuild.
+        manifest.record_data_complete = Some(false);
+    }
+    report.warnings.extend(grass_warnings);
+    report.artifacts.push(PathBuf::from("grass_cache.rkyv"));
     report
         .artifacts
         .push(PathBuf::from("integration-report.json"));
-    // Albedo is embedded in new LOD payloads. Retained textures still match
-    // the source manifest; validate copied model dependencies separately. The merged terrain
-    // payloads (#215) are generated here too and are validated the same way.
-    let payloads = report
+    // Validate new LOD, merged terrain and grass payloads. Retained textures
+    // match the source manifest; validate copied model dependencies separately.
+    let rebuilt_artifacts = report
         .artifacts
         .iter()
-        .filter(|path| path.starts_with("lod") || path.starts_with("terrain"))
+        .filter(|path| {
+            path.starts_with("lod")
+                || path.starts_with("terrain")
+                || *path == Path::new("grass_cache.rkyv")
+        })
         .cloned()
         .collect::<Vec<_>>();
-    validate_artifacts(staging, &payloads, &BTreeMap::new(), config.cpu_jobs)?;
+    validate_artifacts(
+        staging,
+        &rebuilt_artifacts,
+        &BTreeMap::new(),
+        config.cpu_jobs,
+    )?;
     for path in retained.keys().filter(|path| path.ends_with(".glb")) {
         for dependency in MeshConverter::glb_texture_dependencies(&staging.join(path))? {
             ensure!(
@@ -1218,7 +1256,7 @@ mod tests {
                     output_hash: hash_bytes(b"proven body"),
                 },
             );
-            // A nonempty destination directory makes both copy and remove_file fail
+            // A nonempty destination directory makes publication and remove_file fail
             // deterministically, without relying on permissions or a timing race.
             let blocked = staging.join(relative);
             fs::create_dir_all(&blocked).unwrap();

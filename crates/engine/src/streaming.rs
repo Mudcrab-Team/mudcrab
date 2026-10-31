@@ -4021,13 +4021,7 @@ fn validate_spawned_asset(
 fn has_explicit_material_exclusion(extras: &GltfExtras) -> bool {
     serde_json::from_str::<serde_json::Value>(&extras.value)
         .ok()
-        .and_then(|value| {
-            value
-                .pointer("/openSkyrim/materialExclusion")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some()
+        .is_some_and(|value| shared::model_visibility::explicit_material_exclusion(&value))
 }
 
 pub(crate) fn validate_standard_material(

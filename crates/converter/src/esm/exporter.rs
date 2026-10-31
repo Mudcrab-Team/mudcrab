@@ -287,6 +287,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          );
          CREATE TABLE IF NOT EXISTS landscape_texture_grasses (
              ltex_id INTEGER NOT NULL, gras_id INTEGER NOT NULL,
+             ordinal INTEGER NOT NULL DEFAULT 0,
              PRIMARY KEY (ltex_id, gras_id)
          );
          CREATE TABLE IF NOT EXISTS scripts (
@@ -325,6 +326,13 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a complete export can still insert into it.
     add_missing_columns(conn, "references", &[("emittance_id", "INTEGER")])?;
+    // Mark old rows for read-only recovery from the winning raw LTEX payload.
+    // Subset exports preserve these lists; included LTEX records replace their ordinals.
+    add_missing_columns(
+        conn,
+        "landscape_texture_grasses",
+        &[("ordinal", "INTEGER NOT NULL DEFAULT -1")],
+    )?;
     add_missing_columns(conn, "actor_models", ACTOR_SKIN_TONE_COLUMNS)?;
     add_missing_columns(conn, "actor_models", ACTOR_WEIGHT_COLUMNS)?;
     add_missing_columns(conn, "actor_model_parts", ACTOR_PART_SKIN_COLUMNS)?;
@@ -970,13 +978,19 @@ fn export_records(
                 // empty list, even when other records are outside this export.
                 tx.prepare_cached("DELETE FROM landscape_texture_grasses WHERE ltex_id=?1")?
                     .execute([form_id])?;
-                for (_, data) in record.subrecords.iter().filter(|(tag, _)| tag == b"GNAM") {
+                // Keep the first occurrence of each grass in the winning source list.
+                for (ordinal, (_, data)) in record
+                    .subrecords
+                    .iter()
+                    .filter(|(tag, _)| tag == b"GNAM")
+                    .enumerate()
+                {
                     if let Ok(bytes) = <[u8; 4]>::try_from(data.as_slice()) {
                         let grass_id = u32::from_le_bytes(bytes);
                         if grass_id != 0 {
                             tx.prepare_cached(
-                                "INSERT OR IGNORE INTO landscape_texture_grasses(ltex_id, gras_id) VALUES (?1, ?2)")?.execute(
-                                params![form_id, grass_id],
+                                "INSERT OR IGNORE INTO landscape_texture_grasses(ltex_id, gras_id, ordinal) VALUES (?1, ?2, ?3)")?.execute(
+                                params![form_id, grass_id, ordinal as i64],
                             )?;
                         }
                     }

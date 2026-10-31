@@ -1426,6 +1426,84 @@ mod tests {
     }
 
     #[test]
+    /// Pin the shared resolver's literal initial-state rules through real database loading.
+    fn shared_initial_enable_rules_preserve_database_loading_states() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        enable_columns(&connection);
+        type FixtureRow = (u32, u32, Option<u32>, Option<u32>, bool);
+        let rows: &[FixtureRow] = &[
+            (100, 2048, None, None, false),
+            (101, 0, None, None, true),
+            (102, 16384, None, None, true),
+            (103, 2048, Some(0), Some(1), false),
+            (104, 0, Some(0), None, true),
+            (110, 2048, Some(101), Some(0), true),
+            (111, 0, Some(100), Some(0), false),
+            (112, 0, Some(100), Some(1), true),
+            (113, 0, Some(100), Some(952044802), false),
+            (114, 2048, Some(112), Some(1), false),
+            (115, 0, Some(999), Some(1), false),
+            (116, 0, Some(117), Some(1), false),
+            (117, 0, Some(116), Some(0), false),
+            (118, 0, Some(118), Some(1), false),
+            (119, 2048, Some(20), Some(0), true),
+            (120, 0, Some(20), Some(1), false),
+        ];
+        for &(id, flags, parent, parent_flags, _) in rows {
+            connection.execute(
+                "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale,header_flags,enable_parent_id,enable_parent_flags)
+                 VALUES(?1,600,20,0,0,0,0,0,0,1,?2,?3,?4)",
+                params![id, flags, parent, parent_flags],
+            ).unwrap();
+        }
+        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        for _ in 0..2 {
+            let payload =
+                super::load_cell(&connection, &mut query, 1, CellKey::Interior(600)).unwrap();
+            assert_eq!(payload.references.len(), 16);
+            for &(id, _, _, _, enabled) in rows {
+                let reference = payload
+                    .references
+                    .iter()
+                    .find(|row| row.form_id == id)
+                    .unwrap();
+                assert_eq!(reference.initially_enabled, enabled, "reference {id}");
+            }
+            assert_eq!(query.enable_errors.len(), 3);
+        }
+        assert_eq!(
+            query.enable_states.decision_inputs(114),
+            Some(vec![
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 114,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: Some(112),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 112,
+                    inputs: InitialEnableInputs {
+                        header_flags: 0,
+                        parent_id: Some(100),
+                        parent_flags: 1
+                    },
+                },
+                shared::initial_enable::EnableDecisionInput::Reference {
+                    form_id: 100,
+                    inputs: InitialEnableInputs {
+                        header_flags: 2048,
+                        parent_id: None,
+                        parent_flags: 0
+                    },
+                },
+            ])
+        );
+    }
+
+    #[test]
     fn legacy_reference_columns_default_enabled_but_partial_columns_fail() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);

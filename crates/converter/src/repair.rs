@@ -8,6 +8,7 @@ use crate::{
     },
     check::{CheckMode, CheckProblem, check_output},
     config::{PipelineConfig, TextureEncoder},
+    esm::grass_cache::{validate_grass_cache, write_grass_cache},
     integration::finalize_world_database_with_sources,
     mesh::MeshConverter,
     pipeline::{
@@ -24,6 +25,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, bail, ensure},
 };
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
@@ -43,6 +45,12 @@ pub struct RepairReport {
     /// Record data was verified complete by its last authoritative conversion.
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
+    /// Data-loss warnings from rebuilding the repaired pack's grass cache.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Advisory grass omissions that do not affect the completeness proof.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     pub failures: BTreeMap<String, String>,
 }
 
@@ -202,6 +210,8 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         excluded: 0,
         published: false,
         record_data_complete: manifest.record_data_complete == Some(true),
+        warnings: Vec::new(),
+        notices: Vec::new(),
         failures: BTreeMap::new(),
     };
 
@@ -652,6 +662,31 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         );
         changed.insert("skyrim_world.db".into());
         changed.insert("integration-report.json".into());
+        let grass_path = staged.join("grass_cache.rkyv");
+        let terrain_path = staged.join("cell_cache_preserved.rkyv");
+        let grass = write_grass_cache(
+            &Connection::open(staged.join("skyrim_world.db"))?,
+            &staged,
+            &terrain_path,
+            Some(&config.output_dir.join("grass_cache.rkyv")),
+            &grass_path,
+        )
+        .wrap_err_with(|| {
+            if terrain_path.try_exists().is_ok_and(|exists| !exists) {
+                "failed to rebuild staged grass cache; missing cell_cache_preserved.rkyv requires normal conversion, or metadata rebuild from complete verified assets"
+            } else {
+                "failed to rebuild staged grass cache"
+            }
+        })?;
+        validate_grass_cache(&grass_path)?;
+        report.notices.extend(grass.notices());
+        report.warnings.extend(grass.warnings());
+        if !report.warnings.is_empty() {
+            // Grass loss can clear the proof, but a healthy bake cannot certify prior record loss.
+            manifest.record_data_complete = Some(false);
+            report.record_data_complete = false;
+        }
+        changed.insert("grass_cache.rkyv".into());
         for entry in manifest
             .entries
             .values_mut()
@@ -698,7 +733,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
                 }
             }
         }
-        // Asset repair leaves record data and its exact known/unknown proof untouched.
+        // Asset repair cannot establish a missing proof or clear prior record or grass loss.
         manifest.complete = report.record_data_complete;
         manifest.save(&staged.join("conversion-manifest.json"))?;
         changed.insert("conversion-manifest.json".into());
@@ -1201,6 +1236,7 @@ mod tests {
         assert!(checked_destination(&output, "../outside").is_err());
     }
 
+    /// A failed grass replacement restores every artifact in the repair transaction.
     #[test]
     fn failed_publication_preserves_error_and_restores_pack() {
         let root = tempfile::tempdir().unwrap();
@@ -1208,24 +1244,34 @@ mod tests {
         let staged = root.path().join("staged");
         fs::create_dir(&output).unwrap();
         fs::create_dir(&staged).unwrap();
-        for relative in ["a.luau", "conversion-manifest.json"] {
-            fs::write(output.join(relative), "original").unwrap();
-            fs::write(staged.join(relative), "repaired").unwrap();
+        let artifacts = [
+            "grass_cache.rkyv",
+            "meshes/obstruction.glb",
+            "skyrim_world.db",
+            "conversion-manifest.json",
+        ];
+        for relative in artifacts {
+            fs::create_dir_all(output.join(relative).parent().unwrap()).unwrap();
+            fs::create_dir_all(staged.join(relative).parent().unwrap()).unwrap();
+            fs::write(output.join(relative), format!("original {relative}")).unwrap();
+            fs::write(staged.join(relative), format!("repaired {relative}")).unwrap();
         }
         FAIL_PUBLICATION.with(|flag| flag.set(true));
         let error = publish(
             &output,
             &staged,
             &root.path().join("backup"),
-            &BTreeSet::from(["a.luau".into()]),
+            &artifacts.into_iter().map(str::to_owned).collect(),
         )
         .unwrap_err();
         FAIL_PUBLICATION.with(|flag| flag.set(false));
         assert!(format!("{error:#}").contains("injected publication failure"));
-        assert_eq!(
-            fs::read_to_string(output.join("a.luau")).unwrap(),
-            "original"
-        );
+        for relative in artifacts {
+            assert_eq!(
+                fs::read_to_string(output.join(relative)).unwrap(),
+                format!("original {relative}")
+            );
+        }
         assert!(!sibling_path(&output, "repair-journal.json").exists());
     }
 
@@ -1339,6 +1385,8 @@ mod tests {
                 excluded: 0,
                 published: false,
                 record_data_complete: false,
+                warnings: Vec::new(),
+                notices: Vec::new(),
                 failures: BTreeMap::new(),
             };
             attempt(
