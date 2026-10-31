@@ -71,8 +71,13 @@ try {
 # 4.1 Verify Checksum
 Write-Host "==> Verifying SHA256 checksum..." -ForegroundColor Cyan
 $ChecksumMismatch = $false
+$ChecksumError = $null
 try {
-    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction SilentlyContinue
+    # Do not accept a checksum file left behind by a previous installation attempt.
+    if (Test-Path $TempChecksums) {
+        Remove-Item -Path $TempChecksums -Force
+    }
+    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction Stop
     if (Test-Path $TempChecksums) {
         $ExpectedHash = $null
         Get-Content $TempChecksums | ForEach-Object {
@@ -90,15 +95,22 @@ try {
                 Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
             }
         } else {
-            Write-Warning "No entry for $ArchiveFileName in SHA256SUMS.txt; skipping verification."
+            throw "No entry for $ArchiveFileName in SHA256SUMS.txt."
         }
+    } else {
+        throw "SHA256SUMS.txt was not downloaded."
     }
 } catch {
-    Write-Warning "Could not fetch SHA256SUMS.txt; skipping checksum verification."
+    $ChecksumError = "Checksum verification failed: $_"
 } finally {
     if (Test-Path $TempChecksums) {
         Remove-Item -Path $TempChecksums -Force -ErrorAction SilentlyContinue
     }
+}
+
+if ($ChecksumError) {
+    Write-Error $ChecksumError
+    exit 1
 }
 
 if ($ChecksumMismatch) {
