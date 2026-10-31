@@ -45,7 +45,7 @@ use shared::collision::{
 };
 use shared::lod::LodTier;
 use shared::terrain_mesh::TerrainCellMesh;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Instant;
@@ -572,7 +572,7 @@ pub struct StreamingMetrics {
     pub streaming_fixture_failures: u64,
     pub physics_fixture_validated: bool,
     pub physics_fixture_failures: u64,
-    pub asset_failures: Vec<AssetFailure>,
+    pub asset_failures: AssetFailureLog,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -582,6 +582,70 @@ pub struct AssetFailure {
     pub base_form_id: u32,
     pub cell_id: u32,
     pub dependency_chain: Vec<String>,
+}
+
+/// How many recent [`AssetFailure`] records [`StreamingMetrics`] retains.
+///
+/// A failure is recorded per failing reference per cell commit, and a cell committed again
+/// records the same failure again, so the count grows with play time rather than with content.
+/// The collector bounds what it keeps; [`AssetFailureLog::total`] keeps the exact number
+/// recorded and the bug report exports the newest entries plus that total, so the bound hides
+/// no count. The ring is well above the bug report's export limit so every export the report
+/// can show has retained detail behind it.
+pub const MAX_ASSET_FAILURES: usize = 256;
+
+/// The newest [`MAX_ASSET_FAILURES`] asset failures, plus the exact number ever recorded.
+///
+/// [`Self::push`] is the only way in and applies the bound itself, so no call site can grow
+/// the log without bound. Serialized as the retained failures alone (the shape the profiling
+/// and comparison scripts read); the exact count is published by the bug report through
+/// [`Self::total`].
+#[derive(Debug, Clone, Default)]
+pub struct AssetFailureLog {
+    /// Newest last; `push` evicts the oldest, making this a ring.
+    recent: VecDeque<AssetFailure>,
+    total: u64,
+}
+
+impl AssetFailureLog {
+    /// Records one failure, keeping the newest [`MAX_ASSET_FAILURES`] and the exact total.
+    pub fn push(&mut self, failure: AssetFailure) {
+        self.total = self.total.saturating_add(1);
+        self.recent.push_back(failure);
+        if self.recent.len() > MAX_ASSET_FAILURES {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Every failure ever recorded through this log, including ones no longer retained.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Retained failures; never more than [`MAX_ASSET_FAILURES`].
+    pub fn len(&self) -> usize {
+        self.recent.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recent.is_empty()
+    }
+
+    /// Oldest retained failure first; `.rev()` yields newest first.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AssetFailure> {
+        self.recent.iter()
+    }
+
+    /// The oldest retained failure.
+    pub fn first(&self) -> Option<&AssetFailure> {
+        self.recent.front()
+    }
+}
+
+impl Serialize for AssetFailureLog {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.recent.serialize(serializer)
+    }
 }
 
 #[derive(Resource, Default)]
@@ -5030,6 +5094,51 @@ mod tests {
     use bevy_rapier3d::prelude::{
         AdditionalMassProperties, ColliderMassProperties, QueryFilter, ReadRapierContext, Velocity,
     };
+
+    /// A broken pack re-records the same failure on every cell commit, so the collector, not
+    /// the exporter, must hold the bound: the log keeps the newest entries and the exact total.
+    #[test]
+    fn asset_failures_keep_the_newest_entries_and_an_exact_total() {
+        let mut metrics = StreamingMetrics::default();
+        let recorded = MAX_ASSET_FAILURES + 68;
+        for id in 0..recorded as u32 {
+            metrics.asset_failures.push(AssetFailure {
+                model_path: format!("meshes/model-{id}.nif"),
+                reference_form_id: id,
+                base_form_id: 0,
+                cell_id: 7,
+                dependency_chain: vec!["missing texture".to_owned()],
+            });
+        }
+        assert_eq!(metrics.asset_failures.len(), MAX_ASSET_FAILURES);
+        assert_eq!(
+            metrics
+                .asset_failures
+                .iter()
+                .next_back()
+                .expect("the newest failure is retained")
+                .reference_form_id,
+            recorded as u32 - 1
+        );
+        assert_eq!(
+            metrics
+                .asset_failures
+                .first()
+                .expect("the oldest retained failure")
+                .reference_form_id,
+            68,
+            "the ring drops only the oldest entries"
+        );
+        assert_eq!(metrics.asset_failures.total(), recorded as u64);
+        assert!(!metrics.asset_failures.is_empty());
+        // The reported streaming JSON keeps its array shape for the comparison scripts; the
+        // exact count is published by the bug report.
+        let json = serde_json::to_value(&metrics).unwrap();
+        assert_eq!(
+            json["asset_failures"].as_array().unwrap().len(),
+            MAX_ASSET_FAILURES
+        );
+    }
 
     #[test]
     fn a_capsule_hull_covers_the_diagonals_of_its_end_spheres() {
