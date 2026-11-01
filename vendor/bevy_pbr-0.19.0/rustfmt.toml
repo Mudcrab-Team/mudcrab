@@ -1,0 +1,2 @@
+# Preserve the published crate formatting in workspace checks.
+style_edition = "2021"
