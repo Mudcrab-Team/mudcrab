@@ -1038,10 +1038,12 @@ fn update_water_reflection_camera(
         main_camera.single()
     else {
         *geometry = None;
+        deactivate_water_reflection_camera(&mut reflections);
         return;
     };
     let Some(main) = main.filter(|_| has_transform) else {
         *geometry = None;
+        deactivate_water_reflection_camera(&mut reflections);
         warn_once!("water reflection camera has no valid current main-camera transform");
         return;
     };
@@ -1172,6 +1174,19 @@ fn update_water_reflection_camera(
         camera.is_active = active;
     }
     profiler.record_elapsed("render/water_reflection_camera", started);
+}
+
+/// Switches the reflection camera off once its cached geometry is gone: with no current world
+/// camera there is no pose to mirror, and an active camera would redraw a stale one every frame.
+/// The next valid world camera rebuilds the geometry and decides the switch again.
+fn deactivate_water_reflection_camera(
+    reflections: &mut Query<WaterReflectionCameraParts, With<WaterReflectionCamera>>,
+) {
+    if let Ok((_, _, mut camera, _, _)) = reflections.single_mut()
+        && camera.is_active
+    {
+        camera.is_active = false;
+    }
 }
 
 fn same_reflection_lens(a: &PerspectiveProjection, b: &PerspectiveProjection) -> bool {
@@ -2940,6 +2955,47 @@ mod tests {
     #[test]
     fn reflection_camera_stays_off_without_water() {
         let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        assert!(!harness.frame().active);
+    }
+
+    /// The cached geometry is cleared when the world camera is missing or has no transform; the
+    /// extra reflection pass must go with it instead of redrawing a stale pose every frame.
+    #[test]
+    fn reflection_camera_turns_off_when_the_world_camera_goes_away() {
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert!(harness.frame().active);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .remove::<StreamingCamera>();
+        assert!(
+            !harness.frame().active,
+            "no world camera, nothing to reflect"
+        );
+        assert!(!harness.frame().active);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .insert(StreamingCamera);
+        assert!(harness.frame().active, "and it returns with the camera");
+    }
+
+    #[test]
+    fn reflection_camera_turns_off_when_the_world_camera_loses_its_transform() {
+        let mut harness = ReflectionHarness::new(Transform::from_xyz(0.0, 120.0, 0.0));
+        harness.spawn_water(Vec3::new(0.0, 40.0, -800.0), CELL_WATER_HALF_EXTENTS);
+        assert!(harness.frame().active);
+
+        harness
+            .app
+            .world_mut()
+            .entity_mut(harness.main_camera)
+            .remove::<Transform>();
         assert!(!harness.frame().active);
     }
 

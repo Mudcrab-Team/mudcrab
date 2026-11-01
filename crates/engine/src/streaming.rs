@@ -30,7 +30,10 @@ use bevy::{
     app::{Propagate, SceneSpawnerSystems},
     asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages},
     camera::{primitives::MeshAabb, visibility::RenderLayers},
-    ecs::system::SystemParam,
+    ecs::{
+        schedule::ScheduleConfigs,
+        system::{ScheduleSystem, SystemParam},
+    },
     gltf::{GltfExtras, GltfMaterialName, GltfSceneExtras},
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler},
     math::Affine3A,
@@ -170,6 +173,17 @@ type SpawnedNodeQuery<'world, 'state> = Query<
     ),
 >;
 
+/// The plan-then-dispose stage of the streaming chain: both planners, then the shared unload pacer.
+///
+/// Planners revive a retiring root that came back into the keep-set, and only then may the pacer
+/// destroy roots, so a root that is wanted again never reaches the budget. Cells and LOD chunks
+/// must both be planned first (a chunk planned after [`despawn_cells`] loses its root to the
+/// budget the frame the camera turns back). The plugin and the lifecycle tests share this
+/// function, so the tests step the order production runs.
+fn plan_then_unload() -> ScheduleConfigs<ScheduleSystem> {
+    (plan_cells, lod::plan_lod_chunks, despawn_cells).chain()
+}
+
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
         identity_changes::install_terrain(app.world_mut());
@@ -194,9 +208,7 @@ impl Plugin for StreamingPlugin {
                 Update,
                 (
                     runtime::update_streaming_control,
-                    plan_cells,
-                    despawn_cells,
-                    lod::plan_lod_chunks,
+                    plan_then_unload(),
                     collect_cells,
                     lod::collect_lod_chunks,
                     requests::dispatch_scene_requests,
@@ -658,6 +670,10 @@ pub struct StreamingMetrics {
     pub unrecovered_lod_chunks: usize,
     pub resident_lod_chunks: usize,
     pub pending_lod_chunks: usize,
+    /// Ready LOD chunks whose terrain batches are not yet built (CPU) or not yet confirmed
+    /// uploaded to the GPU: they still change what the frame draws after the chunks are resident.
+    /// Zero while terrain batching is disabled.
+    pub pending_lod_terrain_batches: usize,
     pub ready_lod_terrain_patches: u64,
     pub visible_lod_terrain_patches: usize,
     pub total_lod_query_micros: u64,
@@ -6619,6 +6635,16 @@ mod tests {
     /// in `StreamingPlugin`. `collect_cells` is left out, so a requested cell stays `Loading` and
     /// the test drives the resident cells itself through [`spawn_resident_cell`].
     fn streaming_test_app(config: EngineConfig) -> (App, tempfile::TempDir) {
+        let (mut app, directory) = streaming_resources_app(config);
+        app.add_systems(
+            Update,
+            (plan_cells, despawn_cells, validate_streaming_lifecycle).chain(),
+        );
+        (app, directory)
+    }
+
+    /// The resources the cell and LOD planners and the unload pacer run on, with no system added.
+    fn streaming_resources_app(config: EngineConfig) -> (App, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
@@ -6640,11 +6666,7 @@ mod tests {
             .init_resource::<lod::LodStreaming>()
             .init_resource::<TerrainContinuity>()
             .init_resource::<ActiveSpace>()
-            .init_resource::<ProfilingState>()
-            .add_systems(
-                Update,
-                (plan_cells, despawn_cells, validate_streaming_lifecycle).chain(),
-            );
+            .init_resource::<ProfilingState>();
         (app, directory)
     }
 
@@ -6814,6 +6836,8 @@ mod tests {
                 Visibility::default(),
             ))
             .id();
+        // This fixture injects only a window leak, not a second terrain-loss violation.
+        world.spawn((Transform::default(), TerrainPatch, ChildOf(root)));
         world
             .resource_mut::<StreamingWorld>()
             .cells
@@ -7215,6 +7239,64 @@ mod tests {
             "the budget never reached it, so nothing was unloaded"
         );
         assert_eq!(metrics.resident_lod_chunks, 1);
+    }
+
+    /// The exact sequence the review reported, stepped through the production plan-then-unload
+    /// stage: a chunk retires on a budget frame that does not reach it, the camera turns back, and
+    /// the next frame's budget would reach it. The planner has to revive it before the pacer runs.
+    #[test]
+    fn a_chunk_wanted_again_is_revived_before_the_unload_budget_reaches_it() {
+        let (mut app, _directory) = streaming_resources_app(crossing_config(1));
+        app.add_systems(Update, plan_then_unload());
+        let worldspace = app.world().resource::<EngineConfig>().worldspace_id;
+        spawn_camera(&mut app, IVec2::ZERO);
+        let chunk = lod::LodStreaming::spawn_ready_chunk_for_test(
+            app.world_mut(),
+            worldspace,
+            shared::lod::ChunkAnchor::new(0, 0),
+            shared::lod::LodOrigin::new(0, 0),
+        );
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<lod::LodStreaming>()
+                .retiring_chunks_for_test(),
+            0,
+            "the chunk is wanted while the camera stands over it"
+        );
+
+        // A far retiring cell takes the one root of the first budget, so the chunk that retires
+        // with it waits for the next frame.
+        spawn_mock_cell(&mut app, -30, 30, false);
+        move_camera(&mut app, IVec2::new(500, 0));
+        app.update();
+        let lod = app.world().resource::<lod::LodStreaming>();
+        assert_eq!(
+            lod.retiring_chunks_for_test(),
+            1,
+            "the chunk left the keep-set"
+        );
+        assert!(
+            app.world().get_entity(chunk).is_ok(),
+            "the budget went to the cell, so the chunk still has its root"
+        );
+
+        // Turn back. The budget is free to reach the chunk this frame; it is wanted again, so it
+        // must be revived first.
+        move_camera(&mut app, IVec2::new(-500, 0));
+        app.update();
+        assert!(
+            app.world().get_entity(chunk).is_ok(),
+            "a chunk that is wanted again keeps the root the pacer would have destroyed"
+        );
+        let lod = app.world().resource::<lod::LodStreaming>();
+        assert_eq!(lod.retiring_chunks_for_test(), 0);
+        assert_eq!(lod.resident_chunks_for_test(), 1);
+        assert_ne!(
+            app.world().get::<Visibility>(chunk),
+            Some(&Visibility::Hidden),
+            "and it draws again"
+        );
     }
 
     #[test]

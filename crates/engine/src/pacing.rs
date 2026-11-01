@@ -54,6 +54,10 @@ pub struct WorldReadyInputs {
     /// will still change the frame, so the world is not ready while either is nonzero.
     pub pending_lod_queries: usize,
     pub pending_lod_chunks: usize,
+    /// Resident LOD chunks whose terrain batches are still being built or uploaded: the draw swaps
+    /// from the original quadrant meshes to the batches later, with no `SwapWaiting` marker to
+    /// hold [`Self::pending_drawn`].
+    pub pending_lod_terrain_batches: usize,
 }
 
 impl WorldReadyInputs {
@@ -72,6 +76,7 @@ impl WorldReadyInputs {
             && self.pending_drawn == 0
             && self.pending_lod_queries == 0
             && self.pending_lod_chunks == 0
+            && self.pending_lod_terrain_batches == 0
     }
 
     fn from_streaming(
@@ -95,6 +100,7 @@ impl WorldReadyInputs {
             pending_drawn,
             pending_lod_queries: metrics.pending_lod_queries,
             pending_lod_chunks: metrics.pending_lod_chunks,
+            pending_lod_terrain_batches: metrics.pending_lod_terrain_batches,
         }
     }
 }
@@ -580,7 +586,7 @@ mod tests {
 
     #[test]
     fn each_condition_alone_holds_the_world_back() {
-        let holds_back: [fn(&mut WorldReadyInputs); 10] = [
+        let holds_back: [fn(&mut WorldReadyInputs); 11] = [
             |i| i.resident_window_cells = 24,
             |i| i.loading_cells = 1,
             |i| i.active_requests = 1,
@@ -590,6 +596,7 @@ mod tests {
             |i| i.pending_drawn = 1,
             |i| i.pending_lod_queries = 1,
             |i| i.pending_lod_chunks = 1,
+            |i| i.pending_lod_terrain_batches = 1,
             |i| i.window_cells = 0,
         ];
         for (index, hold) in holds_back.iter().enumerate() {
@@ -1077,6 +1084,10 @@ mod tests {
             },
             StreamingMetrics {
                 pending_lod_chunks: 1,
+                ..default()
+            },
+            StreamingMetrics {
+                pending_lod_terrain_batches: 1,
                 ..default()
             },
         ] {

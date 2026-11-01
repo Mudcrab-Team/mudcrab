@@ -2545,6 +2545,7 @@ mod tests {
         };
         app.insert_resource(config)
             .init_resource::<StreamingCommitBudget>()
+            .init_resource::<StreamingMetrics>()
             .init_resource::<LodStreaming>()
             .init_resource::<ProfilingState>();
         let first = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
@@ -2638,6 +2639,7 @@ mod tests {
             ..default()
         })
         .init_resource::<StreamingCommitBudget>()
+        .init_resource::<StreamingMetrics>()
         .init_resource::<LodStreaming>()
         .init_resource::<ProfilingState>();
         let fixture = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
@@ -3356,6 +3358,77 @@ mod tests {
             Some(0.0)
         );
         assert_selection_upload_gauge(&app, 0);
+    }
+
+    /// The world-ready input follows a ready chunk through batch creation and the initial upload,
+    /// with no frame in between where both are zero while work remains.
+    #[test]
+    fn world_ready_batching_input_covers_batch_creation_and_initial_upload() {
+        let pending = |app: &App| {
+            app.world()
+                .resource::<StreamingMetrics>()
+                .pending_lod_terrain_batches
+        };
+        let mut app = selection_app();
+        let fixture = fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+        ready_source(&mut app, &fixture);
+        app.update();
+        assert_eq!(pending(&app), 0, "nothing queued, nothing pending");
+
+        queue_source(&mut app, &fixture);
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .max_commit_micros_per_frame = 0;
+        app.update();
+        assert!(app.world().get::<LodTerrainBatches>(fixture.root).is_none());
+        assert_eq!(
+            pending(&app),
+            1,
+            "the queued chunk is waiting for its batches"
+        );
+        app.world_mut()
+            .resource_mut::<EngineConfig>()
+            .max_commit_micros_per_frame = 1_000_000;
+        app.update();
+        assert!(app.world().get::<LodTerrainBatches>(fixture.root).is_some());
+        app.update();
+        assert_eq!(
+            pending(&app),
+            1,
+            "built but not yet confirmed on the GPU is still pending"
+        );
+        acknowledge_uploads(&app, fixture.root);
+        app.update();
+        app.update();
+        assert_eq!(pending(&app), 0, "the initial upload finished");
+        let settled_selector = selector_last_run(&app);
+        app.update();
+        assert_eq!(pending(&app), 0);
+        assert_eq!(selector_last_run(&app), settled_selector);
+
+        // Disabled batching discards queued conversions and does not hold readiness back.
+        for request_controls in [false, true] {
+            let mut app = selection_app();
+            if request_controls {
+                app.world_mut()
+                    .resource_mut::<EngineConfig>()
+                    .prioritize_streaming = true;
+            } else {
+                app.world_mut()
+                    .remove_resource::<TerrainMeshUploadReadiness>();
+            }
+            let fixture = self::fixture(&mut app, &[IVec2::ZERO], LodTier::Tier4);
+            ready_source(&mut app, &fixture);
+            queue_source(&mut app, &fixture);
+            app.update();
+            assert_eq!(pending(&app), 0);
+            assert!(app.world().get::<LodTerrainBatches>(fixture.root).is_none());
+            assert!(
+                app.world()
+                    .get::<PendingLodTerrainBatching>(fixture.root)
+                    .is_none()
+            );
+        }
     }
 
     fn selector_last_run(app: &App) -> bevy::ecs::change_detection::Tick {

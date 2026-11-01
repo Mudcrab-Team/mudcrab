@@ -281,19 +281,42 @@ fn leave_keep_set(
 /// leave took ([`super::RetireHidden`]); a root without that marker - one something else hid, or
 /// one never shown - is left alone.
 ///
+/// A chunk that failed while it was retiring comes back as that failure ([`RetiredLodFailure`]):
+/// its root never draws, so it goes the way a failed load's root goes, and the table keeps the
+/// failure with its retry state.
+///
 /// Returns whether `status` was retiring and can come back ([`LodChunkStatus::Retiring`]).
 fn revive_left_chunk(
     commands: &mut Commands,
     chunk_visibility: &Query<'_, '_, (&Visibility, Option<&super::RetireHidden>)>,
-    chunk_roots: &Query<'_, '_, (&LodChunkRoot, Option<&PendingLodChunk>)>,
+    chunk_roots: &Query<
+        '_,
+        '_,
+        (
+            &LodChunkRoot,
+            Option<&PendingLodChunk>,
+            Option<&RetiredLodFailure>,
+        ),
+    >,
     status: &mut LodChunkStatus,
 ) -> bool {
     let (root, origin) = match *status {
         LodChunkStatus::Retiring { root, origin } => (root, origin),
         _ => return false,
     };
-    let (generation, still_loading) =
-        chunk_roots.get(root).map_or((0, false), |(root, pending)| {
+    if let Ok((_, _, Some(failure))) = chunk_roots.get(root) {
+        *status = LodChunkStatus::Failed {
+            origin,
+            metadata: failure.metadata.clone(),
+            retry_count: failure.retry_count,
+            retry_at: failure.retry_at,
+        };
+        commands.entity(root).try_despawn();
+        return true;
+    }
+    let (generation, still_loading) = chunk_roots
+        .get(root)
+        .map_or((0, false), |(root, pending, _)| {
             (root.generation, pending.is_some())
         });
     if still_loading {
@@ -333,6 +356,19 @@ impl LodChunkGridOrigin {
             grid_y: 0,
         }
     }
+}
+
+/// A failure found while the chunk was already waiting for disposal.
+///
+/// The root is the unload pacer's, so the failure is saved on it instead of despawning it from
+/// the failure path; a chunk that comes back before the pacer reaches it takes the failure back
+/// into the table ([`revive_left_chunk`]), where the usual retry rules apply, instead of
+/// reviving as a load that has nothing left to finish.
+#[derive(Component)]
+pub(super) struct RetiredLodFailure {
+    metadata: LodChunkMetadata,
+    retry_count: u8,
+    retry_at: Option<Instant>,
 }
 
 #[derive(Component)]
@@ -436,7 +472,11 @@ pub(super) fn plan_lod_chunks(
     origin: Res<RenderOrigin>,
     camera: Query<&Transform, With<StreamingCamera>>,
     chunk_visibility: Query<(&Visibility, Option<&super::RetireHidden>)>,
-    chunk_roots: Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
+    chunk_roots: Query<(
+        &LodChunkRoot,
+        Option<&PendingLodChunk>,
+        Option<&RetiredLodFailure>,
+    )>,
     mut streaming: ResMut<LodStreaming>,
     mut budget: ResMut<StreamingCommitBudget>,
     mut metrics: ResMut<StreamingMetrics>,
@@ -972,6 +1012,7 @@ pub(super) fn batch_ready_lod_chunks(
         &terrain_batching::PendingLodTerrainBatching,
     )>,
     mut streaming: ResMut<LodStreaming>,
+    mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
 ) {
     streaming.terrain_batch_commit_used = false;
@@ -992,18 +1033,26 @@ pub(super) fn batch_ready_lod_chunks(
                 .entity(entity)
                 .remove::<terrain_batching::PendingLodTerrainBatching>();
         }
-        record_terrain_batch_progress(&mut streaming, &mut profiler, 0, pending_gpu);
+        record_terrain_batch_progress(&mut streaming, &mut metrics, &mut profiler, 0, pending_gpu);
         return;
     }
-    record_terrain_batch_progress(&mut streaming, &mut profiler, pending_cpu, pending_gpu);
     if !preparation.has_render_backend() {
+        // No batch will ever be built, so none is pending for the world-ready check either.
         for (entity, _, _) in &pending {
             commands
                 .entity(entity)
                 .remove::<terrain_batching::PendingLodTerrainBatching>();
         }
+        record_terrain_batch_progress(&mut streaming, &mut metrics, &mut profiler, 0, pending_gpu);
         return;
     }
+    record_terrain_batch_progress(
+        &mut streaming,
+        &mut metrics,
+        &mut profiler,
+        pending_cpu,
+        pending_gpu,
+    );
     if !terrain_batch_budget_available(&budget, config.max_commit_micros_per_frame) {
         return;
     }
@@ -1054,13 +1103,18 @@ pub(super) fn batch_ready_lod_chunks(
     profiler.record_elapsed("lod/terrain_batch_commit", started);
 }
 
+/// Publishes the pending batch work: the gauges, and the metric the world-ready check reads. A
+/// ready chunk's batches are built and uploaded after the chunk counts as resident, and nothing
+/// else holds the world-ready mark for that work.
 fn record_terrain_batch_progress(
     streaming: &mut LodStreaming,
+    metrics: &mut StreamingMetrics,
     profiler: &mut ProfilingState,
     pending_cpu: usize,
     pending_gpu: usize,
 ) {
     streaming.terrain_batch_pending_cpu_chunks = pending_cpu;
+    metrics.pending_lod_terrain_batches = pending_cpu.saturating_add(pending_gpu);
     profiler.set_gauge("lod/pending_terrain_batch_chunks", pending_cpu as f64);
     profiler.set_gauge(
         "lod/pending_initial_terrain_upload_chunks",
@@ -1182,11 +1236,22 @@ fn fail_chunk(
         }
         // A chunk that is already leaving: its root is the unload pacer's, not this function's -
         // despawning it here would put a single despawn back on the frame the retire exists to
-        // keep off it.
+        // keep off it. The failure is kept on the root for a revival to take back, and the
+        // pending load is dropped: it can no longer finish, and a failed load or hash task must
+        // not be read again (or fail again every frame) while the root waits.
         Some(LodChunkStatus::Retiring {
             root: expected_root,
             ..
-        }) if expected_root == entity => {}
+        }) if expected_root == entity => {
+            commands
+                .entity(entity)
+                .try_insert(RetiredLodFailure {
+                    metadata: metadata.clone(),
+                    retry_count: root.retry_count,
+                    retry_at,
+                })
+                .try_remove::<PendingLodChunk>();
+        }
         _ => {
             commands.entity(entity).try_despawn();
         }
@@ -3296,7 +3361,11 @@ mod tests {
             Commands,
             ResMut<LodStreaming>,
             Query<(&Visibility, Option<&super::super::RetireHidden>)>,
-            Query<(&LodChunkRoot, Option<&PendingLodChunk>)>,
+            Query<(
+                &LodChunkRoot,
+                Option<&PendingLodChunk>,
+                Option<&RetiredLodFailure>,
+            )>,
         )>::new(world);
         let revived;
         {
@@ -3377,6 +3446,11 @@ mod tests {
         state.apply(&mut world);
         assert_eq!(metrics.failed_lod_chunks, 1);
         assert!(world.get_entity(root).is_ok());
+        assert!(
+            world.get::<RetiredLodFailure>(root).is_some(),
+            "the failure waits on the root for a revival"
+        );
+        assert!(world.get::<PendingLodChunk>(root).is_none());
         assert_eq!(world.get::<Visibility>(root), Some(&Visibility::Hidden));
         assert_eq!(
             world.resource::<LodStreaming>().retiring_chunks(),
@@ -3410,6 +3484,134 @@ mod tests {
                 .chunks
                 .contains_key(&metadata.key)
         );
+    }
+
+    /// The sequence the review reported, stepped through the real planner and readiness systems:
+    /// a chunk's integrity check fails while the chunk waits for disposal, and the player returns
+    /// before the unload pacer reaches its root. The failure must come back with the chunk.
+    #[test]
+    fn a_failure_found_while_retiring_is_still_a_failure_after_revival() {
+        use bevy::asset::{AssetApp, AssetPlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("world.db");
+        crate::streaming::tests::write_plan_database(&path);
+        let config = EngineConfig::default();
+        let worldspace = config.worldspace_id;
+        let mut metadata = retry_test_metadata();
+        metadata.key = ChunkKey::new(
+            worldspace,
+            LodTier::Tier16,
+            shared::lod::ChunkAnchor::new(0, 0),
+        );
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<WorldAsset>()
+            .init_asset::<Mesh>()
+            .insert_resource(config)
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(ActiveSpace {
+                worldspace_id: Some(worldspace),
+                interior: None,
+            })
+            .insert_resource(WorldDatabase::open(&path).unwrap())
+            .init_resource::<LodStreaming>()
+            .init_resource::<StreamingCommitBudget>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<ProfilingState>()
+            .add_systems(Update, (plan_lod_chunks, track_lod_readiness).chain());
+        app.world_mut().spawn((
+            Transform::from_translation(Vec3::new(100.0, 40.0, -200.0)),
+            StreamingCamera,
+        ));
+        // No result is available until the test installs the completed integrity check below.
+        let root = app
+            .world_mut()
+            .spawn((
+                LodChunkRoot {
+                    key: metadata.key,
+                    generation: 0,
+                    origin: metadata.origin,
+                    retry_count: 0,
+                },
+                Visibility::Hidden,
+                PendingLodChunk {
+                    metadata: metadata.clone(),
+                    asset: Some(Handle::default()),
+                    scene_spawned: false,
+                    hash_task: None,
+                    hash_verified: false,
+                    started: Instant::now(),
+                },
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<LodStreaming>()
+            .chunks
+            .insert(
+                metadata.key,
+                LodChunkStatus::Loading {
+                    root,
+                    generation: 0,
+                    origin: metadata.origin,
+                },
+            );
+        app.update();
+
+        // The player steps into an interior: the loading chunk leaves and waits for disposal.
+        app.world_mut().resource_mut::<ActiveSpace>().interior = Some(99);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<LodStreaming>()
+                .retiring_chunks_for_test(),
+            1
+        );
+
+        let hash_task = IoTaskPool::get()
+            .spawn(async { Err(LodChunkFailure::terminal("fixture hash mismatch")) });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !hash_task.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the integrity check never reported"
+            );
+            std::thread::yield_now();
+        }
+        app.world_mut()
+            .get_mut::<PendingLodChunk>(root)
+            .unwrap()
+            .hash_task = Some(hash_task);
+        app.update();
+        assert!(
+            app.world().get_entity(root).is_ok(),
+            "disposal is the pacer's"
+        );
+        assert_eq!(
+            app.world().resource::<StreamingMetrics>().failed_lod_chunks,
+            1
+        );
+
+        // The player comes back before the pacer reaches the root.
+        app.world_mut().resource_mut::<ActiveSpace>().interior = None;
+        for _ in 0..3 {
+            app.update();
+        }
+        let streaming = app.world().resource::<LodStreaming>();
+        assert!(
+            matches!(
+                streaming.chunks.get(&metadata.key),
+                Some(LodChunkStatus::Failed { retry_at: None, .. })
+            ),
+            "a terminal failure found while retiring comes back as a failure, not as loading"
+        );
+        assert!(
+            app.world().get_entity(root).is_err(),
+            "the failed chunk's root, which would never draw, is gone like any failed load's"
+        );
+        let metrics = app.world().resource::<StreamingMetrics>();
+        assert_eq!(metrics.unrecovered_lod_chunks, 1);
+        assert_eq!(metrics.failed_lod_chunks, 1, "and it is counted once");
     }
 
     #[test]
