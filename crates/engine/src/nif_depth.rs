@@ -9,10 +9,7 @@ use bevy::{
     },
 };
 
-pub const DEPTH_TEST: u32 = 1 << 31;
-pub const DEPTH_WRITE: u32 = 1;
-pub const DECAL: u32 = 1 << 26;
-pub const DYNAMIC_DECAL: u32 = 1 << 27;
+pub use shared::material_depth::{DECAL, DEPTH_TEST, DEPTH_WRITE, DYNAMIC_DECAL};
 // SkyrimShaderPropertyFlags1, vendor/project-wormhole-nif/src/nif_flags.rs.
 pub const CAST_SHADOWS: u32 = 1 << 9;
 
@@ -44,7 +41,11 @@ impl NifDepthState {
         let decal = flags_1 & (DECAL | DYNAMIC_DECAL) != 0;
         // Stock blending already avoids depth writes. Ordinary depth-writing surfaces keep
         // their existing opaque/cutout/prepass path.
-        if !decal && depth_test && (depth_write || matches!(alpha_mode, AlphaMode::Blend)) {
+        if !shared::material_depth::requires_sorted_depth_pass(
+            flags_1,
+            flags_2,
+            matches!(alpha_mode, AlphaMode::Blend),
+        ) {
             return None;
         }
         Some(Self {
