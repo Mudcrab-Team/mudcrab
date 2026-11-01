@@ -465,8 +465,10 @@ impl IngestionSelection {
     pub fn recipe(self) -> &'static str {
         match self {
             Self::All => "all-v1",
-            Self::ConverterInputsV1 => "converter-inputs-v2",
-            Self::RuntimeEnglishV1 => "runtime-english-v2",
+            Self::ConverterInputsV1 => "converter-inputs-v3",
+            Self::RuntimeEnglishV1 => "runtime-english-v3",
+            Self::ClusterEnglishV1 => "cluster-english-v2",
+            Self::ClusterInputsV1 => "cluster-inputs-v2",
         }
     }
 
@@ -477,8 +479,10 @@ impl IngestionSelection {
     fn accepts_recipe(self, recipe: &str) -> bool {
         let proven = match recipe {
             "" | "all-v1" => Self::All,
-            "converter-inputs-v2" => Self::ConverterInputsV1,
-            "runtime-english-v2" => Self::RuntimeEnglishV1,
+            "converter-inputs-v3" => Self::ConverterInputsV1,
+            "runtime-english-v3" => Self::RuntimeEnglishV1,
+            "cluster-english-v2" => Self::ClusterEnglishV1,
+            "cluster-inputs-v2" => Self::ClusterInputsV1,
             _ => return false,
         };
         proven.can_satisfy(self)
@@ -927,6 +931,20 @@ pub(crate) fn is_animation_input(path: &Path) -> bool {
 }
 
 fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
+    // Actor animation inputs belong to every current filtered profile. Native LOD is opt-in.
+    // The inventory consumer owns the added namespace; extensions elsewhere stay unselected.
+    match selection {
+        IngestionSelection::ClusterEnglishV1 | IngestionSelection::ClusterInputsV1 => {
+            let base = if selection == IngestionSelection::ClusterEnglishV1 {
+                IngestionSelection::RuntimeEnglishV1
+            } else {
+                IngestionSelection::ConverterInputsV1
+            };
+            return selection_includes(base, path)
+                && !crate::baked_sources::is_baked_geometry_input(path);
+        }
+        _ => {}
+    }
     if selection == IngestionSelection::All {
         return true;
     }
@@ -962,6 +980,136 @@ fn selection_includes(selection: IngestionSelection, path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.ends_with("_english"))
+}
+
+#[cfg(test)]
+mod cluster_selection_tests {
+    use super::*;
+
+    #[test]
+    fn composed_profiles_include_animation_without_trusting_ambiguous_old_recipes() {
+        for selection in [
+            IngestionSelection::RuntimeEnglishV1,
+            IngestionSelection::ConverterInputsV1,
+            IngestionSelection::ClusterEnglishV1,
+            IngestionSelection::ClusterInputsV1,
+        ] {
+            assert!(selection.includes(Path::new(
+                "meshes/actors/character/character assets/skeleton.hkx"
+            )));
+            assert!(selection.includes(Path::new(
+                "meshes/actors/character/animations/male/mt_idle.hkx"
+            )));
+            assert!(!selection.includes(Path::new("meshes/other/unrelated.hkx")));
+            for recipe in [
+                "runtime-english-v1",
+                "converter-inputs-v1",
+                "runtime-english-v2",
+                "converter-inputs-v2",
+                "cluster-english-v1",
+                "cluster-inputs-v1",
+            ] {
+                assert!(!selection.accepts_recipe(recipe), "{selection:?}: {recipe}");
+            }
+            assert!(selection.accepts_recipe(selection.recipe()));
+        }
+    }
+
+    #[test]
+    fn cluster_cache_coverage_never_proves_baked_inventory_on_mode_change() {
+        for cluster in [
+            IngestionSelection::ClusterEnglishV1,
+            IngestionSelection::ClusterInputsV1,
+        ] {
+            let cached = IngestionCacheEntry {
+                source_hash: hash_bytes(b"invented archive bytes"),
+                selection: cluster,
+                recipe: cluster.recipe().into(),
+                files: vec![IngestedFile {
+                    path: "meshes/world/object.nif".into(),
+                    size: 3,
+                    hash: hash_bytes(b"nif"),
+                }],
+                reader_version: BSA_READER_VERSION,
+            };
+            assert!(cached.covers(cluster));
+            for baked in [
+                IngestionSelection::All,
+                IngestionSelection::RuntimeEnglishV1,
+                IngestionSelection::ConverterInputsV1,
+            ] {
+                assert!(!cluster.can_satisfy(baked));
+                assert!(!baked.accepts_recipe(cluster.recipe()));
+                assert!(!cached.covers(baked), "{cluster:?} cannot cover {baked:?}");
+                // Both the profile and its recipe must prove the requested inventory.
+                let wrong_profile = IngestionCacheEntry {
+                    recipe: baked.recipe().into(),
+                    ..cached.clone()
+                };
+                assert!(!wrong_profile.covers(baked));
+                let wrong_recipe = IngestionCacheEntry {
+                    selection: baked,
+                    ..cached.clone()
+                };
+                assert!(!wrong_recipe.covers(baked));
+            }
+            for path in [
+                "meshes/world/object.nif",
+                "textures/landscape/ground.dds",
+                "LODSettings/Custom.LOD",
+            ] {
+                assert!(selection_includes(cluster, Path::new(path)), "{path}");
+            }
+            for path in [
+                "meshes/terrain/custom/custom.4.0.0.btr",
+                "meshes/terrain/custom/objects/custom.4.0.0.bto",
+                "meshes/terrain/custom/trees/custom.lst",
+                "meshes/terrain/custom/trees/custom.4.0.0.btt",
+                "textures/terrain/custom/trees/atlas.dds",
+                "textures/terrain/custom/objects/atlas.dds",
+                "textures/terrain/custom/custom.4.0.0.dds",
+                "textures/lod/atlas.dds",
+            ] {
+                assert!(!selection_includes(cluster, Path::new(path)), "{path}");
+            }
+        }
+        assert!(
+            IngestionSelection::ConverterInputsV1.can_satisfy(IngestionSelection::ClusterInputsV1)
+        );
+        assert!(
+            IngestionSelection::RuntimeEnglishV1.can_satisfy(IngestionSelection::ClusterEnglishV1)
+        );
+        for (baked, cluster) in [
+            (IngestionSelection::All, IngestionSelection::ClusterInputsV1),
+            (
+                IngestionSelection::ConverterInputsV1,
+                IngestionSelection::ClusterInputsV1,
+            ),
+            (
+                IngestionSelection::RuntimeEnglishV1,
+                IngestionSelection::ClusterEnglishV1,
+            ),
+        ] {
+            let cached = IngestionCacheEntry {
+                source_hash: hash_bytes(b"invented archive bytes"),
+                selection: baked,
+                recipe: baked.recipe().into(),
+                files: vec![IngestedFile {
+                    path: "textures/terrain/custom/objects/atlas.dds".into(),
+                    size: 3,
+                    hash: hash_bytes(b"dds"),
+                }],
+                reader_version: BSA_READER_VERSION,
+            };
+            assert!(cached.covers(baked));
+            assert!(cached.covers(cluster), "{baked:?} covers {cluster:?}");
+            assert!(cluster.accepts_recipe(baked.recipe()));
+            assert!(selection_includes(
+                baked,
+                Path::new("textures/terrain/custom/objects/atlas.dds")
+            ));
+        }
+    }
 }
 
 fn is_lod_setting(path: &Path) -> bool {
