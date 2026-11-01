@@ -28,6 +28,20 @@ use shared::{
 
 use super::{envelope, reader::CertifiedPackage};
 
+/// A physical, short temporary root for fixtures that reject linked ancestors and create
+/// Unix sockets. macOS's default /var path is a link and its resolved spelling can exceed
+/// the socket path limit; /private/tmp satisfies both contracts without changing guards.
+pub(crate) fn tempdir() -> tempfile::TempDir {
+    #[cfg(target_os = "macos")]
+    {
+        tempfile::tempdir_in("/private/tmp").unwrap()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        tempfile::tempdir().unwrap()
+    }
+}
+
 /// `ResolvedBuildSettings::converter_version` of every fixture overlay.
 pub(crate) const FIXTURE_CONVERTER_VERSION: &str = "fixture";
 

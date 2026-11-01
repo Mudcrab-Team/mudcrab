@@ -1032,7 +1032,7 @@ mod tests {
     /// The converter's own hash of an overlay's extension: it still reads one folder holding the
     /// cluster tables as `skyrim_world.db`, so the overlay is copied into that shape.
     fn converter_hash(overlay: &Path, entry: &ExtensionEntry) -> String {
-        let copy = tempfile::tempdir().unwrap();
+        let copy = crate::cluster::overlay_fixture::tempdir();
         copy_directory(overlay, copy.path());
         fs::rename(
             copy.path().join(OVERLAY_DATABASE_FILE),
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn parallel_owned_hashes_match_serial_bytes_and_first_refusal() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         let root = directory.path();
         let files: Vec<_> = (0..19).map(|index| format!("file-{index:02}")).collect();
         for (index, file) in files.iter().enumerate() {
@@ -1216,7 +1216,7 @@ mod tests {
 
     // Deliberately minimal tables: success here proves ONLY envelope integrity.
     fn fixture() -> (tempfile::TempDir, Vec<ExtensionEntry>) {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::cluster::overlay_fixture::tempdir();
         let root = temp.path();
         let overlay = overlay_of(root);
         fs::create_dir_all(overlay.join("clusters")).unwrap();
@@ -2025,7 +2025,7 @@ mod generic_inventory_tests {
     }
 
     fn owned_tempdir() -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::cluster::overlay_fixture::tempdir();
         owner(directory.path());
         directory
     }

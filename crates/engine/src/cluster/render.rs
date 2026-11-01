@@ -880,6 +880,11 @@ impl Plugin for ClusterRenderPlugin {
                         .in_set(RenderSystems::Queue)
                         .before(RenderSystems::QueueMeshes)
                         .after(queue_cluster_batches),
+                    refresh_camera_pipeline_refusals
+                        .in_set(RenderSystems::Queue)
+                        .after(queue_cluster_batches)
+                        .after(queue_cluster_prepass)
+                        .after(queue_cluster_shadows),
                     publish_terrain_readiness
                         .in_set(RenderSystems::QueueMeshes)
                         .after(queue_cluster_batches)
@@ -1374,11 +1379,10 @@ fn append_block(
                 &sections.cluster_indices,
             );
             queue.write_buffer(&gpu.groups, at.groups, &sections.groups);
-            queue.write_buffer(
-                &gpu.meshes,
-                u64::from(mesh_id) * 64,
-                &mesh_info_row(&at, mesh, gpu.terrain_meshes[mesh_id as usize]),
-            );
+            let info = mesh_info_row(&at, mesh, gpu.terrain_meshes[mesh_id as usize]);
+            let info_offset = u64::from(mesh_id) * MESH_INFO_BYTES;
+            queue.write_buffer(&gpu.meshes, info_offset, &info);
+            queue.write_buffer(&gpu.cluster_vertices, info_offset, &info);
         })?;
         if uploaded.is_none() {
             return Ok(None);
@@ -1390,7 +1394,8 @@ fn append_block(
             + sizes.clusters
             + sizes.cluster_vertices
             + sizes.cluster_indices
-            + sizes.groups;
+            + sizes.groups
+            + 2 * MESH_INFO_BYTES;
         gpu.cursors.advance(&sizes);
     }
     let first = gpu.blocks[index].first as usize;
@@ -1701,6 +1706,10 @@ struct PooledMeshes {
     cluster_counts: Vec<u32>,
 }
 
+/// The compute mesh row is copied into the reference buffer's fixed prefix.
+/// Vertex pulling then needs neither a mesh-table nor a cluster-header binding.
+const MESH_INFO_BYTES: u64 = 64;
+
 /// Where the next mesh's sections go in each pooled buffer, in bytes.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct PoolCursors {
@@ -1713,6 +1722,13 @@ struct PoolCursors {
 }
 
 impl PoolCursors {
+    fn for_mesh_count(meshes: usize) -> Self {
+        Self {
+            cluster_vertices: meshes as u64 * MESH_INFO_BYTES,
+            ..default()
+        }
+    }
+
     fn advance(&mut self, sizes: &PoolCursors) {
         self.positions += sizes.positions;
         self.attributes += sizes.attributes;
@@ -1732,7 +1748,9 @@ fn mesh_pool_sizes(mesh: &ClusterMeshAsset) -> PoolCursors {
         // Normal, UV, vertex colour and tangent words per vertex.
         attributes: u64::from(mesh.vertex_count) * 16,
         clusters: padded_len(MclSection::Clusters),
-        cluster_vertices: padded_len(MclSection::ClusterVertices),
+        // The per-cluster vertex offset table, then the vertex references (see `mesh_sections`).
+        cluster_vertices: u64::from(mesh.cluster_count) * 4
+            + padded_len(MclSection::ClusterVertices),
         cluster_indices: (mesh.section_len(MclSection::ClusterTriangles) as u64 * 2)
             .next_multiple_of(4),
         groups: padded_len(MclSection::Groups),
@@ -1743,7 +1761,7 @@ fn mesh_pool_sizes(mesh: &ClusterMeshAsset) -> PoolCursors {
 /// indices in u16 elements), its counts, whether only terrain draws it, uv_min and uv_scale, then its
 /// bounding sphere.
 fn mesh_info_row(at: &PoolCursors, mesh: &ClusterMeshAsset, terrain: bool) -> Vec<u8> {
-    let mut row = Vec::with_capacity(64);
+    let mut row = Vec::with_capacity(MESH_INFO_BYTES as usize);
     push_u32(
         &mut row,
         &[
@@ -1793,6 +1811,22 @@ fn cluster_index_bytes(triangles: &[u8]) -> Vec<u8> {
     indices
 }
 
+/// The mesh's section of the pooled vertex references: one word per cluster holding the offset of
+/// its vertex list, then the vertex references themselves, which a cluster's offset indexes from
+/// the end of the table. The vertex stage reads a cluster's offset here, not from the cluster
+/// records. The buffer's fixed prefix also holds the mesh-info table, so vertex
+/// pulling binds neither the cluster-header nor the separate compute mesh table.
+/// The largest terrain motion-vector prepass drops from 18 slots to Metal's 16
+/// (see `render_layout_tests`).
+fn cluster_vertex_words(mesh: &ClusterMeshAsset, view: &shared::cluster::MclView<'_>) -> Vec<u8> {
+    let mut words: Vec<_> = (0..mesh.cluster_count as usize)
+        .flat_map(|cluster| view.cluster(cluster).vertex_offset.to_le_bytes())
+        .collect();
+    words.extend_from_slice(view.section(MclSection::ClusterVertices));
+    words.resize(words.len().next_multiple_of(4), 0);
+    words
+}
+
 /// Builds the pooled form of one mesh: the per-vertex interleave, the tangent words and the
 /// sections padded to words. The tangents are a read when `prepare_tangents` has run for the mesh.
 fn mesh_sections(
@@ -1820,7 +1854,7 @@ fn mesh_sections(
         positions: padded(view.section(MclSection::Positions)),
         attributes,
         clusters: padded(view.section(MclSection::Clusters)),
-        cluster_vertices: padded(view.section(MclSection::ClusterVertices)),
+        cluster_vertices: cluster_vertex_words(mesh, view),
         cluster_indices: cluster_index_bytes(view.section(MclSection::ClusterTriangles)),
         groups: padded(view.section(MclSection::Groups)),
     }
@@ -1839,16 +1873,18 @@ fn pool_meshes(meshes: &[ClusterMeshAsset]) -> PooledMeshes {
         positions: Vec::new(),
         attributes: Vec::new(),
         clusters: Vec::new(),
-        cluster_vertices: Vec::new(),
+        cluster_vertices: vec![0; meshes.len() * MESH_INFO_BYTES as usize],
         cluster_indices: Vec::new(),
         groups: Vec::new(),
         infos: Vec::new(),
         cluster_counts: Vec::new(),
     };
-    let mut at = PoolCursors::default();
-    for mesh in meshes {
-        pool.infos
-            .extend_from_slice(&mesh_info_row(&at, mesh, false));
+    let mut at = PoolCursors::for_mesh_count(meshes.len());
+    for (id, mesh) in meshes.iter().enumerate() {
+        let row = mesh_info_row(&at, mesh, false);
+        pool.infos.extend_from_slice(&row);
+        let start = id * MESH_INFO_BYTES as usize;
+        pool.cluster_vertices[start..start + row.len()].copy_from_slice(&row);
         pool.cluster_counts.push(mesh.cluster_count);
         let sections = fixture_mesh_sections(mesh);
         at.advance(&PoolCursors {
@@ -2026,7 +2062,7 @@ fn prepare_cluster_gpu(
     // The buffers are sized for the whole scene now and filled block by block afterwards
     // (`append_ready_blocks`): what each pool needs is a sum over the meshes' section lengths, which
     // does not build any of them.
-    let mut totals = PoolCursors::default();
+    let mut totals = PoolCursors::for_mesh_count(scene.meshes.len());
     for mesh in &scene.meshes {
         totals.advance(&mesh_pool_sizes(mesh));
     }
@@ -2062,7 +2098,10 @@ fn prepare_cluster_gpu(
         mapped_at_creation: false,
     });
     let groups = make("cluster groups", totals.groups);
-    let meshes = make("cluster mesh table", scene.meshes.len() as u64 * 64);
+    let meshes = make(
+        "cluster mesh table",
+        scene.meshes.len() as u64 * MESH_INFO_BYTES,
+    );
     let batch_total = scene
         .instances
         .iter()
@@ -2164,35 +2203,7 @@ fn prepare_cluster_gpu(
         layout("cluster draw scatter layout", STAGES[6].1),
         layout("cluster large scatter layout", STAGES[7].1),
     ];
-    let mut draw_layout = BindGroupLayoutDescriptor::new(
-        "cluster draw layout",
-        &BindGroupLayoutEntries::with_indices(
-            ShaderStages::VERTEX,
-            (
-                (0, read_only()),
-                (1, read_only()),
-                (2, read_only()),
-                (3, read_only()),
-                (5, read_only()),
-                (6, read_only()),
-            ),
-        ),
-    );
-    draw_layout.entries[5].visibility = ShaderStages::VERTEX_FRAGMENT;
-    let shadow_layout = BindGroupLayoutDescriptor::new(
-        "cluster shadow layout",
-        &BindGroupLayoutEntries::with_indices(
-            ShaderStages::VERTEX,
-            (
-                (0, read_only()),
-                (1, read_only()),
-                (2, read_only()),
-                (4, read_only()),
-                (5, read_only()),
-                (6, read_only()),
-            ),
-        ),
-    );
+    let (draw_layout, shadow_layout) = data_layouts();
     let shift_layout = BindGroupLayoutDescriptor::new(
         "cluster shift layout",
         &BindGroupLayoutEntries::with_indices(
@@ -2300,7 +2311,7 @@ fn prepare_cluster_gpu(
                 .map(|mesh| terrain.contains(&mesh))
                 .collect()
         },
-        cursors: PoolCursors::default(),
+        cursors: PoolCursors::for_mesh_count(scene.meshes.len()),
         capacity_instances: scene.instances.len() as u32,
         total_instances: 0,
         total_slots: slot_total,
@@ -2978,6 +2989,45 @@ struct ReadyBatch {
     alpha_mask: bool,
 }
 
+/// The bind group layouts the vertex stages read the pooled cluster data through: the draw layout
+/// (main pass, prepass and alpha-mask shadows) and the opaque shadow layout. Every binding is
+/// visible to the vertex stage, and each is a buffer slot there on Metal, so a binding added here
+/// must fit the budget `cluster_pipeline_layouts_fit_the_metal_vertex_stage_buffer_limit` checks.
+fn data_layouts() -> (BindGroupLayoutDescriptor, BindGroupLayoutDescriptor) {
+    let read_only = || storage_buffer_read_only_sized(false, None);
+    let mut draw_layout = BindGroupLayoutDescriptor::new(
+        "cluster draw layout",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::VERTEX,
+            (
+                (0, read_only()),
+                (1, read_only()),
+                (3, read_only()),
+                (6, read_only()),
+            ),
+        ),
+    );
+    // The fragment stage reads the visible draw records (binding 6) for the draw's slot.
+    for entry in &mut draw_layout.entries {
+        if entry.binding == 6 {
+            entry.visibility = ShaderStages::VERTEX_FRAGMENT;
+        }
+    }
+    let shadow_layout = BindGroupLayoutDescriptor::new(
+        "cluster shadow layout",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::VERTEX,
+            (
+                (0, read_only()),
+                (2, read_only()),
+                (4, read_only()),
+                (6, read_only()),
+            ),
+        ),
+    );
+    (draw_layout, shadow_layout)
+}
+
 fn build_descriptor(
     material_pipeline: &MaterialPipeline,
     key: ClusterMaterialPipelineKey,
@@ -3556,9 +3606,7 @@ fn new_view_gpu(
         &[
             entry(0, &gpu.positions),
             entry(1, &gpu.attributes),
-            entry(2, &gpu.clusters),
             entry(3, &gpu.cluster_vertices),
-            entry(5, &gpu.meshes),
             entry(6, &visible),
         ],
     );
@@ -3567,10 +3615,8 @@ fn new_view_gpu(
         &pipeline_cache.get_bind_group_layout(&gpu.shadow_layout),
         &[
             entry(0, &gpu.positions),
-            entry(1, &gpu.clusters),
             entry(2, &gpu.cluster_vertices),
             entry(4, &gpu.instances),
-            entry(5, &gpu.meshes),
             entry(6, &visible),
         ],
     );
@@ -4692,6 +4738,54 @@ fn queue_cluster_shadows(
         });
 }
 
+/// Scan only after all three queue planners have finished writing their view inputs.
+fn refresh_camera_pipeline_refusals(
+    gpu: Option<Res<ClusterGpu>>,
+    pipeline_cache: Res<PipelineCache>,
+    mut pipelines: ResMut<ClusterPipelines>,
+    phases: (
+        Res<ViewBinnedRenderPhases<Opaque3d>>,
+        Res<ViewBinnedRenderPhases<Opaque3dPrepass>>,
+    ),
+) {
+    let Some(gpu) = gpu else { return };
+    let refusals = &mut pipelines.shadow_refusals;
+    refusals.retain_resolved_views(
+        gpu.views
+            .keys()
+            .copied()
+            .filter(|key| phases.0.get(key).is_some()),
+    );
+    for (&key, view) in &gpu.views {
+        if phases.0.get(&key).is_none() {
+            continue;
+        }
+        // Memos can outlive an unprepared/replaced material. Only the current
+        // planner's resolutions are dependencies of this camera.
+        let forward = view
+            .walk_ready
+            .iter()
+            .flatten()
+            .map(|ready| (ready.index as usize, ready.pipeline));
+        let prepass = view
+            .prepass_pipelines
+            .iter()
+            .filter(|_| phases.1.get(&key).is_some())
+            .map(|(&batch, &pipeline)| (batch as usize, pipeline));
+        refusals.refresh_resolved(
+            key,
+            (pipeline_cache.readiness_revision(), view.readiness_revision),
+            forward.chain(prepass),
+            |id| {
+                shadow_refusal::terminal_pipeline_failure(
+                    pipeline_cache.get_render_pipeline_state(id),
+                )
+                .map(|reason| format!("camera pipeline {}: {reason}", id.id()))
+            },
+        );
+    }
+}
+
 fn bytes_for_instances(
     bytes: &mut Vec<u8>,
     flags: u32,
@@ -5534,7 +5628,6 @@ mod tests {
         let mut triangle_count = 0;
         for row in [0, 16] {
             let vertex_base = word(&pool.infos, row);
-            let vertex_ref_base = word(&pool.infos, row + 2);
             let index_base = word(&pool.infos, row + 3);
             let snapshot = mesh.snapshot().unwrap();
             let view = shared::cluster::read_mcl_validated(&snapshot).unwrap();
@@ -5548,12 +5641,11 @@ mod tests {
                         let byte = (cluster.triangle_offset as usize + vertex_index / 3) * 3
                             + vertex_index % 3;
                         let local = mesh.section(MclSection::ClusterTriangles).unwrap()[byte];
+                        // Straight from the payload's own vertex references.
                         vertex_base
                             + word(
-                                &pool.cluster_vertices,
-                                vertex_ref_base as usize
-                                    + cluster.vertex_offset as usize
-                                    + usize::from(local),
+                                &mesh.section(MclSection::ClusterVertices).unwrap(),
+                                cluster.vertex_offset as usize + usize::from(local),
                             )
                     })
                     .collect::<Vec<_>>();
@@ -5564,11 +5656,18 @@ mod tests {
                                 .try_into()
                                 .unwrap(),
                         );
+                        // What the vertex shaders do: the cluster's offset from the table that
+                        // starts the mesh's references, then the reference after the table.
+                        let vertex_base = word(&pool.cluster_vertices, row);
+                        let vertex_ref_base = word(&pool.cluster_vertices, row + 2);
+                        let cluster_count = word(&pool.cluster_vertices, row + 5);
+                        let offset = word(&pool.cluster_vertices, vertex_ref_base as usize + id);
                         vertex_base
                             + word(
                                 &pool.cluster_vertices,
                                 vertex_ref_base as usize
-                                    + cluster.vertex_offset as usize
+                                    + cluster_count as usize
+                                    + offset as usize
                                     + usize::from(local),
                             )
                     })
@@ -5590,7 +5689,7 @@ mod tests {
         let pool = pool_meshes(&meshes);
         // The sizes the buffers are created with, and the rows and sections each mesh is written
         // with as it arrives, are the whole-scene pool's.
-        let mut at = PoolCursors::default();
+        let mut at = PoolCursors::for_mesh_count(meshes.len());
         let mut rows = Vec::new();
         for mesh in &meshes {
             rows.extend_from_slice(&mesh_info_row(&at, mesh, false));
@@ -5608,6 +5707,7 @@ mod tests {
             at.advance(&sizes);
         }
         assert_eq!(rows, pool.infos);
+        assert_eq!(&pool.cluster_vertices[..rows.len()], rows);
         assert_eq!(at.positions, pool.positions.len() as u64);
         assert_eq!(at.attributes, pool.attributes.len() as u64);
         assert_eq!(at.clusters, pool.clusters.len() as u64);
@@ -6251,3 +6351,7 @@ mod upload_wakeup_tests {
 #[cfg(test)]
 #[path = "render_upload_tests.rs"]
 mod upload_tests;
+
+#[cfg(test)]
+#[path = "render_layout_tests.rs"]
+mod render_layout_tests;

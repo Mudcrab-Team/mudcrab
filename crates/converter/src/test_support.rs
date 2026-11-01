@@ -83,6 +83,10 @@ impl SyntheticBase {
     }
 
     fn build(failed_asset: bool) -> Self {
+        // Certification rejects linked ancestors; macOS exposes the default temp root via /var.
+        #[cfg(target_os = "macos")]
+        let directory = tempfile::tempdir_in("/private/tmp").unwrap();
+        #[cfg(not(target_os = "macos"))]
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("OWNER.txt"),

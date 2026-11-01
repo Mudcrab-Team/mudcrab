@@ -8,20 +8,7 @@
 
 #import bevy_render::view::View
 
-struct MeshInfo {
-    vertex_base: u32,
-    cluster_base: u32,
-    vertex_ref_base: u32,
-    index_base: u32,
-    group_base: u32,
-    cluster_count: u32,
-    pad0: u32,
-    pad1: u32,
-    // uv_min (xy), uv_scale (zw)
-    uv: vec4<f32>,
-    // Whole-mesh bounding sphere, read by the cull pass.
-    bounds: vec4<f32>,
-}
+
 
 struct Instance {
     world: mat4x4<f32>,
@@ -34,10 +21,8 @@ struct Instance {
 @group(0) @binding(0) var<uniform> view: View;
 
 @group(1) @binding(0) var<storage, read> positions: array<f32>;
-@group(1) @binding(1) var<storage, read> clusters: array<u32>;
 @group(1) @binding(2) var<storage, read> cluster_vertices: array<u32>;
 @group(1) @binding(4) var<storage, read> instances: array<Instance>;
-@group(1) @binding(5) var<storage, read> meshes: array<MeshInfo>;
 @group(1) @binding(6) var<storage, read> visible: array<vec4<u32>>;
 
 // Where the adapter cannot leave depth unclipped, a sun cascade clamps the caster's depth to the far
@@ -56,11 +41,16 @@ fn vertex(
     @builtin(instance_index) slot: u32,
 ) -> VertexOutput {
     let draw = visible[slot];
-    let mesh = meshes[draw.y];
-    let base = (mesh.cluster_base + draw.z) * 12u;
-    let vertex_offset = clusters[base + 6u];
+    // Sixteen-word MeshInfo rows prefix the reference pool (see mesh_info_row).
+    let info = draw.y * 16u;
+    let vertex_base = cluster_vertices[info];
+    let vertex_ref_base = cluster_vertices[info + 2u];
+    let cluster_count = cluster_vertices[info + 5u];
+    // The mesh's vertex references start with one word per cluster: the offset of the cluster's
+    // vertex list, which the references after the table are indexed by.
+    let vertex_offset = cluster_vertices[vertex_ref_base + draw.z];
     let local = vertex_index;
-    let source = mesh.vertex_base + cluster_vertices[mesh.vertex_ref_base + vertex_offset + local];
+    let source = vertex_base + cluster_vertices[vertex_ref_base + cluster_count + vertex_offset + local];
     let position = vec3<f32>(
         positions[source * 3u],
         positions[source * 3u + 1u],

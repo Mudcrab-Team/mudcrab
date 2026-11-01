@@ -21,6 +21,9 @@ pub(super) struct ShadowRefusals {
     stamp: Option<shadow_warmup::ShadowPlanStamp>,
     required: HashMap<RetainedViewEntity, HashMap<CachedRenderPipelineId, BTreeSet<usize>>>,
     pipeline_revision: Option<u64>,
+    /// What the last scan of the main-pass and prepass pipelines saw: the pipeline cache's
+    /// readiness revision and the views' own readiness revisions.
+    resolved_revisions: HashMap<RetainedViewEntity, (u64, u64)>,
     failed: BTreeMap<usize, String>,
     reported: BTreeSet<usize>,
 }
@@ -33,6 +36,7 @@ impl ShadowRefusals {
         if self.stamp.is_none_or(|old| old.gpu != stamp.gpu) {
             self.failed.clear();
             self.reported.clear();
+            self.resolved_revisions.clear();
         }
         // An old material's pending pipeline is no longer a dependency after
         // replacement. Terminal failures stay terminal for this GPU scene.
@@ -79,8 +83,48 @@ impl ShadowRefusals {
 
     pub(super) fn refuse(&mut self, batch: usize, reason: String) {
         if let std::collections::btree_map::Entry::Vacant(entry) = self.failed.entry(batch) {
-            error!(batch, %reason, "cluster shadow batch refused; stock replacement remains disabled");
+            error!(batch, %reason, "cluster GPU batch refused; stock replacement remains disabled");
             entry.insert(reason);
+        }
+    }
+
+    pub(super) fn retain_resolved_views(
+        &mut self,
+        views: impl Iterator<Item = RetainedViewEntity>,
+    ) {
+        let views: HashSet<_> = views.collect();
+        self.resolved_revisions.retain(|key, _| views.contains(key));
+    }
+
+    /// Refuses the batches whose main-pass or prepass pipeline failed for good. Those pipelines
+    /// are resolved per view by the current queue plan, so `resolved` lists the
+    /// `(batch, pipeline)` pairs the views hold now, and nothing is remembered between scans:
+    /// a replaced material cannot inherit an old pipeline's failure. A pipeline that is only
+    /// waiting for a shader stays a wait. The scan runs again only when the pipeline cache or a
+    /// view's readiness inputs moved, so a settled scene spends nothing here.
+    pub(super) fn refresh_resolved(
+        &mut self,
+        view: RetainedViewEntity,
+        revision: (u64, u64),
+        resolved: impl Iterator<Item = (usize, CachedRenderPipelineId)>,
+        mut failure: impl FnMut(CachedRenderPipelineId) -> Option<String>,
+    ) {
+        if self.resolved_revisions.get(&view) == Some(&revision) {
+            return;
+        }
+        self.resolved_revisions.insert(view, revision);
+        let mut verdicts: HashMap<CachedRenderPipelineId, Option<String>> = HashMap::new();
+        let failed: Vec<_> = resolved
+            .filter_map(|(batch, pipeline)| {
+                verdicts
+                    .entry(pipeline)
+                    .or_insert_with(|| failure(pipeline))
+                    .clone()
+                    .map(|reason| (batch, reason))
+            })
+            .collect();
+        for (batch, reason) in failed {
+            self.refuse(batch, reason);
         }
     }
 
@@ -294,6 +338,95 @@ mod tests {
         refusals.require(view(), 1, CachedRenderPipelineId::new(7));
         refusals.refresh(1, |_| Some("compile failure".into()));
         assert!(refusals.is_failed(1));
+    }
+
+    #[test]
+    fn a_permanently_failed_main_or_prepass_pipeline_refuses_its_batches() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        let broken = CachedRenderPipelineId::new(7);
+        let healthy = CachedRenderPipelineId::new(8);
+        refusals.refresh_resolved(
+            view(),
+            (1, 1),
+            [(0, broken), (1, healthy), (2, broken)].into_iter(),
+            |id| (id == broken).then(|| "invalid forward shader".into()),
+        );
+        assert_eq!(refusals.failed.keys().copied().collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(refusals.failed[&0], "invalid forward shader");
+    }
+
+    #[test]
+    fn pending_main_pipelines_wait_and_unchanged_inputs_are_not_rescanned() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        let pending = CachedRenderPipelineId::new(7);
+        let mut scans = 0;
+        refusals.refresh_resolved(view(), (1, 1), [(1, pending)].into_iter(), |_| {
+            scans += 1;
+            None
+        });
+        assert_eq!(scans, 1);
+        assert!(!refusals.is_failed(1));
+        refusals.refresh_resolved(view(), (1, 1), [(1, pending)].into_iter(), |_| {
+            panic!("unchanged inputs rescanned")
+        });
+    }
+
+    #[test]
+    fn a_batch_resolved_to_an_already_failed_pipeline_is_refused_at_the_same_cache_revision() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        let broken = CachedRenderPipelineId::new(7);
+        refusals.refresh_resolved(view(), (1, 1), std::iter::empty(), |_| None);
+        // The view's memo moved (second element), the pipeline cache did not.
+        refusals.refresh_resolved(view(), (1, 2), [(1, broken)].into_iter(), |_| {
+            Some("failed".into())
+        });
+        assert!(refusals.is_failed(1));
+    }
+
+    #[test]
+    fn a_new_gpu_scene_forgets_main_pipeline_scan_state() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        refusals.refresh_resolved(view(), (1, 1), std::iter::empty(), |_| None);
+        refusals.begin_plan(stamp(2));
+        let broken = CachedRenderPipelineId::new(7);
+        refusals.refresh_resolved(view(), (1, 1), [(0, broken)].into_iter(), |_| {
+            Some("failed".into())
+        });
+        assert!(refusals.is_failed(0));
+    }
+
+    #[test]
+    fn camera_views_with_equal_revisions_are_scanned_independently() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        let other = RetainedViewEntity::new(Entity::PLACEHOLDER.into(), None, 1);
+        refusals.refresh_resolved(view(), (1, 1), std::iter::empty(), |_| None);
+        refusals.refresh_resolved(
+            other,
+            (1, 1),
+            [(2, CachedRenderPipelineId::new(7))].into_iter(),
+            |_| Some("failed in second camera".into()),
+        );
+        assert!(refusals.is_failed(2));
+    }
+
+    #[test]
+    fn a_removed_camera_does_not_hide_a_replacement_with_equal_revisions() {
+        let mut refusals = ShadowRefusals::default();
+        refusals.begin_plan(stamp(1));
+        refusals.refresh_resolved(view(), (1, 1), std::iter::empty(), |_| None);
+        refusals.retain_resolved_views(std::iter::empty());
+        refusals.refresh_resolved(
+            view(),
+            (1, 1),
+            [(2, CachedRenderPipelineId::new(7))].into_iter(),
+            |_| Some("failed in replacement camera".into()),
+        );
+        assert!(refusals.is_failed(2));
     }
 
     #[test]

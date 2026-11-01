@@ -5,7 +5,7 @@
 //
 // `instance_index` is `first_instance` of the indirect draw: the draw's place in the compacted
 // list, where the cull pass wrote its instance, mesh and cluster. Meshes are pooled in shared
-// buffers, so every offset is the mesh's base from the `meshes` table. The stock fragment reads
+// buffers, so every offset is the mesh's base from the mesh-info prefix of `cluster_vertices`. The stock fragment reads
 // `mesh[in.instance_index]`, so the mesh uniform array bound at group 2 holds one entry per
 // instance and the output instance index is the instance only.
 
@@ -15,28 +15,12 @@
     view_transformations::position_world_to_clip,
 }
 
-struct MeshInfo {
-    vertex_base: u32,
-    cluster_base: u32,
-    vertex_ref_base: u32,
-    index_base: u32,
-    group_base: u32,
-    cluster_count: u32,
-    pad0: u32,
-    pad1: u32,
-    // uv_min (xy), uv_scale (zw)
-    uv: vec4<f32>,
-    // Whole-mesh bounding sphere, read by the cull pass.
-    bounds: vec4<f32>,
-}
 
 @group(4) @binding(0) var<storage, read> positions: array<f32>;
 // Per vertex, four words: packed octahedral normal, packed UV, vertex colour (unorm8 RGBA), packed
 // octahedral tangent (handedness in the low bit of the second component, set when negative).
 @group(4) @binding(1) var<storage, read> attributes: array<u32>;
-@group(4) @binding(2) var<storage, read> clusters: array<u32>;
 @group(4) @binding(3) var<storage, read> cluster_vertices: array<u32>;
-@group(4) @binding(5) var<storage, read> meshes: array<MeshInfo>;
 @group(4) @binding(6) var<storage, read> visible: array<vec4<u32>>;
 
 // Octahedral decode of two snorm16 values (ADR-0013 section 4, Cigolle et al. 2014).
@@ -57,11 +41,20 @@ fn vertex(
 ) -> VertexOutput {
     let draw = visible[slot];
     let instance = draw.x;
-    let mesh = meshes[draw.y];
-    let base = (mesh.cluster_base + draw.z) * 12u;
-    let vertex_offset = clusters[base + 6u];
+    // Sixteen-word MeshInfo rows prefix the reference pool (see mesh_info_row).
+    let info = draw.y * 16u;
+    let vertex_base = cluster_vertices[info];
+    let vertex_ref_base = cluster_vertices[info + 2u];
+    let cluster_count = cluster_vertices[info + 5u];
+    let uv_transform = bitcast<vec4<f32>>(vec4<u32>(
+        cluster_vertices[info + 8u], cluster_vertices[info + 9u],
+        cluster_vertices[info + 10u], cluster_vertices[info + 11u],
+    ));
+    // The mesh's vertex references start with one word per cluster: the offset of the cluster's
+    // vertex list, which the references after the table are indexed by.
+    let vertex_offset = cluster_vertices[vertex_ref_base + draw.z];
     let local = vertex_index;
-    let source = mesh.vertex_base + cluster_vertices[mesh.vertex_ref_base + vertex_offset + local];
+    let source = vertex_base + cluster_vertices[vertex_ref_base + cluster_count + vertex_offset + local];
 
     let position = vec3<f32>(
         positions[source * 3u],
@@ -69,7 +62,7 @@ fn vertex(
         positions[source * 3u + 2u],
     );
     let normal = decode_normal(attributes[source * 4u]);
-    let uv = mesh.uv.xy + unpack2x16unorm(attributes[source * 4u + 1u]) * mesh.uv.zw;
+    let uv = uv_transform.xy + unpack2x16unorm(attributes[source * 4u + 1u]) * uv_transform.zw;
     let colour = unpack4x8unorm(attributes[source * 4u + 2u]);
     let tangent_word = attributes[source * 4u + 3u];
     let tangent_negative = (tangent_word & 0x10000u) != 0u;

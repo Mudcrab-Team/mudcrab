@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureDimension, TextureFormat},
-        view::screenshot::{Screenshot, save_to_disk},
+        view::screenshot::{Screenshot, ScreenshotCaptured},
     },
 };
 use engine::cluster::{
@@ -43,6 +43,11 @@ struct Frames(u32);
 
 #[derive(Default)]
 struct Requested(bool);
+
+/// Set only after this screenshot's capture and save have completed.
+/// A PNG left by an earlier run in the output folder says nothing about this run's capture.
+#[derive(Resource, Default)]
+struct ScreenshotSaved(Option<bool>);
 
 #[derive(Resource, Clone, Copy)]
 struct CaptureAfter(f32);
@@ -241,6 +246,7 @@ fn main() {
         .insert_resource(CaptureAfter(capture_after))
         .insert_resource(Output { directory, name })
         .init_resource::<Frames>()
+        .init_resource::<ScreenshotSaved>()
         .add_systems(Startup, setup)
         .add_systems(Update, (capture_and_exit, apply_origin_shift))
         .run();
@@ -419,21 +425,96 @@ fn capture_and_exit(
     mut commands: Commands,
     mut frames: ResMut<Frames>,
     mut requested: Local<Requested>,
+    saved: Res<ScreenshotSaved>,
     output: Res<Output>,
     mut exit: MessageWriter<AppExit>,
-    time: Res<Time>,
-    capture_after: Res<CaptureAfter>,
+    (time, capture_after): (Res<Time>, Res<CaptureAfter>),
 ) {
     frames.0 += 1;
     let path = output.directory.join(format!("{}.png", output.name));
     if frames.0 > 600 && time.elapsed_secs() > capture_after.0 && !requested.0 {
         requested.0 = true;
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path.clone()));
+        let save_path = path.clone();
+        commands.spawn(Screenshot::primary_window()).observe(
+            move |captured: On<ScreenshotCaptured>, mut saved: ResMut<ScreenshotSaved>| {
+                let result = captured
+                    .image
+                    .clone()
+                    .try_into_dynamic()
+                    .map_err(|error| error.to_string())
+                    .and_then(|image| {
+                        image
+                            .to_rgb8()
+                            .save_with_format(&save_path, image::ImageFormat::Png)
+                            .map_err(|error| error.to_string())
+                    });
+                if let Err(error) = &result {
+                    error!("cannot save screenshot to {}: {error}", save_path.display());
+                }
+                saved.0 = Some(result.is_ok());
+            },
+        );
     }
-    if requested.0 && path.exists() {
-        exit.write(AppExit::Success);
+    match saved.0 {
+        Some(true) => {
+            exit.write(AppExit::Success);
+        }
+        Some(false) => {
+            error!(
+                "the screenshot was captured but not saved to {}",
+                path.display()
+            );
+            exit.write(AppExit::error());
+        }
+        None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_old_png_cannot_complete_this_runs_screenshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("rerun.png");
+        std::fs::write(&path, b"old screenshot").unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Frames(600))
+            .insert_resource(CaptureAfter(-1.0))
+            .init_resource::<ScreenshotSaved>()
+            .insert_resource(Output {
+                directory: directory.path().to_owned(),
+                name: "rerun".into(),
+            })
+            .add_systems(Update, capture_and_exit);
+        let mut exits = bevy::ecs::message::MessageCursor::<AppExit>::default();
+        app.update();
+        assert!(
+            exits
+                .read(app.world().resource::<Messages<AppExit>>())
+                .next()
+                .is_none()
+        );
+        assert_eq!(app.world().resource::<ScreenshotSaved>().0, None);
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<Screenshot>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().trigger(ScreenshotCaptured {
+            entity,
+            image: Image::default(),
+        });
+        app.update();
+        assert!(matches!(
+            exits
+                .read(app.world().resource::<Messages<AppExit>>())
+                .next(),
+            Some(AppExit::Success)
+        ));
+        assert_eq!(image::open(path).unwrap().width(), 1);
     }
 }
 
