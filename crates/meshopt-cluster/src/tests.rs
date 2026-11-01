@@ -713,3 +713,130 @@ fn empty_mesh_still_validates_all_inputs() {
         Err(Error::AttributeProtectMask { stride: 0, mask: 1 })
     );
 }
+
+/// Adjacent planar strips with separate UV charts; every internal column is a seam.
+fn seamed_strips(n: usize) -> (Vec<[f32; 3]>, Vec<u32>, Vec<f32>) {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    let mut uv = Vec::new();
+    for strip in 0..n {
+        let base = positions.len() as u32;
+        for y in 0..=n {
+            for x in [strip, strip + 1] {
+                positions.push([x as f32, y as f32, 0.0]);
+                uv.extend_from_slice(&[strip as f32, y as f32 / n as f32]);
+            }
+        }
+        for y in 0..n as u32 {
+            let a = base + y * 2;
+            indices.extend_from_slice(&[a, a + 2, a + 1, a + 1, a + 2, a + 3]);
+        }
+    }
+    (positions, indices, uv)
+}
+
+#[test]
+fn tail_keeps_the_uv_seam_protection_of_the_main_build() {
+    let n = 4;
+    let (positions, indices, uv) = seamed_strips(n);
+    // Ignore UV error so only the explicit seam mask keeps the charts separate.
+    let mesh = Mesh {
+        positions: &positions,
+        indices: &indices,
+        attributes: Some(Attributes {
+            data: &uv,
+            stride: 2,
+            weights: &[0.0, 0.0],
+            protect_mask: 1,
+        }),
+        vertex_lock: None,
+    };
+    for config in [Config::classic(64), Config::rt(64)] {
+        let plain = build(&mesh, config).expect("plain build");
+        assert_eq!(plain.clusters().len(), 1, "fixture must start at one root");
+        let mut unprotected = mesh;
+        unprotected
+            .attributes
+            .as_mut()
+            .expect("attributes")
+            .protect_mask = 0;
+        assert_eq!(
+            plain,
+            build(&unprotected, config).expect("unprotected plain build")
+        );
+        let tail = build(&mesh, config.with_tail(8)).expect("tail build");
+        let unprotected_tail =
+            build(&unprotected, config.with_tail(8)).expect("unprotected tail build");
+        assert!(
+            tail != unprotected_tail,
+            "tail must honor the seam mask even when the main build did not simplify"
+        );
+        assert!(
+            tail.groups().len() > plain.groups().len(),
+            "must exercise tail"
+        );
+        assert_covers(&tail, &indices);
+        for cluster in tail.clusters() {
+            for triangle in cluster.indices().as_chunks::<3>().0 {
+                let chart = uv[triangle[0] as usize * 2];
+                assert!(
+                    triangle.iter().all(|&v| uv[v as usize * 2] == chart),
+                    "triangle {triangle:?} crosses UV charts with {config:?}"
+                );
+            }
+        }
+        let mut retained_charts: Vec<_> = tail
+            .groups()
+            .iter()
+            .filter(|g| g.bounds.error == f32::MAX)
+            .flat_map(|g| tail.group_clusters(g))
+            .flat_map(|c| c.indices())
+            .map(|&v| uv[v as usize * 2] as usize)
+            .collect();
+        retained_charts.sort_unstable();
+        retained_charts.dedup();
+        assert_eq!(retained_charts, (0..n).collect::<Vec<_>>());
+        assert_eq!(
+            tail,
+            build(&mesh, config.with_tail(8)).expect("repeat build")
+        );
+    }
+}
+
+#[test]
+fn nonzero_vertex_lock_bytes_of_any_value_pin_the_border_at_every_level() {
+    // A small mesh exercises appendTail directly; a larger one also exercises clodBuild.
+    for n in [4, 16] {
+        let (positions, indices) = grid(n);
+        let border = border_vertices(n);
+        for config in [Config::classic(64), Config::rt(64)] {
+            let mut lock = vec![0u8; positions.len()];
+            let mut reference = None;
+            for value in [1u8, 2, 4, 0x80, 0xFE, 0xFF] {
+                for &v in &border {
+                    lock[v as usize] = value;
+                }
+                let built = build(
+                    &Mesh {
+                        positions: &positions,
+                        indices: &indices,
+                        attributes: None,
+                        vertex_lock: Some(&lock),
+                    },
+                    config.with_tail(2),
+                )
+                .expect("build");
+                assert_eq!(
+                    border_kept_at_root(&built, &border),
+                    border.len(),
+                    "lock byte {value:#x}, grid {n}, {config:?}"
+                );
+                if let Some(reference) = &reference {
+                    assert_eq!(&built, reference, "nonzero lock bytes must be equivalent");
+                } else {
+                    reference = Some(built);
+                }
+            }
+        }
+    }
+}

@@ -8,6 +8,7 @@
 
 #include <float.h>
 #include <algorithm>
+#include <limits>
 #include <string.h>
 
 #include <memory>
@@ -82,6 +83,24 @@ static void appendTail(MlcResult& result, const clodConfig& config, const clodMe
 	std::vector<unsigned char> locks(mesh.vertex_count, 0);
 	if (mesh.vertex_lock)
 		locks.assign(mesh.vertex_lock, mesh.vertex_lock + mesh.vertex_count);
+
+	// Rebuild clodBuild's seam protection; its temporary locks are not part of the output DAG.
+	if (mesh.attribute_protect_mask)
+	{
+		const size_t max_attributes = mesh.vertex_attributes_stride / sizeof(float);
+		const size_t protect_bits = std::numeric_limits<unsigned int>::digits;
+		std::vector<unsigned int> remap(mesh.vertex_count);
+		meshopt_generatePositionRemap(remap.data(), mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
+
+		for (size_t i = 0; i < mesh.vertex_count; ++i)
+		{
+			unsigned int r = remap[i];
+			for (size_t j = 0; j < std::min(max_attributes, protect_bits); ++j)
+				if (r != i && (mesh.attribute_protect_mask & (1u << j)) && mesh.vertex_attributes[i * max_attributes + j] != mesh.vertex_attributes[r * max_attributes + j])
+					locks[i] |= meshopt_SimplifyVertex_Protect;
+		}
+	}
+
 	std::vector<unsigned int> current, simplified, vertices;
 	std::vector<unsigned char> triangles;
 
@@ -164,7 +183,16 @@ MlcResult* mlc_build(const MlcMesh* mesh, int preset, size_t max_triangles, size
 		input.attribute_weights = mesh->attribute_weights;
 		input.attribute_count = mesh->attribute_count;
 		input.attribute_protect_mask = mesh->attribute_protect_mask;
-		input.vertex_lock = mesh->vertex_lock;
+
+		// Rust exposes boolean locks; meshoptimizer interprets these bytes as bit flags.
+		std::vector<unsigned char> vertex_lock;
+		if (mesh->vertex_lock)
+		{
+			vertex_lock.resize(mesh->vertex_count);
+			for (size_t i = 0; i < mesh->vertex_count; ++i)
+				vertex_lock[i] = mesh->vertex_lock[i] ? meshopt_SimplifyVertex_Lock : 0;
+		}
+		input.vertex_lock = mesh->vertex_lock ? vertex_lock.data() : NULL;
 
 		std::unique_ptr<MlcResult> result(new MlcResult());
 		clodBuild(config, input, result.get(), &collectGroup);
