@@ -120,10 +120,12 @@ impl Channel {
         if t >= self.times[keys - 1] {
             return value(keys - 1);
         }
+        // Half-open windows: a key's own time belongs to the segment it starts, so a STEP key
+        // takes effect exactly at its time instead of one sample later.
         let i = self
             .times
             .windows(2)
-            .position(|w| t >= w[0] && t <= w[1])
+            .position(|w| t >= w[0] && t < w[1])
             .unwrap_or(0);
         let (t0, t1) = (self.times[i], self.times[i + 1]);
         let (v0, v1) = (value(i), value(i + 1));
@@ -985,6 +987,27 @@ mod tests {
         channel.tangents = vec![[1.0, 1.0]; 3];
         // With tangents equal to the slope, Hermite is the straight line.
         assert!((channel.value_at(0.5) - 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn step_key_takes_effect_exactly_at_its_time() {
+        let channel = parse_channel(&serde_json::json!({
+            "variable": "uScale", "interpolation": "STEP",
+            "times": [0.0, 1.0, 2.0, 3.0], "values": [1.0, 2.0, 3.0, 4.0]
+        }))
+        .unwrap();
+        for (time, expected) in [
+            (0.0, 1.0),
+            (0.999, 1.0),
+            (1.0, 2.0),
+            (1.5, 2.0),
+            (2.0, 3.0),
+            (2.999, 3.0),
+            (3.0, 4.0),
+            (9.0, 4.0),
+        ] {
+            assert_eq!(channel.value_at(time), expected, "at {time}");
+        }
     }
 
     #[test]
