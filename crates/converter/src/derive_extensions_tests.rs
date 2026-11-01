@@ -768,9 +768,12 @@ mod terrain_input_verification_tests {
             "owner: terrain input helper test\n",
         )
         .unwrap();
-        let raw = directory.path().join("raw");
-        let converted = directory.path().join("converted");
-        let staging = directory.path().join("staging");
+        // The production verifier rejects linked ancestors. macOS exposes its temporary
+        // directory through /var, so use the physical fixture root without weakening that check.
+        let root = directory.path().canonicalize().unwrap();
+        let raw = root.join("raw");
+        let converted = root.join("converted");
+        let staging = root.join("staging");
         for path in [&raw, &converted, &staging] {
             fs::create_dir(path).unwrap();
             fs::write(
@@ -1234,6 +1237,40 @@ fn labels_are_unique_within_a_base_and_replace_works_across_settings_ids() {
             .starts_with(".replaced-")),
         "a retired overlay was left behind"
     );
+}
+
+#[test]
+fn replacing_a_cluster_only_bases_selected_package_under_other_settings_is_refused() {
+    let mut fixture = fixture();
+    fixture.options.triangle_threshold = 1;
+    let selected = output(&fixture.options);
+    mutate_manifest(&fixture, |raw| {
+        raw["geometry_mode"] = serde_json::json!("cluster");
+        raw["cluster_package"] = serde_json::json!(format!(
+            "derived/{}",
+            selected.file_name().unwrap().to_string_lossy()
+        ));
+    });
+    let first = run_with_space(&fixture.options, probe(), |_| Ok(u64::MAX)).unwrap();
+    assert_eq!(first.output, fs::canonicalize(&selected).unwrap());
+    let before = inventory(&first.output);
+    // Same label, other settings id (the tree flag was left off the second command line).
+    fixture.options.include_trees = true;
+    fixture.options.replace = true;
+    let other_destination = output(&fixture.options);
+    assert_ne!(other_destination, selected);
+    let error = run_with_space(&fixture.options, probe(), |_| Ok(u64::MAX))
+        .err()
+        .expect("the package the base selects cannot be retired by another settings id");
+    let text = format!("{error:#}");
+    assert!(text.contains("selected by the base"), "{text}");
+    assert!(first.output.is_dir(), "the selected package was deleted");
+    assert_eq!(inventory(&first.output), before);
+    assert!(!other_destination.exists());
+    // The selected settings still replace their own package in place.
+    fixture.options.include_trees = false;
+    let again = run_with_space(&fixture.options, probe(), |_| Ok(u64::MAX)).unwrap();
+    assert_eq!(again.output, first.output);
 }
 
 #[test]

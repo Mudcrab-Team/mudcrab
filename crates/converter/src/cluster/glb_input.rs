@@ -23,8 +23,13 @@ const IDENTITY: Matrix = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 
-/// Loads every (node, primitive) pair of the default scene. `glb_path` is the GLB's path inside
-/// the output (`meshes/.../x.glb`), used to resolve texture references into asset keys.
+/// Loads every (node, primitive) pair of the default scene, at each node's default (loaded) pose.
+/// Authored node animation is not read: a cluster instance stands for the loaded pose only, and
+/// the engine returns a reference to its stock model once a node leaves that pose. Skinned
+/// primitives are rejected below, so no deformed geometry is baked.
+///
+/// `glb_path` is the GLB's path inside the output (`meshes/.../x.glb`), used to resolve texture
+/// references into asset keys.
 pub fn load_model(bytes: &[u8], glb_path: &str) -> Result<Vec<ModelPrimitive>> {
     let Gltf { document, blob } = Gltf::from_slice(bytes).wrap_err("not a valid glTF")?;
     let buffers: Vec<Vec<u8>> = document

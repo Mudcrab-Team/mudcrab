@@ -122,6 +122,10 @@ struct ModelOutcome {
     fixups: u64,
 }
 
+/// Reject reason recorded for a primitive of a model the stage could not load. Not a
+/// [`RejectReason`]: it describes the run, not the geometry, so a later run must retry it.
+const MODEL_LOAD_FAILED: &str = "model_load_failed";
+
 /// What a previous published output knows, if its builder identity matches ours.
 struct Previous {
     root: PathBuf,
@@ -1020,7 +1024,11 @@ fn reuse_known(
     for prim in known {
         let status = match &prim.kind {
             // A builder failure may have been a one-off (allocation, I/O): rebuild, do not replay.
-            PrevKind::Reject { reason, .. } if reason == RejectReason::BuilderFailed.as_str() => {
+            // A load failure (unreadable GLB) was just as transient: retry it too.
+            PrevKind::Reject { reason, .. }
+                if reason == RejectReason::BuilderFailed.as_str()
+                    || reason == MODEL_LOAD_FAILED =>
+            {
                 return None;
             }
             PrevKind::Reject { reason, detail } => PrimStatus::Rejected {
@@ -1376,14 +1384,15 @@ fn write_mapping(
                 _ => {
                     transaction.execute(
                         "INSERT OR REPLACE INTO cluster_rejects(mesh_hash, primitive_index, reason, detail)
-                         VALUES (?1, ?2, 'model_load_failed', ?3)",
+                         VALUES (?1, ?2, ?3, ?4)",
                         params![
                             outcome.hash_hex,
                             index,
+                            MODEL_LOAD_FAILED,
                             outcome.load_failed.clone().unwrap_or_default()
                         ],
                     )?;
-                    rows.push((index, "rejected", "model_load_failed".to_owned()));
+                    rows.push((index, "rejected", MODEL_LOAD_FAILED.to_owned()));
                 }
             }
         }
@@ -1459,6 +1468,67 @@ fn write_mapping(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod reuse_known_tests {
+    use super::*;
+
+    fn rejected(index: u32, reason: &str) -> PrevPrim {
+        PrevPrim {
+            index,
+            kind: PrevKind::Reject {
+                reason: reason.to_owned(),
+                detail: String::new(),
+            },
+        }
+    }
+
+    fn reuse(known: &[PrevPrim]) -> Option<Vec<PrimOutcome>> {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = StageSettings {
+            mode: LodMode::Cluster,
+            triangle_threshold: 1,
+            jobs: 1,
+            assets_root: None,
+            read_database: None,
+            area: None,
+            child_worldspaces: Vec::new(),
+            include_trees: false,
+            map_references: false,
+        };
+        let context = Context {
+            settings: &settings,
+            cluster_mode: true,
+            staging: directory.path(),
+            assets: directory.path(),
+            identity: [1; 32],
+            previous: None,
+            catalog: None,
+            space: None,
+        };
+        let previous = Previous {
+            root: directory.path().to_owned(),
+            meshes: HashMap::new(),
+        };
+        reuse_known(&context, &previous, &"ab".repeat(32), known)
+    }
+
+    #[test]
+    fn a_recorded_model_load_failure_is_retried_not_replayed() {
+        assert!(reuse(&[rejected(0, MODEL_LOAD_FAILED)]).is_none());
+    }
+
+    #[test]
+    fn a_recorded_builder_failure_is_retried_not_replayed() {
+        assert!(reuse(&[rejected(0, RejectReason::BuilderFailed.as_str())]).is_none());
+    }
+
+    #[test]
+    fn a_deterministic_reject_is_still_replayed() {
+        let prims = reuse(&[rejected(0, RejectReason::NotIndexedTriangles.as_str())]).unwrap();
+        assert_eq!(prims.len(), 1);
+    }
 }
 
 #[cfg(test)]

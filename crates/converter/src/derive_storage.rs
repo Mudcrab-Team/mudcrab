@@ -534,6 +534,7 @@ pub(super) fn claim_label(
     locked_output: &Path,
     label: &str,
     replace: bool,
+    selected_package: Option<&str>,
 ) -> Result<LabelClaim> {
     let digest = crate::cache::hash_bytes(label.as_bytes());
     let claim = AssetLock::acquire_exclusive(derived.join(format!(".label-{}", &digest[..16])))
@@ -582,6 +583,16 @@ pub(super) fn claim_label(
             ensure!(
                 holders.is_empty(),
                 "several overlays already carry label {label:?}; remove all but one before deriving"
+            );
+            // The base manifest names its package by folder and cannot be edited in place, so the
+            // package it selects is only ever replaced by the same settings (the destination).
+            ensure!(
+                selected_package.is_none_or(|selected| path
+                    .file_name()
+                    .is_none_or(|name| name.to_string_lossy() != selected)),
+                "overlay {} (settings {settings_id}) is the package selected by the base; \
+                 re-run with the settings that name it, or use another --label",
+                path.display()
             );
             ensure!(
                 replace,

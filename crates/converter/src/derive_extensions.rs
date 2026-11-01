@@ -127,6 +127,15 @@ pub(crate) fn resolved_settings(
     Ok(settings)
 }
 
+/// The overlay folder name a cluster-only base selects, for example `clusters-0123456789abcdef`.
+/// `None` for a baked base, which names no package.
+fn selected_package_dir(geometry: &shared::geometry::GeometryManifest) -> Option<&str> {
+    let package = geometry.cluster_package.as_deref()?;
+    package
+        .strip_prefix(shared::cluster_overlay::DERIVED_DIR)?
+        .strip_prefix('/')
+}
+
 /// `path` without a Windows verbatim prefix (`\\?\Q:\x` becomes `Q:\x`) for the
 /// local source-root invocation. UNC verbatim paths and every other path are unchanged.
 fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
@@ -253,8 +262,14 @@ fn run_with_space(
     let result = (|| {
         // Labels name overlays within a base. The claim lasts through publication, and the overlay
         // that held the label under another settings id is retired only once the new one is in place.
-        let mut label_claim =
-            derive_storage::claim_label(&derived, &output, &options.label, options.replace)?;
+        let selected_package = selected_package_dir(&manifest.geometry);
+        let mut label_claim = derive_storage::claim_label(
+            &derived,
+            &output,
+            &options.label,
+            options.replace,
+            selected_package,
+        )?;
         storage_notices.append(&mut label_claim.notices);
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
