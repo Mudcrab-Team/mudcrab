@@ -145,7 +145,10 @@ fn load_cell(database: &WorldDatabase, generation: u64, key: CellKey) -> CellPay
         if let Some(response) = database.try_response() {
             assert_eq!(response.generation, generation);
             assert_eq!(response.key, key);
-            return response.result.unwrap();
+            return response
+                .result
+                .unwrap()
+                .expect("fixture cell must be recorded");
         }
         assert!(
             Instant::now() < deadline,

@@ -81,6 +81,13 @@ struct SceneReservation {
     prepared: bool,
 }
 
+/// Logical demand can have several simultaneous allocation lifetimes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct CellAttempt {
+    key: CellKey,
+    generation: u64,
+}
+
 struct CellReservation {
     owner: String,
     resource: String,
@@ -90,6 +97,9 @@ struct CellReservation {
 
 struct ResourceWatch {
     demand: PreparationDemand,
+    /// Generated dependencies prepare together; disposal keeps only images not covered by
+    /// separate catalog texture claims, so another live cell cannot pin dead geometry.
+    allocation_images: Option<Vec<AssetId<Image>>>,
     root_scene: Option<AssetId<WorldAsset>>,
     root_entity: Option<Entity>,
     texture_path: Option<String>,
@@ -111,7 +121,8 @@ pub(crate) struct StreamingRuntime {
     pack_identity: String,
     ledger: MemoryLedger,
     scenes: BTreeMap<SceneKey, SceneReservation>,
-    cells: HashMap<CellKey, CellReservation>,
+    pending_cells: HashMap<CellAttempt, CellReservation>,
+    cells: HashMap<Entity, CellReservation>,
     placements: HashMap<Entity, String>,
     watches: BTreeMap<String, ResourceWatch>,
     prepared_resources: HashSet<String>,
@@ -189,6 +200,7 @@ impl FromWorld for StreamingRuntime {
             pack_identity: format!("{}#{fingerprint}", config.assets_dir.display()),
             ledger: default(),
             scenes: default(),
+            pending_cells: default(),
             cells: default(),
             placements: default(),
             watches: default(),
@@ -276,6 +288,7 @@ impl StreamingRuntime {
                     images: vec![],
                     materials: vec![],
                 },
+                allocation_images: None,
                 root_scene,
                 root_entity,
                 texture_path,
@@ -560,80 +573,79 @@ impl StreamingRuntime {
         true
     }
 
-    pub fn reserve_cell(&mut self, key: CellKey, physics: bool) -> bool {
-        if !self.enabled || self.cells.contains_key(&key) {
-            return true;
-        }
-        if self.pressure_blocked {
-            return false;
-        }
-        self.next_resource = self.next_resource.saturating_add(1);
-        let owner = format!("cell:{key:?}:{}", self.next_resource);
-        let resource = owner.clone();
-        let mut estimates = vec![
-            self.catalog
-                .generated
-                .full_cell_terrain
-                .with_fallback(UNKNOWN_BYTES),
-            self.catalog
-                .generated
-                .full_cell_water
-                .with_fallback(UNKNOWN_BYTES),
-        ];
-        if physics {
-            estimates.push(
-                self.catalog
-                    .generated
-                    .full_cell_collision
-                    .with_fallback(UNKNOWN_BYTES),
-            );
-        }
-        let Some(resident_bytes) = estimates
-            .iter()
-            .try_fold(MIB, |sum, cost| sum.checked_add(cost.resident_bytes))
-        else {
-            return false;
-        };
-        let Some(transient_bytes) = estimates
-            .iter()
-            .try_fold(MIB, |sum, cost| sum.checked_add(cost.peak_transient_bytes))
-        else {
-            return false;
-        };
-        if !self.ledger.reserve(
-            owner.clone(),
-            vec![ResourceReservation {
-                key: resource.clone(),
-                resident_bytes,
-                transient_bytes,
-            }],
-            self.memory_limit.unwrap_or(0),
-        ) {
-            return false;
-        }
-        self.add_watch(resource.clone(), None, None, None);
-        self.cells.insert(
-            key,
-            CellReservation {
-                owner,
-                resource,
-                root: None,
-                dependencies_cached: false,
-            },
-        );
-        true
+    /// Reserve before queueing; repeating the same attempt is idempotent.
+    pub fn reserve_cell_attempt(&mut self, key: CellKey, generation: u64, physics: bool) -> bool {
+        self.reserve_cell_attempt_with_textures(key, generation, physics, Vec::new())
     }
 
-    pub fn reserve_cell_textures(&mut self, key: CellKey, paths: Vec<String>) -> bool {
+    /// Atomically admit any new generated allocation and its discovered textures.
+    /// A deferred existing attempt keeps its funded claims; denial creates no new owner.
+    pub fn reserve_cell_attempt_with_textures(
+        &mut self,
+        key: CellKey,
+        generation: u64,
+        physics: bool,
+        paths: Vec<String>,
+    ) -> bool {
         if !self.enabled {
             return true;
         }
-        let Some(cell) = self.cells.get(&key) else {
-            return false;
+        let attempt = CellAttempt { key, generation };
+        let mut bundle = Vec::new();
+        let new_cell = if self.pending_cells.contains_key(&attempt) {
+            None
+        } else {
+            if self.pressure_blocked {
+                return false;
+            }
+            self.next_resource = self.next_resource.saturating_add(1);
+            let owner = format!("cell:{key:?}:{}", self.next_resource);
+            let mut estimates = vec![
+                self.catalog
+                    .generated
+                    .full_cell_terrain
+                    .with_fallback(UNKNOWN_BYTES),
+                self.catalog
+                    .generated
+                    .full_cell_water
+                    .with_fallback(UNKNOWN_BYTES),
+            ];
+            if physics {
+                estimates.push(
+                    self.catalog
+                        .generated
+                        .full_cell_collision
+                        .with_fallback(UNKNOWN_BYTES),
+                );
+            }
+            let Some(resident_bytes) = estimates
+                .iter()
+                .try_fold(MIB, |sum, cost| sum.checked_add(cost.resident_bytes))
+            else {
+                return false;
+            };
+            let Some(transient_bytes) = estimates
+                .iter()
+                .try_fold(MIB, |sum, cost| sum.checked_add(cost.peak_transient_bytes))
+            else {
+                return false;
+            };
+            bundle.push(ResourceReservation {
+                key: owner.clone(),
+                resident_bytes,
+                transient_bytes,
+            });
+            Some(CellReservation {
+                resource: owner.clone(),
+                owner,
+                root: None,
+                dependencies_cached: false,
+            })
         };
+        let cell = new_cell
+            .as_ref()
+            .unwrap_or_else(|| &self.pending_cells[&attempt]);
         let owner = cell.owner.clone();
-        let mut bundle = vec![];
-        // reserve() extends this owner's existing bundle atomically.
         for path in &paths {
             let cost = self
                 .catalog
@@ -662,11 +674,16 @@ impl StreamingRuntime {
                 transient_bytes: cost.peak_transient_bytes,
             });
         }
+        // One ledger transaction prevents partially admitted fresh collect attempts.
         if !self
             .ledger
             .reserve(owner, bundle, self.memory_limit.unwrap_or(0))
         {
             return false;
+        }
+        if let Some(cell) = new_cell {
+            self.add_watch(cell.resource.clone(), None, None, None);
+            self.pending_cells.insert(attempt, cell);
         }
         for path in paths {
             self.add_watch(self.resource_key(&path, None), None, None, Some(path));
@@ -674,19 +691,49 @@ impl StreamingRuntime {
         true
     }
 
-    pub fn bind_cell(&mut self, key: CellKey, root: Entity) {
-        if let Some(cell) = self.cells.get_mut(&key) {
+    /// Move only this attempt into root ownership. Retained roots keep their own watches.
+    pub fn bind_cell_attempt(&mut self, key: CellKey, generation: u64, root: Entity) {
+        if let Some(mut cell) = self.pending_cells.remove(&CellAttempt { key, generation }) {
             cell.root = Some(root);
             if let Some(watch) = self.watches.get_mut(&cell.resource) {
                 watch.root_entity = Some(root);
             }
+            // A bind consumes one pending allocation; revival never calls this API.
+            debug_assert!(!self.cells.contains_key(&root));
+            self.cells.insert(root, cell);
         }
+    }
+
+    /// A consumed/refused attempt owns no root. Never abandon a retained root here.
+    pub fn retire_cell_attempt(&mut self, key: CellKey, generation: u64) {
+        if let Some(cell) = self.pending_cells.remove(&CellAttempt { key, generation }) {
+            self.abandon(&cell.owner);
+        }
+    }
+
+    // Compatibility helpers for the single-attempt ledger fixtures only.
+    #[cfg(test)]
+    fn reserve_cell(&mut self, key: CellKey, physics: bool) -> bool {
+        self.reserve_cell_attempt(key, 0, physics)
+    }
+
+    #[cfg(test)]
+    fn reserve_cell_textures(&mut self, key: CellKey, paths: Vec<String>) -> bool {
+        self.reserve_cell_attempt_with_textures(key, 0, false, paths)
+    }
+
+    #[cfg(test)]
+    fn bind_cell(&mut self, key: CellKey, root: Entity) {
+        self.bind_cell_attempt(key, 0, root);
     }
 
     fn abandon(&mut self, owner: &str) {
         for resource in self.ledger.abandon(owner) {
             if let Some(watch) = self.watches.get_mut(&resource) {
                 watch.orphaned_frame = Some(self.frame);
+                if let Some(images) = &watch.allocation_images {
+                    watch.demand.images.clone_from(images);
+                }
             }
             self.prepared_resources.remove(&resource);
         }
@@ -1231,25 +1278,32 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
     for owner in orphan_owners {
         runtime.abandon(&owner);
     }
-    let cells: HashSet<_> = world
-        .resource::<StreamingWorld>()
-        .cells
+    // Pending payloads retain their own admission until consumed, including stale responses.
+    let finished_attempts: Vec<_> = runtime
+        .pending_cells
         .keys()
-        .copied()
-        .collect();
-    let absent_cells: Vec<_> = runtime
-        .cells
-        .keys()
-        .filter(|key| {
+        .filter(|attempt| {
             let streaming = world.resource::<StreamingWorld>();
-            !streaming.outstanding_cells.contains_key(key)
-                && (!cells.contains(key)
-                    || matches!(streaming.cells.get(key), Some(CellStatus::Failed)))
+            streaming.outstanding_cells.get(&attempt.key) != Some(&attempt.generation)
+                && !matches!(streaming.cells.get(&attempt.key),
+                Some(CellStatus::Loading { generation, .. })
+                if *generation == attempt.generation)
         })
         .copied()
         .collect();
-    for key in absent_cells {
-        if let Some(cell) = runtime.cells.remove(&key) {
+    for attempt in finished_attempts {
+        runtime.retire_cell_attempt(attempt.key, attempt.generation);
+    }
+    // Logical removal or failure is not physical disposal. Keep each allocation owned until
+    // its exact generational root is absent, independently of the current CellKey.
+    let absent_roots: Vec<_> = runtime
+        .cells
+        .keys()
+        .filter(|root| world.get_entity(**root).is_err())
+        .copied()
+        .collect();
+    for root in absent_roots {
+        if let Some(cell) = runtime.cells.remove(&root) {
             runtime.abandon(&cell.owner);
         }
     }
@@ -1258,12 +1312,57 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
             continue;
         }
         if let Some(root) = cell.root {
+            let validated = surface_validated(world, root);
             if !cell.dependencies_cached && world.get_entity(root).is_ok() {
                 let demand = super::surface_costs::collect_surface_demand(world, root);
+                // Match the actual owner's ledger claims, not just the catalog
+                // or another live cell's watch. Canonical paths can have several
+                // loader IDs (e.g. case aliases); retain each exact dependency ID
+                // on the separate watch that owns its shared texture charge.
+                let texture_claims: HashMap<_, _> = runtime
+                    .ledger
+                    .owner_resources(&cell.owner)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|resource| {
+                        let watch = runtime.watches.get(resource)?;
+                        let path = canonical_resource_key(watch.texture_path.as_ref()?).ok()?;
+                        Some((path, resource.clone()))
+                    })
+                    .collect();
+                let mut allocation_images = Vec::new();
+                let server = world.resource::<AssetServer>();
+                for image in &demand.images {
+                    let claimed_resource = server.get_path(*image).and_then(|path| {
+                        // A subasset or another asset source is not the pack's
+                        // standalone catalog image, even if its path matches.
+                        if path.label().is_some()
+                            || !matches!(path.source(), bevy::asset::io::AssetSourceId::Default)
+                        {
+                            return None;
+                        }
+                        let path = canonical_resource_key(&path.path().to_string_lossy()).ok()?;
+                        texture_claims.get(&path)
+                    });
+                    if let Some(resource) = claimed_resource {
+                        let watch = runtime.watches.get_mut(resource).unwrap();
+                        if !watch.demand.images.contains(image) {
+                            watch.demand.images.push(*image);
+                            runtime.prepared_resources.remove(resource);
+                        }
+                    } else {
+                        allocation_images.push(*image);
+                    }
+                }
                 let watch = runtime.watches.get_mut(&cell.resource).unwrap();
                 watch.demand.meshes = demand.meshes;
+                watch.demand.images = demand.images;
                 watch.demand.materials = demand.materials;
-                cell.dependencies_cached = true;
+                watch.allocation_images = Some(allocation_images);
+                // Pending validation may still change the actual material bindings (for
+                // example the supported optional-normal failure writer). Freeze only
+                // after those owners have resolved; keep exact live and disposal IDs.
+                cell.dependencies_cached = validated;
             }
             let resources: Vec<_> = runtime
                 .ledger
@@ -1278,7 +1377,7 @@ pub(super) fn observe_streaming_ownership(world: &mut World) {
             });
             if cell.dependencies_cached
                 && !runtime.prepared_resources.contains(&cell.resource)
-                && surface_validated(world, root)
+                && validated
                 && colliders_installed(world, root)
                 && prepared
             {

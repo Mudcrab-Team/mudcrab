@@ -175,12 +175,12 @@ fn returned_cell(generation: u64, key: CellKey) -> DatabaseResponse {
     DatabaseResponse {
         generation,
         key,
-        result: Ok(CellPayload {
+        result: Ok(Some(CellPayload {
             generation,
             key,
             cell_id: 1,
             references: vec![],
-        }),
+        })),
         query_micros: 0,
         queue_wait_micros: 0,
         total_request_micros: 0,
@@ -319,6 +319,12 @@ fn rejected_cell_enqueue_stays_retryable_and_its_unused_reservation_is_reclaimed
     assert!(
         app.world()
             .resource::<StreamingRuntime>()
+            .pending_cells
+            .is_empty()
+    );
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
             .ledger
             .totals()
             .orphan_bytes()
@@ -411,7 +417,14 @@ fn stale_cell_payloads_retain_reservations_until_consumed_and_do_not_block_reloa
         app.world().resource::<StreamingRuntime>().ledger.totals(),
         reserved
     );
-    assert_eq!(app.world().resource::<StreamingRuntime>().cells.len(), 2);
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .pending_cells
+            .len(),
+        2
+    );
+    assert!(app.world().resource::<StreamingRuntime>().cells.is_empty());
     responses
         .send(returned_cell(old_generation, old_key))
         .unwrap();
@@ -432,6 +445,12 @@ fn stale_cell_payloads_retain_reservations_until_consumed_and_do_not_block_reloa
     );
     observe_at(&mut app, 5);
     assert!(app.world().resource::<StreamingRuntime>().cells.is_empty());
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .pending_cells
+            .is_empty()
+    );
     assert_eq!(
         app.world()
             .resource::<StreamingRuntime>()
@@ -585,6 +604,7 @@ fn orphan_watch_accounts_for_depth_and_skin_material_lifetimes() {
             },
         });
     let watch = |materials: Vec<_>| ResourceWatch {
+        allocation_images: None,
         demand: PreparationDemand {
             key: PreparationKey::Resource(1),
             meshes: vec![],
@@ -637,6 +657,7 @@ fn orphan_watch_treats_missing_extended_material_resources_as_unknown() {
         Handle::<SkyrimSkinDepthMaterial>::default().id().untyped(),
     ] {
         let watch = ResourceWatch {
+            allocation_images: None,
             demand: PreparationDemand {
                 key: PreparationKey::Resource(1),
                 meshes: vec![],
@@ -1227,6 +1248,7 @@ fn generated_cost_sum_overflow_is_denied_without_partial_reservations() {
     runtime.catalog.generated.full_cell_water = ByteEstimate::conservative(1, 0, "fixture");
     assert!(!runtime.reserve_cell(cell_key(0), false));
     assert!(runtime.cells.is_empty());
+    assert!(runtime.pending_cells.is_empty());
     assert!(runtime.watches.is_empty());
     assert_eq!(runtime.ledger.totals().resources, 0);
 }
@@ -1722,12 +1744,12 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
     let response = |key, cell_id| DatabaseResponse {
         generation: 7,
         key,
-        result: Ok(CellPayload {
+        result: Ok(Some(CellPayload {
             generation: 7,
             key,
             cell_id,
             references: vec![],
-        }),
+        })),
         query_micros: 0,
         queue_wait_micros: 0,
         total_request_micros: 0,
@@ -1798,7 +1820,11 @@ fn unfit_deferred_cell_does_not_block_affordable_cells_or_fresh_stale_responses(
     let runtime = app.world().resource::<StreamingRuntime>();
     assert_eq!(runtime.deferred_responses.len(), 1);
     assert_eq!(runtime.deferred_responses[0].key, blocked);
-    assert_eq!(runtime.cells.len(), 2);
+    assert_eq!(runtime.cells.len(), 1);
+    assert!(
+        runtime.pending_cells.is_empty(),
+        "atomic denial must leave no pending owner"
+    );
     assert!(
         app.world()
             .resource::<StreamingWorld>()
@@ -2549,3 +2575,584 @@ fn a_current_held_response_keeps_its_slot_and_replays_once_when_setup_ends() {
         "the replay is not counted stale"
     );
 }
+
+fn replacement_catalog() -> StreamingCostCatalog {
+    let mut catalog = known_catalog();
+    catalog.generated.full_cell_terrain = ByteEstimate::conservative(100, 10, "terrain fixture");
+    catalog.generated.full_cell_water = ByteEstimate::conservative(20, 2, "water fixture");
+    catalog.generated.full_cell_collision =
+        ByteEstimate::conservative(300, 30, "collision fixture");
+    catalog.resources.insert(
+        "textures/new.ktx2".into(),
+        ResourceCost::new(
+            ResourceKind::Texture,
+            ByteEstimate::conservative(64, 4, "new texture fixture"),
+        ),
+    );
+    catalog
+}
+
+fn replacement_surface(app: &mut App) -> (Entity, Handle<Mesh>, Handle<TerrainMaterial>) {
+    let mesh = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(Cuboid::default());
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<TerrainMaterial>>()
+        .add(TerrainMaterial {
+            base: StandardMaterial::default(),
+            extension: default(),
+        });
+    let root = app.world_mut().spawn_empty().id();
+    app.world_mut().spawn((
+        TerrainPatch,
+        Mesh3d(mesh.clone()),
+        MeshMaterial3d(material.clone()),
+        ChildOf(root),
+    ));
+    (root, mesh, material)
+}
+
+fn bind_replacement(
+    app: &mut App,
+    generation: u64,
+    physics: bool,
+    root: Entity,
+    paths: &[&str],
+) -> String {
+    let key = cell_key(0);
+    let resource = {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        assert!(runtime.reserve_cell_attempt_with_textures(
+            key,
+            generation,
+            physics,
+            paths.iter().map(|path| (*path).into()).collect()
+        ));
+        runtime.bind_cell_attempt(key, generation, root);
+        runtime.cells[&root].resource.clone()
+    };
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .cells
+        .insert(key, CellStatus::Resident { root });
+    resource
+}
+
+fn watch_fixture_texture(app: &mut App, path: &str) -> Handle<Image> {
+    let image = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(Image::default());
+    let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+    let resource = runtime.resource_key(path, None);
+    runtime.watches.get_mut(&resource).unwrap().demand.images = vec![image.id()];
+    image
+}
+
+#[test]
+fn failed_replacement_keeps_its_surface_reservation_until_the_retained_root_is_unloaded() {
+    let (mut app, _directory) = fixture(true);
+    let key = cell_key(0);
+    let root = app.world_mut().spawn_empty().id();
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        runtime.catalog = known_catalog();
+        assert!(runtime.reserve_cell(key, false));
+        runtime.bind_cell(key, root);
+    }
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .set_failed_for_test(key);
+    let reserved = app.world().resource::<StreamingRuntime>().ledger.totals();
+    assert!(reserved.resident_bytes > 0);
+    observe_at(&mut app, 1);
+    observe_at(&mut app, 4);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    assert!(runtime.cells.contains_key(&root));
+    assert_eq!(
+        runtime.ledger.totals().resident_bytes,
+        reserved.resident_bytes
+    );
+    assert_eq!(runtime.ledger.totals().orphan_resident_bytes, 0);
+
+    app.world_mut().despawn(root);
+    observe_at(&mut app, 5);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    assert!(!runtime.cells.contains_key(&root));
+    assert_eq!(
+        runtime.ledger.totals().orphan_resident_bytes,
+        reserved.resident_bytes
+    );
+    observe_at(&mut app, 7);
+    assert_eq!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .totals()
+            .peak_bytes(),
+        Some(0)
+    );
+}
+
+#[test]
+fn rapid_replacements_retain_every_root_and_same_root_revival_does_not_allocate() {
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _directory, requests, _responses) = cell_pipeline_fixture(4);
+    app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+    let mut roots = Vec::new();
+    let mut resources = HashSet::new();
+    // Three full-cell allocations; collision ownership varies independently.
+    for (generation, physics) in [(1, false), (2, true), (3, false)] {
+        let (root, _mesh, _material) = replacement_surface(&mut app);
+        resources.insert(bind_replacement(&mut app, generation, physics, root, &[]));
+        roots.push(root);
+    }
+    observe_at(&mut app, 1);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    assert_eq!(resources.len(), 3);
+    assert_eq!(runtime.cells.len(), 3);
+    assert_eq!(
+        runtime.ledger.totals().resident_bytes,
+        3 * (MIB + 120) + 300
+    );
+    for root in &roots {
+        assert_eq!(
+            runtime.watches[&runtime.cells[root].resource].root_entity,
+            Some(*root)
+        );
+    }
+    let before = runtime.ledger.totals();
+    let root = roots[2];
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .cells
+        .insert(cell_key(0), CellStatus::Retiring { root });
+    // Revive the same full-cell root without issuing another request.
+    app.world_mut()
+        .run_system_once(super::super::plan_cells)
+        .unwrap();
+    assert!(
+        matches!(app.world().resource::<StreamingWorld>().cells[&cell_key(0)],
+        CellStatus::Resident { root: revived } if revived == root)
+    );
+    assert!(requests.is_empty());
+    assert_eq!(
+        app.world().resource::<StreamingRuntime>().ledger.totals(),
+        before
+    );
+    assert_eq!(app.world().resource::<StreamingRuntime>().cells.len(), 3);
+    assert!(
+        app.world()
+            .resource::<StreamingRuntime>()
+            .pending_cells
+            .is_empty()
+    );
+    let after_revival: HashSet<_> = app
+        .world()
+        .resource::<StreamingRuntime>()
+        .cells
+        .values()
+        .map(|cell| cell.resource.clone())
+        .collect();
+    assert_eq!(after_revival, resources);
+    for (root, disposed_at, reclaimed_at, expected_resident) in [
+        (roots[1], 2, 4, 2 * (MIB + 120)),
+        (roots[0], 5, 7, MIB + 120),
+    ] {
+        let demand = {
+            let runtime = app.world().resource::<StreamingRuntime>();
+            runtime.watches[&runtime.cells[&root].resource]
+                .demand
+                .clone()
+        };
+        app.world_mut().despawn(root);
+        for id in demand.meshes {
+            app.world_mut().resource_mut::<Assets<Mesh>>().remove(id);
+        }
+        for id in demand.materials {
+            app.world_mut()
+                .resource_mut::<Assets<TerrainMaterial>>()
+                .remove(id.typed_debug_checked::<TerrainMaterial>());
+        }
+        observe_at(&mut app, disposed_at);
+        assert!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .ledger
+                .totals()
+                .orphan_resident_bytes
+                > 0
+        );
+        observe_at(&mut app, reclaimed_at);
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert_eq!(runtime.ledger.totals().resident_bytes, expected_resident);
+        assert_eq!(runtime.ledger.totals().orphan_resident_bytes, 0);
+        assert!(runtime.cells.contains_key(&roots[2]));
+    }
+}
+
+#[test]
+fn replacement_roots_dispose_independently_and_shared_texture_claim_survives_either_order() {
+    for dispose_new_first in [false, true] {
+        let (mut app, _directory) = fixture(true);
+        app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+        let (a, mesh_a, material_a) = replacement_surface(&mut app);
+        let resource_a = bind_replacement(&mut app, 1, false, a, &["textures/shared.ktx2"]);
+        let _shared = watch_fixture_texture(&mut app, "textures/shared.ktx2");
+        let (b, mesh_b, material_b) = replacement_surface(&mut app);
+        let resource_b = bind_replacement(&mut app, 2, true, b, &["textures/shared.ktx2"]);
+        observe_at(&mut app, 1);
+        let bridge = app.world().resource::<StreamingPreparationBridge>().clone();
+        bridge.publish_fixture(2, watched_demands(&app), true);
+        observe_at(&mut app, 2);
+        assert_eq!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .ledger
+                .totals()
+                .resident_bytes,
+            2 * (MIB + 120) + 300 + 512
+        );
+        let (disposed, retained, resource, retained_resource, mesh, material) = if dispose_new_first
+        {
+            (b, a, resource_b, resource_a, mesh_b, material_b)
+        } else {
+            (a, b, resource_a, resource_b, mesh_a, material_a)
+        };
+        app.world_mut().despawn(disposed);
+        observe_at(&mut app, 3);
+        bridge.publish_absent_fixture(4, watched_demands(&app));
+        observe_at(&mut app, 6);
+        // Exact CPU IDs alone prevent reclamation, even with GPU absence.
+        assert!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .ledger
+                .contains_resource(&resource)
+        );
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .remove(mesh.id());
+        app.world_mut()
+            .resource_mut::<Assets<TerrainMaterial>>()
+            .remove(material.id());
+        bridge.publish_fixture(7, watched_demands(&app), true);
+        observe_at(&mut app, 7);
+        // CPU absence alone cannot reclaim an exact GPU allocation still present.
+        assert!(
+            app.world()
+                .resource::<StreamingRuntime>()
+                .ledger
+                .contains_resource(&resource)
+        );
+        bridge.publish_absent_fixture(8, watched_demands(&app));
+        observe_at(&mut app, 8);
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert!(!runtime.ledger.contains_resource(&resource));
+        assert!(runtime.cells.contains_key(&retained));
+        assert_eq!(
+            runtime.watches[&retained_resource].root_entity,
+            Some(retained)
+        );
+        assert!(runtime.ledger.resource_has_owners(&retained_resource));
+        let texture = runtime.resource_key("textures/shared.ktx2", None);
+        assert!(runtime.ledger.resource_has_owners(&texture));
+        assert_eq!(runtime.ledger.totals().orphan_bytes(), Some(0));
+        assert_eq!(
+            runtime.ledger.totals().resident_bytes,
+            MIB + 120 + if dispose_new_first { 0 } else { 300 } + 512
+        );
+    }
+}
+
+#[test]
+fn replacement_attempt_admission_is_atomic_and_idempotent() {
+    for prepared_a in [false, true] {
+        let (mut app, _directory) = fixture(true);
+        app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+        let (a, _mesh_a, _material_a) = replacement_surface(&mut app);
+        let resource_a = bind_replacement(&mut app, 1, false, a, &["textures/shared.ktx2"]);
+        let _shared = watch_fixture_texture(&mut app, "textures/shared.ktx2");
+        if prepared_a {
+            observe_at(&mut app, 1);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingRuntime>()
+                    .ledger
+                    .totals()
+                    .transient_bytes,
+                0
+            );
+        }
+        let before = app.world().resource::<StreamingRuntime>().ledger.totals();
+        let demand_a = app.world().resource::<StreamingRuntime>().watches[&resource_a]
+            .demand
+            .clone();
+        let b = app.world_mut().spawn_empty().id();
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        let watches_before = runtime.watches.len();
+        let extra_resident = MIB + 100 + 20 + 300 + 64;
+        let extra_transient = MIB + 10 + 2 + 30 + 4 + if prepared_a { 32 } else { 0 };
+        runtime.memory_limit =
+            Some(before.peak_bytes().unwrap() + extra_resident + extra_transient - 1);
+        assert!(!runtime.reserve_cell_attempt_with_textures(
+            cell_key(0),
+            2,
+            true,
+            vec!["textures/shared.ktx2".into(), "textures/new.ktx2".into()]
+        ));
+        assert!(runtime.pending_cells.is_empty());
+        assert_eq!(runtime.watches.len(), watches_before);
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_eq!(runtime.ledger.totals().peak_bytes(), before.peak_bytes());
+        assert_eq!(
+            runtime.ledger.totals().denied_total,
+            before.denied_total + 1
+        );
+        runtime.memory_limit =
+            Some(before.peak_bytes().unwrap() + extra_resident + extra_transient);
+        assert!(runtime.reserve_cell_attempt_with_textures(
+            cell_key(0),
+            2,
+            true,
+            vec!["textures/shared.ktx2".into(), "textures/new.ktx2".into()]
+        ));
+        let admitted = runtime.ledger.totals();
+        assert_eq!(
+            admitted.resident_bytes - before.resident_bytes,
+            MIB + 100 + 20 + 300 + 64
+        );
+        assert_eq!(
+            admitted.transient_bytes - before.transient_bytes,
+            MIB + 10 + 2 + 30 + 4 + if prepared_a { 32 } else { 0 }
+        );
+        assert_eq!(admitted.owners, 2);
+        assert_eq!(
+            admitted.resources, 4,
+            "two generated allocations and two texture identities"
+        );
+        runtime.pressure_blocked = true;
+        assert!(runtime.reserve_cell_attempt(cell_key(0), 2, true));
+        assert!(runtime.reserve_cell_attempt_with_textures(
+            cell_key(0),
+            2,
+            true,
+            vec!["textures/shared.ktx2".into(), "textures/new.ktx2".into()]
+        ));
+        assert!(!runtime.reserve_cell_attempt(cell_key(0), 3, true));
+        assert_eq!(
+            runtime.ledger.totals(),
+            admitted,
+            "planner/collect repetition must be idempotent"
+        );
+        runtime.bind_cell_attempt(cell_key(0), 2, b);
+        assert!(runtime.pending_cells.is_empty());
+        let resource_b = runtime.cells[&b].resource.clone();
+        assert_ne!(resource_a, resource_b);
+        assert_ne!(
+            runtime.watches[&resource_a].demand.key,
+            runtime.watches[&resource_b].demand.key
+        );
+        assert_eq!(runtime.watches[&resource_a].root_entity, Some(a));
+        assert_eq!(runtime.watches[&resource_b].root_entity, Some(b));
+        assert!(!runtime.cells[&b].dependencies_cached);
+        assert!(!runtime.prepared_resources.contains(&resource_b));
+        assert_eq!(runtime.watches[&resource_a].demand, demand_a);
+    }
+}
+
+#[test]
+fn failed_pending_attempt_retires_only_b_and_retry_binds_a_fresh_owner() {
+    let (mut app, _directory) = fixture(true);
+    app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+    let (a, _mesh, _material) = replacement_surface(&mut app);
+    let resource_a = bind_replacement(&mut app, 0, false, a, &[]);
+    observe_at(&mut app, 1);
+    let demand_a = app.world().resource::<StreamingRuntime>().watches[&resource_a]
+        .demand
+        .clone();
+    let key = cell_key(0);
+    let failed_resource = {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        assert!(runtime.reserve_cell_attempt(key, 1, true));
+        runtime.pending_cells[&CellAttempt { key, generation: 1 }]
+            .resource
+            .clone()
+    };
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .set_failed_for_test(key);
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .retire_cell_attempt(key, 1);
+    {
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert!(runtime.pending_cells.is_empty());
+        assert_eq!(runtime.cells.len(), 1);
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_eq!(runtime.watches[&resource_a].demand, demand_a);
+        assert!(runtime.watches[&failed_resource].orphaned_frame.is_some());
+        assert!(runtime.ledger.resource_has_owners(&resource_a));
+        assert!(!runtime.ledger.resource_has_owners(&failed_resource));
+    }
+    observe_at(&mut app, 2);
+    observe_at(&mut app, 4);
+    assert!(
+        !app.world()
+            .resource::<StreamingRuntime>()
+            .ledger
+            .contains_resource(&failed_resource)
+    );
+    let b = app.world_mut().spawn_empty().id();
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        assert!(runtime.reserve_cell_attempt(key, 2, true));
+        runtime.bind_cell_attempt(key, 2, b);
+        assert_eq!(runtime.cells.len(), 2);
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_ne!(runtime.cells[&b].resource, resource_a);
+        assert_ne!(runtime.cells[&b].resource, failed_resource);
+        assert!(!runtime.cells[&b].dependencies_cached);
+        assert!(runtime.pending_cells.is_empty());
+    }
+    assert!(app.world().get_entity(a).is_ok());
+}
+
+#[test]
+fn stale_attempt_and_wrong_key_cannot_retire_or_bind_the_current_owner() {
+    let (mut app, _directory) = fixture(true);
+    app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+    let a = app.world_mut().spawn_empty().id();
+    let resource_a = bind_replacement(&mut app, 0, false, a, &[]);
+    let key = cell_key(0);
+    let attempt = CellAttempt { key, generation: 2 };
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        assert!(runtime.reserve_cell_attempt(key, 1, true));
+        assert!(runtime.reserve_cell_attempt(key, 2, true));
+    }
+    in_flight(&mut app, key, 2);
+    // Observation retires the superseded generation, never the current Loading attempt.
+    observe_at(&mut app, 1);
+    {
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert_eq!(runtime.pending_cells.len(), 1);
+        assert!(runtime.pending_cells.contains_key(&attempt));
+        assert!(runtime.cells.contains_key(&a));
+    }
+    // A repeated retire for the consumed stale response is idempotent.
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .retire_cell_attempt(key, 1);
+    let current_resource = app.world().resource::<StreamingRuntime>().pending_cells[&attempt]
+        .resource
+        .clone();
+    let funded = app.world().resource::<StreamingRuntime>().ledger.totals();
+    assert_eq!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .get(&key),
+        Some(&2)
+    );
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        runtime.bind_cell_attempt(key, 1, a);
+        runtime.bind_cell_attempt(cell_key(1), 2, a);
+        runtime.retire_cell_attempt(key, 1);
+        runtime.retire_cell_attempt(cell_key(1), 2);
+        assert_eq!(runtime.pending_cells[&attempt].resource, current_resource);
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_eq!(runtime.ledger.totals(), funded);
+        assert_eq!(runtime.cells.len(), 1);
+        assert_eq!(runtime.pending_cells.len(), 1);
+    }
+    assert_eq!(
+        app.world()
+            .resource::<StreamingWorld>()
+            .outstanding_cells
+            .get(&key),
+        Some(&2)
+    );
+    let b = app.world_mut().spawn_empty().id();
+    let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+    runtime.bind_cell_attempt(key, 2, b);
+    assert_eq!(runtime.cells[&b].resource, current_resource);
+    assert_eq!(runtime.cells[&a].resource, resource_a);
+    assert!(runtime.pending_cells.is_empty());
+}
+
+#[test]
+fn deferred_and_held_payloads_retain_attempt_charges_until_consumed() {
+    let (mut app, _directory) = fixture(true);
+    app.world_mut().resource_mut::<StreamingRuntime>().catalog = replacement_catalog();
+    let a = app.world_mut().spawn_empty().id();
+    let resource_a = bind_replacement(&mut app, 0, false, a, &[]);
+    observe_at(&mut app, 1);
+    let key = cell_key(0);
+    let attempt = CellAttempt { key, generation: 2 };
+    {
+        let mut runtime = app.world_mut().resource_mut::<StreamingRuntime>();
+        assert!(runtime.reserve_cell_attempt(key, 2, true));
+        runtime.deferred_responses.push_back(returned_cell(2, key));
+    }
+    {
+        let mut streaming = app.world_mut().resource_mut::<StreamingWorld>();
+        streaming.cells.remove(&key);
+        streaming.outstanding_cells.insert(key, 2);
+    }
+    let funded = app.world().resource::<StreamingRuntime>().ledger.totals();
+    observe_at(&mut app, 2);
+    observe_at(&mut app, 4);
+    {
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert_eq!(runtime.ledger.totals(), funded);
+        assert!(runtime.pending_cells.contains_key(&attempt));
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_eq!(runtime.deferred_responses.len(), 1);
+    }
+    let response = app
+        .world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .deferred_responses
+        .pop_front()
+        .unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .held_responses
+        .push_back(response);
+    observe_at(&mut app, 5);
+    assert_eq!(
+        app.world().resource::<StreamingRuntime>().ledger.totals(),
+        funded
+    );
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .held_responses
+        .pop_front()
+        .unwrap();
+    app.world_mut()
+        .resource_mut::<StreamingWorld>()
+        .consume_cell_response(key, 2);
+    app.world_mut()
+        .resource_mut::<StreamingRuntime>()
+        .retire_cell_attempt(key, 2);
+    observe_at(&mut app, 6);
+    {
+        let runtime = app.world().resource::<StreamingRuntime>();
+        assert!(runtime.pending_cells.is_empty());
+        assert_eq!(runtime.cells[&a].resource, resource_a);
+        assert_eq!(runtime.ledger.totals().peak_bytes(), funded.peak_bytes());
+        assert!(runtime.ledger.totals().orphan_resident_bytes > 0);
+    }
+    observe_at(&mut app, 8);
+    let runtime = app.world().resource::<StreamingRuntime>();
+    assert_eq!(runtime.ledger.totals().owners, 1);
+    assert_eq!(runtime.ledger.totals().orphan_bytes(), Some(0));
+    assert!(runtime.ledger.resource_has_owners(&resource_a));
+}
+
+#[path = "runtime_cell_attempt_tests.rs"]
+mod cell_attempt_tests;
