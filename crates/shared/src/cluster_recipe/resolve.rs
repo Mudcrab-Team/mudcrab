@@ -96,7 +96,9 @@ type TextureVerification = Arc<OnceLock<Option<&'static str>>>;
 /// each unique model and texture is cached, however many references place it.
 pub struct ModelCatalog {
     assets_root: PathBuf,
-    hashes: HashMap<String, String>,
+    /// Lower-case GLB path to (published path, content hash). Lookups fold the name; the disk
+    /// reads use the published spelling.
+    hashes: HashMap<String, (String, String)>,
     /// The first (sorted) published GLB path of each content hash.
     paths_by_hash: HashMap<String, String>,
     /// Lower-case texture path to (published path, content hash).
@@ -122,7 +124,7 @@ impl ModelCatalog {
         assets_root: &Path,
         published: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, String> {
-        let mut hashes: HashMap<String, String> = HashMap::new();
+        let mut hashes: HashMap<String, (String, String)> = HashMap::new();
         let mut textures: HashMap<String, (String, String)> = HashMap::new();
         let mut folded: HashMap<String, String> = HashMap::new();
         for (output, output_hash) in published {
@@ -132,7 +134,7 @@ impl ModelCatalog {
             if !is_glb && !lower.ends_with(".ktx2") {
                 continue;
             }
-            if let Some(other) = folded.insert(lower, output.clone())
+            if let Some(other) = folded.insert(lower.clone(), output.clone())
                 && other != output
             {
                 return Err(format!(
@@ -140,7 +142,9 @@ impl ModelCatalog {
                 ));
             }
             let known = if is_glb {
-                hashes.insert(output.clone(), output_hash.clone())
+                hashes
+                    .insert(lower, (output.clone(), output_hash.clone()))
+                    .map(|(_, hash)| hash)
             } else {
                 textures
                     .insert(output.to_lowercase(), (output.clone(), output_hash.clone()))
@@ -150,12 +154,12 @@ impl ModelCatalog {
                 return Err(format!("{output} is published with two content hashes"));
             }
         }
-        let mut paths: Vec<&String> = hashes.keys().collect();
-        paths.sort();
+        let mut published_paths: Vec<&(String, String)> = hashes.values().collect();
+        published_paths.sort();
         let mut paths_by_hash = HashMap::new();
-        for path in paths {
+        for (path, hash) in published_paths {
             paths_by_hash
-                .entry(hashes[path].clone())
+                .entry(hash.clone())
                 .or_insert_with(|| path.clone());
         }
         Ok(Self {
@@ -300,7 +304,8 @@ impl ModelCatalog {
     }
 
     fn read(&self, glb_path: &str) -> ModelInfo {
-        let Some(hash) = self.hashes.get(glb_path).cloned() else {
+        let Some((published_path, hash)) = self.hashes.get(&glb_path.to_lowercase()).cloned()
+        else {
             return ModelInfo {
                 hash: None,
                 facts: None,
@@ -317,7 +322,7 @@ impl ModelCatalog {
         // The bytes on disk must be the bytes the manifest hashed: geometry, materials and
         // everything else the header does not show.
         match hash_file(
-            &self.assets_root.join(glb_path),
+            &self.assets_root.join(&published_path),
             #[cfg(test)]
             None,
         ) {
@@ -325,7 +330,7 @@ impl ModelCatalog {
             Ok(found) if found != hash => return unusable(REASON_MODEL_CONTENT_CHANGED),
             Ok(_) => {}
         }
-        let facts = match read_model_facts(&self.assets_root, glb_path) {
+        let facts = match read_model_facts(&self.assets_root, &published_path) {
             Ok(facts) => facts,
             Err(_) => return unusable(REASON_MODEL_NOT_LOADED),
         };
@@ -337,7 +342,7 @@ impl ModelCatalog {
         // GLB is at another path may use it only when its materials resolve to the same keys.
         if problem.is_none()
             && let Some(canonical) = self.paths_by_hash.get(&hash)
-            && canonical != glb_path
+            && *canonical != published_path
         {
             let winner = self.info(canonical);
             problem = match (winner.problem, &winner.facts) {
@@ -762,6 +767,37 @@ mod runtime_alias_tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn a_mixed_case_published_model_is_found_by_its_folded_name() {
+        let files = Files::new();
+        let document = serde_json::json!({
+            "asset": {"version":"2.0"}, "scene":0,
+            "scenes":[{"nodes":[0]}], "nodes":[{"mesh":0}],
+            "meshes":[{"primitives":[{}]}],
+        });
+        let mut json = serde_json::to_vec(&document).unwrap();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(20u32 + json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        let published = "meshes/Mixed/Case.glb";
+        let model_hash = files.write(published, &glb);
+        let catalog = files.catalog(vec![(published.into(), model_hash.clone())]);
+        // `model_glb_path` hands the catalog the folded spelling.
+        for spelling in ["meshes/mixed/case.glb", published] {
+            let info = catalog.info(spelling);
+            assert_eq!(info.problem, None, "{spelling}");
+            assert_eq!(info.hash.as_deref(), Some(model_hash.as_str()));
+        }
+        assert_eq!(catalog.canonical_path(&model_hash), Some(published));
     }
 
     #[test]

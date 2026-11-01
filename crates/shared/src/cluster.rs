@@ -459,7 +459,8 @@ pub(crate) use crate::extensions::hex;
 
 /// Parses a 64-digit lowercase or uppercase hex SHA-256.
 pub fn parse_hash(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 || !text.is_ascii() {
+    // `u8::from_str_radix` accepts a leading `+`, so every byte is checked as a hex digit first.
+    if text.len() != 64 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0u8; 32];
@@ -820,9 +821,20 @@ fn validate_records(view: &MclView<'_>) -> Result<(), ClusterFormatError> {
     let cluster_vertex_total = view.section(MclSection::ClusterVertices).len() / 4;
     let triangle_total = view.section(MclSection::ClusterTriangles).len() / 3;
 
+    // Every position is read by the renderer and the bounds code, so none may be NaN or infinite.
+    let positions = view.section(MclSection::Positions);
+    if (0..positions.len())
+        .step_by(4)
+        .any(|offset| !get_f32(positions, offset).is_finite())
+    {
+        return bad("a vertex position is not finite".into());
+    }
+
+    let mut grouped_clusters = 0usize;
     for index in 0..view.group_count as usize {
         let group = view.group(index);
         let end = usize::from(group.first_cluster) + usize::from(group.cluster_count);
+        grouped_clusters += usize::from(group.cluster_count);
         if end > view.cluster_count as usize {
             return bad(format!(
                 "group {index} cluster range exceeds {}",
@@ -927,6 +939,15 @@ fn validate_records(view: &MclView<'_>) -> Result<(), ClusterFormatError> {
                 cluster.error
             )));
         }
+    }
+    // Each cluster lies inside its own group's range (checked above), so a group holds at most
+    // as many clusters as its range is long. Ranges whose lengths add up to the cluster count
+    // therefore hold exactly their own clusters: they are disjoint and cover every cluster.
+    if grouped_clusters != view.cluster_count as usize {
+        return bad(format!(
+            "group cluster ranges cover {grouped_clusters} clusters, not a partition of {}",
+            view.cluster_count
+        ));
     }
     for (index, child_error) in max_child_error.iter().enumerate() {
         if view.group(index).error < *child_error {
@@ -1426,14 +1447,24 @@ mod tests {
     }
 
     fn write_sample(mutate: impl FnOnce(&mut Vec<ClusterRecord>)) -> Vec<u8> {
-        let (mut clusters, groups, cluster_vertices, triangles) = sample();
+        write_sample_with(mutate, |_| {}, |_| {})
+    }
+
+    fn write_sample_with(
+        mutate: impl FnOnce(&mut Vec<ClusterRecord>),
+        mutate_groups: impl FnOnce(&mut Vec<GroupRecord>),
+        mutate_positions: impl FnOnce(&mut [[f32; 3]; 4]),
+    ) -> Vec<u8> {
+        let (mut clusters, mut groups, cluster_vertices, triangles) = sample();
         mutate(&mut clusters);
-        let positions = [
+        mutate_groups(&mut groups);
+        let mut positions = [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [1.0, 1.0, 0.0],
         ];
+        mutate_positions(&mut positions);
         let normals = [encode_oct_snorm16([0.0, 0.0, 1.0]); 4];
         let uvs = [[0u16, 0], [65535, 0], [0, 65535], [65535, 65535]];
         write_mcl(&MclContents {
@@ -1537,6 +1568,33 @@ mod tests {
         assert_eq!(error.reason(), "non_monotonic_error");
         let error = read_mcl(&write_sample(|clusters| clusters[1].group = 7)).unwrap_err();
         assert_eq!(error.reason(), "bad_record");
+    }
+
+    #[test]
+    fn mcl_rejects_a_non_finite_position() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let bytes = write_sample_with(|_| {}, |_| {}, |positions| positions[2][1] = value);
+            let error = read_mcl(&bytes).unwrap_err();
+            assert_eq!(error.reason(), "bad_record", "position {value}");
+        }
+    }
+
+    #[test]
+    fn mcl_rejects_group_ranges_that_overlap() {
+        // Group 0 claims cluster 2, which belongs to group 1: every per-cluster check still holds.
+        let bytes = write_sample_with(|_| {}, |groups| groups[0].cluster_count = 3, |_| {});
+        let error = read_mcl(&bytes).unwrap_err();
+        assert_eq!(error.reason(), "bad_record");
+    }
+
+    #[test]
+    fn parse_hash_accepts_only_hex_digits() {
+        let digits = "0123456789abcdefABCDEF0123456789abcdefABCDEF0123456789abcdefABCD";
+        assert_eq!(digits.len(), 64);
+        assert!(parse_hash(digits).is_some());
+        // `u8::from_str_radix` would take each "+X" pair as one byte.
+        assert_eq!(parse_hash(&"+0".repeat(32)), None);
+        assert_eq!(parse_hash(&"-0".repeat(32)), None);
     }
 
     #[test]

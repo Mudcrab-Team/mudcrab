@@ -958,6 +958,16 @@ fn parallel_ordered<T: Sync, R: Send>(
 
 type MaterialRows = HashMap<String, Vec<(u32, MaterialSource)>>;
 
+/// Whether a `cluster_meshes.alpha_mode` row value draws as a mask. Only `opaque` and `mask` are
+/// mesh draw modes; any other value (`blend`, a typo) is not something the source can certify.
+fn alpha_mask_of(mode: &str) -> Option<bool> {
+    match mode {
+        "mask" => Some(true),
+        "opaque" => Some(false),
+        _ => None,
+    }
+}
+
 fn read_material_rows(connection: &Connection) -> Result<MaterialRows, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT mesh_hash, primitive_index, material_key, model_path, material_index, alpha_mode,
@@ -967,13 +977,21 @@ fn read_material_rows(connection: &Connection) -> Result<MaterialRows, rusqlite:
     let mut models = MaterialRows::new();
     while let Some(row) = rows.next()? {
         let model: String = row.get(0)?;
+        let mode: String = row.get(5)?;
+        let alpha_mask = alpha_mask_of(&mode).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                format!("alpha_mode {mode:?} is neither opaque nor mask").into(),
+            )
+        })?;
         let source = (
             row.get(1)?,
             MaterialSource {
                 material_key: row.get(2)?,
                 model_path: row.get(3)?,
                 material_index: row.get(4)?,
-                alpha_mask: row.get::<_, String>(5)? == "mask",
+                alpha_mask,
                 alpha_cutoff: row.get::<_, Option<f64>>(6)?.map(|value| value as f32),
                 double_sided: row.get::<_, i64>(7)? != 0,
             },
@@ -1028,11 +1046,18 @@ fn check_materials(
     let mut rows = statement.query([model])?;
     while let Some(row) = rows.next()? {
         let index: u32 = row.get(0)?;
+        let mode: String = row.get(4)?;
+        let Some(alpha_mask) = alpha_mask_of(&mode) else {
+            return Err(MappingError::MaterialMismatch {
+                mesh_hash: model.to_owned(),
+                primitive_index: index,
+            });
+        };
         let found = (
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, Option<u32>>(3)?,
-            row.get::<_, String>(4)? == "mask",
+            alpha_mask,
             row.get::<_, Option<f64>>(5)?
                 .map(|cutoff| (cutoff as f32).to_bits()),
             row.get::<_, i64>(6)? != 0,
@@ -2019,6 +2044,57 @@ mod parallel_tests {
             check_material_rows(&fixture.authority, &model, rows.get(&model)),
             expected
         );
+    }
+
+    #[test]
+    fn a_draw_mode_other_than_opaque_or_mask_does_not_certify() {
+        let mut fixture = fixture();
+        let model = "ab".repeat(32);
+        fixture.authority.materials.insert(
+            model.clone(),
+            BTreeMap::from([(
+                0,
+                MaterialSource {
+                    model_path: "meshes/model.glb".into(),
+                    material_index: None,
+                    material_key: "key".into(),
+                    alpha_mask: false,
+                    alpha_cutoff: None,
+                    double_sided: false,
+                },
+            )]),
+        );
+        let insert = |mode: &str| {
+            fixture
+                .connection
+                .execute("DELETE FROM cluster_meshes WHERE mesh_hash=?1", [&model])
+                .unwrap();
+            fixture.connection.execute("INSERT INTO cluster_meshes VALUES(?1,0,'payload','content',0,0,0,0,'key','meshes/model.glb',NULL,?2,NULL,0)", rusqlite::params![model, mode]).unwrap();
+        };
+        insert("opaque");
+        assert_eq!(
+            check_materials(&fixture.connection, &fixture.authority, &model),
+            Ok(())
+        );
+        let rows = read_material_rows(&fixture.connection).unwrap();
+        assert_eq!(
+            check_material_rows(&fixture.authority, &model, rows.get(&model)),
+            Ok(())
+        );
+        for mode in ["blend", "Opaque", ""] {
+            insert(mode);
+            let expected = Err(MappingError::MaterialMismatch {
+                mesh_hash: model.clone(),
+                primitive_index: 0,
+            });
+            assert_eq!(
+                check_materials(&fixture.connection, &fixture.authority, &model),
+                expected,
+                "{mode:?}"
+            );
+            // The bulk read refuses the row, so the checker falls back to the per-model query.
+            assert!(read_material_rows(&fixture.connection).is_err(), "{mode:?}");
+        }
     }
 
     #[test]

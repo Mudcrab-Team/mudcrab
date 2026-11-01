@@ -433,8 +433,9 @@ pub fn detect_snow_source(connection: &Connection) -> Result<SnowSource> {
 }
 
 /// The worldspaces with a LOD origin and the (reference worldspace, block worldspace) pairs a run
-/// reads: every worldspace with an origin joins its own blocks, and each requested child whose
-/// parent has an origin joins its parent's.
+/// reads: every worldspace with an origin joins its own blocks, and each requested child without
+/// an origin of its own whose parent has one joins its parent's. Each reference worldspace appears
+/// once, with one block worldspace.
 #[derive(Debug, Clone, Default)]
 pub struct Sources {
     pub worldspaces: Vec<WorldspaceOrigin>,
@@ -466,6 +467,11 @@ pub fn read_sources(connection: &Connection, children: &[u32]) -> Result<Sources
         .collect();
     let mut skipped_children = Vec::new();
     for &child in children {
+        // A child with a LOD origin of its own already reads against its own block grid, and a
+        // repeated child is already listed: either way one block worldspace per source.
+        if sources.iter().any(|&(source, _)| source == child) {
+            continue;
+        }
         let parent: Option<u32> = connection
             .query_row(
                 "SELECT parent_world FROM worldspaces WHERE id = ?1",
@@ -799,6 +805,43 @@ pub fn transform_bounds(
         }
     }
     (out_min, out_max)
+}
+
+#[cfg(test)]
+mod read_sources_tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE worldspaces (
+                     id INTEGER PRIMARY KEY, lod_origin_x INTEGER, lod_origin_y INTEGER,
+                     parent_world INTEGER
+                 );
+                 INSERT INTO worldspaces VALUES
+                     (10, 0, 0, NULL),
+                     (20, 4, 4, 10),
+                     (30, NULL, NULL, 10),
+                     (40, NULL, NULL, 99);",
+            )
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn a_child_with_its_own_origin_keeps_only_its_own_block_grid() {
+        let sources = read_sources(&database(), &[20]).unwrap();
+        assert_eq!(sources.sources, [(10, 10), (20, 20)]);
+        assert!(sources.skipped_children.is_empty());
+    }
+
+    #[test]
+    fn each_source_worldspace_has_one_block_worldspace() {
+        let sources = read_sources(&database(), &[20, 30, 30, 40]).unwrap();
+        assert_eq!(sources.sources, [(10, 10), (20, 20), (30, 10)]);
+        assert_eq!(sources.skipped_children, [40]);
+    }
 }
 
 #[cfg(test)]
