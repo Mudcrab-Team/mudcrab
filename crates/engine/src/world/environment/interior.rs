@@ -353,6 +353,58 @@ mod tests {
     }
 
     #[test]
+    fn interior_first_application_and_late_sun_preserve_the_startup_exterior_baseline() {
+        for late_sun in [false, true] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(fixture())
+                .insert_resource(ActiveSpace {
+                    interior: Some(10),
+                    ..default()
+                })
+                .insert_resource(GlobalAmbientLight {
+                    color: Color::srgb(0.1, 0.2, 0.3),
+                    brightness: 123.0,
+                    ..default()
+                })
+                .add_plugins(InteriorEnvironmentPlugin);
+            if late_sun {
+                app.update();
+            }
+            let rotation = Quat::from_rotation_y(0.4);
+            let sun = app
+                .world_mut()
+                .spawn((
+                    WorldEnvironmentLight,
+                    DirectionalLight {
+                        color: Color::srgb(0.8, 0.7, 0.6),
+                        illuminance: 4321.0,
+                        ..default()
+                    },
+                    Transform::from_rotation(rotation),
+                ))
+                .id();
+            app.update();
+            assert_eq!(light(&app, sun).color, rgb([60, 70, 80]));
+            assert_eq!(light(&app, sun).illuminance, 1080.25);
+            assert_eq!(
+                app.world().resource::<GlobalAmbientLight>().color,
+                rgb([30, 40, 50])
+            );
+            enter(&mut app, None);
+            assert_eq!(light(&app, sun).color, Color::srgb(0.8, 0.7, 0.6));
+            assert_eq!(light(&app, sun).illuminance, 4321.0);
+            assert_eq!(
+                app.world().get::<Transform>(sun).unwrap().rotation,
+                rotation
+            );
+            let ambient = app.world().resource::<GlobalAmbientLight>();
+            assert_eq!(ambient.color, Color::srgb(0.1, 0.2, 0.3));
+            assert_eq!(ambient.brightness, 123.0);
+        }
+    }
+
+    #[test]
     fn transition_and_real_preferences_keep_interior_authorship_and_restore_exterior() {
         let (mut app, sun) = app(fixture());
         app.update();
