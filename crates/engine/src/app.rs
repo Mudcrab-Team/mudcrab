@@ -1445,7 +1445,7 @@ fn setup_terrain_water_fixture(
                 terrain_materials.add(TerrainMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
-                        perceptual_roughness: 0.92,
+                        perceptual_roughness: shared::terrain::ATLAS_ROUGHNESS as f32,
                         cull_mode: None,
                         double_sided: true,
                         ..default()
@@ -1963,7 +1963,7 @@ struct RuntimeIntegrationReport {
     passed: bool,
 }
 
-fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
+pub(crate) fn validate_runtime_assets(config: &EngineConfig) -> Result<()> {
     for required in ["skyrim_world.db", "cell_cache.rkyv"] {
         color_eyre::eyre::ensure!(
             config.assets_dir.join(required).is_file(),

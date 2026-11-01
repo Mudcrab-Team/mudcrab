@@ -2,18 +2,18 @@ use std::collections::{HashMap, HashSet};
 
 const INITIALLY_DISABLED: u32 = 0x800;
 const OPPOSITE_OF_PARENT: u32 = 1;
-const PLAYER_REFERENCE: u32 = 0x14;
+pub(crate) const PLAYER_REFERENCE: u32 = 0x14;
 
 /// Immutable inputs from a winning reference record, separate from runtime state.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct InitialEnableInputs {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InitialEnableInputs {
     pub header_flags: u32,
     pub parent_id: Option<u32>,
     pub parent_flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum EnableStateError {
+pub(crate) enum EnableStateError {
     MissingParent(u32),
     Cycle(u32),
 }
@@ -27,10 +27,11 @@ impl std::fmt::Display for EnableStateError {
     }
 }
 
-pub(super) type EnableState = Result<bool, EnableStateError>;
+pub(crate) type EnableState = Result<bool, EnableStateError>;
 
-/// Memoizes initial state for the immutable package, including unresolved chains.
-pub(super) struct EnableStateResolver {
+/// Memoizes resolved state, including unresolved chains, until explicitly invalidated.
+#[derive(Clone)]
+pub(crate) struct EnableStateResolver {
     resolved: HashMap<u32, EnableState>,
 }
 
@@ -45,6 +46,10 @@ impl Default for EnableStateResolver {
 }
 
 impl EnableStateResolver {
+    pub fn cached(&self, reference: u32) -> Option<EnableState> {
+        self.resolved.get(&reference).copied()
+    }
+
     pub fn resolve<E>(
         &mut self,
         mut form_id: u32,

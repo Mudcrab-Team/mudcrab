@@ -9,6 +9,7 @@ pub mod billboard;
 pub mod bug_report;
 mod capture_frame;
 pub mod cell_commands;
+pub mod cluster;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
@@ -19,6 +20,7 @@ pub mod emittance;
 pub mod extensions;
 pub mod fingerprint;
 pub mod frame_budget;
+pub mod graphics_settings;
 pub mod hdr_probe;
 pub mod indirect_metrics;
 pub mod lights;
@@ -57,6 +59,8 @@ pub mod terrain_upload;
 pub mod tone_mapping;
 pub mod visibility_optimization;
 pub mod visual_profile;
+#[cfg(test)]
+mod work_counters;
 pub mod world;
 
 pub use app::run;

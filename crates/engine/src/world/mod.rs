@@ -5,3 +5,5 @@ pub mod database;
 mod enable_state;
 pub mod environment;
 pub mod imagespace;
+
+pub mod reference_state;
