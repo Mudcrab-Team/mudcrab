@@ -28,8 +28,9 @@ the same frame as `ActiveSpace` changes.
   (xEdit's Fresnel Power, historically named `scale` in this schema) are retained, not applied as
   ambient intensity.
 - Compatibility policies, not verified native behavior: an LTMP-only row uses template groups;
-  a short XCLL without an inheritance mask uses its local fields. Missing environment tables,
-  cells or flags select a closed interior with missing authored light, not the previous scene.
+  a short XCLL without an inheritance mask uses its local fields. A database-open failure or
+  missing environment tables, cells or flags selects a closed interior with missing authored
+  light, not the previous scene. The startup warning distinguishes an open failure.
   Missing colors become black, missing fade becomes 1, missing angles use identity rotation.
   Exiting restores exterior settings/baseline and the original exterior light rotation.
 - Rejected XCLL blocks below 72 bytes retain their authored length (including zero), select no

@@ -1472,7 +1472,16 @@ mod tests {
     }
 
     #[test]
-    fn crossing_and_failed_landing_restore_render_lighting_in_the_scene_switch_frame() {
+    fn crossing_and_timed_out_landing_restore_render_lighting_in_the_scene_switch_frame() {
+        check_crossing_restores_lighting(false);
+    }
+
+    #[test]
+    fn crossing_and_failed_cell_restore_render_lighting_in_the_scene_switch_frame() {
+        check_crossing_restores_lighting(true);
+    }
+
+    fn check_crossing_restores_lighting(fail_destination: bool) {
         use crate::world::environment::{
             EnvironmentCatalog,
             interior::{SceneEnvironment, WorldEnvironmentLight},
@@ -1516,8 +1525,13 @@ mod tests {
                 assert_eq!(light.color, Color::srgb_u8(40, 50, 60));
                 assert_eq!(light.illuminance, 6_000.0);
                 assert_eq!(ambient.color, Color::srgb_u8(10, 20, 30));
+                if fail_destination {
+                    app.world_mut()
+                        .resource_mut::<StreamingWorld>()
+                        .set_failed_for_test(CellKey::Interior(77));
+                }
             } else if saw_interior {
-                // No destination root was made resident, so the real timeout queues a restore.
+                // The real failure or timeout path queues the exterior restoration.
                 saw_restore = true;
                 assert_eq!(light.color, DirectionalLight::default().color);
                 assert_eq!(light.illuminance, 12_000.0);
