@@ -12,7 +12,9 @@ use std::path::Path;
 
 use bevy::prelude::*;
 use color_eyre::eyre::{Result, WrapErr};
-use shared::extensions::{DOOR_LINKS, DataExtensions, ExtensionStatus, core_build_identity};
+use shared::extensions::{
+    DOOR_LINKS, DataExtensions, ExtensionStatus, MATERIAL, core_build_identity,
+};
 
 use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures};
 
@@ -21,16 +23,19 @@ use crate::world::database::{DoorLinksAccess, WorldDatabaseFeatures};
 pub enum Feature {
     /// Ordinary load-door destinations in [`crate::world::database`].
     DoorLinks,
+    /// Authored material animation capability consumed by the glTF loader.
+    Material,
 }
 
 impl Feature {
     /// Every feature, in the order notices are listed.
-    pub const ALL: [Self; 1] = [Self::DoorLinks];
+    pub const ALL: [Self; 2] = [Self::DoorLinks, Self::Material];
 
     /// The extension id the feature reads.
     pub const fn extension(self) -> &'static str {
         match self {
             Self::DoorLinks => DOOR_LINKS,
+            Self::Material => MATERIAL,
         }
     }
 
@@ -38,6 +43,7 @@ impl Feature {
     pub const fn label(self) -> &'static str {
         match self {
             Self::DoorLinks => "load-door links",
+            Self::Material => "material animation",
         }
     }
 
@@ -105,7 +111,7 @@ impl DataSetExtensions {
 }
 
 /// Reads `conversion-manifest.json`, consulting the database's core identity only for a supported
-/// door declaration with a freshness anchor. A dataset without a manifest lists no extensions;
+/// known declaration with a freshness anchor. A dataset without a manifest lists no extensions;
 /// ordinary core doors still use schema discovery. A manifest that cannot be read is an error.
 pub fn read_data_extensions(assets_dir: &Path) -> Result<DataExtensions> {
     let manifest = assets_dir.join("conversion-manifest.json");
@@ -210,21 +216,22 @@ pub(crate) mod fixtures {
     use shared::extensions::{ExtensionEntry, ExtensionOwns};
     use std::collections::BTreeMap;
 
-    /// Synthetic core door schema and unrelated payloads for capability status tests.
+    /// Synthetic core door rows for capability status tests using the converter schema.
     pub const TABLES: &str = "
-        CREATE TABLE cells(id INTEGER PRIMARY KEY, worldspace_id INTEGER);
-        CREATE TABLE \"references\"(id INTEGER PRIMARY KEY, cell_id INTEGER NOT NULL,
-            pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL);
-        CREATE TABLE door_links(ref_id INTEGER PRIMARY KEY, destination_ref_id INTEGER NOT NULL,
-            pos_x REAL NOT NULL, pos_y REAL NOT NULL, pos_z REAL NOT NULL,
-            rot_x REAL NOT NULL, rot_y REAL NOT NULL, rot_z REAL NOT NULL,
-            destination_cell_id INTEGER, destination_worldspace_id INTEGER);
-        INSERT INTO cells VALUES(5, 60);
-        INSERT INTO cells VALUES(100, NULL);
-        INSERT INTO \"references\" VALUES(1, 5, 10, 20, 30);
-        INSERT INTO \"references\" VALUES(2, 100, 1, 2, 3);
-        INSERT INTO door_links VALUES(1, 2, 1, 2, 3, 0, 0, 1.5, 100, NULL);
-        INSERT INTO door_links VALUES(2, 1, 10, 20, 30, 0, 0, 0.5, 5, 60);
+        INSERT INTO cells(id, worldspace_id, flags) VALUES(5, 60, 0);
+        INSERT INTO cells(id, worldspace_id, flags) VALUES(100, NULL, 0);
+        INSERT INTO \"references\"(id, cell_id, base_form_id, is_exterior,
+            pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
+            VALUES(1, 5, 1, 1, 10, 20, 30, 0, 0, 0);
+        INSERT INTO \"references\"(id, cell_id, base_form_id, is_exterior,
+            pos_x, pos_y, pos_z, rot_x, rot_y, rot_z)
+            VALUES(2, 100, 2, 0, 1, 2, 3, 0, 0, 0);
+        INSERT INTO door_links(ref_id, destination_ref_id, pos_x, pos_y, pos_z,
+            rot_x, rot_y, rot_z, destination_cell_id, destination_worldspace_id)
+            VALUES(1, 2, 1, 2, 3, 0, 0, 1.5, 100, NULL);
+        INSERT INTO door_links(ref_id, destination_ref_id, pos_x, pos_y, pos_z,
+            rot_x, rot_y, rot_z, destination_cell_id, destination_worldspace_id)
+            VALUES(2, 1, 10, 20, 30, 0, 0, 0.5, 5, 60);
     ";
 
     /// The manifest of a `main` data set: no `extensions` key.
@@ -247,8 +254,8 @@ pub(crate) mod fixtures {
             .to_string()
     }
 
-    /// A data set folder: the manifest text and a database holding [`TABLES`] (without the ones in
-    /// `without`), whose `lod_build` identity is `core` when it is given.
+    /// A data set folder: the manifest text and current converter schema with [`TABLES`] rows,
+    /// excluding tables in `without`. Its `lod_build` identity is `core` when given.
     pub fn data_set(
         manifest_text: &str,
         core: Option<&str>,
@@ -261,6 +268,9 @@ pub(crate) mod fixtures {
         )
         .unwrap();
         let connection = Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        converter::esm::exporter::create_tables(&connection).unwrap();
+        // Keep absent-identity cases distinct from an empty or malformed identity table.
+        connection.execute_batch("DROP TABLE lod_build;").unwrap();
         connection.execute_batch(TABLES).unwrap();
         for table in without {
             connection
@@ -335,6 +345,11 @@ mod tests {
     fn core_door_links_need_no_legacy_extension_declaration() {
         let directory = data_set(MAIN_MANIFEST, None, &[]);
         let (_, notices, database_features) = open(&directory).unwrap();
+        crate::world::database::WorldDatabase::open_with(
+            &directory.path().join("skyrim_world.db"),
+            database_features,
+        )
+        .unwrap();
         assert_eq!(database_features.door_links, DoorLinksAccess::Core);
         assert!(notices.for_feature(Feature::DoorLinks).is_none());
     }
@@ -423,6 +438,7 @@ mod tests {
                 let (_, notices, database_features) = open(&directory).unwrap();
                 assert_eq!(database_features.door_links, access, "{text}; {sql}");
                 assert_eq!(notices.len(), notice_count, "{text}");
+                assert!(notices.for_feature(Feature::Material).is_none(), "{text}");
             }
         }
     }
@@ -452,6 +468,7 @@ mod tests {
         let notice = notices.for_feature(Feature::DoorLinks).unwrap();
         assert!(notice.reason.contains(&issue.reason), "{}", notice.reason);
         assert_eq!(notices.len(), 1);
+        assert!(notices.for_feature(Feature::Material).is_none());
     }
 
     #[test]
@@ -467,7 +484,7 @@ mod tests {
     fn a_stale_extension_is_off_with_the_reason() {
         for feature in Feature::ALL {
             let directory = data_set(&only(feature, 1, "older"), Some("core"), &[]);
-            let (_, notices, database_features) = open(&directory).unwrap();
+            let (extensions, notices, database_features) = open(&directory).unwrap();
             let notice = notices.for_feature(feature).unwrap();
             assert!(
                 notice
@@ -477,6 +494,7 @@ mod tests {
                 "{}",
                 notice.reason
             );
+            assert!(!extensions.status(feature).is_present());
             if feature == Feature::DoorLinks {
                 assert_eq!(database_features.door_links, DoorLinksAccess::Disabled);
             }
@@ -495,6 +513,11 @@ mod tests {
             connection.execute_batch(sql).unwrap();
             drop(connection);
             let (_, notices, database_features) = open(&directory).unwrap();
+            crate::world::database::WorldDatabase::open_with(
+                &directory.path().join("skyrim_world.db"),
+                database_features,
+            )
+            .unwrap();
             assert!(notices.is_empty());
             assert_eq!(
                 database_features.door_links,
@@ -530,7 +553,7 @@ mod tests {
     fn an_unsupported_version_is_off_with_the_reason() {
         for feature in Feature::ALL {
             let directory = data_set(&only(feature, 2, "core"), Some("core"), &[]);
-            let (_, notices, database_features) = open(&directory).unwrap();
+            let (extensions, notices, database_features) = open(&directory).unwrap();
             let notice = notices.for_feature(feature).unwrap();
             assert!(
                 notice
@@ -540,6 +563,7 @@ mod tests {
                 "{}",
                 notice.reason
             );
+            assert!(!extensions.status(feature).is_present());
             if feature == Feature::DoorLinks {
                 assert_eq!(database_features.door_links, DoorLinksAccess::Disabled);
             }
@@ -554,6 +578,11 @@ mod tests {
             &[],
         );
         let (_, notices, database_features) = open(&directory).unwrap();
+        crate::world::database::WorldDatabase::open_with(
+            &directory.path().join("skyrim_world.db"),
+            database_features,
+        )
+        .unwrap();
         assert!(notices.is_empty());
         assert_eq!(database_features.door_links, DoorLinksAccess::Core);
     }
@@ -637,5 +666,164 @@ mod tests {
             assert_eq!(database_features.door_links, DoorLinksAccess::Core);
             crate::world::database::WorldDatabase::open_with(&path, database_features).unwrap();
         }
+    }
+
+    #[test]
+    fn a_declared_door_extension_requires_its_complete_table() {
+        let directory = data_set(
+            &only(Feature::DoorLinks, 1, "core"),
+            Some("core"),
+            &["door_links"],
+        );
+        let (_, _, database_features) = open(&directory).unwrap();
+        let error = crate::world::database::WorldDatabase::open_with(
+            &directory.path().join("skyrim_world.db"),
+            database_features,
+        )
+        .err()
+        .expect("missing declared table must fail");
+        assert!(format!("{error:#}").contains("door_links"));
+    }
+
+    #[test]
+    fn declared_legacy_doors_reject_incomplete_columns() {
+        let directory = data_set(&only(Feature::DoorLinks, 1, "core"), Some("core"), &[]);
+        let connection =
+            rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch("ALTER TABLE door_links DROP COLUMN rot_z;")
+            .unwrap();
+        let (_, _, database_features) = open(&directory).unwrap();
+        let error = crate::world::database::WorldDatabase::open_with(
+            &directory.path().join("skyrim_world.db"),
+            database_features,
+        )
+        .err()
+        .expect("incomplete declared table must fail");
+        assert!(format!("{error:#}").contains("door_links"));
+    }
+
+    #[test]
+    fn install_retains_validated_capabilities_and_notices() {
+        let directory = data_set(&only(Feature::DoorLinks, 2, "core"), Some("core"), &[]);
+        let (extensions, notices, _) = open(&directory).unwrap();
+        let mut app = App::new();
+        app.insert_resource(extensions).insert_resource(notices);
+        assert!(matches!(
+            app.world()
+                .resource::<DataSetExtensions>()
+                .status(Feature::DoorLinks),
+            ExtensionStatus::UnsupportedVersion { .. }
+        ));
+        assert!(
+            app.world()
+                .resource::<ExtensionNotices>()
+                .for_feature(Feature::DoorLinks)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn material_capability_requires_a_present_supported_current_declaration() {
+        for (declaration, expected) in [
+            (MAIN_MANIFEST.to_owned(), false),
+            (only(Feature::Material, 1, "core"), true),
+            (only(Feature::Material, 1, "older"), false),
+            (only(Feature::Material, 2, "core"), false),
+        ] {
+            let directory = data_set(&declaration, Some("core"), &[]);
+            let (extensions, notices, database_features) = open(&directory).unwrap();
+            assert_eq!(extensions.status(Feature::Material).is_present(), expected);
+            assert_eq!(
+                notices.for_feature(Feature::Material).is_none(),
+                expected || declaration == MAIN_MANIFEST
+            );
+            assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+            crate::world::database::WorldDatabase::open_with(
+                &directory.path().join("skyrim_world.db"),
+                database_features,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn malformed_material_is_off_with_its_parser_issue_without_reading_identity() {
+        let text = r#"{"extensions":[{"id":"mudcrab.material","version":"broken"}]}"#;
+        let directory = data_set(text, None, &[]);
+        let connection =
+            rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+        connection
+            .execute_batch("CREATE TABLE lod_build(renamed_identity TEXT);")
+            .unwrap();
+        drop(connection);
+        let (extensions, notices, database_features) = open(&directory).unwrap();
+        assert!(extensions.data().is_declared(MATERIAL));
+        assert_eq!(
+            extensions.status(Feature::Material),
+            ExtensionStatus::Missing
+        );
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+        let issue = extensions
+            .data()
+            .issues()
+            .find(|issue| issue.id.as_deref() == Some(MATERIAL))
+            .unwrap();
+        let notice = notices.for_feature(Feature::Material).unwrap();
+        assert!(notice.reason.contains(&issue.reason), "{}", notice.reason);
+        assert!(notice.reason.contains("convert the data set again"));
+        assert_eq!(notices.len(), 1);
+    }
+
+    #[test]
+    fn material_identity_is_read_only_for_a_supported_anchored_declaration() {
+        for (version, built_from, reads_identity) in
+            [(2, "older", false), (1, "", false), (1, "core", true)]
+        {
+            let directory = data_set(&only(Feature::Material, version, built_from), None, &[]);
+            let connection =
+                rusqlite::Connection::open(directory.path().join("skyrim_world.db")).unwrap();
+            connection
+                .execute_batch("CREATE TABLE lod_build(renamed_identity TEXT);")
+                .unwrap();
+            drop(connection);
+            let result = open(&directory);
+            if reads_identity {
+                let context = format!(
+                    "{:#}",
+                    result.expect_err("supported material needs valid identity")
+                );
+                assert!(context.contains("cannot read the extensions"), "{context}");
+                assert!(context.contains("reading core build identity"), "{context}");
+            } else {
+                let (extensions, notices, database_features) = result.unwrap();
+                assert_eq!(
+                    extensions.status(Feature::Material).is_present(),
+                    version == 1
+                );
+                assert_eq!(
+                    notices.for_feature(Feature::Material).is_some(),
+                    version != 1
+                );
+                assert_eq!(database_features.door_links, DoorLinksAccess::Core);
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_foreign_entries_do_not_poison_supported_material() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(&only(Feature::Material, 1, "core")).unwrap();
+        document["extensions"].as_array_mut().unwrap().extend([
+            serde_json::json!({"id": "example.payload", "version": "future"}),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+        ]);
+        let directory = data_set(&document.to_string(), Some("core"), &[]);
+        let (extensions, notices, database_features) = open(&directory).unwrap();
+        assert!(extensions.status(Feature::Material).is_present());
+        assert_eq!(extensions.data().issues().count(), 3);
+        assert!(notices.is_empty());
+        assert_eq!(database_features.door_links, DoorLinksAccess::Core);
     }
 }

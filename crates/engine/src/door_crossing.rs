@@ -73,9 +73,13 @@ impl Plugin for DoorCrossingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DoorCrossing>()
             .init_resource::<CameraSpace>()
+            // Keep the player's movement tuning when it is already installed.
+            .init_resource::<MovementTuning>()
             .add_message::<TeleportPlayer>()
+            // One accepted keyboard activation requests an authored swing.
+            .add_message::<crate::doors::OpenDoor>()
             .add_systems(Startup, spawn_fade_overlay)
-            // After the streaming chain in `Update`, so the pending counts are this frame's.
+            // Read the completed streaming and propagated transforms for this frame.
             .add_systems(PostUpdate, drive_door_crossing);
     }
 }
@@ -337,6 +341,26 @@ fn ray_hits_door(
 /// nearer than the door by more than [`DOOR_BLOCKER_SLACK`]. No collider (`None`) never blocks.
 fn door_view_blocked(nearest_collider: Option<f32>, door_distance: f32) -> bool {
     nearest_collider.is_some_and(|hit| hit < door_distance - DOOR_BLOCKER_SLACK)
+}
+
+fn door_blocked(
+    physics: &ReadRapierContext,
+    player: &Query<Entity, With<PlayerBody>>,
+    view: &Transform,
+    direction: Vec3,
+    distance: f32,
+) -> bool {
+    let Ok(physics) = physics.single() else {
+        return false;
+    };
+    let filter = match player.single() {
+        Ok(player) => QueryFilter::default().exclude_rigid_body(player),
+        Err(_) => QueryFilter::default(),
+    };
+    let nearest = physics
+        .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
+        .map(|(_, distance)| distance);
+    door_view_blocked(nearest, distance)
 }
 
 /// The landing a door's destination describes, from the space the player is in now.
@@ -621,10 +645,24 @@ fn set_alpha(overlay: &mut Query<&mut BackgroundColor, With<FadeOverlay>>, alpha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+type TargetLoadDoors<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static LoadDoor,
+        &'static GlobalTransform,
+        Option<&'static ExpectedModelBounds>,
+    ),
+>;
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_door_crossing(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    capture: Res<CursorCapture>,
+    (keyboard, capture, mut open): (
+        Res<ButtonInput<KeyCode>>,
+        Option<Res<CursorCapture>>,
+        MessageWriter<crate::doors::OpenDoor>,
+    ),
     time: Res<Time>,
     config: Res<crate::config::EngineConfig>,
     tuning: Res<MovementTuning>,
@@ -633,8 +671,12 @@ fn drive_door_crossing(
     camera_space: Res<CameraSpace>,
     streaming: Res<StreamingWorld>,
     camera: Query<&Transform, With<StreamingCamera>>,
-    doors: Query<(&LoadDoor, &GlobalTransform, Option<&ExpectedModelBounds>)>,
-    (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
+    doors: TargetLoadDoors,
+    (physics, player, transforms): (
+        ReadRapierContext,
+        Query<Entity, With<PlayerBody>>,
+        bevy::transform::helper::TransformHelper,
+    ),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
     (mut budget, landing_assets, pending_under): (
@@ -646,38 +688,29 @@ fn drive_door_crossing(
 ) {
     let delta = time.delta_secs();
     let Some(active) = crossing.active.as_mut() else {
-        // Idle: E at a door starts a crossing.
-        if !keyboard.just_pressed(KeyCode::KeyE) || *capture != CursorCapture::Captured {
-            return;
-        }
         let Ok(view) = camera.single() else {
             return;
         };
+        if !keyboard.just_pressed(KeyCode::KeyE)
+            || !capture.is_some_and(|capture| *capture == CursorCapture::Captured)
+        {
+            return;
+        }
         let direction = view.forward().as_vec3();
-        let Some((door, distance)) = doors
+        let Some((door_entity, door, distance)) = doors
             .iter()
-            .filter_map(|(door, transform, bounds)| {
+            .filter_map(|(entity, door, _, bounds)| {
+                let transform = transforms.compute_global_transform(entity).ok()?;
                 let bounds = bounds.copied().unwrap_or_else(fallback_bounds);
-                ray_hits_door(view.translation, direction, transform, &bounds, DOOR_REACH)
-                    .map(|distance| (door, distance))
+                ray_hits_door(view.translation, direction, &transform, &bounds, DOOR_REACH)
+                    .map(|distance| (entity, door, distance))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .min_by(|a, b| a.2.total_cmp(&b.2))
         else {
             return;
         };
-        // The same camera-ray test the tankard grab uses: a door behind a wall is not reachable.
-        // Without a physics world (a run with no colliders) nothing can block.
-        if let Ok(physics) = physics.single() {
-            let filter = match player.single() {
-                Ok(player) => QueryFilter::default().exclude_rigid_body(player),
-                Err(_) => QueryFilter::default(),
-            };
-            let nearest = physics
-                .cast_ray(view.translation, direction, DOOR_REACH, true, filter)
-                .map(|(_, distance)| distance);
-            if door_view_blocked(nearest, distance) {
-                return;
-            }
+        if door_blocked(&physics, &player, view, direction, distance) {
+            return;
         }
         let (yaw, _, _) = view.rotation.to_euler(EulerRot::YXZ);
         // The camera sits an eye height above the body, and the body a capsule half-extent above
@@ -700,6 +733,7 @@ fn drive_door_crossing(
             door = format_args!("{:08X}", door.ref_id),
             "door crossing started"
         );
+        open.write(crate::doors::OpenDoor { door: door_entity });
         crossing.active = Some(Crossing {
             door: door.clone(),
             target,
@@ -922,8 +956,17 @@ mod tests {
     /// A headless world with the crossing registered, the camera 100 units in front of a door
     /// whose bounds are a 100-unit cube, and one resident old-space cell.
     fn app_with(door: LoadDoor) -> (App, Entity) {
+        app_with_physics(door, false)
+    }
+
+    fn app_with_physics(door: LoadDoor, physics: bool) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()));
+        if physics {
+            app.add_plugins(bevy_rapier3d::prelude::RapierPhysicsPlugin::<
+                bevy_rapier3d::prelude::NoUserData,
+            >::default());
+        }
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
@@ -971,6 +1014,140 @@ mod tests {
         app.finish();
         app.update();
         (app, old_root)
+    }
+
+    #[test]
+    fn e_opens_the_nearest_door_in_walk_and_noclip() {
+        for mode in [MoveMode::Walk, MoveMode::Noclip] {
+            let (mut app, _) = app_with(interior_door());
+            app.insert_resource(mode);
+            let mut nearer = interior_door();
+            nearer.ref_id = 91;
+            let near = app
+                .world_mut()
+                .spawn((
+                    nearer,
+                    ExpectedModelBounds::new(Vec3::splat(-20.0), Vec3::splat(20.0)).unwrap(),
+                    Transform::from_xyz(0.0, 0.0, -70.0),
+                ))
+                .id();
+            app.update();
+            let mut opens = app
+                .world()
+                .resource::<Messages<crate::doors::OpenDoor>>()
+                .get_cursor_current();
+            press_e(&mut app);
+            let opened: Vec<_> = opens
+                .read(app.world().resource::<Messages<crate::doors::OpenDoor>>())
+                .map(|message| message.door)
+                .collect();
+            assert_eq!(opened, vec![near]);
+            assert_eq!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .door
+                    .ref_id,
+                91
+            );
+        }
+    }
+
+    #[test]
+    fn released_or_missing_cursor_prevents_e_activation() {
+        for missing in [false, true] {
+            let (mut app, _) = app_with(interior_door());
+
+            if missing {
+                app.world_mut().remove_resource::<CursorCapture>();
+            } else {
+                app.insert_resource(CursorCapture::Released);
+            }
+            press_e(&mut app);
+
+            assert!(!app.world().resource::<DoorCrossing>().is_active());
+        }
+    }
+
+    #[test]
+    fn enabled_wall_blocks_e_but_disabled_wall_does_not() {
+        let (mut app, _) = app_with_physics(interior_door(), true);
+        let wall = app
+            .world_mut()
+            .spawn((
+                bevy_rapier3d::prelude::Collider::cuboid(50.0, 50.0, 5.0),
+                Transform::from_xyz(0.0, 0.0, -35.0),
+            ))
+            .id();
+        for _ in 0..3 {
+            app.update();
+        }
+
+        press_e(&mut app);
+        assert!(!app.world().resource::<DoorCrossing>().is_active());
+        app.world_mut()
+            .entity_mut(wall)
+            .insert(bevy_rapier3d::prelude::ColliderDisabled);
+        for _ in 0..3 {
+            app.update();
+        }
+
+        press_e(&mut app);
+        assert!(app.world().resource::<DoorCrossing>().is_active());
+    }
+
+    #[test]
+    fn e_uses_current_ancestor_transforms_before_propagation() {
+        let (mut app, _) = app_with(interior_door());
+        let door = app
+            .world_mut()
+            .query_filtered::<Entity, With<LoadDoor>>()
+            .single(app.world())
+            .unwrap();
+        let parent = app
+            .world_mut()
+            .spawn(Transform::from_xyz(10_000.0, 0.0, 0.0))
+            .id();
+        app.world_mut().entity_mut(door).insert(ChildOf(parent));
+        app.update();
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        app.world_mut()
+            .get_mut::<Transform>(parent)
+            .unwrap()
+            .translation = Vec3::ZERO;
+        // Invoke selection before any schedule can refresh the cached global.
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.world_mut()
+            .run_system_once(drive_door_crossing)
+            .unwrap();
+        assert!(
+            app.world()
+                .get::<GlobalTransform>(door)
+                .unwrap()
+                .translation()
+                .x
+                > 9_000.0
+        );
+        assert!(app.world().resource::<DoorCrossing>().is_active());
     }
 
     fn press_e(app: &mut App) {
