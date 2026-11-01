@@ -429,6 +429,7 @@ mod tests {
         BoneData {
             transform,
             children: children.iter().map(|name| (*name).to_owned()).collect(),
+            billboard_mode: None,
         }
     }
 

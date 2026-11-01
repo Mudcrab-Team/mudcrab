@@ -192,15 +192,17 @@ variable, so the channels are published on the shape's material as their own ext
 
 ### 4.2 Authored transforms and billboard metadata
 
-Ordinary static references use the reference placement in place of block zero's local
-transform, so render geometry and physics share one placement frame. The synthetic regression
+A reference replaces block zero's local transform for every NIF, whatever its extension
+(`.nif`, `.btr`, `.bto`) and whether or not it declares a skin, so render geometry and physics
+share one placement frame. The synthetic regression
 `mesh::placement_tests::conversion_places_render_collision_com_and_inertia_in_one_reference_frame`
 checks render vertices, collision, center of mass and inertia under nonidentity root, child
-and reference transforms. It also checks that `.btr` and `.BTO` LOD roots remain authored.
-Child transforms remain authored. Render export and collision extraction share this policy.
+and reference transforms for each extension. Child transforms remain authored. Render export and
+collision extraction share this policy.
 The synthetic regression
 `mesh::placement_tests::parsed_skin_keeps_its_bone_tree_under_a_nonidentity_mesh_root`
-checks that skeletal export retains its bone transforms. The scene root applies the
+checks that skeletal export retains its bone transforms; the separate bone trees are not static
+nodes, so the replacement never touches them. The scene root applies the
 Creation-to-runtime rotation once. Billboard nodes retain their authored mode in
 `extras.openSkyrim.billboard`.
 
@@ -211,7 +213,15 @@ resolution; duplicate names and conflicting palette pointers remain non-gating n
 Malformed palettes and references to unexported objects omit their affected animation.
 
 The `Quaternion` structure in the pinned nif.xml stores `w, x, y, z`; the decoder
-reorders it to glTF's `x, y, z, w`. Translation and scale channels retain the sequence
+reorders it to glTF's `x, y, z, w`. A `NiControllerSequence` plays key times `start` to `stop`
+at `frequency`, so its clip lasts `(stop - start) / frequency` seconds: curves are cut to that
+window (a cut inside a segment keeps the value at the boundary), shifted to begin at zero and
+divided by the frequency, and cubic derivatives are multiplied by it. A sequence with a
+non-finite or non-positive frequency, or stopping before it starts, is dropped with a notice, as
+is one that spans no time. The constant pose stored in a `NiTransformInterpolator` (components
+holding `-FLT_MAX` are unset) is published as a held channel wherever the keyed data leaves a
+channel out, including an interpolator with no data block; keys always win over the stored pose.
+Translation and scale channels retain the sequence
 stop time with a held endpoint. A cubic trailing hold preserves the preceding segment's
 incoming derivative and sets its outgoing derivative to zero.
 

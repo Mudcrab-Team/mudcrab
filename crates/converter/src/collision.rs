@@ -37,7 +37,7 @@ struct Block<'a> {
 }
 
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
-    let placement = crate::nif_placement::PlacementFrame::from_nif(path, nif);
+    let placement = crate::nif_placement::PlacementFrame::new();
     let bytes = fs::read(path)?;
     let (mut data, header) = crate::mesh::parse_skyrim_header(&bytes, path)?;
     ensure!(
@@ -1275,6 +1275,7 @@ mod tests {
         // parser keeps it, so apply the same rule here before comparing the two.
         let mut model = nif_to_static_model(&nif).unwrap();
         crate::mesh::clear_root_transform(&mut model);
+        let placement = crate::nif_placement::PlacementFrame::new();
         let (gltf, _) = model
             .to_gltf("collision-node-regression".to_owned())
             .unwrap();
@@ -1294,14 +1295,7 @@ mod tests {
                 bytes: &[],
             })
             .collect::<Vec<_>>();
-        let collision_transform = target_transform(
-            &nif,
-            &raw_blocks,
-            target,
-            // This test compares to the vendor's unplaced scene, including its root.
-            crate::nif_placement::PlacementFrame::from_nif(Path::new("node-chain.btr"), &nif),
-        )
-        .unwrap();
+        let collision_transform = target_transform(&nif, &raw_blocks, target, placement).unwrap();
         let export_transform = gltf_world_transform(&gltf.nodes, exported_index);
         for (collision, exported) in collision_transform
             .to_cols_array()

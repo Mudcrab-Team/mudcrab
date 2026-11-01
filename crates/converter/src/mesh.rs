@@ -162,12 +162,23 @@ impl MeshConverter {
 
     /// Converts a NIF into a GLB with collision and material metadata, using static geometry as a fallback.
     pub fn convert_nif_to_glb<P: AsRef<Path>>(nif_path: P, glb_output_path: P) -> Result<()> {
+        Self::convert_nif_to_glb_reporting_animation(nif_path, glb_output_path).map(|_| ())
+    }
+
+    /// Converts like [`Self::convert_nif_to_glb`] and returns the non-gating animation
+    /// diagnostics the conversion produced: the notices for transform tracks and clips that could
+    /// not be exported, and the counts of material channels that were skipped. An audit reads
+    /// these to see animation that was lost while the conversion still succeeded.
+    pub fn convert_nif_to_glb_reporting_animation<P: AsRef<Path>>(
+        nif_path: P,
+        glb_output_path: P,
+    ) -> Result<crate::cache::AnimationDiagnostics> {
         let nif_path = nif_path.as_ref();
         let skeleton = match find_skeleton(nif_path) {
             SkeletonResolution::Skeleton(path) => Some(path),
             SkeletonResolution::SelfContained => None,
             SkeletonResolution::Unresolved { best_coverage } => {
-                return Self::convert_nif_to_glb_with_skin_resolution(
+                return Self::convert_nif_with_animation_and_skin_resolution(
                     nif_path,
                     glb_output_path.as_ref(),
                     None,
@@ -178,7 +189,7 @@ impl MeshConverter {
                 );
             }
         };
-        Self::convert_nif_to_glb_with_skeleton(
+        Self::convert_nif_with_animation_diagnostics(
             nif_path,
             glb_output_path.as_ref(),
             skeleton.as_deref(),
@@ -207,8 +218,12 @@ impl MeshConverter {
         unresolved_skin: Option<&str>,
     ) -> Result<()> {
         Self::convert_nif_with_animation_and_skin_resolution(
-            nif_path, glb_output_path, skeleton_path, unresolved_skin,
-        ).map(|_| ())
+            nif_path,
+            glb_output_path,
+            skeleton_path,
+            unresolved_skin,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn convert_nif_with_animation_diagnostics(
@@ -217,7 +232,10 @@ impl MeshConverter {
         skeleton_path: Option<&Path>,
     ) -> Result<crate::cache::AnimationDiagnostics> {
         Self::convert_nif_with_animation_and_skin_resolution(
-            nif_path, glb_output_path, skeleton_path, None,
+            nif_path,
+            glb_output_path,
+            skeleton_path,
+            None,
         )
     }
 
@@ -229,7 +247,7 @@ impl MeshConverter {
         unresolved_skin: Option<&str>,
     ) -> Result<crate::cache::AnimationDiagnostics> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
-        let placement = crate::nif_placement::PlacementFrame::from_nif(nif_path, &nif);
+        let placement = crate::nif_placement::PlacementFrame::new();
         let mut collision = collision::from_nif(nif_path, &nif)?;
         let declares_skin = nif.declares_skin();
         let skeleton = if nif.has_skeleton() {
@@ -1701,7 +1719,7 @@ fn finish_skinned_model(
             nif_path.display()
         ));
     }
-    let placement = crate::nif_placement::PlacementFrame::from_nif(nif_path, nif);
+    let placement = crate::nif_placement::PlacementFrame::new();
     placement.place_model(&mut model);
     model
         .validate()
@@ -3988,7 +4006,8 @@ mod tests {
                     alpha_property: shape.alpha_property,
                 });
             }
-            let contract = build_nif_material_contract(&nif, &input, &mut Default::default()).unwrap();
+            let contract =
+                build_nif_material_contract(&nif, &input, &mut Default::default()).unwrap();
             let hidden = node_hidden || shape_hidden;
             match &contract[0].disposition {
                 NifMaterialDisposition::Excluded { reason } => {

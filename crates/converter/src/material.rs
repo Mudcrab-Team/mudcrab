@@ -3,8 +3,8 @@ use color_eyre::{Result, eyre::ensure};
 use project_wormhole_nif::{
     bs::prelude::{BSShaderTextureSet, BSTriShape},
     nif_block::{
-        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObjectFlags, NiAlphaProperty, NiFloatInterpController,
-        NiSingleInterpController, NiTimeController, NifBlock,
+        BSEffectShaderProperty, BSLightingShaderProperty, NiAVObjectFlags, NiAlphaProperty,
+        NiFloatInterpController, NiSingleInterpController, NiTimeController, NifBlock,
     },
     nif_enum::{EffectShaderControlledVariable, KeyType, LightingShaderControlledFloat},
     nif_file::NifFile,

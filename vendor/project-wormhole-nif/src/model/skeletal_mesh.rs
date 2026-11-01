@@ -144,6 +144,8 @@ impl BoneTree {
 pub struct BoneData {
     pub transform: BoneTransform,
     pub children: HashSet<String>,
+    /// The `NiBillboardNode` mode when the source joint is a billboard; exported as node extras.
+    pub billboard_mode: Option<u16>,
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]

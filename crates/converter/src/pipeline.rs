@@ -304,7 +304,7 @@ impl From<color_eyre::Report> for PipelineFailure {
 
 /// Renames the staged tree over the output, unless the run was interrupted while it was packing
 /// up. The check here is the last one before the output changes, so an interrupt that lands after
-/// the final stage stops the run instead of publishing over a good output â€” the staging folder is
+/// the final stage stops the run instead of publishing over a good output — the staging folder is
 /// kept either way, so the run resumes from where it stopped.
 #[cfg(test)]
 fn publish_if_not_interrupted(
@@ -4402,11 +4402,15 @@ fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()
     } else {
         std::env::current_dir()?.join(cache_root)
     };
-    let cache_root = absolute.as_path();
-    let mut ancestor = cache_root.to_owned();
+    let mut ancestor = absolute.clone();
     while !ancestor.is_dir() {
         ancestor = ancestor.parent().unwrap().to_owned();
     }
+    // Resolve only the existing prefix: the cache root itself may not exist yet. On Windows
+    // this keeps the extended namespace through atomic publication of deep relative caches.
+    let missing = absolute.strip_prefix(&ancestor)?;
+    let ancestor = fs::canonicalize(&ancestor)?;
+    let cache_root = ancestor.join(missing);
     let mut directories = BTreeSet::new();
     for entry in WalkDir::new(staging_cache).follow_links(false) {
         let entry = entry?;
@@ -10795,17 +10799,17 @@ mod tests {
     /// MO2 activation and final archive attachment share accented plugin-name keys.
     #[test]
     fn archive_attachment_and_mo2_activation_match_unicode_plugin_names() {
-        let plugins = vec![PathBuf::from("CAFÃ‰.esp")];
-        for name in ["cafÃ©.bsa", "cafÃ© - Textures.bsa"] {
+        let plugins = vec![PathBuf::from("CAFÉ.esp")];
+        for name in ["café.bsa", "café - Textures.bsa"] {
             assert!(mo2_archive_is_active(Path::new(name), &plugins));
             assert_eq!(
                 archive_load_order_priority(Path::new(name), &plugins),
                 Some(0)
             );
         }
-        assert!(!mo2_archive_is_active(Path::new("cafÃ©Else.bsa"), &plugins));
+        assert!(!mo2_archive_is_active(Path::new("caféElse.bsa"), &plugins));
         assert_eq!(
-            archive_load_order_priority(Path::new("cafÃ©Else.bsa"), &plugins),
+            archive_load_order_priority(Path::new("caféElse.bsa"), &plugins),
             None
         );
     }
@@ -12719,7 +12723,7 @@ mod tests {
             .expect("an interrupted run keeps staging");
         assert!(staging.is_dir());
         assert!(!output.exists(), "an interrupted run does not publish");
-        // The manifest is written once, at the end of a run, so nothing in flight â€” or after it â€”
+        // The manifest is written once, at the end of a run, so nothing in flight — or after it —
         // is recorded as converted; the resume re-checks the staged files instead.
         assert!(!staging.join("conversion-manifest.json").exists());
         let staged: Vec<_> = fs::read_dir(staging.join("scripts"))
@@ -13301,6 +13305,32 @@ mod tests {
             .join(format!("{}.pack", hash_bytes(b"sealed batch")));
         fs::create_dir_all(staging.join(&relative).parent().unwrap()).unwrap();
         fs::write(staging.join(&relative), b"sealed batch").unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            // The private cwd returns an ordinary Windows spelling. A deep relative cache must
+            // still publish atomically after its complete path exceeds the Win32 namespace limit.
+            let mut deep_root = directory
+                .path()
+                .strip_prefix(&current_directory)
+                .unwrap()
+                .join("deep-cache");
+            while current_directory
+                .join(&deep_root)
+                .as_os_str()
+                .encode_wide()
+                .count()
+                <= windows_sys::Win32::Foundation::MAX_PATH as usize
+            {
+                deep_root.push("relative-cache-parent");
+            }
+            assert!(!deep_root.is_absolute());
+            persist_ingestion_cache(&staging, &deep_root).unwrap();
+            assert_eq!(
+                fs::read(deep_root.join(&relative)).unwrap(),
+                b"sealed batch"
+            );
+        }
         persist_ingestion_cache(&staging, &root).unwrap();
         assert_eq!(fs::read(root.join(relative)).unwrap(), b"sealed batch");
     }

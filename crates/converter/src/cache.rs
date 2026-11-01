@@ -490,6 +490,8 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "collision-reference-root-placement",
     "one-primitive-per-authored-shape",
     "retained-transform-animation-warnings",
+    "unconditional-reference-root-placement",
+    "authored-bone-billboard-mode",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
