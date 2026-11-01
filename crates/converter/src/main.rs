@@ -395,7 +395,7 @@ fn incomplete_summary(report: &PipelineReport, output: &Path) -> String {
 /// The summary a finished run prints: what it produced, how long it took, and where to look.
 fn print_summary(cli: &Cli, report: &PipelineReport, clock: &StageClock) {
     println!("{}", summary_headline(report));
-    for notice in &report.notices {
+    for notice in report.notices.iter().chain(&report.animation_notices) {
         println!("  note: {notice}");
     }
     for warning in &report.selection_warnings {

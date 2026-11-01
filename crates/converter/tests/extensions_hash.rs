@@ -706,9 +706,9 @@ with tempfile.TemporaryDirectory() as root:
     (root / oracle.MANIFEST).write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
     assert not oracle.check(root), 'legacy standalone SQL streams remain checkable'
     (root / 'meshes').mkdir()
-    rock = {'asset': {'version': '2.0'}, 'extensionsUsed': ['MUDCRAB_material', 'OPEN_SKYRIM_material'],
+    rock = {'asset': {'version': '2.0'}, 'extensionsUsed': ['EXAMPLE_owned_material', 'OPEN_SKYRIM_material'],
             'materials': [{'extensions': {'OPEN_SKYRIM_material': {'shaderFlags1': 1},
-                                          'MUDCRAB_material': {'uvScale': [1, 2.5], 'blendSource': 'SRC_ALPHA'}}},
+                                          'EXAMPLE_owned_material': {'uvScale': [1, 2.5], 'blendSource': 'SRC_ALPHA'}}},
                           {'extensions': {'OPEN_SKYRIM_material': {'shaderFlags1': 2}}}]}
     import json, struct
     payload = json.dumps(rock).encode('utf-8')
@@ -716,8 +716,8 @@ with tempfile.TemporaryDirectory() as root:
     mesh = struct.pack('<III', oracle.GLB_MAGIC, 2, 20 + len(payload))
     mesh += struct.pack('<II', len(payload), oracle.GLB_JSON_CHUNK) + payload
     (root / 'meshes/rock.glb').write_bytes(mesh)
-    entry = {'id': 'mudcrab.material', 'version': 1, 'owns': {'gltf_extensions': ['MUDCRAB_material']}}
-    assert oracle.extension_hash(root, entry) == 'a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41'
+    entry = {'id': 'example.material', 'version': 1, 'owns': {'gltf_extensions': ['EXAMPLE_owned_material']}}
+    assert oracle.extension_hash(root, entry) == '523c707654a1a065d03904e38a8a707d5d185aedb882198c13a09ea24b041269'
     node = {'extensionsUsed': ['EXAMPLE_payload'],
             'nodes': [{'extensions': {'EXAMPLE_payload': {'value': 1}}}]}
     primitive = {'extensionsUsed': ['EXAMPLE_payload'],
@@ -725,7 +725,7 @@ with tempfile.TemporaryDirectory() as root:
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') is not None
     assert oracle.gltf_extension_value(node, 'EXAMPLE_payload') != oracle.gltf_extension_value(primitive, 'EXAMPLE_payload')
     entry['owns']['gltf_extensions'] *= 2
-    assert oracle.extension_hash(root, entry) == 'a4917e5beaf2c06dcdeea549a57f76552bc8ef780476b01bafd338ffd1996b41'
+    assert oracle.extension_hash(root, entry) == '523c707654a1a065d03904e38a8a707d5d185aedb882198c13a09ea24b041269'
     entry['sha256'] = oracle.extension_hash(root, entry)
     (root / oracle.MANIFEST).write_text(json.dumps({'extensions': [entry]}), encoding='utf-8')
     assert not oracle.check(root), 'legacy standalone material streams remain checkable'

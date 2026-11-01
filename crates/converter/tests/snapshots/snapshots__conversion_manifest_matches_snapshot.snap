@@ -75,13 +75,14 @@ expression: manifest
   },
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
-    "nif": "8026bcfca3b98e134750136b0c1ad65180b8e1a0ffb1e0cd70daeab7b63198b1",
+    "nif": "9bd5c4a06fa1e5504358f49c08e0d282e4e0288e895dfbc940f640a0e2d746b2",
     "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
   },
   "complete": true,
   "configuration_hash": "5d4328fe57cd0e9a3129eb86fe660997eed83f2c07206c6be34669315e7370f3",
   "entries": {
     "meshes/generated.nif": {
+      "animation_diagnostics": {},
       "output": "meshes/generated.glb",
       "output_hash": "[output_hash]",
       "output_size": 2320,
