@@ -22,6 +22,7 @@ fn key() -> MapKey {
             light_layers: Default::default(),
         },
         shadow_view: ShadowViewInputs::default(),
+        external_producer: true,
         external: 1,
         external_materials: 1,
         stock: (1, 1),
@@ -281,7 +282,7 @@ mod draw_producer_regressions {
         }
     }
 
-    struct ExternalCommand<const N: usize = 0>;
+    pub(super) struct ExternalCommand<const N: usize = 0>;
 
     impl<const N: usize> RenderCommand<Shadow> for ExternalCommand<N> {
         type Param = ();
@@ -299,7 +300,7 @@ mod draw_producer_regressions {
         }
     }
 
-    fn add_external(draws: &DrawFunctions<Shadow>) {
+    pub(super) fn add_external(draws: &DrawFunctions<Shadow>) {
         add_external_command::<0>(draws);
     }
 
@@ -1133,6 +1134,9 @@ fn late_pass_world(frame: u32) -> World {
     world.insert_resource(FrameCount(frame));
     world.insert_resource(DrawFunctions::<Shadow>::default());
     world.insert_resource(ShadowMapExternalInputs::default());
+    // Explicitly refuse GPU key construction so these tests isolate poisoned
+    // cache behavior without requiring GPU resources in the fixture.
+    world.insert_resource(RenderMeshInstances::CpuBuilding(Default::default()));
     world
 }
 
@@ -1181,4 +1185,169 @@ fn replacing_render_assets_invalidates_a_retained_map() {
     let mut new_key = old_key;
     new_key.meshes = RenderAssets::<RenderMesh>::default().revision();
     assert!(!begin(&cache, view, 3, new_key));
+}
+
+mod stock_only_baseline {
+    use super::*;
+
+    /// Resolves real external inputs while keeping unrelated GPU key fields fixed.
+    fn stock_only_key(external: &ShadowMapExternalInputs, frame: u32) -> Result<MapKey, Refusal> {
+        let baseline = external.baseline(view(2), frame)?;
+        let mut key = key();
+        key.external_producer = baseline.producer_present;
+        key.external = baseline.revision;
+        key.external_materials = baseline.materials;
+        Ok(key)
+    }
+
+    #[test]
+    fn stock_only_views_reuse_maps_without_any_external_publication() {
+        let cache = cache();
+        let external = ShadowMapExternalInputs::default();
+        let draws = DrawFunctions::<Shadow>::default();
+        let mut world = World::new();
+        world.insert_resource(super::cache());
+        let command =
+            RenderCommandState::<Shadow, ShadowCacheTracking<crate::DrawPrepass>>::new(&mut world);
+        draws
+            .write()
+            .add_with::<ShadowCacheTracking<crate::DrawPrepass>, _>(command);
+        let stock = ShadowStockInputs::default();
+        stock.set_caster(
+            view(2),
+            entity(10).into(),
+            material(),
+            Some(1),
+            Some(0),
+            false,
+        );
+        let mut texture = None;
+        for frame in 1..=4 {
+            stock.begin_view(view(2));
+            let producers = shadow_draw_producers(&draws, &external, view(2), frame);
+            let mut key = stock_only_key(&external, frame).expect("stock-only baseline");
+            key.stock = stock.snapshot(view(2)).expect("ready stock caster");
+            // One physical allocation across the frames, as a settled directional light has.
+            key.inputs.texture = *texture.get_or_insert(key.inputs.texture);
+            let allocation = (key.inputs.texture, key.inputs.slice);
+            let skipped = cache.begin_key(
+                view(2),
+                frame,
+                Ok(key),
+                Some(allocation),
+                producers,
+                "cascade",
+            );
+            assert_eq!(skipped, frame > 1, "frame {frame}");
+            cache.finish(view(2), false, false, true);
+        }
+        assert_eq!(cache.counters().rendered, 1);
+        assert_eq!(cache.counters().reused, 3);
+        assert_eq!(cache.counters().external_incomplete, 0);
+    }
+
+    #[test]
+    fn stock_only_baseline_is_not_a_producer() {
+        let external = ShadowMapExternalInputs::default();
+        let baseline = external.baseline(view(2), 9).unwrap();
+        assert_eq!(
+            baseline,
+            ExternalBaseline {
+                producer_present: false,
+                revision: 0,
+                materials: 0
+            }
+        );
+    }
+
+    #[test]
+    fn make_key_accepts_stock_only_external_inputs_before_checking_stock_backend() {
+        let mut world = World::new();
+        world.init_resource::<ShadowMapExternalInputs>();
+        world.insert_resource(RenderMeshInstances::CpuBuilding(Default::default()));
+        assert_eq!(
+            make_key(&world, entity(5), view(2), 1),
+            Err(Refusal::UnsupportedProducer),
+        );
+    }
+
+    #[test]
+    fn removing_all_external_views_does_not_forget_the_producer() {
+        for publish_materials in [false, true] {
+            let external = ShadowMapExternalInputs::default();
+            if publish_materials {
+                external.reset_materials(view(3), 1);
+            } else {
+                external.publish(view(3), 1, 0, true);
+            }
+            external.retain(&HashSet::default());
+            assert_eq!(external.baseline(view(2), 2), Err(Refusal::External));
+        }
+    }
+
+    #[test]
+    fn every_way_a_producer_appears_restores_the_certificate_requirement() {
+        let declared = ShadowMapExternalInputs::default();
+        declared.declare_producer();
+
+        let published = ShadowMapExternalInputs::default();
+        published.publish(view(3), 1, 0, true);
+
+        let materials = ShadowMapExternalInputs::default();
+        materials.begin_materials(view(3), 1);
+
+        let draw_certificate = ShadowMapExternalInputs::default();
+        draw_certificate.publish_draw::<draw_producer_regressions::ExternalCommand>(
+            view(3),
+            1,
+            0,
+            true,
+        );
+
+        for (name, external) in [
+            ("declared", declared),
+            ("aggregate certificate for another view", published),
+            ("material closure for another view", materials),
+            ("draw certificate for another view", draw_certificate),
+        ] {
+            assert_eq!(
+                external.baseline(view(2), 1),
+                Err(Refusal::External),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_registered_non_stock_draw_requires_certificates_for_the_view() {
+        let external = ShadowMapExternalInputs::default();
+        let draws = DrawFunctions::<Shadow>::default();
+        draw_producer_regressions::add_external(&draws);
+        // `begin` classifies the registry before it builds the key.
+        let _ = shadow_draw_producers(&draws, &external, view(2), 1);
+        assert_eq!(external.baseline(view(2), 1), Err(Refusal::External));
+    }
+
+    #[test]
+    fn a_present_producer_with_current_certificates_is_accepted_and_keyed_apart() {
+        let external = ShadowMapExternalInputs::default();
+        external.declare_producer();
+        external.publish(view(2), 1, 0, true);
+        external.reset_materials(view(2), 1);
+        let present = stock_only_key(&external, 1).expect("certified producer");
+        let baseline = stock_only_key(&ShadowMapExternalInputs::default(), 1).unwrap();
+        assert!(present.external_producer);
+        // Equal empty revisions must still not let a map rendered without the
+        // producer be reused once the producer exists.
+        let mut equal_revisions = present.clone();
+        equal_revisions.inputs.texture = baseline.inputs.texture;
+        equal_revisions.external = baseline.external;
+        equal_revisions.external_materials = baseline.external_materials;
+        assert_ne!(equal_revisions, baseline);
+        assert_eq!(
+            stock_only_key(&external, 2).unwrap_err(),
+            Refusal::External,
+            "old certificate"
+        );
+    }
 }

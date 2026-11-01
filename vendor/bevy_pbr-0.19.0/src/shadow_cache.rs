@@ -1,7 +1,7 @@
 //! Exact directional shadow-map retention. Producers own invalidation; settled
 //! checks compare view inputs and revisions, never walk the caster population.
 
-use core::{any::TypeId, marker::PhantomData};
+use core::{any::TypeId, marker::PhantomData, sync::atomic::AtomicBool};
 use std::sync::{Mutex, MutexGuard};
 
 use bevy_asset::UntypedAssetId;
@@ -112,16 +112,104 @@ type DrawProducerSnapshot = (u64, u64, u64, u64);
 /// Publish after culling, including frames that reuse the cull output. The
 /// revision must cover the exact selected geometry, transforms, materials,
 /// shader inputs, and resource replacements. `complete` also certifies that all
-/// external draw pipelines and bindings are ready. Empty content needs an
-/// explicit publication. Missing or old certificates refuse reuse.
+/// external draw pipelines and bindings are ready. Once any external producer is
+/// present, empty content needs an explicit publication, and missing or old
+/// certificates refuse reuse.
+///
+/// An external producer is present when the application calls
+/// [`declare_producer`](Self::declare_producer), registers a non-stock shadow
+/// draw function, or has published any certificate or material closure. With
+/// none present, only stock casters exist: there is nothing to certify, and the
+/// external inputs of a view are the fixed empty baseline. A producer that queues
+/// shadow casters through stock draw functions must declare itself, because
+/// nothing else can reveal it before its first publication.
 #[derive(Resource, Default)]
 pub struct ShadowMapExternalInputs(
     Mutex<HashMap<RetainedViewEntity, ExternalInput>>,
     Mutex<ExternalMaterialInputs>,
     Mutex<ShadowDrawProducers>,
+    AtomicBool,
 );
 
+/// The external part of a map key for one view and frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExternalBaseline {
+    /// Whether an external producer is present. Part of the key, so a producer
+    /// appearing invalidates maps rendered without it even if its first
+    /// revisions equal the empty baseline.
+    producer_present: bool,
+    revision: u64,
+    materials: u64,
+}
+
 impl ShadowMapExternalInputs {
+    /// Declares that an external producer queues shadow casters. From then on
+    /// every view needs current certificates before a map can be reused. Call
+    /// once when the producer is installed; producers that register their own
+    /// shadow draw function or publish certificates are detected without it.
+    pub fn declare_producer(&self) {
+        self.3.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether any external producer exists. Poisoned state refuses reuse.
+    fn producer_present(&self) -> Result<bool, Refusal> {
+        if self.3.load(core::sync::atomic::Ordering::Relaxed) {
+            return Ok(true);
+        }
+        if !self.0.lock().map_err(|_| Refusal::External)?.is_empty()
+            || !self
+                .1
+                .lock()
+                .map_err(|_| Refusal::External)?
+                .views
+                .is_empty()
+        {
+            return Ok(true);
+        }
+        let producers = self.2.lock().map_err(|_| Refusal::UnsupportedProducer)?;
+        Ok(producers.unknown != 0
+            || producers.active.iter().any(|active| *active)
+            || producers.certified.iter().any(Option::is_some))
+    }
+
+    /// The external inputs of `view` at `frame`: the fixed empty baseline when no
+    /// producer is present, otherwise the producer's current complete
+    /// certificates and initialized material closure.
+    fn baseline(&self, view: RetainedViewEntity, frame: u32) -> Result<ExternalBaseline, Refusal> {
+        if !self.producer_present()? {
+            return Ok(ExternalBaseline {
+                producer_present: false,
+                revision: 0,
+                materials: 0,
+            });
+        }
+        let external = self
+            .0
+            .lock()
+            .map_err(|_| Refusal::External)?
+            .get(&view)
+            .copied()
+            .filter(|input| input.frame == frame && input.complete)
+            .ok_or(Refusal::External)?;
+        let materials = self.1.lock().map_err(|_| Refusal::External)?;
+        let inputs = materials
+            .views
+            .get(&view)
+            .filter(|inputs| inputs.frame == frame && inputs.initialized)
+            .ok_or(Refusal::External)?;
+        if !inputs.untracked.is_empty() {
+            return Err(Refusal::UntrackedTexture);
+        }
+        if !inputs.unknown.is_empty() {
+            return Err(Refusal::UnknownMaterial);
+        }
+        Ok(ExternalBaseline {
+            producer_present: true,
+            revision: external.revision,
+            materials: inputs.revision,
+        })
+    }
+
     /// Certifies one external shadow command's complete dependencies for this
     /// view and frame. `C` is the inner command registered as
     /// `ShadowCacheTracking<C>`, not the wrapper itself.
@@ -142,6 +230,7 @@ impl ShadowMapExternalInputs {
         revision: u64,
         complete: bool,
     ) {
+        self.declare_producer();
         let command = TypeId::of::<RenderCommandState<Shadow, ShadowCacheTracking<C>>>();
         let mut producers = lock(&self.2);
         let slot = producers
@@ -176,12 +265,14 @@ impl ShadowMapExternalInputs {
     /// Marks freshness, retaining the previous plan's exact material closure.
     /// Invoke before the existing queue's unchanged-plan early return.
     pub fn begin_materials(&self, view: RetainedViewEntity, frame: u32) {
+        self.declare_producer();
         lock(&self.1).views.entry(view).or_default().frame = frame;
     }
 
     /// Starts a new material closure only when the queue plan changes. Record
     /// its materials with `observe_material`, including an explicit empty plan.
     pub fn reset_materials(&self, view: RetainedViewEntity, frame: u32) {
+        self.declare_producer();
         let mut inputs = lock(&self.1);
         if let Some(state) = inputs.views.get_mut(&view)
             && state.initialized
@@ -231,6 +322,7 @@ impl ShadowMapExternalInputs {
 
     /// Publishes the aggregate certificate for all non-stock producers of a view.
     pub fn publish(&self, view: RetainedViewEntity, frame: u32, revision: u64, complete: bool) {
+        self.declare_producer();
         lock(&self.0).insert(
             view,
             ExternalInput {
@@ -739,6 +831,7 @@ struct MapKey {
     entity: Entity,
     inputs: DirectionalShadowMapInputs,
     shadow_view: ShadowViewInputs,
+    external_producer: bool,
     external: u64,
     external_materials: u64,
     stock: (u64, u64),
@@ -1307,30 +1400,9 @@ fn make_key(
     view: RetainedViewEntity,
     frame: u32,
 ) -> Result<MapKey, Refusal> {
-    let external_inputs = world.resource::<ShadowMapExternalInputs>();
-    let external = external_inputs
-        .0
-        .lock()
-        .map_err(|_| Refusal::External)?
-        .get(&view)
-        .copied()
-        .filter(|input| input.frame == frame && input.complete)
-        .ok_or(Refusal::External)?;
-    let external_materials = {
-        let materials = external_inputs.1.lock().map_err(|_| Refusal::External)?;
-        let inputs = materials
-            .views
-            .get(&view)
-            .filter(|inputs| inputs.frame == frame && inputs.initialized)
-            .ok_or(Refusal::External)?;
-        if !inputs.untracked.is_empty() {
-            return Err(Refusal::UntrackedTexture);
-        }
-        if !inputs.unknown.is_empty() {
-            return Err(Refusal::UnknownMaterial);
-        }
-        inputs.revision
-    };
+    let external = world
+        .resource::<ShadowMapExternalInputs>()
+        .baseline(view, frame)?;
     if !matches!(
         world.resource::<RenderMeshInstances>(),
         RenderMeshInstances::GpuBuilding(_)
@@ -1383,8 +1455,9 @@ fn make_key(
         entity,
         inputs,
         shadow_view,
+        external_producer: external.producer_present,
         external: external.revision,
-        external_materials,
+        external_materials: external.materials,
         stock,
         geometry: world.resource::<MeshAllocator>().content_revision(),
         meshes: world.resource::<RenderAssets<RenderMesh>>().revision(),
