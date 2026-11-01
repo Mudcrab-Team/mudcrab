@@ -25,6 +25,9 @@ struct AuditFile {
     validated_material_shape_count: usize,
     excluded_material_shape_count: usize,
     material_exclusions: BTreeMap<String, usize>,
+    animation_skipped_channels: BTreeMap<String, usize>,
+    /// Transform-animation notices from converting this file; empty unless conversion ran.
+    animation_notices: Vec<String>,
     parse_error: Option<String>,
     conversion_error: Option<String>,
 }
@@ -50,6 +53,11 @@ struct AuditSummary {
     validated_material_shapes: usize,
     excluded_material_shapes: usize,
     material_exclusions: BTreeMap<String, usize>,
+    animation_skipped_channels: BTreeMap<String, usize>,
+    /// Converted files whose conversion reported at least one animation notice.
+    files_with_animation_notices: usize,
+    /// Total animation notices across converted files; the notices are listed per file.
+    animation_notices: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +105,10 @@ fn main() -> Result<()> {
                     &mut summary.material_exclusions,
                     &diagnostics.material_exclusions,
                 );
+                merge_counts(
+                    &mut summary.animation_skipped_channels,
+                    &diagnostics.animation_skipped_channels,
+                );
                 summary.material_shapes += diagnostics.material_shape_count;
                 summary.validated_material_shapes += diagnostics.validated_material_shape_count;
                 summary.excluded_material_shapes += diagnostics.excluded_material_shape_count;
@@ -138,6 +150,8 @@ fn main() -> Result<()> {
                     validated_material_shape_count: diagnostics.validated_material_shape_count,
                     excluded_material_shape_count: diagnostics.excluded_material_shape_count,
                     material_exclusions: diagnostics.material_exclusions,
+                    animation_skipped_channels: diagnostics.animation_skipped_channels,
+                    animation_notices: Vec::new(),
                     parse_error: None,
                     conversion_error: None,
                 }
@@ -171,6 +185,8 @@ fn main() -> Result<()> {
                     validated_material_shape_count: 0,
                     excluded_material_shape_count: 0,
                     material_exclusions: BTreeMap::new(),
+                    animation_skipped_channels: BTreeMap::new(),
+                    animation_notices: Vec::new(),
                     parse_error: Some(error),
                     conversion_error: None,
                 }
@@ -181,8 +197,15 @@ fn main() -> Result<()> {
         {
             summary.conversion_attempts += 1;
             let output = output_root.join(relative).with_extension("glb");
-            match MeshConverter::convert_nif_to_glb(path, &output) {
-                Ok(()) => summary.conversion_successes += 1,
+            match MeshConverter::convert_nif_to_glb_reporting_animation(path, &output) {
+                Ok(animation) => {
+                    summary.conversion_successes += 1;
+                    if !animation.notices.is_empty() {
+                        summary.files_with_animation_notices += 1;
+                        summary.animation_notices += animation.notices.len();
+                    }
+                    file.animation_notices = animation.notices;
+                }
                 Err(error) => {
                     summary.conversion_failures += 1;
                     file.conversion_error = Some(format!("{error:#}"));
@@ -195,7 +218,7 @@ fn main() -> Result<()> {
         }
     }
     let report = AuditReport {
-        format_version: 2,
+        format_version: 3,
         root,
         elapsed_ms: started.elapsed().as_millis(),
         summary,

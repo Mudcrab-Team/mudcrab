@@ -424,6 +424,9 @@ fn nif_to_model_inner(
                             Some(skel_node.scale().0),
                         ),
                         children,
+                        billboard_mode: winning_block
+                            .get(node_name)
+                            .and_then(|block| billboard_mode_of(skeleton, *block)),
                     };
                     mesh.bones.add_bone(node_name, bone_data)?;
                 }
@@ -807,6 +810,14 @@ fn nif_node(nif: &NifFile, block: u32) -> Option<&NiNode> {
     nif.blocks.get(block as usize)?.as_node().ok()
 }
 
+/// The billboard mode of a `NiBillboardNode` block, which `as_node` flattens into a plain node.
+fn billboard_mode_of(nif: &NifFile, block: u32) -> Option<u16> {
+    match nif.blocks.get(block as usize)? {
+        NifBlock::NiBillboardNode(billboard) => Some(billboard.billboard_mode),
+        _ => None,
+    }
+}
+
 fn nif_node_name(nif: &NifFile, block: u32) -> Option<&str> {
     nif.header
         .get_string(nif_node(nif, block)?.name() as usize)
@@ -945,7 +956,8 @@ fn insert_mesh_local_joint_chains(
         };
 
         let mut landed = true;
-        for (index, ((_, chain_name), node)) in chain.iter().zip(&chain_nodes).enumerate() {
+        for (index, ((chain_block, chain_name), node)) in chain.iter().zip(&chain_nodes).enumerate()
+        {
             let children = index
                 .checked_sub(1)
                 .map(|below| chain[below].1.clone())
@@ -958,6 +970,7 @@ fn insert_mesh_local_joint_chains(
                     Some(node.scale().0),
                 ),
                 children,
+                billboard_mode: billboard_mode_of(nif, *chain_block),
             };
             if bones.add_bone(chain_name, bone_data).is_err() {
                 landed = false;
@@ -1659,7 +1672,6 @@ fn populate_static_scene_excluding(
             // Node subtypes whose extra fields the static scene does not use.
             NifBlock::BSMultiBoundNode(_)
             | NifBlock::BSOrderedNode(_)
-            | NifBlock::NiBillboardNode(_)
             | NifBlock::BSValueNode(_) => {
                 let node = block.as_node()?;
                 model.static_nodes.push(static_node_from_av(
@@ -1673,6 +1685,22 @@ fn populate_static_scene_excluding(
                         .collect(),
                     None,
                 ));
+            }
+            NifBlock::NiBillboardNode(billboard) => {
+                let node = &billboard.node;
+                let mut scene_node = static_node_from_av(
+                    nif,
+                    block_index,
+                    &node.av,
+                    node.children
+                        .iter()
+                        .copied()
+                        .filter(|child| supported_blocks.contains(child))
+                        .collect(),
+                    None,
+                );
+                scene_node.billboard_mode = Some(billboard.billboard_mode);
+                model.static_nodes.push(scene_node);
             }
             NifBlock::BSTriShape(shape) => {
                 push_modern_static_shape(
@@ -1724,6 +1752,7 @@ fn populate_static_scene_excluding(
                         scale: shape.scale,
                         children: Vec::new(),
                         mesh: None,
+                        billboard_mode: None,
                     });
                     continue;
                 }
@@ -1757,6 +1786,7 @@ fn populate_static_scene_excluding(
                     scale: shape.scale,
                     children: Vec::new(),
                     mesh: Some(mesh_index),
+                    billboard_mode: None,
                 });
             }
             _ => {}
@@ -1966,6 +1996,7 @@ fn static_node_from_av(
         scale: av.scale.0,
         children,
         mesh,
+        billboard_mode: None,
     }
 }
 
