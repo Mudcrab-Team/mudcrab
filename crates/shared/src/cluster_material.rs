@@ -27,6 +27,28 @@ pub enum GeometryField<'a> {
     Unknown,
 }
 
+/// The texture fields a material projection may name, with the vertex data each needs decided in
+/// [`geometry_requirements`]: the image slots of Bevy 0.19's `StandardMaterial`. A texture field
+/// outside this list is not understood, so it cannot show that the payload's vertex streams
+/// suffice; add a field here, with its tangent need, when the renderer gains one.
+const RECOGNIZED_TEXTURES: [&str; 15] = [
+    "base_color_texture",
+    "emissive_texture",
+    "metallic_roughness_texture",
+    "diffuse_transmission_texture",
+    "specular_transmission_texture",
+    "thickness_texture",
+    "normal_map_texture",
+    "occlusion_texture",
+    "specular_texture",
+    "specular_tint_texture",
+    "clearcoat_texture",
+    "clearcoat_roughness_texture",
+    "clearcoat_normal_texture",
+    "anisotropy_texture",
+    "depth_map",
+];
+
 /// MCL carries UV0. Normal, parallax and anisotropy shading additionally need tangents.
 /// Unknown projected inputs cannot establish compatible geometry.
 pub fn geometry_requirements<'a>(
@@ -48,7 +70,7 @@ pub fn geometry_requirements<'a>(
             }
             GeometryField::UnknownChannel | GeometryField::Unknown => result.supported = false,
             GeometryField::PresentTexture(name) => {
-                if name != "depth_map" && !name.ends_with("_texture") {
+                if !RECOGNIZED_TEXTURES.contains(&name) {
                     result.supported = false;
                 }
                 if matches!(
@@ -164,6 +186,26 @@ mod tests {
         assert!(!geometry_requirements([GeometryField::Anisotropy(Some(0.0))]).tangents);
         assert!(geometry_requirements([GeometryField::Anisotropy(Some(0.5))]).tangents);
         assert!(!geometry_requirements([GeometryField::Anisotropy(None)]).supported);
+    }
+    #[test]
+    fn recognized_texture_slots_keep_their_requirements_and_unknown_names_are_refused() {
+        for name in RECOGNIZED_TEXTURES {
+            let expected = matches!(
+                name,
+                "normal_map_texture" | "clearcoat_normal_texture" | "depth_map"
+            );
+            assert_eq!(
+                geometry_requirements([GeometryField::PresentTexture(name)]),
+                GeometryRequirements {
+                    supported: true,
+                    tangents: expected
+                },
+                "{name}"
+            );
+        }
+        for name in ["future_normal_texture", "future_color_texture"] {
+            assert!(!geometry_requirements([GeometryField::PresentTexture(name)]).supported);
+        }
     }
     #[test]
     fn material_labels_cover_both_winding_and_handler_choices() {
