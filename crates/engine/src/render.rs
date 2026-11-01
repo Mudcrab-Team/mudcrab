@@ -5,13 +5,17 @@ use crate::{
 };
 use bevy::{
     app::{HierarchyPropagatePlugin, PropagateOver, PropagateSet},
-    asset::embedded_asset,
+    asset::{LoadContext, embedded_asset},
     camera::{
         Exposure, RenderTarget,
         primitives::{Aabb, Frustum},
         visibility::{Layer, RenderLayers, VisibilitySystems},
     },
     core_pipeline::{mip_generation::experimental::depth::ViewDepthPyramid, prepass::DepthPrepass},
+    gltf::{
+        GltfMaterial,
+        extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
+    },
     image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
     pbr::{
         ExtendedMaterial, ExtractedDirectionalLight, LightEntity, MaterialExtension, ShadowView,
@@ -126,6 +130,9 @@ pub struct VercidiumRendererPlugin;
 
 impl Plugin for VercidiumRendererPlugin {
     fn build(&self, app: &mut App) {
+        install_material_animation(app);
+        register_skyrim_material_handler(app);
+        app.add_plugins(crate::billboard::BillboardPlugin);
         embedded_asset!(app, "shaders/terrain.wgsl");
         embedded_asset!(app, "shaders/water.wgsl");
         app.add_plugins((
@@ -1018,6 +1025,495 @@ fn reflected_camera_transform(main: &GlobalTransform, water_y: f32) -> Transform
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_manifest_validity_controls_animation_installation() {
+        use crate::extensions::{
+            DataSetExtensions,
+            fixtures::{data_set, manifest},
+            read_data_extensions,
+        };
+        use crate::material_animation::{MaterialAnimationPlugin, MaterialAnimationRegistry};
+        use shared::extensions::MATERIAL;
+        for (entries, expected) in [
+            (vec![], false),
+            (vec![(MATERIAL, 1, "core")], true),
+            (vec![(MATERIAL, 1, "older")], false),
+            (vec![(MATERIAL, 2, "core")], false),
+        ] {
+            let directory = data_set(&manifest(&entries), Some("core"), &[]);
+            let data = read_data_extensions(directory.path()).unwrap();
+            let mut app = App::new();
+            app.init_resource::<GltfExtensionHandlers>();
+            app.insert_resource(DataSetExtensions::new(data));
+            install_material_animation(&mut app);
+            register_skyrim_material_handler(&mut app);
+            assert_eq!(app.is_plugin_added::<MaterialAnimationPlugin>(), expected);
+            assert_eq!(
+                app.world().contains_resource::<MaterialAnimationRegistry>(),
+                expected
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<GltfExtensionHandlers>()
+                    .0
+                    .read_blocking()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn material_animation_updates_the_drawn_native_standard_material() {
+        for native_plugin_first in [false, true] {
+            check_drawn_native_material_animation(native_plugin_first, true);
+        }
+    }
+
+    #[test]
+    fn disabled_material_capability_leaves_drawn_native_uvs_static() {
+        for native_plugin_first in [false, true] {
+            check_drawn_native_material_animation(native_plugin_first, false);
+        }
+    }
+
+    fn check_drawn_native_material_animation(native_plugin_first: bool, enabled: bool) {
+        use crate::extensions::{
+            DataSetExtensions,
+            fixtures::{data_set, manifest},
+            read_data_extensions,
+        };
+        use crate::material_animation::MaterialAnimationRegistry;
+        use crate::nif_material::{NifMaterialPlugin, NifSourceMaterial};
+        use bevy::asset::{
+            AssetApp, LoadState,
+            io::{
+                AssetSourceBuilder, AssetSourceId,
+                memory::{Dir, MemoryAssetReader},
+            },
+        };
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+
+        // bevy_pbr's stock glTF handler is private and installed by PbrPlugin.
+        // As in nif_material::skin_load_tests, supply only its /std construction
+        // and binding contract. The glTF loader, native handler, scene spawner,
+        // material-user index, asset events and playback systems are production code.
+        #[derive(Clone)]
+        struct StandardMaterialFixtureHandler;
+
+        impl GltfExtensionHandler for StandardMaterialFixtureHandler {
+            fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+                Box::new(self.clone())
+            }
+
+            fn on_material(
+                &mut self,
+                context: &mut LoadContext<'_>,
+                _source: &bevy::gltf::gltf::Material,
+                _handle: Handle<GltfMaterial>,
+                loaded: &GltfMaterial,
+                label: &str,
+            ) {
+                context.add_labeled_asset(
+                    format!("{label}/std"),
+                    StandardMaterial {
+                        base_color_texture: loaded.base_color_texture.clone(),
+                        uv_transform: loaded.uv_transform,
+                        ..default()
+                    },
+                );
+            }
+
+            fn on_spawn_mesh_and_material(
+                &mut self,
+                context: &mut LoadContext<'_>,
+                _primitive: &bevy::gltf::gltf::Primitive,
+                _mesh: &bevy::gltf::gltf::Mesh,
+                _material: &bevy::gltf::gltf::Material,
+                entity: &mut EntityWorldMut,
+                label: &str,
+            ) {
+                entity.insert(MeshMaterial3d(
+                    context.get_label_handle::<StandardMaterial>(format!("{label}/std")),
+                ));
+            }
+        }
+
+        let entries = if enabled {
+            vec![(shared::extensions::MATERIAL, 1, "core")]
+        } else {
+            vec![]
+        };
+        let directory = data_set(&manifest(&entries), Some("core"), &[]);
+        let data = read_data_extensions(directory.path()).unwrap();
+        let files = Dir::default();
+        let floats: [f32; 24] = [
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // positions
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, // normals
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, // UVs
+        ];
+        let bytes: Vec<u8> = floats
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        files.insert_asset(std::path::Path::new("meshes/triangle.bin"), bytes);
+        files.insert_asset_text(
+            std::path::Path::new("meshes/animated.gltf"),
+            r#"{
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["OPEN_SKYRIM_material_animation", "KHR_texture_transform"],
+            "buffers": [{"uri": "triangle.bin", "byteLength": 96}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 24}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                 "min": [0, 0, 0], "max": [1, 1, 0]},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2"}
+            ],
+            "images": [{"uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="}],
+            "textures": [{"source": 0}],
+            "materials": [
+                {"pbrMetallicRoughness": {"baseColorTexture": {
+                    "index": 0, "extensions": {"KHR_texture_transform": {
+                        "offset": [0.75, 0.875], "scale": [3.0, 4.0]
+                    }}
+                }}, "extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}, "extensions": {
+                    "OPEN_SKYRIM_material_animation": {"channels": [{
+                        "variable": "vOffset", "times": [0.0, 2.0], "values": [0.0, 1.0]
+                    }]}
+                }},
+                {"extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}, "extensions": {"OPEN_SKYRIM_material_animation": {"channels": [{
+                    "variable": "emissiveMultiple", "times": [0.0, 2.0], "values": [1.0, 3.0]
+                }]}}},
+                {"extras": {"openSkyrim": {"uvTransform": {
+                    "offset": [0.25, 0.5], "scale": [2.0, 2.0]
+                }}}}
+            ],
+            "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 0},
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 1},
+                {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "material": 2}
+            ]}],
+            "nodes": [{"mesh": 0}], "scenes": [{"nodes": [0]}], "scene": 0
+        }"#,
+        );
+        if enabled {
+            let path = std::path::Path::new("meshes/animated.gltf");
+            let mut document: serde_json::Value =
+                serde_json::from_slice(files.get_asset(path).unwrap().value()).unwrap();
+            let extra = document["materials"][0].clone();
+            document["materials"].as_array_mut().unwrap().push(extra);
+            let text = serde_json::to_string(&document).unwrap();
+            files.insert_asset_text(path, &text);
+            files.insert_asset_text(std::path::Path::new("meshes/other.gltf"), &text);
+        }
+        let reader = MemoryAssetReader {
+            root: files.clone(),
+        };
+        let mut app = App::new();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || Box::new(reader.clone())),
+        )
+        .add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            bevy::world_serialization::WorldSerializationPlugin,
+            bevy::mesh::MeshPlugin,
+            bevy::image::ImagePlugin::default(),
+            bevy::gltf::GltfPlugin::default(),
+        ))
+        .init_asset::<StandardMaterial>()
+        .register_asset_loader(bevy::image::ImageLoader::new(
+            bevy::image::CompressedImageFormats::NONE,
+        ))
+        .register_type::<MeshMaterial3d<StandardMaterial>>()
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO))
+        .insert_resource(DataSetExtensions::new(data));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .set_max_delta(Duration::from_secs(1));
+        app.world_mut()
+            .resource_mut::<GltfExtensionHandlers>()
+            .0
+            .write_blocking()
+            .push(Box::new(StandardMaterialFixtureHandler));
+        if native_plugin_first {
+            app.add_plugins(NifMaterialPlugin);
+        }
+        install_material_animation(&mut app);
+        register_skyrim_material_handler(&mut app);
+        if !native_plugin_first {
+            app.add_plugins(NifMaterialPlugin);
+        }
+        app.finish();
+        app.cleanup();
+        let server = app.world().resource::<AssetServer>().clone();
+        // Manual reload requires a live root when file watching is disabled.
+        let gltf_root = enabled.then(|| server.load::<bevy::gltf::Gltf>("meshes/animated.gltf"));
+        let held_materials = enabled.then(|| {
+            (
+                server.load::<StandardMaterial>("meshes/animated.gltf#Material3/nif"),
+                server.load::<StandardMaterial>("meshes/other.gltf#Material0/nif"),
+            )
+        });
+        let scene: Handle<WorldAsset> = server.load("meshes/animated.gltf#Scene0");
+        app.world_mut().spawn(WorldAssetRoot(scene.clone()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let drawn = loop {
+            app.update();
+            if let Some(LoadState::Failed(error)) = server.get_load_state(scene.id()) {
+                panic!("fixture glTF scene load failed: {error}");
+            }
+            let drawn: Vec<_> = app
+                .world_mut()
+                .query::<(
+                    Entity,
+                    &Mesh3d,
+                    &MeshMaterial3d<StandardMaterial>,
+                    &NifSourceMaterial,
+                )>()
+                .iter(app.world())
+                .map(|(entity, _, rendered, source)| (entity, rendered.0.clone(), source.0.clone()))
+                .collect();
+            if server.is_loaded_with_dependencies(scene.id())
+                && drawn.len() == 3
+                && gltf_root
+                    .as_ref()
+                    .is_none_or(|root| server.is_loaded_with_dependencies(root.id()))
+                && held_materials.as_ref().is_none_or(|(removed, other)| {
+                    server.is_loaded_with_dependencies(removed.id())
+                        && server.is_loaded_with_dependencies(other.id())
+                })
+            {
+                break drawn;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture scene spawn timed out"
+            );
+            std::thread::yield_now();
+        };
+        for (entity, rendered, source) in &drawn {
+            assert_ne!(
+                rendered, source,
+                "native handler must replace the stock draw handle"
+            );
+            app.world_mut()
+                .entity_mut(*entity)
+                .insert(ViewVisibility::VISIBLE);
+        }
+        if let Some((removed, other)) = &held_materials {
+            let mesh = app.world().get::<Mesh3d>(drawn[0].0).unwrap().clone();
+            // These visible users survive outside the scene that will reload.
+            for handle in [removed, other] {
+                app.world_mut().spawn((
+                    mesh.clone(),
+                    MeshMaterial3d(handle.clone()),
+                    ViewVisibility::VISIBLE,
+                ));
+            }
+        }
+        let native = |index| {
+            drawn
+                .iter()
+                .find(|(_, handle, _)| {
+                    server.get_path(handle.id()).unwrap().to_string()
+                        == format!("meshes/animated.gltf#Material{index}/nif")
+                })
+                .expect("spawned mesh must draw the actual /nif label")
+                .1
+                .clone()
+        };
+        let animated = native(0);
+        let unsupported = native(1);
+        let unanimated = native(2);
+        let base = bevy::math::Affine2::from_scale_angle_translation(
+            Vec2::splat(2.0),
+            0.0,
+            Vec2::new(0.25, 0.5),
+        );
+        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        assert_eq!(materials.get(&animated).unwrap().uv_transform, base);
+        let (_, _, stock) = drawn
+            .iter()
+            .find(|(_, handle, _)| *handle == animated)
+            .unwrap();
+        let stock_base = materials.get(stock).unwrap().uv_transform;
+        assert_eq!(stock_base.matrix2.x_axis, Vec2::new(3.0, 0.0));
+        assert_eq!(stock_base.matrix2.y_axis, Vec2::new(0.0, 4.0));
+        assert_ne!(
+            stock_base, base,
+            "native base must win over the stock UV transform"
+        );
+        if enabled {
+            let registry = app.world().resource::<MaterialAnimationRegistry>();
+            assert_eq!(
+                registry
+                    .get("meshes/animated.gltf#Material0/std")
+                    .unwrap()
+                    .base_scale,
+                Vec2::new(3.0, 4.0),
+            );
+            assert_eq!(
+                registry
+                    .get("meshes/animated.gltf#Material0/nif")
+                    .unwrap()
+                    .base_scale,
+                Vec2::splat(2.0),
+            );
+            for index in [1, 2] {
+                for suffix in ["std", "nif"] {
+                    assert!(
+                        registry
+                            .get(&format!("meshes/animated.gltf#Material{index}/{suffix}"))
+                            .is_none()
+                    );
+                }
+            }
+            assert!(registry.get("meshes/animated.gltf#Material0").is_none());
+        } else {
+            assert!(!app.world().contains_resource::<MaterialAnimationRegistry>());
+        }
+        *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
+            TimeUpdateStrategy::ManualDuration(Duration::from_millis(500));
+        for seconds in [0.5, 1.0, 1.5] {
+            app.update();
+            assert_eq!(app.world().resource::<Time>().elapsed_secs(), seconds);
+            let materials = app.world().resource::<Assets<StandardMaterial>>();
+            let uv = materials.get(&animated).unwrap().uv_transform;
+            assert_eq!(
+                uv.matrix2, base.matrix2,
+                "drawn native scale [2,2] must survive"
+            );
+            assert_eq!(
+                uv.translation,
+                Vec2::new(0.25, if enabled { seconds / 2.0 } else { 0.5 })
+            );
+            assert_eq!(materials.get(&unsupported).unwrap().uv_transform, base);
+            assert_eq!(materials.get(&unanimated).unwrap().uv_transform, base);
+            assert_eq!(materials.get(stock).unwrap().uv_transform, stock_base);
+            if let Some((removed, other)) = &held_materials {
+                for handle in [removed, other] {
+                    assert_eq!(
+                        materials.get(handle).unwrap().uv_transform.translation,
+                        Vec2::new(0.25, seconds / 2.0)
+                    );
+                }
+            }
+        }
+        if enabled {
+            // Exercise real loader reloads: remove the extension, including a label that
+            // disappeared from this source, without withdrawing another source's payload.
+            let registry = app.world().resource::<MaterialAnimationRegistry>().clone();
+            let payload = registry.get("meshes/animated.gltf#Material0/nif").unwrap();
+            for suffix in ["std", "nif"] {
+                registry.insert(
+                    format!("meshes/animated.gltf#Material9/{suffix}"),
+                    payload.clone(),
+                );
+            }
+            let source_path = std::path::Path::new("meshes/animated.gltf");
+            let mut document: serde_json::Value =
+                serde_json::from_slice(files.get_asset(source_path).unwrap().value()).unwrap();
+            for material in document["materials"].as_array_mut().unwrap() {
+                if let Some(extensions) = material
+                    .get_mut("extensions")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    extensions.remove(MATERIAL_ANIMATION_EXTENSION);
+                }
+            }
+            document["materials"].as_array_mut().unwrap().pop(); // Material3 vanishes.
+            files.insert_asset_text(source_path, &serde_json::to_string(&document).unwrap());
+            assert!(
+                server
+                    .get_handle::<bevy::gltf::Gltf>("meshes/animated.gltf")
+                    .is_some(),
+                "reload fixture has no live glTF root; label-only loads are not tracked without file watching"
+            );
+            server.reload("meshes/animated.gltf");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                app.update();
+                if let Some(LoadState::Failed(error)) = server.get_load_state(scene.id()) {
+                    panic!("fixture glTF reload failed: {error}");
+                }
+                let withdrawn = ["std", "nif"].into_iter().all(|suffix| {
+                    [0, 3, 9].into_iter().all(|index| {
+                        registry
+                            .get(&format!("meshes/animated.gltf#Material{index}/{suffix}"))
+                            .is_none()
+                    })
+                });
+                if withdrawn
+                    && app
+                        .world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .is_some_and(|material| material.uv_transform == base)
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "material reload did not withdraw animation and restore authored UVs: root={:?}, scene={:?}, registry/std={}, registry/nif={}, UV={:?}, expected={base:?}",
+                    server
+                        .get_handle::<bevy::gltf::Gltf>("meshes/animated.gltf")
+                        .is_some(),
+                    server.get_load_state(scene.id()),
+                    registry.get("meshes/animated.gltf#Material0/std").is_some(),
+                    registry.get("meshes/animated.gltf#Material0/nif").is_some(),
+                    app.world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .map(|material| material.uv_transform)
+                );
+                std::thread::yield_now();
+            }
+            assert!(registry.get("meshes/other.gltf#Material0/nif").is_some());
+            let (removed, other) = held_materials.as_ref().unwrap();
+            let stopped = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(removed)
+                .unwrap()
+                .uv_transform;
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&animated)
+                        .unwrap()
+                        .uv_transform,
+                    base,
+                    "removed animation must remain static after reload"
+                );
+                let materials = app.world().resource::<Assets<StandardMaterial>>();
+                assert_eq!(
+                    materials.get(removed).unwrap().uv_transform,
+                    stopped,
+                    "omitted label must stop while its visible strong owner survives"
+                );
+                let seconds = app.world().resource::<Time>().elapsed_secs();
+                assert_eq!(
+                    materials.get(other).unwrap().uv_transform.translation,
+                    Vec2::new(0.25, seconds.rem_euclid(2.0) / 2.0),
+                    "another source must keep playing"
+                );
+            }
+        }
+    }
 
     #[test]
     fn terrain_reservation_observes_all_six_diffuse_and_normal_layers() {
@@ -2569,4 +3065,104 @@ mod tests {
             "the fragment's coordinate must be quadrant-local, on the grid's own scale"
         );
     }
+}
+
+const MATERIAL_ANIMATION_EXTENSION: &str = "OPEN_SKYRIM_material_animation";
+
+#[derive(Default, Clone)]
+struct SkyrimMaterialHandler {
+    material_extensions: bool,
+    animations: Option<crate::material_animation::MaterialAnimationRegistry>,
+}
+
+impl GltfExtensionHandler for SkyrimMaterialHandler {
+    fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+        Box::new(self.clone())
+    }
+
+    fn on_root(
+        &mut self,
+        context: &mut LoadContext<'_>,
+        _gltf: &bevy::gltf::gltf::Gltf,
+        _settings: &bevy::gltf::GltfLoaderSettings,
+    ) {
+        if let Some(registry) = &self.animations {
+            registry.clear_source(&context.path().to_string(), "/std");
+        }
+    }
+
+    fn on_material(
+        &mut self,
+        load_context: &mut LoadContext<'_>,
+        gltf_material: &bevy::gltf::gltf::Material,
+        _material: Handle<GltfMaterial>,
+        material_asset: &GltfMaterial,
+        material_label: &str,
+    ) {
+        if let Some(registry) = &self.animations {
+            let animation = material_animation_of(
+                gltf_material,
+                material_asset.uv_transform,
+                self.material_extensions,
+            );
+            registry.replace(
+                &format!("{}#{material_label}/std", load_context.path()),
+                animation,
+            );
+        }
+    }
+}
+
+/// Loader tasks may consume extension payloads only after validating the manifest capability.
+fn material_extensions_enabled(app: &App) -> bool {
+    app.world()
+        .get_resource::<crate::extensions::DataSetExtensions>()
+        .is_some_and(|extensions| {
+            extensions
+                .status(crate::extensions::Feature::Material)
+                .is_present()
+        })
+}
+
+fn install_material_animation(app: &mut App) {
+    if material_extensions_enabled(app) {
+        app.add_plugins(crate::material_animation::MaterialAnimationPlugin);
+    }
+}
+
+pub(crate) fn material_animation_of(
+    material: &bevy::gltf::gltf::Material,
+    base: bevy::math::Affine2,
+    material_extensions: bool,
+) -> Option<crate::material_animation::MaterialAnimation> {
+    if !material_extensions {
+        return None;
+    }
+    material
+        .extension_value(MATERIAL_ANIMATION_EXTENSION)
+        .and_then(|animation| {
+            crate::material_animation::MaterialAnimation::from_extensions(animation, base)
+        })
+}
+
+fn register_skyrim_material_handler(app: &mut App) {
+    let material_extensions = material_extensions_enabled(app);
+    let animations = material_extensions.then(|| {
+        let registry = crate::material_animation::MaterialAnimationRegistry::default();
+        app.insert_resource(registry.clone());
+        registry
+    });
+    let Some(handlers) = app.world().get_resource::<GltfExtensionHandlers>() else {
+        warn!(
+            "the glTF extension handlers are unavailable; published material animations cannot be registered"
+        );
+        return;
+    };
+    handlers
+        .0
+        .write_blocking()
+        .push(Box::new(SkyrimMaterialHandler {
+            material_extensions,
+            animations,
+        }));
 }

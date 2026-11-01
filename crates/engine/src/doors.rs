@@ -5,6 +5,12 @@
 use crate::world::database::DoorLinkRow;
 use bevy::prelude::*;
 
+/// One accepted keyboard activation requests one authored source swing.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct OpenDoor {
+    pub door: Entity,
+}
+
 /// Where a load door leads, as converted from the source door's `XTEL` subrecord.
 #[derive(Reflect, Debug, Clone, PartialEq)]
 pub struct DoorDestination {
