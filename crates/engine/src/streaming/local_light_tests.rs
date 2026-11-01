@@ -147,7 +147,11 @@ fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
             assert_eq!(app.world().get::<Children>(parent).unwrap().len(), 1);
             assert_eq!(
                 *app.world().get::<Visibility>(child).unwrap(),
-                Visibility::Inherited
+                if expected_fade > 0.0 {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                }
             );
             assert_eq!(
                 app.world().get::<PointLight>(child).unwrap().intensity,

@@ -21,7 +21,7 @@
 
 use crate::world::{components::StreamingCamera, database::LightRow};
 use bevy::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// `LIGH` `DATA` flag bit: the record is off until something turns it on, so a reference to it is
 /// not lit by default (UESP, "Skyrim Mod:Mod File Format/LIGH").
@@ -319,10 +319,36 @@ struct LightBudget {
     /// cell streaming in or out, both move lights in or out of it. A cache keyed on the *count*
     /// alone kept a room walked into and stopped in dark until the player moved another
     /// [`BUDGET_RECHOOSE_DISTANCE`].
-    chosen: HashSet<Entity>,
+    chosen: HashMap<Entity, LightBudgetClass>,
 }
 
-/// Keeps the number of enabled [`SkyrimLight`]s to [`ENABLED_LIGHT_BUDGET`] nearest the camera.
+/// Backend budget policy only. Keep native fallback ranges and authored zero power intact,
+/// but do not let them displace wider emitting lights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LightBudgetClass {
+    Regular,
+    Tiny,
+    Dark,
+}
+
+impl LightBudgetClass {
+    fn of(light: &PointLight) -> Self {
+        if !light.intensity.is_finite()
+            || light.intensity <= 0.0
+            || !light.range.is_finite()
+            || light.range <= 0.0
+        {
+            Self::Dark
+        } else if light.range <= NATIVE_NONPOSITIVE_RADIUS {
+            Self::Tiny
+        } else {
+            Self::Regular
+        }
+    }
+}
+
+/// Applies the configured light budget, preferring wider emitters before tiny ones and excluding
+/// zero-power lights. The default limit is [`ENABLED_LIGHT_BUDGET`].
 ///
 /// Add it after [`StreamingPlugin`](crate::streaming::StreamingPlugin).
 pub struct LightsPlugin;
@@ -370,7 +396,8 @@ impl Plugin for LightsPlugin {
     }
 }
 
-/// Enables the [`ENABLED_LIGHT_BUDGET`] lights nearest the camera, and hides the rest.
+/// Enables emitting lights up to the configured budget and hides the rest. Wider lights precede
+/// tiny lights; camera distance orders each class.
 ///
 /// Hidden is the switch: the lights are extracted to the render world only while they are visible
 /// (`bevy_pbr/src/render/light.rs`), and a light set back to `Visibility::Inherited` still goes
@@ -416,8 +443,9 @@ fn budget_lights(
         return;
     };
     let camera_position = camera.translation();
-    // One pass over every spawned light, allocating nothing: how many there are, and whether any of
-    // them is not in the set the current selection was made from.
+    // One pass over every spawned light, allocating nothing: count them and detect changed
+    // membership or budget class. A light that starts emitting must be reconsidered even when
+    // the entity set and camera do not change.
     //
     // The second half is what the count alone cannot answer. A swap that keeps the number of lights
     // in the world the same is invisible to a count - a cell unloading as another streams in with
@@ -425,9 +453,9 @@ fn budget_lights(
     // walked into and stopped in has to light up.
     let mut spawned = 0usize;
     let mut joined = false;
-    for (entity, _, _, _) in lights.iter() {
+    for (entity, _, light, _) in lights.iter() {
         spawned += 1;
-        joined |= !budget.chosen.contains(&entity);
+        joined |= budget.chosen.get(&entity) != Some(&LightBudgetClass::of(light));
     }
     if !joined
         && let Some(chosen_at) = budget.chosen_at
@@ -437,24 +465,26 @@ fn budget_lights(
         return;
     }
 
-    let mut ranked: Vec<(Entity, f32)> = lights
+    let mut ranked: Vec<(Entity, LightBudgetClass, f32)> = lights
         .iter()
-        .map(|(entity, transform, _, _)| {
+        .map(|(entity, transform, light, _)| {
             (
                 entity,
+                LightBudgetClass::of(light),
                 transform.translation().distance_squared(camera_position),
             )
         })
         .collect();
-    sort_by_distance(&mut ranked);
+    sort_for_budget(&mut ranked);
     let enabled: HashSet<Entity> = ranked
         .iter()
+        .filter(|(_, class, _)| *class != LightBudgetClass::Dark)
         .take(
             settings
                 .as_deref()
                 .map_or(ENABLED_LIGHT_BUDGET, |settings| settings.point_light_budget),
         )
-        .map(|(entity, _)| *entity)
+        .map(|(entity, _, _)| *entity)
         .collect();
 
     for (entity, _, _, mut visibility) in &mut lights {
@@ -468,8 +498,13 @@ fn budget_lights(
         }
     }
     budget.chosen_at = Some(camera_position);
-    budget.chosen = ranked.iter().map(|(entity, _)| *entity).collect();
-    if let Some((nearest, distance_squared)) = ranked.first()
+    budget.chosen = ranked
+        .iter()
+        .map(|(entity, class, _)| (*entity, *class))
+        .collect();
+    if let Some((nearest, _, distance_squared)) = ranked
+        .iter()
+        .find(|(_, class, _)| *class != LightBudgetClass::Dark)
         && let Ok((_, _, light, _)) = lights.get(*nearest)
     {
         debug!(
@@ -483,13 +518,17 @@ fn budget_lights(
     }
 }
 
-/// Nearest first. The entity breaks ties, so two lights at the same distance are chosen between the
-/// same way every frame they are re-ranked in.
-fn sort_by_distance(ranked: &mut [(Entity, f32)]) {
-    ranked.sort_by(|(left_entity, left), (right_entity, right)| {
-        left.total_cmp(right)
-            .then_with(|| left_entity.cmp(right_entity))
-    });
+/// Wider emitting lights precede tiny lights. Distance orders each class, and entity identity
+/// breaks ties. Dark lights stay in the cache but never consume an enabled slot.
+fn sort_for_budget(ranked: &mut [(Entity, LightBudgetClass, f32)]) {
+    ranked.sort_by(
+        |(left_entity, left_class, left), (right_entity, right_class, right)| {
+            left_class
+                .cmp(right_class)
+                .then_with(|| left.total_cmp(right))
+                .then_with(|| left_entity.cmp(right_entity))
+        },
+    );
 }
 
 #[cfg(test)]
@@ -829,6 +868,119 @@ mod tests {
                 *app.world().entity(*entity).get::<Visibility>().unwrap() == Visibility::Inherited
             })
             .collect()
+    }
+
+    #[test]
+    fn tiny_fallback_and_zero_power_lights_do_not_displace_wider_lights() {
+        let mut app = budget_app(
+            Vec3::ZERO,
+            (0..ENABLED_LIGHT_BUDGET).map(|i| Vec3::new(1000.0 + i as f32, 0.0, 0.0)),
+        );
+        let regular: HashSet<_> = enabled_lights(&mut app).into_iter().collect();
+        let mut tiny = HashSet::new();
+        let mut dark = HashSet::new();
+        for _ in 0..ENABLED_LIGHT_BUDGET + 1 {
+            tiny.insert(
+                app.world_mut()
+                    .spawn((
+                        SkyrimLight {
+                            form_id: 3,
+                            cell_id: 4,
+                        },
+                        point_light(&light_row(0.0, 0), None).unwrap(),
+                        Transform::default(),
+                    ))
+                    .id(),
+            );
+            dark.insert(
+                app.world_mut()
+                    .spawn((
+                        SkyrimLight {
+                            form_id: 5,
+                            cell_id: 4,
+                        },
+                        point_light(
+                            &LightRow {
+                                fade: Some(0.0),
+                                fade_status: Some(1),
+                                ..light_row(512.0, 0)
+                            },
+                            None,
+                        )
+                        .unwrap(),
+                        Transform::default(),
+                    ))
+                    .id(),
+            );
+        }
+        app.update();
+        let enabled = enabled_lights(&mut app);
+        assert_eq!(enabled.len(), ENABLED_LIGHT_BUDGET);
+        assert!(enabled.iter().all(|entity| regular.contains(entity)));
+
+        // Keep the native 0.1 light and permit it when a slot is available.
+        app.world_mut()
+            .entity_mut(*regular.iter().next().unwrap())
+            .despawn();
+        app.update();
+        let enabled = enabled_lights(&mut app);
+        assert_eq!(enabled.len(), ENABLED_LIGHT_BUDGET);
+        assert_eq!(
+            enabled
+                .iter()
+                .filter(|entity| tiny.contains(*entity))
+                .count(),
+            1
+        );
+        assert!(enabled.iter().all(|entity| !dark.contains(entity)));
+    }
+
+    #[test]
+    fn the_budget_reconsiders_power_and_range_class_changes_without_camera_motion() {
+        let mut app = budget_app(
+            Vec3::ZERO,
+            (0..ENABLED_LIGHT_BUDGET).map(|i| Vec3::new(1000.0 + i as f32, 0.0, 0.0)),
+        );
+        let regular: HashSet<_> = enabled_lights(&mut app).into_iter().collect();
+        let changed = app
+            .world_mut()
+            .spawn((
+                SkyrimLight {
+                    form_id: 3,
+                    cell_id: 4,
+                },
+                point_light(
+                    &LightRow {
+                        fade: Some(0.0),
+                        fade_status: Some(1),
+                        ..light_row(512.0, 0)
+                    },
+                    None,
+                )
+                .unwrap(),
+                Transform::default(),
+            ))
+            .id();
+        app.update();
+        assert!(!enabled_lights(&mut app).contains(&changed));
+
+        app.world_mut()
+            .get_mut::<PointLight>(changed)
+            .unwrap()
+            .intensity = intensity_for_radius(512.0);
+        app.update();
+        let enabled = enabled_lights(&mut app);
+        assert_eq!(enabled.len(), ENABLED_LIGHT_BUDGET);
+        assert!(enabled.contains(&changed));
+
+        app.world_mut()
+            .get_mut::<PointLight>(changed)
+            .unwrap()
+            .range = NATIVE_NONPOSITIVE_RADIUS;
+        app.update();
+        let enabled = enabled_lights(&mut app);
+        assert_eq!(enabled.len(), ENABLED_LIGHT_BUDGET);
+        assert!(enabled.iter().all(|entity| regular.contains(entity)));
     }
 
     fn move_camera(app: &mut App, camera: Vec3) {

@@ -36,6 +36,10 @@ FNAM uses unit fade with a `legacy_fade` disposition. Missing reference projecti
 that the source lacked XLIG. Reconvert into a separate pack to obtain them; never repair a registered
 pack in place. No schema-version or asset-producer bump: these additive projections follow #278.
 
+Older exporters already stored XRDS as its raw signed float. They did not convert it to an absolute
+radius. The corrected additive evaluation therefore applies to those existing values too. The new
+`radius_status` column adds presence/invalid diagnostics; it does not mark a different radius encoding.
+
 ## 2. How a row becomes a light
 
 `point_light(row, radius_override)` returns `Some(PointLight)` for a record the engine may light the
@@ -45,8 +49,8 @@ world with, and `None` otherwise:
   Bevy world unit, so no conversion is applied.
 - `color` is the record's colour, read as sRGB like every other colour of the game.
 - `intensity` comes from unit-fade backend conversion times evaluated FNAM plus XLIG fade (§4).
-- `shadow_maps_enabled` is **false**: one cube map per light is unaffordable at 64 lights. Skyrim
-  does have shadow-casting lights (the record's shadow flags); honouring them is left for later.
+- `shadow_maps_enabled` starts **false**. The existing rendering setting can enable Bevy shadow
+  maps. This does not implement Skyrim's authored shadow modes or attenuation.
 - the area `radius` stays 0, so there is no oversized specular highlight.
 
 `streaming::spawn_cell` places the light as a **child of its reference**, which is what makes it sit
@@ -74,6 +78,11 @@ out of the game's own world; they exist for mods and for scripts.
 fade, native falloff and dispositions as a `LightEvaluation` component on the reference. Immediate and deferred
 spawning consume the same evaluated `PointLight`. `LightInputCoverage` counts dispositions once per
 spawn, including rejected/zero-light results; reloads count again. Debug logs report cumulative counts.
+The denominator includes only references that reach spawning with a usable projected `LIGH` row.
+Disabled references, unloaded cells and records with no usable `DATA` row are outside that census.
+The counters are overlapping dispositions, not unique FormIDs or full native feature coverage.
+Malformed XRDS/XLIG fields remain queryable through projected status, size and NULL fields, with
+original bytes in the archive. The converter's omission counters instead describe missing rows.
 Source identity remains the containing reference's form/base IDs, linked to the converter's existing
 records/formid map. This does not add missing field-level contributor history to old packages.
 
@@ -168,11 +177,14 @@ comparison after the separate environment resolver lands. Tests prove authored f
 storage and the actual CPU light consumer, not rendered brightness, performance or Skyrim parity.
 The frozen normalization must be replaced only with that evidence.
 
-## 6. The budget: 64 enabled lights
+## 6. The budget: 64 enabled lights by default
 
 `LightsPlugin` runs one system, `budget_lights`, in `PostUpdate` after transforms are propagated. It
-enables the `ENABLED_LIGHT_BUDGET = 64` lights nearest the camera and sets every other `SkyrimLight`
-to `Visibility::Hidden`. Hidden is the switch that matters: Bevy extracts a light to the render world
+uses the existing budget setting, whose default is `ENABLED_LIGHT_BUDGET = 64`, and sets unselected
+`SkyrimLight` children to `Visibility::Hidden`. Wider emitting lights are ranked by camera distance
+first. Lights whose range is at or below the native 0.1 fallback use only remaining slots. Zero-power
+or invalid lights use no enabled slot. This is backend selection policy; authored values, evaluated
+fallbacks and child entities remain intact. Hidden is the switch that matters: Bevy extracts a light to the render world
 only while it is visible. A `PointLight` without the `SkyrimLight` marker is never ranked, so the
 budget cannot touch a light that a fixture or a future engine feature spawns.
 
@@ -180,7 +192,8 @@ The choice is cached in a resource and re-made when:
 
 - the camera has moved more than `BUDGET_RECHOOSE_DISTANCE = 256.0` units, or
 - the **set** of spawned lights has changed - a light that is not in the set the last choice was made
-  from, or a count that no longer matches, which covers a cell streaming in or out.
+  from, or a count that no longer matches, which covers a cell streaming in or out, or
+- a light changes between the wider, tiny and non-emitting budget classes.
 
 The set is what is remembered, not the count: a cell that unloads as another streams in with the same
 number of lights is invisible to a count, and a room walked into and stopped in would stay dark until
@@ -191,7 +204,9 @@ every frame.
 
 `EngineConfig::lights` (`crates/engine/src/config.rs`) is false by default and set by `--lights`.
 `LightsPlugin` is registered for every run - it owns the budget, not the spawning - but
-`streaming::spawn_cell` places a light only while the flag is on. A default run therefore renders
+`streaming::spawn_cell` creates the light child while the flag is on. Otherwise it retains the
+evaluated light as deferred data and activates it when the flag is enabled in the resident cell.
+A default run therefore renders
 exactly as it did before this feature, and the acceptance, profiling and benchmark baselines that
 `scripts/phase2-*.ps1` take do not move.
 
