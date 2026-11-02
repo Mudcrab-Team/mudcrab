@@ -1825,9 +1825,10 @@ fn walk_step_rise(
         let capsule_point = body.translation + body.rotation * obstacle.witness2;
         let gap = (capsule_point - obstacle.witness1).dot(obstacle.normal1);
         if blocking_hit.time_of_impact > f32::EPSILON
-            || !(0.0..PLAYER_CONTROLLER_OFFSET).contains(&gap)
+            || !(-PLAYER_CONTROLLER_OFFSET..PLAYER_CONTROLLER_OFFSET).contains(&gap)
         {
-            // Solid penetration is not a lost skin gap. Leave it to Rapier.
+            // Recover at most one skin width of overlap. Deeper penetration
+            // needs placement recovery, not a full autostep-height relocation.
             return None;
         }
         let lift = (PLAYER_CONTROLLER_OFFSET + 0.05 - gap) / obstacle.normal1.y;

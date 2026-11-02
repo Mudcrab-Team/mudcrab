@@ -160,6 +160,8 @@ fn unsupported_capsule_does_not_mantle_a_step() {
     // Sync the obstacle and query pose without producing a grounded WALK tick.
     app.insert_resource(MoveMode::Noclip);
     app.update();
+    let synced_start = headless::player_pose(&mut app).0;
+    assert!(synced_start.distance(start) < 1.0e-4);
     // Prove the geometry offers a step before testing the caller's support gate.
     // Without that gate this pose could rise, despite having no floor support.
     assert!(probe_step(&mut app, start, Vec3::X * (370.0 * PHYSICS_TIMESTEP)).is_some());
@@ -183,40 +185,52 @@ fn unsupported_capsule_does_not_mantle_a_step() {
 }
 
 #[test]
-fn walking_recovers_a_lost_floor_skin_gap() {
-    let mut app = headless::fixture_app();
-    settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
-    // Preserve support output, but sync a pose with one unit of skin clearance
-    // lost. This is not a solid penetration: the capsule still clears the floor.
-    headless::place_player(&mut app, Vec3::new(-100.0, 51.4, 850.0));
-    app.insert_resource(MoveMode::Noclip);
-    app.update();
-    app.insert_resource(MoveMode::Walk);
-    app.insert_resource(WalkIntent {
-        wish_dir: Vec3::X,
-        target_speed: 80.1,
-        jump_pressed: false,
-    });
-    for _ in 0..30 {
+fn walking_recovers_shallow_floor_skin_gaps() {
+    // Cover lost skin, contact at the floor, float-scale overlap, and one unit
+    // of solid overlap. All must recover without a multi-step-height pop.
+    for start_y in [51.4, 50.4, 50.39, 49.4] {
+        let mut app = headless::fixture_app();
+        let rest = settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
+        let start = Vec3::new(-100.0, start_y, 850.0);
+        // Preserve support output while syncing the disturbed pose without WALK.
+        headless::place_player(&mut app, start);
+        app.insert_resource(MoveMode::Noclip);
         app.update();
-        let pose = headless::player_pose(&mut app).0;
+        assert!(headless::player_pose(&mut app).0.distance(start) < 1.0e-4);
+        app.insert_resource(MoveMode::Walk);
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: 80.1,
+            jump_pressed: false,
+        });
+        for _ in 0..30 {
+            app.update();
+            let pose = headless::player_pose(&mut app).0;
+            assert!(
+                pose.y > 52.0 && (pose.y - rest.y).abs() < 0.5,
+                "start_y={start_y}: skin recovery left the floor clearance: {pose:?}"
+            );
+        }
+        let end = headless::player_pose(&mut app).0;
         assert!(
-            (pose.y - 52.4).abs() < 0.5,
-            "skin recovery left the floor clearance: {pose:?}"
+            end.x > -70.0,
+            "start_y={start_y}: skin contact stalled WALK: {end:?}"
         );
     }
-    let end = headless::player_pose(&mut app).0;
-    assert!(end.x > -70.0, "skin contact stalled WALK: {end:?}");
 }
 
 #[test]
-fn skin_recovery_does_not_lift_solid_floor_penetration() {
+fn skin_recovery_does_not_lift_deep_floor_penetration() {
     let mut app = headless::fixture_app();
     settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
-    for y in [49.4, 40.0, 20.0] {
+    assert!(
+        probe_step(&mut app, Vec3::new(-100.0, 51.4, 850.0), Vec3::X).is_some(),
+        "control: the same floor must offer a shallow skin repair"
+    );
+    for y in [40.0, 20.0] {
         assert!(
             probe_step(&mut app, Vec3::new(-100.0, y, 850.0), Vec3::X).is_none(),
-            "solid floor penetration at y={y} was treated as lost skin clearance"
+            "deep floor penetration at y={y} was treated as lost skin clearance"
         );
     }
 }
