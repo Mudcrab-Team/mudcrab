@@ -933,10 +933,19 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
     let before = native::named(b"ACTI", 0x0100_5600, &[native::subrecord(b"VMAD", &vmad)]);
     let broken_payload = [5u32.to_le_bytes().as_slice(), &[0x78, 0x9c, 0]].concat();
     let broken = native::record(b"STAT", 0x0100_5601, 0x40000, &broken_payload);
+    let shape = b"ArchiveShape";
+    let mut swaps = 1u32.to_le_bytes().to_vec();
+    swaps.extend((shape.len() as u32).to_le_bytes());
+    swaps.extend(shape);
+    swaps.extend(0x0100_5700u32.to_le_bytes());
+    swaps.extend(0u32.to_le_bytes());
     let after = native::named(
         b"STAT",
         0x0100_5602,
-        &[native::subrecord(b"OBND", &[0; 12])],
+        &[
+            native::subrecord(b"OBND", &[0; 12]),
+            native::subrecord(b"MODS", &swaps),
+        ],
     );
     body.extend(before);
     body.extend(broken);
@@ -1007,6 +1016,11 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             full_schema, archive_schema,
             "no SQL object silently omitted"
         );
+        assert_eq!(
+            full_tables["base_texture_swaps"].len(),
+            1,
+            "the full export must populate the material view before testing deferral"
+        );
         let deferred = [
             "worldspaces",
             "cells",
@@ -1014,6 +1028,7 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "exterior_spatial",
             "land",
             "statics",
+            "base_texture_swaps",
             "lights",
             "npcs",
             "actor_models",

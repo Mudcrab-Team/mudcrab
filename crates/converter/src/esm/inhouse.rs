@@ -89,6 +89,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "exterior_spatial",
     "land",
     "statics",
+    "base_texture_swaps",
     "lights",
     "npcs",
     "actor_models",

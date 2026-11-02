@@ -1560,7 +1560,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1585,7 +1585,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 12);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
             assert!(
                 settings_for_source_reader(
                     &config,

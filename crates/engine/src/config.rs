@@ -3578,7 +3578,22 @@ mod tests {
             let observation_option = path.file_name().is_some_and(|name| {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+            // The receipt utility owns these argparse/Git options. Do not add them to
+            // the global exclusions: an engine launcher must still reject them.
+            let material_oracle_option = path
+                .file_name()
+                .is_some_and(|name| name == "object_materials_oracle.py")
+                && [
+                    "--packet",
+                    "--cargo-log",
+                    "--receipt",
+                    "--native-grant",
+                    "--name-only",
+                    "--others",
+                    "--exclude-standard",
+                ]
+                .contains(&flag);
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || material_oracle_option {
                 continue;
             }
             assert!(
@@ -3589,6 +3604,36 @@ mod tests {
             checked += 1;
         }
         checked
+    }
+
+    #[test]
+    fn the_script_audit_scopes_material_oracle_options_and_keeps_engine_checks() {
+        let oracle = std::path::Path::new("object_materials_oracle.py");
+        for flag in [
+            "--packet",
+            "--cargo-log",
+            "--receipt",
+            "--native-grant",
+            "--name-only",
+            "--others",
+            "--exclude-standard",
+        ] {
+            assert_eq!(checked_script_engine_flags(flag, oracle), 0);
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(flag, std::path::Path::new("launch.sh"))
+                })
+                .is_err(),
+                "{flag} must not become a global non-engine option"
+            );
+        }
+        assert_eq!(checked_script_engine_flags("engine --headless", oracle), 1);
+        assert!(
+            std::panic::catch_unwind(|| {
+                checked_script_engine_flags("engine --unknown-engine-option", oracle)
+            })
+            .is_err()
+        );
     }
 
     #[test]
