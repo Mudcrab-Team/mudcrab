@@ -474,7 +474,16 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         _settings: &bevy::gltf::GltfLoaderSettings,
     ) {
         if let Some(registry) = &self.animations {
-            registry.clear_source(&context.path().to_string(), "/nif");
+            for suffix in [
+                "/nif",
+                "/nif-depth",
+                "/nif_palette",
+                "/nif_palette_depth",
+                "/skin",
+                "/skin-depth",
+            ] {
+                registry.clear_source(&context.path().to_string(), suffix);
+            }
         }
     }
 
@@ -516,6 +525,9 @@ impl GltfExtensionHandler for NativeMaterialHandler {
             .and_then(|asset| asset.get::<StandardMaterial>())
             .expect("NifMaterialPlugin requires the stock PBR glTF handler before it");
         let material = native_material(source, standard).unwrap_or_else(|| standard.clone());
+        let animation = self.animations.as_ref().and_then(|_| {
+            crate::render::material_animation_of(source, material.uv_transform, true)
+        });
         // `native_material` drops a model-space map from the base; the skin material takes it
         // from the stock material instead.
         let model_space_normal = standard.normal_map_texture.clone();
@@ -585,16 +597,28 @@ impl GltfExtensionHandler for NativeMaterialHandler {
                         specular_srgb,
                     );
                 }
-                // Native StandardMaterial draws bind /nif. Publish the supported scalar
-                // payload at this asset's real label, with the native loaded UV base.
-                // Registry presence carries the renderer's manifest capability gate.
-                if let Some(registry) = &self.animations {
+                context.add_labeled_asset(format!("{label}/nif"), material);
+            }
+        }
+        // Publish at the actual native asset labels, including nested depth wrappers.
+        // Registry presence carries the renderer's manifest capability gate. Retain
+        // no asset handles: an unused alternative must still unload normally.
+        if let Some(registry) = &self.animations {
+            for suffix in [
+                "nif",
+                "nif-depth",
+                "nif_palette",
+                "nif_palette_depth",
+                "skin",
+                "skin-depth",
+            ] {
+                let asset_label = format!("{label}/{suffix}");
+                if context.get_labeled(&asset_label).is_some() {
                     registry.replace(
-                        &format!("{}#{label}/nif", context.path()),
-                        crate::render::material_animation_of(source, material.uv_transform, true),
+                        &format!("{}#{asset_label}", context.path()),
+                        animation.clone(),
                     );
                 }
-                context.add_labeled_asset(format!("{label}/nif"), material);
             }
         }
     }

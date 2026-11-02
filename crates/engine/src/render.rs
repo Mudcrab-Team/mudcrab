@@ -3124,7 +3124,7 @@ fn material_extensions_enabled(app: &App) -> bool {
         })
 }
 
-fn install_material_animation(app: &mut App) {
+pub(crate) fn install_material_animation(app: &mut App) {
     if material_extensions_enabled(app) {
         app.add_plugins(crate::material_animation::MaterialAnimationPlugin);
     }
@@ -3145,7 +3145,7 @@ pub(crate) fn material_animation_of(
         })
 }
 
-fn register_skyrim_material_handler(app: &mut App) {
+pub(crate) fn register_skyrim_material_handler(app: &mut App) {
     let material_extensions = material_extensions_enabled(app);
     let animations = material_extensions.then(|| {
         let registry = crate::material_animation::MaterialAnimationRegistry::default();

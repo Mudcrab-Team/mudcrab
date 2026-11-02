@@ -68,7 +68,7 @@ type SkinTintSurfaces<'world, 'state> = Query<
     'state,
     (
         Entity,
-        &'static mut MeshMaterial3d<SkyrimSkinMaterial>,
+        &'static MeshMaterial3d<SkyrimSkinMaterial>,
         Option<&'static SkinToneSourceMaterial>,
     ),
     With<SkinTintSurface>,
@@ -101,11 +101,15 @@ fn apply_actor_skin_tone(
     mut commands: Commands,
     actors: TonedActors,
     descendants: Query<&Children>,
-    mut surfaces: SkinTintSurfaces,
+    surfaces: SkinTintSurfaces,
     mut materials: ResMut<Assets<SkyrimSkinMaterial>>,
-    mut cache: ResMut<SkinToneMaterials>,
+    mut variants: (
+        ResMut<SkinToneMaterials>,
+        Option<ResMut<crate::material_animation::AnimatedMaterials<SkyrimSkinMaterial>>>,
+    ),
     mut material_events: MessageReader<AssetEvent<SkyrimSkinMaterial>>,
 ) {
+    let (cache, animations) = &mut variants;
     let material_arrived = material_events.read().any(|event| {
         matches!(
             event,
@@ -120,7 +124,7 @@ fn apply_actor_skin_tone(
         let tone = tone.0;
         let tone_key = tone.to_array().map(f32::to_bits);
         for descendant in descendants.iter_descendants(actor) {
-            let Ok((surface, mut material, source)) = surfaces.get_mut(descendant) else {
+            let Ok((surface, material, source)) = surfaces.get(descendant) else {
                 continue;
             };
             let source = match source {
@@ -146,11 +150,15 @@ fn apply_actor_skin_tone(
                     };
                     let derived = materials.add(derived);
                     cache.0.insert(key, derived.id());
+                    if let Some(animations) = animations.as_deref_mut() {
+                        animations.derive(source.id(), derived.id());
+                    }
                     derived
                 }
             };
             if material.0 != derived {
-                material.0 = derived;
+                // Lifecycle observers transfer playback ownership to the drawn clone.
+                commands.entity(surface).insert(MeshMaterial3d(derived));
             }
         }
         match (missing, awaiting) {
