@@ -80,6 +80,7 @@ fn audit_before_final_check(
     // immutable=1 prevents SQLite from creating journals/SHM in a registered pack.
     // It also ignores recovery state. Check both boundaries, without recovery writes.
     require_settled_database(&database)?;
+    let before = hash_file(&database)?;
     let path = database
         .to_str()
         .ok_or_else(|| color_eyre::eyre::eyre!("non-UTF-8 database path"))?
@@ -112,7 +113,6 @@ fn audit_before_final_check(
     let plugins = conn.prepare("SELECT id,name,priority,hex(checksum) FROM plugins ORDER BY priority,id")?
         .query_map([], |row| Ok(json!({"id": row.get::<_, i64>(0)?, "name": row.get::<_, String>(1)?, "priority": row.get::<_, i64>(2)?, "checksum_hex": row.get::<_, String>(3)?})))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let before = hash_file(&database)?;
     let observed = fidelity::audit_runtime_storage(&conn, &schemas)?;
     ensure!(
         observed.canonical_records_without_source == 0,
