@@ -563,7 +563,7 @@ fn group_note(group: &str) -> Option<&'static str> {
         ),
         "Image" => Some(
             "HDR composition stays on. Material colors, texture tiling, and per-water factors \
-             come from converted assets.",
+             come from converted assets. Visual profile requires Save and a restart.",
         ),
         "Threads" => Some(
             "Distance changes update streaming around the current camera. IO threads require \

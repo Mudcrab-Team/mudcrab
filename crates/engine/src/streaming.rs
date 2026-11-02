@@ -498,6 +498,10 @@ pub struct StreamingMetrics {
     pub resident_static_colliders: usize,
     /// NIF models that explicitly have no physical collision.
     pub static_colliders_authored_absent: u64,
+    /// Placements whose record type is outside every collision tier while their model does carry
+    /// authored collision. Counted per placement, not per model, so a repeated model counts each
+    /// time it is placed.
+    pub static_colliders_excluded_authored: u64,
     /// Eligible fixed placements for which no supported collision could be made.
     pub static_colliders_skipped: u64,
     /// Placed clutter references simulated as dynamic Rapier bodies from authored physics data.
@@ -604,6 +608,8 @@ enum StaticCollisionDecision {
     Clutter(Box<ClutterSpec>),
     /// A movable-type model with no dynamic body: it keeps no collision, as before.
     ClutterNone,
+    /// An ineligible record type whose model does carry authored collision.
+    ExcludedWithAuthored,
     /// A movable-type model whose dynamic body could not be built. It gets no collider at all.
     ClutterSkipped(String),
 }
@@ -1954,10 +1960,27 @@ fn static_proxy_eligible(record_type: Option<&str>, path: &str) -> bool {
     }
 }
 
+/// How a fixed record type may receive static collision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FixedCollisionTier {
+    /// Authored shapes, then the verified render proxy.
+    Full,
+    /// Authored fixed/keyframed bodies only; no render proxy; dynamic bodies ignored.
+    AuthoredOnly,
+}
+
+fn fixed_collision_tier(record_type: Option<&str>) -> Option<FixedCollisionTier> {
+    match record_type {
+        Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
+        Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
+        _ => None,
+    }
+}
+
 /// Placed furniture is fixed in the world, but may use only its authored NIF shape.
 /// Render proxies remain restricted to the verified STAT/TREE families above.
 fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
-    matches!(record_type, Some("STAT" | "TREE" | "FURN"))
+    fixed_collision_tier(record_type).is_some()
 }
 
 /// Base record types whose placed references may become dynamic bodies (#104 phase a). These are
@@ -1965,8 +1988,9 @@ fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
 /// one of them remains fixed.
 ///
 /// `CONT`, `MSTT`, `ACTI`, `FLOR`, `DOOR` and `FURN` are deliberately left out of this slice:
-/// barrels and chests (`CONT`), ingredient plants (`FLOR`) and the ambiguous `ACTI` props stay
-/// fixed for now even when their NIF carries simulated dynamics.
+/// barrels and chests (`CONT`) and ingredient plants (`FLOR`) stay fixed for now even when their
+/// NIF carries simulated dynamics. `ACTI` keeps its fixed and keyframed bodies on the static path
+/// instead, so only its dynamic bodies are left unsimulated.
 fn dynamic_clutter_record_eligible(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -2158,6 +2182,89 @@ fn collider_parts_from_authored(
     asset: &CollisionAsset,
 ) -> Result<Vec<AuthoredColliderPart>, String> {
     asset.shapes.iter().map(collider_part_from_shape).collect()
+}
+
+/// Decide a fixed record's static collision from its asset alone.
+///
+/// `Full` keeps every authored shape, whatever its body's kind, which is what fixed record types
+/// have always done. `AuthoredOnly` keeps a shape unless every body that owns it is dynamic, so a
+/// prop's fixed and keyframed bodies stay solid while its simulated parts are left to nothing.
+fn static_decision_from_asset(
+    tier: FixedCollisionTier,
+    asset: &CollisionAsset,
+) -> StaticCollisionDecision {
+    match tier {
+        FixedCollisionTier::Full => match collider_parts_from_authored(asset) {
+            Ok(parts) if !parts.is_empty() => {
+                StaticCollisionDecision::Authored(parts, asset.skipped.clone())
+            }
+            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
+            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
+            Err(reason) => StaticCollisionDecision::Skipped(reason),
+        },
+        FixedCollisionTier::AuthoredOnly => {
+            let mut owned_by_fixed = vec![false; asset.shapes.len()];
+            let mut owned_by_dynamic = vec![false; asset.shapes.len()];
+            for body in &asset.bodies {
+                let dynamic = body.kind == BodyKind::Dynamic;
+                for shape_index in &body.shapes {
+                    let Some(index) = usize::try_from(*shape_index)
+                        .ok()
+                        .filter(|index| *index < asset.shapes.len())
+                    else {
+                        return StaticCollisionDecision::Skipped(
+                            "authored collision body lists a shape that does not exist".to_owned(),
+                        );
+                    };
+                    if dynamic {
+                        owned_by_dynamic[index] = true;
+                    } else {
+                        owned_by_fixed[index] = true;
+                    }
+                }
+            }
+            let mut parts = Vec::new();
+            let mut kept = vec![false; asset.shapes.len()];
+            for (index, shape) in asset.shapes.iter().enumerate() {
+                if owned_by_dynamic[index] && !owned_by_fixed[index] {
+                    continue;
+                }
+                match collider_part_from_shape(shape) {
+                    Ok(part) => {
+                        kept[index] = true;
+                        parts.push(part);
+                    }
+                    Err(reason) => return StaticCollisionDecision::Skipped(reason),
+                }
+            }
+            let lost_bodies = asset
+                .bodies
+                .iter()
+                .filter(|body| {
+                    body.kind == BodyKind::Dynamic
+                        && body
+                            .shapes
+                            .iter()
+                            .any(|index| !kept.get(*index as usize).copied().unwrap_or(false))
+                })
+                .count();
+            if !parts.is_empty() {
+                let mut notes = asset.skipped.clone();
+                if lost_bodies > 0 {
+                    notes.push(format!(
+                        "{lost_bodies} dynamic bodies left unsimulated on a fixed record"
+                    ));
+                }
+                StaticCollisionDecision::Authored(parts, notes)
+            } else if asset.skipped.is_empty() {
+                // Nothing was dropped and nothing failed to convert: the tier is the whole reason
+                // this record has no shapes, which is a policy outcome rather than a failure.
+                StaticCollisionDecision::AuthoredAbsent
+            } else {
+                StaticCollisionDecision::Skipped(asset.skipped.join("; "))
+            }
+        }
+    }
 }
 
 fn collider_part_from_shape(shape: &CollisionShape) -> Result<AuthoredColliderPart, String> {
@@ -2487,14 +2594,14 @@ fn static_collision_from_hierarchy(
     materials: &Assets<StandardMaterial>,
 ) -> StaticCollisionDecision {
     match authored_collision_from_hierarchy(root, children, scene_extras) {
-        Ok(Some(asset)) => match collider_parts_from_authored(&asset) {
-            Ok(parts) if !parts.is_empty() => {
-                StaticCollisionDecision::Authored(parts, asset.skipped)
-            }
-            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
-            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
-            Err(reason) => StaticCollisionDecision::Skipped(reason),
-        },
+        // Only a tiered record type reaches this path, so a missing tier is a broken invariant
+        // rather than a case to fall back on: the fallback would hand a record the shapes its
+        // tier exists to withhold.
+        Ok(Some(asset)) => static_decision_from_asset(
+            fixed_collision_tier(record_type)
+                .expect("static collision is only built for a tiered record type"),
+            &asset,
+        ),
         Ok(None) if static_proxy_eligible(record_type, path) => {
             match static_proxy_from_hierarchy(
                 path, root, children, transforms, primitives, meshes, materials,
@@ -2508,6 +2615,22 @@ fn static_collision_from_hierarchy(
         }
         Ok(None) => StaticCollisionDecision::LegacyExcluded,
         Err(reason) => StaticCollisionDecision::Skipped(reason),
+    }
+}
+
+/// Read a model once for a record type that no collision tier accepts, reporting whether the
+/// exclusion silently drops authored collision. A malformed asset counts as no authored collision
+/// so it cannot inflate the report.
+fn exclusion_decision_from_hierarchy(
+    root: Entity,
+    children: &Query<&Children>,
+    scene_extras: &Query<&GltfSceneExtras>,
+) -> StaticCollisionDecision {
+    match authored_collision_from_hierarchy(root, children, scene_extras) {
+        Ok(Some(asset)) if !asset.shapes.is_empty() => {
+            StaticCollisionDecision::ExcludedWithAuthored
+        }
+        Ok(Some(_)) | Ok(None) | Err(_) => StaticCollisionDecision::LegacyExcluded,
     }
 }
 
@@ -3194,6 +3317,7 @@ fn track_asset_readiness(
                     // A fixed record type never asks for the clutter decision, so these arms cannot
                     // be reached on this path; the movable path above owns them.
                     StaticCollisionDecision::LegacyExcluded
+                    | StaticCollisionDecision::ExcludedWithAuthored
                     | StaticCollisionDecision::Clutter(_)
                     | StaticCollisionDecision::ClutterNone
                     | StaticCollisionDecision::ClutterSkipped(_) => {}
@@ -3202,6 +3326,30 @@ fn track_asset_readiness(
                             warn!(model = %pending.path, %reason, "static collision skipped");
                         }
                         note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
+                }
+            }
+            // A record type outside every tier used to drop authored collision without a trace.
+            // Report the placements that do carry it so the exclusion is visible in metrics.
+            if pending.static_physics
+                && fixed_collision_tier(pending.base_record_type.as_deref()).is_none()
+                && !dynamic_clutter_record_eligible(pending.base_record_type.as_deref())
+            {
+                let key = (pending.base_record_type.clone(), pending.path.clone());
+                let first_placement = !static_cache.0.contains_key(&key);
+                let decision = static_cache.0.entry(key).or_insert_with(|| {
+                    exclusion_decision_from_hierarchy(entity, &children, &scene_extras)
+                });
+                if matches!(decision, StaticCollisionDecision::ExcludedWithAuthored) {
+                    metrics.static_colliders_excluded_authored =
+                        metrics.static_colliders_excluded_authored.saturating_add(1);
+                    profiler.increment("physics/static_excluded_authored", 1);
+                    if first_placement {
+                        debug!(
+                            record_type = ?pending.base_record_type,
+                            model = %pending.path,
+                            "authored collision ignored: record type not eligible"
+                        );
                     }
                 }
             }
@@ -5250,6 +5398,182 @@ mod tests {
                         | StaticCollisionDecision::AuthoredAbsent
                 ));
             }
+        }
+    }
+
+    fn authored_box_shape() -> CollisionShape {
+        CollisionShape::Box {
+            center: [0.0, 1.0, 0.0],
+            half_extents: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn authored_mesh_shape() -> CollisionShape {
+        CollisionShape::Mesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+        }
+    }
+
+    fn authored_hull_shape() -> CollisionShape {
+        CollisionShape::Hull {
+            points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+    }
+
+    fn authored_asset(shapes: Vec<CollisionShape>, bodies: Vec<CollisionBody>) -> CollisionAsset {
+        CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes,
+            skipped: Vec::new(),
+            bodies,
+        }
+    }
+
+    #[test]
+    fn fixed_collision_tier_splits_fixed_and_authored_only_records() {
+        assert_eq!(
+            fixed_collision_tier(Some("ACTI")),
+            Some(FixedCollisionTier::AuthoredOnly)
+        );
+        for record in ["STAT", "TREE", "FURN"] {
+            assert_eq!(
+                fixed_collision_tier(Some(record)),
+                Some(FixedCollisionTier::Full),
+                "{record}"
+            );
+        }
+        for record in ["DOOR", "MSTT", "FLOR", "CONT", "MISC"] {
+            assert_eq!(fixed_collision_tier(Some(record)), None, "{record}");
+        }
+        assert_eq!(fixed_collision_tier(None), None);
+        assert!(fixed_collision_record_eligible(Some("ACTI")));
+    }
+
+    #[test]
+    fn acti_never_receives_a_render_proxy() {
+        let path = "meshes/architecture/whiterun/wrdrawbridge01.glb";
+        assert!(static_proxy_eligible(Some("STAT"), path));
+        assert!(!static_proxy_eligible(Some("ACTI"), path));
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_owned_by_fixed_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_mesh_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+                clutter_body(BodyKind::Fixed, vec![0, 1], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("fixed bodies must keep their shapes"),
+        }
+    }
+
+    #[test]
+    fn authored_only_drops_shapes_owned_only_by_dynamic_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(
+                    notes,
+                    vec!["1 dynamic bodies left unsimulated on a fixed record".to_owned()]
+                );
+            }
+            _ => panic!("the fixed body must stay solid"),
+        }
+    }
+
+    #[test]
+    fn authored_only_ignores_a_dynamic_only_model_without_skipping_it() {
+        let asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        let decision = static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset);
+        assert!(matches!(decision, StaticCollisionDecision::AuthoredAbsent));
+    }
+
+    #[test]
+    fn authored_only_still_reports_a_converter_failure_on_a_dynamic_only_model() {
+        let mut asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        asset
+            .skipped
+            .push("block 4: collision target is not exported".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("not exported"), "{reason}");
+            }
+            _ => panic!("a converter failure must not be reported as an authored absence"),
+        }
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_of_a_version_one_asset() {
+        let mut asset = authored_asset(vec![authored_box_shape()], Vec::new());
+        asset.version = 1;
+        asset.shapes.push(authored_mesh_shape());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a version one asset has no dynamic ownership"),
+        }
+    }
+
+    #[test]
+    fn authored_only_skips_a_body_that_names_a_missing_shape() {
+        let asset = authored_asset(
+            vec![authored_box_shape()],
+            vec![clutter_body(BodyKind::Fixed, vec![0, 5], true)],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("does not exist"), "{reason}");
+            }
+            _ => panic!("an out-of-range shape index must be reported"),
+        }
+    }
+
+    #[test]
+    fn full_tier_keeps_dynamic_body_shapes_on_a_fixed_record() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::Full, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a full-tier fixed record keeps every authored shape"),
         }
     }
 

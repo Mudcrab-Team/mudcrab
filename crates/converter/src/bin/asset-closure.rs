@@ -140,11 +140,30 @@ fn main() -> Result<()> {
     };
     let mut assets = Vec::with_capacity(models.len());
     for model_path in models {
-        let key = converted_model_key(&model_path);
+        let canonical = match canonical_asset_path(&model_path, AssetKind::Mesh, "nif") {
+            Ok(canonical) => canonical,
+            Err(error) => {
+                // A stored path the canonicalizer refuses (absolute, traversing, or another
+                // asset kind) is reported instead of being joined onto either root.
+                summary.invalid_models += 1;
+                assets.push(ClosureAsset {
+                    model_path,
+                    classification: "invalid_model_path",
+                    glb_path: None,
+                    bounds: None,
+                    texture_uris: Vec::new(),
+                    missing_textures: Vec::new(),
+                    texture_dependencies: Vec::new(),
+                    error: Some(format!("{error:#}")),
+                });
+                continue;
+            }
+        };
+        let key = converted_model_key(&canonical);
         let Some(glb_path) = files.get(&key) else {
             let source_unavailable = source_mesh_root
                 .as_ref()
-                .is_some_and(|root| !root.join(relative_model_path(&model_path)).is_file());
+                .is_some_and(|root| !root.join(relative_model_path(&canonical)).is_file());
             if source_unavailable {
                 summary.unavailable_source_models += 1;
             } else {
@@ -361,13 +380,11 @@ fn inspect_asset(
     })
 }
 
-fn relative_model_path(model_path: &str) -> PathBuf {
-    let canonical = canonical_asset_path(model_path, AssetKind::Mesh, "nif")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(model_path.replace('\\', "/")));
+fn relative_model_path(canonical_source: &str) -> PathBuf {
+    let canonical = Path::new(canonical_source);
     canonical
         .strip_prefix("meshes")
-        .unwrap_or(&canonical)
+        .unwrap_or(canonical)
         .to_owned()
 }
 
@@ -390,9 +407,11 @@ fn file_index(root: &Path) -> Result<HashMap<String, PathBuf>> {
     Ok(files)
 }
 
-fn converted_model_key(source: &str) -> String {
-    canonical_asset_path(source, AssetKind::Mesh, "glb")
-        .unwrap_or_else(|_| source.replace('\\', "/").to_ascii_lowercase())
+/// The converted GLB key for a canonical source path: the same path with the GLB extension.
+fn converted_model_key(canonical_source: &str) -> String {
+    let mut key = PathBuf::from(canonical_source);
+    key.set_extension("glb");
+    normalize(&key)
 }
 
 fn normalize(path: &Path) -> String {
@@ -408,9 +427,28 @@ mod tests {
     #[test]
     fn normalizes_model_paths() {
         assert_eq!(
-            converted_model_key("Meshes\\Architecture\\Wall.NIF"),
+            converted_model_key("meshes/architecture/wall.nif"),
             "meshes/architecture/wall.glb"
         );
+        assert_eq!(
+            relative_model_path("meshes/architecture/wall.nif"),
+            Path::new("architecture/wall.nif")
+        );
+    }
+
+    #[test]
+    fn refuses_model_paths_that_leave_the_assets_root() {
+        for escaping in [
+            "..\\..\\payload.nif",
+            "C:/payload.nif",
+            "/payload.nif",
+            "meshes/../../payload.nif",
+        ] {
+            assert!(
+                canonical_asset_path(escaping, AssetKind::Mesh, "nif").is_err(),
+                "{escaping} was accepted"
+            );
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 pub mod plugins_txt;
+pub mod projection_omissions;
 pub mod records;
 mod reference_links;
 pub mod rooms;
