@@ -1789,10 +1789,9 @@ fn walk_step_rise(
     }
     let direction = horizontal / distance;
     let filter = QueryFilter {
-        flags: QueryFilterFlags::EXCLUDE_SENSORS,
-        ..QueryFilter::default()
-            .groups(player_collision_groups())
-            .exclude_rigid_body(entity)
+        flags: controller.filter_flags,
+        groups: controller.filter_groups,
+        ..QueryFilter::default().exclude_rigid_body(entity)
     };
     let static_filter = QueryFilter {
         flags: filter.flags | QueryFilterFlags::EXCLUDE_DYNAMIC,
@@ -1825,7 +1824,10 @@ fn walk_step_rise(
         // ordinary slope contacts continue through Rapier without a step.
         let capsule_point = body.translation + body.rotation * obstacle.witness2;
         let gap = (capsule_point - obstacle.witness1).dot(obstacle.normal1);
-        if blocking_hit.time_of_impact > f32::EPSILON || gap >= PLAYER_CONTROLLER_OFFSET {
+        if blocking_hit.time_of_impact > f32::EPSILON
+            || !(0.0..PLAYER_CONTROLLER_OFFSET).contains(&gap)
+        {
+            // Solid penetration is not a lost skin gap. Leave it to Rapier.
             return None;
         }
         let lift = (PLAYER_CONTROLLER_OFFSET + 0.05 - gap) / obstacle.normal1.y;

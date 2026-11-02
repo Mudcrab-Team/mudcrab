@@ -1,6 +1,7 @@
 //! Headless stair traversal through the production fixed-step WALK controller.
 
 use super::{headless, *};
+use bevy::ecs::system::RunSystemOnce;
 
 fn fixed_box(app: &mut App, center: Vec3, half_extents: Vec3) {
     app.world_mut().spawn((
@@ -9,6 +10,31 @@ fn fixed_box(app: &mut App, center: Vec3, half_extents: Vec3) {
         world_collision_groups(),
         Transform::from_translation(center),
     ));
+}
+
+fn probe_step(app: &mut App, position: Vec3, horizontal: Vec3) -> Option<f32> {
+    app.world_mut()
+        .run_system_once(
+            move |context: ReadRapierContext,
+                  tuning: Res<MovementTuning>,
+                  player: WalkBodyQuery| {
+                let (entity, body, capsule, controller, _, _) = player.single().unwrap();
+                let pose = Transform {
+                    translation: position,
+                    ..*body
+                };
+                walk_step_rise(
+                    &context.single().unwrap(),
+                    entity,
+                    &pose,
+                    capsule,
+                    controller,
+                    &tuning,
+                    horizontal,
+                )
+            },
+        )
+        .unwrap()
 }
 
 fn settle(app: &mut App, position: Vec3) -> Vec3 {
@@ -131,6 +157,13 @@ fn unsupported_capsule_does_not_mantle_a_step() {
     );
     let start = Vec3::new(-29.0, 62.4, 850.0);
     headless::place_player(&mut app, start);
+    // Sync the obstacle and query pose without producing a grounded WALK tick.
+    app.insert_resource(MoveMode::Noclip);
+    app.update();
+    // Prove the geometry offers a step before testing the caller's support gate.
+    // Without that gate this pose could rise, despite having no floor support.
+    assert!(probe_step(&mut app, start, Vec3::X * (370.0 * PHYSICS_TIMESTEP)).is_some());
+    app.insert_resource(MoveMode::Walk);
     let mut query = app.world_mut().query::<&mut WalkState>();
     query
         .single_mut(app.world_mut())
@@ -166,11 +199,57 @@ fn walking_recovers_a_lost_floor_skin_gap() {
     });
     for _ in 0..30 {
         app.update();
+        let pose = headless::player_pose(&mut app).0;
+        assert!(
+            (pose.y - 52.4).abs() < 0.5,
+            "skin recovery left the floor clearance: {pose:?}"
+        );
     }
     let end = headless::player_pose(&mut app).0;
+    assert!(end.x > -70.0, "skin contact stalled WALK: {end:?}");
+}
+
+#[test]
+fn skin_recovery_does_not_lift_solid_floor_penetration() {
+    let mut app = headless::fixture_app();
+    settle(&mut app, Vec3::new(-100.0, 200.0, 850.0));
+    for y in [49.4, 40.0, 20.0] {
+        assert!(
+            probe_step(&mut app, Vec3::new(-100.0, y, 850.0), Vec3::X).is_none(),
+            "solid floor penetration at y={y} was treated as lost skin clearance"
+        );
+    }
+}
+
+#[test]
+fn step_clearance_uses_the_controller_collision_filter() {
+    let mut app = headless::fixture_app();
+    fixed_box(
+        &mut app,
+        Vec3::new(100.0, 12.0, 850.0),
+        Vec3::new(100.0, 12.0, 100.0),
+    );
+    // The default controller queries every group. A separate ceiling group must
+    // still block the lift, even though player_collision_groups omits GROUP_5.
+    app.world_mut().spawn((
+        RigidBody::Fixed,
+        Collider::cuboid(300.0, 10.0, 100.0),
+        CollisionGroups::new(Group::GROUP_5, Group::ALL),
+        Transform::from_xyz(0.0, 120.0, 850.0),
+    ));
+    settle(&mut app, Vec3::new(-100.0, 55.0, 850.0));
+    let position = Vec3::new(-29.0, 52.45, 850.0);
+    let horizontal = Vec3::X * (370.0 * PHYSICS_TIMESTEP);
+    let mut query = app.world_mut().query::<&mut KinematicCharacterController>();
+    query.single_mut(app.world_mut()).unwrap().filter_groups = Some(player_collision_groups());
     assert!(
-        end.x > -70.0 && end.y > 52.0,
-        "skin contact stalled WALK: {end:?}"
+        probe_step(&mut app, position, horizontal).is_some(),
+        "control: excluding the separate ceiling group should expose the step"
+    );
+    query.single_mut(app.world_mut()).unwrap().filter_groups = None;
+    assert!(
+        probe_step(&mut app, position, horizontal).is_none(),
+        "step clearance ignored a ceiling included by the controller filter"
     );
 }
 
