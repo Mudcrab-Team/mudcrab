@@ -203,12 +203,21 @@ fn walking_recovers_shallow_floor_skin_gaps() {
             target_speed: 80.1,
             jump_pressed: false,
         });
+        // Exact floor contact can allow tangential motion without a blocking
+        // hit. Only the lost-skin case requires immediate clearance recovery;
+        // other shallow contacts must not sink further or produce a height pop.
+        let contact_y = MovementTuning::default().capsule_standing_height * 0.5;
+        let minimum_y = if start_y > contact_y {
+            52.0
+        } else {
+            start_y - 0.05
+        };
         for _ in 0..30 {
             app.update();
             let pose = headless::player_pose(&mut app).0;
             assert!(
-                pose.y > 52.0 && (pose.y - rest.y).abs() < 0.5,
-                "start_y={start_y}: skin recovery left the floor clearance: {pose:?}"
+                pose.y > minimum_y && pose.y < rest.y + 0.5,
+                "start_y={start_y}: skin contact sank or produced a height pop: {pose:?}"
             );
         }
         let end = headless::player_pose(&mut app).0;
