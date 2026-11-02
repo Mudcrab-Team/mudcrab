@@ -284,6 +284,9 @@ fn interior_rotation(lighting: &Lighting) -> Option<Quat> {
     Some(Quat::from_rotation_arc(Vec3::NEG_Z, -toward_light))
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod native_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,7 +858,7 @@ mod plugin_tests {
             data[0..3].copy_from_slice(&[255, 0, 0]);
             data[4..7].copy_from_slice(&[64, 96, 128]);
             data[28..32].copy_from_slice(&0.5f32.to_le_bytes());
-            for face in data[40..64].chunks_exact_mut(4) {
+            for face in data[40..64].as_chunks_mut::<4>().0 {
                 face[..3].copy_from_slice(&[255, 0, 0]);
             }
             let template = group(
