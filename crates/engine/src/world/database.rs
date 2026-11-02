@@ -232,6 +232,7 @@ fn unpack_color(value: u32) -> [u8; 3] {
 
 #[derive(Resource, Default)]
 pub struct AssetCatalog {
+    object_texture_swaps: crate::object_materials::ObjectTextureCatalog,
     landscape_diffuse: std::collections::HashMap<u32, String>,
     landscape_normal: std::collections::HashMap<u32, String>,
     water_flow: std::collections::HashMap<u32, String>,
@@ -310,6 +311,7 @@ impl AssetCatalog {
             })
             .unwrap_or_default();
         Ok(Self {
+            object_texture_swaps: crate::object_materials::ObjectTextureCatalog::read(&connection)?,
             landscape_diffuse,
             landscape_normal,
             water_flow,
@@ -319,6 +321,13 @@ impl AssetCatalog {
 
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
         self.landscape_diffuse.get(&form_id).map(String::as_str)
+    }
+
+    pub(crate) fn object_texture_swaps(
+        &self,
+        base: u32,
+    ) -> Option<crate::object_materials::ReferenceTextureSwaps> {
+        self.object_texture_swaps.get(base)
     }
 
     /// The converted normal map of landscape texture `form_id`, if its texture set has one.
@@ -340,7 +349,7 @@ impl AssetCatalog {
 /// The database is input the engine did not write, so a path that could leave `textures/` - a
 /// `..` or `.` segment, an absolute or drive-prefixed path, an empty segment, or a `:` (a Windows
 /// drive or stream, or an asset source such as `embedded://`) - is refused rather than loaded.
-fn converted_texture_path(path: String) -> Option<String> {
+pub(crate) fn converted_texture_path(path: String) -> Option<String> {
     // Converted assets are published with lowercase canonical paths, so the
     // lookup must lowercase too (matching world-inspect's resolver).
     let normalized = path.replace('\\', "/").to_ascii_lowercase();

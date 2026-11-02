@@ -1823,6 +1823,9 @@ fn spawn_cell(
             if let Some(rgb) = reference.emittance {
                 entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));
             }
+            if let Some(swaps) = catalog.object_texture_swaps(reference.base_form_id) {
+                entity.insert(swaps);
+            }
             // A child of the reference, so the light sits where the reference is and follows it
             // through a render-origin rebase - and, because it is a descendant of the cell root,
             // through the cell unload that despawns the reference.
@@ -8935,6 +8938,50 @@ mod tests {
             .add_systems(Update, spawn_queued_references);
         app.update();
         app
+    }
+
+    /// Appearance belongs to each placed base, including instances that share a model.
+    #[test]
+    fn object_diffuse_swap_input_attaches_to_each_placed_base() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalogue.db");
+        write_empty_catalogue(&path);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE base_texture_swaps(base_id INTEGER,position INTEGER,shape_name TEXT,shape_index INTEGER,texture_set_id INTEGER,diffuse_path TEXT,disposition TEXT);
+             INSERT INTO base_texture_swaps VALUES(513,0,'Rock',0,100,'textures/red.dds','diffuse_only');
+             INSERT INTO base_texture_swaps VALUES(514,0,'Rock',0,101,'textures/blue.dds','diffuse_only');"
+        ).unwrap();
+        let mut app = spawn_reference_cell_app(
+            vec![
+                lit_reference(1, None, None),
+                lit_reference(2, None, None),
+                lit_reference(3, None, None),
+            ],
+            false,
+        );
+        app.insert_resource(AssetCatalog::open(&path).unwrap());
+        app.update();
+        let mut query = app.world_mut().query::<(
+            &FormId,
+            Option<&crate::object_materials::ReferenceTextureSwaps>,
+        )>();
+        let root = app.world().resource::<SpawnedCellRoot>().0.unwrap();
+        let rows: Vec<_> = app
+            .world()
+            .get::<Children>(root)
+            .unwrap()
+            .iter()
+            .filter_map(|entity| query.get(app.world(), entity).ok())
+            .map(|(id, swaps)| (id.0, swaps.is_some()))
+            .collect();
+        assert_eq!(rows.len(), 3);
+        for id in [1, 2, 3] {
+            assert!(
+                rows.contains(&(id, id != 3)),
+                "base-specific appearance input for reference {id}"
+            );
+        }
     }
 
     /// The documented actor catalog DDL (db-schema.md §18), as an in-memory fixture.

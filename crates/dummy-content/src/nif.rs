@@ -158,7 +158,50 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
 
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
-    build_static_shape(shape, colors, &[], None)
+    build_static_shape(shape, colors, &[], None, None)
+}
+
+/// Generates a static NIF with explicitly authored lighting-shader flag words.
+pub fn static_shape_with_material_flags(
+    shape: &StaticShape<'_>,
+    flags_1: u32,
+    flags_2: u32,
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], &[], None, Some((flags_1, flags_2)))
+}
+
+/// Authored sampling on an ordinary lighting shader. Clamp bits follow NIF's S/T convention.
+#[derive(Debug, Clone, Copy)]
+pub struct StaticSampling {
+    pub offset: [f32; 2],
+    pub scale: [f32; 2],
+    pub clamp_mode: u32,
+}
+
+/// Generates a static NIF with authored shader flags, UV transform and texture addressing.
+pub fn static_shape_with_material_sampling(
+    shape: &StaticShape<'_>,
+    flags_1: u32,
+    flags_2: u32,
+    sampling: StaticSampling,
+) -> Result<Vec<u8>> {
+    ensure!(sampling.clamp_mode <= 3, "invalid texture clamp mode");
+    ensure!(
+        sampling
+            .offset
+            .into_iter()
+            .chain(sampling.scale)
+            .all(f32::is_finite),
+        "non-finite texture transform"
+    );
+    build_static_shape_sampled(
+        shape,
+        &[],
+        &[],
+        None,
+        Some((flags_1, flags_2)),
+        Some(sampling),
+    )
 }
 
 /// Like [`static_shape`], plus one collision body per entry. Each body hangs off its own
@@ -168,7 +211,7 @@ pub fn static_shape_with_bodies(
     shape: &StaticShape<'_>,
     bodies: &[BoxBody<'_>],
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies, None)
+    build_static_shape(shape, &[], bodies, None, None)
 }
 
 /// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
@@ -177,7 +220,7 @@ pub fn static_shape_with_root_transform(
     bodies: &[BoxBody<'_>],
     root: RootTransform,
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies, Some(root))
+    build_static_shape(shape, &[], bodies, Some(root), None)
 }
 
 /// How a legacy skin fixture supplies its shading normals.
@@ -993,6 +1036,18 @@ fn build_static_shape(
     colors: &[[u8; 4]],
     bodies: &[BoxBody<'_>],
     root: Option<RootTransform>,
+    material_flags: Option<(u32, u32)>,
+) -> Result<Vec<u8>> {
+    build_static_shape_sampled(shape, colors, bodies, root, material_flags, None)
+}
+
+fn build_static_shape_sampled(
+    shape: &StaticShape<'_>,
+    colors: &[[u8; 4]],
+    bodies: &[BoxBody<'_>],
+    root: Option<RootTransform>,
+    material_flags: Option<(u32, u32)>,
+    sampling: Option<StaticSampling>,
 ) -> Result<Vec<u8>> {
     validate(shape)?;
     ensure!(
@@ -1014,7 +1069,14 @@ fn build_static_shape(
     let mut blocks = vec![
         root_node,
         triangle_shape(shape, colors)?,
-        lighting_shader_property(!colors.is_empty(), 3),
+        {
+            let (flags_1, flags_2) = material_flags.unwrap_or(if colors.is_empty() {
+                (0, 0)
+            } else {
+                (1 << 3, 1 << 5)
+            });
+            lighting_shader_property_sampled(flags_1, flags_2, 3, sampling)
+        },
         texture_set(shape)?,
     ];
     let mut block_types = vec![
@@ -1349,6 +1411,20 @@ fn lighting_shader_property(colors: bool, texture_set: u32) -> Vec<u8> {
 }
 
 fn lighting_shader_property_with_flags(flags_1: u32, flags_2: u32, texture_set: u32) -> Vec<u8> {
+    lighting_shader_property_sampled(flags_1, flags_2, texture_set, None)
+}
+
+fn lighting_shader_property_sampled(
+    flags_1: u32,
+    flags_2: u32,
+    texture_set: u32,
+    sampling: Option<StaticSampling>,
+) -> Vec<u8> {
+    let sampling = sampling.unwrap_or(StaticSampling {
+        offset: [0.0; 2],
+        scale: [1.0; 2],
+        clamp_mode: 0,
+    });
     let mut block = Vec::with_capacity(100);
     push_u32(&mut block, SHADER_TYPE_DEFAULT);
     push_u32(&mut block, NULL_REF);
@@ -1356,16 +1432,15 @@ fn lighting_shader_property_with_flags(flags_1: u32, flags_2: u32, texture_set: 
     push_u32(&mut block, NULL_REF);
     push_u32(&mut block, 0);
     push_u32(&mut block, 0);
-    push_f32(&mut block, 0.0);
-    push_f32(&mut block, 0.0);
-    push_f32(&mut block, 1.0);
-    push_f32(&mut block, 1.0);
+    for value in sampling.offset.into_iter().chain(sampling.scale) {
+        push_f32(&mut block, value);
+    }
     push_u32(&mut block, texture_set);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 1.0);
-    push_u32(&mut block, 0);
+    push_u32(&mut block, sampling.clamp_mode);
     push_f32(&mut block, 1.0);
     push_f32(&mut block, 0.0);
     push_f32(&mut block, 80.0);

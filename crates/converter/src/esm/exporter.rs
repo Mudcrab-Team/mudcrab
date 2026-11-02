@@ -319,6 +319,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
 
     // Optional reference link and detail tables (db-schema.md, #269 gap 3).
     conn.execute_batch(crate::esm::reference_links::REFERENCE_LINK_TABLES_SQL)?;
+    super::object_materials::create_tables(conn)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the columns
     // later exports added, so a subset export can still insert into it.
     add_missing_columns(conn, "lights", LIGHT_DETAIL_COLUMNS)?;
@@ -552,6 +553,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
     for table in crate::esm::environment::ENVIRONMENT_TABLES
         .iter()
         .chain(crate::esm::reference_links::REFERENCE_LINK_TABLES.iter())
+        .chain(std::iter::once(&super::object_materials::TABLE))
     {
         tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
     }
@@ -763,6 +765,9 @@ fn export_records(
         let projection = runtime_projection(record, unresolved_fields);
         let record = projection.as_ref().unwrap_or(record);
         let view = SubrecordView::new(&record.subrecords);
+        if record.record_type == *b"STAT" {
+            super::object_materials::insert(&tx, master, record, &view)?;
+        }
         let vmad_bytes = view.find(b"VMAD");
         if let Some(vmad_bytes) = vmad_bytes {
             let parsed = parse_vmad(vmad_bytes, &record.record_type);

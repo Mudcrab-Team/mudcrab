@@ -27,6 +27,7 @@ mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
+mod object_materials;
 pub mod plugins_txt;
 pub mod projection_omissions;
 pub mod records;
@@ -719,6 +720,26 @@ fn remap_record_form_ids(
     record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
     let mut malformed_subrecords = Vec::new();
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
+        if record.record_type == *b"STAT" && tag.as_slice() == b"MODS" {
+            let Some(offsets) = object_materials::form_offsets(data) else {
+                warnings
+                    .skipped_optional(plugin_name, format!("STAT {source_id:08X}: malformed MODS"));
+                malformed_subrecords.push(index);
+                continue;
+            };
+            for offset in offsets {
+                let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                let resolved = remap_link(value).unwrap_or_else(|error| {
+                    warnings.skipped_optional(
+                        plugin_name,
+                        format!("STAT {source_id:08X} MODS reference {value:08X}: {error}"),
+                    );
+                    0
+                });
+                data[offset..offset + 4].copy_from_slice(&resolved.to_le_bytes());
+            }
+            continue;
+        }
         if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
             color_eyre::eyre::ensure!(data.len() >= 4, "truncated GRAS alternate textures");
             let count = u32::from_le_bytes(data[..4].try_into().unwrap());
