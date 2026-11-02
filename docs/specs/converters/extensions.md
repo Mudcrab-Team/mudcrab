@@ -104,11 +104,12 @@ that the payload matches the current core.
 
 Every input file path must be canonical and relative to the payload root, using `/` separators.
 Reject absolute paths, any colon (including a drive prefix), backslashes, control characters,
-and empty, `.` or `..` segments, including segments ending in a dot or space. A single trailing
-`/` is allowed for a directory ownership entry; it is not an empty interior segment. Reject
-noncanonical spellings rather than silently normalizing them before validation, overlap detection
-or hashing. Extension IDs and all declared table, index, file and glTF names must also be
-nonempty and contain no control characters.
+and empty, `.` or `..` segments, including segments ending in a dot or space. A single trailing `/` is allowed for a directory ownership
+entry; it is not an empty interior segment. Reject noncanonical spellings rather than silently
+normalizing them before validation, overlap detection or hashing. Extension IDs and all declared
+table, index, file and glTF names must also be nonempty and contain no control characters.
+The shared declaration check (`ExtensionEntry::validate_names`) enforces these file path rules, so a reader
+rejects a declaration the converter would refuse to hash; it is reported as an issue, never as present.
 
 An exact file entry must exist. A directory entry owns every file below that directory; an
 absent or empty directory contributes no files. Directory ownership overlaps any owned file or
@@ -141,7 +142,10 @@ declarations are dropped with a warning; refresh does not replace their hashes o
 Legacy door declarations are retired because their payload is now
 core. With no retained declarations, serialization omits `extensions`. Full conversion,
 metadata rebuild and asset repair refresh declarations after payload finalization and before
-saving the staged manifest. Metadata and repair reports retain refresh warnings.
+saving the staged manifest. Metadata and repair reports retain refresh warnings. A full conversion
+offers the previous pack's declarations to the refresh: one whose payload is valid in the staging tree is
+kept and its owned files are published with the pack, every other one is dropped with a warning in the
+report (also with `--invalidate-cache`), and such a warning makes the conversion incomplete.
 
 `refresh_manifest_with_finalized(manifest, output, finalized)` also accepts explicit entries
 from payload finalizers. The generic mechanism can hash and validate entries supplied by

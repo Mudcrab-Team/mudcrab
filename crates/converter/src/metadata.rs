@@ -21,8 +21,9 @@ use crate::{
     pipeline::{
         LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
         conversion_is_complete, discover, installed_archive_owners, non_mo2_archive_is_active,
-        overlay_loose_assets, publish_new_directory, sort_archives_by_load_order, staging_path,
-        validate_artifacts, write_streaming_cost_catalog,
+        overlay_loose_assets, publish_new_directory, report_projection_omissions,
+        sort_archives_by_load_order, staging_path, validate_artifacts,
+        write_streaming_cost_catalog,
     },
     records::addons::RuntimeSchemas,
 };
@@ -696,6 +697,7 @@ async fn rebuild_into(
         "rebuilt asset integration failed: {:?}",
         integration.issues
     );
+    report_projection_omissions(&mut report, &integration.projection_omissions);
     report.integration = Some(integration);
     report
         .artifacts
@@ -1367,8 +1369,8 @@ mod tests {
                 output_hash: hash_bytes(proven),
             },
         );
-        // A read-only parent prevents unlinking on Unix. On Windows a read-only attribute alone
-        // need not prevent removal, so hold a real handle that denies deletion while allowing writes.
+        // A read-only parent blocks unlink on Unix. On Windows, keep a shared-write handle
+        // without delete sharing: the old overwrite-then-unlink path could leave rejected bytes.
         let destination = staging.join(relative);
         let parent = destination.parent().unwrap().to_path_buf();
         fs::create_dir_all(&parent).unwrap();
@@ -1379,18 +1381,8 @@ mod tests {
             fs::set_permissions(path, permissions).unwrap();
         };
         set_readonly(parent.as_path(), true);
+        #[cfg(not(windows))]
         set_readonly(destination.as_path(), true);
-        #[cfg(windows)]
-        let occupant_guard = {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
-
-            fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .open(&destination)
-                .unwrap()
-        };
         // Root can unlink through a read-only parent; skip rather than assert rejection.
         #[cfg(unix)]
         if fs::remove_file(&destination).is_ok() {
@@ -1398,9 +1390,19 @@ mod tests {
             eprintln!("skipping: Unix permissions allow root to remove the fixture");
             return;
         }
+        #[cfg(windows)]
+        let removal_guard = {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&destination)
+                .unwrap()
+        };
         let result = copy_verified_assets(&source, &staging, &mut manifest, &mut Vec::new());
         #[cfg(windows)]
-        drop(occupant_guard);
+        drop(removal_guard);
         set_readonly(destination.as_path(), false);
         set_readonly(parent.as_path(), false);
         assert!(result.is_err(), "unremovable occupant must fail closed");

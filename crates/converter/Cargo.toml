@@ -36,7 +36,7 @@ project-wormhole-nif.workspace = true
 project-wormhole-shared = "0.1.0"
 project-wormhole-esm.workspace = true
 mlua.workspace = true
-zstd = "0.13"
+zstd = "0.14"
 # The encoder runs on native Vulkan, Metal or DX12 only (no GL, no WebGPU).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 tempfile = "3.20"

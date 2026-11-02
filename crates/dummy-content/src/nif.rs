@@ -1,7 +1,7 @@
 //! Deterministic NIF static-shape fixtures for Skyrim SE (`20.2.0.7`).
 //!
 //! The writer emits the minimal block set the converter renders:
-//! `BSFadeNode` → `BSTriShape` → `BSLightingShaderProperty` → `BSShaderTextureSet`.
+//! `BSFadeNode` â†’ `BSTriShape` â†’ `BSLightingShaderProperty` â†’ `BSShaderTextureSet`.
 //! Geometry is validated before serialization and the output is byte-stable
 //! for identical input.
 
@@ -127,12 +127,12 @@ pub enum SkinInstanceKind {
 }
 
 /// A deterministic legacy-skinned NIF: a `BSTriShape` bound to two bones through
-/// a `NiSkinInstance` (or `BSDismemberSkinInstance`) → `NiSkinData` →
+/// a `NiSkinInstance` (or `BSDismemberSkinInstance`) â†’ `NiSkinData` â†’
 /// `NiSkinPartition` chain.
 ///
-/// The block set is `BSFadeNode` → `NiNode` × 2 (bones) → `BSTriShape` → skin
-/// instance → `NiSkinData` → `NiSkinPartition`, plus `BSLightingShaderProperty`
-/// → `BSShaderTextureSet` so the material path stays exercised.
+/// The block set is `BSFadeNode` â†’ `NiNode` Ã— 2 (bones) â†’ `BSTriShape` â†’ skin
+/// instance â†’ `NiSkinData` â†’ `NiSkinPartition`, plus `BSLightingShaderProperty`
+/// â†’ `BSShaderTextureSet` so the material path stays exercised.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacySkin<'a> {
     /// Shape name stored in the NIF string table.
@@ -154,6 +154,17 @@ pub struct LegacySkin<'a> {
     /// out-of-range-joint case. An index outside the palette is written into
     /// the vertex buffers unchanged.
     pub joint_override: Option<[u8; 4]>,
+}
+
+/// The root `BSFadeNode`'s own local transform. Retail meshes such as
+/// `clutter/counterset/countercornerin01.nif` author one; Skyrim replaces it with the placing
+/// reference's transform.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RootTransform {
+    pub translation: [f32; 3],
+    /// Row-major, as the file stores it.
+    pub rotation: [f32; 9],
+    pub scale: f32,
 }
 
 /// Generates a minimal static NIF containing one triangle mesh.
@@ -185,7 +196,7 @@ pub fn static_shape_with_billboard(shape: &StaticShape<'_>, mode: u16) -> Result
 
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
-    build_static_shape(shape, colors, &[])
+    build_static_shape(shape, colors, &[], None)
 }
 
 /// Like [`static_shape`], plus one collision body per entry. Each body hangs off its own
@@ -195,7 +206,16 @@ pub fn static_shape_with_bodies(
     shape: &StaticShape<'_>,
     bodies: &[BoxBody<'_>],
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies)
+    build_static_shape(shape, &[], bodies, None)
+}
+
+/// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
+pub fn static_shape_with_root_transform(
+    shape: &StaticShape<'_>,
+    bodies: &[BoxBody<'_>],
+    root: RootTransform,
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], bodies, Some(root))
 }
 
 /// Generates an ordinary static NIF whose shape carries an authored segment table.
@@ -243,6 +263,7 @@ fn build_static_shape(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
     bodies: &[BoxBody<'_>],
+    root: Option<RootTransform>,
 ) -> Result<Vec<u8>> {
     validate(shape)?;
     ensure!(
@@ -257,8 +278,12 @@ fn build_static_shape(
     let first_body_block = 4_u32;
     let mut children = vec![1_u32];
     children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
+    let mut root_node = fade_node_with_children(&children);
+    if let Some(root) = root {
+        set_av_transform(&mut root_node, root);
+    }
     let mut blocks = vec![
-        fade_node_with_children(&children),
+        root_node,
         write_shape_block(&geometry(shape, colors), STATIC_SHADER_BLOCK)?,
         lighting_shader_property(STATIC_TEXTURE_SET_BLOCK, !colors.is_empty()),
         texture_set(shape.diffuse, shape.normal_texture)?,
@@ -691,7 +716,7 @@ struct Geometry<'a> {
 
 /// One shader float controller of a fixture effect shape.
 ///
-/// One entry becomes a `NiTimeController` → `NiFloatInterpolator` →
+/// One entry becomes a `NiTimeController` â†’ `NiFloatInterpolator` â†’
 /// `NiFloatData` triple, chained through `next_controller` in list order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FloatController<'a> {
@@ -712,7 +737,7 @@ pub struct FloatController<'a> {
 
 /// Generates a minimal effect-shader NIF whose shader property is animated.
 ///
-/// The block set is `BSFadeNode` → `BSTriShape` → `BSEffectShaderProperty`,
+/// The block set is `BSFadeNode` â†’ `BSTriShape` â†’ `BSEffectShaderProperty`,
 /// followed by one interpolator, one float data and one controller block per
 /// entry in `controllers`, in that order. The shader property's controller
 /// reference points at the first controller; each controller's `target` points
@@ -1856,7 +1881,7 @@ fn effect_shader_property(shape: &StaticShape<'_>, controller: u32) -> Result<Ve
     Ok(block)
 }
 
-/// An `NiTimeController` → `BSEffectShaderPropertyFloatController` block.
+/// An `NiTimeController` â†’ `BSEffectShaderPropertyFloatController` block.
 fn float_controller(
     controller: &FloatController<'_>,
     interpolator: u32,
@@ -2003,6 +2028,20 @@ fn push_av_object_with(out: &mut Vec<u8>, name: u32, collision_object: u32) {
     }
     out.extend_from_slice(&1.0f32.to_le_bytes());
     push_u32(out, collision_object);
+}
+
+/// Overwrites the transform [`push_av_object_with`] wrote at the start of `block`: translation,
+/// rotation and scale follow the name, extra data, controller and flags words.
+fn set_av_transform(block: &mut [u8], transform: RootTransform) {
+    let values = transform
+        .translation
+        .into_iter()
+        .chain(transform.rotation)
+        .chain([transform.scale]);
+    for (index, value) in values.enumerate() {
+        let offset = 16 + 4 * index;
+        block[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
 }
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {

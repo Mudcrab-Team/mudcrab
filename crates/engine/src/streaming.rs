@@ -220,6 +220,10 @@ pub struct StreamingWorld {
     /// Keep each dispatched payload accounted for after its cell leaves the wanted window.
     /// An entry survives channel delivery and deferral until the response is consumed.
     outstanding_cells: HashMap<CellKey, u64>,
+    /// The exterior grid square `plan_cells` measured this frame's window against, or `None` when
+    /// it had no camera to plan from. The lifecycle check compares against it to tell a root the
+    /// planner kept from one that only looks out of range because the camera moved since.
+    planned_center: Option<IVec2>,
     /// Responses for exterior cells with terrain that arrived while the merged terrain arrays were
     /// still loading, in arrival order. They are replayed, ahead of new responses, once the merged
     /// path is ready or refused; every other cell is committed without waiting.
@@ -506,6 +510,10 @@ pub struct StreamingMetrics {
     pub resident_static_colliders: usize,
     /// NIF models that explicitly have no physical collision.
     pub static_colliders_authored_absent: u64,
+    /// Placements whose record type is outside every collision tier while their model does carry
+    /// authored collision. Counted per placement, not per model, so a repeated model counts each
+    /// time it is placed.
+    pub static_colliders_excluded_authored: u64,
     /// Eligible fixed placements for which no supported collision could be made.
     pub static_colliders_skipped: u64,
     /// Placed clutter references simulated as dynamic Rapier bodies from authored physics data.
@@ -566,6 +574,14 @@ pub struct StreamingMetrics {
     pub orphaned_cell_roots: u64,
     pub missing_cell_roots: u64,
     pub out_of_range_cell_roots: u64,
+    /// Peak count of the roots `out_of_range_cell_roots` would count if it measured against the
+    /// centre `plan_cells` used instead of the camera read at check time. Diagnostic only: it is
+    /// not part of `streaming_invariant_failures` and gates nothing.
+    pub out_of_range_vs_planned_roots: u64,
+    /// Largest per-axis distance, in cells, between the planner's centre and the check's centre.
+    pub max_plan_check_center_offset: i32,
+    /// Lifecycle checks that ran without a centre from `plan_cells` because it had no camera.
+    pub invariant_checks_without_plan: u64,
     pub streaming_invariant_failures: u64,
     pub origin_rebases: u64,
     pub streaming_fixture_validated: bool,
@@ -604,6 +620,8 @@ enum StaticCollisionDecision {
     Clutter(Box<ClutterSpec>),
     /// A movable-type model with no dynamic body: it keeps no collision, as before.
     ClutterNone,
+    /// An ineligible record type whose model does carry authored collision.
+    ExcludedWithAuthored,
     /// A movable-type model whose dynamic body could not be built. It gets no collider at all.
     ClutterSkipped(String),
 }
@@ -863,6 +881,7 @@ fn plan_cells(
     commit_budget.lod_priority = !commit_budget.lod_priority;
     commit_budget.reserved_for_lod = false;
     let Ok(camera) = camera.single() else {
+        streaming.planned_center = None;
         return;
     };
     // Screenshot runs frame the configured start cell from an artistic
@@ -871,6 +890,7 @@ fn plan_cells(
     // the framed cells empty; anchor on the start cell instead. Interactive
     // runs keep following the camera.
     let center = window_center(&config, camera.translation, origin.0);
+    streaming.planned_center = Some(center);
     let wanted = wanted_cells(&space, config.worldspace_id, center, config.stream_radius);
     let mut ordered: Vec<_> = wanted.iter().copied().collect();
     let controlled = config.streaming_controls_enabled();
@@ -1439,6 +1459,14 @@ pub(crate) fn streaming_center(translation: Vec3, origin: IVec2) -> IVec2 {
     )
 }
 
+/// Whole cells `update_render_origin` moves the origin by for a camera at `translation`.
+fn rebase_shift(translation: Vec3) -> IVec2 {
+    IVec2::new(
+        (translation.x / CELL_SIZE).trunc() as i32,
+        (-translation.z / CELL_SIZE).trunc() as i32,
+    )
+}
+
 /// Whether a loaded cell stays loaded. Exteriors fall out of the radius the camera carries; an
 /// interior has no grid square to fall out of, so it stays until something unloads it (a load door
 /// crossing unloads every cell of the space it leaves, see [`unload_all_cells_now`]).
@@ -1449,6 +1477,25 @@ fn cell_within_unload_radius(key: CellKey, center: IVec2, radius: i32) -> bool {
         }
         CellKey::Interior(_) => true,
     }
+}
+
+/// The grid squares of the non-retiring exterior roots more than `unload_radius` cells from
+/// `center` on either axis: the roots the lifecycle check reports as out of range.
+fn roots_outside_window<'a>(
+    roots: &'a [(Entity, &'a CellRef, Option<&'a ExteriorCellGrid>)],
+    retiring: &'a HashSet<Entity>,
+    center: IVec2,
+    unload_radius: i32,
+) -> impl Iterator<Item = IVec2> + 'a {
+    roots
+        .iter()
+        // A retiring root is outside the radius by construction: it is waiting for its turn in
+        // the unload budget, which [`despawn_cells`] bounds, so its lag is not a violation.
+        .filter(move |(entity, _, _)| !retiring.contains(entity))
+        .filter_map(|(_, _, grid)| grid.map(|grid| grid.0))
+        .filter(move |grid| {
+            (grid.x - center.x).abs() > unload_radius || (grid.y - center.y).abs() > unload_radius
+        })
 }
 
 /// Build a cell hierarchy and request its model scenes, recording their IDs for optional tracing.
@@ -1925,10 +1972,27 @@ fn static_proxy_eligible(record_type: Option<&str>, path: &str) -> bool {
     }
 }
 
+/// How a fixed record type may receive static collision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FixedCollisionTier {
+    /// Authored shapes, then the verified render proxy.
+    Full,
+    /// Authored fixed/keyframed bodies only; no render proxy; dynamic bodies ignored.
+    AuthoredOnly,
+}
+
+fn fixed_collision_tier(record_type: Option<&str>) -> Option<FixedCollisionTier> {
+    match record_type {
+        Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
+        Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
+        _ => None,
+    }
+}
+
 /// Placed furniture is fixed in the world, but may use only its authored NIF shape.
 /// Render proxies remain restricted to the verified STAT/TREE families above.
 fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
-    matches!(record_type, Some("STAT" | "TREE" | "FURN"))
+    fixed_collision_tier(record_type).is_some()
 }
 
 /// Base record types whose placed references may become dynamic bodies (#104 phase a). These are
@@ -1936,8 +2000,9 @@ fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
 /// one of them remains fixed.
 ///
 /// `CONT`, `MSTT`, `ACTI`, `FLOR`, `DOOR` and `FURN` are deliberately left out of this slice:
-/// barrels and chests (`CONT`), ingredient plants (`FLOR`) and the ambiguous `ACTI` props stay
-/// fixed for now even when their NIF carries simulated dynamics.
+/// barrels and chests (`CONT`) and ingredient plants (`FLOR`) stay fixed for now even when their
+/// NIF carries simulated dynamics. `ACTI` keeps its fixed and keyframed bodies on the static path
+/// instead, so only its dynamic bodies are left unsimulated.
 fn dynamic_clutter_record_eligible(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -2130,6 +2195,89 @@ fn collider_parts_from_authored(
     asset: &CollisionAsset,
 ) -> Result<Vec<AuthoredColliderPart>, String> {
     asset.shapes.iter().map(collider_part_from_shape).collect()
+}
+
+/// Decide a fixed record's static collision from its asset alone.
+///
+/// `Full` keeps every authored shape, whatever its body's kind, which is what fixed record types
+/// have always done. `AuthoredOnly` keeps a shape unless every body that owns it is dynamic, so a
+/// prop's fixed and keyframed bodies stay solid while its simulated parts are left to nothing.
+fn static_decision_from_asset(
+    tier: FixedCollisionTier,
+    asset: &CollisionAsset,
+) -> StaticCollisionDecision {
+    match tier {
+        FixedCollisionTier::Full => match collider_parts_from_authored(asset) {
+            Ok(parts) if !parts.is_empty() => {
+                StaticCollisionDecision::Authored(parts, asset.skipped.clone())
+            }
+            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
+            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
+            Err(reason) => StaticCollisionDecision::Skipped(reason),
+        },
+        FixedCollisionTier::AuthoredOnly => {
+            let mut owned_by_fixed = vec![false; asset.shapes.len()];
+            let mut owned_by_dynamic = vec![false; asset.shapes.len()];
+            for body in &asset.bodies {
+                let dynamic = body.kind == BodyKind::Dynamic;
+                for shape_index in &body.shapes {
+                    let Some(index) = usize::try_from(*shape_index)
+                        .ok()
+                        .filter(|index| *index < asset.shapes.len())
+                    else {
+                        return StaticCollisionDecision::Skipped(
+                            "authored collision body lists a shape that does not exist".to_owned(),
+                        );
+                    };
+                    if dynamic {
+                        owned_by_dynamic[index] = true;
+                    } else {
+                        owned_by_fixed[index] = true;
+                    }
+                }
+            }
+            let mut parts = Vec::new();
+            let mut kept = vec![false; asset.shapes.len()];
+            for (index, shape) in asset.shapes.iter().enumerate() {
+                if owned_by_dynamic[index] && !owned_by_fixed[index] {
+                    continue;
+                }
+                match collider_part_from_shape(shape) {
+                    Ok(part) => {
+                        kept[index] = true;
+                        parts.push(part);
+                    }
+                    Err(reason) => return StaticCollisionDecision::Skipped(reason),
+                }
+            }
+            let lost_bodies = asset
+                .bodies
+                .iter()
+                .filter(|body| {
+                    body.kind == BodyKind::Dynamic
+                        && body
+                            .shapes
+                            .iter()
+                            .any(|index| !kept.get(*index as usize).copied().unwrap_or(false))
+                })
+                .count();
+            if !parts.is_empty() {
+                let mut notes = asset.skipped.clone();
+                if lost_bodies > 0 {
+                    notes.push(format!(
+                        "{lost_bodies} dynamic bodies left unsimulated on a fixed record"
+                    ));
+                }
+                StaticCollisionDecision::Authored(parts, notes)
+            } else if asset.skipped.is_empty() {
+                // Nothing was dropped and nothing failed to convert: the tier is the whole reason
+                // this record has no shapes, which is a policy outcome rather than a failure.
+                StaticCollisionDecision::AuthoredAbsent
+            } else {
+                StaticCollisionDecision::Skipped(asset.skipped.join("; "))
+            }
+        }
+    }
 }
 
 fn collider_part_from_shape(shape: &CollisionShape) -> Result<AuthoredColliderPart, String> {
@@ -2459,14 +2607,14 @@ fn static_collision_from_hierarchy(
     materials: &Assets<StandardMaterial>,
 ) -> StaticCollisionDecision {
     match authored_collision_from_hierarchy(root, children, scene_extras) {
-        Ok(Some(asset)) => match collider_parts_from_authored(&asset) {
-            Ok(parts) if !parts.is_empty() => {
-                StaticCollisionDecision::Authored(parts, asset.skipped)
-            }
-            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
-            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
-            Err(reason) => StaticCollisionDecision::Skipped(reason),
-        },
+        // Only a tiered record type reaches this path, so a missing tier is a broken invariant
+        // rather than a case to fall back on: the fallback would hand a record the shapes its
+        // tier exists to withhold.
+        Ok(Some(asset)) => static_decision_from_asset(
+            fixed_collision_tier(record_type)
+                .expect("static collision is only built for a tiered record type"),
+            &asset,
+        ),
         Ok(None) if static_proxy_eligible(record_type, path) => {
             match static_proxy_from_hierarchy(
                 path, root, children, transforms, primitives, meshes, materials,
@@ -2480,6 +2628,22 @@ fn static_collision_from_hierarchy(
         }
         Ok(None) => StaticCollisionDecision::LegacyExcluded,
         Err(reason) => StaticCollisionDecision::Skipped(reason),
+    }
+}
+
+/// Read a model once for a record type that no collision tier accepts, reporting whether the
+/// exclusion silently drops authored collision. A malformed asset counts as no authored collision
+/// so it cannot inflate the report.
+fn exclusion_decision_from_hierarchy(
+    root: Entity,
+    children: &Query<&Children>,
+    scene_extras: &Query<&GltfSceneExtras>,
+) -> StaticCollisionDecision {
+    match authored_collision_from_hierarchy(root, children, scene_extras) {
+        Ok(Some(asset)) if !asset.shapes.is_empty() => {
+            StaticCollisionDecision::ExcludedWithAuthored
+        }
+        Ok(Some(_)) | Ok(None) | Err(_) => StaticCollisionDecision::LegacyExcluded,
     }
 }
 
@@ -3166,6 +3330,7 @@ fn track_asset_readiness(
                     // A fixed record type never asks for the clutter decision, so these arms cannot
                     // be reached on this path; the movable path above owns them.
                     StaticCollisionDecision::LegacyExcluded
+                    | StaticCollisionDecision::ExcludedWithAuthored
                     | StaticCollisionDecision::Clutter(_)
                     | StaticCollisionDecision::ClutterNone
                     | StaticCollisionDecision::ClutterSkipped(_) => {}
@@ -3174,6 +3339,30 @@ fn track_asset_readiness(
                             warn!(model = %pending.path, %reason, "static collision skipped");
                         }
                         note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
+                }
+            }
+            // A record type outside every tier used to drop authored collision without a trace.
+            // Report the placements that do carry it so the exclusion is visible in metrics.
+            if pending.static_physics
+                && fixed_collision_tier(pending.base_record_type.as_deref()).is_none()
+                && !dynamic_clutter_record_eligible(pending.base_record_type.as_deref())
+            {
+                let key = (pending.base_record_type.clone(), pending.path.clone());
+                let first_placement = !static_cache.0.contains_key(&key);
+                let decision = static_cache.0.entry(key).or_insert_with(|| {
+                    exclusion_decision_from_hierarchy(entity, &children, &scene_extras)
+                });
+                if matches!(decision, StaticCollisionDecision::ExcludedWithAuthored) {
+                    metrics.static_colliders_excluded_authored =
+                        metrics.static_colliders_excluded_authored.saturating_add(1);
+                    profiler.increment("physics/static_excluded_authored", 1);
+                    if first_placement {
+                        debug!(
+                            record_type = ?pending.base_record_type,
+                            model = %pending.path,
+                            "authored collision ignored: record type not eligible"
+                        );
                     }
                 }
             }
@@ -4805,10 +4994,7 @@ fn update_render_origin(
     let Ok(mut camera) = camera.single_mut() else {
         return;
     };
-    let shift = IVec2::new(
-        (camera.translation.x / CELL_SIZE).trunc() as i32,
-        (-camera.translation.z / CELL_SIZE).trunc() as i32,
-    );
+    let shift = rebase_shift(camera.translation);
     if shift == IVec2::ZERO {
         return;
     }
@@ -4906,22 +5092,23 @@ fn validate_streaming_lifecycle(
     let duplicate_roots = roots_by_cell.values().filter(|count| **count > 1).count() as u64;
     let orphaned_roots = root_entities.difference(&resident_entities).count() as u64;
     let missing_roots = resident_entities.difference(&root_entities).count() as u64;
-    let out_of_range_roots = camera.single().map_or(0, |camera| {
-        // Must match plan_cells: screenshot runs anchor streaming on the
-        // start cell, not the camera.
-        let center = window_center(&config, camera.translation, origin.0);
-        root_entries
-            .iter()
-            // A retiring root is outside the radius by construction: it is waiting for its turn in
-            // the unload budget, which [`despawn_cells`] bounds, so its lag is not a violation.
-            .filter(|(entity, _, _)| !retiring_entities.contains(entity))
-            .filter_map(|(_, _, grid)| *grid)
-            .filter(|grid| {
-                (grid.0.x - center.x).abs() > config.unload_radius
-                    || (grid.0.y - center.y).abs() > config.unload_radius
-            })
-            .count() as u64
+    let unload_radius = config.unload_radius;
+    let camera_translation = camera.single().ok().map(|camera| camera.translation);
+    // Must match plan_cells: screenshot runs anchor streaming on the start cell, not the camera.
+    let current_center =
+        camera_translation.map(|translation| window_center(&config, translation, origin.0));
+    let planned_center = streaming.planned_center;
+    let out_of_range_roots = current_center.map_or(0, |center| {
+        roots_outside_window(&root_entries, &retiring_entities, center, unload_radius).count()
+            as u64
     });
+    let out_of_range_vs_planned = planned_center.map_or(0, |center| {
+        roots_outside_window(&root_entries, &retiring_entities, center, unload_radius).count()
+            as u64
+    });
+    let plan_check_offset = planned_center
+        .zip(current_center)
+        .map(|(planned, current)| current - planned);
     let violations = duplicate_roots + orphaned_roots + missing_roots + out_of_range_roots;
 
     metrics.active_requests = active_requests;
@@ -4932,12 +5119,49 @@ fn validate_streaming_lifecycle(
     metrics.orphaned_cell_roots = metrics.orphaned_cell_roots.max(orphaned_roots);
     metrics.missing_cell_roots = metrics.missing_cell_roots.max(missing_roots);
     metrics.out_of_range_cell_roots = metrics.out_of_range_cell_roots.max(out_of_range_roots);
+    metrics.out_of_range_vs_planned_roots = metrics
+        .out_of_range_vs_planned_roots
+        .max(out_of_range_vs_planned);
+    if let Some(offset) = plan_check_offset {
+        metrics.max_plan_check_center_offset = metrics
+            .max_plan_check_center_offset
+            .max(offset.abs().max_element());
+    }
+    if planned_center.is_none() {
+        metrics.invariant_checks_without_plan =
+            metrics.invariant_checks_without_plan.saturating_add(1);
+    }
     if violations > metrics.streaming_invariant_failures {
+        // The first offending roots measured against the check-time centre, each with its
+        // distance from both centres: one trailing column is drift, scattered cells are a leak.
+        let sample: Vec<_> = current_center
+            .map(|center| {
+                roots_outside_window(&root_entries, &retiring_entities, center, unload_radius)
+                    .take(8)
+                    .map(|grid| {
+                        (
+                            grid,
+                            (grid - center).abs().max_element(),
+                            planned_center.map(|planned| (grid - planned).abs().max_element()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         error!(
             duplicate_roots,
             orphaned_roots,
             missing_roots,
             out_of_range_roots,
+            out_of_range_vs_planned,
+            planned_center = ?planned_center,
+            current_center = ?current_center,
+            plan_check_offset = ?plan_check_offset,
+            camera_translation = ?camera_translation,
+            origin = ?origin.0,
+            stream_radius = config.stream_radius,
+            unload_radius,
+            sample = ?sample,
             "streaming lifecycle invariant failed"
         );
         profiler.event("streaming", "invariant_failed", None);
@@ -5188,6 +5412,182 @@ mod tests {
                         | StaticCollisionDecision::AuthoredAbsent
                 ));
             }
+        }
+    }
+
+    fn authored_box_shape() -> CollisionShape {
+        CollisionShape::Box {
+            center: [0.0, 1.0, 0.0],
+            half_extents: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn authored_mesh_shape() -> CollisionShape {
+        CollisionShape::Mesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+        }
+    }
+
+    fn authored_hull_shape() -> CollisionShape {
+        CollisionShape::Hull {
+            points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+    }
+
+    fn authored_asset(shapes: Vec<CollisionShape>, bodies: Vec<CollisionBody>) -> CollisionAsset {
+        CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes,
+            skipped: Vec::new(),
+            bodies,
+        }
+    }
+
+    #[test]
+    fn fixed_collision_tier_splits_fixed_and_authored_only_records() {
+        assert_eq!(
+            fixed_collision_tier(Some("ACTI")),
+            Some(FixedCollisionTier::AuthoredOnly)
+        );
+        for record in ["STAT", "TREE", "FURN"] {
+            assert_eq!(
+                fixed_collision_tier(Some(record)),
+                Some(FixedCollisionTier::Full),
+                "{record}"
+            );
+        }
+        for record in ["DOOR", "MSTT", "FLOR", "CONT", "MISC"] {
+            assert_eq!(fixed_collision_tier(Some(record)), None, "{record}");
+        }
+        assert_eq!(fixed_collision_tier(None), None);
+        assert!(fixed_collision_record_eligible(Some("ACTI")));
+    }
+
+    #[test]
+    fn acti_never_receives_a_render_proxy() {
+        let path = "meshes/architecture/whiterun/wrdrawbridge01.glb";
+        assert!(static_proxy_eligible(Some("STAT"), path));
+        assert!(!static_proxy_eligible(Some("ACTI"), path));
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_owned_by_fixed_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_mesh_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+                clutter_body(BodyKind::Fixed, vec![0, 1], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("fixed bodies must keep their shapes"),
+        }
+    }
+
+    #[test]
+    fn authored_only_drops_shapes_owned_only_by_dynamic_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(
+                    notes,
+                    vec!["1 dynamic bodies left unsimulated on a fixed record".to_owned()]
+                );
+            }
+            _ => panic!("the fixed body must stay solid"),
+        }
+    }
+
+    #[test]
+    fn authored_only_ignores_a_dynamic_only_model_without_skipping_it() {
+        let asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        let decision = static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset);
+        assert!(matches!(decision, StaticCollisionDecision::AuthoredAbsent));
+    }
+
+    #[test]
+    fn authored_only_still_reports_a_converter_failure_on_a_dynamic_only_model() {
+        let mut asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        asset
+            .skipped
+            .push("block 4: collision target is not exported".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("not exported"), "{reason}");
+            }
+            _ => panic!("a converter failure must not be reported as an authored absence"),
+        }
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_of_a_version_one_asset() {
+        let mut asset = authored_asset(vec![authored_box_shape()], Vec::new());
+        asset.version = 1;
+        asset.shapes.push(authored_mesh_shape());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a version one asset has no dynamic ownership"),
+        }
+    }
+
+    #[test]
+    fn authored_only_skips_a_body_that_names_a_missing_shape() {
+        let asset = authored_asset(
+            vec![authored_box_shape()],
+            vec![clutter_body(BodyKind::Fixed, vec![0, 5], true)],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("does not exist"), "{reason}");
+            }
+            _ => panic!("an out-of-range shape index must be reported"),
+        }
+    }
+
+    #[test]
+    fn full_tier_keeps_dynamic_body_shapes_on_a_fixed_record() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::Full, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a full-tier fixed record keeps every authored shape"),
         }
     }
 
@@ -5925,6 +6325,168 @@ mod tests {
 
     fn streaming_metrics(app: &App) -> StreamingMetrics {
         app.world().resource::<StreamingMetrics>().clone()
+    }
+
+    /// A camera move to apply between the plan and the check, once.
+    #[derive(Resource, Default)]
+    struct MidFrameShift(Option<IVec2>);
+
+    /// A resident root to commit between the plan and the check, once.
+    #[derive(Resource, Default)]
+    struct MidFrameLeak(Option<IVec2>);
+
+    fn apply_mid_frame_shift(
+        mut shift: ResMut<MidFrameShift>,
+        mut camera: Query<&mut Transform, With<StreamingCamera>>,
+    ) {
+        let Some(shift) = shift.0.take() else {
+            return;
+        };
+        let mut transform = camera.single_mut().unwrap();
+        transform.translation.x += shift.x as f32 * CELL_SIZE;
+        transform.translation.z -= shift.y as f32 * CELL_SIZE;
+    }
+
+    fn inject_mid_frame_leak(world: &mut World) {
+        let Some(grid) = world.resource_mut::<MidFrameLeak>().0.take() else {
+            return;
+        };
+        let root = world
+            .spawn((
+                CellRef(cell_id_of(grid.x, grid.y)),
+                StreamedCellRoot,
+                ExteriorCellGrid(grid),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        world
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(exterior_key(grid.x, grid.y), CellStatus::Resident { root });
+    }
+
+    /// [`streaming_test_app`] with hooks that act after `plan_cells` and before the check, where
+    /// no production system runs for a static interactive camera.
+    fn mid_frame_test_app() -> (App, tempfile::TempDir) {
+        let (mut app, directory) = streaming_test_app(EngineConfig {
+            stream_radius: 2,
+            unload_radius: 3,
+            ..default()
+        });
+        app.init_resource::<MidFrameShift>()
+            .init_resource::<MidFrameLeak>()
+            .add_systems(
+                Update,
+                (apply_mid_frame_shift, inject_mid_frame_leak)
+                    .after(plan_cells)
+                    .before(validate_streaming_lifecycle),
+            );
+        (app, directory)
+    }
+
+    /// The radius-2 window around `center`, all resident.
+    fn spawn_radius_two_window(app: &mut App, center: IVec2) {
+        for grid_y in (center.y - 2)..=(center.y + 2) {
+            for grid_x in (center.x - 2)..=(center.x + 2) {
+                spawn_mock_cell(app, grid_x, grid_y, true);
+            }
+        }
+    }
+
+    #[test]
+    fn a_static_camera_keeps_the_plan_and_check_centers_equal() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        for _ in 0..3 {
+            app.update();
+        }
+
+        assert_eq!(
+            app.world().resource::<StreamingWorld>().planned_center,
+            Some(start)
+        );
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 0);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 0);
+        assert_eq!(metrics.max_plan_check_center_offset, 0);
+        assert_eq!(metrics.streaming_invariant_failures, 0);
+        assert_eq!(metrics.invariant_checks_without_plan, 0);
+    }
+
+    #[test]
+    fn a_mid_frame_camera_crossing_is_measured_as_plan_drift() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        app.update();
+
+        move_camera(&mut app, IVec2::X);
+        app.world_mut().resource_mut::<MidFrameShift>().0 = Some(IVec2::X);
+        app.update();
+
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 5);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 0);
+        assert_eq!(metrics.max_plan_check_center_offset, 1);
+        assert_eq!(metrics.streaming_invariant_failures, 5);
+
+        app.update();
+        let settled = streaming_metrics(&app);
+        assert_eq!(settled.out_of_range_cell_roots, 5);
+        assert_eq!(settled.out_of_range_vs_planned_roots, 0);
+    }
+
+    #[test]
+    fn a_root_committed_outside_the_planned_window_is_measured_as_a_leak() {
+        let start = IVec2::new(5, -12);
+        let (mut app, _directory) = mid_frame_test_app();
+        spawn_camera(&mut app, start);
+        spawn_radius_two_window(&mut app, start);
+        app.update();
+
+        app.world_mut().resource_mut::<MidFrameLeak>().0 = Some(IVec2::new(10, 0));
+        app.update();
+
+        let metrics = streaming_metrics(&app);
+        assert_eq!(metrics.out_of_range_cell_roots, 1);
+        assert_eq!(metrics.out_of_range_vs_planned_roots, 1);
+        assert_eq!(metrics.max_plan_check_center_offset, 0);
+        assert_eq!(metrics.streaming_invariant_failures, 1);
+    }
+
+    #[test]
+    fn a_render_origin_rebase_does_not_move_the_streaming_center() {
+        for origin in [IVec2::ZERO, IVec2::new(5, -12), IVec2::new(-40, 37)] {
+            for (x, z) in [
+                (2048.0, -2048.0),
+                (4096.0, 0.0),
+                (0.0, -4096.0),
+                (-4096.0, 4096.0),
+                (8192.0, -12288.0),
+                (4095.999, -4095.999),
+                (4096.001, 0.5),
+                (-0.001, 0.001),
+                (12.0, -20.0),
+            ] {
+                let translation = Vec3::new(x, 0.0, z);
+                let shift = rebase_shift(translation);
+                let rebased = translation
+                    - Vec3::new(
+                        shift.x as f32 * CELL_SIZE,
+                        0.0,
+                        -(shift.y as f32) * CELL_SIZE,
+                    );
+                assert_eq!(
+                    streaming_center(rebased, origin + shift),
+                    streaming_center(translation, origin),
+                    "translation {translation:?} origin {origin:?}"
+                );
+            }
+        }
     }
 
     #[test]

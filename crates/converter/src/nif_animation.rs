@@ -40,12 +40,15 @@
 //! quaternions; every other rotation type stores quaternion keys. A `KeyGroup` is
 //! `u32 Num Keys, u32 Key Type` followed by its keys, and a key is `f32 Time, <value>` plus
 //! `f32 Forward, f32 Backward` for `QUADRATIC_KEY` or three TBC floats for `TBC_KEY`. Times are
-//! seconds from the sequence's start; euler values are radians about the node's own axes.
+//! on the sequence's own clock, which a `NiControllerSequence` plays from its start time to its
+//! stop time at its frequency; euler values are radians about the node's own axes.
 //!
 //! One more shape is worth naming: a `NiTransformInterpolator`'s own translation/rotation/scale
 //! are the "invalid" sentinel `-FLT_MAX` on animated doors, so the node's rest transform in the
 //! exported scene *is* the pose and the curves are absolute - the curve at t = 0 equals the
-//! node's rest transform.
+//! node's rest transform. A component that is set holds that value instead (a sequence can hold a
+//! node away from its scene pose, with or without a data block); it is published as a held
+//! channel wherever the keys do not animate that component.
 //!
 //! Translation and scale retain their authored interpolation: CONST_KEY emits STEP, linear keys
 //! emit LINEAR, and quadratic/TBC keys emit CUBICSPLINE with time-normalized derivatives.
@@ -67,7 +70,7 @@ use std::{
 };
 
 /// Per-kind mesh cache identity: source quaternion order, held endpoints and bounded rotation grids.
-pub(crate) const PRODUCER_VERSION: u32 = 6;
+pub(crate) const PRODUCER_VERSION: u32 = 7;
 
 /// Sampling rate of a baked rotation channel, in samples per second.
 const ROTATION_SAMPLES_PER_SECOND: f32 = 30.0;
@@ -783,8 +786,244 @@ fn validate(keys: &TransformKeys) -> Result<()> {
 /// One `NiControllerSequence`, reduced to what a clip needs.
 struct SequenceSpec {
     name: String,
-    stop_time: f32,
+    window: SequenceWindow,
     targets: Vec<SequenceTarget>,
+}
+
+/// The slice of key time one `NiControllerSequence` plays, and how fast it plays it.
+///
+/// nif.xml stores `Frequency`, `Start Time` and `Stop Time` after the sequence's cycle type. Key
+/// times are in the sequence's own clock; playback maps elapsed seconds `r` to key time
+/// `start + r * frequency` and holds at `stop`, so a clip lasts `(stop - start) / frequency`
+/// seconds and its curves must be cut to `[start, stop]`, shifted to begin at zero and divided by
+/// the frequency. Cubic derivatives are per second of key time, so they are multiplied by it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SequenceWindow {
+    start: f32,
+    stop: f32,
+    frequency: f32,
+}
+
+impl SequenceWindow {
+    fn new(start: f32, stop: f32, frequency: f32) -> Result<Self> {
+        ensure!(
+            start.is_finite() && stop.is_finite() && frequency.is_finite(),
+            "NiControllerSequence start {start}, stop {stop} or frequency {frequency} is not finite"
+        );
+        ensure!(
+            frequency > 0.0,
+            "NiControllerSequence frequency {frequency} does not advance the sequence clock"
+        );
+        ensure!(
+            stop >= start,
+            "NiControllerSequence stops at {stop}, before it starts at {start}"
+        );
+        let window = Self {
+            start,
+            stop,
+            frequency,
+        };
+        ensure!(
+            window.duration().is_finite(),
+            "NiControllerSequence duration ({stop} - {start}) / {frequency} overflows"
+        );
+        Ok(window)
+    }
+
+    /// Playback length in seconds.
+    fn duration(self) -> f32 {
+        (self.stop - self.start) / self.frequency
+    }
+
+    /// Clip time, in seconds, of a key time. Exact for a unit-frequency window starting at zero.
+    fn local(self, time: f32) -> f32 {
+        if time == self.stop {
+            return self.duration();
+        }
+        (time - self.start) / self.frequency
+    }
+
+    fn apply_translation(self, curve: &Vec3Curve) -> Vec3Curve {
+        let (keys, tangents) = self.apply_numeric(curve.key_type, &curve.keys, &curve.tangents);
+        Vec3Curve {
+            key_type: curve.key_type,
+            keys,
+            tangents,
+        }
+    }
+
+    fn apply_scalar(self, curve: &ScalarCurve) -> ScalarCurve {
+        let keys: Vec<_> = curve
+            .keys
+            .iter()
+            .map(|(time, value)| (*time, [*value]))
+            .collect();
+        let tangents: Vec<_> = curve
+            .tangents
+            .iter()
+            .map(|(incoming, outgoing)| ([*incoming], [*outgoing]))
+            .collect();
+        let (keys, tangents) = self.apply_numeric(curve.key_type, &keys, &tangents);
+        ScalarCurve {
+            key_type: curve.key_type,
+            keys: keys
+                .into_iter()
+                .map(|(time, [value])| (time, value))
+                .collect(),
+            tangents: tangents
+                .into_iter()
+                .map(|([incoming], [outgoing])| (incoming, outgoing))
+                .collect(),
+        }
+    }
+
+    /// Which keys stay, and whether the cut needs a new key at the window's start or end to keep
+    /// the value the removed keys gave the curve there.
+    ///
+    /// A curve that never leaves the window is left as authored: the sampler already holds its
+    /// first and last values. A window between keys needs both boundary samples; a window
+    /// wholly outside the keyed range is a hold, represented by one sample at its start.
+    fn cut(self, times: impl Iterator<Item = f32>) -> Cut {
+        let mut keep = Vec::new();
+        let mut before = false;
+        let mut after = false;
+        let mut total = 0usize;
+        let mut first = None;
+        let mut last = None;
+        for (index, time) in times.enumerate() {
+            total += 1;
+            if time < self.start {
+                before = true;
+            } else if time > self.stop {
+                after = true;
+            } else {
+                keep.push(index);
+                first.get_or_insert(time);
+                last = Some(time);
+            }
+        }
+        if total > 0 && keep.is_empty() {
+            return Cut {
+                keep,
+                at_start: true,
+                at_end: before && after,
+            };
+        }
+        Cut {
+            keep,
+            at_start: before && first != Some(self.start),
+            at_end: after && last != Some(self.stop),
+        }
+    }
+
+    fn apply_numeric<const N: usize>(
+        self,
+        key_type: KeyType,
+        keys: &[(f32, [f32; N])],
+        tangents: &[Tangents<N>],
+    ) -> (Vec<(f32, [f32; N])>, Vec<Tangents<N>>) {
+        let cut = self.cut(keys.iter().map(|key| key.0));
+        let cubic = key_type.is_cubic() && tangents.len() == keys.len();
+        let per_clip_second = |(incoming, outgoing): Tangents<N>| -> Tangents<N> {
+            (
+                incoming.map(|value| value * self.frequency),
+                outgoing.map(|value| value * self.frequency),
+            )
+        };
+        let mut out_keys = Vec::with_capacity(cut.keep.len() + 2);
+        let mut out_tangents = Vec::new();
+        let boundary = |time: f32| {
+            let (value, derivative) = numeric_at(key_type, keys, tangents, cubic, time);
+            (
+                (self.local(time), value),
+                per_clip_second((derivative, derivative)),
+            )
+        };
+        if cut.at_start {
+            let (key, tangent) = boundary(self.start);
+            out_keys.push(key);
+            if cubic {
+                out_tangents.push(tangent);
+            }
+        }
+        for &index in &cut.keep {
+            out_keys.push((self.local(keys[index].0), keys[index].1));
+            if cubic {
+                out_tangents.push(per_clip_second(tangents[index]));
+            }
+        }
+        if cut.at_end {
+            let (key, tangent) = boundary(self.stop);
+            out_keys.push(key);
+            if cubic {
+                out_tangents.push(tangent);
+            }
+        }
+        (out_keys, out_tangents)
+    }
+}
+
+/// The result of cutting one curve's keys to a [`SequenceWindow`].
+struct Cut {
+    keep: Vec<usize>,
+    at_start: bool,
+    at_end: bool,
+}
+
+/// A numeric curve's value and its derivative per key-time second at `time`.
+///
+/// Outside the keyed range the curve holds, so the derivative is zero there; STEP and LINEAR
+/// curves carry no tangents, and a cubic mid-segment point takes the segment's Hermite derivative.
+fn numeric_at<const N: usize>(
+    key_type: KeyType,
+    keys: &[(f32, [f32; N])],
+    tangents: &[Tangents<N>],
+    cubic: bool,
+    time: f32,
+) -> ([f32; N], [f32; N]) {
+    let (Some(&(first_time, first)), Some(&(last_time, last))) = (keys.first(), keys.last()) else {
+        return ([0.0; N], [0.0; N]);
+    };
+    if time <= first_time {
+        return (first, [0.0; N]);
+    }
+    if time >= last_time {
+        return (last, [0.0; N]);
+    }
+    let (index, blend) = bracket(keys, time);
+    let (left_time, left) = keys[index - 1];
+    let (right_time, right) = keys[index];
+    if key_type.is_step() {
+        return (left, [0.0; N]);
+    }
+    if cubic {
+        let span = right_time - left_time;
+        let value = std::array::from_fn(|axis| {
+            hermite(
+                left[axis],
+                right[axis],
+                tangents[index - 1].1[axis],
+                tangents[index].0[axis],
+                span,
+                blend,
+            )
+        });
+        let derivative = std::array::from_fn(|axis| {
+            hermite_derivative(
+                left[axis],
+                right[axis],
+                tangents[index - 1].1[axis],
+                tangents[index].0[axis],
+                span,
+                blend,
+            )
+        });
+        return (value, derivative);
+    }
+    (
+        std::array::from_fn(|axis| left[axis] + (right[axis] - left[axis]) * blend),
+        [0.0; N],
+    )
 }
 
 struct SequenceTarget {
@@ -848,8 +1087,8 @@ fn read_sequence(block: &[u8], header: &NifHeader) -> Result<SequenceSpec> {
     cursor.skip(4)?; // weight
     cursor.skip(4)?; // text keys
     cursor.skip(4)?; // cycle type
-    cursor.skip(4)?; // frequency
-    cursor.skip(4)?; // start time
+    let frequency = cursor.f32()?;
+    let start_time = cursor.f32()?;
     let stop_time = cursor.f32()?;
     cursor.skip(4)?; // manager back-reference; the traversed manager list owns palette resolution
     cursor.skip(4)?; // accumulation root name
@@ -858,7 +1097,7 @@ fn read_sequence(block: &[u8], header: &NifHeader) -> Result<SequenceSpec> {
     cursor.finish()?;
     Ok(SequenceSpec {
         name: string_of(header, name_index).unwrap_or_else(|| format!("sequence_{name_index}")),
-        stop_time,
+        window: SequenceWindow::new(start_time, stop_time, frequency)?,
         targets,
     })
 }
@@ -1000,11 +1239,106 @@ fn read_object_palette(block: &[u8], block_count: usize) -> Result<BTreeMap<Stri
     Ok(objects)
 }
 
-/// Decodes a `NiTransformData` through the `NiTransformInterpolator` that references it.
+/// The "no value" word of a `NiQuatTransform` component: `-FLT_MAX`.
+const INVALID_POSE_COMPONENT: f32 = f32::MIN;
+
+/// The constant pose a `NiTransformInterpolator` stores ahead of its data reference.
+///
+/// nif.xml lays out `NiQuatTransform` as `Translation` (three floats), `Rotation` (a quaternion
+/// stored w, x, y, z) and `Scale` (one float); a component holding `-FLT_MAX` is unset. A
+/// sequence that holds a node still, or holds one channel while another is keyed, stores the
+/// held value here.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct InterpolatorPose {
+    translation: Option<[f32; 3]>,
+    /// Components ordered `x, y, z, w`.
+    rotation: Option<[f32; 4]>,
+    scale: Option<f32>,
+}
+
+impl InterpolatorPose {
+    fn read(block: &[u8]) -> Result<Self> {
+        let mut cursor = BlockCursor::new(block, "NiTransformInterpolator");
+        let translation = [cursor.f32()?, cursor.f32()?, cursor.f32()?];
+        let rotation = cursor.quaternion()?;
+        let scale = cursor.f32()?;
+        let unset = |values: &[f32]| values.contains(&INVALID_POSE_COMPONENT);
+        let finite = |what: &str, values: &[f32]| -> Result<()> {
+            ensure!(
+                values.iter().all(|value| value.is_finite()),
+                "NiTransformInterpolator {what} {values:?} is not finite"
+            );
+            Ok(())
+        };
+        let translation = if unset(&translation) {
+            None
+        } else {
+            finite("translation", &translation)?;
+            Some(translation)
+        };
+        let rotation = if unset(&rotation) {
+            None
+        } else {
+            finite("rotation", &rotation)?;
+            let length = dot4(rotation, rotation).sqrt();
+            ensure!(
+                length.is_finite() && length > f32::EPSILON,
+                "NiTransformInterpolator rotation {rotation:?} cannot be normalized"
+            );
+            Some(normalize4(rotation))
+        };
+        let scale = if unset(&[scale]) {
+            None
+        } else {
+            finite("scale", &[scale])?;
+            Some(scale)
+        };
+        Ok(Self {
+            translation,
+            rotation,
+            scale,
+        })
+    }
+
+    /// Fills each channel the keys leave empty with a one-key hold of the stored pose.
+    /// Keys always win over the pose for the channel they animate.
+    fn fill_unkeyed(self, keys: &mut TransformKeys) {
+        let rotation_keyed = match &keys.rotation {
+            RotationKeys::Quaternion(curve) => !curve.keys.is_empty(),
+            RotationKeys::Euler { x, y, z } => {
+                !(x.keys.is_empty() && y.keys.is_empty() && z.keys.is_empty())
+            }
+        };
+        if let (false, Some(rotation)) = (rotation_keyed, self.rotation) {
+            keys.rotation = RotationKeys::Quaternion(QuatCurve {
+                key_type: KeyType::Const,
+                keys: vec![(0.0, rotation)],
+            });
+        }
+        if let (true, Some(translation)) = (keys.translation.keys.is_empty(), self.translation) {
+            keys.translation = Vec3Curve {
+                key_type: KeyType::Const,
+                keys: vec![(0.0, translation)],
+                tangents: Vec::new(),
+            };
+        }
+        if let (true, Some(scale)) = (keys.scale.keys.is_empty(), self.scale) {
+            keys.scale = ScalarCurve {
+                key_type: KeyType::Const,
+                keys: vec![(0.0, scale)],
+                tangents: Vec::new(),
+            };
+        }
+    }
+}
+
+/// Decodes the transform an interpolator drives: its `NiTransformData` keys, with any constant
+/// pose it stores standing in for the channels the keys leave out.
 ///
 /// `Ok(None)` says the block controls something other than a node's transform - a `NiVisController`
-/// through a `NiBoolInterpolator`, a particle emitter's rate through a `NiFloatInterpolator`, or an
-/// interpolator with no data at all. Those are not transform tracks and are not a problem.
+/// through a `NiBoolInterpolator`, a particle emitter's rate through a `NiFloatInterpolator`, or a
+/// transform interpolator with neither data nor a stored pose. Those are not transform tracks and
+/// are not a problem.
 fn transform_keys_of(
     blocks: &[&[u8]],
     header: &NifHeader,
@@ -1023,23 +1357,47 @@ fn transform_keys_of(
         "NiTransformInterpolator block is {} bytes, shorter than its 36 byte layout",
         block.len()
     );
+    let pose = InterpolatorPose::read(&block[..32])?;
     let data_index = u32::from_le_bytes([block[32], block[33], block[34], block[35]]) as usize;
-    if data_index == u32::MAX as usize {
+    let data = if data_index == u32::MAX as usize {
+        None
+    } else {
+        let Some(data) = blocks.get(data_index) else {
+            return Err(color_eyre::eyre::eyre!(
+                "transform interpolator references transform data {data_index}, which does not exist"
+            ));
+        };
+        ensure!(
+            type_of(header, data_index) == "NiTransformData",
+            "transform interpolator references block {data_index} of type {}, not transform data",
+            type_of(header, data_index)
+        );
+        Some(
+            decode_transform_data(data)
+                .wrap_err_with(|| format!("NiTransformData block {data_index}"))?,
+        )
+    };
+    if data.is_none() && pose == InterpolatorPose::default() {
         return Ok(None);
     }
-    let Some(data) = blocks.get(data_index) else {
-        return Err(color_eyre::eyre::eyre!(
-            "transform interpolator references transform data {data_index}, which does not exist"
-        ));
-    };
-    ensure!(
-        type_of(header, data_index) == "NiTransformData",
-        "transform interpolator references block {data_index} of type {}, not transform data",
-        type_of(header, data_index)
-    );
-    decode_transform_data(data)
-        .map(Some)
-        .wrap_err_with(|| format!("NiTransformData block {data_index}"))
+    let mut keys = data.unwrap_or_else(|| TransformKeys {
+        rotation: RotationKeys::Quaternion(QuatCurve {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        }),
+        translation: Vec3Curve {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+            tangents: Vec::new(),
+        },
+        scale: ScalarCurve {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+            tangents: Vec::new(),
+        },
+    });
+    pose.fill_unkeyed(&mut keys);
+    Ok(Some(keys))
 }
 
 /// Every animation clip a NIF declares, in the order its sequences are listed.
@@ -1052,6 +1410,14 @@ fn clips_from_blocks(block_bytes: &[u8], header: &NifHeader) -> Result<(Vec<Clip
     let mut clips = Vec::new();
     let mut rotation_budget = ROTATION_SAMPLE_BUDGET;
     for sequence in sequences {
+        let duration = sequence.window.duration();
+        if duration <= 0.0 {
+            warnings.push(format!(
+                "sequence '{}' spans no time after clock conversion; clip omitted",
+                sequence.name
+            ));
+            continue;
+        }
         let mut tracks: Vec<ClipTrack> = Vec::new();
         let mut has_transform_block = false;
         for target in &sequence.targets {
@@ -1069,8 +1435,7 @@ fn clips_from_blocks(block_bytes: &[u8], header: &NifHeader) -> Result<(Vec<Clip
                 }
             };
             has_transform_block = true;
-            let mut track = match build_track(node, &keys, sequence.stop_time, &mut rotation_budget)
-            {
+            let mut track = match build_track(node, &keys, sequence.window, &mut rotation_budget) {
                 Ok(track) => track,
                 Err(error) => {
                     warnings.push(format!(
@@ -1100,10 +1465,6 @@ fn clips_from_blocks(block_bytes: &[u8], header: &NifHeader) -> Result<(Vec<Clip
             }
             continue;
         }
-        let duration = sequence.stop_time.max(track_end(&tracks)).max(0.0);
-        if duration <= 0.0 {
-            continue;
-        }
         clips.push(Clip {
             name: sequence.name,
             tracks,
@@ -1112,63 +1473,40 @@ fn clips_from_blocks(block_bytes: &[u8], header: &NifHeader) -> Result<(Vec<Clip
     Ok((clips, warnings))
 }
 
-fn track_end(tracks: &[ClipTrack]) -> f32 {
-    let mut end: f32 = 0.0;
-    for track in tracks {
-        if let Some(channel) = &track.rotation {
-            end = end.max(channel.times.last().copied().unwrap_or(0.0));
-        }
-        if let Some(channel) = &track.translation {
-            end = end.max(channel.times.last().copied().unwrap_or(0.0));
-        }
-        if let Some(channel) = &track.scale {
-            end = end.max(channel.times.last().copied().unwrap_or(0.0));
-        }
-    }
-    end
-}
-
-/// Samples one `NiTransformData` into the channels of a clip track.
+/// Samples the selected sequence window without changing the source rotation's parameterization.
 fn build_track(
     node: &str,
     keys: &TransformKeys,
-    duration: f32,
+    window: SequenceWindow,
     rotation_budget: &mut usize,
 ) -> Result<ClipTrack> {
-    let duration = duration.max(keys_end(keys));
-    Ok(ClipTrack {
+    let duration = window.duration();
+    let track = ClipTrack {
         node: node.to_owned(),
         target: TrackTarget::Name,
-        rotation: sample_rotation(&keys.rotation, duration, rotation_budget)?,
-        translation: sample_translation(&keys.translation, duration),
-        scale: sample_scale(&keys.scale, duration),
-    })
-}
-
-/// The time of a block's last key, whichever curve carries it.
-fn keys_end(keys: &TransformKeys) -> f32 {
-    let mut end: f32 = 0.0;
-    match &keys.rotation {
-        RotationKeys::Quaternion(curve) => {
-            for (time, _) in &curve.keys {
-                end = end.max(*time);
-            }
-        }
-        RotationKeys::Euler { x, y, z } => {
-            for curve in [x, y, z] {
-                for (time, _) in &curve.keys {
-                    end = end.max(*time);
-                }
-            }
-        }
-    }
-    for (time, _) in &keys.translation.keys {
-        end = end.max(*time);
-    }
-    for (time, _) in &keys.scale.keys {
-        end = end.max(*time);
-    }
-    end
+        rotation: sample_rotation(&keys.rotation, window, rotation_budget)?,
+        translation: sample_translation(&window.apply_translation(&keys.translation), duration),
+        scale: sample_scale(&window.apply_scalar(&keys.scale), duration),
+    };
+    let finite = track
+        .rotation
+        .iter()
+        .flat_map(|channel| channel.times.iter().chain(channel.values.iter().flatten()))
+        .chain(
+            track
+                .translation
+                .iter()
+                .flat_map(|channel| channel.times.iter().chain(channel.values.iter().flatten())),
+        )
+        .chain(
+            track
+                .scale
+                .iter()
+                .flat_map(|channel| channel.times.iter().chain(channel.values.iter())),
+        )
+        .all(|value| value.is_finite());
+    ensure!(finite, "sequence clock animation sample is not finite");
+    Ok(track)
 }
 
 /// The rotation of a clip at `time`: an euler triple converted, or the quaternion key itself.
@@ -1184,9 +1522,10 @@ fn rotation_value_at(rotation: &RotationKeys, time: f32) -> [f32; 4] {
 /// Bakes a rotation to quaternion samples at 30 Hz plus every authored key time.
 fn sample_rotation(
     rotation: &RotationKeys,
-    duration: f32,
+    window: SequenceWindow,
     budget: &mut usize,
 ) -> Result<Option<SampledChannel<[f32; 4]>>> {
+    let duration = window.duration();
     let key_count = match rotation {
         RotationKeys::Quaternion(curve) => curve.keys.len(),
         RotationKeys::Euler { x, y, z } => x
@@ -1224,6 +1563,11 @@ fn sample_rotation(
         RotationKeys::Quaternion(curve) => curve.keys.iter().map(|key| key.0).collect(),
         RotationKeys::Euler { x, y, z } => x.times().chain(y.times()).chain(z.times()).collect(),
     };
+    let key_times: Vec<f32> = key_times
+        .into_iter()
+        .filter(|time| *time >= window.start && *time <= window.stop)
+        .map(|time| window.local(time))
+        .collect();
     let times = if step {
         let mut times = key_times;
         times.retain(|time| *time >= 0.0);
@@ -1245,7 +1589,14 @@ fn sample_rotation(
     }
     let values = times
         .iter()
-        .map(|time| rotation_value_at(rotation, *time))
+        .map(|time| {
+            let source_time = if *time == duration {
+                window.stop
+            } else {
+                window.start + *time * window.frequency
+            };
+            rotation_value_at(rotation, source_time)
+        })
         .collect();
     Ok(Some(SampledChannel {
         times,
@@ -1327,6 +1678,10 @@ fn sample_numeric<const N: usize>(
                     outgoing[axis] = incoming[axis];
                 }
             }
+        }
+        if *time == keys[0].0 && keys[0].0 > 0.0 {
+            // A leading hold must meet the first authored key with a zero incoming derivative.
+            incoming = [0.0; N];
         }
         if trailing_hold && *time >= keys[keys.len() - 1].0 {
             // Preserve the incoming derivative of the last authored segment, but
@@ -1861,12 +2216,23 @@ mod tests {
         let keys = decode_transform_data(&bytes).unwrap();
         let required = 30 + 4 + 2; // Grid, authored axis times, and endpoints.
         let mut budget = required - 1;
-        assert!(sample_rotation(&keys.rotation, 1.0, &mut budget).is_err());
+        assert!(
+            sample_rotation(
+                &keys.rotation,
+                SequenceWindow::new(0.0, 1.0, 1.0).unwrap(),
+                &mut budget
+            )
+            .is_err()
+        );
         assert_eq!(budget, required - 1);
         budget = required;
-        let channel = sample_rotation(&keys.rotation, 1.0, &mut budget)
-            .unwrap()
-            .unwrap();
+        let channel = sample_rotation(
+            &keys.rotation,
+            SequenceWindow::new(0.0, 1.0, 1.0).unwrap(),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(budget, 0);
         assert_eq!(channel.times.first(), Some(&0.0));
         assert_eq!(channel.times.last(), Some(&1.0));
@@ -1879,9 +2245,13 @@ mod tests {
         writer.u32(0).u32(0);
         let keys = decode_transform_data(&writer.finish()).unwrap();
         let mut budget = 3;
-        let channel = sample_rotation(&keys.rotation, f32::MAX, &mut budget)
-            .unwrap()
-            .unwrap();
+        let channel = sample_rotation(
+            &keys.rotation,
+            SequenceWindow::new(0.0, f32::MAX, 1.0).unwrap(),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(budget, 0);
         assert_eq!(channel.interpolation, "STEP");
         assert_eq!(channel.times, [0.0, f32::MAX]);
@@ -2288,9 +2658,13 @@ mod tests {
         let bytes = DataWriter::rotation_only(&[(0.0, 0.0)], &[(0.0, 0.0), (0.6, -0.15)]);
         let keys = decode_transform_data(&bytes).unwrap();
         let mut budget = ROTATION_SAMPLE_BUDGET;
-        let channel = sample_rotation(&keys.rotation, 0.6, &mut budget)
-            .unwrap()
-            .unwrap();
+        let channel = sample_rotation(
+            &keys.rotation,
+            SequenceWindow::new(0.0, 0.6, 1.0).unwrap(),
+            &mut budget,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(channel.values.len(), channel.times.len());
         assert_eq!(channel.times[0], 0.0);
         assert!((channel.times[channel.times.len() - 1] - 0.6).abs() < 1.0e-6);
@@ -2716,7 +3090,15 @@ mod tests {
         let mut budget = ROTATION_SAMPLE_BUDGET;
         let clip = Clip {
             name: "Authored".to_owned(),
-            tracks: vec![build_track("Object02", &keys, 4.0, &mut budget).unwrap()],
+            tracks: vec![
+                build_track(
+                    "Object02",
+                    &keys,
+                    SequenceWindow::new(0.0, 4.0, 1.0).unwrap(),
+                    &mut budget,
+                )
+                .unwrap(),
+            ],
         };
         let (glb, warnings) = append_animations(&tiny_glb(), &[clip], &BTreeMap::new()).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -3111,6 +3493,14 @@ mod decode_regressions {
     use project_wormhole_esm::structs::strings::{SizedString32, StringN};
     use project_wormhole_nif::nif_header::{Endianess, NifFileVersion};
 
+    /// The 32 bytes of a `NiTransformInterpolator` pose whose components are all unset (-FLT_MAX),
+    /// as animated doors store it: the keys alone carry the animation.
+    fn unset_pose() -> Vec<u8> {
+        std::iter::repeat_n(f32::MIN, 8)
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    }
+
     fn two_rotation_sequences(first_duration: f32, second_duration: f32) -> (Vec<u8>, NifHeader) {
         let data: Vec<u8> = [
             2u32,
@@ -3143,9 +3533,9 @@ mod decode_regressions {
         for value in [2u32, 1, 4, u32::MAX] {
             manager.extend_from_slice(&value.to_le_bytes());
         }
-        let mut first_interpolator = vec![0; 32];
+        let mut first_interpolator = unset_pose();
         first_interpolator.extend_from_slice(&3u32.to_le_bytes());
-        let mut second_interpolator = vec![0; 32];
+        let mut second_interpolator = unset_pose();
         second_interpolator.extend_from_slice(&6u32.to_le_bytes());
         let (_, mut header) = fixture(first.clone(), data.clone());
         let blocks = [
@@ -3213,12 +3603,20 @@ mod decode_regressions {
     }
 
     fn fixture(sequence: Vec<u8>, data: Vec<u8>) -> (Vec<u8>, NifHeader) {
+        let mut interpolator = unset_pose();
+        interpolator.extend_from_slice(&3u32.to_le_bytes());
+        fixture_with_interpolator(sequence, interpolator, data)
+    }
+
+    fn fixture_with_interpolator(
+        sequence: Vec<u8>,
+        interpolator: Vec<u8>,
+        data: Vec<u8>,
+    ) -> (Vec<u8>, NifHeader) {
         let mut manager = vec![0; 27];
         manager.extend_from_slice(&1u32.to_le_bytes());
         manager.extend_from_slice(&1u32.to_le_bytes());
         manager.extend_from_slice(&u32::MAX.to_le_bytes()); // no object palette
-        let mut interpolator = vec![0; 32];
-        interpolator.extend_from_slice(&3u32.to_le_bytes());
         let blocks = [manager, sequence, interpolator, data];
         let header = NifHeader {
             file_desc: StringN {
@@ -3259,7 +3657,9 @@ mod decode_regressions {
         bytes.push(0); // priority
         bytes.extend_from_slice(&1u32.to_le_bytes()); // Node
         bytes.extend_from_slice(&[0; 16]);
-        bytes.extend_from_slice(&[0; 20]); // weight through start time
+        bytes.extend_from_slice(&[0; 12]); // weight, text keys, cycle type
+        bytes.extend_from_slice(&1f32.to_le_bytes()); // frequency
+        bytes.extend_from_slice(&0f32.to_le_bytes()); // start time
         bytes.extend_from_slice(&1f32.to_le_bytes()); // stop time
         bytes.extend_from_slice(&[0; 10]); // manager, root name, empty notes
         bytes
@@ -3774,5 +4174,367 @@ mod decode_regressions {
             assert_eq!(all_notices[0], all_notices[1]);
             assert_eq!(outputs[0], outputs[1]);
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Sequence clock and held poses
+    // -----------------------------------------------------------------------------------------
+
+    /// A `NiControllerSequence` laid out field by field in nif.xml order for Skyrim (20.2.0.7,
+    /// Bethesda 100): Name, Num Controlled Blocks, Array Grow By, one ControlledBlock (Interpolator,
+    /// Controller, Priority, Node Name, four string refs), Weight, Text Keys, Cycle Type,
+    /// Frequency, Start Time, Stop Time, Manager, Accumulation Root Name, Num Notes.
+    fn clocked_sequence(frequency: f32, start: f32, stop: f32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [0u32, 1, 0] {
+            bytes.extend_from_slice(&word.to_le_bytes()); // name, controlled blocks, grow by
+        }
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // interpolator block
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // controller
+        bytes.push(0); // priority
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // node name "Node"
+        for _ in 0..4 {
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1f32.to_le_bytes()); // weight
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // text keys
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // cycle type
+        for value in [frequency, start, stop] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // manager
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // accumulation root name
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // notes
+        bytes
+    }
+
+    /// A `NiTransformInterpolator` in nif.xml order: translation, rotation as w, x, y, z, scale,
+    /// then the data reference.
+    fn interpolator_bytes(
+        translation: [f32; 3],
+        rotation_wxyz: [f32; 4],
+        scale: f32,
+        data: u32,
+    ) -> Vec<u8> {
+        translation
+            .into_iter()
+            .chain(rotation_wxyz)
+            .chain([scale])
+            .flat_map(f32::to_le_bytes)
+            .chain(data.to_le_bytes())
+            .collect()
+    }
+
+    /// `NiTransformData` with no rotation or scale keys and linear translation keys.
+    fn translation_data(keys: &[(f32, f32)]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        for word in [0u32, keys.len() as u32, 1] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for (time, x) in keys {
+            for value in [*time, *x, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // no scale keys
+        bytes
+    }
+
+    const UNSET: [f32; 4] = [f32::MIN; 4];
+
+    fn read_clips(
+        sequence: Vec<u8>,
+        interpolator: Vec<u8>,
+        data: Vec<u8>,
+    ) -> (Vec<Clip>, Vec<String>) {
+        let (bytes, header) = fixture_with_interpolator(sequence, interpolator, data);
+        clips_from_blocks(&bytes, &header).unwrap()
+    }
+
+    fn close4(left: [f32; 4], right: [f32; 4], tolerance: f32) -> bool {
+        left.iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= tolerance)
+    }
+
+    fn x_of(values: &[[f32; 3]]) -> Vec<f32> {
+        values.iter().map(|value| value[0]).collect()
+    }
+
+    fn five_keys() -> Vec<u8> {
+        translation_data(&[
+            (1.0, 10.0),
+            (2.0, 20.0),
+            (3.0, 40.0),
+            (4.0, 60.0),
+            (5.0, 100.0),
+        ])
+    }
+
+    #[test]
+    fn sequence_reads_frequency_start_and_stop_in_nif_xml_order() {
+        let sequence = clocked_sequence(2.0, 2.0, 4.0);
+        let (bytes, header) = fixture(sequence, Vec::new());
+        let blocks = blocks_of(&bytes, &header).unwrap();
+        let spec = read_sequence(blocks[1], &header).unwrap();
+        assert_eq!(spec.window, SequenceWindow::new(2.0, 4.0, 2.0).unwrap());
+        assert_eq!(spec.window.duration(), 1.0);
+    }
+
+    #[test]
+    fn clip_lasts_stop_minus_start_over_frequency_and_starts_at_zero() {
+        // Keys at seconds 1..5 of the sequence clock; the sequence plays seconds 2..4 twice as
+        // fast, so the clip is one second long and shows the keys at 2, 3 and 4.
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) =
+            read_clips(clocked_sequence(2.0, 2.0, 4.0), interpolator, five_keys());
+        assert!(notices.is_empty(), "{notices:?}");
+        let translation = clips[0].tracks[0].translation.as_ref().unwrap();
+        assert_eq!(translation.times, [0.0, 0.5, 1.0]);
+        assert_eq!(x_of(&translation.values), [20.0, 40.0, 60.0]);
+        assert_eq!(translation.interpolation, "LINEAR");
+    }
+
+    #[test]
+    fn window_inside_a_segment_keeps_the_value_the_cut_keys_gave_each_boundary() {
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) =
+            read_clips(clocked_sequence(1.0, 1.5, 4.5), interpolator, five_keys());
+        assert!(notices.is_empty(), "{notices:?}");
+        let translation = clips[0].tracks[0].translation.as_ref().unwrap();
+        assert_eq!(translation.times, [0.0, 0.5, 1.5, 2.5, 3.0]);
+        assert_eq!(x_of(&translation.values), [15.0, 20.0, 40.0, 60.0, 80.0]);
+    }
+
+    #[test]
+    fn window_between_keys_preserves_motion_instead_of_holding_the_start() {
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) = read_clips(
+            clocked_sequence(2.0, 1.0, 3.0),
+            interpolator,
+            translation_data(&[(0.0, 10.0), (4.0, 50.0)]),
+        );
+        assert!(notices.is_empty(), "{notices:?}");
+        let translation = clips[0].tracks[0].translation.as_ref().unwrap();
+        assert_eq!(translation.times, [0.0, 1.0]);
+        assert_eq!(x_of(&translation.values), [20.0, 40.0]);
+    }
+
+    #[test]
+    fn trimmed_quaternion_samples_keep_the_source_curve_parameterization() {
+        let mut data: Vec<u8> = [2u32, 1].into_iter().flat_map(u32::to_le_bytes).collect();
+        // Actual source order: time, w, x, y, z. Identity at 0; a Y half-turn at 4.
+        data.extend(
+            [0.0_f32, 1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 1.0, 0.0]
+                .into_iter()
+                .flat_map(f32::to_le_bytes),
+        );
+        data.extend([0u32, 0].into_iter().flat_map(u32::to_le_bytes));
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) = read_clips(clocked_sequence(1.0, 0.5, 3.0), interpolator, data);
+        assert!(notices.is_empty(), "{notices:?}");
+        let channel = clips[0].tracks[0].rotation.as_ref().unwrap();
+        for (&time, &actual) in channel.times.iter().zip(&channel.values) {
+            // The authored identity-to-half-turn nlerp has unnormalized y=u, w=1-u.
+            let u = (0.5 + time) / 4.0;
+            let length = (u * u + (1.0 - u).powi(2)).sqrt();
+            assert!(close4(
+                actual,
+                [0.0, u / length, 0.0, (1.0 - u) / length],
+                1.0e-6
+            ));
+        }
+    }
+
+    #[test]
+    fn cubic_curve_cut_and_rescaled_follows_the_authored_curve() {
+        let curve = ScalarCurve {
+            key_type: KeyType::Quadratic,
+            keys: vec![(0.0, 1.0), (2.0, 5.0), (4.0, 2.0)],
+            tangents: vec![(0.0, 3.0), (1.0, -2.0), (4.0, 0.0)],
+        };
+        let window = SequenceWindow::new(0.5, 3.5, 2.0).unwrap();
+        let clip = window.apply_scalar(&curve);
+        assert_eq!(clip.key_type, KeyType::Quadratic);
+        assert_eq!(clip.keys.len(), clip.tangents.len());
+        assert_eq!(clip.keys.first().unwrap().0, 0.0);
+        assert_eq!(clip.keys.last().unwrap().0, window.duration());
+        for step in 0..=20 {
+            let clip_time = window.duration() * step as f32 / 20.0;
+            let source_time = window.start + clip_time * window.frequency;
+            let expected = curve.value_at(source_time);
+            assert!(
+                (clip.value_at(clip_time) - expected).abs() < 1.0e-4,
+                "clip time {clip_time}: {} != {expected}",
+                clip.value_at(clip_time)
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_window_preserves_cubic_holds_before_and_after_keys() {
+        let curve = ScalarCurve {
+            key_type: KeyType::Quadratic,
+            keys: vec![(1.0, 5.0), (2.0, 7.0)],
+            tangents: vec![(10.0, 2.0), (2.0, -10.0)],
+        };
+        let window = SequenceWindow::new(0.0, 3.0, 1.0).unwrap();
+        let channel = sample_scale(&window.apply_scalar(&curve), window.duration()).unwrap();
+        assert_eq!(channel.times, [0.0, 1.0, 2.0, 3.0]);
+        for (segment, expected) in [(0, 5.0), (2, 7.0)] {
+            let values = &channel.values[segment * 3..];
+            let midpoint = hermite(values[1], values[4], values[2], values[3], 1.0, 0.5);
+            assert_eq!(midpoint, expected, "hold segment {segment}");
+        }
+    }
+
+    #[test]
+    fn nonpositive_or_nonfinite_clock_is_a_sequence_warning_not_a_guess() {
+        for (frequency, start, stop) in [
+            (0.0, 0.0, 1.0),
+            (-1.0, 0.0, 1.0),
+            (f32::NAN, 0.0, 1.0),
+            (1.0, 2.0, 1.0),
+            (1.0, f32::NAN, 1.0),
+        ] {
+            let data = translation_data(&[(0.0, 0.0), (1.0, 1.0)]);
+            let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+            let (clips, notices) =
+                read_clips(clocked_sequence(frequency, start, stop), interpolator, data);
+            assert!(clips.is_empty(), "{frequency} {start} {stop}");
+            assert!(
+                notices
+                    .iter()
+                    .any(|notice| notice.contains("NiControllerSequence")),
+                "{notices:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_that_spans_no_time_is_reported_and_dropped() {
+        let data = translation_data(&[(0.0, 0.0), (1.0, 1.0)]);
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) = read_clips(clocked_sequence(1.0, 1.0, 1.0), interpolator, data);
+        assert!(clips.is_empty());
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("spans no time")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn interpolator_without_data_publishes_its_held_pose() {
+        // Source order: translation, rotation w x y z, scale, data (none).
+        let interpolator = interpolator_bytes([1.0, 2.0, 3.0], [0.6, 0.0, 0.8, 0.0], 1.5, u32::MAX);
+        let (clips, notices) =
+            read_clips(clocked_sequence(1.0, 0.0, 2.0), interpolator, Vec::new());
+        assert!(notices.is_empty(), "{notices:?}");
+        let track = &clips[0].tracks[0];
+        let translation = track.translation.as_ref().unwrap();
+        assert_eq!(translation.times, [0.0, 2.0]);
+        assert_eq!(translation.interpolation, "STEP");
+        assert_eq!(translation.values, [[1.0, 2.0, 3.0]; 2]);
+        let rotation = track.rotation.as_ref().unwrap();
+        assert_eq!(rotation.times, [0.0, 2.0]);
+        assert_eq!(rotation.interpolation, "STEP");
+        // w, x, y, z = 0.6, 0, 0.8, 0 is x, y, z, w = 0, 0.8, 0, 0.6 in glTF order.
+        for value in &rotation.values {
+            assert!(
+                close4(*value, [0.0, 0.8, 0.0, 0.6], 1.0e-6),
+                "{value:?} is not (x, y, z, w) = (0, 0.8, 0, 0.6)"
+            );
+        }
+        assert_eq!(track.scale.as_ref().unwrap().values, [1.5, 1.5]);
+    }
+
+    #[test]
+    fn keyed_channels_win_and_the_pose_fills_the_unkeyed_ones() {
+        // Translation is keyed; the stored scale and rotation are held, and a keyed channel is
+        // never replaced by the stored pose value.
+        let data = translation_data(&[(0.0, 0.0), (1.0, 10.0)]);
+        let interpolator = interpolator_bytes([99.0, 99.0, 99.0], [1.0, 0.0, 0.0, 0.0], 2.0, 3);
+        let (clips, notices) = read_clips(clocked_sequence(1.0, 0.0, 1.0), interpolator, data);
+        assert!(notices.is_empty(), "{notices:?}");
+        let track = &clips[0].tracks[0];
+        assert_eq!(
+            x_of(&track.translation.as_ref().unwrap().values),
+            [0.0, 10.0]
+        );
+        assert_eq!(track.scale.as_ref().unwrap().values, [2.0, 2.0]);
+        assert_eq!(
+            track.rotation.as_ref().unwrap().values,
+            [[0.0, 0.0, 0.0, 1.0]; 2]
+        );
+    }
+
+    #[test]
+    fn interpolator_with_nothing_set_and_no_data_is_not_a_transform_track() {
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, u32::MAX);
+        let (clips, notices) =
+            read_clips(clocked_sequence(1.0, 0.0, 1.0), interpolator, Vec::new());
+        assert!(clips.is_empty());
+        assert!(notices.is_empty(), "{notices:?}");
+    }
+
+    #[test]
+    fn held_pose_before_the_window_is_a_hold_at_clip_start() {
+        let interpolator = interpolator_bytes([4.0, 5.0, 6.0], UNSET, f32::MIN, u32::MAX);
+        let (clips, notices) =
+            read_clips(clocked_sequence(2.0, 3.0, 5.0), interpolator, Vec::new());
+        assert!(notices.is_empty(), "{notices:?}");
+        let translation = clips[0].tracks[0].translation.as_ref().unwrap();
+        assert_eq!(translation.times, [0.0, 1.0]);
+        assert_eq!(translation.values, [[4.0, 5.0, 6.0]; 2]);
+    }
+
+    #[test]
+    fn nonfinite_stored_pose_rejects_the_track_with_a_warning() {
+        let interpolator = interpolator_bytes([f32::NAN, 0.0, 0.0], UNSET, f32::MIN, u32::MAX);
+        let (clips, notices) =
+            read_clips(clocked_sequence(1.0, 0.0, 1.0), interpolator, Vec::new());
+        assert!(clips.is_empty());
+        assert!(
+            notices.iter().any(|notice| notice.contains("not finite")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn unnormalizable_stored_rotation_is_reported_instead_of_replaced_by_identity() {
+        let interpolator = interpolator_bytes([f32::MIN; 3], [f32::MAX; 4], f32::MIN, u32::MAX);
+        let (clips, notices) =
+            read_clips(clocked_sequence(1.0, 0.0, 1.0), interpolator, Vec::new());
+        assert!(clips.is_empty());
+        assert!(
+            notices.iter().any(|notice| notice.contains("rotation")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn sequence_frequency_overflow_is_reported_instead_of_publishing_infinite_tangents() {
+        let mut data: Vec<u8> = [0u32, 2, 2]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        for (time, value) in [(0.0_f32, 0.0), (1.0, 1.0)] {
+            // Time, translation, forward tangent, backward tangent: finite in source units.
+            data.extend(
+                [time, value, 0.0, 0.0, 1.0e38, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes),
+            );
+        }
+        data.extend(0u32.to_le_bytes()); // No scale keys.
+        let interpolator = interpolator_bytes([f32::MIN; 3], UNSET, f32::MIN, 3);
+        let (clips, notices) = read_clips(clocked_sequence(4.0, 0.0, 1.0), interpolator, data);
+        assert!(clips.is_empty());
+        assert!(
+            notices.iter().any(|notice| notice.contains("not finite")),
+            "{notices:?}"
+        );
     }
 }

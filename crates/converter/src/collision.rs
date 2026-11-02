@@ -37,7 +37,7 @@ struct Block<'a> {
 }
 
 pub fn from_nif(path: &Path, nif: &NifFile) -> Result<CollisionAsset> {
-    let placement = crate::nif_placement::PlacementFrame::from_nif(path, nif);
+    let placement = crate::nif_placement::PlacementFrame::new();
     let bytes = fs::read(path)?;
     let (mut data, header) = crate::mesh::parse_skyrim_header(&bytes, path)?;
     ensure!(
@@ -196,7 +196,7 @@ fn classify(motion_system: u8, quality_type: u8, mass: f32) -> BodyKind {
 /// glTF node index the exporter gives a NIF block: the static scene writes one node per
 /// scene node (every block `NifBlock::as_node` accepts) and geometry block, in block order.
 /// The converter re-checks this against the model it exported (`mesh.rs`).
-fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
+pub(crate) fn gltf_node_index(nif: &NifFile, target: usize) -> Result<u32> {
     fn exported(block: &NifBlock) -> bool {
         block.as_node().is_ok()
             || matches!(
@@ -1271,7 +1271,11 @@ mod tests {
         let predicted_index = gltf_node_index(&nif, target).unwrap() as usize;
         assert_eq!(node_name(&nif, target), "target");
 
-        let model = nif_to_static_model(&nif).unwrap();
+        // The converter drops the root block's own transform before publishing; the vendor
+        // parser keeps it, so apply the same rule here before comparing the two.
+        let mut model = nif_to_static_model(&nif).unwrap();
+        crate::mesh::clear_root_transform(&mut model);
+        let placement = crate::nif_placement::PlacementFrame::new();
         let (gltf, _) = model
             .to_gltf("collision-node-regression".to_owned())
             .unwrap();
@@ -1291,14 +1295,7 @@ mod tests {
                 bytes: &[],
             })
             .collect::<Vec<_>>();
-        let collision_transform = target_transform(
-            &nif,
-            &raw_blocks,
-            target,
-            // This test compares to the vendor's unplaced scene, including its root.
-            crate::nif_placement::PlacementFrame::from_nif(Path::new("node-chain.btr"), &nif),
-        )
-        .unwrap();
+        let collision_transform = target_transform(&nif, &raw_blocks, target, placement).unwrap();
         let export_transform = gltf_world_transform(&gltf.nodes, exported_index);
         for (collision, exported) in collision_transform
             .to_cols_array()
@@ -1308,8 +1305,7 @@ mod tests {
             assert!((collision - exported).abs() < 1.0e-4);
         }
         assert!(
-            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(4.0, 32.0, 38.0))
-                .length()
+            (collision_transform.transform_point3(Vec3::ZERO) - Vec3::new(6.0, 3.0, 4.0)).length()
                 < 1.0e-4
         );
     }

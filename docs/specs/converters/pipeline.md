@@ -24,10 +24,11 @@ Both readers retain their terminal diagnostics and return bounded per-plugin
 summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
 malformed records/frames, unusable candidates, cleared optional links, truncated
 light IDs, and in-house decoder/adapter issues such as omitted fields or missing
-localized text. `PipelineReport.notices` contains successful compatibility
-remaps: master indices past a plugin's list treated as the plugin's own, and the
-in-house reader's supplier-self compatibility lines. Counts and first examples
-remain bounded per plugin and kind.
+localized banks or referenced malformed entries. `PipelineReport.notices` contains
+successful compatibility remaps: master indices past a plugin's list treated as
+the plugin's own, and the in-house reader's supplier-self compatibility lines.
+Absent localized keys in readable banks also produce notices. Counts and first
+examples remain bounded per plugin and kind.
 
 The existing completeness rule requires zero skipped asset inputs and no
 warnings. Usable neighboring records still publish, but data-loss warnings mark
@@ -70,7 +71,9 @@ missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
 columns remain NULL. Missing nonzero keys in readable tables produce counted
 notices; missing or unreadable tables and referenced malformed entries produce
-warnings. A null ID does not require its declared bank. Explicitly resolved
+warnings. Both readers apply this severity policy; the legacy reader resolves
+subrecords whose schema occurrences unambiguously agree on localized type and bank.
+A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.
@@ -343,7 +346,7 @@ that affect that kind's bytes:
 
 | Kind | Settings proof | Source proof |
 | :--- | :--- | :--- |
-| NIF -> GLB | Mesh producer contract | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
+| NIF -> GLB | Mesh producer contract and current mesh output contracts | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
 | DDS -> KTX2 | Texture producer, fallback quality, UASTC level, Zstd level and CPU/GPU encoder quality | DDS bytes, resolved `TextureEncoding` from the freshly rebuilt database and accepted GLBs, plus the applicable GPU encoding label |
 | PEX -> Luau | Script ABI | PEX bytes; known producer eligibility is checked separately |
 
@@ -382,6 +385,17 @@ the published output to exist with its recorded size and SHA-256.
 Staging journal entries carry the same per-kind settings proof and also require
 the current producer contract and matching source/output bytes; older journal
 entries carrying a full configuration hash do not acquire a new proof implicitly.
+
+A converter change to mesh bytes that does not advance the producer appends a
+name to `MESH_OUTPUT_CONTRACTS` (`crates/converter/src/cache.rs`). The current
+producer's mesh settings proof includes the list, so a normal conversion and a
+resumed staging run rebuild meshes an earlier converter of the same producer
+wrote, while textures and scripts stay reusable. Every producer-27 manifest
+records per-kind proofs, which arrived with producer 26, so the combined fallback
+below never decides current-producer meshes. The list is cleared when the
+producer advances. `--reuse-assets` still retains the source
+package's mesh bytes and its recorded mesh proof, so a later normal conversion
+of that package rebuilds them.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

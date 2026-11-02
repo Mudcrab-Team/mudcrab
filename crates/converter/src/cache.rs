@@ -481,12 +481,17 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "facegen-tint-slot",
     "lighting-type-data",
     "msn-specular-default",
+    "hidden-niavobject-excluded",
+    "nif-root-transform-ignored",
+    "skin-static-fallback",
     "authored-material-animation",
     "authored-billboard-mode",
     "reference-root-placement",
     "collision-reference-root-placement",
     "one-primitive-per-authored-shape",
     "retained-transform-animation-warnings",
+    "unconditional-reference-root-placement",
+    "authored-bone-billboard-mode",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -727,7 +732,7 @@ pub(crate) fn ensure_current_retained_mesh_proof(
             asset_configuration_hash_for_schema(config, CONVERTER_SCHEMA_VERSION, "nif")?;
         color_eyre::eyre::ensure!(
             manifest.asset_configuration_hashes.get("nif") == Some(&expected),
-            "retained NIF proof predates the current authored mesh contract; run normal conversion to regenerate every NIF GLB before retaining converted meshes"
+            "retained NIF proof predates the current authored mesh output contract; run normal conversion to regenerate every NIF GLB before retaining converted meshes"
         );
     }
     Ok(())

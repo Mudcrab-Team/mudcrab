@@ -80,6 +80,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "movement_types",
     "npcs",
     "plugins",
+    "projection_omission_samples",
+    "projection_omission_stats",
     "race_movement_links",
     "record_diagnostics",
     "record_overrides",
@@ -333,6 +335,23 @@ pub(crate) fn refresh_manifest_with_notices(
     Ok(notices)
 }
 
+/// Dataset-relative paths of every file the manifest's retained declarations own, as found in
+/// `output` now. A conversion publishes only the files its report lists, so the payloads of
+/// declarations that survived [`refresh_manifest_with_notices`] have to be listed too; otherwise
+/// the published manifest would declare a capability whose files were left behind.
+pub(crate) fn retained_payload_paths(
+    manifest: &ConversionManifest,
+    output: &Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    let mut paths = std::collections::BTreeSet::new();
+    for entry in &manifest.extensions {
+        for (relative, _) in owned_files(output, &entry.owns.files)? {
+            paths.insert(std::path::PathBuf::from(relative));
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
 /// Recomputes `mudcrab-ext-hash-v1` of `entry` from what `output` holds now, reading only what the
 /// entry's `owns` lists. Errors when an owned table, index or exact file is missing.
 pub fn recompute_hash(output: &Path, entry: &ExtensionEntry) -> Result<String> {
@@ -510,21 +529,7 @@ fn count_rows(connection: &Connection, table: &str) -> Result<u64> {
 fn owned_files(root: &Path, entries: &[String]) -> Result<Vec<(String, std::path::PathBuf)>> {
     let mut files = BTreeMap::new();
     for entry in entries {
-        let relative = entry.strip_suffix('/').unwrap_or(entry);
-        color_eyre::eyre::ensure!(
-            !relative.is_empty()
-                && !entry.contains('\\')
-                && !entry.contains(':')
-                && !entry.chars().any(char::is_control)
-                && relative.split('/').all(|part| {
-                    !part.is_empty()
-                        && part != "."
-                        && part != ".."
-                        && !part.ends_with('.')
-                        && !part.ends_with(' ')
-                }),
-            "owned file path {entry:?} must be a canonical dataset-relative path"
-        );
+        shared::extensions::validate_owned_file_path(entry)?;
         if entry.ends_with('/') {
             let folder = root.join(entry.trim_end_matches('/'));
             if !folder.is_dir() {

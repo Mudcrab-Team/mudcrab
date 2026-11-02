@@ -9,7 +9,6 @@ OCR is retained as evidence, never interpreted as an effective numeric readback.
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import os
@@ -21,6 +20,12 @@ import subprocess
 import sys
 import time
 import zlib
+
+try:
+    import fcntl
+except ImportError:  # Windows has no flock; msvcrt locks one byte instead.
+    fcntl = None
+    import msvcrt
 
 
 ROOT = Path('/home/taylor/Games/MudcrabComparison')
@@ -253,8 +258,19 @@ def verified_display_environment():
 @contextmanager
 def collection_lock():
     with (ROOT / 'artifacts/tonemap-console-capture.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            else:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def capture_evidence(output, label, tools, env):

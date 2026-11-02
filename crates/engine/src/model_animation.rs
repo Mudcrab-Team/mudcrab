@@ -1,6 +1,7 @@
 //! Authored model clips owned by their loaded scene, without a second glTF load.
 use crate::{
     doors::LoadDoor,
+    streaming::PendingAssetProfile,
     world::components::{FormId, MeshHandle},
 };
 use std::collections::{HashMap, HashSet};
@@ -437,13 +438,20 @@ pub(crate) fn resolve_source_clips(
 
 #[expect(
     clippy::type_complexity,
-    reason = "The ambient-idle filter names the two exclusions a door and a started idle impose."
+    reason = "The ambient-idle filter names the exclusions a door, a started idle and a model awaiting its readiness check impose."
 )]
 fn play_idle_clips(
     mut commands: Commands,
     references: Query<
         (Entity, &FormId, &SourceClipBinding),
-        (Without<LoadDoor>, Without<IdleStarted>),
+        (
+            Without<LoadDoor>,
+            Without<IdleStarted>,
+            // Readiness compares the spawned pose with the converter's still-pose bounds and
+            // removes this marker when it is done. A clip started earlier would move the model
+            // first, and the check would hide a valid one.
+            Without<PendingAssetProfile>,
+        ),
     >,
     mut players: Query<&mut AnimationPlayer>,
 ) {
@@ -619,6 +627,69 @@ mod tests {
         app.update();
         let index = app.world().resource::<SourceClipIndex>();
         assert!(index.nodes.is_empty() && index.clip_users.is_empty());
+    }
+
+    #[test]
+    fn idle_waits_for_the_readiness_check_before_moving_the_model() {
+        let mut app = resolver_app();
+        // The readiness scan has not validated this model yet: it still carries the marker.
+        let reference = app
+            .world_mut()
+            .spawn((
+                MeshHandle("idle.glb".into()),
+                FormId(17),
+                PendingAssetProfile::test_actor(),
+            ))
+            .id();
+        let clip = app
+            .world()
+            .resource::<Assets<AnimationClip>>()
+            .reserve_handle();
+        let mut loaded = AnimationClip::default();
+        loaded.set_duration(2.0);
+        app.world_mut()
+            .resource_mut::<Assets<AnimationClip>>()
+            .insert(clip.id(), loaded)
+            .unwrap();
+        let source = app
+            .world_mut()
+            .spawn((
+                SourceClips(vec![("Idle".into(), clip.clone())]),
+                AnimationPlayer::default(),
+                ChildOf(reference),
+            ))
+            .id();
+        app.world_mut()
+            .write_message(AssetEvent::<AnimationClip>::LoadedWithDependencies { id: clip.id() });
+        app.update();
+        let node = app
+            .world()
+            .get::<SourceClipBinding>(reference)
+            .expect("the clip is bound while the model awaits validation")
+            .idle
+            .unwrap()
+            .0;
+        for _ in 0..3 {
+            app.update();
+            assert!(
+                !app.world()
+                    .get::<AnimationPlayer>(source)
+                    .unwrap()
+                    .is_playing_animation(node),
+                "playback must not start before the readiness check finishes"
+            );
+        }
+        // Readiness completion removes the marker; playback starts then.
+        app.world_mut()
+            .entity_mut(reference)
+            .remove::<PendingAssetProfile>();
+        app.update();
+        assert!(
+            app.world()
+                .get::<AnimationPlayer>(source)
+                .unwrap()
+                .is_playing_animation(node)
+        );
     }
 
     #[test]

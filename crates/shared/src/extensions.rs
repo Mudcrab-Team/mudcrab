@@ -61,7 +61,10 @@ pub struct ExtensionEntry {
 }
 
 impl ExtensionEntry {
-    /// Reject names that would inject control characters into the line-framed hash stream.
+    /// Reject names that would inject control characters into the line-framed hash stream, and
+    /// owned file paths that are not canonical dataset-relative paths. Readers and publishers
+    /// share this one check, so a declaration a publisher refuses to hash is never reported as
+    /// present by a reader.
     pub fn validate_names(&self) -> Result<()> {
         for name in std::iter::once(&self.id)
             .chain(&self.owns.tables)
@@ -74,8 +77,33 @@ impl ExtensionEntry {
                 "extension declaration has an empty name or control characters: {name:?}"
             );
         }
+        for file in &self.owns.files {
+            validate_owned_file_path(file)?;
+        }
         Ok(())
     }
+}
+
+/// Checks that an owned `files` entry is a canonical dataset-relative path: `/` separators only,
+/// no drive or stream colon, no empty, `.` or `..` components, no component ending in a dot or
+/// space (Windows aliases), and an optional trailing `/` marking a whole directory.
+pub fn validate_owned_file_path(entry: &str) -> Result<()> {
+    let relative = entry.strip_suffix('/').unwrap_or(entry);
+    ensure!(
+        !relative.is_empty()
+            && !entry.contains('\\')
+            && !entry.contains(':')
+            && !entry.chars().any(char::is_control)
+            && relative.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && !part.ends_with('.')
+                    && !part.ends_with(' ')
+            }),
+        "owned file path {entry:?} must be a canonical dataset-relative path"
+    );
+    Ok(())
 }
 
 /// A rejected optional declaration. An identifiable rejected entry still disables its reader.
@@ -1312,6 +1340,38 @@ mod tests {
             let (entries, issues) = parse_entries(&serde_json::json!([value]));
             assert!(entries.is_empty());
             assert!(issues[0].reason.contains("control characters"));
+        }
+    }
+
+    #[test]
+    fn declared_file_paths_must_be_canonical_dataset_relative_paths() {
+        for path in [
+            "../outside.bin",
+            "payload/./a.bin",
+            "payload/../a.bin",
+            "payload//a.bin",
+            "payload\\a.bin",
+            "/absolute.bin",
+            "Q:/absolute.bin",
+            "payload/a.bin.",
+            "payload/a.bin ",
+            "./",
+            "/",
+        ] {
+            let mut value = serde_json::to_value(entry("example.bad", 1, "core")).unwrap();
+            value["owns"]["files"] = serde_json::json!([path]);
+            let (entries, issues) = parse_entries(&serde_json::json!([value]));
+            assert!(entries.is_empty(), "accepted {path:?}");
+            assert_eq!(issues.len(), 1, "{path:?}");
+            assert_eq!(issues[0].id.as_deref(), Some("example.bad"));
+            assert!(issues[0].reason.contains("canonical"), "{path:?}");
+        }
+        for path in ["payload/a.bin", "payload/", "a.bin"] {
+            let mut value = serde_json::to_value(entry("example.ok", 1, "core")).unwrap();
+            value["owns"]["files"] = serde_json::json!([path]);
+            let (entries, issues) = parse_entries(&serde_json::json!([value]));
+            assert_eq!(entries.len(), 1, "rejected {path:?}");
+            assert!(issues.is_empty());
         }
     }
 }

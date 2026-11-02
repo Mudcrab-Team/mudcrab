@@ -79,6 +79,7 @@ impl Model {
         Ok(Some(&first.bones))
     }
 
+    /// Emits rigid scene nodes and skeletal meshes with independent mesh and skin indices.
     pub fn to_gltf(&self, name: String) -> Result<(gltf::json::Root, Vec<u8>), String> {
         self.export_gltf(name, &BTreeMap::new(), &mut BTreeMap::new())
     }
@@ -415,7 +416,7 @@ impl Model {
                     camera: None,
                     children: None,
                     extensions: None,
-                    extras: Extras::default(),
+                    extras: bone.billboard_mode.map(billboard_extras),
                     matrix: None,
                     mesh: None,
                     name: Some(name.clone()),
@@ -975,7 +976,8 @@ impl Model {
                 rotation: None,
                 scale: None,
                 translation: None,
-                skin: Some(Index::new(root.meshes.len() as u32)),
+                // Rigid meshes precede skins in mixed rigs; skin and mesh indices differ.
+                skin: Some(Index::new(index as u32)),
                 weights: None,
             });
 
@@ -1387,6 +1389,7 @@ mod shared_skeleton_tests {
         BoneData {
             transform: BoneTransform::default(),
             children: children.iter().map(|name| (*name).to_owned()).collect(),
+            billboard_mode: None,
         }
     }
 
@@ -1431,6 +1434,27 @@ mod shared_skeleton_tests {
             material_indices,
             scene_root_rotation: None,
         }
+    }
+
+    #[test]
+    fn billboard_bone_keeps_its_mode_in_the_exported_node_extras() {
+        let mut bones = bone_tree();
+        bones.bones.get_mut("Bone1").unwrap().billboard_mode = Some(1);
+        let (root, _) = model(vec![mesh("body", bones, &["Root", "Bone1"])])
+            .to_gltf("billboard-bone".to_owned())
+            .unwrap();
+        let extras = |name: &str| {
+            root.nodes
+                .iter()
+                .find(|node| node.name.as_deref() == Some(name))
+                .and_then(|node| node.extras.as_ref())
+                .map(|extras| serde_json::from_str::<serde_json::Value>(extras.get()).unwrap())
+        };
+        assert_eq!(
+            extras("Bone1"),
+            Some(serde_json::json!({ "openSkyrim": { "billboard": "rotateAboutUp" } }))
+        );
+        assert_eq!(extras("Bone0"), None, "an ordinary bone carries no extras");
     }
 
     #[test]
@@ -2404,6 +2428,7 @@ mod morph_target_tests {
                 BoneData {
                     transform: BoneTransform::default(),
                     children: HashSet::new(),
+                    billboard_mode: None,
                 },
             )
             .unwrap();

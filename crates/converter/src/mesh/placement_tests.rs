@@ -197,7 +197,7 @@ fn conversion_places_render_collision_com_and_inertia_in_one_reference_frame() {
         ])),
     );
     let directory = tempfile::tempdir().unwrap();
-    // Extension is the production policy boundary. LOD roots must survive, including case.
+    // The reference replaces block 0 whatever the extension or its case: LOD roots included.
     for extension in ["nif", "btr", "BTO"] {
         let input = directory.path().join(format!("placement.{extension}"));
         let output = directory.path().join(format!("placement-{extension}.glb"));
@@ -217,12 +217,7 @@ fn conversion_places_render_collision_com_and_inertia_in_one_reference_frame() {
         };
         assert_eq!(points.len(), 8);
         assert_eq!(rendered.len(), 8);
-        let retained_root = if extension == "nif" {
-            Mat4::IDENTITY
-        } else {
-            root
-        };
-        let frame = retained_root * child * body_frame;
+        let frame = child * body_frame;
         for corner in &corners {
             let expected = (basis * frame).transform_point3(*corner);
             assert!(
@@ -332,8 +327,9 @@ fn parsed_skin_keeps_its_bone_tree_under_a_nonidentity_mesh_root() {
     fs::write(&input, bytes).unwrap();
     let (nif, _, _) = open_nif_resilient(&input).unwrap();
     assert!(nif.has_skeleton());
-    let placement = crate::nif_placement::PlacementFrame::from_nif(&input, &nif);
-    assert!(!placement.replaces_block(0));
+    let placement = crate::nif_placement::PlacementFrame::new();
+    // Block 0 is replaced for a skinned mesh too; its separate bone trees are checked below.
+    assert!(placement.replaces_block(0));
     let mut model = nif_to_model(&nif, None).unwrap();
     assert!(!model.skeletal_meshes.is_empty());
     assert!(model.static_nodes.is_empty());
@@ -366,4 +362,52 @@ fn parsed_skin_keeps_its_bone_tree_under_a_nonidentity_mesh_root() {
             .iter()
             .any(|node| node["skin"].is_u64())
     );
+}
+
+#[test]
+fn skinned_billboard_joint_keeps_its_mode_through_bone_extraction_and_export() {
+    use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
+    use project_wormhole_nif::nif_block::{NiBillboardNode, NifBlock};
+
+    let mut bytes = legacy_skinned_shape(&LegacySkin {
+        name: "BillboardSkin",
+        instance_kind: SkinInstanceKind::Plain,
+        bone_transforms: [([0.0; 3], [0.0, 0.0, 0.0, 1.0], 1.0); 2],
+        palette: &[1, 0],
+        weights: &[[0.7, 0.3, 0.0, 0.0]; 4],
+        with_geometry: true,
+        joint_override: None,
+    })
+    .unwrap();
+    // An external skeleton must name every node, including the generated scene root.
+    let root_start = bytes.len()
+        - parse_skyrim_header(&bytes, Path::new("billboard-skin.nif"))
+            .unwrap()
+            .0
+            .len();
+    bytes[root_start..root_start + 4].copy_from_slice(&0u32.to_le_bytes());
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("billboard-skin.nif");
+    fs::write(&input, bytes).unwrap();
+    let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+    let NifBlock::NiNode(node) = &nif.blocks[1] else {
+        panic!("fixture block 1 must be Bone0");
+    };
+    nif.blocks[1] = NifBlock::NiBillboardNode(NiBillboardNode {
+        node: node.clone(),
+        billboard_mode: 1,
+    });
+    // Both mesh-local joints and joints supplied by an external skeleton retain metadata.
+    for skeleton in [None, Some(&nif)] {
+        let model = nif_to_model(&nif, skeleton).unwrap();
+        let (root, _) = model.to_gltf("billboard-skin".into()).unwrap();
+        let bone = root
+            .nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Bone0"))
+            .unwrap();
+        let extras: serde_json::Value =
+            serde_json::from_str(bone.extras.as_ref().unwrap().get()).unwrap();
+        assert_eq!(extras["openSkyrim"]["billboard"], "rotateAboutUp");
+    }
 }

@@ -38,6 +38,8 @@ pub(crate) struct CaptureTicket {
     /// reports only the failures of this shot: an earlier shot's failures are history, and one
     /// that happens after the request still shows up in the receipt.
     baseline: crate::shots::Failures,
+    /// Stage 3 probes read from the same frame, when the request names any.
+    probes: Option<crate::hdr_probe::ProbeTicket>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -52,6 +54,8 @@ pub(crate) struct CaptureFrame {
     pub work: crate::shots::SettleCounts,
     pub terrain_coverage: Vec<serde_json::Value>,
     pub terrain_gauges: std::collections::BTreeMap<String, f64>,
+    /// Absent only in harnesses that build a world without the engine's startup resources.
+    pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
 }
 
@@ -158,7 +162,20 @@ impl CaptureTicket {
         Self {
             receipt: Arc::new(Mutex::new(None)),
             baseline,
+            probes: None,
         }
+    }
+
+    /// Also samples these points before tone mapping in the captured frame.
+    pub(crate) fn with_probes(mut self, points: Vec<crate::hdr_probe::ProbePoint>) -> Self {
+        if !points.is_empty() {
+            self.probes = Some(crate::hdr_probe::ProbeTicket::new(points));
+        }
+        self
+    }
+
+    pub(crate) fn probes(&self) -> Option<&crate::hdr_probe::ProbeTicket> {
+        self.probes.as_ref()
     }
 
     #[cfg(test)]
@@ -180,7 +197,8 @@ pub(crate) struct CaptureFramePlugin;
 impl Plugin for CaptureFramePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RetryReadiness>()
-            .init_resource::<TransferReadiness>();
+            .init_resource::<TransferReadiness>()
+            .add_plugins(crate::hdr_probe::HdrProbePlugin);
         let bridge = app.world().resource::<RetryReadiness>().clone();
         let transfers = app.world().resource::<TransferReadiness>().clone();
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -249,6 +267,7 @@ fn extract_capture_frames(
         Option<Res<SceneVisualPreset>>,
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
+        Option<Res<crate::visual_profile::VisualProfile>>,
     )>,
 ) {
     let (frame, origin, camera, tickets, streaming, renderer, profiler, uploads) = &*frame_inputs;
@@ -261,6 +280,7 @@ fn extract_capture_frames(
         visual_preset,
         tone_source,
         grade_overrides,
+        visual_profile,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -300,6 +320,7 @@ fn extract_capture_frames(
             render_origin: origin.0.to_array(),
             pending_specializations: None,
             work,
+            visual_profile: visual_profile.as_deref().copied(),
             grading: capture_grade_with_overrides(
                 grade_source.as_deref(),
                 tone_source.as_deref(),
@@ -467,6 +488,7 @@ mod tests {
             work: default(),
             terrain_gauges: default(),
             terrain_coverage: default(),
+            visual_profile: None,
             grading: capture_grade(
                 Some(&source),
                 None,

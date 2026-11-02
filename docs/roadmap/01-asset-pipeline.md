@@ -9,7 +9,7 @@
 | Legacy Format                | Target Modern Format               | Purpose                                                     | Conversion Library / Crate    |
 | :--------------------------- | :--------------------------------- | :---------------------------------------------------------- | :---------------------------- |
 | **`.bsa` / `.ba2`**          | Extracted VFS Hierarchy            | Unpacked file system access                                 | `flate2`, `lz4_flex`          |
-| **`.esm` / `.esp` / `.esl`** | **`SQLite 3` (`skyrim_world.db`)** | Conflict-resolved record database & R-Tree spatial indexing | `rusqlite`, `libsql`          |
+| **`.esm` / `.esp` / `.esl`** | **`SQLite 3` (`skyrim_world.db`)** | Conflict-resolved record database & R-Tree spatial indexing | `rusqlite`                     |
 | **`.nif`**                   | **`glTF 2.0` (`.glb`)**            | Geometry, PBR materials, skeletal skinning & joints         | `mesh_tools` / `gltf` crate   |
 | **`.dds` (BC1-BC7)**         | **`KTX2` Basis Universal**         | Supercompressed GPU texture streaming                       | `ddsfile`, `basis-universal`  |
 | **`.pex` (Papyrus)**         | **`Luau` Scripts**                 | Sandboxed, high-performance scripting                       | Papyrus AST Decompiler ➔ Luau |

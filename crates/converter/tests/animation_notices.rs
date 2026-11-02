@@ -534,17 +534,26 @@ fn duplicate_transform_names_use_palette_pointer_in_published_glb() {
             serde_json::json!([20.0, 0.0, 0.0])
         );
         if palette.is_some_and(|targets| targets.iter().all(|&target| target == 4)) {
+            // The generated interpolator stores an identity rotation and unit scale beside the
+            // translation keys, so those two channels are held (STEP) on the same node.
             let channels = json["animations"][0]["channels"].as_array().unwrap();
-            assert_eq!(channels.len(), 1);
-            assert_eq!(channels[0]["target"]["node"], second);
-            assert_eq!(channels[0]["target"]["path"], "translation");
-            assert_eq!(
-                json["animations"][0]["samplers"][0]["interpolation"],
-                "LINEAR"
+            assert_eq!(channels.len(), 3);
+            assert!(
+                channels
+                    .iter()
+                    .all(|channel| channel["target"]["node"] == second)
             );
-            let accessor = json["animations"][0]["samplers"][0]["output"]
-                .as_u64()
-                .unwrap() as usize;
+            let sampler_of = |path: &str| {
+                let channel = channels
+                    .iter()
+                    .find(|channel| channel["target"]["path"] == path)
+                    .unwrap_or_else(|| panic!("no {path} channel"));
+                &json["animations"][0]["samplers"][channel["sampler"].as_u64().unwrap() as usize]
+            };
+            assert_eq!(sampler_of("translation")["interpolation"], "LINEAR");
+            assert_eq!(sampler_of("rotation")["interpolation"], "STEP");
+            assert_eq!(sampler_of("scale")["interpolation"], "STEP");
+            let accessor = sampler_of("translation")["output"].as_u64().unwrap() as usize;
             assert_eq!(json["accessors"][accessor]["type"], "VEC3");
             assert_eq!(json["accessors"][accessor]["count"], 2);
             let warnings = &json["asset"]["extras"]["openSkyrim"]["animationWarnings"];
@@ -607,4 +616,49 @@ fn billboard_metadata_survives_nif_to_glb_export() {
         assert_eq!(nodes[child]["name"], shape.name);
         assert!(nodes[child].get("mesh").is_some());
     }
+}
+
+#[test]
+fn nif_audit_reports_dropped_transform_tracks_per_file_and_in_summary() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input");
+    fs::create_dir(&input).unwrap();
+    let shape = StaticShape {
+        name: "AuditTarget",
+        positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: &[[0.0, 0.0, 1.0]; 3],
+        uvs: &[[0.0, 0.0]; 3],
+        indices: &[[0, 1, 2]],
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    };
+    let mut bytes =
+        dummy_content::nif::static_shape_with_duplicate_transform_targets(&shape, Some(&[4]))
+            .unwrap();
+    // Corrupt only the final NiTransformData: one scale key is declared with no payload.
+    // The geometry remains valid, so the audit must attempt conversion and expose its notices.
+    let data_end = bytes.len(); // The generated container ends with NiTransformData.
+    bytes[data_end - 4..data_end].copy_from_slice(&1u32.to_le_bytes());
+    fs::write(input.join("broken-track.nif"), bytes).unwrap();
+    let report = directory.path().join("report.json");
+    let converted = directory.path().join("converted");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nif-audit"))
+        .args([&input, &report, &converted])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["summary"]["conversion_successes"], 1);
+    let notices = report["files"][0]["animation_notices"].as_array().unwrap();
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.as_str().unwrap().contains("NiTransformData"))
+    );
+    assert_eq!(report["summary"]["files_with_animation_notices"], 1);
+    assert_eq!(report["summary"]["animation_notices"], notices.len());
 }

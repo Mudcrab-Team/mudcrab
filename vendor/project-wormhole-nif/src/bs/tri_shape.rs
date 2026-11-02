@@ -297,6 +297,10 @@ pub struct NiSkinPartition {
     pub bone_indices: Vec<Vec<u8>>,
     /// Concatenated vertex maps; `None` if any partition omitted its map.
     pub vertex_map: Option<Vec<u16>>,
+    /// Whether partitions disagreed on having a vertex map, so the maps that some
+    /// of them carried were dropped from `vertex_map`. Code that needs to know
+    /// which vertices any partition references cannot rely on `vertex_map` then.
+    pub vertex_map_discarded: bool,
     pub partition_flags: u16,
     /// Whether a later partition's palette could not be folded into the merged palette with
     /// `u8` indices, so its bone indices still address its own palette.
@@ -320,6 +324,7 @@ impl NiSkinPartition {
             weights: Vec::new(),
             bone_indices: Vec::new(),
             vertex_map: None,
+            vertex_map_discarded: false,
             partition_flags: 0,
             palette_overflow: false,
         }
@@ -369,12 +374,14 @@ impl NiSkinPartition {
                     );
                 }
             }
-            if let Some(map) = part.vertex_map {
-                if let Some(existing) = self.vertex_map.as_mut() {
-                    existing.extend(map);
+            match (part.vertex_map, self.vertex_map.as_mut()) {
+                (Some(map), Some(existing)) => existing.extend(map),
+                (None, None) => {}
+                // Mixed presence: the merged map cannot describe every partition.
+                _ => {
+                    self.vertex_map = None;
+                    self.vertex_map_discarded = true;
                 }
-            } else {
-                self.vertex_map = None;
             }
         }
         self.weights.append(&mut part.weights);
@@ -1144,6 +1151,39 @@ impl BSTriShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(vertex_map: Option<Vec<u16>>) -> ParsedPartition {
+        ParsedPartition {
+            bone_palette: vec![0],
+            weights_per_vertex: 4,
+            weights: Vec::new(),
+            bone_indices: Vec::new(),
+            vertex_map,
+            partition_flags: 0,
+        }
+    }
+
+    fn merged(maps: [Option<Vec<u16>>; 2]) -> NiSkinPartition {
+        let (_, desc) = BSVertexDesc::parse(&0u64.to_le_bytes()).unwrap();
+        let mut partition = NiSkinPartition::empty(desc, Vec::new(), Vec::new(), 2);
+        let [first, second] = maps;
+        partition.absorb(parsed(first), true);
+        partition.absorb(parsed(second), false);
+        partition
+    }
+
+    #[test]
+    fn absorb_records_a_vertex_map_dropped_by_mixed_presence() {
+        for maps in [[None, Some(vec![1])], [Some(vec![0]), None]] {
+            let partition = merged(maps);
+            assert_eq!(partition.vertex_map, None);
+            assert!(partition.vertex_map_discarded);
+        }
+        let both = merged([Some(vec![0]), Some(vec![1])]);
+        assert_eq!(both.vertex_map, Some(vec![0, 1]));
+        assert!(!both.vertex_map_discarded);
+        assert!(!merged([None, None]).vertex_map_discarded);
+    }
 
     #[test]
     fn particle_size_counts_u16_values_and_preserves_following_data() {

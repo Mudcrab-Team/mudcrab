@@ -310,9 +310,9 @@ async fn reader_switch_reuses_archives_and_assets_but_rebuilds_database_and_cell
     assert!(fixture.output.join("cell_cache_preserved.rkyv").is_file());
 }
 
-/// Known full legacy proofs retain textures and scripts, not meshes; arbitrary metadata hashes cannot replace them.
+/// Known full legacy proofs retain DDS/PEX, but cannot prove the named NIF output contract.
 #[tokio::test]
-async fn known_legacy_full_hashes_reuse_assets_without_kind_keys() {
+async fn known_legacy_full_hashes_reuse_dds_and_pex_but_regenerate_nif_without_kind_keys() {
     for contract in [
         "historical",
         "projection-1",
@@ -685,9 +685,10 @@ async fn repeated_metadata_migrations_preserve_recorded_asset_producer() {
     );
 }
 
-/// Mode-only and previous versioned proofs survive multiple retained publications unchanged.
+/// Historical reader proofs and a fresh NIF kind proof survive repeated metadata publications.
 #[tokio::test]
-async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations() {
+async fn historical_legacy_reader_identity_with_current_nif_proof_survives_repeated_metadata_migrations()
+ {
     for projection_version in [None, Some(1), Some(2), Some(3)] {
         let fixture = Fixture::new(true);
         let legacy = fixture.config(RecordReader::Legacy);
@@ -756,7 +757,7 @@ async fn historical_legacy_reader_identity_survives_repeated_metadata_migrations
             );
             assert_eq!(
                 retained.asset_configuration_hashes, original.asset_configuration_hashes,
-                "reader migration must preserve the current NIF proof without adding DDS or script keys"
+                "metadata retention must preserve only the original fresh NIF proof"
             );
             let provenance = json_artifact(output, "metadata-rebuild.json");
             assert_eq!(provenance["retained_asset_record_reader"], original_reader);
