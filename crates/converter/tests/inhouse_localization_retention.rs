@@ -1017,9 +1017,17 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
             "no SQL object silently omitted"
         );
         assert_eq!(
-            full_tables["base_texture_swaps"].len(),
-            1,
-            "the full export must populate the material view before testing deferral"
+            full_tables["base_texture_swaps"],
+            vec![vec![
+                MoveSqlCell::Integer(0x0100_5602),
+                MoveSqlCell::Integer(0),
+                MoveSqlCell::Text(b"ArchiveShape".to_vec()),
+                MoveSqlCell::Integer(0),
+                MoveSqlCell::Integer(0x0100_5700),
+                MoveSqlCell::Null,
+                MoveSqlCell::Text(b"missing_texture_set".to_vec()),
+            ]],
+            "the full export must preserve the exact material row before testing deferral"
         );
         let deferred = [
             "worldspaces",

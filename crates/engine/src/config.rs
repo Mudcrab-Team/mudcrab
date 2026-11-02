@@ -3579,7 +3579,7 @@ mod tests {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
             // The receipt utility owns these argparse/Git options. Do not add them to
-            // the global exclusions: an engine launcher must still reject them.
+            // the global exclusions: engine lines, including this file's, reject them.
             let material_oracle_option = path
                 .file_name()
                 .is_some_and(|name| name == "object_materials_oracle.py")
@@ -3592,7 +3592,12 @@ mod tests {
                     "--others",
                     "--exclude-standard",
                 ]
-                .contains(&flag);
+                .contains(&flag)
+                && !script.lines().any(|line| {
+                    line.split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word == "engine")
+                        && script_cli_options(line).contains(&flag)
+                });
             if NON_ENGINE_FLAGS.contains(&flag) || observation_option || material_oracle_option {
                 continue;
             }
@@ -3619,6 +3624,13 @@ mod tests {
             "--exclude-standard",
         ] {
             assert_eq!(checked_script_engine_flags(flag, oracle), 0);
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(&format!("engine {flag}"), oracle)
+                })
+                .is_err(),
+                "{flag} must still fail on an engine line in the oracle"
+            );
             assert!(
                 std::panic::catch_unwind(|| {
                     checked_script_engine_flags(flag, std::path::Path::new("launch.sh"))
