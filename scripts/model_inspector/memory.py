@@ -30,4 +30,3 @@ class Darwin:
         if self.lib.proc_pid_rusage(pid, 0, ctypes.byref(info)):
             raise Refused('proc_pid_rusage failed for ' + str(pid))
         return dict(rss=info.resident_size, footprint=info.phys_footprint)
-

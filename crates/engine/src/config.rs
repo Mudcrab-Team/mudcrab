@@ -3640,10 +3640,7 @@ mod tests {
         );
     }
 
-    /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
-    /// included, is read from disk, so a script added later cannot pass an
-    /// option the parser refuses without failing this test. The scan is skipped
-    /// when the repository's `scripts/` is not next to this crate.
+    /// Standalone inspector flags must not become general engine CLI options.
     #[test]
     fn inspector_options_are_scoped_to_the_standalone_example_launcher() {
         let tool = std::path::Path::new("scripts/model_inspector/runtime.py");
@@ -3667,6 +3664,10 @@ mod tests {
         );
     }
 
+    /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
+    /// included, is read from disk, so a script added later cannot pass an
+    /// option the parser refuses without failing this test. The scan is skipped
+    /// when the repository's `scripts/` is not next to this crate.
     #[test]
     fn the_scripts_only_pass_options_the_parser_accepts() {
         let Some(scripts) = scripts_directory() else {
