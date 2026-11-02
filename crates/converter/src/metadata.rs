@@ -1560,7 +1560,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12] {
+        for adapter in [10, 11] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1596,6 +1596,9 @@ mod metadata_schema_controls {
             );
             for (key, value) in [
                 ("adapter_version", serde_json::json!(8)),
+                // Cache migration is not a retained-asset producer proof: this helper
+                // reconstructs only the explicitly supported adapter-10/11 identities.
+                ("adapter_version", serde_json::json!(12)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
