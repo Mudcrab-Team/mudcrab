@@ -50,6 +50,21 @@ qualification. Early captures can precede shader readiness. The standalone main-
 not install the pending authored NIF UV or creature-idle playback consumers, so P does not add
 animation to a static model.
 
+## Screenshots
+
+These F12 captures use this tool's main-based build on Apple M4 Pro/Metal. They show
+baseline model viewing, not acceptance of pending material fixes. The chandelier's
+flat baseline material is visible; #483 is not part of this tool PR.
+
+![A complete goat-horn chandelier in the inspector](../images/model-inspector-single-model.png)
+
+Single-model view. Use the up/down arrows to fit the model, then F12 to save the frame.
+
+![The chandelier viewed from a second orbit angle](../images/model-inspector-orbit.png)
+
+Orbit view with ambient fill toggled off. Left/right arrows orbit; Space toggles fill.
+The baseline emissive surface changes little with ambient fill. There is no wireframe mode.
+
 ## Limits, output, and recovery
 
 Only one native session runs at a time. A busy native lock, another game/inspector, another managed
