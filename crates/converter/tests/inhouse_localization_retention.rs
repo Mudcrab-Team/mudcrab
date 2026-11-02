@@ -1023,7 +1023,8 @@ fn archive_only_preserves_complete_facts_and_caches_while_explicit_views_defer()
                 MoveSqlCell::Integer(0),
                 MoveSqlCell::Text(b"ArchiveShape".to_vec()),
                 MoveSqlCell::Integer(0),
-                MoveSqlCell::Integer(0x0100_5700),
+                // The in-house reader clears links to absent TXST records before projection.
+                MoveSqlCell::Integer(0),
                 MoveSqlCell::Null,
                 MoveSqlCell::Text(b"missing_texture_set".to_vec()),
             ]],
