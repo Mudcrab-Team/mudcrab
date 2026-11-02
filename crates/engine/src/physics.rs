@@ -1700,6 +1700,19 @@ pub fn integrate_walk(
     }
 }
 
+type WalkBodyQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Transform,
+        &'static Collider,
+        &'static mut KinematicCharacterController,
+        &'static mut WalkState,
+        Option<&'static KinematicCharacterControllerOutput>,
+    ),
+>;
+
 /// Fixed-step walk integration + controller feed (V10, V11, V18).
 pub fn walk_movement_system(
     mode: Res<MoveMode>,
@@ -1707,14 +1720,7 @@ pub fn walk_movement_system(
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
     context: ReadRapierContext,
-    mut player: Query<(
-        Entity,
-        &mut Transform,
-        &Collider,
-        &mut KinematicCharacterController,
-        &mut WalkState,
-        Option<&KinematicCharacterControllerOutput>,
-    )>,
+    mut player: WalkBodyQuery,
 ) {
     if *mode != MoveMode::Walk {
         return;
