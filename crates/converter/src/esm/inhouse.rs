@@ -26,12 +26,12 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 12;
+pub const ADAPTER_VERSION: u32 = 13;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 4;
+pub const LEGACY_PROJECTION_VERSION: u32 = 5;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
