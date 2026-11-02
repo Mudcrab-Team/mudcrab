@@ -49,8 +49,8 @@ The adapter identifier is `bevy-interior-v1`; it is an approximation, not a Skyr
    It does not invoke the historical affine DALC helper, assume native `G=0`, or apply specular
    scale. The native raw-domain matrix and live source selection remain separate research.
 2. Interior direct color is the selected sRGB color. Bevy illuminance is the user's sun level
-   (or existing startup level without settings) times `max(selected fade, 0)`. Missing fade uses
-   1. This fade/intensity mapping is an explicit uncalibrated backend policy. Zero stays zero;
+   (or existing startup level without settings) times `max(selected fade, 0)`. Missing fade
+   uses 1. This fade/intensity mapping is an explicit uncalibrated backend policy. Zero stays zero;
    negative values remain in diagnostics and are suppressed at the backend.
 3. Rotations use XY as bearing from Creation +Y toward +X and Z as elevation above XY. A
    unit direction is mapped by `(x,y,z) -> (x,z,-y)`; Bevy rays travel opposite that direction.
