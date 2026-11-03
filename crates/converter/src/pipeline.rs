@@ -681,7 +681,8 @@ impl AssetPipeline {
                     return Err(error);
                 }
                 undiscovered.push(path.to_path_buf());
-                record_input_failure(&mut report, &mut manifest, path, error);
+                let key = input_failure_key(&config.data_dir, path);
+                record_input_failure(&mut report, &mut manifest, Path::new(&key), error);
                 Ok(())
             })?
         };
@@ -998,7 +999,8 @@ impl AssetPipeline {
                     if config.fail_fast {
                         return Err(error);
                     }
-                    record_input_failure(&mut report, &mut manifest, key.unwrap_or(source), error);
+                    let key = input_failure_key(&config.data_dir, key.unwrap_or(source));
+                    record_input_failure(&mut report, &mut manifest, Path::new(&key), error);
                     Ok(())
                 },
             )?;
@@ -1256,6 +1258,7 @@ impl AssetPipeline {
             .map(|path| (path.clone(), path))
             .collect();
         let mut loose_keys = BTreeSet::new();
+        let mut skipped_mo2_lod_inputs = BTreeSet::new();
         for (relative, source) in &resolved_files {
             if crate::asset_path::is_authoring_resource(relative) {
                 manifest.excluded_inputs.insert(
@@ -1273,13 +1276,17 @@ impl AssetPipeline {
             } else {
                 continue;
             };
-            let canonical = match canonical_asset_path(relative, kind, ext) {
-                Ok(canonical) => canonical,
-                Err(error) if !config.fail_fast => {
-                    record_input_failure(&mut report, &mut manifest, Path::new(relative), error);
-                    continue;
-                }
-                Err(error) => return Err(error),
+            let canonical = match canonicalize_loose_mo2_asset(
+                relative,
+                kind,
+                ext,
+                config.fail_fast,
+                &mut report,
+                &mut manifest,
+                &mut skipped_mo2_lod_inputs,
+            )? {
+                Some(canonical) => canonical,
+                None => continue,
             };
             ensure!(
                 loose_keys.insert(canonical.clone()),
@@ -1586,7 +1593,11 @@ impl AssetPipeline {
                 .insert("scripts".into(), scripts_started.elapsed().as_millis());
         }
         if config.mo2.is_some() && !config.no_lod && !plugins.is_empty() {
-            stage_mo2_lod_inputs(&staging.join("vfs"), &resolved_files)?;
+            stage_mo2_lod_inputs(
+                &staging.join("vfs"),
+                &resolved_files,
+                &skipped_mo2_lod_inputs,
+            )?;
         }
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
@@ -1855,6 +1866,11 @@ enum Produced {
     /// Freshly converted; `digest` is the output's (size, SHA-256) when the
     /// converter already computed it, so it need not be read back.
     Converted { digest: Option<(u64, String)> },
+}
+
+struct FailureIdentity {
+    key: String,
+    loose_source: bool,
 }
 
 struct GpuTag {
@@ -2449,7 +2465,14 @@ impl ConversionBatch<'_> {
                                     stage,
                                     completed,
                                     total_files,
-                                    key,
+                                    FailureIdentity {
+                                        key,
+                                        loose_source: is_loose_vfs_source(
+                                            source_paths,
+                                            &staging_vfs,
+                                            &relative,
+                                        ),
+                                    },
                                     relative,
                                     error.into(),
                                 )
@@ -2472,7 +2495,14 @@ impl ConversionBatch<'_> {
                                     stage,
                                     completed,
                                     total_files,
-                                    key,
+                                    FailureIdentity {
+                                        key,
+                                        loose_source: is_loose_vfs_source(
+                                            source_paths,
+                                            &staging_vfs,
+                                            &relative,
+                                        ),
+                                    },
                                     relative,
                                     error,
                                 )
@@ -2551,8 +2581,22 @@ impl ConversionBatch<'_> {
                             first_error = Some(error);
                         }
                     } else {
-                        self.record_skip(stage, completed, total_files, key, relative, error)
-                            .await;
+                        self.record_skip(
+                            stage,
+                            completed,
+                            total_files,
+                            FailureIdentity {
+                                key,
+                                loose_source: is_loose_vfs_source(
+                                    source_paths,
+                                    &staging_vfs,
+                                    &relative,
+                                ),
+                            },
+                            relative,
+                            error,
+                        )
+                        .await;
                     }
                 }
             }
@@ -2573,7 +2617,7 @@ impl ConversionBatch<'_> {
         stage: ProgressStage,
         completed: u64,
         total: u64,
-        key: String,
+        identity: FailureIdentity,
         relative: PathBuf,
         error: color_eyre::eyre::Error,
     ) {
@@ -2590,8 +2634,12 @@ impl ConversionBatch<'_> {
                 .with_outcome(AssetOutcome::Skipped),
             )
             .await;
-        let message = format!("{}: {error:#}", relative.display());
-        self.manifest.failures.insert(key, message.clone());
+        let message = if identity.loose_source {
+            format!("skipped loose asset {}: {error:#}", relative.display())
+        } else {
+            format!("{}: {error:#}", relative.display())
+        };
+        self.manifest.failures.insert(identity.key, message.clone());
         self.report.warnings.push(message);
         self.report.skipped += 1;
     }
@@ -3418,6 +3466,10 @@ pub(crate) fn discover(root: &Path) -> Result<Vec<PathBuf>> {
     discover_inputs(root, |_, error| Err(error))
 }
 
+fn traversal_error_is_required(depth: usize, has_path: bool) -> bool {
+    depth == 0 || !has_path
+}
+
 /// Source discovery can skip inaccessible descendants; the source root itself is required.
 /// Internal output scans use `discover`, which remains strict about staging integrity.
 fn discover_inputs(
@@ -3429,14 +3481,14 @@ fn discover_inputs(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                let path = error.path().unwrap_or(root).to_path_buf();
-                let required = error.depth() == 0;
+                let path = error.path().map(Path::to_path_buf);
+                let required = traversal_error_is_required(error.depth(), path.is_some());
                 let error = color_eyre::Report::from(error)
                     .wrap_err(format!("failed to discover inputs in {}", root.display()));
                 if required {
                     return Err(error);
                 }
-                failed(&path, error)?;
+                failed(path.as_deref().expect("required path checked above"), error)?;
                 continue;
             }
         };
@@ -3446,6 +3498,29 @@ fn discover_inputs(
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+fn is_loose_vfs_source(
+    source_paths: &BTreeMap<PathBuf, PathBuf>,
+    vfs_root: &Path,
+    relative: &Path,
+) -> bool {
+    source_paths
+        .get(&vfs_root.join(relative))
+        .is_some_and(|source| !source.starts_with(vfs_root))
+}
+
+fn input_failure_key(data_root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(data_root).unwrap_or(path);
+    let normalized = normalize_separators(relative);
+    match crate::repair::kind_for_recovery_key(relative) {
+        Some((asset_kind, ext, _)) => {
+            crate::asset_path::canonical_asset_path(&normalized, asset_kind, ext)
+                .unwrap_or_else(|_| normalized.to_ascii_lowercase())
+        }
+        None if !relative.is_absolute() => normalized.to_ascii_lowercase(),
+        None => normalize_separators(path),
+    }
 }
 
 fn record_input_failure(
@@ -3468,6 +3543,10 @@ fn mask_undiscovered_inputs(data: &Path, vfs: &Path, blocked: &[PathBuf]) -> Res
     let mut prefixes = BTreeSet::new();
     for path in blocked {
         let relative = path.strip_prefix(data)?;
+        ensure!(
+            !relative.as_os_str().is_empty(),
+            "cannot mask undiscovered inputs at the data root"
+        );
         prefixes.insert(PathBuf::from(
             normalize_separators(relative).to_ascii_lowercase(),
         ));
@@ -3825,10 +3904,38 @@ fn plugin_paths_with_diagnostics(
     Ok(plugins)
 }
 
+/// Canonicalizes a loose winner and records recoverable failures. Invalid texture keys must
+/// also stay out of later MO2 LOD staging, which reads the original resolved-file map.
+fn canonicalize_loose_mo2_asset(
+    relative: &str,
+    kind: AssetKind,
+    ext: &str,
+    fail_fast: bool,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+    skipped_lod_inputs: &mut BTreeSet<String>,
+) -> Result<Option<String>> {
+    match canonical_asset_path(relative, kind, ext) {
+        Ok(canonical) => Ok(Some(canonical)),
+        Err(error) if !fail_fast => {
+            record_input_failure(report, manifest, Path::new(relative), error);
+            if kind == AssetKind::Texture {
+                skipped_lod_inputs.insert(relative.to_string());
+            }
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Materializes winning loose LOD inputs for the compiler's filesystem-based VFS reads.
-fn stage_mo2_lod_inputs(vfs: &Path, sources: &BTreeMap<String, PathBuf>) -> Result<()> {
+fn stage_mo2_lod_inputs(
+    vfs: &Path,
+    sources: &BTreeMap<String, PathBuf>,
+    skipped: &BTreeSet<String>,
+) -> Result<()> {
     for (relative, source) in sources {
-        if crate::asset_path::is_authoring_resource(relative) {
+        if crate::asset_path::is_authoring_resource(relative) || skipped.contains(relative) {
             continue;
         }
         let relative = if extension(source, &["dds"]) {
@@ -5735,6 +5842,7 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
                     ensure!(
                         !(kind.is_dir() || kind.is_symlink())
                             || !name.starts_with(&prefix)
+                            || (kind.is_dir() && is_preserved_unusable_backup_name(output, &name)?)
                             || (kind.is_dir() && leftovers.contains(&name)),
                         "unowned publication backup {}; manual recovery required",
                         entry.path().display()
@@ -5891,6 +5999,33 @@ fn is_owned_backup_name(output: &Path, name: &str) -> Result<bool> {
     Ok(Path::new(name).components().count() == 1
         && !name.contains(['/', '\\', ':'])
         && name.starts_with(&publication_backup_prefix(output)?))
+}
+
+/// Matches only backup names emitted for a preserved unusable original.
+fn is_preserved_unusable_backup_name(output: &Path, name: &str) -> Result<bool> {
+    let Some(suffix) = name.strip_prefix(&publication_backup_prefix(output)?) else {
+        return Ok(false);
+    };
+    let Some((pid, tail)) = suffix.split_once("-unusable-") else {
+        return Ok(false);
+    };
+    if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(false);
+    }
+    let (timestamp, retry) = match tail.split_once('-') {
+        Some((timestamp, retry)) => (timestamp, Some(retry)),
+        None => (tail, None),
+    };
+    if timestamp.is_empty() || !timestamp.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(false);
+    }
+    match retry {
+        None => Ok(true),
+        Some(retry) => Ok(retry.bytes().all(|byte| byte.is_ascii_digit())
+            && retry.parse::<usize>().is_ok_and(|attempt| {
+                (1..MAX_PUBLICATION_LEFTOVERS).contains(&attempt) && attempt.to_string() == retry
+            })),
+    }
 }
 
 fn read_publication_leftovers(output: &Path) -> Result<Vec<String>> {
@@ -7979,7 +8114,7 @@ mod tests {
             ("textures/landscape/grass.dds".into(), texture.clone()),
             ("lodsettings/tamriel.lod".into(), sidecar.clone()),
         ]);
-        stage_mo2_lod_inputs(&vfs, &sources).unwrap();
+        stage_mo2_lod_inputs(&vfs, &sources, &BTreeSet::new()).unwrap();
         assert_eq!(
             fs::read(vfs.join("textures/landscape/grass.dds")).unwrap(),
             b"winning texture"

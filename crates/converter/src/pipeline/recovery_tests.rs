@@ -1,5 +1,15 @@
 use super::*;
 
+#[path = "recovery_tests/repair_selection.rs"]
+mod repair_selection;
+
+#[path = "recovery_tests/mo2_lod.rs"]
+mod mo2_lod;
+#[path = "recovery_tests/pathless.rs"]
+mod pathless;
+#[path = "recovery_tests/preserved_backup.rs"]
+mod preserved_backup;
+
 fn config(data: &Path, output: &Path) -> PipelineConfig {
     let mut config = PipelineConfig::new(data, output);
     config.cpu_jobs = 2;
