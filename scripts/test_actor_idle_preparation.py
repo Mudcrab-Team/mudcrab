@@ -1,15 +1,56 @@
 """Pure/synthetic actor oracle and mocked controller wiring; no native/OS control."""
 import copy
+import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
 import actor_idle_oracle as oracle
-import actor_idle_watchdog as watchdog
+import actor_idle_tools
 from actor_idle_tools import load_json
+
+
+class _Refused(ValueError):
+    pass
+
+
+def _controller_controls():
+    """Supply local controls so portable wiring tests need no private evidence tree."""
+    def check_sample(_elapsed, memory, _log_bytes):
+        if memory['rss'] >= 2 * 1024**3 or memory['footprint'] >= 2 * 1024**3:
+            raise _Refused('injected memory ceiling')
+
+    control = SimpleNamespace(
+        Refused=_Refused, Darwin=MagicMock(), GAME=re.compile(r'(?!)'),
+        FAULT=re.compile(rb'validation error'),
+        check_host=MagicMock(), check_sample=check_sample, command=MagicMock(),
+    )
+    return {
+        'geometry_watchdog': control,
+        'materials_process': SimpleNamespace(processes=MagicMock()),
+        'lifecycle': SimpleNamespace(OwnedChild=MagicMock()),
+        'lease_admission': SimpleNamespace(held_build_leases=MagicMock()),
+    }
+
+
+# The production loader keeps its exact pins. These tests exercise the actor
+# adapter with local doubles and do not import or qualify operational helpers.
+_shared = actor_idle_tools.shared
+try:
+    actor_idle_tools.shared = lambda name: _controller_controls()[name]
+    _spec = importlib.util.spec_from_file_location(
+        '_test_actor_idle_watchdog_' + uuid.uuid4().hex,
+        Path(__file__).with_name('actor_idle_watchdog.py'))
+    watchdog = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(watchdog)
+finally:
+    actor_idle_tools.shared = _shared
 
 
 def fixture():
