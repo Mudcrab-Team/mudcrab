@@ -974,7 +974,7 @@ a shorter `DATA` leaves them NULL for both readers, and floats that are not fini
 in-house reader clears links that do not resolve and the legacy reader keeps them), and the legacy
 reader now remaps `LIGH` `SNAM`/`LNAM` as the in-house schema already did. The columns are
 additive and optional, with no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: `create_tables` adds
-them to an older reused `lights` table. The engine reads radius, colour and flags only.
+them to an older reused `lights` table. The engine reads radius, colour, flags, `fade`, `falloff` and `fade_status`.
 
 ---
 
