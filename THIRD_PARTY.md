@@ -42,6 +42,11 @@ source is unchanged and keeps `MIT OR Apache-2.0`; both upstream license files a
 the [patch notes](vendor/bevy_image/README.mudcrab.md) for the source hash, the exact change and
 the removal criteria.
 
+`vendor/project-wormhole-nif` is a Mudcrab fork of the published `project-wormhole-nif` 0.1.0
+crate (`GPL-3.0-or-later`, the same licence as Mudcrab). Unlike `vendor/bevy_image` it carries
+Mudcrab's own parser changes. See its [fork notes](vendor/project-wormhole-nif/README.mudcrab.md)
+for the source hash, what changed and how to compare it with the published crate.
+
 The MIT notice for the original shader code (Community Shaders,
 `package/SKSE/Plugins/CommunityShaders/Licenses/LICENSE-Perapechka-MIT.txt`):
 

@@ -426,6 +426,7 @@ fn configured_rendering(config: Option<&EngineConfig>) -> Value {
         return json!({"value": null, "unavailable": {"value": "EngineConfig absent"}});
     };
     let mut configured = Section::default();
+    configured.text("visual_profile", config.visual_profile.name());
     configured.set("lighting", config.lights);
     configured.set(
         "diagnostic_asset_fallbacks",
@@ -637,6 +638,7 @@ fn streaming_snapshot(metrics: &StreamingMetrics) -> Value {
         "terrain_validation_failures": metrics.terrain_validation_failures, "water_validation_failures": metrics.water_validation_failures,
         "transform_bounds_validation_failures": metrics.transform_bounds_validation_failures,
         "streaming_invariant_failures": metrics.streaming_invariant_failures,
+        "static_colliders_excluded_authored": metrics.static_colliders_excluded_authored,
         "diagnostic_fallbacks": metrics.diagnostic_fallbacks, "origin_rebases": metrics.origin_rebases,
         "commit_budget_violations": metrics.commit_budget_violations,
         "recent_asset_failures": failures,

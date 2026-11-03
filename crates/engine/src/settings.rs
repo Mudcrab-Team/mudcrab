@@ -99,6 +99,8 @@ pub struct RenderingSettings {
     pub upload_mib: usize,
     pub io_threads: usize,
     pub diagnostic_asset_fallbacks: bool,
+    /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
+    pub visual_profile: usize,
 }
 
 impl Default for RenderingSettings {
@@ -166,6 +168,7 @@ impl Default for RenderingSettings {
             upload_mib: config.max_upload_mib_per_frame,
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
+            visual_profile: config.visual_profile.index(),
         }
     }
 }
@@ -323,6 +326,12 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
         ]
     ),
     number!(Graphics, "Image", "Vertical field of view (degrees)", fov_degrees; 30.0, 110.0, 5.0),
+    choice!(
+        "Image",
+        "Visual profile (restart)",
+        visual_profile,
+        &["Mudcrab", "Skyrim"]
+    ),
     choice!("Color grading", "Grade mode", color_grade, &["Off", "Saturation", "Full", "Approved sRGB", "Snapshot linear", "Record sRGB"]),
     choice!("Color grading", "Sky and fog preset", visual_preset, &["Vivid", "Cool Gray"]),
     grade_number!("Grade saturation", grade_saturation, 0; 0.0, 3.0, 0.05).when(|s| s.color_grade != 0),
@@ -566,6 +575,7 @@ impl RenderingSettings {
         self.upload_mib = config.max_upload_mib_per_frame;
         self.io_threads = config.io_threads;
         self.diagnostic_asset_fallbacks = config.diagnostic_asset_fallbacks;
+        self.visual_profile = config.visual_profile.index();
     }
 
     fn retain_explicit_launch_values(&mut self, config: &EngineConfig) {
@@ -607,6 +617,7 @@ impl RenderingSettings {
                 "--max-model-spawns-per-frame" => self.model_spawns = source.model_spawns,
                 "--max-upload-mib-per-frame" => self.upload_mib = source.upload_mib,
                 "--io-threads" => self.io_threads = source.io_threads,
+                "--visual-profile" => self.visual_profile = source.visual_profile,
                 "--diagnostic-asset-fallbacks" => {
                     self.diagnostic_asset_fallbacks = source.diagnostic_asset_fallbacks
                 }
@@ -801,6 +812,10 @@ fn prepare_settings_at(
     }
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
+    if let Some(profile) = crate::visual_profile::VisualProfile::from_index(settings.visual_profile)
+    {
+        config.visual_profile = profile;
+    }
     (settings, file)
 }
 
@@ -1352,6 +1367,45 @@ mod tests {
         assert!(lights.is_modified(&settings));
         assert!(budget.relevant(&settings));
         assert!(!budget.is_modified(&settings));
+    }
+
+    #[test]
+    fn saved_visual_profile_selects_the_run_and_still_refuses_foreign_flags() {
+        use crate::visual_profile::VisualProfile;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            visual_profile: VisualProfile::Skyrim.index(),
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+
+        let mut config = EngineConfig::default();
+        prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!(config.visual_profile, VisualProfile::Skyrim);
+        config.check_visual_profile().unwrap();
+
+        // The parser accepted --tone-map under the default profile; the saved one refuses it.
+        let mut config = launch(&["--tone-map".into(), "tony".into()]);
+        prepare_settings_at(&mut config, Some(path.clone()));
+        assert!(matches!(
+            config.check_visual_profile(),
+            Err(crate::config::ConfigError::ForeignToProfile {
+                option: "--tone-map",
+                ..
+            })
+        ));
+
+        let mut config = launch(&["--visual-profile".into(), "mudcrab".into()]);
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(config.visual_profile, VisualProfile::Mudcrab);
+        assert_eq!(loaded.visual_profile, VisualProfile::Mudcrab.index());
+
+        let unknown = RenderingSettings {
+            visual_profile: 2,
+            ..default()
+        };
+        assert!(unknown.validate().is_err());
     }
 
     #[test]

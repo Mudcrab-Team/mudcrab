@@ -21,8 +21,9 @@ use crate::{
     pipeline::{
         LodWorkerOwnership, archive_load_order_priority, compile_lod_chunks,
         conversion_is_complete, discover, installed_archive_owners, non_mo2_archive_is_active,
-        overlay_loose_assets, publish_new_directory, sort_archives_by_load_order, staging_path,
-        validate_artifacts, write_streaming_cost_catalog,
+        overlay_loose_assets, publish_new_directory, report_projection_omissions,
+        sort_archives_by_load_order, staging_path, validate_artifacts,
+        write_streaming_cost_catalog,
     },
     records::addons::RuntimeSchemas,
 };
@@ -678,6 +679,7 @@ async fn rebuild_into(
         "rebuilt asset integration failed: {:?}",
         integration.issues
     );
+    report_projection_omissions(&mut report, &integration.projection_omissions);
     report.integration = Some(integration);
     report
         .artifacts

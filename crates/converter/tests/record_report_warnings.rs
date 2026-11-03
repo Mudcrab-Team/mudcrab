@@ -605,6 +605,7 @@ async fn readable_localized_gaps_are_notices_but_malformed_entries_remain_warnin
             .join(if malformed { "malformed" } else { "absent" });
         let data = case.join("Data");
         let mut body = keyword(0x801, b"BeforeMessage\0");
+        // Message names are localized text; SNDR.FNAM contains numeric legacy flags.
         for (id, key) in [(0x806, 17u32), (0x807, 33), (0x808, 0), (0x809, 34)] {
             body.extend(record(
                 b"MESG",
