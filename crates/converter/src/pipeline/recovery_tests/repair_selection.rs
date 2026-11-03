@@ -308,7 +308,11 @@ async fn malformed_percent_loose_asset_stays_failed_while_valid_neighbor_repairs
     let data = data_with_script(directory.path());
     let output = directory.path().join("modern");
     let malformed_loose = data.join("Scripts/bad%.pex");
-    fs::write(&malformed_loose, dummy_content::pex::minimal("LooseBad").unwrap()).unwrap();
+    fs::write(
+        &malformed_loose,
+        dummy_content::pex::minimal("LooseBad").unwrap(),
+    )
+    .unwrap();
     // The archive also has a valid source with the same malformed path. Repair must not
     // turn the malformed loose failure into a successful archive conversion.
     let malformed_archive = dummy_content::pex::minimal("ArchivedBad").unwrap();
@@ -336,9 +340,10 @@ async fn malformed_percent_loose_asset_stays_failed_while_valid_neighbor_repairs
     assert!(manifest.failures.contains_key("scripts/bad%.pex"));
     assert!(manifest.entries.remove("scripts/neighbor.pex").is_some());
     fs::remove_file(output.join("scripts/neighbor.luau")).unwrap();
-    manifest
-        .failures
-        .insert("scripts/neighbor.pex".into(), "simulated neighbor failure".into());
+    manifest.failures.insert(
+        "scripts/neighbor.pex".into(),
+        "simulated neighbor failure".into(),
+    );
     manifest.complete = false;
     manifest.save(&manifest_path).unwrap();
     assert_repairable_pack(&output);
