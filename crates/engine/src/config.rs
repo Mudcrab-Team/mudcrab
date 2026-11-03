@@ -1644,7 +1644,6 @@ mod tests {
         "--quiet",               // git diff
         "--progress-bar",        // curl in install.sh
         "--dest",                // stage-release.sh
-        "--target",              // stage-release.sh, cargo build
         "--short",               // git rev-parse
         "--output", // world-inspect, profiling, startup runner, repeat-terrain-startup.py
         "--pairs-output", // correlate_drawables.py
@@ -3484,7 +3483,10 @@ mod tests {
             let observation_option = path.file_name().is_some_and(|name| {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+            let release_stage_option = path
+                .file_name()
+                .is_some_and(|name| name == "stage-release.sh" && flag == "--target");
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || release_stage_option {
                 continue;
             }
             assert!(
