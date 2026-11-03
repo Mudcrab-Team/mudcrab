@@ -1373,8 +1373,9 @@ fn append_block(
                 at.cluster_vertices,
                 &sections.cluster_vertices,
             );
+            // The index sections live behind the vertex references in the same buffer.
             queue.write_buffer(
-                &gpu.cluster_indices,
+                &gpu.cluster_vertices,
                 at.cluster_indices,
                 &sections.cluster_indices,
             );
@@ -1514,8 +1515,10 @@ struct ClusterGpu {
     /// Per vertex: packed octahedral normal, packed UV, vertex colour (three words).
     attributes: Buffer,
     clusters: Buffer,
+    /// The mesh-info rows, the per-mesh vertex references and, behind them, the u16 cluster-local
+    /// index sections: one buffer that the vertex stages read as storage and the count path binds as
+    /// its index buffer (see [`PoolCursors`]).
     cluster_vertices: Buffer,
-    cluster_indices: Buffer,
     groups: Buffer,
     meshes: Buffer,
     instances: Buffer,
@@ -1699,7 +1702,9 @@ struct PooledMeshes {
     positions: Vec<u8>,
     attributes: Vec<u8>,
     clusters: Vec<u8>,
+    /// The merged buffer: mesh-info rows, vertex-reference sections, then the index sections.
     cluster_vertices: Vec<u8>,
+    /// The index sections alone, as they follow the vertex references in `cluster_vertices`.
     cluster_indices: Vec<u8>,
     groups: Vec<u8>,
     /// `MeshInfo` rows: eight words of bases and counts, uv_min and uv_scale, then the bounding
@@ -1713,7 +1718,11 @@ struct PooledMeshes {
 /// Vertex pulling then needs neither a mesh-table nor a cluster-header binding.
 const MESH_INFO_BYTES: u64 = 64;
 
-/// Where the next mesh's sections go in each pooled buffer, in bytes.
+/// Where the next mesh's sections go in each pooled buffer, in bytes. `cluster_vertices` and
+/// `cluster_indices` are two cursors into one buffer: the index sections start where the whole
+/// scene's vertex-reference sections end (see [`index_pool_start`]), so a mesh's index base is an
+/// absolute offset in that buffer. In a scene's totals `cluster_indices` is the bytes of the index
+/// sections alone, counted from zero.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct PoolCursors {
     positions: u64,
@@ -1732,6 +1741,14 @@ impl PoolCursors {
         }
     }
 
+    /// The cursors before any mesh has arrived, for a scene whose pooled sizes are `totals`.
+    fn first_mesh(meshes: usize, totals: &PoolCursors) -> Self {
+        Self {
+            cluster_indices: index_pool_start(totals),
+            ..Self::for_mesh_count(meshes)
+        }
+    }
+
     fn advance(&mut self, sizes: &PoolCursors) {
         self.positions += sizes.positions;
         self.attributes += sizes.attributes;
@@ -1740,6 +1757,17 @@ impl PoolCursors {
         self.cluster_indices += sizes.cluster_indices;
         self.groups += sizes.groups;
     }
+}
+
+/// Where the u16 index sections begin in the merged vertex buffer: after the mesh-info rows and every
+/// vertex-reference section, on a word boundary so the sections can be read as u32 words.
+fn index_pool_start(totals: &PoolCursors) -> u64 {
+    totals.cluster_vertices.next_multiple_of(4)
+}
+
+/// The size of the merged vertex-reference and index buffer.
+fn merged_vertex_pool_bytes(totals: &PoolCursors) -> u64 {
+    index_pool_start(totals) + totals.cluster_indices
 }
 
 /// The bytes one mesh takes in each pooled buffer (every section padded to words), without
@@ -1882,7 +1910,11 @@ fn pool_meshes(meshes: &[ClusterMeshAsset]) -> PooledMeshes {
         infos: Vec::new(),
         cluster_counts: Vec::new(),
     };
-    let mut at = PoolCursors::for_mesh_count(meshes.len());
+    let mut totals = PoolCursors::for_mesh_count(meshes.len());
+    for mesh in meshes {
+        totals.advance(&mesh_pool_sizes(mesh));
+    }
+    let mut at = PoolCursors::first_mesh(meshes.len(), &totals);
     for (id, mesh) in meshes.iter().enumerate() {
         let row = mesh_info_row(&at, mesh, false);
         pool.infos.extend_from_slice(&row);
@@ -1907,12 +1939,18 @@ fn pool_meshes(meshes: &[ClusterMeshAsset]) -> PooledMeshes {
             .extend_from_slice(&sections.cluster_indices);
         pool.groups.extend_from_slice(&sections.groups);
     }
+    assert_eq!(
+        pool.cluster_vertices.len() as u64,
+        index_pool_start(&totals)
+    );
+    let indices = pool.cluster_indices.clone();
+    pool.cluster_vertices.extend_from_slice(&indices);
     pool
 }
 
 /// Whether the scene fits what the adapter binds and allocates: every pooled section, the instance
 /// tables and per-view lists (20-byte arguments, 16-byte visible records) in one storage binding
-/// each, the index pool as an index buffer, and the slot and
+/// each (the merged vertex-reference and index buffer is also an index buffer), and the slot and
 /// instance totals in the 32-bit indices the shaders use. The sizes are summed in 64 bits, so
 /// nothing wraps before it is compared.
 fn check_scene_limits(
@@ -1956,7 +1994,10 @@ fn check_scene_limits(
         ("positions", totals.positions),
         ("vertex attributes", totals.attributes),
         ("cluster records", totals.clusters),
-        ("cluster vertex references", totals.cluster_vertices),
+        (
+            "cluster vertex references and local indices",
+            merged_vertex_pool_bytes(totals),
+        ),
         (
             "per-view indexed draw arguments",
             slots.max(1) * DRAW_INDEXED_INDIRECT_BYTES,
@@ -1973,12 +2014,12 @@ fn check_scene_limits(
             ));
         }
     }
-    if totals.cluster_indices > limits.max_buffer_size
-        || totals.cluster_indices / 2 > u64::from(u32::MAX)
+    if merged_vertex_pool_bytes(totals) > limits.max_buffer_size
+        || merged_vertex_pool_bytes(totals) / 2 > u64::from(u32::MAX)
     {
         return Err(format!(
-            "the cluster index pool needs {} bytes, exceeding the adapter buffer size or 32-bit index addressing",
-            totals.cluster_indices
+            "the cluster index pool ends {} bytes into its buffer, exceeding the adapter buffer size or 32-bit index addressing",
+            merged_vertex_pool_bytes(totals)
         ));
     }
     info!(
@@ -2093,11 +2134,12 @@ fn prepare_cluster_gpu(
     let positions = make("cluster positions", totals.positions);
     let attributes = make("cluster attributes", totals.attributes);
     let clusters = make("cluster records", totals.clusters);
-    let cluster_vertices = make("cluster vertex references", totals.cluster_vertices);
-    let cluster_indices = device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
-        label: Some("cluster local indices"),
-        size: totals.cluster_indices.max(4),
-        usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+    // Both uses are read-only, so the count path's index buffer and the vertex stages' storage
+    // binding of this buffer can be in one pass.
+    let cluster_vertices = device.create_buffer(&bevy::render::render_resource::BufferDescriptor {
+        label: Some("cluster vertex references and local indices"),
+        size: merged_vertex_pool_bytes(&totals).max(4),
+        usage: BufferUsages::STORAGE | BufferUsages::INDEX | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let groups = make("cluster groups", totals.groups);
@@ -2282,7 +2324,6 @@ fn prepare_cluster_gpu(
         attributes,
         clusters,
         cluster_vertices,
-        cluster_indices,
         groups,
         meshes,
         instances,
@@ -2314,7 +2355,7 @@ fn prepare_cluster_gpu(
                 .map(|mesh| terrain.contains(&mesh))
                 .collect()
         },
-        cursors: PoolCursors::for_mesh_count(scene.meshes.len()),
+        cursors: PoolCursors::first_mesh(scene.meshes.len(), &totals),
         capacity_instances: scene.instances.len() as u32,
         total_instances: 0,
         total_slots: slot_total,
@@ -3922,7 +3963,7 @@ impl<P: PhaseItem, const ONCE: bool> RenderCommand<P> for DrawClusterIndirect<ON
                 return RenderCommandResult::Success;
             }
         }
-        pass.set_index_buffer(gpu.cluster_indices.slice(..), IndexFormat::Uint16);
+        pass.set_index_buffer(gpu.cluster_vertices.slice(..), IndexFormat::Uint16);
         if gpu.use_count {
             pass.multi_draw_indexed_indirect_count(
                 &view_gpu.args,
@@ -5645,6 +5686,12 @@ mod tests {
         for row in [0, 16] {
             let vertex_base = word(&pool.infos, row);
             let index_base = word(&pool.infos, row + 3);
+            // An absolute u16 offset in the merged buffer: word aligned, behind the references.
+            assert_eq!(index_base % 2, 0);
+            assert!(
+                u64::from(index_base) * 2
+                    >= (pool.cluster_vertices.len() - pool.cluster_indices.len()) as u64
+            );
             let snapshot = mesh.snapshot().unwrap();
             let view = shared::cluster::read_mcl_validated(&snapshot).unwrap();
             for id in 0..mesh.cluster_count as usize {
@@ -5668,7 +5715,7 @@ mod tests {
                 let indexed = (first_index..first_index + count)
                     .map(|index| {
                         let local = u16::from_le_bytes(
-                            pool.cluster_indices[index * 2..index * 2 + 2]
+                            pool.cluster_vertices[index * 2..index * 2 + 2]
                                 .try_into()
                                 .unwrap(),
                         );
@@ -5705,7 +5752,11 @@ mod tests {
         let pool = pool_meshes(&meshes);
         // The sizes the buffers are created with, and the rows and sections each mesh is written
         // with as it arrives, are the whole-scene pool's.
-        let mut at = PoolCursors::for_mesh_count(meshes.len());
+        let mut totals = PoolCursors::for_mesh_count(meshes.len());
+        for mesh in &meshes {
+            totals.advance(&mesh_pool_sizes(mesh));
+        }
+        let mut at = PoolCursors::first_mesh(meshes.len(), &totals);
         let mut rows = Vec::new();
         for mesh in &meshes {
             rows.extend_from_slice(&mesh_info_row(&at, mesh, false));
@@ -5727,8 +5778,18 @@ mod tests {
         assert_eq!(at.positions, pool.positions.len() as u64);
         assert_eq!(at.attributes, pool.attributes.len() as u64);
         assert_eq!(at.clusters, pool.clusters.len() as u64);
-        assert_eq!(at.cluster_vertices, pool.cluster_vertices.len() as u64);
-        assert_eq!(at.cluster_indices, pool.cluster_indices.len() as u64);
+        // The vertex-reference cursor ends where the index cursor started, and the index cursor
+        // ends at the end of the merged buffer the scene's totals size.
+        assert_eq!(at.cluster_vertices, index_pool_start(&totals));
+        assert_eq!(
+            at.cluster_vertices,
+            pool.cluster_vertices.len() as u64 - pool.cluster_indices.len() as u64
+        );
+        assert_eq!(at.cluster_indices, pool.cluster_vertices.len() as u64);
+        assert_eq!(
+            merged_vertex_pool_bytes(&totals),
+            pool.cluster_vertices.len() as u64
+        );
         assert_eq!(at.groups, pool.groups.len() as u64);
     }
 
