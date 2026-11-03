@@ -1568,6 +1568,9 @@ struct ClusterGpu {
     total_instances: u32,
     /// The most clusters one view can select over every batch of the whole scene.
     total_slots: u32,
+    /// The triangles of the largest cluster of any mesh in the scene: every pulled draw covers this
+    /// many triangles per instance, and the vertices past a cluster's own count are padding.
+    triangle_limit: u32,
     next_slot: u32,
     /// Immutable scheduling metadata; large meshes retain cooperative cluster scatter.
     large_instances: Vec<u32>,
@@ -2315,6 +2318,12 @@ fn prepare_cluster_gpu(
         capacity_instances: scene.instances.len() as u32,
         total_instances: 0,
         total_slots: slot_total,
+        triangle_limit: scene
+            .meshes
+            .iter()
+            .map(|mesh| mesh.max_cluster_triangles)
+            .max()
+            .unwrap_or(0),
         next_slot: 0,
         large_instances: Vec::new(),
         terrain_blocks: scene.terrain_blocks.clone(),
@@ -3269,6 +3278,7 @@ fn run_cluster_cull(
     }
     let instance_count = gpu.total_instances;
     let instance_mask_base = gpu.batches.len().max(1) as u32;
+    let triangle_limit = gpu.triangle_limit;
     let use_count = gpu.use_count;
     let gpu_identity = gpu.identity;
     let layout = gpu.layout_epoch;
@@ -3295,7 +3305,12 @@ fn run_cluster_cull(
         else {
             continue;
         };
-        let params = cull_params(view, &settings, instance_count, instance_mask_base, epoch);
+        let params = cull_params(
+            view,
+            &settings,
+            (instance_count, instance_mask_base, triangle_limit),
+            epoch,
+        );
         let upload = cull_params_to_upload(&mut view_gpu.params_uploaded, params);
         let uniform_changed = upload.is_some();
         if let Some(bytes) = upload {
@@ -3702,8 +3717,7 @@ fn cull_params_to_upload(
 fn cull_params(
     view: &ExtractedView,
     settings: &ClusterSettings,
-    instance_count: u32,
-    instance_mask_base: u32,
+    (instance_count, instance_mask_base, triangle_limit): (u32, u32, u32),
     epoch: u32,
 ) -> CullParams {
     let clip_from_world = view
@@ -3746,7 +3760,9 @@ fn cull_params(
         orthographic: u32::from(orthographic),
         terrain_error_pixels: settings.terrain_error_pixels,
         instance_mask_base,
+        triangle_limit,
         epoch,
+        padding: [0; 3],
     }
 }
 

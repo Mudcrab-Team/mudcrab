@@ -21,7 +21,7 @@ pub(crate) const DRAW_INDEXED_INDIRECT_BYTES: u64 =
 /// Selection and first_index carried from cull to scatter without another storage binding.
 pub(crate) const SELECTED_CLUSTER_BYTES: u64 = 8;
 
-/// Exact 128-byte WGSL CullParams uniform, without host-only padding or offsets.
+/// Exact 144-byte WGSL CullParams uniform: the struct is padded to its 16-byte alignment.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct CullParams {
@@ -35,7 +35,12 @@ pub(crate) struct CullParams {
     pub orthographic: u32,
     pub terrain_error_pixels: f32,
     pub instance_mask_base: u32,
+    /// The triangles of the scene's largest cluster: the pulled draw's vertex count is three times
+    /// this, and the draw-group prefix writes it into every group's arguments.
+    pub triangle_limit: u32,
     pub epoch: u32,
+    /// Uniform structs round up to 16 bytes; Pod forbids implicit padding.
+    pub padding: [u32; 3],
 }
 
 #[cfg(test)]
@@ -261,6 +266,7 @@ mod tests {
                 "instance_mask_base",
                 offset_of!(CullParams, instance_mask_base),
             ),
+            ("triangle_limit", offset_of!(CullParams, triangle_limit)),
             ("epoch", offset_of!(CullParams, epoch)),
         ];
         assert_eq!(*span as usize, size_of::<CullParams>());

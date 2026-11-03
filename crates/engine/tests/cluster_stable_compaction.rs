@@ -924,7 +924,8 @@ fn pipelines(
 impl Gpu {
     fn new() -> Self {
         let instance = Instance::new(InstanceDescriptor {
-            backends: Backends::VULKAN,
+            // CI runs these on Vulkan; WGPU_BACKEND=metal runs them on a Mac.
+            backends: Backends::from_env().unwrap_or(Backends::VULKAN),
             ..InstanceDescriptor::new_without_display_handle()
         });
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))

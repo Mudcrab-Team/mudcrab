@@ -27,6 +27,8 @@ struct CullParams {
     // The threshold for meshes only terrain draws (MeshInfo.terrain), in place of error_pixels.
     terrain_error_pixels: f32,
     instance_mask_base: u32,
+    // Triangles of the scene's largest cluster; every group's vertex-pulled draw covers this many.
+    triangle_limit: u32,
     // Host run stamp (retained in the shared cull parameter ABI).
     epoch: u32,
 }
