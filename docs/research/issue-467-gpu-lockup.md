@@ -113,7 +113,7 @@ performance and Skyrim visual parity remain unvalidated.
 ## Executed check
 
 ```sh
-python3 scripts/diagnose_cluster_bounds.py --registry /Users/taylor/.cargo/registry
+python3 tools/diagnose_cluster_bounds.py --registry /Users/taylor/.cargo/registry
 ```
 
 The audit checks source premises and enumerates allocation counts
