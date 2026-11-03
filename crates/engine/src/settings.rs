@@ -1169,8 +1169,8 @@ mod tests {
                 .insert_resource(settings)
                 .insert_resource(file)
                 .insert_resource(GlobalAmbientLight {
-                    color: weather.mean_ambient(),
-                    brightness: crate::lights::AMBIENT_ILLUMINANCE,
+                    color: Color::srgb(0.2, 0.3, 0.4),
+                    brightness: 321.0,
                     ..default()
                 })
                 .add_systems(Update, apply_render_settings);
@@ -1178,21 +1178,23 @@ mod tests {
                 .world_mut()
                 .spawn((
                     DirectionalLight {
-                        color: weather.sunlight,
-                        illuminance: crate::lights::SUN_ILLUMINANCE,
+                        color: Color::srgb(0.4, 0.3, 0.2),
+                        illuminance: 123.0,
                         ..default()
                     },
                     crate::app::sun_shadow_cascades(&config),
                 ))
                 .id();
             app.insert_resource(config);
-            let assert_lighting = |app: &App| {
+            let assert_lighting = |app: &App,
+                                   sun_color: Color,
+                                   sun_illuminance,
+                                   ambient_color: Color,
+                                   ambient_brightness| {
                 let light = app.world().get::<DirectionalLight>(sun).unwrap();
                 let ambient = app.world().resource::<GlobalAmbientLight>();
-                for (actual, expected) in [
-                    (light.color, weather.sunlight),
-                    (ambient.color, weather.mean_ambient()),
-                ] {
+                for (actual, expected) in [(light.color, sun_color), (ambient.color, ambient_color)]
+                {
                     for (actual, expected) in actual
                         .to_linear()
                         .to_f32_array()
@@ -1202,11 +1204,20 @@ mod tests {
                         assert!((actual - expected).abs() < 1e-6);
                     }
                 }
-                assert_eq!(light.illuminance, crate::lights::SUN_ILLUMINANCE);
-                assert_eq!(ambient.brightness, crate::lights::AMBIENT_ILLUMINANCE);
+                assert_eq!(light.illuminance, sun_illuminance);
+                assert_eq!(ambient.brightness, ambient_brightness);
+            };
+            let assert_defaults = |app: &App| {
+                assert_lighting(
+                    app,
+                    weather.sunlight,
+                    crate::lights::SUN_ILLUMINANCE,
+                    weather.mean_ambient(),
+                    crate::lights::AMBIENT_ILLUMINANCE,
+                )
             };
             app.update();
-            assert_lighting(&app);
+            assert_defaults(&app);
 
             {
                 let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
@@ -1216,22 +1227,25 @@ mod tests {
                 settings.ambient_brightness = 100.0;
             }
             app.update();
-            assert_eq!(
-                app.world().get::<DirectionalLight>(sun).unwrap().color,
-                Color::srgb(1.0, 1.0, 1.0)
+            assert_lighting(
+                &app,
+                Color::srgb(1.0, 1.0, 1.0),
+                4_000.0,
+                Color::srgb(0.1, 0.1, 0.1),
+                100.0,
             );
             app.world_mut()
                 .resource_scope(|world, mut file: Mut<SettingsFile>| {
                     file.restore_defaults(&mut world.resource_mut::<RenderingSettings>());
                 });
             app.update();
-            assert_lighting(&app);
+            assert_defaults(&app);
             save_app_settings(&mut app);
             let mut config = EngineConfig::default();
             let (reloaded, _) = prepare_settings_at(&mut config, Some(path));
             *app.world_mut().resource_mut::<RenderingSettings>() = reloaded;
             app.update();
-            assert_lighting(&app);
+            assert_defaults(&app);
         }
     }
 
