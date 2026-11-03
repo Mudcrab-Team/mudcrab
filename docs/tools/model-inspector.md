@@ -110,3 +110,16 @@ cover path/record boundaries with temporary procedural inputs. Neither proves GP
 Skyrim visual parity, world/resource admission, performance, all-animal coverage, or acceptance
 of other PRs. Earlier all-pending goat/fireplace/red-blue playtests covered different source;
 they are provenance for this extraction, not native proof of this clean-main branch.
+
+The following F12 frames show the same fireplace and camera with ambient fill on and off.
+They are static baseline frames. They do not accept the pending #484 UV animation work.
+The capture run used temporary logging-only diagnostics, which were removed after evidence capture.
+The goat-horn chandelier remains the #483 baseline; this tool PR does not adopt its pending material fixes.
+
+![Fireplace with ambient fill on](../images/model-inspector-fireplace-fill-on.jpg)
+
+Fireplace frame with Space fill on.
+
+![Fireplace with ambient fill off](../images/model-inspector-fireplace-fill-off.jpg)
+
+Same camera frame with Space fill off.
