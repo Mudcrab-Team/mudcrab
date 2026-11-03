@@ -48,7 +48,7 @@ fn vertex(
     let cluster_count = cluster_vertices[info + 5u];
     // The mesh's vertex references start with one word per cluster: the offset of the cluster's
     // vertex list, which the references after the table are indexed by.
-    let vertex_offset = cluster_vertices[vertex_ref_base + draw.z];
+    let vertex_offset = cluster_vertices[vertex_ref_base + (draw.z & 0xffffffu)];
     let local = vertex_index;
     let source = vertex_base + cluster_vertices[vertex_ref_base + cluster_count + vertex_offset + local];
     let position = vec3<f32>(

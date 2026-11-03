@@ -43,7 +43,8 @@ const GROUP_ARG_WORDS: usize = (GROUP_ARGS_BYTES / 4) as usize;
 /// vertex count says where it came from.
 const TRIANGLE_LIMIT: u32 = 9;
 
-/// A selected draw: (instance, mesh, cluster, 0) and all five indexed argument words.
+/// A selected draw: its `visible` record and all five indexed argument words. The record is
+/// (instance, mesh, cluster | triangle count << 24, first index).
 /// The signed base_vertex word is compared by its exact bits (zero for pooled indices).
 type Draw = ([u32; 4], [u32; 5]);
 /// The common selection semantics of indexed production and non-indexed legacy draws.
@@ -534,11 +535,18 @@ fn lod_scene(cases: &[LodCase]) -> Scene {
 }
 
 /// Expected indexed arguments from the fixture's pooled element and triangle offsets.
+/// `tuple` is (instance, mesh, cluster, _); the record the cull writes is derived from it.
 fn expected_indexed_draw(scene: &Scene, tuple: [u32; 4], indices: u32, slot: u32) -> Draw {
     let mesh = tuple[1] as usize * 16;
     let cluster = (scene.meshes[mesh + 1] + tuple[2]) as usize * 12;
     let first_index = scene.meshes[mesh + 3] + scene.clusters[cluster + 7] * 3;
-    (tuple, [indices, 1, first_index, 0, slot])
+    let record = [
+        tuple[0],
+        tuple[1],
+        tuple[2] | ((indices / 3) << 24),
+        first_index,
+    ];
+    (record, [indices, 1, first_index, 0, slot])
 }
 
 /// Expected LOD draws per group. Instance 2 remains a perspective survivor,
@@ -812,8 +820,8 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
     }
     let first = expected_indexed_draw(&scene, [7, 1, 1, 0], 6, 1);
     let second = expected_indexed_draw(&scene, [9, 0, 0, 0], 0, 3);
-    assert_eq!(first, ([7, 1, 1, 0], [6, 1, 1066, 0, 1]));
-    assert_eq!(second, ([9, 0, 0, 0], [0, 1, 122, 0, 3]));
+    assert_eq!(first, ([7, 1, 1 | (2 << 24), 1066], [6, 1, 1066, 0, 1]));
+    assert_eq!(second, ([9, 0, 0, 122], [0, 1, 122, 0, 3]));
     let bases = [1, 3];
     let expected = vec![vec![first], vec![second]];
     let slots = 5;

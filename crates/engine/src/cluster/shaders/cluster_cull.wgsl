@@ -76,7 +76,8 @@ const NO_GROUP: u32 = 0xffffu;
 // path's draw count (word 1) always come from the same record.
 @group(0) @binding(5) var<storage, read_write> group_args: array<u32>;
 @group(0) @binding(6) var<storage, read> meshes: array<MeshInfo>;
-// Per draw: instance, mesh, cluster within the mesh.
+// Per draw: instance, mesh, the cluster within the mesh with its triangle count in the top byte,
+// and the cluster's first index in the merged vertex buffer.
 @group(0) @binding(7) var<storage, read_write> visible: array<vec4<u32>>;
 // Four tightly packed N-word planes: selected counts, local ranks / draw prefixes,
 // draw tiles, stable surviving source IDs. Counts and local ranks are rewritten for
@@ -383,7 +384,7 @@ fn scatter_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
         if selection != 0u {
             let slot = base + written;
             args[slot] = DrawArgs((selection - 1u) * 3u, 1u, selected.y, 0, slot);
-            visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster, 0u);
+            visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster | ((selection - 1u) << 24u), selected.y);
             written += 1u;
         }
     }
@@ -424,7 +425,7 @@ fn scatter_large_clusters(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_i
                 let cluster = first_cluster + lane * 4u + i;
                 let first_index = selected_clusters[instance.region_start + cluster].y;
                 args[slot] = DrawArgs((selection - 1u) * 3u, 1u, first_index, 0, slot);
-                visible[slot] = vec4<u32>(instance_id, instance.mesh, first_cluster + lane * 4u + i, 0u);
+                visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster | ((selection - 1u) << 24u), first_index);
                 prefix += 1u;
             }
         }
