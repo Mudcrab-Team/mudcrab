@@ -147,11 +147,11 @@ Got:      ${ACTUAL_HASH}"
             fi
             success "Checksum verified ($EXPECTED_HASH)"
         else
-            warn "No entry for ${ARCHIVE_FILENAME} in SHA256SUMS.txt; skipping checksum verification."
+            error "No entry for ${ARCHIVE_FILENAME} in SHA256SUMS.txt; aborting installation."
         fi
     )
 else
-    warn "SHA256SUMS.txt not found for release ${TAG}; skipping checksum verification."
+    error "SHA256SUMS.txt could not be fetched for release ${TAG}; aborting installation."
 fi
 
 # 4. Extract into installation directory

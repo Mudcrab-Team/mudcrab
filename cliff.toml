@@ -73,8 +73,7 @@ footer = """
 trim = true
 
 [git]
-tag_pattern = "v?[0-9]+\\.[0-9]+\\.[0-9]+"
-ignore_tags = "v.*-(alpha|beta|rc).*"
+tag_pattern = "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-([0-9A-Za-z.-]+))?(\\+([0-9A-Za-z.-]+))?$"
 conventional_commits = true
 filter_unconventional = false
 commit_preprocessors = [
