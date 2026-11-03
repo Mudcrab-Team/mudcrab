@@ -553,6 +553,7 @@ impl Plugin for PlayerControlsPlugin {
             .init_resource::<WalkEntryStatus>()
             .init_resource::<WalkSpawnHold>()
             .init_resource::<WalkCameraFollowState>()
+            .init_resource::<WalkCameraTick>()
             .init_resource::<CursorCapture>()
             .add_message::<TeleportPlayer>()
             .add_console_command(toggle_collision_command())
@@ -583,6 +584,10 @@ impl Plugin for PlayerControlsPlugin {
                     .run_if(crate::door_crossing::no_door_crossing)
                     .run_if(console_closed)
                     .before(PhysicsSet::SyncBackend),
+            )
+            .add_systems(
+                FixedUpdate,
+                sample_walk_camera_tick.after(PhysicsSet::Writeback),
             );
     }
 }
@@ -1721,6 +1726,7 @@ pub fn walk_movement_system(
     mut intent: ResMut<WalkIntent>,
     tuning: Res<MovementTuning>,
     context: ReadRapierContext,
+    mut camera_tick: Option<ResMut<WalkCameraTick>>,
     mut player: WalkBodyQuery,
 ) {
     if *mode != MoveMode::Walk {
@@ -1755,6 +1761,9 @@ pub fn walk_movement_system(
             displacement.reject_from_normalized(Vec3::Y),
         )
     {
+        if let Some(tick) = camera_tick.as_deref_mut() {
+            tick.validated_rise = true;
+        }
         // The upward sweep validated this segment. Rapier runs the controller
         // before syncing transforms, so override this tick's query pose too.
         // Do not subtract the lift from the horizontal tick: built-in autostep
@@ -1893,135 +1902,206 @@ fn walk_step_rise(
 }
 
 /// Camera follows the capsule at eye height; yaw on body, pitch on view (V9).
-/// Supported stair height changes receive a short presentation-only response.
-// Explicit Mudcrab presentation tuning; available native evidence does not set this response.
+/// This response is Mudcrab presentation tuning. It is not a native Skyrim measurement.
 const WALK_STEP_CAMERA_RESPONSE_SECONDS: f32 = 0.055;
-const WALK_STEP_CAMERA_MIN_HEIGHT: f32 = 1.0;
-const WALK_STEP_CAMERA_MAX_HEIGHT: f32 = 36.0;
+const WALK_STEP_CAMERA_MAX_TICK_DELTA: f32 = 36.0;
+const WALK_STEP_CAMERA_MIN_TICK_DELTA: f32 = 1.0;
+
+#[derive(Debug, Default, Resource)]
+pub struct WalkCameraTick {
+    previous_body: Option<Vec3>,
+    previous_supported: bool,
+    validated_rise: bool,
+    pending_y: f32,
+    discontinuity: bool,
+    airborne: bool,
+    #[cfg(test)]
+    last_sample_validated_rise: bool,
+    #[cfg(test)]
+    last_sample_collected_y: f32,
+}
 
 #[derive(Debug, Default, Resource)]
 struct WalkCameraFollowState {
-    previous_body: Option<Vec3>,
-    previous_grounded: bool,
-    following_step: bool,
+    offset_y: f32,
+    initialized: bool,
+    previous_origin: Option<IVec2>,
 }
 
-fn is_supported_step_motion(
-    previous_body: Vec3,
-    body: Vec3,
-    previous_grounded: bool,
-    grounded: bool,
-    walk: &WalkState,
-) -> bool {
-    let delta = body - previous_body;
-    previous_grounded
-        && grounded
-        && !walk.jump_active
-        && walk.vertical_velocity.abs() <= 2.0
-        && delta.xz().length() >= 0.5
-        && (WALK_STEP_CAMERA_MIN_HEIGHT..=WALK_STEP_CAMERA_MAX_HEIGHT).contains(&delta.y.abs())
+fn accumulate_camera_offset(offset: f32, delta_y: f32) -> f32 {
+    // Keep the presented height continuous when step direction reverses.
+    // Only explicit placement/reset paths discard the residual.
+    offset + delta_y
 }
 
-fn exponential_camera_y_step(current: f32, target: f32, delta_secs: f32) -> f32 {
+fn exponential_camera_offset(offset: f32, delta_secs: f32) -> f32 {
     if !delta_secs.is_finite() || delta_secs <= 0.0 {
-        return current;
+        return offset;
     }
-    let alpha = 1.0 - (-delta_secs / WALK_STEP_CAMERA_RESPONSE_SECONDS).exp();
-    current + (target - current) * alpha
+    offset * (-delta_secs / WALK_STEP_CAMERA_RESPONSE_SECONDS).exp()
+}
+
+/// Runs after Rapier writeback so this records the controller's final physical pose per tick.
+fn sample_walk_camera_tick(
+    mode: Res<MoveMode>,
+    mut tick: ResMut<WalkCameraTick>,
+    player: Query<
+        (
+            &Transform,
+            &WalkState,
+            Option<&KinematicCharacterControllerOutput>,
+        ),
+        With<PlayerBody>,
+    >,
+) {
+    let Ok((body, walk, output)) = player.single() else {
+        tick.previous_body = None;
+        tick.previous_supported = false;
+        tick.pending_y = 0.0;
+        tick.validated_rise = false;
+        tick.discontinuity = false;
+        tick.airborne = false;
+        return;
+    };
+    if *mode != MoveMode::Walk {
+        tick.previous_body = Some(body.translation);
+        tick.previous_supported = false;
+        tick.pending_y = 0.0;
+        tick.validated_rise = false;
+        tick.airborne = false;
+        return;
+    }
+
+    let supported = output.is_some_and(|result| result.grounded);
+    let jumping_or_falling = walk.jump_active || (!supported && walk.vertical_velocity.abs() > 2.0);
+    #[cfg(test)]
+    {
+        tick.last_sample_validated_rise = tick.validated_rise;
+        tick.last_sample_collected_y = 0.0;
+    }
+    if let Some(previous) = tick.previous_body {
+        let delta = body.translation - previous;
+        let bounded = delta.y.abs() <= WALK_STEP_CAMERA_MAX_TICK_DELTA;
+        if delta.xz().length() > 256.0 || !bounded {
+            tick.discontinuity = true;
+            tick.pending_y = 0.0;
+        } else if tick.validated_rise && delta.y > 0.0 {
+            // The explicit sweep signal remains valid when movement clears grounded.
+            tick.pending_y += delta.y;
+            #[cfg(test)]
+            {
+                tick.last_sample_collected_y = delta.y;
+            }
+        } else if tick.previous_supported
+            && supported
+            && !jumping_or_falling
+            && !walk.jump_active
+            && delta.y < -WALK_STEP_CAMERA_MIN_TICK_DELTA
+        {
+            // Smooth only bounded supported downward snaps. Small slope changes stay direct.
+            tick.pending_y += delta.y;
+            #[cfg(test)]
+            {
+                tick.last_sample_collected_y = delta.y;
+            }
+        }
+        if jumping_or_falling || (!supported && !tick.validated_rise) {
+            // Keep this state sticky until render consumes it. A jump and landing can
+            // both occur between two rendered frames.
+            tick.airborne = true;
+            tick.pending_y = 0.0;
+        }
+    }
+    tick.previous_body = Some(body.translation);
+    tick.previous_supported = supported;
+    tick.validated_rise = false;
 }
 
 type WalkCameraFollowPlayerQuery<'w, 's> = Query<
     'w,
     's,
-    (
-        &'static Transform,
-        &'static WalkState,
-        Option<&'static KinematicCharacterControllerOutput>,
-    ),
+    (&'static Transform, &'static WalkState),
     (With<PlayerBody>, Without<StreamingCamera>),
 >;
 
-#[allow(clippy::too_many_arguments)] // Bevy systems receive each live input as a system parameter.
+#[allow(clippy::too_many_arguments)]
 fn walk_camera_follow_system(
     mode: Res<MoveMode>,
     tuning: Res<MovementTuning>,
     look: Res<LookIntent>,
     time: Res<Time>,
     camera_space: Option<Res<crate::sky::CameraSpace>>,
+    render_origin: Option<Res<crate::streaming::RenderOrigin>>,
     mut teleports: MessageReader<TeleportPlayer>,
+    mut tick: Option<ResMut<WalkCameraTick>>,
     mut follow: ResMut<WalkCameraFollowState>,
     player: WalkCameraFollowPlayerQuery,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
-    let teleported = teleports.read().next().is_some();
+    let mut teleported = false;
+    for _ in teleports.read() {
+        teleported = true;
+    }
     let space_changed = camera_space
         .as_ref()
         .is_some_and(|space| space.is_changed());
+    let current_origin = render_origin.as_ref().map(|origin| origin.0);
+    let origin_changed = follow
+        .previous_origin
+        .is_some_and(|old| Some(old) != current_origin);
+    follow.previous_origin = current_origin;
+
     if *mode != MoveMode::Walk {
-        if mode.is_changed() || teleported || space_changed {
-            *follow = WalkCameraFollowState::default();
+        if mode.is_changed() || teleported || space_changed || origin_changed {
+            follow.offset_y = 0.0;
+            if let Some(tick) = tick.as_deref_mut() {
+                tick.pending_y = 0.0;
+                tick.discontinuity = false;
+            }
         }
         return;
     }
-    let (Ok((body, walk, output)), Ok(mut view)) = (player.single(), camera.single_mut()) else {
+    let (Ok((body, walk)), Ok(mut view)) = (player.single(), camera.single_mut()) else {
         return;
     };
     let target = body.translation + Vec3::Y * tuning.eye_height;
-    let grounded = output.map_or(walk.grounded, |output| output.grounded) && walk.grounded;
-
-    // On first use, keep the camera's authored startup pose. The player body is spawned from
-    // that pose, so its eye-height target should already match it.
-    let Some(previous_body) = follow.previous_body else {
-        follow.previous_body = Some(body.translation);
-        follow.previous_grounded = grounded;
-        follow.following_step = false;
-        set_walk_camera_rotation(&mut view, body, look.pitch);
-        return;
-    };
-
-    if mode.is_changed() || teleported || space_changed {
-        view.translation.y = target.y;
-        follow.previous_body = Some(body.translation);
-        follow.previous_grounded = grounded;
-        follow.following_step = false;
-        set_walk_camera_rotation(&mut view, body, look.pitch);
-        return;
-    }
-
-    let body_delta = body.translation - previous_body;
-    let discontinuity =
-        body_delta.xz().length() > 256.0 || body_delta.y.abs() > WALK_STEP_CAMERA_MAX_HEIGHT;
-    if discontinuity {
-        view.translation.y = target.y;
-        follow.following_step = false;
-    } else {
-        let started_step = is_supported_step_motion(
-            previous_body,
-            body.translation,
-            follow.previous_grounded,
-            grounded,
-            walk,
-        );
-        let airborne_or_non_step_height_change = !grounded
-            || walk.jump_active
-            || (body_delta.y.abs() >= WALK_STEP_CAMERA_MIN_HEIGHT && !started_step);
-        if airborne_or_non_step_height_change {
-            follow.following_step = false;
-        } else if started_step {
-            follow.following_step = true;
+    if !follow.initialized {
+        // The authored startup camera pose is authoritative for the first frame.
+        follow.initialized = true;
+        if let Some(tick) = tick.as_deref_mut() {
+            tick.pending_y = 0.0;
+            tick.discontinuity = false;
         }
-        view.translation.y = if follow.following_step {
-            exponential_camera_y_step(view.translation.y, target.y, time.delta_secs())
-        } else {
-            target.y
-        };
+        set_walk_camera_rotation(&mut view, body, look.pitch);
+        return;
     }
-    follow.previous_body = Some(body.translation);
-    follow.previous_grounded = grounded;
-    view.translation.x = target.x;
-    view.translation.z = target.z;
-    let (yaw, _, _) = body.rotation.to_euler(EulerRot::YXZ);
-    view.rotation = Quat::from_euler(EulerRot::YXZ, yaw, look.pitch, 0.0);
+
+    let reset = mode.is_changed() || teleported || space_changed || origin_changed;
+    let camera_tick = tick.as_deref_mut();
+    let discontinuity = camera_tick.as_ref().is_some_and(|tick| tick.discontinuity);
+    let airborne = camera_tick.as_ref().is_some_and(|tick| tick.airborne) || walk.jump_active;
+    if reset || discontinuity || airborne {
+        view.translation = target;
+        follow.offset_y = 0.0;
+    } else {
+        let pending = camera_tick.as_ref().map_or(0.0, |tick| tick.pending_y);
+        follow.offset_y = accumulate_camera_offset(follow.offset_y, pending);
+        if let Some(tick) = tick.as_deref_mut() {
+            tick.pending_y = 0.0;
+            tick.discontinuity = false;
+        }
+        follow.offset_y = exponential_camera_offset(follow.offset_y, time.delta_secs());
+        view.translation = target - Vec3::Y * follow.offset_y;
+    }
+    if let Some(tick) = tick.as_deref_mut()
+        && (reset || discontinuity || airborne)
+    {
+        tick.pending_y = 0.0;
+        tick.discontinuity = false;
+        tick.airborne = false;
+        tick.previous_body = Some(body.translation);
+    }
+    set_walk_camera_rotation(&mut view, body, look.pitch);
 }
 
 fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) {
@@ -2030,305 +2110,109 @@ fn set_walk_camera_rotation(view: &mut Transform, body: &Transform, pitch: f32) 
 }
 
 #[cfg(test)]
-mod step_camera_follow_tests {
+mod walk_camera_presentation_tests {
     use super::*;
 
-    fn camera_follow_app(camera_pose: Transform, body_pose: Transform) -> (App, Entity, Entity) {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin))
-            .init_resource::<WalkCameraFollowState>()
-            .add_message::<TeleportPlayer>()
-            .insert_resource(MoveMode::Walk)
-            .insert_resource(MovementTuning::default())
-            .insert_resource(LookIntent::default())
-            .insert_resource(WalkIntent::default())
-            .insert_resource(WalkSpawnHold::default())
-            .insert_resource(crate::sky::CameraSpace::Exterior)
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-                std::time::Duration::from_secs_f32(1.0 / 60.0),
-            ))
-            .add_systems(
-                Update,
-                (apply_teleport_player, walk_camera_follow_system).chain(),
-            );
-        let body = app
-            .world_mut()
-            .spawn((
-                PlayerBody,
-                body_pose,
-                WalkState {
-                    grounded: true,
-                    ..default()
-                },
-                KinematicCharacterController::default(),
-                KinematicCharacterControllerOutput {
-                    grounded: true,
-                    desired_translation: Vec3::ZERO,
-                    effective_translation: Vec3::ZERO,
-                    collisions: Vec::new(),
-                    is_sliding_down_slope: false,
-                },
-            ))
-            .id();
-        let camera = app.world_mut().spawn((StreamingCamera, camera_pose)).id();
-        (app, body, camera)
+    #[test]
+    fn accumulated_step_offset_follows_the_exponential_recurrence() {
+        let rise = 24.0_f32;
+        let dt = 1.0 / 60.0;
+        let decay = (-dt / WALK_STEP_CAMERA_RESPONSE_SECONDS).exp();
+        let expected_offset = rise * decay;
+        let offset = exponential_camera_offset(rise, dt);
+        assert!((offset - expected_offset).abs() < 1.0e-5);
+        assert_eq!(accumulate_camera_offset(5.0, -2.0), 3.0);
+        assert_eq!(accumulate_camera_offset(-5.0, 2.0), -3.0);
+        assert_eq!(accumulate_camera_offset(5.0, 2.0), 7.0);
+        assert!((rise - offset) < rise);
+        assert!(exponential_camera_offset(offset, dt) < offset);
+
+        let slow_dt = 1.0 / 20.0;
+        let after_three_ticks = rise * (-3.0 * dt / WALK_STEP_CAMERA_RESPONSE_SECONDS).exp();
+        let accumulated_then_decayed = exponential_camera_offset(rise * 3.0, slow_dt);
+        assert!((accumulated_then_decayed - 3.0 * after_three_ticks).abs() < 1.0e-5);
+        let old_target = 100.0;
+        let old_offset = 5.0;
+        let reverse_step = -2.0;
+        assert_eq!(
+            old_target - old_offset,
+            old_target + reverse_step - accumulate_camera_offset(old_offset, reverse_step),
+            "step collection must not itself move the presented eye"
+        );
     }
 
     #[test]
-    fn only_supported_grounded_steps_start_vertical_smoothing() {
-        let grounded = WalkState {
-            grounded: true,
-            ..default()
+    fn camera_placement_resets_clear_pending_steps_and_follow_full_position() {
+        let mut app = headless::fixture_app();
+        let (body, camera) = {
+            let mut bodies = app.world_mut().query_filtered::<Entity, With<PlayerBody>>();
+            let body = bodies.single(app.world()).unwrap();
+            let mut cameras = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            (body, cameras.single(app.world()).unwrap())
         };
-        let start = Vec3::ZERO;
-        for rise in [24.0, -24.0] {
-            assert!(is_supported_step_motion(
-                start,
-                Vec3::new(12.0, rise, 0.0),
-                true,
-                true,
-                &grounded,
-            ));
-        }
-        assert!(!is_supported_step_motion(
-            start,
-            Vec3::new(12.0, 24.0, 0.0),
-            true,
-            false,
-            &grounded,
-        ));
-        assert!(!is_supported_step_motion(
-            start,
-            Vec3::new(12.0, 24.0, 0.0),
-            true,
-            true,
-            &WalkState {
-                grounded: true,
-                jump_active: true,
-                ..default()
-            },
-        ));
-        assert!(!is_supported_step_motion(
-            start,
-            Vec3::new(12.0, 40.0, 0.0),
-            true,
-            true,
-            &grounded,
-        ));
-        assert!(!is_supported_step_motion(
-            start,
-            Vec3::new(12.0, 24.0, 0.0),
-            true,
-            true,
-            &WalkState {
-                grounded: true,
-                vertical_velocity: -20.0,
-                ..default()
-            },
-        ));
-    }
-
-    #[test]
-    fn step_camera_response_is_bounded_convergent_and_frame_rate_independent() {
-        let follow_for = |hz: u32| {
-            let mut camera_y = 0.0;
-            let mut largest_frame = 0.0_f32;
-            for _ in 0..(hz / 5) {
-                let next = exponential_camera_y_step(camera_y, 24.0, 1.0 / hz as f32);
-                largest_frame = largest_frame.max((next - camera_y).abs());
-                camera_y = next;
-            }
-            (camera_y, largest_frame)
-        };
-
-        let (at_30_hz, _) = follow_for(30);
-        let (at_60_hz, largest_60_hz_frame) = follow_for(60);
-        let (at_120_hz, _) = follow_for(120);
-        assert!((at_30_hz - at_60_hz).abs() < 0.01);
-        assert!((at_60_hz - at_120_hz).abs() < 0.01);
-        assert!(
-            largest_60_hz_frame < 7.0,
-            "frame jump was {largest_60_hz_frame}"
-        );
-        assert!((24.0 - at_60_hz).abs() < 0.7);
-
-        let descending = exponential_camera_y_step(24.0, 0.0, 1.0 / 60.0);
-        assert!(descending < 24.0 && descending > 17.0);
-        let mut settled = descending;
-        for _ in 0..60 {
-            settled = exponential_camera_y_step(settled, 0.0, 1.0 / 60.0);
-        }
-        assert!(settled.abs() < 0.001);
-    }
-
-    #[test]
-    fn walk_follow_changes_only_camera_height_for_steps_and_snaps_airborne_motion() {
-        let tuning = MovementTuning::default();
-        let body_pose = Transform::from_xyz(40.0, 200.0, 30.0);
-        let camera_pose =
-            Transform::from_translation(body_pose.translation + Vec3::Y * tuning.eye_height);
-        let (mut app, body_entity, camera_entity) = camera_follow_app(camera_pose, body_pose);
-        app.update();
-
-        let before = app
-            .world()
-            .get::<Transform>(body_entity)
-            .unwrap()
-            .translation;
-        let mut stepped = before + Vec3::new(12.0, 24.0, 0.0);
-        app.world_mut()
-            .get_mut::<Transform>(body_entity)
-            .unwrap()
-            .translation = stepped;
-        app.update();
-        let raised_view = app.world().get::<Transform>(camera_entity).unwrap();
-        assert!(raised_view.translation.y > before.y + tuning.eye_height);
-        assert!(raised_view.translation.y < stepped.y + tuning.eye_height - 17.0);
-        assert_eq!(raised_view.translation.x, stepped.x);
-        assert_eq!(raised_view.translation.z, stepped.z);
-        assert_eq!(
-            app.world()
-                .get::<Transform>(body_entity)
-                .unwrap()
-                .translation,
-            stepped,
-            "camera smoothing must not change body traversal"
-        );
-
-        for _ in 0..3 {
-            for _ in 0..4 {
-                app.update();
-            }
-            let previous_camera_y = app
-                .world()
-                .get::<Transform>(camera_entity)
-                .unwrap()
-                .translation
-                .y;
-            stepped += Vec3::new(12.0, 24.0, 0.0);
-            app.world_mut()
-                .get_mut::<Transform>(body_entity)
-                .unwrap()
-                .translation = stepped;
-            app.update();
-            let camera_y = app
-                .world()
-                .get::<Transform>(camera_entity)
-                .unwrap()
-                .translation
-                .y;
-            assert!(
-                (camera_y - previous_camera_y).abs() < 8.0,
-                "a 24-unit repeated step moved the camera by {} units",
-                (camera_y - previous_camera_y).abs()
-            );
-        }
-
-        for _ in 0..30 {
-            app.update();
-        }
-        let settled_view = *app.world().get::<Transform>(camera_entity).unwrap();
-        assert!((settled_view.translation.y - (stepped.y + tuning.eye_height)).abs() < 0.01);
-        let descending = stepped + Vec3::new(12.0, -24.0, 0.0);
-        app.world_mut()
-            .get_mut::<Transform>(body_entity)
-            .unwrap()
-            .translation = descending;
-        app.update();
-        let lowered_view = *app.world().get::<Transform>(camera_entity).unwrap();
-        assert!(lowered_view.translation.y < settled_view.translation.y);
-        assert!(lowered_view.translation.y > descending.y + tuning.eye_height + 17.0);
-
-        app.world_mut().entity_mut(body_entity).insert(WalkState {
-            grounded: false,
-            vertical_velocity: 300.0,
-            jump_active: true,
-            ..default()
-        });
-        app.world_mut()
-            .entity_mut(body_entity)
-            .insert(KinematicCharacterControllerOutput {
-                grounded: false,
-                desired_translation: Vec3::ZERO,
-                effective_translation: Vec3::ZERO,
-                collisions: Vec::new(),
-                is_sliding_down_slope: false,
-            });
-        let airborne = descending + Vec3::new(12.0, 4.0, 0.0);
-        app.world_mut()
-            .get_mut::<Transform>(body_entity)
-            .unwrap()
-            .translation = airborne;
-        app.update();
-        assert_eq!(
-            app.world()
-                .get::<Transform>(camera_entity)
-                .unwrap()
-                .translation
-                .y,
-            airborne.y + tuning.eye_height,
-            "jump and freefall camera height must follow without added latency"
-        );
-
-        let landing_feet = Vec3::new(500.0, 60.0, -300.0);
-        app.world_mut().write_message(TeleportPlayer {
-            position: landing_feet,
-            sampled_ground_y: Some(landing_feet.y),
-            yaw: 0.4,
-        });
-        app.update();
-        let (landing_body, landing_view) = body_and_camera_for_feet(&tuning, landing_feet);
-        assert_eq!(
-            app.world()
-                .get::<Transform>(body_entity)
-                .unwrap()
-                .translation,
-            landing_body
-        );
-        assert_eq!(
-            app.world()
-                .get::<Transform>(camera_entity)
-                .unwrap()
-                .translation,
-            landing_view,
-            "door teleports must initialize the camera at the destination"
-        );
-
-        app.insert_resource(crate::sky::CameraSpace::Interior);
-        app.insert_resource(MoveMode::Noclip);
-        app.update();
-        let mode_pose = Vec3::new(900.0, 1200.0, 800.0);
-        app.world_mut()
-            .get_mut::<Transform>(camera_entity)
-            .unwrap()
-            .translation = mode_pose;
-        app.world_mut()
-            .get_mut::<Transform>(body_entity)
-            .unwrap()
-            .translation = mode_pose - Vec3::Y * tuning.eye_height;
         app.insert_resource(MoveMode::Walk);
-        app.update();
-        let reset_view = app.world().get::<Transform>(camera_entity).unwrap();
-        assert_eq!(reset_view.translation, mode_pose);
-    }
-
-    #[test]
-    fn first_walk_follow_preserves_the_authored_start_shot_pose() {
-        let authored = Transform::from_xyz(1200.0, 1800.0, -4300.0)
-            .with_rotation(Quat::from_euler(EulerRot::YXZ, 1.2, -0.1, 0.0));
-        let body = Transform::from_translation(
-            authored.translation - Vec3::Y * MovementTuning::default().eye_height,
-        )
-        .with_rotation(Quat::from_rotation_y(1.2));
-        let (mut app, _, camera_entity) = camera_follow_app(authored, body);
-        app.insert_resource(LookIntent {
-            yaw: 1.2,
-            pitch: -0.1,
-        });
-        app.update();
-        let view = app.world().get::<Transform>(camera_entity).unwrap();
-        assert_eq!(view.translation, authored.translation);
-        assert!(view.rotation.dot(authored.rotation).abs() > 1.0 - 1.0e-6);
+        app.world_mut().run_schedule(Update);
+        for case in 0..5 {
+            {
+                let mut follow = app.world_mut().resource_mut::<WalkCameraFollowState>();
+                follow.initialized = true;
+                follow.offset_y = 12.0;
+            }
+            app.world_mut().resource_mut::<WalkCameraTick>().pending_y = 24.0;
+            let destination = Vec3::new(500.0 + case as f32 * 100.0, 800.0, -900.0);
+            app.world_mut()
+                .get_mut::<Transform>(body)
+                .unwrap()
+                .translation = destination;
+            match case {
+                0 => {
+                    app.world_mut().write_message(TeleportPlayer {
+                        position: destination,
+                        sampled_ground_y: Some(destination.y),
+                        yaw: 0.4,
+                    });
+                }
+                1 => {
+                    app.insert_resource(crate::sky::CameraSpace::Interior);
+                }
+                2 => {
+                    app.insert_resource(MoveMode::Noclip);
+                    app.world_mut().run_schedule(Update);
+                    app.insert_resource(MoveMode::Walk);
+                }
+                3 => {
+                    app.insert_resource(crate::streaming::RenderOrigin(IVec2::ZERO));
+                    app.world_mut().run_schedule(Update);
+                    app.world_mut()
+                        .resource_mut::<WalkCameraFollowState>()
+                        .offset_y = 12.0;
+                    app.world_mut().resource_mut::<WalkCameraTick>().pending_y = 24.0;
+                    app.world_mut()
+                        .resource_mut::<crate::streaming::RenderOrigin>()
+                        .0 = IVec2::X;
+                }
+                _ => {
+                    app.world_mut()
+                        .get_mut::<WalkState>(body)
+                        .unwrap()
+                        .jump_active = true;
+                }
+            }
+            app.world_mut().run_schedule(Update);
+            let position = app.world().get::<Transform>(body).unwrap().translation;
+            let view = app.world().get::<Transform>(camera).unwrap().translation;
+            assert!(
+                view.distance(position + Vec3::Y * MovementTuning::default().eye_height) < 1.0e-3,
+                "reset case {case} retained an old camera coordinate: {view:?} vs {position:?}"
+            );
+            assert_eq!(
+                app.world().resource::<WalkCameraFollowState>().offset_y,
+                0.0
+            );
+            assert_eq!(app.world().resource::<WalkCameraTick>().pending_y, 0.0);
+        }
     }
 }
 
