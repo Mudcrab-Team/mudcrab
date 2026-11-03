@@ -24,6 +24,7 @@ serde_json.workspace = true
 sha2.workspace = true
 ktx2.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+gif = "=0.13.3"
 libc = "0.2"
 regex = "1.12"
 time = { version = "0.3.55", features = ["formatting"] }
