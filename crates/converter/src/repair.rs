@@ -288,6 +288,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         .filter_map(|archive| archive_keys.get(archive).cloned())
         .collect();
     let original_failures = manifest.failures.clone();
+    let resolved_loose_keys = resolved_loose_asset_keys(&resolved);
     let mut legacy_asset_failures = BTreeMap::<String, String>::new();
     let mut directory_targets = BTreeMap::<String, (BTreeSet<String>, BTreeSet<String>)>::new();
     let mut targets = BTreeSet::<String>::new();
@@ -327,15 +328,16 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
                 || message.starts_with("skipped input ")
                 || message.starts_with("skipped loose asset ");
             if requires_loose_source {
-                let has_loose_source = if config.mo2.is_some() {
-                    resolved_loose_source(&key, &resolved, &config.data_dir).is_some()
-                } else {
-                    physical
-                        .filter(|path| path.is_file())
-                        .is_some_and(|physical_file| {
-                            resolved.values().any(|source| source == &physical_file)
-                        })
-                };
+                let has_loose_source =
+                    if Path::new(failure_key).is_absolute() && config.mo2.is_none() {
+                        physical
+                            .filter(|path| path.is_file())
+                            .is_some_and(|physical_file| {
+                                resolved.values().any(|source| source == &physical_file)
+                            })
+                    } else {
+                        resolved_loose_keys.contains(&key)
+                    };
                 if !has_loose_source {
                     // A known loose failure must not fall back to an archive winner.
                     continue;
@@ -1036,16 +1038,14 @@ fn recoverable_failure_asset_key(key: &str, data_root: &Path) -> Option<String> 
     canonical_failure_asset_key(key, data_root).ok().flatten()
 }
 
-fn resolved_loose_source(
-    key: &str,
-    resolved: &BTreeMap<String, PathBuf>,
-    data_root: &Path,
-) -> Option<PathBuf> {
-    resolved.iter().find_map(|(relative, source)| {
-        (kind(relative).is_some()
-            && recoverable_failure_asset_key(relative, data_root).as_deref() == Some(key))
-        .then(|| source.clone())
-    })
+fn resolved_loose_asset_keys(resolved: &BTreeMap<String, PathBuf>) -> BTreeSet<String> {
+    resolved
+        .keys()
+        .filter_map(|relative| {
+            let (asset_kind, ext, _) = kind(relative)?;
+            canonical_asset_path(relative, asset_kind, ext).ok()
+        })
+        .collect()
 }
 
 fn canonical_failure_asset_key(key: &str, data_root: &Path) -> Result<Option<String>> {
@@ -1443,16 +1443,14 @@ mod tests {
     }
 
     #[test]
-    fn mo2_loose_failure_matches_virtual_source_key() {
-        let root = Path::new("/data");
-        let mod_file = PathBuf::from("/mods/example/textures/sky.dds");
-        let resolved =
-            std::collections::BTreeMap::from([("textures/sky.dds".to_string(), mod_file.clone())]);
-        assert_eq!(
-            resolved_loose_source("textures/sky.dds", &resolved, root),
-            Some(mod_file)
-        );
-        assert!(resolved_loose_source("textures/missing.dds", &resolved, root).is_none());
+    fn resolved_loose_asset_keys_canonicalize_nested_source_paths() {
+        let resolved = std::collections::BTreeMap::from([(
+            "Data/Authoring/Scripts/x.pex".to_string(),
+            PathBuf::from("/data/Authoring/Scripts/x.pex"),
+        )]);
+        let keys = resolved_loose_asset_keys(&resolved);
+        assert!(keys.contains("scripts/x.pex"));
+        assert!(!keys.contains("scripts/missing.pex"));
     }
 
     fn texture_source(root: &Path, format: ddsfile::D3DFormat) -> PathBuf {

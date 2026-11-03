@@ -203,6 +203,39 @@ async fn failed_child_keeps_directory_failure_and_original_pack_bytes() {
 }
 
 #[tokio::test]
+async fn relative_failure_key_finds_nested_non_mo2_loose_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = data_with_script(directory.path());
+    write_script_archive(&data, "loose.bsa", "scripts/nested.pex", "Archive");
+    let output = directory.path().join("modern");
+    let settings = config(&data, &output);
+    run(settings.clone()).await.unwrap();
+
+    let loose = data.join("Authoring/Scripts/nested.pex");
+    let loose_bytes = dummy_content::pex::minimal("NestedLoose").unwrap();
+    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    fs::write(&loose, &loose_bytes).unwrap();
+    let manifest_path = output.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&manifest_path).unwrap();
+    manifest.failures.insert(
+        "scripts/nested.pex".into(),
+        "skipped loose asset was unreadable".into(),
+    );
+    manifest.complete = false;
+    manifest.save(&manifest_path).unwrap();
+    assert_repairable_pack(&output);
+
+    let report = crate::repair::repair_failed(&settings, true).unwrap();
+    assert!(report.published);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let repaired = ConversionManifest::load(&manifest_path).unwrap();
+    assert_eq!(
+        repaired.entries["scripts/nested.pex"].source_hash,
+        crate::cache::hash_file(&loose).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn legacy_absolute_asset_failure_repairs_and_clears_its_alias() {
     let directory = tempfile::tempdir().unwrap();
     let data = data_with_script(directory.path());
