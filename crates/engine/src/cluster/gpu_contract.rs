@@ -9,7 +9,7 @@ pub(crate) const STAGES: [(&str, &[u32]); 8] = [
     ("scatter_instances", &[0, 8, 11]),
     ("cull", &[0, 1, 2, 3, 6, 8, 11, 12]),
     ("prefix_draw_tiles", &[0, 8, 11, 13]),
-    ("prefix_draw_groups", &[5, 11, 13]),
+    ("prefix_draw_groups", &[0, 5, 11, 13]),
     ("scatter_clusters", &[0, 3, 4, 6, 7, 8, 11, 12, 13]),
     ("scatter_large_clusters", &[0, 3, 4, 6, 7, 8, 11, 12, 13]),
 ];
@@ -17,6 +17,9 @@ pub(crate) const STAGES: [(&str, &[u32]); 8] = [
 /// Wgpu's five-word indexed indirect ABI, shared by allocations and draw slice offsets.
 pub(crate) const DRAW_INDEXED_INDIRECT_BYTES: u64 =
     std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+
+/// wgpu's four-word non-indexed indirect ABI: one record per draw group.
+pub(crate) const GROUP_ARGS_BYTES: u64 = std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64;
 
 /// Selection and first_index carried from cull to scatter without another storage binding.
 pub(crate) const SELECTED_CLUSTER_BYTES: u64 = 8;

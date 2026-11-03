@@ -71,8 +71,10 @@ const NO_GROUP: u32 = 0xffffu;
 @group(0) @binding(2) var<storage, read> groups: array<u32>;
 @group(0) @binding(3) var<storage, read> instances: array<Instance>;
 @group(0) @binding(4) var<storage, read_write> args: array<DrawArgs>;
-// One draw count per draw group.
-@group(0) @binding(5) var<storage, read_write> counts: array<u32>;
+// One four-word indirect draw record per draw group: vertex_count, instance_count, first_vertex,
+// first_instance. `prefix_draw_groups` writes all four, so the vertex-pulled draw and the count
+// path's draw count (word 1) always come from the same record.
+@group(0) @binding(5) var<storage, read_write> group_args: array<u32>;
 @group(0) @binding(6) var<storage, read> meshes: array<MeshInfo>;
 // Per draw: instance, mesh, cluster within the mesh.
 @group(0) @binding(7) var<storage, read_write> visible: array<vec4<u32>>;
@@ -343,7 +345,16 @@ fn prefix_draw_groups(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invoc
         if local_tile < tiles { prefixes[1u + tile].y = carry + scan.x; }
         carry += scan.y;
     }
-    if lane == 0u { counts[group] = carry; }
+    if lane == 0u {
+        let out = group * 4u;
+        // The vertex-pulled draw covers the scene's largest cluster; smaller clusters pad.
+        group_args[out] = params.triangle_limit * 3u;
+        group_args[out + 1u] = carry;
+        group_args[out + 2u] = 0u;
+        // The group's first slot, the base `draw_base` adds: the scatter stages write slots
+        // first_instance .. first_instance + instance_count of `visible`.
+        group_args[out + 3u] = source_order[base + 2u];
+    }
 }
 
 fn draw_base(instance_id: u32) -> u32 {

@@ -12,7 +12,9 @@
 mod gpu_contract;
 #[path = "handoff.rs"]
 mod handoff;
-use gpu_contract::{CullParams, DRAW_INDEXED_INDIRECT_BYTES, SELECTED_CLUSTER_BYTES, STAGES};
+use gpu_contract::{
+    CullParams, DRAW_INDEXED_INDIRECT_BYTES, GROUP_ARGS_BYTES, SELECTED_CLUSTER_BYTES, STAGES,
+};
 
 #[path = "cull_reuse.rs"]
 mod cull_reuse;
@@ -943,8 +945,10 @@ struct ViewGpu {
     prepass_pipelines: HashMap<u32, CachedRenderPipelineId>,
     shadow_pipelines: HashMap<u32, CachedRenderPipelineId>,
     args: Buffer,
-    /// One draw count per draw group.
-    counts: Buffer,
+    /// One indirect draw record per draw group (`DrawIndirectArgs`, 16 bytes), written whole by the
+    /// cull's draw-group prefix: the vertex-pulled draw reads it as its arguments and the count path
+    /// reads its draw count from word 1 of the same record.
+    group_args: Buffer,
     params: Buffer,
     /// Exact contents last written to this allocation, including the first upload.
     params_uploaded: Option<CullParams>,
@@ -1028,8 +1032,10 @@ struct GroupDraw {
     representative: u32,
     /// Where the group's slice of the argument list starts, in bytes.
     args_offset: u64,
-    /// Where the group's draw count is, in bytes.
+    /// Where the group's draw count is, in bytes: word 1 of its `group_args` record.
     count_offset: u64,
+    /// Where the group's `group_args` record starts, in bytes.
+    group_args_offset: u64,
     /// The most clusters the group's batches can select between them.
     max_count: u32,
 }
@@ -1078,7 +1084,8 @@ impl DrawGroups {
             draws.push(GroupDraw {
                 representative: *representative,
                 args_offset: u64::from(next) * DRAW_INDEXED_INDIRECT_BYTES,
-                count_offset: group as u64 * 4,
+                count_offset: group as u64 * GROUP_ARGS_BYTES + 4,
+                group_args_offset: group as u64 * GROUP_ARGS_BYTES,
                 max_count: *slots,
             });
             next += slots;
@@ -3396,7 +3403,7 @@ fn run_cluster_cull(
         if !use_count {
             encoder.clear_buffer(&view_gpu.args, 0, None);
         }
-        encoder.clear_buffer(&view_gpu.counts, 0, None);
+        encoder.clear_buffer(&view_gpu.group_args, 0, None);
     }
     let active: Vec<&ViewGpu> = views
         .iter()
@@ -3546,9 +3553,9 @@ fn new_view_gpu(
         slots * DRAW_INDEXED_INDIRECT_BYTES,
         BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
     );
-    let counts = make(
-        "cluster draw counts",
-        gpu.batches.len().max(1) as u64 * 4,
+    let group_args = make(
+        "cluster group draw arguments",
+        gpu.batches.len().max(1) as u64 * GROUP_ARGS_BYTES,
         BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
     );
     let batch_table = make(
@@ -3598,7 +3605,7 @@ fn new_view_gpu(
         &gpu.groups,
         &gpu.instances,
         &args,
-        &counts,
+        &group_args,
         &gpu.meshes,
         &visible,
         &instance_list,
@@ -3692,7 +3699,7 @@ fn new_view_gpu(
         prepass_pipelines: HashMap::new(),
         shadow_pipelines: HashMap::new(),
         args,
-        counts,
+        group_args,
         params,
         params_uploaded: None,
         visible,
@@ -3968,7 +3975,7 @@ impl<P: PhaseItem, const ONCE: bool> RenderCommand<P> for DrawClusterIndirect<ON
             pass.multi_draw_indexed_indirect_count(
                 &view_gpu.args,
                 draw.args_offset,
-                &view_gpu.counts,
+                &view_gpu.group_args,
                 draw.count_offset,
                 draw.max_count,
             );
@@ -5854,21 +5861,24 @@ mod tests {
         assert_eq!(groups.add(2, 7, Some(first)), first);
         let (draws, table) = groups.plan();
         assert_eq!(draws.len(), 2);
+        // Each group owns one 16-byte `group_args` record; its draw count is the record's word 1.
         assert_eq!(
             (
                 draws[0].args_offset,
                 draws[0].max_count,
-                draws[0].count_offset
+                draws[0].count_offset,
+                draws[0].group_args_offset
             ),
-            (0, 17, 0)
+            (0, 17, 4, 0)
         );
         assert_eq!(
             (
                 draws[1].args_offset,
                 draws[1].max_count,
-                draws[1].count_offset
+                draws[1].count_offset,
+                draws[1].group_args_offset
             ),
-            (17 * DRAW_INDEXED_INDIRECT_BYTES, 5, 4)
+            (17 * DRAW_INDEXED_INDIRECT_BYTES, 5, 16 + 4, 16)
         );
         let entry = |batch: usize| -> [u32; 4] {
             std::array::from_fn(|index| word(&table, batch * 4 + index))

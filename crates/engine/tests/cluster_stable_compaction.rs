@@ -17,7 +17,9 @@ use bevy::{
 };
 use bytemuck::Zeroable;
 use cull_reuse::{CullInputs, CullReuse};
-use gpu_contract::{CullParams, DRAW_INDEXED_INDIRECT_BYTES, SELECTED_CLUSTER_BYTES, STAGES};
+use gpu_contract::{
+    CullParams, DRAW_INDEXED_INDIRECT_BYTES, GROUP_ARGS_BYTES, SELECTED_CLUSTER_BYTES, STAGES,
+};
 use std::{borrow::Cow, sync::mpsc, time::Duration};
 use wgpu::{util::DeviceExt, *};
 
@@ -36,6 +38,10 @@ const NO_GROUP: u32 = 0xffff;
 
 const INDEXED_ARG_WORDS: usize = (DRAW_INDEXED_INDIRECT_BYTES / 4) as usize;
 const LEGACY_ARG_WORDS: usize = 4;
+const GROUP_ARG_WORDS: usize = (GROUP_ARGS_BYTES / 4) as usize;
+/// The scene's largest cluster in these tests, above every cluster the scenes build, so a group's
+/// vertex count says where it came from.
+const TRIANGLE_LIMIT: u32 = 9;
 
 /// A selected draw: (instance, mesh, cluster, 0) and all five indexed argument words.
 /// The signed base_vertex word is compared by its exact bits (zero for pooled indices).
@@ -405,6 +411,7 @@ fn view_params(n: u32, mask_base: u32, epoch: u32, orthographic: bool) -> CullPa
     params.instance_count = n;
     params.orthographic = u32::from(orthographic);
     params.instance_mask_base = mask_base;
+    params.triangle_limit = TRIANGLE_LIMIT;
     params.epoch = epoch;
     params
 }
@@ -582,7 +589,9 @@ struct Shared {
 struct ViewBuffers {
     params: Buffer,
     args: Buffer,
-    counts: Buffer,
+    /// The stable shader's per-group `DrawIndirectArgs` records (the legacy shader's one count word
+    /// per group in the same slot).
+    group_args: Buffer,
     visible: Buffer,
     list: Buffer,
     dispatch: Buffer,
@@ -603,7 +612,7 @@ impl ViewBuffers {
             2 => &shared.groups,
             3 => &shared.instances,
             4 => &self.args,
-            5 => &self.counts,
+            5 => &self.group_args,
             6 => &shared.meshes,
             7 => &self.visible,
             8 => &self.list,
@@ -640,7 +649,10 @@ struct Job {
 /// `instance_count` words for the stable shader, one vec4 per survivor for the legacy one.
 #[derive(Debug, PartialEq, Eq)]
 struct Output {
+    /// Draws per group: word 1 of each `group_args` record, or the legacy shader's count.
     counts: Vec<u32>,
+    /// The stable shader's whole `group_args` records, four words per group; empty for the legacy.
+    group_args: Vec<u32>,
     args: Vec<u32>,
     args_words: usize,
     visible: Vec<u32>,
@@ -732,6 +744,15 @@ fn assert_exact(
     );
     let slots = out.args.len() / INDEXED_ARG_WORDS;
     assert_eq!(out.counts.len(), expected.len(), "{label}: group count");
+    // Every group's whole record is rewritten each recompute, including empty groups: the vertex
+    // count of the pulled draw, the count, no first vertex and the group's first slot.
+    for (group, draws) in expected.iter().enumerate() {
+        assert_eq!(
+            &out.group_args[group * GROUP_ARG_WORDS..(group + 1) * GROUP_ARG_WORDS],
+            &[TRIANGLE_LIMIT * 3, draws.len() as u32, 0, bases[group]],
+            "{label} group {group}: draw record"
+        );
+    }
     let mut used = vec![false; slots];
     for (group, draws) in expected.iter().enumerate() {
         assert_eq!(
@@ -799,6 +820,10 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
     for count_mode in [false, true] {
         let mut out = Output {
             counts: vec![1, 1],
+            group_args: bases
+                .iter()
+                .flat_map(|&base| [TRIANGLE_LIMIT * 3, 1, 0, base])
+                .collect(),
             args: vec![if count_mode { POISON } else { 0 }; slots * INDEXED_ARG_WORDS],
             args_words: INDEXED_ARG_WORDS,
             visible: vec![POISON; (slots + 1) * 4],
@@ -823,6 +848,7 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
 
         let mut legacy = Output {
             counts: out.counts.clone(),
+            group_args: Vec::new(),
             args: vec![0; slots * LEGACY_ARG_WORDS],
             args_words: LEGACY_ARG_WORDS,
             visible: out.visible.clone(),
@@ -1046,7 +1072,15 @@ impl Gpu {
                 u64::from(slots.max(1)) * args_words as u64 * 4,
                 storage | BufferUsages::INDIRECT,
             ),
-            counts: make(groups as u64 * 4, storage | BufferUsages::INDIRECT),
+            group_args: make(
+                groups as u64
+                    * if args_words == INDEXED_ARG_WORDS {
+                        GROUP_ARGS_BYTES
+                    } else {
+                        4
+                    },
+                storage | BufferUsages::INDIRECT,
+            ),
             // The terrain tail sentinel follows the last draw slot.
             visible: make((u64::from(slots) + 1) * 16, storage),
             list: make(u64::from(instances) * 16, storage),
@@ -1117,7 +1151,7 @@ impl Gpu {
                 &view.prefixes,
                 &view.selected,
                 &view.dispatch,
-                &view.counts,
+                &view.group_args,
             ] {
                 let words = vec![POISON; (buffer.size() / 4) as usize];
                 self.queue
@@ -1200,7 +1234,7 @@ impl Gpu {
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         encoder.clear_buffer(&view.args, 0, None);
-        encoder.clear_buffer(&view.counts, 0, None);
+        encoder.clear_buffer(&view.group_args, 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
             pass.set_pipeline(&self.legacy[0]);
@@ -1223,15 +1257,20 @@ impl Gpu {
             let view = &bound.view;
             let slots = view.slots as usize;
             let n = job.params.instance_count as usize;
+            let group_words = if view.args_words == INDEXED_ARG_WORDS {
+                view.groups * GROUP_ARG_WORDS
+            } else {
+                view.groups
+            };
             let words = [
-                view.groups,
+                group_words,
                 slots * view.args_words,
                 (slots + 1) * 4,
                 n * 4,
                 4,
             ];
             parts.extend([
-                (&view.counts, words[0] as u64 * 4),
+                (&view.group_args, words[0] as u64 * 4),
                 (&view.args, words[1] as u64 * 4),
                 (&view.visible, words[2] as u64 * 4),
                 (&view.list, words[3] as u64 * 4),
@@ -1252,9 +1291,20 @@ impl Gpu {
             let list = std::mem::take(&mut take[3]);
             let visible = std::mem::take(&mut take[2]);
             let args = std::mem::take(&mut take[1]);
-            let counts = std::mem::take(&mut take[0]);
+            let raw = std::mem::take(&mut take[0]);
+            let (counts, group_args) = if args_words == INDEXED_ARG_WORDS {
+                (
+                    raw.chunks(GROUP_ARG_WORDS)
+                        .map(|record| record[1])
+                        .collect(),
+                    raw,
+                )
+            } else {
+                (raw, Vec::new())
+            };
             outputs.push(Output {
                 counts,
+                group_args,
                 args,
                 args_words,
                 visible,
@@ -1763,7 +1813,7 @@ impl Gpu {
                         encoder.clear_buffer(&view.bound.view.args, 0, None);
                         work[index].clears += 1;
                     }
-                    encoder.clear_buffer(&view.bound.view.counts, 0, None);
+                    encoder.clear_buffer(&view.bound.view.group_args, 0, None);
                     work[index].clears += 1;
                 }
                 needed || force
@@ -1803,6 +1853,10 @@ impl Gpu {
 /// miss a clear performed on the reuse path or stale indirect dispatch arguments.
 fn assert_reuse_output(label: &str, retained: &Output, forced: &Output) {
     assert_eq!(retained.counts, forced.counts, "{label}: counts");
+    assert_eq!(
+        retained.group_args, forced.group_args,
+        "{label}: group arguments"
+    );
     assert_eq!(retained.args_words, forced.args_words, "{label}: stride");
     assert_eq!(retained.args, forced.args, "{label}: all arguments");
     assert_eq!(
