@@ -29,14 +29,40 @@ struct Options {
     export: Option<ExportOptions>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExportKind { Frames, Gif, Video }
+enum ExportKind {
+    Frames,
+    Gif,
+    Video,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Background { Transparent, Solid([u8; 3]) }
+enum Background {
+    Transparent,
+    Solid([u8; 3]),
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VideoFormat { Mp4, Mov }
-impl VideoFormat { fn as_str(self) -> &'static str { match self { Self::Mp4 => "mp4", Self::Mov => "mov" } } }
+enum VideoFormat {
+    Mp4,
+    Mov,
+}
+impl VideoFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ExportOptions { kind: ExportKind, seconds: u32, fps: u32, width: u32, height: u32, orbit: bool, background: Background, video_format: VideoFormat }
+struct ExportOptions {
+    kind: ExportKind,
+    seconds: u32,
+    fps: u32,
+    width: u32,
+    height: u32,
+    orbit: bool,
+    background: Background,
+    video_format: VideoFormat,
+}
 fn arguments(args: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut args = args.into_iter();
     let mut assets = None;
@@ -52,13 +78,23 @@ fn arguments(args: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut background = Background::Solid([6, 8, 10]);
     let mut video_format = VideoFormat::Mp4;
     while let Some(flag) = args.next() {
-        if flag == "--orbit" { ensure!(!orbit, "duplicate --orbit"); orbit = true; continue; }
-        if flag == "--export-frames" || flag == "--export-gif" || flag == "--export-video" {
-            ensure!(export_kind.is_none(), "select only one export mode");
-            export_kind = Some(match flag.as_str() { "--export-frames" => ExportKind::Frames, "--export-gif" => ExportKind::Gif, _ => ExportKind::Video });
+        if flag == "--orbit" {
+            ensure!(!orbit, "duplicate --orbit");
+            orbit = true;
             continue;
         }
-        let value = args.next().ok_or_else(|| eyre!("{flag} requires a value"))?;
+        if flag == "--export-frames" || flag == "--export-gif" || flag == "--export-video" {
+            ensure!(export_kind.is_none(), "select only one export mode");
+            export_kind = Some(match flag.as_str() {
+                "--export-frames" => ExportKind::Frames,
+                "--export-gif" => ExportKind::Gif,
+                _ => ExportKind::Video,
+            });
+            continue;
+        }
+        let value = args
+            .next()
+            .ok_or_else(|| eyre!("{flag} requires a value"))?;
         match flag.as_str() {
             "--assets" => {
                 ensure!(assets.is_none(), "duplicate --assets");
@@ -76,9 +112,37 @@ fn arguments(args: impl IntoIterator<Item = String>) -> Result<Options> {
             "--record" => records.push(value),
             "--seconds" => seconds = value.parse()?,
             "--fps" => fps = value.parse()?,
-            "--size" => { let (w,h) = value.split_once('x').ok_or_else(|| eyre!("--size must be WIDTHxHEIGHT"))?; size = (w.parse()?, h.parse()?); },
-            "--background" => background = if value == "transparent" { Background::Transparent } else { let hex = value.strip_prefix('#').ok_or_else(|| eyre!("background must be transparent or #RRGGBB"))?; ensure!(hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()), "background must be #RRGGBB"); Background::Solid([u8::from_str_radix(&hex[0..2],16)?,u8::from_str_radix(&hex[2..4],16)?,u8::from_str_radix(&hex[4..6],16)?]) },
-            "--video-format" => video_format = match value.as_str() { "mp4" => VideoFormat::Mp4, "mov" => VideoFormat::Mov, _ => return Err(eyre!("--video-format must be mp4 or mov")) },
+            "--size" => {
+                let (w, h) = value
+                    .split_once('x')
+                    .ok_or_else(|| eyre!("--size must be WIDTHxHEIGHT"))?;
+                size = (w.parse()?, h.parse()?);
+            }
+            "--background" => {
+                background = if value == "transparent" {
+                    Background::Transparent
+                } else {
+                    let hex = value
+                        .strip_prefix('#')
+                        .ok_or_else(|| eyre!("background must be transparent or #RRGGBB"))?;
+                    ensure!(
+                        hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                        "background must be #RRGGBB"
+                    );
+                    Background::Solid([
+                        u8::from_str_radix(&hex[0..2], 16)?,
+                        u8::from_str_radix(&hex[2..4], 16)?,
+                        u8::from_str_radix(&hex[4..6], 16)?,
+                    ])
+                }
+            }
+            "--video-format" => {
+                video_format = match value.as_str() {
+                    "mp4" => VideoFormat::Mp4,
+                    "mov" => VideoFormat::Mov,
+                    _ => return Err(eyre!("--video-format must be mp4 or mov")),
+                }
+            }
             _ => return Err(eyre!("unknown option {flag}")),
         }
     }
@@ -97,20 +161,60 @@ fn arguments(args: impl IntoIterator<Item = String>) -> Result<Options> {
         "provide --model or --record"
     );
     ensure!(models.len() + records.len() <= 8, "at most eight models");
-    let export = export_kind.map(|kind| ExportOptions { kind, seconds, fps, width:size.0, height:size.1, orbit, background, video_format });
+    let export = export_kind.map(|kind| ExportOptions {
+        kind,
+        seconds,
+        fps,
+        width: size.0,
+        height: size.1,
+        orbit,
+        background,
+        video_format,
+    });
     if let Some(e) = export {
         ensure!(e.seconds > 0 && e.seconds <= 60, "seconds must be 1..=60");
         ensure!(e.fps > 0 && e.fps <= 60, "fps must be 1..=60");
-        let pixels=u64::from(e.width).checked_mul(u64::from(e.height)).ok_or_else(|| eyre!("size overflows"))?;
-        ensure!(e.width>0 && e.height>0 && pixels<=export::ANIMALS_MAX_PIXELS, "size exceeds shared 4096000-pixel limit");
-        let frames=u64::from(e.seconds).checked_mul(u64::from(e.fps)).ok_or_else(|| eyre!("frame count overflows"))?;
-        let worst_case_png_bytes=pixels.checked_mul(4).and_then(|n| n.checked_mul(frames)).ok_or_else(|| eyre!("PNG staging estimate overflows"))?;
-        ensure!(frames<=u64::from(export::MAX_FRAMES) && worst_case_png_bytes<=export::ANIMALS_MAX_PNG_BYTES, "worst-case PNG staging exceeds shared 512 MiB limit");
+        let pixels = u64::from(e.width)
+            .checked_mul(u64::from(e.height))
+            .ok_or_else(|| eyre!("size overflows"))?;
+        ensure!(
+            e.width > 0 && e.height > 0 && pixels <= export::ANIMALS_MAX_PIXELS,
+            "size exceeds shared 4096000-pixel limit"
+        );
+        let frames = u64::from(e.seconds)
+            .checked_mul(u64::from(e.fps))
+            .ok_or_else(|| eyre!("frame count overflows"))?;
+        let worst_case_png_bytes = pixels
+            .checked_mul(4)
+            .and_then(|n| n.checked_mul(frames))
+            .ok_or_else(|| eyre!("PNG staging estimate overflows"))?;
+        ensure!(
+            frames <= u64::from(export::MAX_FRAMES)
+                && worst_case_png_bytes <= export::ANIMALS_MAX_PNG_BYTES,
+            "worst-case PNG staging exceeds shared 512 MiB limit"
+        );
         if e.kind == ExportKind::Video {
-            ensure!(matches!(e.background, Background::Solid(_)), "video requires a solid background");
-            ensure!(e.width % 2 == 0 && e.height % 2 == 0, "H.264 requires even physical dimensions; no padding is applied");
+            ensure!(
+                matches!(e.background, Background::Solid(_)),
+                "video requires a solid background"
+            );
+            ensure!(
+                e.width % 2 == 0 && e.height % 2 == 0,
+                "H.264 requires even physical dimensions; no padding is applied"
+            );
         }
-        export::ExportRequest { duration:export::Rational { numerator:u64::from(e.seconds), denominator:1 }, fps:e.fps, width:e.width, height:e.height, png_budget:export::ANIMALS_MAX_PNG_BYTES }.validate().map_err(|error| eyre!("{error}"))?;
+        export::ExportRequest {
+            duration: export::Rational {
+                numerator: u64::from(e.seconds),
+                denominator: 1,
+            },
+            fps: e.fps,
+            width: e.width,
+            height: e.height,
+            png_budget: export::ANIMALS_MAX_PNG_BYTES,
+        }
+        .validate()
+        .map_err(|error| eyre!("{error}"))?;
     }
     let asset_lock = shared::asset_lock::AssetLock::acquire_shared(&assets)?;
     let assets = assets.canonicalize()?;
@@ -275,9 +379,41 @@ fn main() -> Result<()> {
         scenes.push(scene);
         labels.push(input.label);
     }
-    let (capture_width, capture_height) = export_request.map_or((recording_settings().width, recording_settings().height), |e| (e.width, e.height));
-    let target = Some(app.world_mut().resource_mut::<Assets<Image>>().add(Image::new_target_texture(capture_width,capture_height,bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,None)));
-    let sequence = export_request.map(|e| export::CaptureSequence::new(options.output.clone(), export::ExportRequest { duration: export::Rational { numerator:u64::from(e.seconds), denominator:1 }, fps:e.fps, width:e.width, height:e.height, png_budget:export::ANIMALS_MAX_PNG_BYTES }, export::CaptureIdentity { protocol:export::PROTOCOL.into(), version:1, source_identity:"model-inspector-local-adapter".into(), width:e.width, height:e.height }).expect("validated export options"));
+    let (capture_width, capture_height) = export_request.map_or(
+        (recording_settings().width, recording_settings().height),
+        |e| (e.width, e.height),
+    );
+    let target = Some(app.world_mut().resource_mut::<Assets<Image>>().add(
+        Image::new_target_texture(
+            capture_width,
+            capture_height,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            None,
+        ),
+    ));
+    let sequence = export_request.map(|e| {
+        export::CaptureSequence::new(
+            options.output.clone(),
+            export::ExportRequest {
+                duration: export::Rational {
+                    numerator: u64::from(e.seconds),
+                    denominator: 1,
+                },
+                fps: e.fps,
+                width: e.width,
+                height: e.height,
+                png_budget: export::ANIMALS_MAX_PNG_BYTES,
+            },
+            export::CaptureIdentity {
+                protocol: export::PROTOCOL.into(),
+                version: 1,
+                source_identity: "model-inspector-local-adapter".into(),
+                width: e.width,
+                height: e.height,
+            },
+        )
+        .expect("validated export options")
+    });
     app.insert_resource(Viewer {
         scenes,
         output: options.output.clone(),
@@ -314,11 +450,31 @@ fn main() -> Result<()> {
     if let Some(export) = export_request {
         let encoded_by = match export.kind {
             ExportKind::Frames => None,
-            ExportKind::Gif => Some(export::encoder::encode_gif(&output_dir, export.fps, export.seconds)?),
-            ExportKind::Video => Some(export::encoder::encode_video(&output_dir, export.fps, export.seconds, export.video_format.as_str())?),
+            ExportKind::Gif => Some(export::encoder::encode_gif(
+                &output_dir,
+                export.fps,
+                export.seconds,
+            )?),
+            ExportKind::Video => Some(export::encoder::encode_video(
+                &output_dir,
+                export.fps,
+                export.seconds,
+                export.video_format.as_str(),
+            )?),
         };
         if let Some(encoder) = encoded_by {
-            export::encoder::write_encoding_manifest(&output_dir, export.fps, export.seconds, if export.kind == ExportKind::Gif { "gif" } else { "video" }, (export.kind == ExportKind::Video).then_some(export.video_format.as_str()), encoder)?;
+            export::encoder::write_encoding_manifest(
+                &output_dir,
+                export.fps,
+                export.seconds,
+                if export.kind == ExportKind::Gif {
+                    "gif"
+                } else {
+                    "video"
+                },
+                (export.kind == ExportKind::Video).then_some(export.video_format.as_str()),
+                encoder,
+            )?;
         }
     }
     Ok(())
@@ -332,8 +488,26 @@ fn setup(mut commands: Commands, viewer: Res<Viewer>) {
         Transform::from_xyz(200., 100., 250.).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     if let Some(target) = &viewer.capture_target {
-        let clear = match viewer.export.map(|opts| opts.background).unwrap_or(Background::Solid([6, 8, 10])) { Background::Transparent => Color::NONE, Background::Solid([r,g,b]) => Color::srgb_u8(r,g,b) };
-        commands.spawn((Camera3d::default(), Exposure { ev100: 9.7 }, Tonemapping::TonyMcMapface, DebandDither::Disabled, RenderTarget::Image(target.clone().into()), Camera { clear_color: bevy::camera::ClearColorConfig::Custom(clear), ..default() }, Transform::from_xyz(200.,100.,250.).looking_at(Vec3::ZERO,Vec3::Y)));
+        let clear = match viewer
+            .export
+            .map(|opts| opts.background)
+            .unwrap_or(Background::Solid([6, 8, 10]))
+        {
+            Background::Transparent => Color::NONE,
+            Background::Solid([r, g, b]) => Color::srgb_u8(r, g, b),
+        };
+        commands.spawn((
+            Camera3d::default(),
+            Exposure { ev100: 9.7 },
+            Tonemapping::TonyMcMapface,
+            DebandDither::Disabled,
+            RenderTarget::Image(target.clone().into()),
+            Camera {
+                clear_color: bevy::camera::ClearColorConfig::Custom(clear),
+                ..default()
+            },
+            Transform::from_xyz(200., 100., 250.).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
     }
     commands.spawn((
         DirectionalLight {
@@ -346,16 +520,34 @@ fn setup(mut commands: Commands, viewer: Res<Viewer>) {
     commands.spawn((Text::new(format!("{}\nArrows: orbit/zoom  W/S: elevation  Space: fill  P: pause  F12: capture  R: record/stop (640x400, 30 fps, 120 frame cap)  Esc: close",viewer.labels)),TextFont{font_size:FontSize::Px(18.),..default()},TextColor(Color::WHITE),Node{position_type:PositionType::Absolute,left:px(16),top:px(16),..default()}));
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RecordingSettings { width: u32, height: u32, fps: u32, max_frames: u32 }
+struct RecordingSettings {
+    width: u32,
+    height: u32,
+    fps: u32,
+    max_frames: u32,
+}
 const fn recording_settings() -> RecordingSettings {
-    RecordingSettings { width: RECORDING_WIDTH, height: RECORDING_HEIGHT, fps: RECORDING_FPS, max_frames: RECORDING_MAX_FRAMES }
+    RecordingSettings {
+        width: RECORDING_WIDTH,
+        height: RECORDING_HEIGHT,
+        fps: RECORDING_FPS,
+        max_frames: RECORDING_MAX_FRAMES,
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecordingStopAction { WaitForReadback, DiscardEmpty, FinishCapturedPrefix }
+enum RecordingStopAction {
+    WaitForReadback,
+    DiscardEmpty,
+    FinishCapturedPrefix,
+}
 fn recording_stop_action(captured_frames: u32, readback_pending: bool) -> RecordingStopAction {
-    if readback_pending { RecordingStopAction::WaitForReadback }
-    else if captured_frames == 0 { RecordingStopAction::DiscardEmpty }
-    else { RecordingStopAction::FinishCapturedPrefix }
+    if readback_pending {
+        RecordingStopAction::WaitForReadback
+    } else if captured_frames == 0 {
+        RecordingStopAction::DiscardEmpty
+    } else {
+        RecordingStopAction::FinishCapturedPrefix
+    }
 }
 fn can_start_readback(export_pending: bool, live_pending: bool) -> bool {
     !export_pending && !live_pending
@@ -365,7 +557,11 @@ fn fixed_pose_controls_locked(export: bool, recording: bool) -> bool {
 }
 fn restore_recording_pause(viewer: &mut Viewer, virtual_time: &mut Time<Virtual>) {
     if let Some(was_paused) = viewer.recording_was_paused.take() {
-        if was_paused { virtual_time.pause(); } else { virtual_time.unpause(); }
+        if was_paused {
+            virtual_time.pause();
+        } else {
+            virtual_time.unpause();
+        }
     }
 }
 fn create_recording_sequence(root: &std::path::Path) -> Result<(PathBuf, export::CaptureSequence)> {
@@ -374,15 +570,34 @@ fn create_recording_sequence(root: &std::path::Path) -> Result<(PathBuf, export:
     for index in 0u64.. {
         let candidate = root.join(format!("recording-{index:03}"));
         match std::fs::create_dir(&candidate) {
-            Ok(()) => { directory = Some(candidate); break; }
+            Ok(()) => {
+                directory = Some(candidate);
+                break;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
         }
     }
-    let directory = directory.ok_or_else(|| eyre!("could not allocate a unique recording directory"))?;
-    let request = export::ExportRequest { duration: export::Rational::new(u64::from(settings.max_frames), u64::from(settings.fps))?, fps: settings.fps, width: settings.width, height: settings.height, png_budget: export::ANIMALS_MAX_PNG_BYTES };
-    let identity = export::CaptureIdentity { protocol: export::PROTOCOL.into(), version: 1, source_identity: "model-inspector-r-recording".into(), width: settings.width, height: settings.height };
-    Ok((directory.clone(), export::CaptureSequence::new(directory, request, identity)?))
+    let directory =
+        directory.ok_or_else(|| eyre!("could not allocate a unique recording directory"))?;
+    let request = export::ExportRequest {
+        duration: export::Rational::new(u64::from(settings.max_frames), u64::from(settings.fps))?,
+        fps: settings.fps,
+        width: settings.width,
+        height: settings.height,
+        png_budget: export::ANIMALS_MAX_PNG_BYTES,
+    };
+    let identity = export::CaptureIdentity {
+        protocol: export::PROTOCOL.into(),
+        version: 1,
+        source_identity: "model-inspector-r-recording".into(),
+        width: settings.width,
+        height: settings.height,
+    };
+    Ok((
+        directory.clone(),
+        export::CaptureSequence::new(directory, request, identity)?,
+    ))
 }
 #[allow(clippy::too_many_arguments)]
 fn update(
@@ -399,8 +614,15 @@ fn update(
     mut close_requests: MessageReader<bevy::window::WindowCloseRequested>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if viewer.capture_error.is_some() { restore_recording_pause(&mut viewer, &mut virtual_time); exit.write(AppExit::error()); return; }
-    if viewer.pending_since.is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(30)) {
+    if viewer.capture_error.is_some() {
+        restore_recording_pause(&mut viewer, &mut virtual_time);
+        exit.write(AppExit::error());
+        return;
+    }
+    if viewer
+        .pending_since
+        .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(30))
+    {
         viewer.capture_error = Some("capture readback timed out after 30 seconds".into());
         eprintln!("INSPECTOR_CAPTURE_TIMEOUT: partial PNGs retained");
         exit.write(AppExit::error());
@@ -408,20 +630,30 @@ fn update(
     }
     if viewer.started.elapsed().as_secs() >= 1800 {
         if viewer.export.is_some() || viewer.pending {
-            eprintln!("INSPECTOR_WATCHDOG_TIMEOUT: active capture did not finish within 30 minutes");
+            eprintln!(
+                "INSPECTOR_WATCHDOG_TIMEOUT: active capture did not finish within 30 minutes"
+            );
             exit.write(AppExit::error());
-        } else { exit.write(AppExit::Success); }
+        } else {
+            exit.write(AppExit::Success);
+        }
         return;
     }
     let closing = close_requests.read().next().is_some();
     if keys.just_pressed(KeyCode::Escape) || closing {
         if viewer.export.is_some() || viewer.recording_active {
-            eprintln!("INSPECTOR_CAPTURE_CANCELLED: PNG sequence is incomplete; partial frames retained");
+            eprintln!(
+                "INSPECTOR_CAPTURE_CANCELLED: PNG sequence is incomplete; partial frames retained"
+            );
             exit.write(AppExit::error());
-        } else { exit.write(AppExit::Success); }
+        } else {
+            exit.write(AppExit::Success);
+        }
         return;
     }
-    if viewer.export.is_some() { virtual_time.pause(); }
+    if viewer.export.is_some() {
+        virtual_time.pause();
+    }
     for scene in &viewer.scenes {
         if let bevy::asset::LoadState::Failed(reason) = server.load_state(scene.id()) {
             eprintln!("INSPECTOR_LOAD_FAILED: {reason}");
@@ -474,26 +706,40 @@ fn update(
         }
     }
     let dt = time.delta_secs();
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::ArrowLeft) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::ArrowLeft)
+    {
         viewer.yaw -= dt;
     }
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::ArrowRight) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::ArrowRight)
+    {
         viewer.yaw += dt;
     }
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::KeyW) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::KeyW)
+    {
         viewer.pitch = (viewer.pitch + dt).min(1.5);
     }
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::KeyS) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::KeyS)
+    {
         viewer.pitch = (viewer.pitch - dt).max(-1.5);
     }
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::ArrowUp) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::ArrowUp)
+    {
         viewer.radius *= (-dt).exp();
     }
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.pressed(KeyCode::ArrowDown) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.pressed(KeyCode::ArrowDown)
+    {
         viewer.radius *= dt.exp();
     }
     viewer.radius = viewer.radius.clamp(0.01, 100000.);
-    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active) && keys.just_pressed(KeyCode::Space) {
+    if !fixed_pose_controls_locked(viewer.export.is_some(), viewer.recording_active)
+        && keys.just_pressed(KeyCode::Space)
+    {
         ambient.brightness = if ambient.brightness == 0. { 40. } else { 0. };
     }
     if viewer.export.is_none() && !viewer.recording_active && keys.just_pressed(KeyCode::KeyP) {
@@ -515,15 +761,32 @@ fn update(
                     viewer.recording_active = true;
                     viewer.recording_stop_requested = false;
                     viewer.recording_was_paused = Some(virtual_time.is_paused());
-                    println!("INSPECTOR_RECORDING_STARTED path={} fps={} max_frames={}", directory.display(), RECORDING_FPS, RECORDING_MAX_FRAMES);
+                    println!(
+                        "INSPECTOR_RECORDING_STARTED path={} fps={} max_frames={}",
+                        directory.display(),
+                        RECORDING_FPS,
+                        RECORDING_MAX_FRAMES
+                    );
                 }
-                Err(error) => { viewer.capture_error = Some(error.to_string()); eprintln!("INSPECTOR_RECORDING_FAILED: {error}"); }
+                Err(error) => {
+                    viewer.capture_error = Some(error.to_string());
+                    eprintln!("INSPECTOR_RECORDING_FAILED: {error}");
+                }
             }
         }
     }
-    if viewer.export.is_some() || viewer.recording_active { virtual_time.pause(); }
-    if let (Some(opts), Some(index)) = (viewer.export, viewer.sequence.as_ref().and_then(export::CaptureSequence::next_index)) {
-        if opts.orbit { viewer.yaw = 0.6 + std::f32::consts::TAU * index as f32 / (opts.fps * opts.seconds) as f32; }
+    if viewer.export.is_some() || viewer.recording_active {
+        virtual_time.pause();
+    }
+    if let (Some(opts), Some(index)) = (
+        viewer.export,
+        viewer
+            .sequence
+            .as_ref()
+            .and_then(export::CaptureSequence::next_index),
+    ) && opts.orbit
+    {
+        viewer.yaw = 0.6 + std::f32::consts::TAU * index as f32 / (opts.fps * opts.seconds) as f32;
     }
     for mut camera in &mut cameras {
         let offset = Vec3::new(
@@ -543,11 +806,16 @@ fn update(
         if viewer.export.is_some() || viewer.recording_active {
             if viewer.capture_error.is_none() {
                 if viewer.recording_active && viewer.recording_stop_requested {
-                    let captured = viewer.sequence.as_ref().map_or(0, |sequence| sequence.next_index().map_or(RECORDING_MAX_FRAMES, |index| index));
+                    let captured = viewer.sequence.as_ref().map_or(0, |sequence| {
+                        sequence.next_index().unwrap_or(RECORDING_MAX_FRAMES)
+                    });
                     match recording_stop_action(captured, viewer.pending) {
                         RecordingStopAction::WaitForReadback => {}
                         RecordingStopAction::DiscardEmpty => {
-                            println!("INSPECTOR_RECORDING_CANCELLED_EMPTY path={}", viewer.sequence_dir.display());
+                            println!(
+                                "INSPECTOR_RECORDING_CANCELLED_EMPTY path={}",
+                                viewer.sequence_dir.display()
+                            );
                             viewer.sequence = None;
                             viewer.recording_active = false;
                             viewer.recording_stop_requested = false;
@@ -555,43 +823,84 @@ fn update(
                         }
                         RecordingStopAction::FinishCapturedPrefix => {
                             let result = if let Some(sequence) = viewer.sequence.as_mut() {
-                                sequence.truncate_to_captured().and_then(|()| sequence.finish())
-                            } else { Err(export::ExportError::Sequence("recording sequence is missing")) };
+                                sequence
+                                    .truncate_to_captured()
+                                    .and_then(|()| sequence.finish())
+                            } else {
+                                Err(export::ExportError::Sequence(
+                                    "recording sequence is missing",
+                                ))
+                            };
                             match result {
-                                Ok(()) => println!("INSPECTOR_RECORDING_COMPLETE path={}", viewer.sequence_dir.display()),
-                                Err(error) => { viewer.capture_error = Some(error.to_string()); eprintln!("INSPECTOR_RECORDING_PARTIAL path={} error={error}", viewer.sequence_dir.display()); }
+                                Ok(()) => println!(
+                                    "INSPECTOR_RECORDING_COMPLETE path={}",
+                                    viewer.sequence_dir.display()
+                                ),
+                                Err(error) => {
+                                    viewer.capture_error = Some(error.to_string());
+                                    eprintln!(
+                                        "INSPECTOR_RECORDING_PARTIAL path={} error={error}",
+                                        viewer.sequence_dir.display()
+                                    );
+                                }
                             }
                             viewer.sequence = None;
                             viewer.recording_active = false;
                             viewer.recording_stop_requested = false;
-                            if viewer.capture_error.is_none() { restore_recording_pause(&mut viewer, &mut virtual_time); }
+                            if viewer.capture_error.is_none() {
+                                restore_recording_pause(&mut viewer, &mut virtual_time);
+                            }
                         }
                     }
                 } else if can_start_readback(viewer.pending, viewer.live_pending) {
-                let sequence = viewer.sequence.as_mut().unwrap();
-                if let Some(index) = sequence.next_index() {
-                    let command = sequence.command(if index == 0 { export::Operation::Capture } else { export::Operation::Step }).unwrap();
-                    viewer.pending_command = Some(command);
-                    viewer.pending = true;
-                    viewer.pending_since = Some(Instant::now());
-                    virtual_time.pause();
-                    if let Some(target) = &viewer.capture_target { commands.spawn(Screenshot::image(target.clone())).observe(export_capture_complete); }
-                } else {
-                    match sequence.finish() {
-                        Ok(()) if viewer.recording_active => {
-                            println!("INSPECTOR_RECORDING_COMPLETE path={}", viewer.sequence_dir.display());
-                            viewer.sequence = None;
-                            viewer.recording_active = false;
-                            restore_recording_pause(&mut viewer, &mut virtual_time);
+                    let sequence = viewer.sequence.as_mut().unwrap();
+                    if let Some(index) = sequence.next_index() {
+                        let command = sequence
+                            .command(if index == 0 {
+                                export::Operation::Capture
+                            } else {
+                                export::Operation::Step
+                            })
+                            .unwrap();
+                        viewer.pending_command = Some(command);
+                        viewer.pending = true;
+                        viewer.pending_since = Some(Instant::now());
+                        virtual_time.pause();
+                        if let Some(target) = &viewer.capture_target {
+                            commands
+                                .spawn(Screenshot::image(target.clone()))
+                                .observe(export_capture_complete);
                         }
-                        Ok(()) => { println!("INSPECTOR_EXPORT_FRAMES_COMPLETE path={}", viewer.output.display()); exit.write(AppExit::Success); }
-                        Err(error) => { viewer.capture_error = Some(error.to_string()); eprintln!("INSPECTOR_EXPORT_FAILED partial PNGs retained: {error}"); exit.write(AppExit::error()); }
+                    } else {
+                        match sequence.finish() {
+                            Ok(()) if viewer.recording_active => {
+                                println!(
+                                    "INSPECTOR_RECORDING_COMPLETE path={}",
+                                    viewer.sequence_dir.display()
+                                );
+                                viewer.sequence = None;
+                                viewer.recording_active = false;
+                                restore_recording_pause(&mut viewer, &mut virtual_time);
+                            }
+                            Ok(()) => {
+                                println!(
+                                    "INSPECTOR_EXPORT_FRAMES_COMPLETE path={}",
+                                    viewer.output.display()
+                                );
+                                exit.write(AppExit::Success);
+                            }
+                            Err(error) => {
+                                viewer.capture_error = Some(error.to_string());
+                                eprintln!("INSPECTOR_EXPORT_FAILED partial PNGs retained: {error}");
+                                exit.write(AppExit::error());
+                            }
+                        }
                     }
-                }
                 }
             }
         } else if can_start_readback(viewer.pending, viewer.live_pending)
-            && (viewer.frames == 180 || viewer.frames == 480 || keys.just_pressed(KeyCode::F12)) {
+            && (viewer.frames == 180 || viewer.frames == 480 || keys.just_pressed(KeyCode::F12))
+        {
             viewer.live_pending = true;
             viewer.pending_since = Some(Instant::now());
             let path = viewer
@@ -616,27 +925,57 @@ fn normal_capture_complete(_event: On<ScreenshotCaptured>, mut viewer: ResMut<Vi
 
 fn export_capture_complete(event: On<ScreenshotCaptured>, mut viewer: ResMut<Viewer>) {
     let result = (|| -> Result<()> {
-        let command = viewer.pending_command.take().ok_or_else(|| eyre!("capture completed without a pending command"))?;
+        let command = viewer
+            .pending_command
+            .take()
+            .ok_or_else(|| eyre!("capture completed without a pending command"))?;
         let image = &event.image;
         let desc = &image.texture_descriptor;
-        let (width,height) = (desc.size.width, desc.size.height);
+        let (width, height) = (desc.size.width, desc.size.height);
         let output = viewer.sequence_dir.clone();
-        ensure!((width,height) == (viewer.capture_width,viewer.capture_height), "offscreen physical dimensions differ from active capture settings");
+        ensure!(
+            (width, height) == (viewer.capture_width, viewer.capture_height),
+            "offscreen physical dimensions differ from active capture settings"
+        );
         let capture_fps = viewer.capture_fps;
-        let seq = viewer.sequence.as_mut().ok_or_else(|| eyre!("missing export sequence"))?;
-        let dynamic = image.clone().try_into_dynamic().map_err(|e| eyre!("screenshot image conversion failed: {e}"))?;
+        let seq = viewer
+            .sequence
+            .as_mut()
+            .ok_or_else(|| eyre!("missing export sequence"))?;
+        let dynamic = image
+            .clone()
+            .try_into_dynamic()
+            .map_err(|e| eyre!("screenshot image conversion failed: {e}"))?;
         let mut png = Cursor::new(Vec::new());
         dynamic.write_to(&mut png, image::ImageFormat::Png)?;
         let index = command.frame_index;
-        let path = export::write_captured_png(&output,index,png.get_ref())?;
-        let seek = export::Rational { numerator:u64::from(index), denominator:u64::from(capture_fps) };
-        let ack = export::CaptureAck { protocol:export::PROTOCOL.into(), version:1, source_identity:seq.identity().source_identity.clone(), sequence:command.sequence, frame_index:index, state:export::AckState::Captured, png_path:Some(path.to_string_lossy().into_owned()), width,height,png_readback_and_write_completed:true,seek };
-        seq.complete_capture(&command,&ack,&path)?;
+        let path = export::write_captured_png(&output, index, png.get_ref())?;
+        let seek = export::Rational {
+            numerator: u64::from(index),
+            denominator: u64::from(capture_fps),
+        };
+        let ack = export::CaptureAck {
+            protocol: export::PROTOCOL.into(),
+            version: 1,
+            source_identity: seq.identity().source_identity.clone(),
+            sequence: command.sequence,
+            frame_index: index,
+            state: export::AckState::Captured,
+            png_path: Some(path.to_string_lossy().into_owned()),
+            width,
+            height,
+            png_readback_and_write_completed: true,
+            seek,
+        };
+        seq.complete_capture(&command, &ack, &path)?;
         Ok(())
     })();
     viewer.pending = false;
     viewer.pending_since = None;
-    if let Err(error) = result { viewer.capture_error = Some(error.to_string()); eprintln!("INSPECTOR_EXPORT_FAILED partial PNGs retained: {error}"); }
+    if let Err(error) = result {
+        viewer.capture_error = Some(error.to_string());
+        eprintln!("INSPECTOR_EXPORT_FAILED partial PNGs retained: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -760,33 +1099,184 @@ mod tests {
     #[test]
     fn export_cli_parses_bounds_and_rejects_invalid_modes() {
         let (_dir, assets, output) = fixture();
-        let parsed = arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-frames", "--seconds", "5", "--fps", "24", "--size", "640x480", "--orbit", "--background", "#102030"])).unwrap();
-        assert_eq!(parsed.export, Some(ExportOptions { kind: ExportKind::Frames, seconds: 5, fps: 24, width: 640, height: 480, orbit: true, background: Background::Solid([16,32,48]), video_format: VideoFormat::Mp4 }));
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-gif", "--export-video"])).is_err());
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-video", "--background", "transparent"])).is_err());
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-video", "--size", "641x480"])).is_err());
-        assert_eq!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-video", "--video-format", "mov"])).unwrap().export.unwrap().video_format, VideoFormat::Mov);
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-frames", "--size", "640x480"])).is_ok());
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-frames", "--fps", "61"])).is_err());
-        assert!(arguments(args(&assets, &output, &["--model", "meshes/test.glb", "--export-frames", "--size", "2024x2024", "--seconds", "60", "--fps", "60"])).is_err());
+        let parsed = arguments(args(
+            &assets,
+            &output,
+            &[
+                "--model",
+                "meshes/test.glb",
+                "--export-frames",
+                "--seconds",
+                "5",
+                "--fps",
+                "24",
+                "--size",
+                "640x480",
+                "--orbit",
+                "--background",
+                "#102030",
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed.export,
+            Some(ExportOptions {
+                kind: ExportKind::Frames,
+                seconds: 5,
+                fps: 24,
+                width: 640,
+                height: 480,
+                orbit: true,
+                background: Background::Solid([16, 32, 48]),
+                video_format: VideoFormat::Mp4
+            })
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-gif",
+                    "--export-video"
+                ]
+            ))
+            .is_err()
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-video",
+                    "--background",
+                    "transparent"
+                ]
+            ))
+            .is_err()
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-video",
+                    "--size",
+                    "641x480"
+                ]
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-video",
+                    "--video-format",
+                    "mov"
+                ]
+            ))
+            .unwrap()
+            .export
+            .unwrap()
+            .video_format,
+            VideoFormat::Mov
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-frames",
+                    "--size",
+                    "640x480"
+                ]
+            ))
+            .is_ok()
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-frames",
+                    "--fps",
+                    "61"
+                ]
+            ))
+            .is_err()
+        );
+        assert!(
+            arguments(args(
+                &assets,
+                &output,
+                &[
+                    "--model",
+                    "meshes/test.glb",
+                    "--export-frames",
+                    "--size",
+                    "2024x2024",
+                    "--seconds",
+                    "60",
+                    "--fps",
+                    "60"
+                ]
+            ))
+            .is_err()
+        );
     }
 
     #[test]
     fn recording_settings_match_offscreen_sequence_configuration() {
         let settings = recording_settings();
-        assert_eq!((settings.width, settings.height, settings.fps, settings.max_frames), (640, 400, 30, 120));
+        assert_eq!(
+            (
+                settings.width,
+                settings.height,
+                settings.fps,
+                settings.max_frames
+            ),
+            (640, 400, 30, 120)
+        );
         let dir = tempfile::tempdir().unwrap();
         let (_, sequence) = create_recording_sequence(dir.path()).unwrap();
-        assert_eq!((sequence.identity().width, sequence.identity().height), (settings.width, settings.height));
+        assert_eq!(
+            (sequence.identity().width, sequence.identity().height),
+            (settings.width, settings.height)
+        );
         assert_eq!(sequence.next_index(), Some(0));
     }
 
     #[test]
     fn recording_stop_waits_for_in_flight_frame_and_finishes_only_captured_prefix() {
-        assert_eq!(recording_stop_action(0, false), RecordingStopAction::DiscardEmpty);
-        assert_eq!(recording_stop_action(0, true), RecordingStopAction::WaitForReadback);
-        assert_eq!(recording_stop_action(1, true), RecordingStopAction::WaitForReadback);
-        assert_eq!(recording_stop_action(1, false), RecordingStopAction::FinishCapturedPrefix);
+        assert_eq!(
+            recording_stop_action(0, false),
+            RecordingStopAction::DiscardEmpty
+        );
+        assert_eq!(
+            recording_stop_action(0, true),
+            RecordingStopAction::WaitForReadback
+        );
+        assert_eq!(
+            recording_stop_action(1, true),
+            RecordingStopAction::WaitForReadback
+        );
+        assert_eq!(
+            recording_stop_action(1, false),
+            RecordingStopAction::FinishCapturedPrefix
+        );
     }
 
     #[test]
@@ -808,14 +1298,23 @@ mod tests {
     fn recording_stop_empty_and_partial_paths_do_not_claim_missing_frames() {
         let dir = tempfile::tempdir().unwrap();
         let (empty_dir, empty) = create_recording_sequence(dir.path()).unwrap();
-        assert_eq!(recording_stop_action(0, false), RecordingStopAction::DiscardEmpty);
+        assert_eq!(
+            recording_stop_action(0, false),
+            RecordingStopAction::DiscardEmpty
+        );
         drop(empty);
         assert!(!empty_dir.join("manifest.json").exists());
 
         // The pure stop decision waits while readback is active. The caller finishes
         // only after sequence completion advances the contiguous captured prefix.
-        assert_eq!(recording_stop_action(0, true), RecordingStopAction::WaitForReadback);
-        assert_eq!(recording_stop_action(1, false), RecordingStopAction::FinishCapturedPrefix);
+        assert_eq!(
+            recording_stop_action(0, true),
+            RecordingStopAction::WaitForReadback
+        );
+        assert_eq!(
+            recording_stop_action(1, false),
+            RecordingStopAction::FinishCapturedPrefix
+        );
     }
 
     #[test]

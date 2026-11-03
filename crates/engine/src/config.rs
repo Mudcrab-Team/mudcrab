@@ -3594,6 +3594,16 @@ mod tests {
                     "--message-format",
                     "--path-format",
                     "--git-common-dir",
+                    "--export-",
+                    "--export-frames",
+                    "--export-gif",
+                    "--export-video",
+                    "--seconds",
+                    "--fps",
+                    "--size",
+                    "--orbit",
+                    "--background",
+                    "--video-format",
                 ]
                 .contains(&flag);
             if NON_ENGINE_FLAGS.contains(&flag) || observation_option || inspector_option {
@@ -3648,6 +3658,27 @@ mod tests {
             checked_script_engine_flags("--record 1 --model meshes/a.glb --build-only", tool),
             0
         );
+        for flag in [
+            "--export-",
+            "--export-frames",
+            "--export-gif",
+            "--export-video",
+            "--seconds",
+            "--fps",
+            "--size",
+            "--orbit",
+            "--background",
+            "--video-format",
+        ] {
+            assert_eq!(checked_script_engine_flags(flag, tool), 0, "{flag}");
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(flag, std::path::Path::new("scripts/other.py"))
+                })
+                .is_err(),
+                "{flag} was accepted for an ordinary engine launcher"
+            );
+        }
         assert!(
             std::panic::catch_unwind(|| checked_script_engine_flags(
                 "--record 1",

@@ -5,7 +5,7 @@ use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -209,14 +209,17 @@ fn verify_sequence(dir: &Path, fps: u32, seconds: u32, video: bool) -> Result<Se
 }
 
 fn ffmpeg_path_from(path: Option<&std::ffi::OsStr>, homebrew_ffmpeg: &Path) -> Option<PathBuf> {
-    path
-        .map(OsString::from)
+    path.map(OsString::from)
         .and_then(|path| {
             std::env::split_paths(&path)
                 .map(|directory| directory.join("ffmpeg"))
                 .find(|candidate| candidate.is_file())
         })
-        .or_else(|| homebrew_ffmpeg.is_file().then(|| homebrew_ffmpeg.to_path_buf()))
+        .or_else(|| {
+            homebrew_ffmpeg
+                .is_file()
+                .then(|| homebrew_ffmpeg.to_path_buf())
+        })
 }
 
 fn run_ffmpeg(dir: &Path, ffmpeg: PathBuf, log_name: &str, args: &[OsString]) -> Result<()> {
@@ -308,22 +311,26 @@ fn gif_ffmpeg_args(sequence: &Sequence) -> Vec<OsString> {
     ]
     .into_iter()
     .map(OsString::from)
-    .chain([
-        sequence.fps.to_string(),
-        "-start_number".into(),
-        "0".into(),
-        "-i".into(),
-        "frame-%06d.png".into(),
-        "-filter_complex".into(),
-        "[0:v]split[a][b];[a]palettegen[p];[b][p]paletteuse".into(),
-        "-fps_mode".into(),
-        "vfr".into(),
-        "-loop".into(),
-        "0".into(),
-        "-f".into(),
-        "gif".into(),
-        "animation.gif.partial".into(),
-    ].into_iter().map(OsString::from))
+    .chain(
+        [
+            sequence.fps.to_string(),
+            "-start_number".into(),
+            "0".into(),
+            "-i".into(),
+            "frame-%06d.png".into(),
+            "-filter_complex".into(),
+            "[0:v]split[a][b];[a]palettegen[p];[b][p]paletteuse".into(),
+            "-fps_mode".into(),
+            "vfr".into(),
+            "-loop".into(),
+            "0".into(),
+            "-f".into(),
+            "gif".into(),
+            "animation.gif.partial".into(),
+        ]
+        .into_iter()
+        .map(OsString::from),
+    )
     .collect()
 }
 
@@ -344,12 +351,7 @@ fn encode_gif_with_ffmpeg_search(
     path: Option<&std::ffi::OsStr>,
     homebrew_ffmpeg: &Path,
 ) -> Result<&'static str> {
-    encode_gif_with_ffmpeg(
-        dir,
-        fps,
-        seconds,
-        ffmpeg_path_from(path, homebrew_ffmpeg),
-    )
+    encode_gif_with_ffmpeg(dir, fps, seconds, ffmpeg_path_from(path, homebrew_ffmpeg))
 }
 
 fn encode_gif_with_ffmpeg(
@@ -377,7 +379,7 @@ fn encode_gif_with_ffmpeg(
 
 fn validate_h264_dimensions(width: u32, height: u32) -> Result<()> {
     ensure!(
-        width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0,
+        width > 0 && height > 0 && width.is_multiple_of(2) && height.is_multiple_of(2),
         "H.264 requires even physical dimensions; no padding was applied"
     );
     Ok(())
@@ -514,6 +516,7 @@ pub fn write_encoding_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     fn fixture(fps: u32, seconds: u32, width: u32, height: u32) -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
@@ -626,10 +629,9 @@ mod tests {
     fn encoding_manifest_records_fps_and_final_frame_hold_separately() {
         let temp = fixture(2, 1, 4, 2);
         write_encoding_manifest(temp.path(), 2, 1, "gif", None, "fixture encoder").unwrap();
-        let report: Value = serde_json::from_slice(
-            &fs::read(temp.path().join("encoding-manifest.json")).unwrap(),
-        )
-        .unwrap();
+        let report: Value =
+            serde_json::from_slice(&fs::read(temp.path().join("encoding-manifest.json")).unwrap())
+                .unwrap();
         assert_eq!(report["requested"]["fps"]["numerator"], 2);
         assert_eq!(report["requested"]["fps"]["denominator"], 1);
         assert_eq!(report["requested"]["final_hold"]["numerator"], 1);
