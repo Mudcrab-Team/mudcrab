@@ -180,3 +180,5 @@ reason to refresh every mesh on every frame.
 
 For repeated camera, queue and coverage requirements, see the
 [matched batching protocol](../research/terrain-batching-matched-protocol-20261009.md).
+
+To compare two binaries or two sets of screenshots without a person watching, see the [performance loop](perf-loop.md).
