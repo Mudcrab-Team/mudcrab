@@ -1,8 +1,10 @@
 //! Validated in-memory cluster payloads (ADR-0013 sections 2 and 3).
 //!
-//! The package reader checks the exact owned bytes and the shared format before publishing
-//! these values. Production meshes share transient bytes until upload handoff; small metadata
-//! and tangent proof survive release. Explicit in-memory fixtures retain their payloads.
+//! The package reader checks the owned bytes against the launch digests and the shared format
+//! before publishing these values. Production meshes are released as soon as they are validated:
+//! only small metadata and, once prepared, the tangent proof stay. Tangent preparation and upload
+//! each re-read the payload through the certified source and drop it again. Explicit in-memory
+//! fixtures retain their payloads.
 
 use bevy::{asset::Asset, prelude::*, reflect::TypePath};
 use shared::cluster::{
@@ -28,6 +30,10 @@ struct UploadState {
     terrain_only: Option<bool>,
     /// A replacement scene may request the same mesh while an old request is in flight.
     waiters: Vec<Arc<AtomicU64>>,
+    /// The tangent proof a non-terrain preparation reaches, computed from the bytes while the
+    /// loader still held them. Only this flag is kept, never the words, so a released mesh can be
+    /// proved without another read.
+    proof_hint: Option<bool>,
 }
 
 struct MeshUpload {
@@ -178,6 +184,7 @@ impl ClusterMeshAsset {
                     failure: None,
                     terrain_only: None,
                     waiters: Vec::new(),
+                    proof_hint: None,
                 }),
                 proof: AtomicU8::new(0),
                 #[cfg(test)]
@@ -220,6 +227,39 @@ impl ClusterMeshAsset {
         source: super::mesh_payload::MeshRehydrateSource,
     ) {
         self.source = Some(Arc::new(source));
+    }
+
+    /// Drop this certified mesh's bytes before any tangent proof exists. The validated header
+    /// stays; tangent preparation and upload re-read the payload through the retained source.
+    /// A mesh without a certified source (an explicit fixture) keeps its bytes.
+    pub(crate) fn release_certified_payload(&self) {
+        if self.retain_in_memory || self.source.is_none() {
+            return;
+        }
+        self.upload
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .payload = None;
+    }
+
+    /// Record what non-terrain tangent preparation will conclude, from the bytes this mesh still
+    /// holds, so a later `prepare` of the released mesh needs no re-read. The tangent words are
+    /// dropped; upload regenerates them from its own read and checks the proof against this one.
+    pub(crate) fn record_tangent_proof(&self) -> Result<(), String> {
+        let mut state = self
+            .upload
+            .state
+            .lock()
+            .map_err(|_| "mesh payload lock poisoned")?;
+        let payload = state
+            .payload
+            .as_ref()
+            .ok_or("mesh payload released before its tangent proof was recorded")?;
+        let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+        let usable = self.generate_tangent_words(&view).usable;
+        state.proof_hint = Some(usable);
+        Ok(())
     }
 
     /// The mesh as the stock path sees it: one ordinary indexed triangle list of the source
@@ -321,18 +361,39 @@ impl ClusterMeshAsset {
         if self.prepared_tangents_usable().is_some() {
             return Ok(());
         }
-        let payload = state
-            .payload
-            .as_mut()
-            .ok_or("mesh payload released before preparation")?;
-        let prepared = if terrain_only {
-            prepare_generated_tangents(self.vertex_count as usize, false, None)
-        } else {
-            let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
-            self.generate_tangent_words(&view)
+        let usable = match state.payload.as_mut() {
+            Some(payload) => {
+                let prepared = if terrain_only {
+                    prepare_generated_tangents(self.vertex_count as usize, false, None)
+                } else {
+                    let view =
+                        read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+                    self.generate_tangent_words(&view)
+                };
+                let usable = prepared.usable;
+                payload.tangents = Some(prepared);
+                usable
+            }
+            // Released before any proof: use the proof recorded at load, or else prove it from a
+            // re-read that is dropped right after, so preparing every mesh of the scene never
+            // holds more than the workers' own files. Upload re-reads again and checks the proof;
+            // only the proof persists, as after an upload.
+            None => {
+                let source = self
+                    .source
+                    .clone()
+                    .ok_or("mesh payload released before preparation")?;
+                if terrain_only {
+                    false
+                } else if let Some(usable) = state.proof_hint {
+                    usable
+                } else {
+                    let rebuilt = source.read_mesh()?;
+                    rebuilt.prepare(false)?;
+                    rebuilt.prepared_tangents_usable() == Some(true)
+                }
+            }
         };
-        let usable = prepared.usable;
-        payload.tangents = Some(prepared);
         state.terrain_only = Some(terrain_only);
         self.upload
             .proof

@@ -1251,6 +1251,12 @@ struct GpuBlock {
 /// appended per frame whatever its size.
 const APPEND_BYTES_PER_FRAME: u64 = 32 << 20;
 
+/// How many blocks may be asked for their geometry (re-read from the package, whose scene keeps no
+/// payload bytes) beyond the ones already appended. Without it every prepared block would be
+/// re-read at once and the whole scene's bytes would sit in memory again while the per-frame
+/// append budget drains them.
+const REREAD_AHEAD_BLOCKS: usize = 32;
+
 /// Appends the blocks the main world has prepared, in scene order, up to the frame's byte budget.
 /// Upload work, woken only by block preparation or a requested geometry reread. The heap preserves
 /// the package's nearest-first block order among all blocks currently ready.
@@ -1273,7 +1279,14 @@ impl PendingBlockUploads {
             return;
         }
         let ready = &mut self.ready;
+        // The nearest pending blocks, up to the read-ahead allowance net of those already waiting
+        // for their append, are asked about; the rest wait for appends to free allowance.
+        let mut allowance = REREAD_AHEAD_BLOCKS.saturating_sub(ready.len());
         self.pending.retain(|&index| {
+            if allowance == 0 {
+                return true;
+            }
+            allowance -= 1;
             if is_ready(index) {
                 ready.push(std::cmp::Reverse(index));
                 false
@@ -1333,7 +1346,11 @@ fn append_ready_blocks(
             return;
         };
         match append_block(gpu, scene, index, queue) {
-            Ok(Some(written)) => bytes += written,
+            Ok(Some(written)) => {
+                bytes += written;
+                // The append freed read-ahead allowance for the next pending block.
+                gpu.uploads.revision = None;
+            }
             Ok(None) => {
                 gpu.uploads.pending.push(index);
                 gpu.uploads.revision = None;
@@ -6345,6 +6362,42 @@ mod upload_wakeup_tests {
             uploads.update(revision, |_| panic!("completed block scan"));
         }
         assert_eq!(uploads.pop(), None);
+    }
+
+    #[test]
+    fn reread_read_ahead_is_bounded_by_blocks_waiting_for_their_append() {
+        let blocks = REREAD_AHEAD_BLOCKS * 3;
+        let mut uploads = PendingBlockUploads::new(blocks);
+        let mut asked = Vec::new();
+        // Nothing is prepared yet: only the nearest blocks are asked about.
+        uploads.update(0, |index| {
+            asked.push(index);
+            false
+        });
+        assert_eq!(asked, (0..REREAD_AHEAD_BLOCKS).collect::<Vec<_>>());
+        // They all become ready; no further block is asked about until appends free allowance.
+        uploads.update(1, |_| true);
+        assert_eq!(uploads.ready.len(), REREAD_AHEAD_BLOCKS);
+        uploads.update(2, |_| panic!("read-ahead allowance exceeded"));
+        assert_eq!(uploads.pop(), Some(0));
+        assert_eq!(uploads.pop(), Some(1));
+        let mut asked = Vec::new();
+        uploads.update(3, |index| {
+            asked.push(index);
+            true
+        });
+        assert_eq!(asked, vec![REREAD_AHEAD_BLOCKS, REREAD_AHEAD_BLOCKS + 1]);
+        // Draining everything lets the remaining blocks through, nearest first.
+        while uploads.pop().is_some() {}
+        let mut revision = 4;
+        let mut appended = 2 + REREAD_AHEAD_BLOCKS;
+        while appended < blocks {
+            uploads.update(revision, |_| true);
+            revision += 1;
+            appended += uploads.ready.len();
+            while uploads.pop().is_some() {}
+        }
+        uploads.update(revision, |_| panic!("completed block scan"));
     }
 }
 
