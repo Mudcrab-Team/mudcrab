@@ -871,6 +871,9 @@ fn load_cluster_package(
                                 builder,
                                 row.expected,
                             )?);
+                            // The scene keeps only the validated header and the way back to the
+                            // bytes; tangent preparation and upload re-read them when needed.
+                            mesh.release_certified_payload();
                             Ok(mesh)
                         });
                     match loaded {
@@ -3185,9 +3188,10 @@ mod empty_certified_loader_tests {
     }
 
     #[test]
-    fn payloads_changed_after_certification_are_refused_and_unchanged_ones_load() {
+    fn payloads_changed_after_certification_are_refused_and_unchanged_ones_load_released() {
         use bevy::ecs::system::RunSystemOnce;
         use shared::cluster::{MclSection, read_mci, read_mcl};
+        bevy::tasks::IoTaskPool::get_or_init(Default::default);
         for corruption in [
             "unchanged",
             "missing_block",
@@ -3381,24 +3385,47 @@ mod empty_certified_loader_tests {
                         ),
                         "{corruption}: original mesh header"
                     );
-                    for section in [
-                        MclSection::Positions,
-                        MclSection::Normals,
-                        MclSection::Uvs,
-                        MclSection::Tangents,
-                        MclSection::Colours,
-                        MclSection::Clusters,
-                        MclSection::ClusterVertices,
-                        MclSection::ClusterTriangles,
-                        MclSection::Groups,
-                        MclSection::Bvh,
-                    ] {
-                        assert_eq!(
-                            mesh.section(section).unwrap(),
-                            original.section(section),
-                            "{corruption}: exact certified {section:?} bytes"
+                    // The scene keeps no bytes; the upload path re-reads the exact certified ones.
+                    assert_eq!(
+                        mesh.resident_estimate().unwrap().raw_payload_bytes,
+                        0,
+                        "{corruption}: scene meshes start released"
+                    );
+                    mesh.prepare_tangents().unwrap();
+                    let wake = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                    let ready = mesh
+                        .request_upload(wake.clone(), |reason| panic!("{reason}"))
+                        .unwrap();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    while !ready && wake.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "rehydration timed out"
                         );
+                        std::thread::yield_now();
                     }
+                    mesh.with_upload(|view, _| {
+                        for section in [
+                            MclSection::Positions,
+                            MclSection::Normals,
+                            MclSection::Uvs,
+                            MclSection::Tangents,
+                            MclSection::Colours,
+                            MclSection::Clusters,
+                            MclSection::ClusterVertices,
+                            MclSection::ClusterTriangles,
+                            MclSection::Groups,
+                            MclSection::Bvh,
+                        ] {
+                            assert_eq!(
+                                view.section(section),
+                                original.section(section),
+                                "{corruption}: exact certified {section:?} bytes"
+                            );
+                        }
+                    })
+                    .unwrap()
+                    .unwrap();
                 }
                 assert!(
                     expected_meshes.is_empty(),

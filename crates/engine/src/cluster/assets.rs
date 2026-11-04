@@ -1,8 +1,10 @@
 //! Validated in-memory cluster payloads (ADR-0013 sections 2 and 3).
 //!
-//! The package reader checks the exact owned bytes and the shared format before publishing
-//! these values. Production meshes share transient bytes until upload handoff; small metadata
-//! and tangent proof survive release. Explicit in-memory fixtures retain their payloads.
+//! The package reader checks the owned bytes against the launch digests and the shared format
+//! before publishing these values. Production meshes are released as soon as they are validated:
+//! only small metadata and, once prepared, the tangent proof stay. Tangent preparation and upload
+//! each re-read the payload through the certified source and drop it again. Explicit in-memory
+//! fixtures retain their payloads.
 
 use bevy::{asset::Asset, prelude::*, reflect::TypePath};
 use shared::cluster::{
@@ -222,6 +224,20 @@ impl ClusterMeshAsset {
         self.source = Some(Arc::new(source));
     }
 
+    /// Drop this certified mesh's bytes before any tangent proof exists. The validated header
+    /// stays; tangent preparation and upload re-read the payload through the retained source.
+    /// A mesh without a certified source (an explicit fixture) keeps its bytes.
+    pub(crate) fn release_certified_payload(&self) {
+        if self.retain_in_memory || self.source.is_none() {
+            return;
+        }
+        self.upload
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .payload = None;
+    }
+
     /// The mesh as the stock path sees it: one ordinary indexed triangle list of the source
     /// geometry (the clusters no simplification produced), retaining colours and authored tangents.
     pub fn source_mesh(&self) -> Result<Mesh, String> {
@@ -321,18 +337,36 @@ impl ClusterMeshAsset {
         if self.prepared_tangents_usable().is_some() {
             return Ok(());
         }
-        let payload = state
-            .payload
-            .as_mut()
-            .ok_or("mesh payload released before preparation")?;
-        let prepared = if terrain_only {
-            prepare_generated_tangents(self.vertex_count as usize, false, None)
-        } else {
-            let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
-            self.generate_tangent_words(&view)
+        let usable = match state.payload.as_mut() {
+            Some(payload) => {
+                let prepared = if terrain_only {
+                    prepare_generated_tangents(self.vertex_count as usize, false, None)
+                } else {
+                    let view =
+                        read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+                    self.generate_tangent_words(&view)
+                };
+                let usable = prepared.usable;
+                payload.tangents = Some(prepared);
+                usable
+            }
+            // Released before any proof: prove it from a re-read that is dropped right after,
+            // so preparing every mesh of the scene never holds more than the workers' own files.
+            // Upload re-reads again; only the proof persists, as after an upload.
+            None => {
+                let source = self
+                    .source
+                    .clone()
+                    .ok_or("mesh payload released before preparation")?;
+                if terrain_only {
+                    false
+                } else {
+                    let rebuilt = source.read_mesh()?;
+                    rebuilt.prepare(false)?;
+                    rebuilt.prepared_tangents_usable() == Some(true)
+                }
+            }
         };
-        let usable = prepared.usable;
-        payload.tangents = Some(prepared);
         state.terrain_only = Some(terrain_only);
         self.upload
             .proof

@@ -12,7 +12,17 @@ struct Fixture {
     _directory: tempfile::TempDir,
 }
 
+/// A mesh loaded as the package loads it, still holding the bytes it was validated from.
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+
+/// A mesh as the scene keeps it: validated header, a retained source and no bytes.
+fn released_fixture() -> Fixture {
+    fixture_with(true)
+}
+
+fn fixture_with(release: bool) -> Fixture {
     let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
     let package =
         Arc::new(crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap());
@@ -37,6 +47,9 @@ fn fixture() -> Fixture {
         MeshRehydrateSource::new(package.clone(), relative.clone(), builder, expected).unwrap(),
     );
     drop(payload);
+    if release {
+        mesh.release_certified_payload();
+    }
     Fixture {
         mesh,
         package,
@@ -225,6 +238,110 @@ fn reread_reapplies_typed_row_validation_and_retains_the_source_locks() {
     }
     let digest = fixture.package.envelope().payload_digest(&fixture.relative);
     assert_eq!(digest, Some(fixture.expected.content_hash));
+}
+
+#[test]
+fn released_mesh_proves_tangents_through_one_reread_and_keeps_no_bytes() {
+    let fixture = released_fixture();
+    let envelope = fixture.package.envelope();
+    let before = envelope.reread_count();
+    let estimate = fixture.mesh.resident_estimate().unwrap();
+    assert_eq!(estimate.raw_payload_bytes, 0);
+    assert_eq!(estimate.tangent_bytes, 0);
+    assert_eq!(fixture.mesh.prepared_tangents_usable(), None);
+    fixture.mesh.prepare_tangents().unwrap();
+    assert!(fixture.mesh.prepared_tangents_usable().is_some());
+    assert_eq!(envelope.reread_count(), before + 1);
+    let estimate = fixture.mesh.resident_estimate().unwrap();
+    assert_eq!(
+        estimate.raw_payload_bytes, 0,
+        "proof must not keep the bytes"
+    );
+    assert_eq!(estimate.tangent_bytes, 0);
+    // Another block's worker reaching the same mesh finds the proof and reads nothing.
+    fixture.mesh.prepare_tangents().unwrap();
+    fixture.mesh.prepare_unused_tangent_slots().unwrap();
+    assert_eq!(envelope.reread_count(), before + 1);
+    assert!(
+        fixture.mesh.with_upload(|_, _| ()).unwrap().is_none(),
+        "nothing is resident to upload until the upload requests its own reread"
+    );
+}
+
+#[test]
+fn terrain_only_released_mesh_is_prepared_without_reading_its_file() {
+    let fixture = released_fixture();
+    let before = fixture.package.envelope().reread_count();
+    fixture.mesh.prepare_unused_tangent_slots().unwrap();
+    assert_eq!(fixture.mesh.prepared_tangents_usable(), Some(false));
+    assert_eq!(fixture.package.envelope().reread_count(), before);
+}
+
+#[test]
+fn released_mesh_is_read_uploaded_and_released_through_rereads_only() {
+    bevy::tasks::IoTaskPool::get_or_init(Default::default);
+    let fixture = released_fixture();
+    let envelope = fixture.package.envelope();
+    let before = envelope.reread_count();
+    fixture.mesh.prepare_tangents().unwrap();
+    let proof = fixture.mesh.prepared_tangents_usable();
+    let wake = Arc::new(AtomicU64::new(0));
+    let (send, receive) = std::sync::mpsc::channel();
+    assert!(
+        !fixture
+            .mesh
+            .request_upload(wake.clone(), move |reason| send.send(reason).unwrap())
+            .unwrap()
+    );
+    wait_for_wake(&wake);
+    assert!(receive.try_recv().is_err());
+    assert_eq!(
+        envelope.reread_count(),
+        before + 2,
+        "proof read, upload read"
+    );
+    assert_eq!(fixture.mesh.prepared_tangents_usable(), proof);
+    assert_eq!(
+        fixture.mesh.resident_estimate().unwrap().raw_payload_bytes as u64,
+        fixture.expected.payload_bytes
+    );
+    assert!(
+        fixture
+            .mesh
+            .with_upload(|view, words| {
+                assert_eq!(view.mesh_hash, fixture.expected.mesh_hash);
+                assert_eq!(words.len(), fixture.expected.vertex_count as usize);
+            })
+            .unwrap()
+            .is_some()
+    );
+    let estimate = fixture.mesh.resident_estimate().unwrap();
+    assert_eq!(estimate.raw_payload_bytes, 0);
+    assert_eq!(estimate.tangent_bytes, 0);
+    assert_eq!(envelope.reread_count(), before + 2, "upload adds no read");
+}
+
+#[test]
+fn released_mesh_refuses_a_file_changed_before_its_tangents_are_proven() {
+    for missing in [false, true] {
+        let fixture = released_fixture();
+        let path = fixture.package.envelope().overlay.join(&fixture.relative);
+        if missing {
+            std::fs::remove_file(&path).unwrap();
+        } else {
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[8] ^= 1; // Same size, structurally legal, different SHA256.
+            assert!(shared::cluster::read_mcl(&bytes).is_ok());
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let reason = fixture.mesh.prepare_tangents().unwrap_err();
+        assert!(reason.contains(&fixture.relative), "{reason}");
+        if !missing {
+            assert!(reason.contains("content hash"), "{reason}");
+        }
+        assert_eq!(fixture.mesh.prepared_tangents_usable(), None);
+        assert!(fixture.mesh.with_upload(|_, _| ()).unwrap().is_none());
+    }
 }
 
 #[test]
