@@ -54,7 +54,7 @@ struct Vertex {
 #endif
     @location(4) packed: vec4<u32>,
 #ifdef TANGENT
-    @location(6) tangent: vec4<f32>,
+    @location(5) tangent: vec4<f32>,
 #endif
 }
 struct Varyings {
@@ -69,6 +69,7 @@ struct Varyings {
     @location(5) root_fraction: f32,
 #endif
 }
+fn wind_weight(alpha:f32) -> f32 { return clamp(alpha,0.0,1.0); }
 fn signed_byte(value: u32) -> f32 {
     return f32(i32((value & 255u) ^ 128u) - 128) / 127.0;
 }
@@ -165,7 +166,7 @@ fn vertex(input: Vertex) -> Varyings {
     let gust = textureSampleLevel(wind,wind_sampler,absolute_xy / 8192.0 + vec2(phase*0.035,phase*0.02),0.0).r * 2.0 - 1.0;
     var sway = 1.0;
 #ifdef COLOR
-    sway = clamp(input.color.a,0.0,1.0);
+    sway = wind_weight(input.color.a);
 #endif
     if grass.height_wind.z > 0.0 { p.x += gust * max(p.y,0.0) * 0.10 * sway; p.z += gust * max(p.y,0.0) * 0.035 * sway; }
     let root = (grass.world_from_cell * vec4(xy.x,height,-xy.y,1.0)).xyz;
@@ -252,13 +253,14 @@ fn directional_shadow(input:Varyings) -> f32 {
     return 1.0;
 }
 // Native tangent-space decode; normal textures are linear data. Source NIF
-// bitangent handedness is retained, with no additional green-channel inversion.
+// bitangent is converted to glTF handedness; DirectX-tagged maps flip Y once.
 fn tangent_normal(sampled:vec3<f32>, n:vec3<f32>, t:vec3<f32>, b:vec3<f32>) -> vec3<f32> {
     let v = sampled * 2.0 - vec3(1.0);
     return normalize(t*v.x + b*v.y + n*v.z);
 }
 fn mapped_normal(input:Varyings) -> vec3<f32> {
-    let sampled = textureSample(normal_map,normal_sampler,input.uv).rgb;
+    var sampled = textureSample(normal_map,normal_sampler,input.uv).rgb;
+    sampled.y = 0.5 + (sampled.y-0.5)*grass.normal_params.y;
     let n = normalize(input.normal);
     var t = input.tangent.xyz - n*dot(n,input.tangent.xyz);
     var b = cross(n,t)*input.tangent.w;

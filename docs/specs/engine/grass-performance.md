@@ -16,8 +16,7 @@ The test checks deterministic output, participation of all species, slot orderin
 16-byte instance layout and bounded output allocation. It reports the median of
 three generation samples per cell at spacings 64, 32 and the MudCrab default 20
 (4,096, 16,384 and 41,944 candidates). The stress fixture explicitly allows four
-resolved species per texture with configured INI-equivalent N=3 (effective
-N+1=4), exercising the boundary beyond the default N=2 (effective three).
+resolved species per texture with configured cap four, exercising the boundary beyond the default cap two.
 Exact species IDs and replay batch counts are asserted, so a truncated `zip`
 cannot conceal a missing species.
 

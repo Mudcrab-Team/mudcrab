@@ -304,8 +304,8 @@ exact Skyrim placement, variation, animation or visual parity.
 Static grass keeps authored tangent XYZ and bitangent handedness through glTF.
 Normal textures are sampled as linear data in the fragment shader and transformed
 through that frame. Legacy geometry without TANGENT uses position/UV derivatives;
-degenerate frames or absent maps keep the geometric normal. NIF bitangent signs
-are retained without an extra green-channel inversion. Node reflection/nonuniform
+degenerate frames or absent maps keep the geometric normal. NIF bitangents convert to the glTF convention; DirectX-tagged normal maps
+flip Y once, matching the native material contract. Node reflection/nonuniform
 scale, instance yaw and slope transform the frame with the mesh. Both raster
 sides retain authored orientation. Wind displaces positions while retaining the
 undeformed shading frame, matching the existing native wind policy.

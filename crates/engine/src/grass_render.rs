@@ -55,7 +55,9 @@ pub struct GrassRenderPlugin;
 
 /// Deterministic ON/OFF controls for explicit shot capture runs.
 #[derive(Resource, Clone, Copy, Debug)]
-pub(crate) struct GrassCaptureControls { pub(crate) capture: bool }
+pub(crate) struct GrassCaptureControls {
+    pub(crate) capture: bool,
+}
 
 /// Capture readiness requires an issued main draw for every admitted primitive.
 #[derive(Resource, Default, Debug)]
@@ -68,9 +70,12 @@ impl Plugin for GrassRenderPlugin {
     /// Install grass extraction, preparation and render-phase systems.
     fn build(&self, app: &mut App) {
         let config = app.world().resource::<crate::config::EngineConfig>();
-        let controls = GrassCaptureControls { capture: config.shots.is_some() };
+        let controls = GrassCaptureControls {
+            capture: config.shots.is_some(),
+        };
         let tuning = crate::grass_tuning::GrassTuningState::new(config.grass_tuning.clone());
-        app.insert_resource(tuning).insert_resource(controls)
+        app.insert_resource(tuning)
+            .insert_resource(controls)
             .add_systems(Update, crate::grass_tuning::reload_grass_tuning);
         embedded_asset!(app, "shaders/grass.wgsl");
         let upload_budget = app
@@ -375,13 +380,43 @@ fn build_templates(
                         .as_ref()
                         .map(|handle| materials.get(handle).ok_or("missing loaded grass material"))
                         .transpose()?;
+                    let tags = primitive.material_extras.as_ref().and_then(|extras| {
+                        serde_json::from_str::<serde_json::Value>(&extras.value).ok()
+                    });
+                    let convention = tags
+                        .as_ref()
+                        .and_then(|v| v.pointer("/openSkyrim/normalConvention"))
+                        .and_then(|v| v.as_str());
+                    let normal_supported = convention != Some("model_space")
+                        && material
+                            .is_none_or(|m| m.normal_map_channel == bevy::mesh::UvChannel::Uv0);
+                    if !normal_supported && material.is_some_and(|m| m.normal_map_texture.is_some())
+                    {
+                        warn!(
+                            "grass primitive normal map needs unsupported model-space or UV1 mapping; using geometry normal"
+                        );
+                    }
                     build.output.push(PrimitiveTemplate {
                         mesh: primitive.mesh.clone(),
                         texture: material
                             .and_then(|material| material.base_color_texture.clone())
                             .unwrap_or_default(),
-                        normal_texture: material.and_then(|m| m.normal_map_texture.clone()).unwrap_or_default(),
-                        normal_params: Vec4::new(u32::from(material.is_some_and(|m| m.normal_map_texture.is_some())) as f32, 0.0, 0.0, 0.0),
+                        normal_texture: material
+                            .and_then(|m| m.normal_map_texture.clone())
+                            .unwrap_or_default(),
+                        normal_params: Vec4::new(
+                            u32::from(
+                                normal_supported
+                                    && material.is_some_and(|m| m.normal_map_texture.is_some()),
+                            ) as f32,
+                            if convention == Some("directx") {
+                                -1.0
+                            } else {
+                                1.0
+                            },
+                            0.0,
+                            0.0,
+                        ),
                         model,
                         model_normal: model.inverse().transpose(),
                         color: material.map_or(Vec4::ONE, |material| {
@@ -583,7 +618,8 @@ fn update_grass_uniforms(
     let mut all_drawn = true;
     let capture = controls.as_ref().is_some_and(|c| c.capture);
     for (transform, mut primitive) in &mut primitives {
-        primitive.suppress_draw = capture && shots.as_ref().is_some_and(|run| run.grass_draws_off());
+        primitive.suppress_draw =
+            capture && shots.as_ref().is_some_and(|run| run.grass_draws_off());
         primitive.uniform.world_from_cell = transform.to_matrix();
         primitive.uniform.model = primitive.model;
         if let Some(tuning) = &tuning {
@@ -596,14 +632,19 @@ fn update_grass_uniforms(
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            if capture && shots.is_some() { 1.0 } else { time.elapsed_secs_wrapped() },
+            if capture && shots.is_some() {
+                1.0
+            } else {
+                time.elapsed_secs_wrapped()
+            },
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
             primitive.uniform.ambient =
                 Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
         }
-        all_drawn &= primitive.suppress_draw || primitive.drawn.load(Ordering::Acquire)
+        all_drawn &= primitive.suppress_draw
+            || primitive.drawn.load(Ordering::Acquire)
             || eye.is_some_and(|eye| visible_instance_count(&primitive, eye) == 0);
     }
     metrics.ready = eye.is_some()
@@ -622,10 +663,7 @@ struct GrassPipeline {
 }
 
 /// Load the grass shader and initialize its render pipeline resource.
-fn init_pipeline(
-    mut commands: Commands,
-    server: Res<AssetServer>,
-) {
+fn init_pipeline(mut commands: Commands, server: Res<AssetServer>) {
     let mut pipeline =
         GrassPipeline::new(load_embedded_asset!(server.as_ref(), "shaders/grass.wgsl"));
     pipeline.tuning = true;
@@ -939,8 +977,14 @@ fn prepare_grass(
             };
             texture
         };
-        let normal = if data.normal_texture == Handle::default() { &fallback.d2 }
-            else { let Some(image) = images.get(&data.normal_texture) else { continue; }; image };
+        let normal = if data.normal_texture == Handle::default() {
+            &fallback.d2
+        } else {
+            let Some(image) = images.get(&data.normal_texture) else {
+                continue;
+            };
+            image
+        };
         let key = Arc::as_ptr(&data.instances) as usize;
         let buffer = if let Some((_, buffer)) = buffers.0.get(&key) {
             buffer.clone()
@@ -1149,7 +1193,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some((data, gpu)) = item else {
             return RenderCommandResult::Skip;
         };
-        if data.suppress_draw { return RenderCommandResult::Skip; }
+        if data.suppress_draw {
+            return RenderCommandResult::Skip;
+        }
         let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
             return RenderCommandResult::Skip;
         };
@@ -1581,6 +1627,70 @@ mod tests {
                 assert_eq!(primitive.uniform.height_wind.w, 0.375);
             }
         }
+    }
+
+    #[test]
+    fn authored_tangent_shader_inputs_match_specialized_vertex_layout() {
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0_f32; 3]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0_f32; 2]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0_f32; 4]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; 3]);
+        let layout =
+            mesh.get_mesh_vertex_buffer_layout(&mut bevy::mesh::MeshVertexBufferLayouts::default());
+        let descriptor = GrassPipeline::new(Handle::default())
+            .specialize(
+                GrassKey::new(4, TextureFormat::Rgba16Float, false, true, None),
+                &layout,
+            )
+            .unwrap();
+        let mut defs = crate::grass_shader_tests::definitions(false, 4, 15, false);
+        for def in &descriptor.vertex.shader_defs {
+            match def {
+                bevy::shader::ShaderDefVal::Bool(name, value) => {
+                    defs.insert(
+                        name.clone(),
+                        naga_oil::compose::ShaderDefValue::Bool(*value),
+                    );
+                }
+                bevy::shader::ShaderDefVal::UInt(name, value) => {
+                    defs.insert(
+                        name.clone(),
+                        naga_oil::compose::ShaderDefValue::UInt(*value),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let module =
+            crate::grass_shader_tests::compose(include_str!("shaders/grass.wgsl"), defs).unwrap();
+        let vertex = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("Vertex"))
+            .unwrap()
+            .1;
+        let wgpu::naga::TypeInner::Struct { members, .. } = &vertex.inner else {
+            panic!("vertex struct");
+        };
+        let required: std::collections::BTreeSet<_> = members
+            .iter()
+            .filter_map(|m| match m.binding {
+                Some(wgpu::naga::Binding::Location { location, .. }) => Some(location),
+                _ => None,
+            })
+            .collect();
+        let supplied: std::collections::BTreeSet<_> = descriptor
+            .vertex
+            .buffers
+            .iter()
+            .flat_map(|b| b.attributes.iter().map(|a| a.shader_location))
+            .collect();
+        assert_eq!(required, supplied);
     }
 
     #[test]
@@ -2123,7 +2233,7 @@ mod tests {
             let bytes = encoded.into_inner();
             assert_eq!(
                 bytes.len(),
-                416,
+                432,
                 "the attached GPU uniform must retain the authored texture transform"
             );
             // WGSL mat3 columns each occupy sixteen bytes in uniform storage.

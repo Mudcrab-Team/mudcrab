@@ -666,7 +666,10 @@ enum Phase {
 impl ShotsRun {
     /// ON/OFF capture pairs keep placement and suppress only grass draws.
     pub(crate) fn grass_draws_off(&self) -> bool {
-        self.file.shots.get(self.shot).is_some_and(|s| s.name.ends_with("-off"))
+        self.file
+            .shots
+            .get(self.shot)
+            .is_some_and(|s| s.name.ends_with("-off"))
     }
 
     pub fn new(file: ShotsFile, output_dir: PathBuf, worldspace_id: u32) -> Self {
@@ -1060,7 +1063,9 @@ fn run_shots(
                     );
                 }
                 run.window_size = Some((run.file.width, run.file.height));
-                if controls.as_ref().is_some_and(|c| c.capture) { grass_capture_counts(run,&grass_batches,&config); }
+                if controls.as_ref().is_some_and(|c| c.capture) {
+                    grass_capture_counts(run, &grass_batches, &config);
+                }
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
                     // The old image would be taken for this shot's, so the shot fails instead.
@@ -1112,7 +1117,9 @@ fn run_shots(
                     }
                     None => {}
                 }
-                if controls.as_ref().is_some_and(|c| c.capture) { grass_capture_counts(run,&grass_batches,&config); }
+                if controls.as_ref().is_some_and(|c| c.capture) {
+                    grass_capture_counts(run, &grass_batches, &config);
+                }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
                 run.note(line);

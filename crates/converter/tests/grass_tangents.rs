@@ -36,7 +36,7 @@ fn authored_tangent_handedness_survives_model_conversion() {
     }
     let mesh = tri_shape_to_mesh(&shape, Some("grass".into()));
     assert_eq!(mesh.tangents.len(), 3);
-    assert!(mesh.tangents.iter().all(|t| t.x > 0.99 && t.w == -1.0));
+    assert!(mesh.tangents.iter().all(|t| t.x > 0.99 && t.w == 1.0));
     let mut model = project_wormhole_nif::nif_file::nif_to_static_model(&nif).unwrap();
     model.static_meshes[0] = mesh;
     let (json, bin) = model.to_gltf("test".into()).unwrap();
@@ -52,5 +52,5 @@ fn authored_tangent_handedness_survives_model_conversion() {
     let reader = primitive.reader(|_| Some(bin.as_slice()));
     let tangents: Vec<_> = reader.read_tangents().unwrap().collect();
     assert_eq!(tangents.len(), 3);
-    assert!(tangents.iter().all(|t| t[0] > 0.99 && t[3] == -1.0));
+    assert!(tangents.iter().all(|t| t[0] > 0.99 && t[3] == 1.0));
 }

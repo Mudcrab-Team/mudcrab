@@ -274,7 +274,7 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
     let config = EngineConfig {
         grass: true,
         grass_min_spacing: spacing,
-        grass_max_types_per_texture: 3,
+        grass_max_types_per_texture: 4,
         ..EngineConfig::default()
     };
     let mut durations = Vec::new();
@@ -292,7 +292,7 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
                 .map(|batch| batch.grass_id)
                 .collect::<Vec<_>>(),
             (0..8).map(|index| 0x0102_0000 + index).collect::<Vec<_>>(),
-            "raw N=3 must admit the fourth GNAM of each texture"
+            "exact cap four must admit the fourth GNAM of each texture"
         );
         let count: usize = warm.batches.iter().map(|batch| batch.instances.len()).sum();
         assert!(

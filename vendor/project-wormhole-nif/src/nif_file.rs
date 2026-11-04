@@ -15,7 +15,7 @@ use gltf::json::mesh::Primitive;
 use gltf::json::scene::UnitQuaternion;
 use gltf::json::texture::Info;
 use gltf::json::validation::{Checked, USize64};
-use gltf::{json::*, Semantic};
+use gltf::{Semantic, json::*};
 use project_wormhole_ba2::dev::ensure_texture_parent;
 use project_wormhole_ba2::dev::normalize_esm_path;
 use project_wormhole_esm::structs::geometry::Quaternion;
@@ -996,7 +996,7 @@ fn legacy_skinned_mesh(
             return Err(format!(
                 "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinData",
                 instance.data
-            ))
+            ));
         }
     };
 
@@ -1031,7 +1031,7 @@ fn legacy_skinned_mesh(
             return Err(format!(
                 "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinPartition",
                 instance.skin_partition
-            ))
+            ));
         }
     };
 
@@ -1371,7 +1371,9 @@ fn normalize_vertex_influences(
     let mut raw_weights = raw_weights;
     for weight in &mut raw_weights {
         if !weight.is_finite() || *weight < -SKIN_WEIGHT_ROUNDING_TOLERANCE {
-            return Err(format!("shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"));
+            return Err(format!(
+                "shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"
+            ));
         }
         *weight = weight.max(0.0);
     }
@@ -1429,20 +1431,37 @@ pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> Static
     let uvs = tri_shape.get_vertex_uvs();
 
     // NIF stores tangent XYZ plus split bitangent XYZ. glTF stores the sign
-    // of cross(N,T) relative to B. Invalid optional frames are omitted locally.
-    let frames: Option<Vec<_>> = tri_shape.vertex_data.iter().map(|v| {
-        let n = v.normal?.try_normalize()?;
-        let t = v.tangent?;
-        let t = Vec3::new(t.x as f32, t.y as f32, t.z as f32) / 255.0 * 2.0 - Vec3::ONE;
-        let t = (t - n * n.dot(t)).try_normalize()?;
-        let b = Vec3::new(v.bitangent_x?, v.bitangent_y? / 255.0 * 2.0 - 1.0, v.bitangent_z? / 255.0 * 2.0 - 1.0);
-        let orientation = n.cross(t).dot(b);
-        if !orientation.is_finite() || orientation.abs() < 1e-6 { return None; }
-        Some(t.extend(if orientation < 0.0 { -1.0 } else { 1.0 }))
-    }).collect();
-    if let Some(frames) = frames { mesh.tangents = frames; }
-    else if tri_shape.vertex_data.iter().any(|v| v.tangent.is_some()) {
-        log::warn!("NIF shape {:?}: omitted unusable optional tangent frame", mesh.name);
+    // of cross(N,T) relative to -B: NIF normal Y follows increasing texture V,
+    // opposite the glTF tangent convention. The existing DirectX material tag
+    // preserves source normal pixels and tells native shaders to flip Y once.
+    // Invalid optional frames are omitted locally.
+    let frames: Option<Vec<_>> = tri_shape
+        .vertex_data
+        .iter()
+        .map(|v| {
+            let n = v.normal?.try_normalize()?;
+            let t = v.tangent?;
+            let t = Vec3::new(t.x as f32, t.y as f32, t.z as f32) / 255.0 * 2.0 - Vec3::ONE;
+            let t = (t - n * n.dot(t)).try_normalize()?;
+            let b = Vec3::new(
+                v.bitangent_x?,
+                v.bitangent_y? / 255.0 * 2.0 - 1.0,
+                v.bitangent_z? / 255.0 * 2.0 - 1.0,
+            );
+            let orientation = n.cross(t).dot(b);
+            if !orientation.is_finite() || orientation.abs() < 1e-6 {
+                return None;
+            }
+            Some(t.extend(if orientation < 0.0 { 1.0 } else { -1.0 }))
+        })
+        .collect();
+    if let Some(frames) = frames {
+        mesh.tangents = frames;
+    } else if tri_shape.vertex_data.iter().any(|v| v.tangent.is_some()) {
+        log::warn!(
+            "NIF shape {:?}: omitted unusable optional tangent frame",
+            mesh.name
+        );
     }
     mesh.positions.extend(positions);
     mesh.triangles.extend(triangles);
@@ -1978,8 +1997,8 @@ fn static_node_from_av(
             .get_string(av.object.name as usize)
             .ok()
             .map(str::to_owned),
-        translation: av.translation.0 .0,
-        rotation: av.rotation.0 .0,
+        translation: av.translation.0.0,
+        rotation: av.rotation.0.0,
         scale: av.scale.0,
         children,
         mesh,
@@ -2679,7 +2698,16 @@ impl Parse<&[u8]> for NifFileV3 {
 
 impl std::fmt::Debug for NifFileV3 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NifFileV3\nHeader: {:#?}\nNodes: {}\nSkins: {}\nMaterials: {}\nShapes: {}\nSegShapes: {}", self.header, self.nodes.len(), self.skins.len(), self.materials.len(), self.shapes.len(), self.seg_shapes.len())
+        write!(
+            f,
+            "NifFileV3\nHeader: {:#?}\nNodes: {}\nSkins: {}\nMaterials: {}\nShapes: {}\nSegShapes: {}",
+            self.header,
+            self.nodes.len(),
+            self.skins.len(),
+            self.materials.len(),
+            self.shapes.len(),
+            self.seg_shapes.len()
+        )
     }
 }
 
@@ -2722,16 +2750,16 @@ pub fn push_nodes_to_root(root: &mut Root, nif: &NifFileV3) -> Result<(), String
             None
         } else {
             Some([
-                node.av.translation.0 .0.x,
-                node.av.translation.0 .0.y,
-                node.av.translation.0 .0.z,
+                node.av.translation.0.0.x,
+                node.av.translation.0.0.y,
+                node.av.translation.0.0.z,
             ])
         };
 
         let rotation = if node.av.rotation == NifRotation::default() {
             None
         } else {
-            let q = glam::Quat::from_mat3(&node.av.rotation.0 .0);
+            let q = glam::Quat::from_mat3(&node.av.rotation.0.0);
 
             Some(UnitQuaternion([q.x, q.y, q.z, q.w]))
 
@@ -2999,9 +3027,11 @@ mod smooth_normal_tests {
         assert_close(normals[0], -Vec3::Z);
         // A vertex no triangle uses still gets a valid unit normal.
         assert_close(normals[3], Vec3::Z);
-        assert!(normals
-            .iter()
-            .all(|normal| (normal.length() - 1.0).abs() < 1e-5));
+        assert!(
+            normals
+                .iter()
+                .all(|normal| (normal.length() - 1.0).abs() < 1e-5)
+        );
     }
 
     #[test]

@@ -79,7 +79,12 @@ impl StaticMesh {
             ));
         }
         if self.positions.len() != self.normals.len() && self.normals.len() != 0 {
-            let msg = format!("StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]", self.name, self.positions.len(), self.normals.len());
+            let msg = format!(
+                "StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]",
+                self.name,
+                self.positions.len(),
+                self.normals.len()
+            );
             debug!("{}", msg);
             return Err(msg);
         }
@@ -151,7 +156,10 @@ impl StaticMesh {
     }
 
     pub fn tangents_as_bytes(&self) -> Vec<u8> {
-        self.tangents.iter().flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes)).collect()
+        self.tangents
+            .iter()
+            .flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes))
+            .collect()
     }
 
     pub fn uvs_as_bytes(&self) -> Vec<u8> {
