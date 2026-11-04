@@ -1655,7 +1655,7 @@ mod tests {
                 .contains(&"GRASS_TUNING".into()),
             "fileless production pipeline must include tuning"
         );
-        let mut defs = crate::grass_shader_tests::definitions(false, 4, 15, false);
+        let mut defs = super::grass_shader_tests::definitions(false, 4, 15, false);
         for def in &descriptor.vertex.shader_defs {
             match def {
                 bevy::shader::ShaderDefVal::Bool(name, value) => {
@@ -1674,7 +1674,7 @@ mod tests {
             }
         }
         let module =
-            crate::grass_shader_tests::compose(include_str!("shaders/grass.wgsl"), defs).unwrap();
+            super::grass_shader_tests::compose(include_str!("shaders/grass.wgsl"), defs).unwrap();
         let vertex = module
             .types
             .iter()

@@ -2561,7 +2561,7 @@ mod tests {
             // Complete the production observer's result without a GPU readback. The capture
             // phase must retain the settle failure through logging and the final AppExit.
             let path = run.shot_path(&run.file.shots[0]);
-            write_shot(test_image(), &path).unwrap();
+            write_shot(&decode_shot(test_image()).unwrap(), &path).unwrap();
             app.world_mut().resource_mut::<ShotsRun>().capture = Some(Ok(()));
             app.update();
             assert_eq!(app.world().resource::<ShotsRun>().phase, Phase::Done);
