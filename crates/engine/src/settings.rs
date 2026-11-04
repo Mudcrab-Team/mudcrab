@@ -809,11 +809,11 @@ fn prepare_settings_at(
                     Ok(saved) => {
                         file.stored = saved.clone();
                         settings = saved;
-                        let raw: serde_json::Value =
-                            serde_json::from_slice(&bytes).expect("valid settings are valid JSON");
                         file.metal_drawing_default_available =
-                            raw.get("indirect_drawing").is_none()
-                                && raw.get("occlusion_culling").is_none();
+                            serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|raw| {
+                                raw.get("indirect_drawing").is_none()
+                                    && raw.get("occlusion_culling").is_none()
+                            });
                         settings.retain_explicit_launch_values(config);
                         if settings.color_grade
                             == crate::color_pipeline::SceneGradeMode::RecordSrgb.index()
@@ -2280,6 +2280,16 @@ mod tests {
         let mut saved_config = EngineConfig::default();
         let (_, mut saved_file) = prepare_settings_at(&mut saved_config, Some(path));
         assert!(!saved_file.take_metal_drawing_default());
+    }
+
+    #[test]
+    fn unknown_out_of_range_number_does_not_panic_or_enable_metal_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"hud":false,"x":1e999}"#).unwrap();
+        let (settings, mut file) = prepare_settings_at(&mut EngineConfig::default(), Some(path));
+        assert!(!settings.hud);
+        assert!(!file.take_metal_drawing_default());
     }
 
     #[test]
