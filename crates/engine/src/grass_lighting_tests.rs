@@ -82,12 +82,19 @@ fn lighting_fixture_expression(
                 *reject
             })
         }
-        E::Math { fun, arg, arg1, arg2, .. } => {
+        E::Math {
+            fun,
+            arg,
+            arg1,
+            arg2,
+            ..
+        } => {
             let a = eval(*arg);
             match fun {
                 M::Clamp => {
-                    let lo = eval(arg1.unwrap())[0]; let hi = eval(arg2.unwrap())[0];
-                    a.into_iter().map(|v|v.clamp(lo,hi)).collect()
+                    let lo = eval(arg1.unwrap())[0];
+                    let hi = eval(arg2.unwrap())[0];
+                    a.into_iter().map(|v| v.clamp(lo, hi)).collect()
                 }
                 M::Abs => a.into_iter().map(f32::abs).collect(),
                 M::Normalize => {
@@ -499,22 +506,41 @@ fn g3_brightness_byte_decodes_as_unit_range() {
 #[test]
 fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     let shader = include_str!("shaders/grass.wgsl");
-    let source = lighting_fixture_function(shader,"tangent_normal").unwrap().replace("fn tangent_normal(","fn fixture(");
-    let args = [vec![0.8,0.3,0.9],vec![0.0,1.0,0.0],vec![0.0,0.0,-1.0],vec![1.0,0.0,0.0]];
-    let actual = lighting_fixture_run(&source,&args);
+    let source = lighting_fixture_function(shader, "tangent_normal")
+        .unwrap()
+        .replace("fn tangent_normal(", "fn fixture(");
+    let args = [
+        vec![0.8, 0.3, 0.9],
+        vec![0.0, 1.0, 0.0],
+        vec![0.0, 0.0, -1.0],
+        vec![1.0, 0.0, 0.0],
+    ];
+    let actual = lighting_fixture_run(&source, &args);
     let length = 1.16_f32.sqrt();
-    assert_lighting_rgb(&actual,[-0.4/length,0.8/length,-0.6/length]);
-    let mut mirrored = args.clone(); mirrored[3][0] = -1.0;
-    let actual = lighting_fixture_run(&source,&mirrored);
-    assert_lighting_rgb(&actual,[0.4/length,0.8/length,-0.6/length]);
+    assert_lighting_rgb(&actual, [-0.4 / length, 0.8 / length, -0.6 / length]);
+    let mut mirrored = args.clone();
+    mirrored[3][0] = -1.0;
+    let actual = lighting_fixture_run(&source, &mirrored);
+    assert_lighting_rgb(&actual, [0.4 / length, 0.8 / length, -0.6 / length]);
 }
 
 #[test]
 fn authored_alpha_weights_native_wind_without_erasing_roots() {
     let shader = include_str!("shaders/grass.wgsl");
-    let source = lighting_fixture_function(shader,"wind_weight").unwrap().replace("fn wind_weight(","fn fixture(");
-    for (alpha,expected) in [(-0.2,0.0),(0.0,0.0),(0.35,0.35),(1.0,1.0),(1.5,1.0)] {
-        assert_eq!(lighting_fixture_run(&source,&[vec![alpha]]),vec![expected]);
+    let source = lighting_fixture_function(shader, "wind_weight")
+        .unwrap()
+        .replace("fn wind_weight(", "fn fixture(");
+    for (alpha, expected) in [
+        (-0.2, 0.0),
+        (0.0, 0.0),
+        (0.35, 0.35),
+        (1.0, 1.0),
+        (1.5, 1.0),
+    ] {
+        assert_eq!(
+            lighting_fixture_run(&source, &[vec![alpha]]),
+            vec![expected]
+        );
     }
     assert!(shader.contains("sway = wind_weight(input.color.a)"));
 }

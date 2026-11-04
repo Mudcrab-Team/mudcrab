@@ -149,9 +149,15 @@ fn root_luminance(field: Option<&[f32]>, position: [u16; 2]) -> f32 {
 /// position. The cache retains each texture's GNAM order; native Skyrim selection is not
 /// reproduced by this deterministic placement algorithm.
 fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfig) -> f32 {
-    if layer.weights.len() != GRASS_BLEND_SIDE * GRASS_BLEND_SIDE { return 0.0; }
+    if layer.weights.len() != GRASS_BLEND_SIDE * GRASS_BLEND_SIDE {
+        return 0.0;
+    }
     let weight = sample_grid(GRASS_BLEND_SIDE, x, y, |i| layer.weights[i].into());
-    if weight < config.grass_texture_threshold { 0.0 } else { weight }
+    if weight < config.grass_texture_threshold {
+        0.0
+    } else {
+        weight
+    }
 }
 
 /// Generate one cell's species batches from the immutable cache with no main-thread terrain copy.
@@ -229,110 +235,147 @@ fn generate_field(
     let mut instances: BTreeMap<u32, Vec<GrassInstance>> = BTreeMap::new();
     // Each admitted species owns a deterministic stream. Other species cannot
     // steal its roots or dilute its blend support.
-    let ids: std::collections::BTreeSet<u32> = cell.quadrants.iter()
+    let ids: std::collections::BTreeSet<u32> = cell
+        .quadrants
+        .iter()
         .flat_map(|q| q.layers.iter())
-        .flat_map(|layer| layer.grass_ids.iter().take(config.effective_grass_species_cap()))
-        .map(|id| u32::from(*id)).collect();
+        .flat_map(|layer| {
+            layer
+                .grass_ids
+                .iter()
+                .take(config.effective_grass_species_cap())
+        })
+        .map(|id| u32::from(*id))
+        .collect();
     for id in ids {
-        let Some(species) = cache.species(id) else { continue; };
+        let Some(species) = cache.species(id) else {
+            continue;
+        };
         let seed = hash(cell_id, id, 12);
         for slot in 0..slots {
-        let [x, y] = candidate(seed, slot);
-        let quadrant = (x * 2.0) as u8 + (y * 2.0) as u8 * 2;
-        let Some(mask) = cell.quadrants.iter().find(|q| q.quadrant == quadrant) else { continue; };
-        let support = |mask: &shared::grass::ArchivedGrassQuadrant, x, y| -> f32 {
-            mask.layers.iter().filter(|layer| layer.grass_ids.iter()
-                .take(config.effective_grass_species_cap()).any(|grass| u32::from(*grass) == id))
-                .map(|layer| layer_weight(layer,x,y,config)).sum()
-        };
-        let weight = support(mask,(x*2.0).fract(),(y*2.0).fract());
-        let (height, normal, slope) = terrain(&height_at,x,y);
-        if weight <= 0.0 || slope < f32::from(species.min_slope) || slope > f32::from(species.max_slope)
-            || !water_allowed(height,water,species.units_from_water.into(),species.water_comparison.into())
-            || unit(hash(seed,slot,4)) >= (weight*f32::from(species.density)/100.0*config.grass_density_multiplier).min(1.0) {
-            continue;
-        }
-        let position_range: f32 = species.position_range.into();
-        // Authored Position Range is a total jitter span, not a radius.
-        let px = x * GRASS_CELL_SIZE + (unit(hash(seed, slot, 5)) - 0.5) * position_range;
-        let py = y * GRASS_CELL_SIZE + (unit(hash(seed, slot, 6)) - 0.5) * position_range;
-        // Clamping makes an artificial line of clumps on the cell boundary.
-        if !(0.0..GRASS_CELL_SIZE).contains(&px) || !(0.0..GRASS_CELL_SIZE).contains(&py) {
-            continue;
-        }
-        // Test exclusion only where the clump is placed, not before and after jitter.
-        let jx = px / GRASS_CELL_SIZE;
-        let jy = py / GRASS_CELL_SIZE;
-        let jq = (jx * 2.0) as u8 + (jy * 2.0) as u8 * 2;
-        let Some(jmask) = cell.quadrants.iter().find(|q| q.quadrant == jq) else {
-            continue;
-        };
-        let jbit = ((jy * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize
-            * GRASS_EXCLUSION_SIDE
-            + ((jx * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize;
-        if jmask
-            .exclusion
-            .get(jbit / 8)
-            .is_none_or(|byte| byte & (1 << (jbit % 8)) != 0)
-        {
-            continue;
-        }
-        let final_weight: f32 = jmask
-            .layers
-            .iter()
-            .filter(|layer| {
-                layer
-                    .grass_ids
+            let [x, y] = candidate(seed, slot);
+            let quadrant = (x * 2.0) as u8 + (y * 2.0) as u8 * 2;
+            let Some(mask) = cell.quadrants.iter().find(|q| q.quadrant == quadrant) else {
+                continue;
+            };
+            let support = |mask: &shared::grass::ArchivedGrassQuadrant, x, y| -> f32 {
+                mask.layers
                     .iter()
-                    .take(config.effective_grass_species_cap())
-                    .any(|grass| u32::from(*grass) == id)
-            })
-            .map(|layer| layer_weight(layer, (jx * 2.0).fract(), (jy * 2.0).fract(), config))
-            .sum();
-        if final_weight <= 0.0 {
-            continue;
+                    .filter(|layer| {
+                        layer
+                            .grass_ids
+                            .iter()
+                            .take(config.effective_grass_species_cap())
+                            .any(|grass| u32::from(*grass) == id)
+                    })
+                    .map(|layer| layer_weight(layer, x, y, config))
+                    .sum()
+            };
+            let weight = support(mask, (x * 2.0).fract(), (y * 2.0).fract());
+            let (height, normal, slope) = terrain(&height_at, x, y);
+            if weight <= 0.0
+                || slope < f32::from(species.min_slope)
+                || slope > f32::from(species.max_slope)
+                || !water_allowed(
+                    height,
+                    water,
+                    species.units_from_water.into(),
+                    species.water_comparison.into(),
+                )
+                || unit(hash(seed, slot, 4))
+                    >= (weight * f32::from(species.density) / 100.0
+                        * config.grass_density_multiplier)
+                        .min(1.0)
+            {
+                continue;
+            }
+            let position_range: f32 = species.position_range.into();
+            // Authored Position Range is a total jitter span, not a radius.
+            let px = x * GRASS_CELL_SIZE + (unit(hash(seed, slot, 5)) - 0.5) * position_range;
+            let py = y * GRASS_CELL_SIZE + (unit(hash(seed, slot, 6)) - 0.5) * position_range;
+            // Clamping makes an artificial line of clumps on the cell boundary.
+            if !(0.0..GRASS_CELL_SIZE).contains(&px) || !(0.0..GRASS_CELL_SIZE).contains(&py) {
+                continue;
+            }
+            // Test exclusion only where the clump is placed, not before and after jitter.
+            let jx = px / GRASS_CELL_SIZE;
+            let jy = py / GRASS_CELL_SIZE;
+            let jq = (jx * 2.0) as u8 + (jy * 2.0) as u8 * 2;
+            let Some(jmask) = cell.quadrants.iter().find(|q| q.quadrant == jq) else {
+                continue;
+            };
+            let jbit = ((jy * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize
+                * GRASS_EXCLUSION_SIDE
+                + ((jx * 2.0).fract() * GRASS_EXCLUSION_SIDE as f32) as usize;
+            if jmask
+                .exclusion
+                .get(jbit / 8)
+                .is_none_or(|byte| byte & (1 << (jbit % 8)) != 0)
+            {
+                continue;
+            }
+            let final_weight: f32 = jmask
+                .layers
+                .iter()
+                .filter(|layer| {
+                    layer
+                        .grass_ids
+                        .iter()
+                        .take(config.effective_grass_species_cap())
+                        .any(|grass| u32::from(*grass) == id)
+                })
+                .map(|layer| layer_weight(layer, (jx * 2.0).fract(), (jy * 2.0).fract(), config))
+                .sum();
+            if final_weight <= 0.0 {
+                continue;
+            }
+            let (jh, jnormal, jslope) = if position_range != 0.0 {
+                terrain(&height_at, jx, jy)
+            } else {
+                (height, normal, slope)
+            };
+            if jslope < f32::from(species.min_slope)
+                || jslope > f32::from(species.max_slope)
+                || !water_allowed(
+                    jh,
+                    water,
+                    species.units_from_water.into(),
+                    species.water_comparison.into(),
+                )
+            {
+                continue;
+            }
+            if unit(hash(seed, slot, 4))
+                >= (final_weight * f32::from(species.density) / 100.0
+                    * config.grass_density_multiplier)
+                    .min(1.0)
+            {
+                continue;
+            }
+            let height_range: f32 = species.height_range.into();
+            // Runtime-only brightness: the cache format and species rules are unchanged.
+            let color_range = f32::from(species.color_range).clamp(0.0, 1.0);
+            let position_xy = [quantize(px, GRASS_CELL_SIZE), quantize(py, GRASS_CELL_SIZE)];
+            instances.entry(id).or_default().push(GrassInstance {
+                position: [
+                    position_xy[0],
+                    position_xy[1],
+                    quantize(jh - height_min, height_span),
+                ],
+                rotation: (hash(seed, slot, 7) & 255) as u8,
+                scale: ((1.0 + (unit(hash(seed, slot, 8)) * 2.0 - 1.0) * height_range)
+                    .clamp(0.0, 2.0)
+                    * 127.5)
+                    .round() as u8,
+                color: brightness(
+                    color_range,
+                    unit(hash(seed, slot, 9)),
+                    root_luminance(luminance, position_xy),
+                ),
+                normal: jnormal,
+                slot,
+            });
         }
-        let (jh, jnormal, jslope) = if position_range != 0.0 {
-            terrain(&height_at, jx, jy)
-        } else {
-            (height, normal, slope)
-        };
-        if jslope < f32::from(species.min_slope)
-            || jslope > f32::from(species.max_slope)
-            || !water_allowed(
-                jh,
-                water,
-                species.units_from_water.into(),
-                species.water_comparison.into(),
-            )
-        {
-            continue;
-        }
-        if unit(hash(seed,slot,4)) >= (final_weight*f32::from(species.density)/100.0*config.grass_density_multiplier).min(1.0) { continue; }
-        let height_range: f32 = species.height_range.into();
-        // Runtime-only brightness: the cache format and species rules are unchanged.
-        let color_range = f32::from(species.color_range).clamp(0.0, 1.0);
-        let position_xy = [quantize(px, GRASS_CELL_SIZE), quantize(py, GRASS_CELL_SIZE)];
-        instances.entry(id).or_default().push(GrassInstance {
-            position: [
-                position_xy[0],
-                position_xy[1],
-                quantize(jh - height_min, height_span),
-            ],
-            rotation: (hash(seed, slot, 7) & 255) as u8,
-            scale: ((1.0 + (unit(hash(seed, slot, 8)) * 2.0 - 1.0) * height_range)
-                .clamp(0.0, 2.0)
-                * 127.5)
-                .round() as u8,
-            color: brightness(
-                color_range,
-                unit(hash(seed, slot, 9)),
-                root_luminance(luminance, position_xy),
-            ),
-            normal: jnormal,
-            slot,
-        });
-    }
     }
     for (id, instances) in instances {
         let species = cache
@@ -430,12 +473,26 @@ mod tests {
 
     #[test]
     fn unrelated_species_do_not_change_target_population() {
-        let config = EngineConfig { grass_max_types_per_texture: 4, ..Default::default() };
-        let a = mapped(vec![species(7)],fixture(vec![layer(9,vec![7],0.45)]));
-        let b = mapped(vec![species(7),species(11)],fixture(vec![layer(9,vec![11,7],0.45)]));
-        let a = generate(&a,42,&config); let b = generate(&b,42,&config);
+        let config = EngineConfig {
+            grass_max_types_per_texture: 4,
+            ..Default::default()
+        };
+        let a = mapped(vec![species(7)], fixture(vec![layer(9, vec![7], 0.45)]));
+        let b = mapped(
+            vec![species(7), species(11)],
+            fixture(vec![layer(9, vec![11, 7], 0.45)]),
+        );
+        let a = generate(&a, 42, &config);
+        let b = generate(&b, 42, &config);
         assert!(!a.batches[0].instances.is_empty());
-        assert_eq!(a.batches[0].instances,b.batches.iter().find(|b| b.grass_id==7).unwrap().instances);
+        assert_eq!(
+            a.batches[0].instances,
+            b.batches
+                .iter()
+                .find(|b| b.grass_id == 7)
+                .unwrap()
+                .instances
+        );
     }
 
     #[test]
@@ -638,7 +695,8 @@ mod tests {
             assert_eq!(new.color, expected_byte, "slot {} encoded root", new.slot);
             let candidate_x = candidate(hash(42, 7, 12), new.slot)[0];
             jitter_matters |= (candidate_x * 224.0).round() as u8 != expected_byte;
-            let raw_x = candidate_x * 4096.0 + (unit(hash(hash(42, 7, 12), new.slot, 5)) - 0.5) * 64.0;
+            let raw_x =
+                candidate_x * 4096.0 + (unit(hash(hash(42, 7, 12), new.slot, 5)) - 0.5) * 64.0;
             quantization_matters |=
                 (f64::from(raw_x) * 224.0 / 4096.0).round() as u8 != expected_byte;
             let mut expected = *old;
@@ -865,7 +923,10 @@ mod tests {
             .map(|b| (b.grass_id, b.instances.len()))
             .collect();
         assert_eq!(counts.len(), 3, "{counts:?}");
-        assert!(counts[0].1 > counts[1].1 * 3 && counts[0].1 < counts[1].1 * 5, "{counts:?}");
+        assert!(
+            counts[0].1 > counts[1].1 * 3 && counts[0].1 < counts[1].1 * 5,
+            "{counts:?}"
+        );
         assert!(counts[1].1 > 50 && counts[2].1 > 50, "{counts:?}");
     }
 
@@ -1024,7 +1085,8 @@ mod tests {
                 let px = f32::from(instance.position[0]) / 65535.0 * GRASS_CELL_SIZE;
                 if px % 2048.0 >= 1024.1 {
                     assert!(
-                        unit(hash(hash(42, batch.grass_id, 12), instance.slot, 4)) < 0.02 * if batch.grass_id == 7 { 0.2 } else { 0.8 },
+                        unit(hash(hash(42, batch.grass_id, 12), instance.slot, 4))
+                            < 0.02 * if batch.grass_id == 7 { 0.2 } else { 0.8 },
                         "slot {} survived on the sparse side using its source density",
                         instance.slot
                     );
