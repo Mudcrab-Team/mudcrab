@@ -120,7 +120,8 @@ pub struct EffectPalette {
     #[sampler(102)]
     #[dependency]
     palette: Handle<Image>,
-    // Keep the labeled dependency alive while this material is alive.
+    // Keep the labeled dependency alive while this material is alive. The loader
+    // scope records the edge; ExtendedMaterial does not visit its fields.
     #[dependency]
     image_holder: Option<Handle<EffectPaletteImage>>,
 }
