@@ -20,6 +20,7 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+toml_edit = { version = "0.25.12", default-features = false, features = ["parse"] }
 ktx2.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libc = "0.2"

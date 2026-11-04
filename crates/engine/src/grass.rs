@@ -130,8 +130,16 @@ pub struct GrassInstance {
     pub color: u8,
     /// Creation-space unit normal multiplied by 127.
     pub normal: [i8; 3],
-    /// R2 candidate order retained for deterministic prefix thinning.
+    /// R2 candidate order retained in low 18 bits for deterministic prefix thinning.
+    /// Tuning-only high bits retain 7-bit LAND luminance and signed range factor.
     pub slot: u32,
+}
+
+impl GrassInstance {
+    /// Decode the stable candidate identity independently of optional tuning metadata.
+    pub const fn candidate_slot(&self) -> u32 {
+        self.slot & 0x3ffff
+    }
 }
 
 /// One species in one cell. The renderer owns primitive children, never blade entities.

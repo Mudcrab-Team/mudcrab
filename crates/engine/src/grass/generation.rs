@@ -330,7 +330,15 @@ fn generate_field(
                 root_luminance(luminance, position_xy),
             ),
             normal: jnormal,
-            slot,
+            slot: {
+                let land =
+                    (root_luminance(luminance, position_xy).clamp(0.0, 1.0) * 127.0).round() as u32;
+                let factor =
+                    1.0 - 2.0 * color_range + 2.0 * unit(hash(seed, slot, 9)) * color_range;
+                let range = ((factor + 1.0) * 63.5).round() as u32;
+                debug_assert!(slot < (1 << 18));
+                slot | (land << 18) | (range << 25)
+            },
         });
     }
     }
@@ -436,6 +444,70 @@ mod tests {
         let a = generate(&a,42,&config); let b = generate(&b,42,&config);
         assert!(!a.batches[0].instances.is_empty());
         assert_eq!(a.batches[0].instances,b.batches.iter().find(|b| b.grass_id==7).unwrap().instances);
+    }
+
+    #[test]
+    /// Tuning metadata preserves every original byte except high slot bits, with exact replay.
+    fn grass_tuning_metadata_preserves_packing_and_precision() {
+        let mut rule = species(7);
+        rule.color_range = 0.8;
+        let cache = mapped(vec![rule], fixture(vec![layer(9, vec![7], 1.0)]));
+        let snapshot = crate::world::cache::TerrainSnapshot {
+            cell_id: 42,
+            width: 33,
+            height: 33,
+            heights: vec![120.0; 1089],
+            normals: vec![0; 3267],
+            vertex_colors: vec![102; 3267],
+            layers: vec![],
+            water_height: Some(20.0),
+            water_type_form_id: None,
+        };
+        let terrain = GrassTerrain::from_snapshot(&snapshot);
+        let base = EngineConfig {
+            grass_min_spacing: 8.0,
+            ..Default::default()
+        };
+        let tuned = EngineConfig {
+            grass_tuning: Some("unused.toml".into()),
+            ..base.clone()
+        };
+        let original = generate_on_terrain(&cache, 42, &base, &terrain);
+        let generated = generate_on_terrain(&cache, 42, &tuned, &terrain);
+        let replay = generate_on_terrain(&cache, 42, &tuned, &terrain);
+        assert_eq!(generated.bytes, original.bytes);
+        assert_eq!(generated.batches[0].slot_count, 262144);
+        assert_eq!(std::mem::size_of::<GrassInstance>(), 16);
+        assert_eq!(generated.batches[0].instances, replay.batches[0].instances);
+        assert_eq!(
+            original.batches[0].instances.len(),
+            generated.batches[0].instances.len()
+        );
+        for (old, new) in original.batches[0]
+            .instances
+            .iter()
+            .zip(generated.batches[0].instances.iter())
+        {
+            let mut decoded = *new;
+            decoded.slot = new.candidate_slot();
+            let mut old = *old;
+            old.slot = old.candidate_slot();
+            assert_eq!(
+                old, decoded,
+                "all default brightness and placement bytes survive"
+            );
+            let land = ((new.slot >> 18) & 127) as f32 / 127.0;
+            let range = (new.slot >> 25) as f32 * (2.0 / 127.0) - 1.0;
+            assert!((land - 0.4).abs() <= 1.0 / 254.0 + 1e-6);
+            let expected = 1.0 - 1.6 + 1.6 * unit(hash(hash(42, 7, 12), new.candidate_slot(), 9));
+            assert!((range - expected).abs() <= 1.0 / 127.0 + 1e-6);
+        }
+        assert!(
+            generated.batches[0]
+                .instances
+                .windows(2)
+                .all(|pair| pair[0].candidate_slot() < pair[1].candidate_slot())
+        );
     }
 
     #[test]

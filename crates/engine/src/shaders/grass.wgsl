@@ -26,6 +26,12 @@ struct Grass {
     ambient: vec4<f32>,
     uv_transform: mat3x3<f32>,
     normal_params: vec4<f32>,
+#ifdef GRASS_TUNING
+    tuning_light: vec4<f32>,
+    tuning_surface: vec4<f32>,
+    tuning_color: vec4<f32>,
+    tuning_specular: vec4<f32>,
+#endif
 }
 @group(#{GRASS_GROUP}) @binding(0) var<uniform> grass: Grass;
 @group(#{GRASS_GROUP}) @binding(1) var albedo: texture_2d<f32>;
@@ -48,7 +54,7 @@ struct Vertex {
 #endif
     @location(4) packed: vec4<u32>,
 #ifdef TANGENT
-    @location(5) tangent: vec4<f32>,
+    @location(6) tangent: vec4<f32>,
 #endif
 }
 struct Varyings {
@@ -58,7 +64,10 @@ struct Varyings {
     @location(2) normal: vec3<f32>,
     @location(3) light: vec3<f32>,
     @location(4) world_position: vec4<f32>,
-    @location(5) tangent: vec4<f32>,
+    @location(6) tangent: vec4<f32>,
+#ifdef GRASS_TUNING
+    @location(5) root_fraction: f32,
+#endif
 }
 fn signed_byte(value: u32) -> f32 {
     return f32(i32((value & 255u) ^ 128u) - 128) / 127.0;
@@ -67,6 +76,52 @@ fn rotate_y(p: vec3<f32>, angle: f32) -> vec3<f32> {
     let c = cos(angle); let s = sin(angle);
     return vec3(c*p.x+s*p.z, p.y, -s*p.x+c*p.z);
 }
+#ifdef GRASS_TUNING
+// Keep these pure helpers executable by the CPU production-formula fixtures.
+fn tuning_brightness(original:f32, land:f32, range:f32, tint_strength:f32, range_strength:f32) -> f32 {
+    if tint_strength == 1.0 && range_strength == 1.0 { return original; }
+    return clamp(mix(1.0,land,tint_strength) * mix(1.0,range,range_strength),0.0,1.0);
+}
+fn tuning_diffuse(normal:vec3<f32>, sun:vec3<f32>, light:vec4<f32>, surface:vec4<f32>) -> f32 {
+    let cosine = dot(normalize(normal),normalize(sun));
+    let wrapped = clamp((cosine + surface.x)/(1.0 + surface.x),0.0,1.0);
+    return mix(1.0,wrapped,light.w) + surface.w * max(-cosine,0.0);
+}
+fn tuning_illumination(ambient:vec3<f32>, direct:vec3<f32>, shadow:f32, exposure:f32, light:vec4<f32>, surface:vec4<f32>, specular:vec4<f32>) -> vec3<f32> {
+    let visibility = surface.z + (1.0-surface.z) * mix(1.0,shadow,surface.y);
+    if specular.z != 0.0 { return vec3(visibility); }
+    return (ambient*light.y + direct*light.z*visibility) * exposure / 3.14159265;
+}
+fn tuning_finish(color:vec3<f32>, root_fraction:f32, light:vec4<f32>, tint:vec4<f32>) -> vec3<f32> {
+    let luminance = dot(color,vec3(0.2126,0.7152,0.0722));
+    return max(mix(vec3(luminance),color,tint.x),vec3(0.0)) * light.x * (1.0-tint.w*root_fraction);
+}
+// Bevy 0.19 pbr_lighting.wgsl: D_GGX, V_SmithGGXCorrelated and F_Schlick.
+// Dielectric F0=.04; perceptual roughness squared to alpha, clamped away from zero.
+fn tuning_ggx(ndh:f32, ndv:f32, ndl:f32, vdh:f32, perceptual_roughness:f32) -> f32 {
+    let roughness = max(perceptual_roughness*perceptual_roughness,0.007921);
+    let a = ndh * roughness;
+    let k = roughness / (1.0-ndh*ndh+a*a);
+    let distribution = k*k / 3.14159265;
+    let a2 = roughness*roughness;
+    let lambda_v = ndl*sqrt((ndv-a2*ndv)*ndv+a2);
+    let lambda_l = ndv*sqrt((ndl-a2*ndl)*ndl+a2);
+    let visibility = 0.5/max(lambda_v+lambda_l,0.000001);
+    let fresnel = 0.04+0.96*pow(1.0-vdh,5.0);
+    return distribution*visibility*fresnel*ndl;
+}
+fn tuning_sheen(normal:vec3<f32>, world:vec3<f32>) -> vec3<f32> {
+    if grass.tuning_specular.x == 0.0 || grass.tuning_specular.z != 0.0 { return vec3(0.0); }
+    let n = normalize(normal);
+    let l = normalize(grass.sun_direction.xyz);
+    let eye = view.world_position-world;
+    let v = eye/max(length(eye),0.000001);
+    let half_vector = l+v;
+    let h = half_vector/max(length(half_vector),0.000001);
+    let response = tuning_ggx(max(dot(n,h),0.0),max(dot(n,v),0.0001),max(dot(n,l),0.0),clamp(dot(v,h),0.0,1.0),grass.tuning_specular.y);
+    return grass.sun_color.rgb * grass.tuning_light.z * grass.tuning_specular.x * response * view.exposure;
+}
+#endif
 @vertex
 fn vertex(input: Vertex) -> Varyings {
     var out: Varyings;
@@ -74,7 +129,14 @@ fn vertex(input: Vertex) -> Varyings {
     let height = grass.height_wind.x + f32(input.packed.y & 65535u) * grass.height_wind.y / 65535.0;
     let rotation = f32((input.packed.y >> 16u) & 255u) * (6.28318530718 / 256.0);
     let scale = f32(input.packed.y >> 24u) * (2.0 / 255.0);
+#ifdef GRASS_TUNING
+    let brightness = tuning_brightness(f32(input.packed.z & 255u)/255.0,
+        f32((input.packed.w >> 18u)&127u)/127.0,
+        f32(input.packed.w >> 25u)*(2.0/127.0)-1.0,
+        grass.tuning_color.y,grass.tuning_color.z);
+#else
     let brightness = f32(input.packed.z & 255u) / 255.0;
+#endif
     let flags = u32(grass.absolute_grid.z);
     var p = (grass.model * vec4(input.position,1.0)).xyz;
     var n = vec3(0.0,1.0,0.0);
@@ -112,10 +174,18 @@ fn vertex(input: Vertex) -> Varyings {
     out.world_position = world;
     let distance = length((root-view.world_position).xz);
     let fraction = select(clamp((grass.fade.y-distance)/max(grass.fade.y-grass.fade.x,1.0),0.0,1.0),1.0,grass.fade.w != 0.0);
+#ifdef GRASS_TUNING
+    if f32(input.packed.w & 262143u) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
+    out.root_fraction = 0.0;
+#else
     if f32(input.packed.w) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
+#endif
     out.uv = vec2(0.0);
 #ifdef UV
     out.uv = input.uv;
+#ifdef GRASS_TUNING
+    out.root_fraction = clamp(input.uv.y,0.0,1.0);
+#endif
 #endif
     // Share authored texture coordinates between color and depth coverage.
     // Apply offsets to the zero default when the mesh has no UV attribute.
@@ -156,6 +226,9 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
 fn lighting(normal:vec3<f32>) -> vec3<f32> {
+#ifdef GRASS_TUNING
+    return grass.sun_color.rgb * tuning_diffuse(normal,grass.sun_direction.xyz,grass.tuning_light,grass.tuning_surface);
+#else
     // Keep the authored blade normal on both raster sides, matching the k=0
     // measured model. Flipping a back face would restore unwanted direct sun.
     let sun_direction = grass.sun_direction.xyz;
@@ -163,6 +236,7 @@ fn lighting(normal:vec3<f32>) -> vec3<f32> {
     let diffuse = max(dot(normalize(normal),normalize(sun_direction)),0.0);
     // Interpolate only direct illumination; ambient is added once per fragment.
     return sun_color*diffuse;
+#endif
 }
 // Reuse terrain's prepared directional shadow maps and cascade/filter/bias policy.
 // Disabled shadows (or no directional light) leave the direct term unchanged.
@@ -208,10 +282,31 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);
+#ifdef GRASS_TUNING
+    let shadow = directional_shadow(input);
     let direct = select(lighting(input.normal),input.light,(u32(grass.absolute_grid.z)&1u)!=0u);
+    let light = tuning_illumination(grass.ambient.rgb,direct,shadow,view.exposure,grass.tuning_light,grass.tuning_surface,grass.tuning_specular);
+    let visibility = grass.tuning_surface.z + (1.0-grass.tuning_surface.z)*mix(1.0,shadow,grass.tuning_surface.y);
+    let sheen = tuning_sheen(input.normal,input.world_position.xyz)*visibility;
+    out.color = vec4(tuning_finish(base.rgb*light+sheen,input.root_fraction,grass.tuning_light,grass.tuning_color),1.0);
+#else
+#ifdef GRASS_SHADING_F
+    // Reference-only same-view grass samples give S=0.679935..., rounded to 0.68.
+    // No ambient, sun, exposure or Lambert/pi conversion in this unlit branch.
+    let shadow = directional_shadow(input);
+    let light = vec3(0.68 + (1.0 - 0.68) * shadow);
+#else
+#ifdef GRASS_SHADING_E
+    // Drop only the blade/sun angle. Keep the control's photometric conversion.
+    let direct = grass.sun_color.rgb;
+#else
+    let direct = select(lighting(input.normal),input.light,(u32(grass.absolute_grid.z)&1u)!=0u);
+#endif
     let shadow = directional_shadow(input);
     let light = (grass.ambient.rgb + direct*shadow) * view.exposure / 3.14159265;
+#endif
     out.color = vec4(base.rgb * light,1.0);
+#endif
 #ifdef TONEMAP_IN_SHADER
     // Match standard materials for LDR targets. HDR is mapped after the main
     // pass by the camera, and depth coverage is independent of display color.

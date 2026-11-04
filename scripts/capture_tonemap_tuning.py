@@ -12,6 +12,7 @@ import hashlib
 import html
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -121,7 +122,8 @@ def assert_expected(actual, expected, context="receipt"):
         approximately_equal(actual, expected, context)
 
 
-def validate_capture(receipt, baseline, camera, image, expected=None, require_grading=True):
+def validate_capture(receipt, baseline, camera, image, expected=None, require_grading=True,
+                     expected_grass_tuning=None):
     require(receipt.get("capture") == 0 and receipt.get("kind") == "settled",
             "Capture must be the first and only settled shot")
     require(receipt.get("timed_out") is False, "Capture timed out or has no timeout evidence")
@@ -166,11 +168,79 @@ def validate_capture(receipt, baseline, camera, image, expected=None, require_gr
         require(grade["source"].get("resolution_error") is None, "Grading source failed to resolve")
     if expected:
         assert_expected(receipt, expected)
+    if expected_grass_tuning is not None:
+        require(receipt.get("grass_tuning") == frame.get("grass_tuning") == expected_grass_tuning,
+                "Captured-frame grass tuning differs from engine settings receipt")
     return {
         "passed": True, "camera_matches_approved": True, "dimensions": dimensions,
         "renderer_ready": True, "pending_or_failed_work": 0, "timed_out": False,
         "water_time_seconds": 1.0, "grading_bound_to_captured_frame": require_grading,
     }
+
+
+def grass_tuning_argument(arguments):
+    """Locate one explicit tuning path without interpreting its settings format."""
+    found = []
+    for index, argument in enumerate(arguments):
+        if argument == "--grass-tuning":
+            require(index + 1 < len(arguments) and not arguments[index + 1].startswith("--"),
+                    "--grass-tuning requires a path")
+            found.append((index, index + 1, arguments[index + 1]))
+        elif argument.startswith("--grass-tuning="):
+            require(argument.split("=", 1)[1], "--grass-tuning requires a path")
+            found.append((index, index, argument.split("=", 1)[1]))
+    require(len(found) <= 1, "Duplicate --grass-tuning options")
+    return found[0] if found else None
+
+
+def engine_grass_tuning_receipt(engine, path):
+    """Ask the CPU-only engine command for the authoritative effective values."""
+    result = subprocess.run([str(engine), "--grass-tuning-info", str(path)], cwd=REPOSITORY,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
+                            env=grass_tuning_environment())
+    value = json.loads(result.stdout)
+    require(isinstance(value, dict) and isinstance(value.get("effective"), dict)
+            and value.get("accepted") is True and value.get("enabled") is True,
+            "Invalid or rejected engine grass tuning receipt")
+    require(isinstance(value.get("path"), str) and Path(value["path"]).resolve() == path.resolve(),
+            "Engine grass tuning receipt path differs")
+    require(value.get("sha256", "").lower() == sha256(path), "Engine grass tuning receipt hash differs")
+    return value
+
+
+def grass_tuning_environment():
+    """Explicit tuning files take priority over inherited legacy experiment switches."""
+    environment = os.environ.copy()
+    for name in ("MUDCRAB_GRASS_SHADING", "MUDCRAB_GRASS_TUNING"):
+        environment.pop(name, None)
+    return environment
+
+
+def freeze_grass_tuning(arguments, engine, directory):
+    """Freeze a variant's file and return the rewritten command and engine receipt."""
+    selected = grass_tuning_argument(arguments)
+    if selected is None and os.environ.get("MUDCRAB_GRASS_TUNING"):
+        arguments = [*arguments, "--grass-tuning", os.environ["MUDCRAB_GRASS_TUNING"]]
+        selected = grass_tuning_argument(arguments)
+    if selected is None:
+        return arguments, None
+    index, value_index, value = selected
+    source = Path(value)
+    if not source.is_absolute():
+        source = REPOSITORY / source
+    destination = (directory / "grass-tuning.toml").resolve()
+    shutil.copyfile(source.resolve(strict=True), destination)
+    receipt = engine_grass_tuning_receipt(engine, destination)
+    arguments = list(arguments)
+    # The engine's native CLI accepts the two-argument spelling only.
+    arguments[index:value_index + 1] = ["--grass-tuning", str(destination)]
+    return arguments, receipt
+
+
+def verify_grass_tuning(receipt):
+    """A capture campaign keeps its selected tuning bytes fixed across all frames."""
+    if receipt is not None:
+        require(sha256(Path(receipt["path"])) == receipt["sha256"].lower(), "Frozen grass tuning changed")
 
 
 def command_options(arguments):
@@ -276,7 +346,7 @@ def render_gallery(manifest, output):
         "references": manifest["inputs"], "limits": manifest["limits"], "runs": [],
     }
     for run in runs:
-        receipt = json.loads((output / run["receipt_file"]).read_text())
+        receipt = json.loads((output / run["receipt_file"]).read_text(encoding="utf-8"))
         data["runs"].append({
             "name": run["name"], "label": run.get("label", run["name"]),
             "notes": run.get("notes", ""), "image": image_data(output / run["image_file"]),
@@ -392,11 +462,11 @@ def verify_asset_inputs(manifest):
 
 def validate_existing(output):
     manifest_path = output / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     verify_frozen_inputs(manifest)
-    camera = json.loads(Path(manifest["inputs"]["camera"]["path"]).read_text())
+    camera = json.loads(Path(manifest["inputs"]["camera"]["path"]).read_text(encoding="utf-8"))
     baseline = load_capture_receipt(Path(manifest["inputs"]["approved_receipt"]["path"]))
-    source = json.loads((output / manifest["source_provenance_file"]).read_text())
+    source = json.loads((output / manifest["source_provenance_file"]).read_text(encoding="utf-8"))
     source_hash = source.pop("sha256")
     require(canonical_hash(source) == source_hash == manifest["source_sha256"], "Source provenance changed")
     require(len(manifest["runs"]) == len(manifest["variants"]), "Capture sequence is incomplete")
@@ -410,8 +480,10 @@ def validate_existing(output):
         image = output / run["image_file"]
         require(sha256(image) == run["image_sha256"], f"Captured PNG changed: {run['name']}")
         require(sha256(receipt_path) == run["receipt_sha256"], f"Captured receipt changed: {run['name']}")
-        receipt = json.loads(receipt_path.read_text())
-        run["validation"] = validate_capture(receipt, baseline, camera, image, variant.get("expect_receipt"))
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        verify_grass_tuning(run.get("grass_tuning"))
+        run["validation"] = validate_capture(receipt, baseline, camera, image, variant.get("expect_receipt"),
+                                             expected_grass_tuning=run.get("grass_tuning"))
     manifest["passed"] = True
     manifest["last_validated_utc"] = utc_now()
     write_json(manifest_path, manifest)
@@ -419,9 +491,15 @@ def validate_existing(output):
     return manifest
 
 
-def capture(config_path, engine, assets, output):
+def capture(config_path, engine, assets, output, grass_tuning_files=None):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     require(config.get("schema_version") == 1, "Expected config schema_version 1")
+    if grass_tuning_files:
+        # Repeated CLI paths form a matrix sharing the config's scene/common arguments.
+        require("--grass-tuning" not in command_options(config.get("common_args", [])),
+                "A grass tuning file matrix cannot also set common --grass-tuning")
+        config["variants"] = [{"name": path.stem, "args": ["--grass-tuning", str(path.resolve(strict=True))]}
+                              for path in grass_tuning_files]
     validate_variants(config)
     output.mkdir(parents=True, exist_ok=False)
     references = output / "references"
@@ -437,7 +515,7 @@ def capture(config_path, engine, assets, output):
                 "Additional input names must be unique lowercase letters, numbers and hyphens")
         suffix = Path(specification["path"]).suffix
         inputs[name] = freeze_input(config_path, specification, references / f"input-{name}{suffix}")
-    camera = json.loads(Path(inputs["camera"]["path"]).read_text())
+    camera = json.loads(Path(inputs["camera"]["path"]).read_text(encoding="utf-8"))
     require(len(camera.get("shots", [])) == 1, "Tuning requires exactly one fixed camera shot")
     shot_name = camera["shots"][0].get("name", "")
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", shot_name) is not None, "Unsafe camera shot name")
@@ -490,6 +568,7 @@ def capture(config_path, engine, assets, output):
                 require(input_name in inputs, f"Unknown frozen input placeholder: {argument}")
                 argument = inputs[input_name]["path"]
             arguments.append(argument)
+        arguments, grass_tuning = freeze_grass_tuning(arguments, engine, directory)
         command = [str(engine), "--assets", str(assets), "--shots", inputs["camera"]["path"],
                    "--ini", inputs["ini"]["path"], "--shots-out", str(directory / "capture"),
                    "--hidden-window", "--shots-settle-timeout", str(settle_timeout),
@@ -499,13 +578,15 @@ def capture(config_path, engine, assets, output):
             "notes": variant.get("notes", ""), "command": command, "started_utc": utc_now(),
             "engine_sha256": engine_hash, "source_sha256": before["sha256"],
             "frozen_inputs_sha256": {name: item["sha256"] for name, item in inputs.items()},
+            "grass_tuning": grass_tuning,
         }
         manifest["runs"].append(run)
         write_json(manifest_path, manifest)
         print(f"Capturing {variant['name']}: {directory}", flush=True)
         try:
             with (directory / "native.log").open("w", encoding="utf-8") as log:
-                result = subprocess.run(command, cwd=REPOSITORY, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+                result = subprocess.run(command, cwd=REPOSITORY, stdout=log, stderr=subprocess.STDOUT, timeout=timeout,
+                                        env=grass_tuning_environment() if grass_tuning is not None else None)
             run["exit_code"] = result.returncode
             require(result.returncode == 0, f"{variant['name']}: engine exited {result.returncode}; inspect native.log")
             require(sha256(engine) == engine_hash, "Engine executable changed during capture")
@@ -513,9 +594,11 @@ def capture(config_path, engine, assets, output):
                     "Source changed during capture")
             verify_frozen_inputs(manifest)
             verify_asset_inputs(manifest)
+            verify_grass_tuning(grass_tuning)
             receipt = load_capture_receipt(directory / "capture/shots.log")
             image = directory / f"capture/{shot_name}.png"
-            run["validation"] = validate_capture(receipt, baseline, camera, image, variant.get("expect_receipt"))
+            run["validation"] = validate_capture(receipt, baseline, camera, image, variant.get("expect_receipt"),
+                                                 expected_grass_tuning=grass_tuning)
             run["image_file"] = str(image.relative_to(output))
             run["image_sha256"] = sha256(image)
             receipt_path = directory / "receipt.json"
@@ -543,18 +626,20 @@ def main():
     parser.add_argument("--engine", type=Path, help="Already-built native engine executable")
     parser.add_argument("--assets", type=Path, help="Converted assets used for every variant")
     parser.add_argument("--output", type=Path, help="Fresh output directory; existing paths are refused")
+    parser.add_argument("--grass-tuning", type=Path, action="append",
+                        help="Tuning file; repeat for a file matrix using config common_args and file stems as names")
     parser.add_argument("--validate-only", type=Path, metavar="OUTPUT", help="Revalidate and rebuild an existing gallery without launching")
     args = parser.parse_args()
     try:
         if args.validate_only:
-            require(not any([args.config, args.engine, args.assets, args.output]),
+            require(not any([args.config, args.engine, args.assets, args.output, args.grass_tuning]),
                     "--validate-only cannot be combined with capture arguments")
             manifest = validate_existing(args.validate_only.resolve(strict=True))
         else:
             require(all([args.config, args.engine, args.assets, args.output]),
                     "Capture requires --config, --engine, --assets and --output")
             manifest = capture(args.config.resolve(strict=True), args.engine.resolve(strict=True),
-                               args.assets.resolve(strict=True), args.output.resolve())
+                               args.assets.resolve(strict=True), args.output.resolve(), args.grass_tuning)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, f"capture_tonemap_tuning: {error}\n")
     print(f"Passed {len(manifest['runs'])} tuning stages; frozen references verified", flush=True)

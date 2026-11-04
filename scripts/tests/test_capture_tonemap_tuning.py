@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import struct
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -60,6 +61,35 @@ class CaptureEvidenceTests(unittest.TestCase):
         self.image = self.root / "capture.png"
         self.image.write_bytes(png())
         self.camera, self.receipt = camera_and_receipt()
+        self.commands = []
+        self.environments = []
+        native = patch.object(TUNING.subprocess, "run", side_effect=self.fake_engine)
+        native.start()
+        self.addCleanup(native.stop)
+
+    def tuning_receipt(self, path):
+        return {"path": str(path), "sha256": TUNING.sha256(path),
+                "effective": {"brightness": 0.6}, "accepted": True, "enabled": True}
+
+    def fake_engine(self, command, **kwargs):
+        """Exercise orchestration without a native executable or GPU on every OS."""
+        self.commands.append(command)
+        self.environments.append(kwargs.get("env"))
+        if "--grass-tuning-info" in command:
+            path = Path(command[command.index("--grass-tuning-info") + 1])
+            return subprocess.CompletedProcess(command, 0, json.dumps(self.tuning_receipt(path)), "")
+        directory = Path(command[command.index("--shots-out") + 1])
+        directory.mkdir(parents=True)
+        fixture = json.loads(Path(command[command.index("--fixture") + 1]).read_text(encoding="utf-8"))
+        receipt = fixture["receipt"]
+        self.assertFalse(any(value.startswith("--grass-tuning=") for value in command))
+        if "--grass-tuning" in command:
+            path = Path(command[command.index("--grass-tuning") + 1])
+            receipt["grass_tuning"] = self.tuning_receipt(path)
+            receipt["captured_frame"]["grass_tuning"] = receipt["grass_tuning"]
+        (directory / "riverwood.png").write_bytes(base64.b64decode(fixture["png"]))
+        (directory / "shots.log").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
 
     def validate(self, receipt):
         return TUNING.validate_capture(receipt, self.receipt, self.camera, self.image)
@@ -174,13 +204,13 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         self.assertTrue(manifest["passed"])
         self.assertEqual(len(manifest["runs"]), 2)
         self.assertEqual((output / "references/approved.png").read_bytes(), self.image.read_bytes())
-        page = (output / "comparison.html").read_text()
+        page = (output / "comparison.html").read_text(encoding="utf-8")
         self.assertNotIn("Approved </script><script>bad()", page)
         self.assertIn("data:image/png;base64,", page)
         self.assertNotIn('src="https://', page)
         self.assertIn("Previous approved setup", page)
         self.assertIn("Skyrim reference", page)
-        preview = (output / "comparison-preview.html").read_text()
+        preview = (output / "comparison-preview.html").read_text(encoding="utf-8")
         preview_data = json.loads(preview.split('<script id="comparison-data" type="application/json">', 1)[1].split('</script>', 1)[0])
         self.assertEqual(preview_data["approved"], str(output / "references/approved.png"))
         self.assertEqual(preview_data["skyrim"], str(output / "references/skyrim.png"))
@@ -193,15 +223,15 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         self.assertEqual(preview.count(json.dumps(str(output / "references/skyrim.png"))[1:-1]), 1)
         self.assertEqual(len(preview_data["runs"]), 2)
         for run in manifest["runs"]:
-            stage_page = (output / f"comparison-{run['name']}-preview.html").read_text()
+            stage_page = (output / f"comparison-{run['name']}-preview.html").read_text(encoding="utf-8")
             stage_data = json.loads(stage_page.split('<script id="comparison-data" type="application/json">', 1)[1].split('</script>', 1)[0])
             self.assertEqual([entry["name"] for entry in stage_data["runs"]], [run["name"]])
             self.assertEqual(stage_data["approved"], preview_data["approved"])
             self.assertEqual(stage_data["skyrim"], preview_data["skyrim"])
             self.assertEqual(stage_data["runs"][0]["image"], str(output / run["image_file"]))
             self.assertEqual(stage_data["runs"][0]["sha256"], run["image_sha256"])
-        engine.unlink()
-        self.assertTrue(TUNING.validate_existing(output)["passed"])
+        with patch.object(TUNING.subprocess, "run", side_effect=AssertionError("Offline validation launched a process")):
+            self.assertTrue(TUNING.validate_existing(output)["passed"])
         (output / "references/skyrim.png").write_bytes(png(64, 36))
         with self.assertRaisesRegex(ValueError, "Frozen skyrim changed"):
             TUNING.validate_existing(output)
@@ -213,15 +243,93 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         with patch.object(TUNING, "source_snapshot", return_value=source), self.assertRaises(FileExistsError):
             TUNING.capture(config, engine, assets, output)
 
+    def test_grass_tuning_file_matrix_is_frozen_receipted_and_revalidates_offline(self):
+        config, engine, assets, source = self.make_campaign()
+        files = [self.root / "d.toml", self.root / "darker-start.toml"]
+        for path in files:
+            path.write_text("brightness = 0.6\n", encoding="utf-8")
+        output = self.root / "matrix"
+        with patch.object(TUNING, "source_snapshot", return_value=source), patch.dict(
+                TUNING.os.environ, {"MUDCRAB_GRASS_SHADING": "f", "MUDCRAB_GRASS_TUNING": "other.toml"}):
+            manifest = TUNING.capture(config, engine, assets, output, files)
+        self.assertEqual([run["name"] for run in manifest["runs"]], ["d", "darker-start"])
+        for run in manifest["runs"]:
+            receipt = run["grass_tuning"]
+            self.assertEqual(receipt["effective"], {"brightness": 0.6})
+            self.assertIn(str(output / run["name"]), receipt["path"])
+            self.assertEqual(Path(receipt["path"]).read_bytes(), files[0].read_bytes())
+            self.assertIn(receipt["path"], run["command"])
+        self.assertEqual(sum("--grass-tuning-info" in cmd for cmd in self.commands), 2)
+        for environment in self.environments:
+            self.assertNotIn("MUDCRAB_GRASS_SHADING", environment)
+            self.assertNotIn("MUDCRAB_GRASS_TUNING", environment)
+        self.commands.clear()
+        self.assertTrue(TUNING.validate_existing(output)["passed"])
+        self.assertFalse(self.commands)
+        Path(manifest["runs"][0]["grass_tuning"]["path"]).write_text("changed", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Frozen grass tuning changed"):
+            TUNING.validate_existing(output)
+
+    def test_grass_tuning_callback_and_frame_must_match_authoritative_receipt(self):
+        expected = {"path": "settings.toml", "sha256": "hash", "effective": {"brightness": 0.6}, "selection": "cli"}
+        receipt = copy.deepcopy(self.receipt)
+        receipt["grass_tuning"] = expected
+        receipt["captured_frame"]["grass_tuning"] = expected
+        TUNING.validate_capture(receipt, self.receipt, self.camera, self.image, expected_grass_tuning=expected)
+        receipt["grass_tuning"] = {**expected, "effective": {"brightness": 1.0}}
+        with self.assertRaisesRegex(ValueError, "grass tuning differs"):
+            TUNING.validate_capture(receipt, self.receipt, self.camera, self.image, expected_grass_tuning=expected)
+
+    def test_grass_tuning_paths_info_and_duplicates_are_guarded(self):
+        for arguments in (["--grass-tuning"], ["--grass-tuning="],
+                          ["--grass-tuning", "--grass"],
+                          ["--grass-tuning=a", "--grass-tuning", "b"]):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                TUNING.grass_tuning_argument(arguments)
+        path = self.root / "tuning.toml"
+        path.write_text("opaque to harness", encoding="utf-8")
+        target = self.root / "stage"
+        target.mkdir()
+        arguments, receipt = TUNING.freeze_grass_tuning([f"--grass-tuning={path}"], self.root / "engine", target)
+        self.assertEqual(arguments, ["--grass-tuning", str(target / "grass-tuning.toml")])
+        self.assertEqual(receipt["sha256"], TUNING.sha256(path))
+        bad = {**receipt, "sha256": "0" * 64}
+        with patch.object(TUNING.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(bad))):
+            with self.assertRaisesRegex(ValueError, "receipt hash differs"):
+                TUNING.engine_grass_tuning_receipt(self.root / "engine", target / "grass-tuning.toml")
+        with patch.object(TUNING.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps({**receipt, "accepted": False}))):
+            with self.assertRaisesRegex(ValueError, "rejected engine grass tuning"):
+                TUNING.engine_grass_tuning_receipt(self.root / "engine", target / "grass-tuning.toml")
+
+    def test_environment_grass_tuning_is_frozen_and_receipted(self):
+        config, engine, assets, source = self.make_campaign()
+        selected = self.root / "environment.toml"
+        selected.write_text("brightness = 0.6\n", encoding="utf-8")
+        output = self.root / "environment-campaign"
+        with patch.object(TUNING, "source_snapshot", return_value=source), patch.dict(
+                TUNING.os.environ, {"MUDCRAB_GRASS_TUNING": str(selected)}):
+            manifest = TUNING.capture(config, engine, assets, output)
+        for run in manifest["runs"]:
+            receipt = run["grass_tuning"]
+            self.assertIsNotNone(receipt)
+            self.assertEqual(Path(receipt["path"]).read_bytes(), selected.read_bytes())
+            self.assertEqual(run["command"].count("--grass-tuning"), 1)
+            index = run["command"].index("--grass-tuning")
+            self.assertEqual(run["command"][index + 1], receipt["path"])
+        for environment in self.environments:
+            self.assertNotIn("MUDCRAB_GRASS_TUNING", environment)
+        self.assertTrue(TUNING.validate_existing(output)["passed"])
+
     def test_failed_variant_keeps_earlier_gallery_and_failure_manifest(self):
         config_path, engine, assets, source = self.make_campaign()
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         config["variants"][1]["expect_receipt"] = {"color_grade": "record-srgb"}
         TUNING.write_json(config_path, config)
         output = self.root / "campaign"
         with patch.object(TUNING, "source_snapshot", return_value=source), self.assertRaises(ValueError):
             TUNING.capture(config_path, engine, assets, output)
-        manifest = json.loads((output / "manifest.json").read_text())
+        manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(manifest["passed"])
         self.assertIn("error", manifest["runs"][1])
         self.assertTrue((output / "comparison.html").is_file())

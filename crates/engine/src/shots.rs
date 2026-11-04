@@ -664,6 +664,11 @@ enum Phase {
 }
 
 impl ShotsRun {
+    /// ON/OFF capture pairs keep placement and suppress only grass draws.
+    pub(crate) fn grass_draws_off(&self) -> bool {
+        self.file.shots.get(self.shot).is_some_and(|s| s.name.ends_with("-off"))
+    }
+
     pub fn new(file: ShotsFile, output_dir: PathBuf, worldspace_id: u32) -> Self {
         Self {
             file,
@@ -818,6 +823,75 @@ impl ShotsRun {
     }
 }
 
+/// Capture evidence from the actual resident worker batches, deduplicated by species.
+/// Frustum counts refer to projected roots, not occlusion-tested pixels or primitive draws.
+fn grass_capture_counts(
+    run: &ShotsRun,
+    batches: &Query<&crate::grass::GrassBatch>,
+    config: &crate::config::EngineConfig,
+) {
+    let shot = &run.file.shots[run.shot];
+    let (sy, cy) = shot.yaw.to_radians().sin_cos();
+    let (sp, cp) = shot.pitch.to_radians().sin_cos();
+    let tx = (shot.hfov.to_radians() * 0.5).tan();
+    let ty = tx / run.file.aspect();
+    let (start, end) = config.effective_grass_fade();
+    let mut species = std::collections::BTreeMap::<u32, [u64; 4]>::new();
+    for batch in batches {
+        let counts = species.entry(batch.grass_id).or_default();
+        counts[0] += batch.instances.len() as u64;
+        for instance in batch.instances.iter() {
+            let p = [
+                batch.grid[0] as f32 * 4096.0 + f32::from(instance.position[0]) * 4096.0 / 65535.0,
+                batch.grid[1] as f32 * 4096.0 + f32::from(instance.position[1]) * 4096.0 / 65535.0,
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0,
+            ];
+            let [dx, dy, dz] = std::array::from_fn(|i| p[i] - shot.position[i]);
+            let horizontal = dx * sy + dy * cy;
+            let depth = horizontal * cp - dz * sp;
+            let right = dx * cy - dy * sy;
+            let up = horizontal * sp + dz * cp;
+            if depth <= 0.1 || right.abs() > depth * tx || up.abs() > depth * ty {
+                continue;
+            }
+            counts[1] += 1;
+            if depth <= 2100.0 {
+                counts[3] += 1;
+            }
+            let distance = dx.hypot(dy);
+            let fraction = if config.grass_enable_fade {
+                ((end - distance) / (end - start).max(1.0)).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            if (instance.candidate_slot() as f32) < fraction * batch.slot_count as f32 {
+                counts[2] += 1;
+            }
+        }
+    }
+    let value = serde_json::json!({"shot": shot.name, "grass_off": run.grass_draws_off(),
+        "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m"],
+        "visible_after_toggle": !run.grass_draws_off(), "wind_seconds": 1.0, "species": species});
+    let path = run.output_dir.join("grass-counts.jsonl");
+    let result = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "{value}"));
+    if let Err(error) = result {
+        error!(%error, "v3 grass count evidence write failed");
+    }
+}
+
+/// Capture resources, including the opt-in controls and resident species-count query.
+type GrassShotReadiness<'w, 's> = (
+    Res<'w, crate::config::EngineConfig>,
+    Option<Res<'w, crate::grass::GrassMetrics>>,
+    Option<Res<'w, crate::grass_render::GrassRenderMetrics>>,
+    Query<'w, 's, &'static crate::grass::GrassBatch>,
+    Option<Res<'w, crate::grass_render::GrassCaptureControls>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 /// Pose, settle and capture each view, including enabled grass generation and draw readiness.
 fn run_shots(
@@ -829,11 +903,7 @@ fn run_shots(
     mut camera: Query<(&mut Transform, &mut Projection), With<StreamingCamera>>,
     streaming: Res<StreamingMetrics>,
     renderer: Res<RendererMetrics>,
-    grass_readiness: (
-        Res<crate::config::EngineConfig>,
-        Option<Res<crate::grass::GrassMetrics>>,
-        Option<Res<crate::grass_render::GrassRenderMetrics>>,
-    ),
+    grass_readiness: GrassShotReadiness<'_, '_>,
     mut exit: MessageWriter<AppExit>,
     profiler: Res<crate::profiling::ProfilingState>,
     uploads: Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
@@ -841,7 +911,7 @@ fn run_shots(
     main_frame: Res<bevy::diagnostic::FrameCount>,
     transfers: Res<crate::capture_frame::TransferReadiness>,
 ) {
-    let (config, grass, grass_renderer) = grass_readiness;
+    let (config, grass, grass_renderer, grass_batches, controls) = grass_readiness;
     // Borrowed once: the shot is taken from the file without cloning it, and the arms below still
     // write the run's other fields, which the borrow checker allows field by field.
     let run = &mut *run;
@@ -990,6 +1060,7 @@ fn run_shots(
                     );
                 }
                 run.window_size = Some((run.file.width, run.file.height));
+                if controls.as_ref().is_some_and(|c| c.capture) { grass_capture_counts(run,&grass_batches,&config); }
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
                     // The old image would be taken for this shot's, so the shot fails instead.
@@ -1041,6 +1112,7 @@ fn run_shots(
                     }
                     None => {}
                 }
+                if controls.as_ref().is_some_and(|c| c.capture) { grass_capture_counts(run,&grass_batches,&config); }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
                 run.note(line);
@@ -1137,6 +1209,7 @@ fn request_capture(
                         "requested_rotation_runtime_xyzw": rotation,
                         "requested_vertical_fov_radians": fov,
                         "captured_frame": receipt,
+                        "grass_tuning": receipt.grass_tuning,
                         "settle_counts": counts,
                         "timed_out": run.timed_out,
                         "image": path,

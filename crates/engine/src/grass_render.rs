@@ -53,6 +53,10 @@ use std::{
 
 pub struct GrassRenderPlugin;
 
+/// Deterministic ON/OFF controls for explicit shot capture runs.
+#[derive(Resource, Clone, Copy, Debug)]
+pub(crate) struct GrassCaptureControls { pub(crate) capture: bool }
+
 /// Capture readiness requires an issued main draw for every admitted primitive.
 #[derive(Resource, Default, Debug)]
 pub struct GrassRenderMetrics {
@@ -63,6 +67,11 @@ pub struct GrassRenderMetrics {
 impl Plugin for GrassRenderPlugin {
     /// Install grass extraction, preparation and render-phase systems.
     fn build(&self, app: &mut App) {
+        let config = app.world().resource::<crate::config::EngineConfig>();
+        let controls = GrassCaptureControls { capture: config.shots.is_some() };
+        let tuning = crate::grass_tuning::GrassTuningState::new(config.grass_tuning.clone());
+        app.insert_resource(tuning).insert_resource(controls)
+            .add_systems(Update, crate::grass_tuning::reload_grass_tuning);
         embedded_asset!(app, "shaders/grass.wgsl");
         let upload_budget = app
             .world()
@@ -92,6 +101,7 @@ impl Plugin for GrassRenderPlugin {
             return;
         };
         render_app
+            .insert_resource(controls)
             .add_render_command::<AlphaMask3d, DrawGrass>()
             .init_resource::<GrassInstanceBuffers>()
             .init_resource::<GrassQueuedEntities>()
@@ -197,6 +207,7 @@ struct GrassAttachmentProgress(usize);
 /// The immutable instance array is shared through extraction, never copied per frame.
 #[derive(Component, Clone)]
 struct GrassPrimitive {
+    suppress_draw: bool,
     instances: Arc<Vec<GrassInstance>>,
     mesh: Handle<Mesh>,
     texture: Handle<Image>,
@@ -235,6 +246,10 @@ struct GrassUniform {
     ambient: Vec4,
     uv_transform: Mat3,
     normal_params: Vec4,
+    tuning_light: Vec4,
+    tuning_surface: Vec4,
+    tuning_color: Vec4,
+    tuning_specular: Vec4,
 }
 
 /// A small, shared wind field; generated data, not an authored grass replacement.
@@ -480,6 +495,7 @@ fn attach_grass_primitives(
         while index < templates.len() && budget.spend() {
             let template = &templates[index];
             let primitive = GrassPrimitive {
+                suppress_draw: false,
                 instances: batch.instances.clone(),
                 mesh: template.mesh.clone(),
                 texture: template.texture.clone(),
@@ -511,6 +527,10 @@ fn attach_grass_primitives(
                     ambient: Vec4::ZERO,
                     uv_transform: template.uv_transform,
                     normal_params: template.normal_params,
+                    tuning_light: crate::grass_tuning::GrassTuning::default().as_uniforms()[0],
+                    tuning_surface: crate::grass_tuning::GrassTuning::default().as_uniforms()[1],
+                    tuning_color: crate::grass_tuning::GrassTuning::default().as_uniforms()[2],
+                    tuning_specular: crate::grass_tuning::GrassTuning::default().as_uniforms()[3],
                 },
             };
             commands.entity(entity).with_children(|parent| {
@@ -543,7 +563,10 @@ fn update_grass_uniforms(
     cameras: Query<(Entity, &GlobalTransform, Option<&GrassView>), With<StreamingCamera>>,
     mut primitives: Query<(&GlobalTransform, &mut GrassPrimitive)>,
     time: Res<Time>,
+    shots: Option<Res<crate::shots::ShotsRun>>,
+    controls: Option<Res<GrassCaptureControls>>,
     fade: Res<GrassFade>,
+    tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
     batches: Query<Option<&GrassAttached>, With<GrassBatch>>,
     mut metrics: ResMut<GrassRenderMetrics>,
@@ -558,20 +581,29 @@ fn update_grass_uniforms(
         .ok()
         .map(|(_, transform, _)| transform.translation());
     let mut all_drawn = true;
+    let capture = controls.as_ref().is_some_and(|c| c.capture);
     for (transform, mut primitive) in &mut primitives {
+        primitive.suppress_draw = capture && shots.as_ref().is_some_and(|run| run.grass_draws_off());
         primitive.uniform.world_from_cell = transform.to_matrix();
         primitive.uniform.model = primitive.model;
+        if let Some(tuning) = &tuning {
+            let [light, surface, color, specular] = tuning.effective.as_uniforms();
+            primitive.uniform.tuning_light = light;
+            primitive.uniform.tuning_surface = surface;
+            primitive.uniform.tuning_color = color;
+            primitive.uniform.tuning_specular = specular;
+        }
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            time.elapsed_secs_wrapped(),
+            if capture && shots.is_some() { 1.0 } else { time.elapsed_secs_wrapped() },
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
             primitive.uniform.ambient =
                 Vec4::from_array(ambient.color.to_linear().to_f32_array()) * ambient.brightness;
         }
-        all_drawn &= primitive.drawn.load(Ordering::Acquire)
+        all_drawn &= primitive.suppress_draw || primitive.drawn.load(Ordering::Acquire)
             || eye.is_some_and(|eye| visible_instance_count(&primitive, eye) == 0);
     }
     metrics.ready = eye.is_some()
@@ -582,6 +614,7 @@ fn update_grass_uniforms(
 
 #[derive(Resource)]
 struct GrassPipeline {
+    tuning: bool,
     shader: Handle<Shader>,
     view_layout: BindGroupLayoutDescriptor,
     batch_layout: BindGroupLayoutDescriptor,
@@ -589,17 +622,21 @@ struct GrassPipeline {
 }
 
 /// Load the grass shader and initialize its render pipeline resource.
-fn init_pipeline(mut commands: Commands, server: Res<AssetServer>) {
-    commands.insert_resource(GrassPipeline::new(load_embedded_asset!(
-        server.as_ref(),
-        "shaders/grass.wgsl"
-    )));
+fn init_pipeline(
+    mut commands: Commands,
+    server: Res<AssetServer>,
+) {
+    let mut pipeline =
+        GrassPipeline::new(load_embedded_asset!(server.as_ref(), "shaders/grass.wgsl"));
+    pipeline.tuning = true;
+    commands.insert_resource(pipeline);
 }
 
 impl GrassPipeline {
     /// Create grass view and batch layouts for the supplied shader.
     fn new(shader: Handle<Shader>) -> Self {
         Self {
+            tuning: true,
             shader,
             scene: None,
             view_layout: BindGroupLayoutDescriptor::new(
@@ -672,6 +709,9 @@ impl SpecializedMeshPipeline for GrassPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
         let mut defs = vec![];
+        if self.tuning {
+            defs.push("GRASS_TUNING".into());
+        }
         for (attribute, location, name) in [
             (Mesh::ATTRIBUTE_NORMAL, 1, "NORMAL"),
             (Mesh::ATTRIBUTE_UV_0, 2, "UV"),
@@ -1085,7 +1125,7 @@ fn visible_instance_count(data: &GrassPrimitive, eye_world: Vec3) -> usize {
     .clamp(0.0, 1.0);
     let limit = (fraction * data.slot_count as f32).ceil() as u32;
     data.instances
-        .partition_point(|instance| instance.slot < limit)
+        .partition_point(|instance| instance.candidate_slot() < limit)
 }
 
 struct DrawGrassInstances;
@@ -1109,6 +1149,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         let Some((data, gpu)) = item else {
             return RenderCommandResult::Skip;
         };
+        if data.suppress_draw { return RenderCommandResult::Skip; }
         let Some(mesh) = meshes.into_inner().get(&data.mesh) else {
             return RenderCommandResult::Skip;
         };
@@ -1354,7 +1395,7 @@ mod tests {
 
     /// Parse and validate the real shared shader coverage function for either MSAA variant.
     fn shader_coverage_samples(alpha: f32, cutoff: f32, width: f32, samples: u32) -> usize {
-        let shader = include_str!("shaders/grass.wgsl");
+        let shader = grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "d");
         let uniform = shader
             .split("struct Grass {")
             .nth(1)
@@ -1819,6 +1860,7 @@ mod tests {
     /// Build a synthetic primitive with shared instance data and draw proof.
     fn primitive() -> GrassPrimitive {
         GrassPrimitive {
+            suppress_draw: false,
             instances: batch().instances,
             mesh: Handle::default(),
             texture: Handle::default(),
@@ -1840,8 +1882,34 @@ mod tests {
                 ambient: Vec4::ONE,
                 uv_transform: Mat3::IDENTITY,
                 normal_params: Vec4::ZERO,
+                tuning_light: crate::grass_tuning::GrassTuning::default().as_uniforms()[0],
+                tuning_surface: crate::grass_tuning::GrassTuning::default().as_uniforms()[1],
+                tuning_color: crate::grass_tuning::GrassTuning::default().as_uniforms()[2],
+                tuning_specular: crate::grass_tuning::GrassTuning::default().as_uniforms()[3],
             },
         }
+    }
+
+    #[test]
+    /// Metadata must not disturb candidate ordering or CPU fade readiness.
+    fn grass_tuning_metadata_fade_uses_candidate_identity() {
+        let mut data = primitive();
+        data.instances = Arc::new(
+            [0, 1, 3]
+                .map(|slot| GrassInstance {
+                    slot: slot | (127 << 18) | (91 << 25),
+                    ..batch().instances[0]
+                })
+                .to_vec(),
+        );
+        assert_eq!(
+            visible_instance_count(&data, Vec3::new(-1500.0, 0.0, 0.0)),
+            2
+        );
+        assert_eq!(
+            visible_instance_count(&data, Vec3::new(-10000.0, 0.0, 0.0)),
+            0
+        );
     }
 
     #[test]
@@ -2055,7 +2123,7 @@ mod tests {
             let bytes = encoded.into_inner();
             assert_eq!(
                 bytes.len(),
-                352,
+                416,
                 "the attached GPU uniform must retain the authored texture transform"
             );
             // WGSL mat3 columns each occupy sixteen bytes in uniform storage.
@@ -2077,7 +2145,8 @@ mod tests {
 
         // Parse the actual shared shader declaration, rather than a second copy
         // of its fields, to check the CPU upload's member offset and total span.
-        let shader = include_str!("shaders/grass.wgsl");
+        let shader =
+            grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "tuning");
         let start = shader.find("struct Grass {").unwrap();
         let end = shader[start..].find("@group(").unwrap() + start;
         let module = wgpu::naga::front::wgsl::parse_str(&shader[start..end]).unwrap();
@@ -2090,6 +2159,28 @@ mod tests {
             panic!("grass shader uniform must be a structure");
         };
         assert_eq!(*span, GrassUniform::min_size().get() as u32);
+        let baseline =
+            grass_lighting_tests::shading_source(include_str!("shaders/grass.wgsl"), "d");
+        let baseline_start = baseline.find("struct Grass {").unwrap();
+        let baseline_end = baseline[baseline_start..].find("@group(").unwrap() + baseline_start;
+        let baseline_module =
+            wgpu::naga::front::wgsl::parse_str(&baseline[baseline_start..baseline_end]).unwrap();
+        let baseline_uniform = baseline_module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("Grass"))
+            .unwrap()
+            .1;
+        let wgpu::naga::TypeInner::Struct {
+            span: baseline_span,
+            ..
+        } = &baseline_uniform.inner
+        else {
+            panic!("baseline grass structure");
+        };
+        assert_eq!(*baseline_span, 368);
+        assert_eq!(*baseline_span + 64, *span);
+
         let transform = members
             .iter()
             .find(|member| member.name.as_deref() == Some("uv_transform"))

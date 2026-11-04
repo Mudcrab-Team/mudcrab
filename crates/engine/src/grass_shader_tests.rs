@@ -441,3 +441,39 @@ fn production_grass_validation_rejects_a_missing_shadow_function() {
         "unexpected failure: {error}"
     );
 }
+
+#[test]
+/// Compile every experimental branch against real Bevy imports, coverage and shadow filters.
+fn unlit_shadow_variants_validate_with_real_bevy() {
+    for definition in [
+        None,
+        Some("GRASS_SHADING_E"),
+        Some("GRASS_SHADING_F"),
+        Some("GRASS_TUNING"),
+    ] {
+        for attributes in 0..8 {
+            for scene in [false, true] {
+                for samples in [1, 4] {
+                    for tonemap in [false, true] {
+                        for filter in [
+                            "SHADOW_FILTER_METHOD_HARDWARE_2X2",
+                            "SHADOW_FILTER_METHOD_GAUSSIAN",
+                            "SHADOW_FILTER_METHOD_TEMPORAL",
+                        ] {
+                            let mut defs = definitions(scene, samples, attributes, tonemap);
+                            if let Some(definition) = definition {
+                                defs.insert(definition.into(), ShaderDefValue::Bool(true));
+                            }
+                            if scene {
+                                defs.remove("SHADOW_FILTER_METHOD_HARDWARE_2X2");
+                                defs.insert(filter.into(), ShaderDefValue::Bool(true));
+                            }
+                            let module = compose(SHADER, defs).unwrap_or_else(|error| panic!("{definition:?} scene={scene} samples={samples} tonemap={tonemap} filter={filter}:\n{error}"));
+                            check_contract(&module, scene);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

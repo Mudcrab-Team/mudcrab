@@ -78,6 +78,10 @@ mod skyrim_ini_grass_tests;
 
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
+    /// Optional local appearance settings; CLI overrides MUDCRAB_GRASS_TUNING.
+    pub grass_tuning: Option<PathBuf>,
+    /// Print effective grass settings as JSON and exit before creating the app.
+    pub grass_tuning_info: bool,
     /// Launch setting ownership, including accepted INI values and automatic grass coverage.
     pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
@@ -254,6 +258,8 @@ impl Default for EngineConfig {
     fn default() -> Self {
         let grass = shared::grass_settings::GrassSettings::default();
         Self {
+            grass_tuning: None,
+            grass_tuning_info: false,
             settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
             bug_report_dir: None,
@@ -418,6 +424,8 @@ Streaming:
 
 Grass (opt-in):
   --grass                              enable authored grass
+  --grass-tuning <path>                hot-reload appearance TOML (or MUDCRAB_GRASS_TUNING)
+  --grass-tuning-info <path>           print appearance provenance JSON; no window or GPU
   --grass-radius <cells>               generated cell radius (default: 2)
   --grass-uploads-per-frame <count>     species upload budget; 0 is unlimited (default: 2)
   --grass-density <scale>              density multiplier (default: 1)
@@ -803,7 +811,15 @@ impl EngineConfig {
     }
 
     pub fn from_env() -> Result<ConfigAction, ConfigError> {
-        Self::from_args(std::env::args().skip(1))
+        let mut action = Self::from_args(std::env::args().skip(1))?;
+        if let ConfigAction::Run(config) = &mut action
+            && config.grass_tuning.is_none()
+        {
+            config.grass_tuning = std::env::var_os("MUDCRAB_GRASS_TUNING")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from);
+        }
+        Ok(action)
     }
 
     /// Whether startup loads converted world data, including the streaming fixture's world.
@@ -970,6 +986,21 @@ impl EngineConfig {
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
                 "--grass" => grass_options.requested = true,
+                "--grass-tuning" => {
+                    config.grass_tuning = Some(PathBuf::from(take_raw(
+                        "--grass-tuning",
+                        "a grass appearance TOML path",
+                        args.next(),
+                    )?));
+                }
+                "--grass-tuning-info" => {
+                    config.grass_tuning = Some(PathBuf::from(take_raw(
+                        "--grass-tuning-info",
+                        "a grass appearance TOML path",
+                        args.next(),
+                    )?));
+                    config.grass_tuning_info = true;
+                }
                 "--grass-radius"
                 | "--grass-uploads-per-frame"
                 | "--grass-density"
@@ -1962,6 +1993,28 @@ mod tests {
         match EngineConfig::from_args(arguments.iter().map(|argument| (*argument).to_owned())) {
             Err(error) => error,
             Ok(action) => panic!("expected an error, got {action:?}"),
+        }
+    }
+
+    #[test]
+    /// Appearance files are opt-in and both CLI modes require a path without consuming flags.
+    fn grass_tuning_cli_selection_and_missing_paths() {
+        let defaults = run_config(&[]);
+        assert!(defaults.grass_tuning.is_none());
+        assert!(!defaults.grass_tuning_info);
+        let selected = run_config(&["--grass-tuning", "settings.toml"]);
+        assert_eq!(selected.grass_tuning, Some(PathBuf::from("settings.toml")));
+        assert!(!selected.grass_tuning_info);
+        let info = run_config(&["--grass-tuning-info", "receipt.toml"]);
+        assert_eq!(info.grass_tuning, Some(PathBuf::from("receipt.toml")));
+        assert!(info.grass_tuning_info);
+        for option in ["--grass-tuning", "--grass-tuning-info"] {
+            for args in [vec![option], vec![option, "--grass"]] {
+                assert!(matches!(
+                    parse_error(&args),
+                    ConfigError::InvalidValue { .. }
+                ));
+            }
         }
     }
 

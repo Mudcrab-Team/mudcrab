@@ -48,6 +48,17 @@ fn lighting_fixture_expression(
             .into_iter()
             .map(|value| value as u32 as f32)
             .collect(),
+        E::Unary {
+            op: wgpu::naga::UnaryOperator::Negate,
+            expr,
+        } => eval(*expr).into_iter().map(|v| -v).collect(),
+        E::Unary {
+            op: wgpu::naga::UnaryOperator::LogicalNot,
+            expr,
+        } => eval(*expr)
+            .into_iter()
+            .map(|v| f32::from(v == 0.0))
+            .collect(),
         E::Binary { op, left, right } => {
             let (left, right) = (eval(*left), eval(*right));
             let lanes = left.len().max(right.len());
@@ -62,6 +73,9 @@ fn lighting_fixture_expression(
                         B::Multiply => a * b,
                         B::Divide => a / b,
                         B::And => ((a as u32) & (b as u32)) as f32,
+                        B::Equal => u32::from(a == b) as f32,
+                        B::LogicalAnd => u32::from(a != 0.0 && b != 0.0) as f32,
+                        B::LogicalOr => u32::from(a != 0.0 || b != 0.0) as f32,
                         B::NotEqual => u32::from(a != b) as f32,
                         B::Greater => u32::from(a > b) as f32,
                         _ => panic!("unsupported lighting operator: {op:?}"),
@@ -82,9 +96,39 @@ fn lighting_fixture_expression(
                 *reject
             })
         }
-        E::Math { fun, arg, arg1, .. } => {
+        E::Math {
+            fun,
+            arg,
+            arg1,
+            arg2,
+            ..
+        } => {
             let a = eval(*arg);
             match fun {
+                M::Sqrt => a.into_iter().map(f32::sqrt).collect(),
+                M::Pow => {
+                    let b = eval(arg1.unwrap());
+                    a.into_iter()
+                        .enumerate()
+                        .map(|(i, v)| v.powf(b[i % b.len()]))
+                        .collect()
+                }
+                M::Length => vec![a.iter().map(|v| v * v).sum::<f32>().sqrt()],
+                M::Mix | M::Clamp => {
+                    let b = eval(arg1.unwrap());
+                    let c = eval(arg2.unwrap());
+                    let lanes = a.len().max(b.len()).max(c.len());
+                    (0..lanes)
+                        .map(|i| {
+                            let (x, y, z) = (a[i % a.len()], b[i % b.len()], c[i % c.len()]);
+                            if *fun == M::Mix {
+                                x * (1.0 - z) + y * z
+                            } else {
+                                x.clamp(y, z)
+                            }
+                        })
+                        .collect()
+                }
                 M::Abs => a.into_iter().map(f32::abs).collect(),
                 M::Normalize => {
                     let length = a.iter().map(|value| value * value).sum::<f32>().sqrt();
@@ -266,7 +310,38 @@ fn shader_lighting_fixture(
     vertex_lighting: bool,
     shadow: f32,
 ) -> Vec<f32> {
-    let shader = include_str!("shaders/grass.wgsl");
+    shader_shading_fixture(normal, vertex_normal, vertex_lighting, shadow, "d")
+}
+
+/// Execute a selected experiment branch from the actual production WGSL.
+fn shader_shading_fixture(
+    normal: [f32; 3],
+    vertex_normal: [f32; 3],
+    vertex_lighting: bool,
+    shadow: f32,
+    mode: &str,
+) -> Vec<f32> {
+    shader_shading_fixture_with_tuning(
+        normal,
+        vertex_normal,
+        vertex_lighting,
+        shadow,
+        mode,
+        crate::grass_tuning::GrassTuning::default().as_uniforms(),
+    )
+}
+
+/// Run the real fragment body with uniform values, bypassing only texture/GPU sampling.
+fn shader_shading_fixture_with_tuning(
+    normal: [f32; 3],
+    vertex_normal: [f32; 3],
+    vertex_lighting: bool,
+    shadow: f32,
+    mode: &str,
+    tuning: [bevy::prelude::Vec4; 4],
+) -> Vec<f32> {
+    let selected = shading_source(include_str!("shaders/grass.wgsl"), mode);
+    let shader = selected.as_str();
     let vertex = shader
         .split_once("out.light =")
         .expect("vertex lighting assignment")
@@ -293,9 +368,22 @@ fn shader_lighting_fixture(
         .replace("input.normal", "normal")
         .replace("input.light", "vertex_light(vertex_normal)")
         .replace("base.rgb", "vec3<f32>(0.25,0.5,0.75)")
-        .replace("out.color =", "return");
+        .replace("out.color =", "return")
+        .replace(
+            "tuning_sheen(input.normal,input.world_position.xyz)",
+            "vec3(0.0)",
+        )
+        .replace("tuning_sheen(normal,input.world_position.xyz)", "vec3(0.0)")
+        .replace("input.root_fraction", "0.4");
+    let helpers = if mode == "tuning" {
+        ["tuning_diffuse", "tuning_illumination", "tuning_finish"]
+            .map(|name| lighting_fixture_function(shader, name).unwrap())
+            .join("\n")
+    } else {
+        String::new()
+    };
     let source = format!(
-        "{}\nfn vertex_light(normal:vec3<f32>) -> vec3<f32> {{ return {}; }}\n\
+        "{helpers}\n{}\nfn vertex_light(normal:vec3<f32>) -> vec3<f32> {{ return {}; }}\n\
          fn fixture(normal:vec3<f32>, vertex_normal:vec3<f32>, flags:f32, synthetic_shadow:f32) -> vec4<f32> {{ {} }}",
         lighting_fixture_preprocess(lighting_fixture_function(shader, "lighting").expect("lighting function"), false), vertex.replace("out.normal", "normal"), fragment,
     )
@@ -304,6 +392,24 @@ fn shader_lighting_fixture(
     .replace("grass.ambient.rgb", "vec3<f32>(0.25,0.5,1.0)")
     .replace("grass.absolute_grid.z", "flags")
     .replace("view.exposure", "2.0");
+    let mut source = source;
+    for (name, value) in [
+        "tuning_light",
+        "tuning_surface",
+        "tuning_color",
+        "tuning_specular",
+    ]
+    .into_iter()
+    .zip(tuning)
+    {
+        source = source.replace(
+            &format!("grass.{name}"),
+            &format!(
+                "vec4<f32>({:?},{:?},{:?},{:?})",
+                value.x, value.y, value.z, value.w
+            ),
+        );
+    }
     lighting_fixture_run(
         &source,
         &[
@@ -471,7 +577,7 @@ fn g3_disabled_shadow_visibility_returns_unshadowed_light() {
 #[test]
 /// Decode actual packed brightness without allowing the unit maximum to exceed one.
 fn g3_brightness_byte_decodes_as_unit_range() {
-    let shader = include_str!("shaders/grass.wgsl");
+    let shader = shading_source(include_str!("shaders/grass.wgsl"), "d");
     let expression = shader
         .split_once("let brightness =")
         .unwrap()
@@ -487,6 +593,273 @@ fn g3_brightness_byte_decodes_as_unit_range() {
             (actual - expected).abs() < 0.000001,
             "packed {packed}: expected {expected}, got {actual}"
         );
+    }
+}
+
+/// Resolve only experiment directives, retaining every baseline shader byte otherwise.
+pub(super) fn shading_source(source: &str, mode: &str) -> String {
+    let mut active = true;
+    let mut parents = Vec::new();
+    let mut result = String::new();
+    for line in source.split_inclusive('\n') {
+        match line.trim() {
+            "#ifdef GRASS_SHADING_E" | "#ifdef GRASS_SHADING_F" | "#ifdef GRASS_TUNING" => {
+                parents.push(active);
+                active &= if line.contains("SHADING_E") {
+                    mode == "e"
+                } else if line.contains("SHADING_F") {
+                    mode == "f"
+                } else {
+                    mode == "tuning"
+                };
+            }
+            "#else" if !parents.is_empty() => {
+                active = *parents.last().unwrap() && !active;
+            }
+            "#endif" if !parents.is_empty() => active = parents.pop().unwrap(),
+            _ if active => result.push_str(line),
+            _ => {}
+        }
+    }
+    assert!(parents.is_empty());
+    result
+}
+
+#[test]
+/// D keeps the literal one-sided lighting on known inputs, including partial shadows.
+fn unlit_shadow_d_control_keeps_lambert() {
+    for vertex in [false, true] {
+        assert_lighting_rgb(
+            &shader_shading_fixture([0.0, 0.0, 2.0], [0.0, 0.0, 3.0], vertex, 0.5, "d"),
+            [0.15915494, 0.63661975, 1.6711269],
+        );
+    }
+}
+
+#[test]
+/// E lights away-facing blades as sun-facing, without changing ambient/exposure/shadow.
+fn unlit_shadow_e_removes_only_sun_angle() {
+    for vertex in [false, true] {
+        for normal in [[0.0, 0.0, -2.0], [0.0, 3.0, 0.0], [0.0, 0.0, 2.0]] {
+            assert_lighting_rgb(
+                &shader_shading_fixture(normal, [0.0, 0.0, -3.0], vertex, 0.5, "e"),
+                [0.15915494, 0.63661975, 1.6711269],
+            );
+            assert_lighting_rgb(
+                &shader_shading_fixture(normal, [0.0, 0.0, -3.0], vertex, 0.0, "e"),
+                [0.039788735, 0.15915494, 0.47746483],
+            );
+        }
+    }
+}
+
+#[test]
+/// F at full visibility returns base RGB with no lighting, exposure or Lambert factor.
+fn unlit_shadow_f_fully_lit_is_base_rgb() {
+    for vertex in [false, true] {
+        assert_lighting_rgb(
+            &shader_shading_fixture([0.0, 0.0, -2.0], [0.0, 3.0, 0.0], vertex, 1.0, "f"),
+            [0.25, 0.5, 0.75],
+        );
+    }
+}
+
+#[test]
+/// F interpolates the fixed reference ratio, including full and partial occlusion.
+fn unlit_shadow_f_shadow_ratio_is_reference_derived() {
+    for vertex in [false, true] {
+        for (shadow, expected) in [
+            (0.0, [0.17, 0.34, 0.51]),
+            (0.5, [0.21, 0.42, 0.63]),
+            (1.0, [0.25, 0.5, 0.75]),
+        ] {
+            assert_lighting_rgb(
+                &shader_shading_fixture([0.0, 0.0, -2.0], [0.0, 3.0, 0.0], vertex, shadow, "f"),
+                expected,
+            );
+        }
+    }
+}
+
+/// Execute an extracted production tuning helper, never a copied implementation.
+fn tuning_helper(name: &str, arguments: &[Vec<f32>]) -> Vec<f32> {
+    let shader = include_str!("shaders/grass.wgsl");
+    let helper = lighting_fixture_function(shader, name).expect("production tuning helper");
+    let source = helper.replacen(&format!("fn {name}("), "fn fixture(", 1);
+    lighting_fixture_run(&source, arguments)
+}
+
+#[test]
+/// Separate factors remain tunable even when their old combined byte is zero.
+fn grass_tuning_independent_land_and_range() {
+    let run = |tint, range| {
+        tuning_helper(
+            "tuning_brightness",
+            &[vec![0.0], vec![0.4], vec![-0.5], vec![tint], vec![range]],
+        )[0]
+    };
+    assert_eq!(run(1.0, 1.0), 0.0);
+    assert_eq!(run(0.0, 0.0), 1.0);
+    assert!((run(1.0, 0.0) - 0.4).abs() < 1e-6);
+    assert!((run(1.0, 0.5) - 0.1).abs() < 1e-6);
+    for byte in 0..=255 {
+        let original = byte as f32 / 255.0;
+        assert_eq!(
+            tuning_helper(
+                "tuning_brightness",
+                &[vec![original], vec![0.4], vec![-0.5], vec![1.0], vec![1.0]]
+            )[0],
+            original
+        );
+    }
+}
+
+#[test]
+/// Angle, wrap and backlight independently affect literal perpendicular/back normals.
+fn grass_tuning_angle_wrap_backlight() {
+    let run = |normal, weight, wrap, back| {
+        tuning_helper(
+            "tuning_diffuse",
+            &[
+                normal,
+                vec![0.0, 0.0, 4.0],
+                vec![1.0, 1.0, 1.0, weight],
+                vec![wrap, 1.0, 0.0, back],
+            ],
+        )[0]
+    };
+    assert_eq!(run(vec![0.0, 2.0, 0.0], 1.0, 0.0, 0.0), 0.0);
+    assert_eq!(run(vec![0.0, 2.0, 0.0], 0.0, 0.0, 0.0), 1.0);
+    assert!((run(vec![0.0, 2.0, 0.0], 1.0, 0.5, 0.0) - 1.0 / 3.0).abs() < 1e-6);
+    assert_eq!(run(vec![0.0, 0.0, -2.0], 1.0, 0.0, 0.25), 0.25);
+}
+
+#[test]
+/// Ambient, sun, strength and floor use independently calculated scalar results.
+fn grass_tuning_light_and_shadow_controls() {
+    let run = |ambient, sun, strength, floor, mode| {
+        tuning_helper(
+            "tuning_illumination",
+            &[
+                vec![2.0; 3],
+                vec![6.0; 3],
+                vec![0.25],
+                vec![std::f32::consts::PI],
+                vec![1.0, ambient, sun, 1.0],
+                vec![0.0, strength, floor, 0.0],
+                vec![0.0, 0.5, mode, 0.0],
+            ],
+        )
+    };
+    assert_eq!(run(1.0, 1.0, 1.0, 0.0, 0.0), vec![3.5; 3]);
+    assert_eq!(run(0.5, 2.0, 1.0, 0.0, 0.0), vec![4.0; 3]);
+    assert_eq!(run(1.0, 1.0, 0.0, 0.0, 0.0), vec![8.0; 3]);
+    for value in run(1.0, 1.0, 0.5, 0.0, 0.0) {
+        assert!((value - 5.75).abs() < 1e-6);
+    }
+    assert!((run(9.0, 8.0, 1.0, 0.68, 1.0)[0] - 0.76).abs() < 1e-6);
+}
+
+#[test]
+/// Final brightness, luminance saturation and base darkening each have literal targets.
+fn grass_tuning_final_color_controls() {
+    let run = |brightness, saturation, root, dark| {
+        tuning_helper(
+            "tuning_finish",
+            &[
+                vec![0.2, 0.4, 0.8],
+                vec![root],
+                vec![brightness, 1.0, 1.0, 1.0],
+                vec![saturation, 1.0, 1.0, dark],
+            ],
+        )
+    };
+    assert_eq!(run(1.0, 1.0, 0.0, 0.0), vec![0.2, 0.4, 0.8]);
+    assert_eq!(run(0.5, 1.0, 0.0, 0.0), vec![0.1, 0.2, 0.4]);
+    for value in run(1.0, 0.0, 0.0, 0.0) {
+        assert!((value - 0.38636).abs() < 1e-6);
+    }
+    assert_eq!(run(1.0, 1.0, 1.0, 0.5), vec![0.1, 0.2, 0.4]);
+}
+
+#[test]
+/// At normal incidence GGX has a closed-form reference; grazing/back sun stays finite.
+fn grass_tuning_ggx_roughness() {
+    let run = |roughness, ndl| {
+        tuning_helper(
+            "tuning_ggx",
+            &[vec![1.0], vec![1.0], vec![ndl], vec![1.0], vec![roughness]],
+        )[0]
+    };
+    // alpha=.25, D=16/pi, V=.25, F=.04, NdotL=1.
+    assert!((run(0.5, 1.0) - 0.05092958).abs() < 1e-6);
+    assert!((run(1.0, 1.0) - 0.0031830988).abs() < 1e-6);
+    assert_eq!(run(0.5, 0.0), 0.0);
+    assert!(run(0.0, 1.0).is_finite());
+}
+
+#[test]
+/// Default file D and E/F presets execute the same fragment math as retained switches.
+fn grass_tuning_presets_match_original_production_branches() {
+    use crate::grass_tuning::{GrassMode, GrassTuning};
+    for (mode, preset) in [
+        ("d", GrassMode::D),
+        ("e", GrassMode::E),
+        ("f", GrassMode::F),
+    ] {
+        for vertex in [false, true] {
+            for normal in [[0.0, 0.0, 2.0], [0.0, 3.0, 0.0], [0.0, 0.0, -2.0]] {
+                for shadow in [0.0, 0.375, 1.0] {
+                    let original =
+                        shader_shading_fixture(normal, [0.0, 0.0, 3.0], vertex, shadow, mode);
+                    let tuned = shader_shading_fixture_with_tuning(
+                        normal,
+                        [0.0, 0.0, 3.0],
+                        vertex,
+                        shadow,
+                        "tuning",
+                        GrassTuning::preset(preset).as_uniforms(),
+                    );
+                    assert_lighting_rgb(&tuned, original[..3].try_into().unwrap());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+/// Execute production sheen strength and mode bypass with the actual GGX helper.
+fn grass_tuning_specular_strength_and_f_bypass() {
+    let shader = include_str!("shaders/grass.wgsl");
+    let ggx = lighting_fixture_function(shader, "tuning_ggx").unwrap();
+    let sheen = lighting_fixture_function(shader, "tuning_sheen")
+        .unwrap()
+        .replace("grass.tuning_specular.x", "strength")
+        .replace("grass.tuning_specular.y", "0.5")
+        .replace("grass.tuning_specular.z", "mode_f")
+        .replace("grass.sun_direction.xyz", "vec3(0.0,0.0,2.0)")
+        .replace("grass.sun_color.rgb", "vec3(1.5,3.0,5.0)")
+        .replace("grass.tuning_light.z", "2.0")
+        .replace("view.world_position", "vec3(0.0,0.0,3.0)")
+        .replace("view.exposure", "2.0")
+        .replace(
+            "world:vec3<f32>)",
+            "world:vec3<f32>, strength:f32, mode_f:f32)",
+        );
+    let source = format!(
+        "{ggx}\n{sheen}\nfn fixture(strength:f32, mode_f:f32) -> vec3<f32> {{ return tuning_sheen(vec3(0.0,0.0,1.0),vec3(0.0),strength,mode_f); }}"
+    );
+    assert_eq!(
+        lighting_fixture_run(&source, &[vec![0.0], vec![0.0]]),
+        vec![0.0; 3]
+    );
+    assert_eq!(
+        lighting_fixture_run(&source, &[vec![1.0], vec![1.0]]),
+        vec![0.0; 3]
+    );
+    let color = lighting_fixture_run(&source, &[vec![0.5], vec![0.0]]);
+    for (actual, expected) in color.into_iter().zip([0.15278874, 0.305_577_5, 0.5092958]) {
+        assert!((actual - expected).abs() < 1e-6);
     }
 }
 

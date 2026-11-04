@@ -57,6 +57,8 @@ pub(crate) struct CaptureFrame {
     /// Absent only in harnesses that build a world without the engine's startup resources.
     pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
+    /// Tuning values sampled in the same extraction as the photographed frame.
+    pub grass_tuning: Option<serde_json::Value>,
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -272,6 +274,7 @@ fn extract_capture_frames(
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
         Option<Res<crate::visual_profile::VisualProfile>>,
+        Option<Res<crate::grass_tuning::GrassTuningState>>,
     )>,
 ) {
     let (
@@ -297,6 +300,7 @@ fn extract_capture_frames(
         tone_source,
         grade_overrides,
         visual_profile,
+        grass_tuning,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -342,6 +346,7 @@ fn extract_capture_frames(
             pending_specializations: None,
             work,
             visual_profile: visual_profile.as_deref().copied(),
+            grass_tuning: grass_tuning.as_ref().map(|state| state.receipt()),
             grading: capture_grade_with_overrides(
                 grade_source.as_deref(),
                 tone_source.as_deref(),
@@ -549,6 +554,26 @@ mod tests {
         assert!(receipt.work.is_quiet(), "{}", receipt.work.describe());
     }
 
+    /// Screenshot extraction samples the resource once; later live edits cannot relabel it.
+    #[test]
+    fn capture_receipt_freezes_tuning_resource_at_extraction() {
+        let (mut render, ticket) = grass_capture_world(true, Some((true, 0)), Some((true, 0)));
+        let mut tuning = crate::grass_tuning::GrassTuningState::new(None);
+        tuning.effective.brightness = 0.625;
+        let expected = tuning.receipt();
+        render
+            .resource_mut::<bevy::render::MainWorld>()
+            .insert_resource(tuning);
+        render.run_schedule(ExtractSchedule);
+        render
+            .resource_mut::<bevy::render::MainWorld>()
+            .resource_mut::<crate::grass_tuning::GrassTuningState>()
+            .effective
+            .brightness = 1.75;
+        let receipt = finish_grass_capture(&mut render, &ticket);
+        assert_eq!(receipt.grass_tuning, Some(expected));
+    }
+
     /// Independent CPU and render failures accumulate even when both report readiness.
     #[test]
     fn g3_capture_receipt_sums_grass_failures() {
@@ -702,6 +727,9 @@ mod tests {
             terrain_gauges: default(),
             terrain_coverage: default(),
             visual_profile: None,
+            grass_tuning: Some(
+                serde_json::json!({"path": "first.toml", "sha256": "first", "effective": {"brightness": 0.6}}),
+            ),
             grading: capture_grade(
                 Some(&source),
                 None,
@@ -726,6 +754,9 @@ mod tests {
         let mut later = record;
         later.main_frame = 99;
         later.render_frame = 98;
+        later.grass_tuning = Some(
+            serde_json::json!({"path": "later.toml", "sha256": "later", "effective": {"brightness": 1.0}}),
+        );
         later.grading = Some(CaptureGrade {
             color_grade: "record-srgb".into(),
             visual_preset: "vivid".into(),
@@ -740,6 +771,10 @@ mod tests {
         world.run_system_once(finalize_capture_frames).unwrap();
         let captured = validate_receipt(&ticket, [1.0; 3]).unwrap();
         assert_eq!(captured.render_frame, 2);
+        assert_eq!(
+            captured.grass_tuning.unwrap()["effective"]["brightness"],
+            0.6
+        );
         let captured_grade = captured.grading.unwrap();
         assert_eq!(captured_grade.color_grade, "snapshot-srgb");
         assert_eq!(captured_grade.visual_preset, "cool-gray");

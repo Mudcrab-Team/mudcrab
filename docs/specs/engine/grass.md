@@ -317,3 +317,113 @@ GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
 project exceptions). Its alpha-weighted wind supports this interpretation; its
 feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
 and lighting formulas here remain native MudCrab choices.
+S=0.68 is the rounded median (0.6799352908) of three same-view shaded/sunlit
+grass linear screenshot luminance ratios from the existing Skyrim references:
+Falkreath 2=0.83136, Rift 1=0.67994, Rift 2=0.33515. Sampling uses spatial
+shade/open-light regions and relative ON/OFF contrast masks, then IEC sRGB decode
+and Rec.709 luminance. Threshold/box sensitivity is 0.596 to 0.760; mixed
+materials, partial shade, compositing and tone mapping make S provisional.
+No engine outcome was used to choose it.
+
+An explicit selection also enables the retained scratch multi-shot controls:
+wind=1s, draw-only `-off` poses, and species/root counters. With the switch unset,
+normal captures keep G4 wind and drawing behavior. These controls and shading
+variants are local experiments, not production adoption. GPU captures and visual
+comparison are pending; CPU tests do not establish image equality or native parity.
+
+
+## Live grass tuning (local experiment)
+
+Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/d.toml`
+(or `MUDCRAB_GRASS_TUNING`). `--grass-tuning-info <path>` prints its resolved
+settings. The file is polled approximately once per second. Valid edits update
+uniforms, with no regeneration or shader specialization. Invalid edits retain
+the last good settings. Unknown keys warn; finite values outside the ranges
+below clamp with a warning. A selected file enables `GRASS_TUNING` once at
+startup and takes precedence over the older shading switch. Without a file,
+the source-selected D shader remains byte-identical to the retained control.
+
+Write `mode = "d"`, `"e"`, or `"f"` before optional scalar overrides. D supplies
+all defaults below; E sets `sun_angle_weight=0`; F sets `shadow_floor=.68` and
+selects unlit visibility. Mode edits use the same uniform path as scalar edits.
+
+For normalized authored blade normal N and sun direction L, let c=dot(N,L).
+The direct response is `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight)
++ backlight*max(-c,0)`. GRAS vertex-lighting retains the interpolated vertex
+response; otherwise the fragment evaluates its interpolated normal.
+Shadow visibility V is `shadow_floor + (1-shadow_floor) *
+mix(1,native_shadow,shadow_strength)`. D/E illumination is
+`(ambient*ambient_strength + sun*direct_response*sun_strength*V)*exposure/pi`.
+F illumination is simply V, ignoring ambient, sun and exposure. Alpha coverage,
+terrain shadow filtering and display tone mapping retain the production paths.
+
+| Knob | Default | Accepted range | Effect |
+| --- | --- | --- | --- |
+| brightness | 1 | 0..8 | Final linear HDR RGB multiplier |
+| ambient_strength | 1 | 0..8 | Ambient/sky multiplier (D/E) |
+| sun_strength | 1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
+| sun_angle_weight | 1 | 0..1 | Interpolate between sun-facing and wrapped normal response |
+| wrap | 0 | 0..1 | Wrapped Lambert response above |
+| shadow_strength | 1 | 0..1 | Interpolate native visibility toward no shadow |
+| shadow_floor | 0 | 0..1 | Minimum visibility; F preset .68 |
+| backlight | 0 | 0..1 | Add response from away-facing authored normals |
+| specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
+| specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
+| saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
+| vclr_tint_strength | 1 | 0..1 | LAND luminance strength |
+| color_range_strength | 1 | 0..1 | GRAS color-range variation strength |
+| root_darkening | 0 | 0..1 | Multiply by `1-root_darkening*clamp(original_uv.y,0,1)` |
+
+The last darkening convention assumes the root lies at authored UV.y=1 and
+leaves meshes without UVs unaffected; arbitrary modded UV layouts may differ.
+Texture transforms do not move this root fraction. Saturation uses
+`max(mix(dot(HDR,vec3(.2126,.7152,.0722)),HDR,saturation),0)` before root
+and brightness multiplication. LAND's existing encoded-input luminance retains
+`.299,.587,.114`; these are separate operations in different color spaces.
+
+Sheen uses the isotropic equations inspected in Bevy 0.19's local
+`pbr_lighting.wgsl`: `D_GGX`, `V_SmithGGXCorrelated`, and `F_Schlick`.
+For `alpha=max(roughness^2,.007921)`, `k=alpha/(1-NdotH^2+(NdotH*alpha)^2)`,
+`D=k^2/pi`; `Vsmith=.5/(NdotL*sqrt((NdotV-alpha^2*NdotV)*NdotV+alpha^2)
++ NdotV*sqrt((NdotL-alpha^2*NdotL)*NdotL+alpha^2))`;
+F=.04+.96*(1-VdotH)^5. The added HDR sheen is
+`sun*sun_strength*specular_strength*D*Vsmith*F*NdotL*exposure*V`.
+Dot products clamp to their nonnegative domains; NdotV and visibility's
+denominator have epsilon guards. Strength zero bypasses sheen, as does F mode.
+This is a direct dielectric highlight, without an environment reflection probe.
+
+The old per-instance brightness byte is preserved exactly. With both tint and
+range strengths at one the shader uses that byte directly. Otherwise it uses
+`clamp(mix(1,LAND,tint_strength)*mix(1,R,range_strength),0,1)`, where
+`R=1-2*GRAS_color_range+2*random*GRAS_color_range` includes negative values.
+Tuning-only generation encodes LAND and R in the high 14 bits of the slot word:
+7-bit UNORM LAND (maximum error 1/254) and 7-bit signed-range R (error 1/127).
+The low 18 bits hold every candidate at supported spacing >=8 (maximum
+262144 candidates). `GrassInstance::candidate_slot()` decodes CPU identity;
+both CPU and GPU fading ignore metadata. No sidecar allocation or instance-size
+increase occurs, and no-file generation retains every packed byte.
+
+To tune live, launch the engine with the usual asset/world arguments plus
+`--grass --grass-tuning docs/examples/grass-tuning/darker-start.toml` and edit
+that file while it runs. Begin with brightness, then ambient/sun strength,
+then angle/wrap and shadows; adjust tint/saturation and roots last, and add
+sheen only if needed. `darker-start.toml` uses brightness .59 from the provisional
+rounded luminance ratio .065/.110. This is a starting hypothesis; tone mapping,
+scene differences and local shadows prevent it from proving a Skyrim match.
+
+## Default appearance and tuning
+
+Without a file, grass uses flat-b: sun angle weight 0, sun strength 0.1,
+shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.0.
+Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
+pipeline and packed tint metadata are active with or without a tuning file.
+`--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
+once per elapsed second by content hash. Invalid or missing files keep the last
+good settings and warn. A valid empty file resets to defaults. Inputs are limited
+to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before app
+or GPU creation. Captures freeze the accepted hash and effective settings with
+the actual frame; they do not reread the file in the callback.
+
+Explicit `--shots` runs freeze wind time and allow `-on`/`-off` shot-name pairs
+to suppress grass draws while retaining placement and readiness accounting.
+No experimental gamma or alternate placement switches are included.
