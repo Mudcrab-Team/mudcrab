@@ -18,8 +18,8 @@ for its scene, results and source-level mechanisms. No graphics features were di
 2. On Metal, capture a short settled **Metal System Trace**. Compare CPU submission, GPU execution,
    drawable acquisition and presentation on the same timeline before calling the scene CPU- or
    GPU-bound. Record profiler overhead separately. GPU stages and CPU work can overlap; do not add
-   their durations as a serial frame budget. Keep traces short and monitor free space: even a few
-   seconds can produce several GiB of temporary data.
+   their durations as a serial frame budget. Keep traces short and monitor free space: short captures
+   can produce large temporary files.
 3. Use engine spans and Samply 0.13.1 with Firefox Profiler to identify CPU functions in the same
    scene. Select the settled interval and inspect the render thread and worker threads. Distinguish
    sampled CPU time from off-CPU waits and unresolved symbols. For GPU shader or material costs,
@@ -39,7 +39,7 @@ as GPU costs. For Bevy 0.20, recheck the timestamp implementation and diagnostic
 this guidance. Metal Performance HUD encoder timing also conflicts with application-owned counter
 sample buffers. For that method, use the measurement-only `native-hud-counters.patch` and its
 [capture steps](../../scripts/profiling/README.md#controls-and-optional-capture). Its instrumented result is
-not an unprofiled FPS comparison. The patch applies to `f9653bfd`, not current main; run
+not an unprofiled FPS comparison. The patch applies to `f9653bfd`, not `64108a1c` or `5840f49f`; run
 `git apply --check` on the chosen source and update the patch before using it on a newer revision.
 The [native Metal investigation](../research/metal-native-timeline-20261009.md)
 explains the counter restriction and the earlier measurements.
