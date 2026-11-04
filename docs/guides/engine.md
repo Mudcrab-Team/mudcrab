@@ -35,6 +35,12 @@ cargo run --release -p engine --bin engine -- --assets modern_assets --clusters
 - `--cluster-error-pixels <px>` and `--cluster-terrain-error-pixels <px>` set the object and
   terrain cluster error thresholds (default 1; above 0, at most 16). Both are refused without
   `--clusters` on the command line, including for a pack whose manifest selects the package.
+- `--far-stock-reach <cells|unbounded>` bounds how far from the camera an owned-cluster run
+  still streams stock models for static scenery the clusters cannot own (default 12 cells, never
+  below `--stream-radius`). Each such stock scene keeps CPU mesh and texture copies, and on Tamriel
+  the whole-worldspace set is tens of thousands of references, so it is a candidate for the memory
+  use of an owned-cluster run on a 24 GB machine (not yet measured). `unbounded` restores the
+  whole-worldspace reach. Refused without `--clusters` on the command line.
 
 The adapter must expose the `INDIRECT_FIRST_INSTANCE` feature and allow at least 8 storage buffers
 per shader stage, 5 bind groups and 65,535 compute workgroups per dimension; its storage buffer and

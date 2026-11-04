@@ -1754,6 +1754,7 @@ fn owned_statics_desire_refused_models_beyond_stream_and_terrain_reach() {
     {
         let mut config = app.world_mut().resource_mut::<EngineConfig>();
         config.cluster_own_statics = true;
+        config.far_stock_reach = None;
         config.stream_radius = 0;
     }
     app.world_mut().resource_mut::<RenderOrigin>().0 = grid(key) + IVec2::new(200, 0);
@@ -1861,6 +1862,7 @@ fn owned_statics_desire_complete_initial_material_refusal_beyond_grid_with_exact
     {
         let mut config = app.world_mut().resource_mut::<EngineConfig>();
         config.cluster_own_statics = true;
+        config.far_stock_reach = None;
         config.stream_radius = 0;
     }
     app.world_mut().resource_mut::<RenderOrigin>().0 = grid(*key) + IVec2::new(200, 0);

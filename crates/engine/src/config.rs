@@ -85,6 +85,10 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Cells around the camera in which an owned-cluster run still streams stock models for
+    /// static scenery the clusters cannot own. `None` reaches the whole worldspace. Never
+    /// narrower than `stream_radius`; only read when `cluster_own_statics` is set.
+    pub far_stock_reach: Option<i32>,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
@@ -246,6 +250,7 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            far_stock_reach: Some(DEFAULT_FAR_STOCK_REACH),
             sun_shadow_distance_limit: None,
             sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
@@ -372,6 +377,9 @@ Assets and start position:
 Streaming:
   --ini <file>                        layer Skyrim INI settings; CLI options override files
   --stream-radius <cells>               cells streamed around the camera (default: 2)
+  --far-stock-reach <cells|unbounded>   with --clusters, cells around the camera that still stream stock
+                                        models for scenery clusters cannot own; unbounded reaches the whole
+                                        worldspace; never below --stream-radius (default: 12)
   --max-commit-ms <ms>                  cell commit time allowed per frame (default: 16.67)
   --max-unloads-per-frame <count>       cells despawned per frame; 0 despawns all at once (default: 2)
   --max-model-spawns-per-frame <count>  models spawned per frame; 0 spawns all at once (default: 32)
@@ -868,6 +876,25 @@ impl EngineConfig {
                         })?;
                     config.stream_radius = value;
                     config.unload_radius = value + 1;
+                }
+                "--far-stock-reach" => {
+                    let raw = take_raw("--far-stock-reach", FAR_STOCK_REACH_EXPECTED, args.next())?;
+                    config.far_stock_reach = if raw == "unbounded" {
+                        None
+                    } else {
+                        Some(
+                            raw.parse::<i32>()
+                                .ok()
+                                .filter(|value| (0..=MAX_STREAM_RADIUS).contains(value))
+                                .ok_or_else(|| {
+                                    ConfigError::invalid_value(
+                                        "--far-stock-reach",
+                                        Some(raw),
+                                        FAR_STOCK_REACH_EXPECTED,
+                                    )
+                                })?,
+                        )
+                    };
                 }
                 "--clusters" => {
                     // The selector is optional: bare `--clusters` means the only overlay.
@@ -1419,7 +1446,11 @@ impl EngineConfig {
         }
         config.check_visual_profile()?;
         if config.clusters.is_none() {
-            for option in ["--cluster-error-pixels", "--cluster-terrain-error-pixels"] {
+            for option in [
+                "--cluster-error-pixels",
+                "--cluster-terrain-error-pixels",
+                "--far-stock-reach",
+            ] {
                 if config
                     .settings_overrides
                     .iter()
@@ -1508,6 +1539,15 @@ pub const MAX_STREAM_RADIUS: i32 = (i32::MAX - 3) / 2;
 /// What `--stream-radius` takes, with [`MAX_STREAM_RADIUS`] spelled out; a test holds the two
 /// equal.
 const STREAM_RADIUS_EXPECTED: &str = "a cell count from 0 to 1073741822";
+
+/// Cells of stock-model reach around the camera in an owned-cluster run. The unbounded reach
+/// spawns every refused static reference in the worldspace, which does not fit in memory on
+/// a unified-memory machine.
+pub const DEFAULT_FAR_STOCK_REACH: i32 = 12;
+
+/// What `--far-stock-reach` takes; the range is [`MAX_STREAM_RADIUS`] so the window arithmetic
+/// shares `--stream-radius`'s overflow margin.
+const FAR_STOCK_REACH_EXPECTED: &str = "a cell count from 0 to 1073741822, or 'unbounded'";
 
 /// What `--sun-position` takes: azimuth clockwise from north, then elevation above the horizon.
 const SUN_POSITION_EXPECTED: &str =
@@ -3512,6 +3552,61 @@ mod tests {
             STREAM_RADIUS_EXPECTED,
             format!("a cell count from 0 to {MAX_STREAM_RADIUS}")
         );
+    }
+
+    #[test]
+    fn far_stock_reach_defaults_to_twelve_cells() {
+        assert_eq!(
+            run_config(&[]).far_stock_reach,
+            Some(DEFAULT_FAR_STOCK_REACH)
+        );
+        assert_eq!(run_config(&["--clusters"]).far_stock_reach, Some(12));
+    }
+
+    #[test]
+    fn far_stock_reach_takes_a_cell_count_or_unbounded() {
+        let reach = |value: &str| run_config(&["--clusters", "--far-stock-reach", value]);
+        assert_eq!(reach("5").far_stock_reach, Some(5));
+        assert_eq!(reach("0").far_stock_reach, Some(0));
+        assert_eq!(reach("1073741822").far_stock_reach, Some(MAX_STREAM_RADIUS));
+        assert_eq!(reach("unbounded").far_stock_reach, None);
+        // The reach never moves the stream window.
+        assert_eq!(reach("30").stream_radius, run_config(&[]).stream_radius);
+        for refused in ["-1", "wide", "1073741823", "Unbounded", "1.5"] {
+            assert!(
+                matches!(
+                    parse_error(&["--clusters", "--far-stock-reach", refused]),
+                    ConfigError::InvalidValue { value: Some(ref value), .. } if value == refused
+                ),
+                "--far-stock-reach accepted {refused}"
+            );
+        }
+        assert!(matches!(
+            parse_error(&["--clusters", "--far-stock-reach"]),
+            ConfigError::InvalidValue { value: None, .. }
+        ));
+    }
+
+    #[test]
+    fn far_stock_reach_requires_explicit_cluster_selection_in_either_order() {
+        let result =
+            EngineConfig::from_args(["--far-stock-reach", "4"].into_iter().map(str::to_owned));
+        assert!(
+            matches!(
+                result,
+                Err(ConfigError::MissingRequirement {
+                    option: "--far-stock-reach",
+                    requires: "--clusters"
+                })
+            ),
+            "{result:?}"
+        );
+        for args in [
+            ["--far-stock-reach", "4", "--clusters"],
+            ["--clusters", "--far-stock-reach", "4"],
+        ] {
+            assert_eq!(run_config(&args).far_stock_reach, Some(4), "{args:?}");
+        }
     }
 
     #[test]

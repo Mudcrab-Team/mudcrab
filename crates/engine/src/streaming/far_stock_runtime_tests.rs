@@ -18,6 +18,8 @@ fn app(fixture: &Fixture) -> App {
     {
         let mut config = app.world_mut().resource_mut::<EngineConfig>();
         config.cluster_own_statics = true;
+        // These tests move the camera hundreds of cells from the stock they plan.
+        config.far_stock_reach = None;
         config.stream_radius = 0;
     }
     app.world_mut()
