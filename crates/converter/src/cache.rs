@@ -596,10 +596,8 @@ fn configuration_hash_with_identity(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
-    if schema == CONVERTER_SCHEMA_VERSION {
-        relevant["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
-    }
-    // Actual DDS roles remain in per-source proofs rather than this broad identity.
+    // Keep historical metadata identities stable. Changed output recipes belong
+    // to per-kind proofs; combined proofs cannot authorize those newer bytes.
     if let Some(identity) = identity {
         relevant["record_reader"] = identity.clone();
     }
