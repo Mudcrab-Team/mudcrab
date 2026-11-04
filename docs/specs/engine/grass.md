@@ -317,35 +317,23 @@ GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
 project exceptions). Its alpha-weighted wind supports this interpretation; its
 feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
 and lighting formulas here remain native MudCrab choices.
-S=0.68 is the rounded median (0.6799352908) of three same-view shaded/sunlit
-grass linear screenshot luminance ratios from the existing Skyrim references:
-Falkreath 2=0.83136, Rift 1=0.67994, Rift 2=0.33515. Sampling uses spatial
-shade/open-light regions and relative ON/OFF contrast masks, then IEC sRGB decode
-and Rec.709 luminance. Threshold/box sensitivity is 0.596 to 0.760; mixed
-materials, partial shade, compositing and tone mapping make S provisional.
-No engine outcome was used to choose it.
 
-An explicit selection also enables the retained scratch multi-shot controls:
-wind=1s, draw-only `-off` poses, and species/root counters. With the switch unset,
-normal captures keep G4 wind and drawing behavior. These controls and shading
-variants are local experiments, not production adoption. GPU captures and visual
-comparison are pending; CPU tests do not establish image equality or native parity.
+## Live grass tuning
 
+Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/flat-b.toml`
+(or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same
+flat-b defaults. `--grass-tuning-info <path>` prints the accepted settings before
+app or GPU creation. Content-hash polling runs at most once per elapsed second;
+valid edits atomically update uniforms without regenerating placement or shaders.
+Missing/unreadable/invalid edits retain the last good values. Unknown keys warn;
+finite values outside the ranges below clamp with warnings. Inputs over 64 KiB
+are rejected. Accepted file hash, effective values and revision are frozen with
+captured frames; callbacks never reread the file.
 
-## Live grass tuning (local experiment)
-
-Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/d.toml`
-(or `MUDCRAB_GRASS_TUNING`). `--grass-tuning-info <path>` prints its resolved
-settings. The file is polled approximately once per second. Valid edits update
-uniforms, with no regeneration or shader specialization. Invalid edits retain
-the last good settings. Unknown keys warn; finite values outside the ranges
-below clamp with a warning. A selected file enables `GRASS_TUNING` once at
-startup and takes precedence over the older shading switch. Without a file,
-the source-selected D shader remains byte-identical to the retained control.
-
-Write `mode = "d"`, `"e"`, or `"f"` before optional scalar overrides. D supplies
-all defaults below; E sets `sun_angle_weight=0`; F sets `shadow_floor=.68` and
-selects unlit visibility. Mode edits use the same uniform path as scalar edits.
+The optional `mode` is `flat` (default), `d`, `e`, or `f`. Explicit D/E comparison
+presets set ambient, sun, shadows and saturation to1, with sun angle1 for D and0
+for E. F uses an unlit shadow visibility with floor .68. Scalar fields override
+the selected preset. Modes and scalars share the same hot-reload uniform path.
 
 For normalized authored blade normal N and sun direction L, let c=dot(N,L).
 The direct response is `mix(1,clamp((c+wrap)/(1+wrap),0,1),sun_angle_weight)
@@ -360,16 +348,16 @@ terrain shadow filtering and display tone mapping retain the production paths.
 | Knob | Default | Accepted range | Effect |
 | --- | --- | --- | --- |
 | brightness | 1 | 0..8 | Final linear HDR RGB multiplier |
-| ambient_strength | 1 | 0..8 | Ambient/sky multiplier (D/E) |
-| sun_strength | 1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
-| sun_angle_weight | 1 | 0..1 | Interpolate between sun-facing and wrapped normal response |
+| ambient_strength | 1.15 | 0..8 | Ambient/sky multiplier (D/E) |
+| sun_strength | .1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
+| sun_angle_weight | 0 | 0..1 | Interpolate between sun-facing and wrapped normal response |
 | wrap | 0 | 0..1 | Wrapped Lambert response above |
-| shadow_strength | 1 | 0..1 | Interpolate native visibility toward no shadow |
+| shadow_strength | .3 | 0..1 | Interpolate native visibility toward no shadow |
 | shadow_floor | 0 | 0..1 | Minimum visibility; F preset .68 |
 | backlight | 0 | 0..1 | Add response from away-facing authored normals |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
-| saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
+| saturation | .75 | 0..4 | Linear HDR saturation around Rec.709 luminance |
 | vclr_tint_strength | 1 | 0..1 | LAND luminance strength |
 | color_range_strength | 1 | 0..1 | GRAS color-range variation strength |
 | root_darkening | 0 | 0..1 | Multiply by `1-root_darkening*clamp(original_uv.y,0,1)` |
@@ -396,15 +384,15 @@ The old per-instance brightness byte is preserved exactly. With both tint and
 range strengths at one the shader uses that byte directly. Otherwise it uses
 `clamp(mix(1,LAND,tint_strength)*mix(1,R,range_strength),0,1)`, where
 `R=1-2*GRAS_color_range+2*random*GRAS_color_range` includes negative values.
-Tuning-only generation encodes LAND and R in the high 14 bits of the slot word:
+Generation encodes LAND and R in the high 14 bits of the slot word:
 7-bit UNORM LAND (maximum error 1/254) and 7-bit signed-range R (error 1/127).
 The low 18 bits hold every candidate at supported spacing >=8 (maximum
 262144 candidates). `GrassInstance::candidate_slot()` decodes CPU identity;
 both CPU and GPU fading ignore metadata. No sidecar allocation or instance-size
-increase occurs, and no-file generation retains every packed byte.
+increase occurs. No-file generation uses the same metadata and original brightness byte.
 
 To tune live, launch the engine with the usual asset/world arguments plus
-`--grass --grass-tuning docs/examples/grass-tuning/darker-start.toml` and edit
+`--grass --grass-tuning docs/examples/grass-tuning/flat-b.toml` and edit
 that file while it runs. Begin with brightness, then ambient/sun strength,
 then angle/wrap and shadows; adjust tint/saturation and roots last, and add
 sheen only if needed. `darker-start.toml` uses brightness .59 from the provisional
