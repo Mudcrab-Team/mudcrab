@@ -2105,6 +2105,122 @@ fn stable_cull_reuse_matches_forced_recompute_after_mutations() {
     }
 }
 
+/// The vertex-pulled draw of a group reads slots `first_instance .. first_instance + instance_count`
+/// of `visible` and nothing else. Over a poisoned `visible`, that range must hold exactly the
+/// records this frame's cull wrote for the group (its own instances, none outside the range), and
+/// no record may be written anywhere else.
+fn assert_group_args_cover_visible(label: &str, out: &Output, scene: &Scene, plan: &Plan) {
+    let slots = out.args.len() / INDEXED_ARG_WORDS;
+    let written = |slot: usize| out.visible[slot * 4..slot * 4 + 4] != [POISON; 4];
+    let mut covered = 0;
+    for (group, ids) in plan.group_ids.iter().enumerate() {
+        let record = &out.group_args[group * GROUP_ARG_WORDS..(group + 1) * GROUP_ARG_WORDS];
+        let (count, first) = (record[1] as usize, record[3] as usize);
+        assert_eq!(
+            first, plan.bases[group] as usize,
+            "{label} group {group}: first_instance"
+        );
+        let capacity: usize = ids
+            .iter()
+            .map(|&id| scene.counts[id as usize] as usize)
+            .sum();
+        assert!(
+            count <= capacity,
+            "{label} group {group}: {count} of {capacity}"
+        );
+        for slot in first..first + capacity {
+            assert_eq!(
+                written(slot),
+                slot < first + count,
+                "{label} group {group} slot {slot}: record written exactly where instance_count says"
+            );
+        }
+        for slot in first..first + count {
+            assert!(
+                ids.contains(&out.visible[slot * 4]),
+                "{label} group {group} slot {slot}: record of another group's instance"
+            );
+        }
+        covered += count;
+    }
+    let stray = (0..slots).filter(|&slot| written(slot)).count();
+    assert_eq!(
+        stray, covered,
+        "{label}: records written outside every group's range"
+    );
+}
+
+/// One frame of the test below: its name, the batch to group mapping, the instance mask, and
+/// whether the frame must recompute.
+type Step = (&'static str, [u32; 4], fn(u32) -> bool, bool);
+
+/// `group_args[g]` describes exactly what the cull wrote for group `g`, in a recompute frame, in
+/// reuse frames that run nothing, and across a plan change that moves the groups' bases.
+#[test]
+#[ignore = "hardware GPU proof: cargo nextest run -p engine --test cluster_stable_compaction --run-ignored only"]
+fn group_args_cover_exactly_the_visible_records_across_recompute_reuse_and_plan_change() {
+    let gpu = Gpu::new();
+    let capacity = 66;
+    let groups = 4;
+    let scene = boundary_scene(capacity, false, 3);
+    let shared = gpu.shared(&scene);
+    for count_mode in [false, true] {
+        let mut retained = gpu.reuse_view(&shared, &scene, groups);
+        let mut inputs = CullInputs::default();
+        // (batch to group mapping, instances the mask hides)
+        let steps: [Step; 6] = [
+            ("recompute", [0, 1, 2, 3], |_| true, true),
+            ("reuse", [0, 1, 2, 3], |_| true, false),
+            ("plan change", [2, 0, 3, 1], |_| true, true),
+            ("reuse after plan change", [2, 0, 3, 1], |_| true, false),
+            ("mask", [2, 0, 3, 1], |id| id % 3 != 1, true),
+            ("reuse after mask", [2, 0, 3, 1], |id| id % 3 != 1, false),
+        ];
+        let mut previous: Option<Output> = None;
+        for (change, mapping, mask, recompute) in steps {
+            let plan = scene.plan(capacity, groups, |id| mapping[scene.batch(id) as usize]);
+            let entries: Vec<[u32; 4]> = mapping
+                .iter()
+                .map(|&group| [1, group, plan.bases[group as usize], 0])
+                .collect();
+            let job = Job {
+                params: view_params(capacity, groups as u32, 1, true),
+                table: batch_table(&entries, capacity, mask),
+                order: plan.order(capacity),
+                count_mode,
+                // A recompute frame starts from poisoned scratch, so a record counts as written
+                // only if this frame's cull wrote it.
+                poison: recompute,
+            };
+            if recompute {
+                inputs.plan += 1;
+            }
+            let label = format!("{change}, count_mode={count_mode}");
+            let (out, work) = gpu.run_reused_views(&mut [(&mut retained, &job, inputs)], false);
+            assert_reuse_work(&label, &work[0], &job, recompute);
+            let out = out.into_iter().next().unwrap();
+            assert_exact(
+                &label,
+                &out,
+                &plan.bases,
+                &boundary_expected(&scene, &plan, mask),
+                count_mode,
+                true,
+            );
+            assert_group_args_cover_visible(&label, &out, &scene, &plan);
+            assert!(out.counts.iter().sum::<u32>() > 0, "{label}: vacuous");
+            if !recompute {
+                assert_eq!(
+                    Some(&out),
+                    previous.as_ref(),
+                    "{label}: retained records changed"
+                );
+            }
+            previous = Some(out);
+        }
+    }
+}
+
 /// Mutating one view must neither invalidate nor clear another view's retained outputs.
 /// A shared instance edit, in contrast, must invalidate both in its first frame.
 #[test]

@@ -6015,6 +6015,106 @@ mod tests {
         );
     }
 
+    /// The draw groups of a Metal-sized scene: millions of slots in a handful of groups.
+    fn metal_sized_draws() -> Vec<GroupDraw> {
+        let mut groups = DrawGroups::new(5);
+        let first = groups.add(0, 3_000_000, None);
+        groups.add(1, 2_000_000, None);
+        groups.add(2, 500_000, Some(first));
+        groups.add(3, 1, None);
+        groups.add(4, 40_000, None);
+        groups.plan().0
+    }
+
+    #[test]
+    fn without_a_gpu_draw_count_every_group_is_one_indirect_draw_over_its_own_record() {
+        let draws = metal_sized_draws();
+        assert!(draws.len() >= 4);
+        let calls: Vec<_> = draws
+            .iter()
+            .map(|draw| group_draw_call(false, draw))
+            .collect();
+        // One command per group, whatever the number of slots the group could select: the old
+        // fallback encoded one per slot (5.5 million here), which Metal cannot execute in time.
+        assert_eq!(calls.len(), draws.len());
+        assert!(
+            draws
+                .iter()
+                .map(|draw| u64::from(draw.max_count))
+                .sum::<u64>()
+                > 5_000_000
+        );
+        for (group, (call, draw)) in calls.iter().zip(&draws).enumerate() {
+            assert_eq!(
+                *call,
+                GroupDrawCall::Indirect {
+                    offset: group as u64 * GROUP_ARGS_BYTES
+                },
+                "group {group}"
+            );
+            assert_eq!(draw.group_args_offset, group as u64 * GROUP_ARGS_BYTES);
+            assert!(
+                !matches!(call, GroupDrawCall::IndexedCount { .. }),
+                "group {group}: no multi-draw over every slot"
+            );
+        }
+    }
+
+    #[test]
+    fn with_a_gpu_draw_count_every_group_keeps_the_indexed_count_draw() {
+        for (group, draw) in metal_sized_draws().iter().enumerate() {
+            assert_eq!(
+                group_draw_call(true, draw),
+                GroupDrawCall::IndexedCount {
+                    args_offset: draw.args_offset,
+                    // The count is word 1 of the group's own record.
+                    count_offset: group as u64 * GROUP_ARGS_BYTES + 4,
+                    max_count: draw.max_count,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn the_draw_stats_keep_the_busiest_view_of_any_frame() {
+        let stats = ClusterDrawStats::default();
+        assert_eq!(stats.encoded_draws_per_view(), 0);
+        for per_view in [12, 200, 40, 0] {
+            stats.record(per_view);
+        }
+        assert_eq!(stats.encoded_draws_per_view(), 200);
+        assert_eq!(stats.clone().encoded_draws_per_view(), 200);
+    }
+
+    #[test]
+    fn pipelines_built_for_each_draw_path_are_never_mistaken_for_each_other() {
+        let key = |vertex_pull| ClusterMaterialPipelineKey {
+            material: ErasedMaterialPipelineKey {
+                mesh_key: ErasedMeshPipelineKey::new(MeshPipelineKey::empty()),
+                material_key: ErasedMaterialKey::new(0_u32),
+                type_id: std::any::TypeId::of::<StandardMaterial>(),
+            },
+            tangents: false,
+            vertex_pull,
+        };
+        assert_ne!(key(false), key(true));
+        let mut pipelines = ClusterPipelines::default();
+        let mut queued = 0;
+        for vertex_pull in [false, true, false, true] {
+            pipelines
+                .forward_pipeline(
+                    key(vertex_pull),
+                    || Some(default()),
+                    |_| {
+                        queued += 1;
+                        CachedRenderPipelineId::INVALID
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(queued, 2);
+    }
+
     #[test]
     fn material_slot_rewrites_keep_distinct_per_instance_terrain_record_tags() {
         let instances = [0, 2].map(|block| ClusterInstance {
