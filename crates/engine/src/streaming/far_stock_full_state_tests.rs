@@ -199,6 +199,9 @@ fn full_replan(world: &mut World, fixture: &Fixture, stepping: bool) -> (FarStoc
         let key = exterior(demand.world, cell);
         let incomplete = reference.coverage != CoverageState::Complete;
         if config.cluster_own_statics
+            && config
+                .far_stock_reach
+                .is_none_or(|reach| square_contains(cell, demand.center, reach.max(radius)))
             && reference.is_static_scenery
             && ((incomplete
                 && matches!(
@@ -874,9 +877,13 @@ fn full_state_crossings_preserve_inflight_and_held_receipts_and_sticky_failures(
         assert_eq!(cell_world(key), cell_world(request_key));
         assert_ne!(key, request_key);
         let mut app = full_state_app(&fixture, key);
-        app.world_mut()
-            .resource_mut::<EngineConfig>()
-            .cluster_own_statics = true;
+        {
+            let mut config = app.world_mut().resource_mut::<EngineConfig>();
+            config.cluster_own_statics = true;
+            // The crossings below leave the request's cell far behind; the receipt only
+            // survives while the whole-world reach still wants it.
+            config.far_stock_reach = None;
+        }
         checked_update(&mut app, &fixture, "unbounded policy");
         assert_eq!(
             app.world()

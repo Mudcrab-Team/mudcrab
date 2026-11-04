@@ -67,6 +67,10 @@ struct Pending {
 struct UnboundedDemandKey {
     world: Option<u32>,
     owned: bool,
+    /// Window radius in cells, `None` for the whole world.
+    reach: Option<i32>,
+    /// Window centre. `None` when the reach is unbounded, so a crossing does not replan it.
+    center: Option<IVec2>,
     enable_revision: Option<u64>,
     refusal_revision: Option<u64>,
 }
@@ -157,12 +161,12 @@ impl PlanningWork {
 pub(crate) struct FarStock {
     package: Option<Arc<CertifiedPackage>>,
     demand: Option<LodDemand>,
-    /// None scans the whole worldspace for enabled, refused static scenery.
+    /// None defers to `far_stock_reach` in owned mode.
     reach: Option<i32>,
     stream_radius: i32,
     generation: u64,
     desired: HashMap<Identity, CellKey>,
-    /// Package allocation is checked separately; camera demand never invalidates this projection.
+    /// Package allocation is checked separately; a bounded `far_stock_reach` includes the camera centre in this key.
     unbounded_key: Option<UnboundedDemandKey>,
     unbounded_desired: HashMap<Identity, CellKey>,
     bounded_desired: HashMap<Identity, CellKey>,
@@ -554,7 +558,7 @@ fn plan(
         far.invalidate_near();
         far.failure_dirty = true;
     }
-    // Owned clusters and enabled refused static scenery have no distance cutoff.
+    // Owned clusters extend refused static scenery to `far_stock_reach`.
     // Unknown source feedback keeps the grid; refusal classes do not replace enable state.
     // Native LOD stays disabled in owned mode, including for grid-bound references.
     if !changed_package
@@ -586,21 +590,36 @@ fn plan(
     } else {
         far.planning_work.full_rebuilds += 1;
     }
+    let stock_reach = config.far_stock_reach.map(|reach| reach.max(stream_radius));
     let unbounded_key = UnboundedDemandKey {
         world: demand.map(|d| d.world),
         owned: config.cluster_own_statics,
+        reach: stock_reach,
+        center: demand
+            .filter(|_| stock_reach.is_some())
+            .map(|demand| demand.center),
         enable_revision,
         refusal_revision,
     };
+    let center_only_change = !changed_package
+        && far.unbounded_key.is_some_and(|previous| {
+            UnboundedDemandKey {
+                center: unbounded_key.center,
+                ..previous
+            } == unbounded_key
+        });
     let unbounded = if changed_package || far.unbounded_key != Some(unbounded_key) {
         let mut desired = HashMap::new();
-        // Only owned mode grants whole-world reach, and ownership alone never grants it.
+        // Only owned mode grants reach beyond the stream window, and ownership alone never grants
+        // it. The reach is bounded because each spawned scene keeps CPU mesh and texture copies,
+        // and a whole-worldspace set is a memory risk on unified-memory machines.
         if config.cluster_own_statics
             && let Some(demand) = demand
         {
-            for (grid, ids) in package
-                .0
-                .placed_cells_in_window(demand.world, demand.center, None)
+            for (grid, ids) in
+                package
+                    .0
+                    .placed_cells_in_window(demand.world, demand.center, stock_reach)
             {
                 #[cfg(test)]
                 {
@@ -717,8 +736,25 @@ fn plan(
         far.bounded_desired = bounded;
     }
     if let Some(unbounded) = unbounded {
-        touched.extend(far.unbounded_desired.keys().copied());
-        touched.extend(unbounded.keys().copied());
+        if center_only_change {
+            // A moving bounded window changes only its leading and trailing strips; the overlap
+            // keeps its targets and need not be projected again.
+            touched.extend(
+                far.unbounded_desired
+                    .iter()
+                    .filter(|(id, key)| unbounded.get(id) != Some(key))
+                    .map(|(id, _)| *id),
+            );
+            touched.extend(
+                unbounded
+                    .iter()
+                    .filter(|(id, key)| far.unbounded_desired.get(id) != Some(key))
+                    .map(|(id, _)| *id),
+            );
+        } else {
+            touched.extend(far.unbounded_desired.keys().copied());
+            touched.extend(unbounded.keys().copied());
+        }
         far.unbounded_desired = unbounded;
     }
     let target_changed = far.project_union(touched);

@@ -83,6 +83,9 @@ fn recompute(world: &mut World, fixture: &Fixture) -> Recomputed {
         let incomplete = reference.coverage != CoverageState::Complete;
         let refused = refusals.contains(&row.form_id);
         if config.cluster_own_statics
+            && config
+                .far_stock_reach
+                .is_none_or(|reach| in_square(cell, demand.center, reach.max(radius)))
             && reference.is_static_scenery
             && ((incomplete
                 && matches!(
@@ -207,6 +210,9 @@ fn populated_overlap_crossing_does_not_reevaluate_the_unchanged_window() {
     {
         let mut config = app.world_mut().resource_mut::<EngineConfig>();
         config.cluster_own_statics = true;
+        // The unbounded window does not depend on the camera; a bounded one is replanned by
+        // `bounded_far_stock_reach_*` below.
+        config.far_stock_reach = None;
         config.stream_radius = 4;
     }
     app.update();
@@ -939,3 +945,185 @@ fn an_unrelated_same_cell_edit_cannot_clear_duplicate_refusal() {
 
 #[path = "far_stock_delta_lifecycle_tests.rs"]
 mod lifecycle;
+
+/// One owned-mode planning pass with the given far-stock reach, returning what it planned.
+fn plan_with_reach(
+    fixture: &Fixture,
+    center: IVec2,
+    stream_radius: i32,
+    reach: Option<i32>,
+) -> (HashMap<Identity, CellKey>, PlanningWork) {
+    let world_id = inventory_world(fixture);
+    let mut app = complete_plan_app(fixture, exterior(world_id, center));
+    {
+        let mut config = app.world_mut().resource_mut::<EngineConfig>();
+        config.cluster_own_statics = true;
+        config.stream_radius = stream_radius;
+        config.far_stock_reach = reach;
+    }
+    app.update();
+    assert_recomputed(&mut app, fixture);
+    let far = app.world().resource::<FarStock>();
+    (far.unbounded_desired.clone(), far.planning_work)
+}
+
+fn within(
+    desired: &HashMap<Identity, CellKey>,
+    center: IVec2,
+    radius: i32,
+) -> HashMap<Identity, CellKey> {
+    desired
+        .iter()
+        .filter(|(_, key)| in_square(grid(**key), center, radius))
+        .map(|(id, key)| (*id, *key))
+        .collect()
+}
+
+#[test]
+fn bounded_far_stock_reach_plans_only_cells_within_the_radius_of_the_camera() {
+    let fixture = Fixture::new();
+    let (whole, whole_work) = plan_with_reach(&fixture, IVec2::ZERO, 0, None);
+    assert!(!whole.is_empty(), "the inventory must demand stock");
+    let anchor = grid(*whole.values().next().unwrap());
+
+    for reach in [0, 1, 3] {
+        // The anchor sits on the corner of the window, then one cell outside it.
+        let inside = anchor + IVec2::new(reach, -reach);
+        let (planned, _) = plan_with_reach(&fixture, inside, 0, Some(reach));
+        assert!(planned.values().any(|key| grid(*key) == anchor));
+        assert_eq!(planned, within(&whole, inside, reach));
+
+        let outside = anchor + IVec2::new(reach + 1, 0);
+        let (planned, work) = plan_with_reach(&fixture, outside, 0, Some(reach));
+        assert!(planned.values().all(|key| grid(*key) != anchor));
+        assert!(planned.len() < whole.len());
+        assert_eq!(planned, within(&whole, outside, reach));
+        assert!(
+            work.unbounded_entries < whole_work.unbounded_entries,
+            "a bounded window must read fewer certificate entries than the whole world"
+        );
+    }
+
+    // No bound reaches the anchor from any distance.
+    let far_away = anchor + IVec2::new(500, -500);
+    assert_eq!(plan_with_reach(&fixture, far_away, 0, None).0, whole);
+    assert!(
+        plan_with_reach(&fixture, far_away, 0, Some(12))
+            .0
+            .is_empty()
+    );
+}
+
+#[test]
+fn far_stock_reach_is_never_narrower_than_the_stream_window() {
+    let fixture = Fixture::new();
+    let (whole, _) = plan_with_reach(&fixture, IVec2::ZERO, 0, None);
+    let anchor = grid(*whole.values().next().unwrap());
+    let center = anchor + IVec2::new(3, 0);
+    let (planned, _) = plan_with_reach(&fixture, center, 3, Some(0));
+    assert_eq!(planned, within(&whole, center, 3));
+    assert!(planned.values().any(|key| grid(*key) == anchor));
+}
+
+#[test]
+fn bounded_far_stock_reach_follows_the_camera_across_cells() {
+    let fixture = Fixture::new();
+    let world_id = inventory_world(&fixture);
+    let (whole, _) = plan_with_reach(&fixture, IVec2::ZERO, 0, None);
+    let anchor = grid(*whole.values().next().unwrap());
+    let mut app = complete_plan_app(&fixture, exterior(world_id, anchor));
+    {
+        let mut config = app.world_mut().resource_mut::<EngineConfig>();
+        config.cluster_own_statics = true;
+        config.stream_radius = 0;
+        config.far_stock_reach = Some(1);
+    }
+    for offset in [
+        IVec2::ZERO,
+        IVec2::new(5, 0),
+        IVec2::new(1, 1),
+        IVec2::new(-2, 0),
+        IVec2::new(0, 3),
+        IVec2::ZERO,
+    ] {
+        let center = anchor + offset;
+        app.world_mut().resource_mut::<RenderOrigin>().0 = center;
+        app.update();
+        assert_recomputed(&mut app, &fixture);
+        let far = app.world().resource::<FarStock>();
+        assert_eq!(far.unbounded_desired, within(&whole, center, 1), "{offset}");
+        assert_no_exit(app.world());
+    }
+}
+
+#[test]
+fn bounded_far_stock_crossing_projects_only_the_entered_and_left_references() {
+    let fixture = Fixture::new();
+    let world_id = inventory_world(&fixture);
+    let (whole, _) = plan_with_reach(&fixture, IVec2::ZERO, 0, None);
+    let anchor = grid(*whole.values().next().unwrap());
+    // Start beside the stock so the stream window (radius 0) never covers the request's cell and
+    // the crossings cannot change that cell's required set through the bounded path.
+    let mut app = complete_plan_app(&fixture, exterior(world_id, anchor + IVec2::X));
+    {
+        let mut config = app.world_mut().resource_mut::<EngineConfig>();
+        config.cluster_own_statics = true;
+        config.stream_radius = 0;
+        config.far_stock_reach = Some(3);
+    }
+    app.update();
+    // An in-flight request for a cell that stays in the window across the crossing.
+    let (_sender, receiver) = crossbeam_channel::bounded(1);
+    let key = {
+        let mut far = app.world_mut().resource_mut::<FarStock>();
+        let (key, ids) = far.pop_queued().expect("the window must queue stock");
+        far.pending.insert(
+            key,
+            Pending {
+                ids,
+                receiver: receiver.clone(),
+                ready: None,
+            },
+        );
+        key
+    };
+    let steps = [
+        grid(key) + IVec2::new(2, 0),
+        grid(key) + IVec2::new(5, 0),
+        grid(key) + IVec2::new(3, 0),
+    ];
+    for (step, center) in steps.into_iter().enumerate() {
+        let before = app.world().resource::<FarStock>();
+        let (old, work) = (before.unbounded_desired.clone(), before.planning_work);
+        app.world_mut().resource_mut::<RenderOrigin>().0 = center;
+        app.update();
+        assert_recomputed(&mut app, &fixture);
+        let far = app.world().resource::<FarStock>();
+        let changed = old
+            .iter()
+            .filter(|(id, key)| far.unbounded_desired.get(id) != Some(key))
+            .count()
+            + far
+                .unbounded_desired
+                .iter()
+                .filter(|(id, key)| old.get(id) != Some(key))
+                .count();
+        let bounded = far.planning_work.bounded_entries - work.bounded_entries;
+        let projected = far.planning_work.projection_entries - work.projection_entries;
+        assert!(
+            projected <= changed as u64 + bounded,
+            "step {step}: projected {projected} entries for {changed} entered or left references"
+        );
+        assert_eq!(changed > 0, step > 0, "step {step}: window edge crossings");
+        if step == 0 {
+            assert!(
+                far.pending
+                    .get(&key)
+                    .is_some_and(|pending| pending.receiver.same_channel(&receiver)),
+                "an in-window receipt must survive the crossing"
+            );
+            assert!(!far.queued_keys.contains(&key));
+        }
+        assert_no_exit(app.world());
+    }
+}
