@@ -9,6 +9,36 @@ The Apple Silicon investigation on 2026-10-08 used **Samply 0.13.1**, **Firefox 
 build with line-table symbols. See [the investigation](../research/metal-function-profiling-20261008.md)
 for its scene, results and source-level mechanisms. No graphics features were disabled.
 
+## Where does the frame go?
+
+1. Record an unprofiled release baseline for each scene. Save frame distributions and sample counts,
+   the camera, settings, physical surface size, display refresh rate, requested present mode, source
+   diff, executable checksum and asset provenance. Confirm that drawables are acquired and presented.
+   A requested `AutoNoVsync` mode alone does not prove that presentation is unpaced.
+2. On Metal, capture a short settled **Metal System Trace**. Compare CPU submission, GPU execution,
+   drawable acquisition and presentation on the same timeline before calling the scene CPU- or
+   GPU-bound. Record profiler overhead separately. GPU stages and CPU work can overlap; do not add
+   their durations as a serial frame budget. Keep traces short and monitor free space: even a few
+   seconds can produce several GiB of temporary data.
+3. Use engine spans and Samply 0.13.1 with Firefox Profiler to identify CPU functions in the same
+   scene. Select the settled interval and inspect the render thread and worker threads. Distinguish
+   sampled CPU time from off-CPU waits and unresolved symbols. For GPU shader or material costs,
+   profile a Metal GPU capture in Xcode; a command-buffer interval is not a shader duration.
+4. Form one change from a measured cost, then repeat the same scene and checks. Compare the same
+   executable with a flag where possible. Keep the unprofiled before/after results separate from
+   diagnostic captures, and preserve failed attempts and the exact commands.
+
+On the M4 Pro with Xcode 27.1, the Command Line Tools selection needs this prefix for Instruments:
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun xctrace`. Verify both recording and
+`xctrace export` on the host. Follow the checkout's managed storage and native-workload rules for
+builds and captures. RenderDoc is a graphics debugger, not a timing profiler.
+
+Bevy 0.19 omits command-encoder timestamp writes on macOS. Its GPU pass timing distributions can
+therefore be all zero even when timestamp queries are reported as supported. Do not use those values
+as GPU costs. Metal Performance HUD encoder timing also conflicts with application-owned counter
+sample buffers; use the separate diagnostic configuration described in the
+[native Metal investigation](../research/metal-native-timeline-20261009.md) when using that method.
+
 ## Build and capture CPU stacks
 
 Install [Samply](https://github.com/mstange/samply/blob/main/README.md) using a prebuilt binary from
