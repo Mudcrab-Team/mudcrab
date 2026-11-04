@@ -22,6 +22,7 @@ struct Probe {
     triangles: Vec<[u32; 3]>,
     initialized: bool,
     done: bool,
+    started_at: Option<f64>,
     stable_since: Option<f64>,
     output: String,
 }
@@ -69,6 +70,7 @@ impl Plugin for ScenePlacementProbe {
             triangles,
             initialized: false,
             done: false,
+            started_at: None,
             stable_since: None,
             output: std::env::var("MUDCRAB_PLACEMENT_PROBE").unwrap(),
         })
@@ -133,6 +135,25 @@ fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
     (distance >= 0.0).then_some(distance)
 }
 
+fn timeout_reason(
+    elapsed: f64,
+    initialized: bool,
+    ready: bool,
+    target_found: bool,
+) -> Option<&'static str> {
+    if elapsed < 120.0 {
+        None
+    } else if !initialized {
+        Some("probe initialization did not complete")
+    } else if !ready {
+        Some("streaming did not become ready")
+    } else if !target_found {
+        Some("target reference or required root collider was not found")
+    } else {
+        Some("probe did not stabilize")
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn inspect(
     mut state: ResMut<Probe>,
@@ -144,9 +165,11 @@ fn inspect(
     hierarchy: Query<(Option<&FormId>, Option<&Name>, Option<&ChildOf>)>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if !state.initialized || state.done {
+    if state.done {
         return;
     }
+    let now = time.elapsed_secs_f64();
+    let started_at = *state.started_at.get_or_insert(now);
     let ready = metrics.resident_cells > 0
         && metrics.loading_cells == 0
         && metrics.active_requests == 0
@@ -154,10 +177,22 @@ fn inspect(
         && metrics.pending_surface_instances == 0
         && metrics.arming_queue_depth == 0;
     let policy_off = std::env::var_os("MUDCRAB_COLLISION_MEASURE_OFF").is_some();
-    let Some((entity, _, actual, _)) = refs
+    let target = refs
         .iter()
-        .find(|(_, id, _, collider)| id.0 == state.id && (policy_off || collider.is_some()))
-    else {
+        .find(|(_, id, _, collider)| id.0 == state.id && (policy_off || collider.is_some()));
+    if let Some(reason) =
+        timeout_reason(now - started_at, state.initialized, ready, target.is_some())
+    {
+        let result = serde_json::json!({"form_id":format!("{:08x}",state.id),"interior":state.interior,"policy_off":policy_off,"passed":false,"reason":reason});
+        std::fs::write(&state.output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        exit.write(AppExit::Success);
+        state.done = true;
+        return;
+    }
+    if !state.initialized {
+        return;
+    }
+    let Some((entity, _, actual, _)) = target else {
         state.stable_since = None;
         return;
     };
@@ -165,7 +200,6 @@ fn inspect(
         state.stable_since = None;
         return;
     }
-    let now = time.elapsed_secs_f64();
     let started = *state.stable_since.get_or_insert(now);
     if now - started < 5.0 {
         return;
@@ -270,4 +304,30 @@ fn inspect(
     std::fs::write(&state.output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     exit.write(AppExit::Success);
     state.done = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timeout_reason;
+
+    #[test]
+    fn deadline_identifies_incomplete_probe_state() {
+        assert_eq!(timeout_reason(119.9, true, true, false), None);
+        assert_eq!(
+            timeout_reason(120.0, false, false, false),
+            Some("probe initialization did not complete")
+        );
+        assert_eq!(
+            timeout_reason(120.0, true, false, false),
+            Some("streaming did not become ready")
+        );
+        assert_eq!(
+            timeout_reason(120.0, true, true, false),
+            Some("target reference or required root collider was not found")
+        );
+        assert_eq!(
+            timeout_reason(120.0, true, true, true),
+            Some("probe did not stabilize")
+        );
+    }
 }
