@@ -35,7 +35,8 @@ builds and captures. RenderDoc is a graphics debugger, not a timing profiler.
 
 Bevy 0.19 omits command-encoder timestamp writes on macOS. Its GPU pass timing distributions can
 therefore be all zero even when timestamp queries are reported as supported. Do not use those values
-as GPU costs. Metal Performance HUD encoder timing also conflicts with application-owned counter
+as GPU costs. For Bevy 0.20, recheck the timestamp implementation and diagnostic patch before using
+this guidance. Metal Performance HUD encoder timing also conflicts with application-owned counter
 sample buffers. For that method, use the measurement-only `native-hud-counters.patch` and its
 [capture steps](../../scripts/profiling/README.md#controls-and-optional-capture). Its instrumented result is
 not an unprofiled FPS comparison. The patch applies to `f9653bfd`, not current main; run
