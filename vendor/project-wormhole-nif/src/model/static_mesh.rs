@@ -79,7 +79,12 @@ impl StaticMesh {
             ));
         }
         if self.positions.len() != self.normals.len() && self.normals.len() != 0 {
-            let msg = format!("StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]", self.name, self.positions.len(), self.normals.len());
+            let msg = format!(
+                "StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]",
+                self.name,
+                self.positions.len(),
+                self.normals.len()
+            );
             debug!("{}", msg);
             return Err(msg);
         }
