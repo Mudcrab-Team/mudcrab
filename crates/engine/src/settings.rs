@@ -998,15 +998,15 @@ pub(crate) fn apply_render_settings(
     adapter_info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
     mut file: Option<ResMut<SettingsFile>>,
 ) {
-    if let Some(file) = file.as_deref_mut() {
-        if should_enable_metal_direct_default(
+    if let Some(file) = file.as_deref_mut()
+        && should_enable_metal_direct_default(
             &settings,
             file,
             adapter_info.is_some_and(|info| info.backend == wgpu::Backend::Metal),
-        ) {
-            settings.indirect_drawing = false;
-            settings.occlusion_culling = false;
-        }
+        )
+    {
+        settings.indirect_drawing = false;
+        settings.occlusion_culling = false;
     }
     if !settings.is_changed() {
         return;

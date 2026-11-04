@@ -246,20 +246,19 @@ struct RendererProofState {
 #[derive(Resource, Clone, Default)]
 struct RendererProofBridge(Arc<RendererProofState>);
 
+type DirectWorldViewFilter = (
+    With<ExtractedCamera>,
+    With<crate::world::components::StreamingCamera>,
+    With<NoIndirectDrawing>,
+);
+
 fn sample_renderer_path(
     bridge: Res<RendererProofBridge>,
     support: Option<Res<GpuPreprocessingSupport>>,
     indirect: Option<Res<IndirectParametersBuffers>>,
     adapter: Option<Res<RenderAdapterInfo>>,
     views: Query<Option<&ViewDepthPyramid>, With<OcclusionCulling>>,
-    direct_views: Query<
-        (),
-        (
-            With<ExtractedCamera>,
-            With<crate::world::components::StreamingCamera>,
-            With<NoIndirectDrawing>,
-        ),
-    >,
+    direct_views: Query<(), DirectWorldViewFilter>,
 ) {
     let preprocessing = support
         .as_deref()
