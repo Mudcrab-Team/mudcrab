@@ -11,3 +11,7 @@ for other macOS backends. `src/lib.rs` updates the corresponding API documentati
 Remove this patch when a Bevy release provides and validates equivalent macOS Metal
 async compilation; reassess it on every Bevy upgrade. Track bevyengine/bevy#26151.
 PR #428 also vendors this crate. Integrate both patches into one copy if either lands.
+
+Because this is a path dependency, registry advisory scanners may not identify it
+as the published crate. Check Bevy advisories manually and update the lockfile when
+refreshing the vendor copy.

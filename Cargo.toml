@@ -60,8 +60,9 @@ project-wormhole-esm = "0.1.0"
 # decoder shares the fixed zstd with the converter. The advisories and the removal
 # criteria are in vendor/bevy_image/README.mudcrab.md.
 [patch.crates-io]
-bevy_render = { path = "vendor/bevy_render-0.19.0" }
 bevy_image = { path = "vendor/bevy_image" }
+# Enable asynchronous pipeline compilation on Metal; see the vendor removal criteria.
+bevy_render = { path = "vendor/bevy_render-0.19.0" }
 
 # Workspace profile optimization
 [profile.dev]
