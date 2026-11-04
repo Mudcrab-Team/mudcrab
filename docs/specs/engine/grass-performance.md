@@ -64,7 +64,7 @@ Texture cutout screenshots alone do not verify fractional vertex alpha. A separa
 controlled GLB variant can assign every grass vertex alpha 0.25 and material cutoff
 0.5, then compare density one against density zero with grass enabled in both runs.
 With opaque texture and material alpha, grass must retain coverage in both color
-and depth passes: vertex alpha is preserved for future animation use and does not
+and depth passes: vertex alpha weights native wind and does not
 control grass opacity. A texture or material alpha below the cutoff must still
 leave neither visible color nor prepass holes. Such a post-conversion variant must
 be identified as an edited test asset. The converter preserves enabled authored

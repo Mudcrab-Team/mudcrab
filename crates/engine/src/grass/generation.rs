@@ -775,7 +775,18 @@ mod tests {
                 (f64::from(raw_x) * 224.0 / 4096.0).round() as u8 != expected_byte;
             let mut expected = *old;
             expected.color = expected_byte;
-            assert_eq!(*new, expected);
+            expected.slot = old.candidate_slot();
+            let mut actual = *new;
+            actual.slot = new.candidate_slot();
+            assert_eq!(actual, expected, "LAND tint must preserve placement identity");
+            assert_eq!((old.slot >> 18) & 127, 127, "plain LAND is white");
+            assert_eq!(new.slot >> 25, 127, "zero Color Range stays unit strength");
+            let land = f64::from((new.slot >> 18) & 127) / 127.0;
+            let expected_land = f64::from(new.position[0]) * 224.0 / (65535.0 * 255.0);
+            assert!(
+                (land - expected_land).abs() <= 0.5 / 127.0 + 0.000001,
+                "packed LAND tint must sample the encoded root"
+            );
         }
         assert!(jitter_matters, "fixture must reject pre-jitter sampling");
         assert!(
