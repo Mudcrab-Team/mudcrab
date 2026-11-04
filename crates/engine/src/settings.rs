@@ -740,7 +740,15 @@ impl SettingsFile {
     pub(crate) fn restore_defaults(&mut self, settings: &mut RenderingSettings) {
         self.note_grade_mode_selection();
         *settings = RenderingSettings::default();
-        self.status = "Defaults restored for this session. Choose Save to keep them.".into();
+        self.status = if self
+            .launch_overrides
+            .iter()
+            .any(|flag| flag == "--start-shot")
+        {
+            "Defaults restored for this session. Save preserves the pre-launch FOV, window mode, and window size.".into()
+        } else {
+            "Defaults restored for this session. Choose Save to keep them.".into()
+        };
     }
 
     pub fn save(&mut self, settings: &RenderingSettings) {
@@ -1099,6 +1107,7 @@ pub(crate) fn apply_render_settings(
                     .with_scale_factor_override(1.0);
             } else {
                 let (width, height) = WINDOW_SIZES[settings.window_size];
+                window.resolution.set_scale_factor_override(None);
                 window.resolution.set(width as f32, height as f32);
             }
         }
@@ -1206,6 +1215,55 @@ mod tests {
         app.world_mut()
             .resource_mut::<SettingsFile>()
             .save(&settings);
+    }
+
+    #[test]
+    fn start_shot_reset_reports_preserved_framing() {
+        let mut file = SettingsFile::session_only();
+        let mut settings = RenderingSettings::default();
+        file.restore_defaults(&mut settings);
+        assert_eq!(
+            file.status,
+            "Defaults restored for this session. Choose Save to keep them."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.restore_defaults(&mut settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
+    fn preference_size_uses_display_scale_after_start_shot() {
+        let mut app = App::new();
+        let settings = RenderingSettings {
+            window_size_override: Some((1920, 1080)),
+            ..default()
+        };
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(settings)
+            .add_systems(Update, apply_render_settings);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.update();
+        {
+            let mut window = app.world_mut().get_mut::<Window>(window).unwrap();
+            assert_eq!(window.resolution.scale_factor_override(), Some(1.0));
+            window.resolution.set_scale_factor(2.0);
+        }
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .window_size = 0;
+        app.update();
+        let window = app.world().get::<Window>(window).unwrap();
+        let (width, height) = WINDOW_SIZES[0];
+        assert_eq!(window.resolution.scale_factor_override(), None);
+        assert_eq!(window.resolution.physical_width(), width * 2);
+        assert_eq!(window.resolution.physical_height(), height * 2);
     }
 
     #[test]
