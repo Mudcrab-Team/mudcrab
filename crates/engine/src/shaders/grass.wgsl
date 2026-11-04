@@ -9,6 +9,9 @@
 #import bevy_render::view::View
 @group(0) @binding(0) var<uniform> view: View;
 #endif
+#ifdef DISTANCE_FOG
+#import bevy_pbr::{mesh_view_bindings::fog, pbr_functions::apply_fog}
+#endif
 #ifdef TONEMAP_IN_SHADER
 #import bevy_core_pipeline::tonemapping::tone_mapping
 #endif
@@ -213,6 +216,15 @@ fn mapped_normal(input:Varyings) -> vec3<f32> {
     let orientation = select(-1.0,1.0,dot(cross(n,t),b) >= 0.0);
     return tangent_normal(sampled,n,t,cross(n,t)*orientation);
 }
+// Inherit terrain's DistanceFog specialization and prepared view uniforms.
+// Lighting already includes exposure; Bevy applies fog in this same HDR space.
+fn grass_fog(input_color:vec4<f32>, world_position:vec3<f32>, frag_coord:vec2<f32>) -> vec4<f32> {
+#ifdef DISTANCE_FOG
+    return apply_fog(fog,input_color,world_position,view.world_position,frag_coord);
+#else
+    return input_color;
+#endif
+}
 @fragment
 fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fragment {
     var input = vertex_input;
@@ -225,6 +237,7 @@ fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fr
     let shadow = directional_shadow(input);
     let light = (grass.ambient.rgb + direct*shadow) * view.exposure / 3.14159265;
     out.color = vec4(base.rgb * light,1.0);
+    out.color = grass_fog(out.color,input.world_position.xyz,input.position.xy);
 #ifdef TONEMAP_IN_SHADER
     // Match standard materials for LDR targets. HDR is mapped after the main
     // pass by the camera, and depth coverage is independent of display color.
