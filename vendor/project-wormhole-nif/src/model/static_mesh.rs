@@ -151,7 +151,10 @@ impl StaticMesh {
     }
 
     pub fn tangents_as_bytes(&self) -> Vec<u8> {
-        self.tangents.iter().flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes)).collect()
+        self.tangents
+            .iter()
+            .flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes))
+            .collect()
     }
 
     pub fn uvs_as_bytes(&self) -> Vec<u8> {
