@@ -72,8 +72,7 @@ pub fn canonical_mesh_key(key: &str, extension: &str) -> bool {
         && key == key.to_ascii_lowercase()
         && key.split('/').all(|part| {
             !part.is_empty()
-                && part != "."
-                && part != ".."
+                && !matches!(part, "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e")
                 && !part.contains(['\\', ':', '\0', '#', '?'])
                 && !part.chars().any(char::is_control)
         })
@@ -201,6 +200,18 @@ impl ActorIdleCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_keys_reject_encoded_dot_segments() {
+        for segment in ["%2e", ".%2e", "%2e.", "%2e%2e"] {
+            assert!(!canonical_mesh_key(
+                &format!("meshes/{segment}/body.glb"),
+                ".glb"
+            ));
+        }
+        assert!(canonical_mesh_key("meshes/horse%20/body.glb", ".glb"));
+        assert!(canonical_body_path("meshes/%252e%252e/body.nif", "glb").is_err());
+    }
+
     #[test]
     fn authored_body_keys_decode_once_and_reject_escapes() {
         for path in [
