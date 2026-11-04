@@ -23,23 +23,24 @@ refuses merged terrain for the whole run, deliberately: the converter transcodes
 into the BC7 class, so a table that still names one is a converter fault, not content to work
 around one cell at a time.
 
-The quadrant path corrects null or absent base assignments by binding
-`textures/landscape/dirt02.ktx2` and `textures/landscape/dirt02_n.ktx2`, including quadrants
-without stored texture layers. Both images participate in streaming resource reservations.
-Zero overlays retain their existing unresolved slots and weights without image requests;
-missing nonzero LTEX diffuse images retain the existing validation error.
+The quadrant path binds the converted pack's configured default for null or absent base
+assignments, including quadrants without stored layers. The converter records the effective
+choice in the optional `terrain_default_texture` database table on every conversion, including
+non-merged and `--no-lod` runs. LOD uses that same recorded diffuse choice (#449/#240).
+`white` binds no images; `skyrim-ini` uses the configured `[Landscape]` diffuse and normal,
+falling back to Skyrim's built-in Dirt02 paths for absent INI keys. An unusable diffuse warns
+and records white without an orphan normal; an unusable normal warns and keeps the diffuse.
+Generated `terrain/default-diffuse.ktx2` and `terrain/default-normal.ktx2` are rebuilt from the
+current source bytes, outside ingestion-cache reuse. Their actual image loads participate in
+streaming resource reservations. Zero overlays keep their unresolved slots and weights.
+A missing nonzero LTEX diffuse retains the existing validation error; #500 addresses that
+separate case.
 
-This correction does not change merged table admission or replace baked array entry 0. Existing
-merged packs with a white default need compatible arrays regenerated with the converter's
-`--merged-terrain --terrain-default-texture skyrim-ini` options. Without `--terrain-ini FILE`,
-that option uses the built-in Dirt02 diffuse and normal; with it, the converter reads
-`[Landscape]` `sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture`. Confirm the rebuilt
-table records `settings.default = "skyrim_ini"`, both default paths, and an entry-zero normal
-binding: a requested default whose assets cannot be converted can still fall back to white.
-Regenerate and publish the table, arrays and cell chunks as one compatible pack; editing the
-JSON provenance alone cannot correct baked pixels. The runtime adds no fallback from usable
-merged terrain to the ordinary six-layer cache, which could discard painted layers. This is a
-quadrant null-base correction, not complete merged-terrain coverage of #386.
+Old packs without this metadata retain white in the quadrant path. Reconvert to record a
+configured default; regenerate LOD and, when enabled, merged arrays as one compatible pack.
+Merged admission and baked array entry 0 are unchanged: the runtime does not fall back from
+usable merged terrain to the ordinary six-layer cache, which could discard painted layers.
+This addresses the white/null-base portion of #386 without claiming complete material parity.
 
 ## Per cell
 

@@ -1532,8 +1532,32 @@ impl AssetPipeline {
                 .phase_elapsed_ms
                 .insert("scripts".into(), scripts_started.elapsed().as_millis());
         }
-        if config.mo2.is_some() && !config.no_lod && !plugins.is_empty() {
-            stage_mo2_lod_inputs(&staging.join("vfs"), &resolved_files)?;
+        if config.mo2.is_some() && !plugins.is_empty() {
+            if !config.no_lod {
+                stage_mo2_lod_inputs(&staging.join("vfs"), &resolved_files)?;
+            } else if config.terrain_default_texture
+                == crate::config::TerrainDefaultTexture::SkyrimIni
+                && crate::terrain_pipeline::default_land_is_needed(staging)?
+            {
+                // Ordinary defaults still need their winning DDS inputs with LOD disabled.
+                // Other MO2 inputs remain direct and read-only.
+                let defaults: BTreeSet<_> = crate::terrain_pipeline::default_land_sources(config)?
+                    .into_iter()
+                    .collect();
+                for (relative, source) in &resolved_files {
+                    if extension(source, &["dds"])
+                        && canonical_asset_path(relative, AssetKind::Texture, "dds")
+                            .is_ok_and(|path| defaults.contains(Path::new(&path)))
+                    {
+                        let selected = BTreeMap::from([(relative.clone(), source.clone())]);
+                        if let Err(error) = stage_mo2_lod_inputs(&staging.join("vfs"), &selected) {
+                            report
+                                .warnings
+                                .push(format!("default land input omitted: {relative}: {error:#}"));
+                        }
+                    }
+                }
+            }
         }
         let lod_started = Instant::now();
         compile_lod_chunks_with_cancel(
@@ -1552,8 +1576,8 @@ impl AssetPipeline {
         interrupt(cancellation)?;
         let terrain_started = Instant::now();
         // Merged terrain (#215): the arrays, one mesh per exterior cell and the chunk files,
-        // once the world database and every converted texture are in staging. Off by default
-        // until the engine half that reads these outputs lands.
+        // once the world database and converted textures are in staging. Ordinary default
+        // images are published independently of this optional merged-terrain stage.
         if config.merged_terrain {
             crate::terrain_pipeline::run_merged_terrain_stage(
                 staging,
@@ -3471,6 +3495,14 @@ pub(crate) fn validate_artifact(
                 path.display()
             );
         }
+        Some("ktx2")
+            if matches!(
+                relative.to_str(),
+                Some("terrain/default-diffuse.ktx2" | "terrain/default-normal.ktx2")
+            ) =>
+        {
+            crate::texture::inspect_runtime_ktx2(&fs::read(&path)?)?;
+        }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
             let key = source_texture_key(&canonical_asset_path(
@@ -4470,6 +4502,7 @@ async fn compile_lod_chunks_inline(
     cancellation: &Cancellation,
     report: &mut PipelineReport,
 ) -> Result<()> {
+    crate::terrain_pipeline::publish_default_land(staging, config, report)?;
     if config.no_lod {
         interrupt(cancellation)?;
         let message = "Terrain LOD compilation disabled by --no-lod";
@@ -4519,17 +4552,19 @@ async fn compile_lod_chunks_inline(
     };
     let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
     let mut texture_cache = TerrainTextureCache::default();
-    // Entry 0 of the land texture table, resolved exactly as the merged-terrain stage resolves it
-    // (#215), so a quadrant with no BTXT is painted the same texture at every distance. A
-    // configured default that cannot be used falls back to the generated white one, as entry 0
-    // does there, and the report names it instead of skipping the world.
-    let (default_diffuse, default_fallback) =
-        crate::terrain_pipeline::TerrainDefaultDiffuse::resolve(
-            &crate::terrain_pipeline::TerrainOptions::from_config(config),
-        )?;
+    // Use the effective published choice, including a KTX2 conversion fallback to white.
+    let source: Option<String> = connection.query_row(
+        "SELECT source_diffuse FROM terrain_default_texture WHERE id=0",
+        [],
+        |row| row.get(0),
+    )?;
+    let default_diffuse = source.map_or(
+        crate::terrain_pipeline::TerrainDefaultDiffuse::GeneratedWhite,
+        crate::terrain_pipeline::TerrainDefaultDiffuse::Image,
+    );
     let (default_textures, default_error) =
         LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
-    if let Some(reason) = default_fallback.or(default_error) {
+    if let Some(reason) = default_error {
         report.lod_warnings.push(format!(
             "terrain LOD default land texture falls back to the generated white one: {reason}"
         ));
@@ -12542,6 +12577,8 @@ mod tests {
         let mut config = cpu_lod_config(&data, &output);
         config.record_reader = crate::config::RecordReader::Inhouse;
         config.no_lod = true;
+        // This record-cache fixture intentionally supplies no landscape images.
+        config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
         let cold = run_without_progress(config.clone()).await;
         assert!(cold.complete);
         assert!(!cold.database_cache_hit);

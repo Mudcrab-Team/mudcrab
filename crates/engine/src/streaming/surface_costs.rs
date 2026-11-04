@@ -33,7 +33,7 @@ pub(crate) fn surface_resource_paths(
             continue;
         };
         for layer in layers {
-            // Match the material: zero bases load Skyrim's default pair; unresolved overlays
+            // Match the material: zero bases load the pack's default pair; unresolved overlays
             // keep their slots without requesting images.
             if layer.texture_form_id == 0 && !layer.is_base {
                 continue;
@@ -157,7 +157,9 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);\
              CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);\
-             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);\
+             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+                 INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');\
              INSERT INTO texture_sets VALUES(1,'Textures\\Shared.dds','Textures\\Shared_n.dds');\
              INSERT INTO landscape_textures VALUES(10,1);\
              INSERT INTO waters VALUES(20,'Textures\\Water_n.dds');",
@@ -216,7 +218,9 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);\
              CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);\
-             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);\
+             CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+                 INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');\
              INSERT INTO texture_sets VALUES(1,'Textures\\Zero_must_not_load.dds',NULL);\
              INSERT INTO texture_sets VALUES(2,'Textures\\Shared.dds','Textures\\Shared_n.dds');\
              INSERT INTO landscape_textures VALUES(0,1);\
@@ -248,6 +252,46 @@ mod tests {
             surface_resource_paths(Some(&terrain), false, &catalog),
             vec!["textures/shared.ktx2", "textures/shared_n.ktx2"]
         );
+    }
+
+    /// Reservation follows white and custom metadata, including the actual material's image set.
+    #[test]
+    fn configured_default_reservations_match_material_images() {
+        let (directory, _) = catalog();
+        let path = directory.path().join("world.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        let mut terrain = terrain();
+        terrain.layers.clear();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Image>();
+        let server = app.world().resource::<AssetServer>();
+        for (diffuse, normal) in [
+            (None, None),
+            (Some("terrain/custom.ktx2"), Some("terrain/custom_n.ktx2")),
+            (Some("terrain/custom.ktx2"), None),
+        ] {
+            connection
+                .execute(
+                    "UPDATE terrain_default_texture SET diffuse_path=?1,normal_path=?2",
+                    rusqlite::params![diffuse, normal],
+                )
+                .unwrap();
+            let catalog = AssetCatalog::open(&path).unwrap();
+            let (_, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, server).unwrap();
+            let mut loaded: Vec<_> = images
+                .color
+                .iter()
+                .chain(&images.normal)
+                .map(|image| image.path().unwrap().path().to_string_lossy().into_owned())
+                .collect();
+            loaded.sort();
+            assert_eq!(
+                surface_resource_paths(Some(&terrain), false, &catalog),
+                loaded
+            );
+        }
     }
 
     /// Default images are charged even when a quadrant has no stored texture layers.

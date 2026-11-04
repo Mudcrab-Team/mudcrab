@@ -600,6 +600,11 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     // the stage reads must not be switched silently.
     if cli.merged_terrain {
         command.push_str(" --merged-terrain");
+    }
+    if cli.merged_terrain
+        || cli.terrain_default_texture != TerrainDefaultTexture::default()
+        || cli.terrain_ini.is_some()
+    {
         command.push_str(match cli.terrain_default_texture {
             TerrainDefaultTexture::White => " --terrain-default-texture white",
             TerrainDefaultTexture::SkyrimIni => " --terrain-default-texture skyrim-ini",
@@ -793,6 +798,9 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
+        let terrain_selection = args
+            .iter()
+            .any(|argument| argument == "--terrain-default-texture" || argument == "--terrain-ini");
         let gpu_tuning = args
             .iter()
             .any(|argument| argument == "--gpu-quality" || argument == "--gpu-batch-mb");
@@ -812,6 +820,11 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
         if cli.merged_terrain {
             bail!(
                 "repair-failed does not build merged terrain; drop --merged-terrain and its options"
+            );
+        }
+        if terrain_selection {
+            bail!(
+                "repair-failed does not rebuild default land; use normal conversion for terrain defaults"
             );
         }
         if cli.resume_staging.is_some()
@@ -994,7 +1007,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--no-lod") => no_lod = true,
             Some("--merged-terrain") => merged_terrain = true,
             Some("--terrain-default-texture") => {
-                terrain_option.get_or_insert("--terrain-default-texture");
                 let value = next_value(&mut args, "--terrain-default-texture")?;
                 terrain_default_texture = match value.to_str() {
                     Some("white") => TerrainDefaultTexture::White,
@@ -1003,7 +1015,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                 };
             }
             Some("--terrain-ini") => {
-                terrain_option.get_or_insert("--terrain-ini");
                 terrain_ini = Some(next_path_value(&mut args, "--terrain-ini")?)
             }
             Some("--terrain-allow-downscale") => {
@@ -2082,24 +2093,13 @@ mod tests {
         ));
     }
 
-    /// Merged-terrain options mean nothing without --merged-terrain, an ini needs the skyrim-ini
-    /// default, --terrain-ini takes a path and never another option, and repair refuses the option.
+    /// Array options need merged terrain; defaults apply to all terrain paths and INI values are paths.
     #[test]
     fn merged_terrain_options_need_the_option_and_their_own_values() {
-        for dependent in [
-            vec!["--terrain-default-texture", "skyrim-ini"],
-            vec!["--terrain-default-texture", "white"],
-            vec!["--terrain-allow-downscale"],
-            vec!["--terrain-ini", "Skyrim.ini"],
-        ] {
-            let mut values = vec!["Data"];
-            values.extend(dependent.iter().copied());
-            let error = parse_cli(args(&values)).unwrap_err().to_string();
-            assert!(
-                error.contains("requires --merged-terrain"),
-                "{values:?}: {error}"
-            );
-        }
+        let error = parse_cli(args(&["Data", "--terrain-allow-downscale"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires --merged-terrain"), "{error}");
         // Explicit white with an ini is refused: the ini is only read by skyrim-ini.
         let error = parse_cli(args(&[
             "Data",
@@ -2164,6 +2164,29 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    /// Repair must reject explicitly supplied defaults, including the current default value.
+    #[test]
+    fn repair_rejects_default_land_options() {
+        for options in [
+            vec!["--terrain-default-texture", "white"],
+            vec!["--terrain-default-texture", "skyrim-ini"],
+            vec![
+                "--terrain-default-texture",
+                "skyrim-ini",
+                "--terrain-ini",
+                "custom.ini",
+            ],
+        ] {
+            let mut values = vec!["repair-failed", "Data", "out", "--apply"];
+            values.extend(options);
+            let error = parse_command(args(&values)).unwrap_err().to_string();
+            assert!(
+                error.contains("repair-failed does not rebuild default land"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

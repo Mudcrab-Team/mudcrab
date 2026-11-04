@@ -605,7 +605,8 @@ async fn rebuild_into(
         drop(merged);
         None
     };
-    let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
+    let mut diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
+    diffuse_paths.extend(crate::terrain_pipeline::default_land_sources(config)?);
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
     }

@@ -497,7 +497,7 @@ impl TerrainExtension {
         .map(Handle::id)
     }
 
-    /// Binds Skyrim's default diffuse and normal for a zero base ID. Zero overlays retain
+    /// Binds the pack's configured default for a zero base ID. Zero overlays retain
     /// their slots and weights without images; nonzero IDs require a converted diffuse.
     pub fn from_quadrant(
         terrain: &TerrainSnapshot,
@@ -513,6 +513,10 @@ impl TerrainExtension {
         for ((target, normal), layer) in textures.iter_mut().zip(normals.iter_mut()).zip(&layers) {
             if layer.texture_form_id == 0 && !layer.is_base {
                 // A preserved unresolved overlay keeps its slot and weights with no image bound.
+                continue;
+            }
+            if layer.texture_form_id == 0 && catalog.landscape_diffuse(0).is_none() {
+                // An explicit white default (or an old pack) needs no image or normal.
                 continue;
             }
             if let Some(path) = catalog.landscape_normal(layer.texture_form_id) {
@@ -2048,6 +2052,91 @@ mod tests {
         );
     }
 
+    /// Configured defaults affect only null bases, including absent bases in all quadrants.
+    #[test]
+    fn terrain_configured_default_land_is_scoped_to_null_bases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+            INSERT INTO texture_sets VALUES(1,'textures/poison.dds','textures/poison_n.dds');
+            INSERT INTO landscape_textures VALUES(0,1),(10,1);").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let asset_server = app.world().resource::<AssetServer>();
+        let mut terrain = terrain_fixture_with_overlays(91, &[vec![(3, 0.625)]]);
+        for layer in &mut terrain.layers {
+            layer.texture_form_id = 0;
+        }
+        let old = AssetCatalog::open(&path).unwrap();
+        let (material, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(material.layer_0.is_none());
+        connection.execute_batch("CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            INSERT INTO terrain_default_texture VALUES(0,NULL,NULL);").unwrap();
+        for (diffuse, normal) in [
+            (None, None),
+            (
+                Some("terrain/custom.ktx2"),
+                Some("terrain/custom-normal.ktx2"),
+            ),
+            (Some("terrain/custom.ktx2"), None),
+            (Some("../escape.ktx2"), Some("terrain/orphan.ktx2")),
+        ] {
+            connection
+                .execute(
+                    "UPDATE terrain_default_texture SET diffuse_path=?1,normal_path=?2",
+                    rusqlite::params![diffuse, normal],
+                )
+                .unwrap();
+            let catalog = AssetCatalog::open(&path).unwrap();
+            let expected = diffuse.filter(|path| !path.starts_with(".."));
+            let (material, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+            assert_eq!(images.color.len(), usize::from(expected.is_some()));
+            assert_eq!(
+                images.normal.len(),
+                usize::from(expected.is_some() && normal.is_some())
+            );
+            if let Some(path) = expected {
+                assert_eq!(
+                    material.layer_0.as_ref().unwrap().path().unwrap().path(),
+                    std::path::Path::new(path)
+                );
+            }
+            assert!(
+                material.layer_1.is_none(),
+                "zero overlay never receives the default"
+            );
+            assert_eq!(material.settings.weights[0][3], 0.625);
+            let mut unpainted = terrain.clone();
+            unpainted.layers.clear();
+            for quadrant in 0..4 {
+                let (empty, _) =
+                    TerrainExtension::from_quadrant(&unpainted, quadrant, &catalog, asset_server)
+                        .unwrap();
+                assert_eq!(empty.layer_0, material.layer_0);
+            }
+            let mut painted = terrain.clone();
+            painted
+                .layers
+                .iter_mut()
+                .find(|layer| layer.is_base)
+                .unwrap()
+                .texture_form_id = 10;
+            let (painted, _) =
+                TerrainExtension::from_quadrant(&painted, 0, &catalog, asset_server).unwrap();
+            assert_eq!(
+                painted.layer_0.unwrap().path().unwrap().path(),
+                std::path::Path::new("textures/poison.ktx2")
+            );
+        }
+    }
+
     /// A null base binds Dirt02 while zero overlays keep slots and weights without requests.
     /// A missing nonzero LTEX still fails without preventing a subsequent placeholder build.
     #[test]
@@ -2060,6 +2149,8 @@ mod tests {
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
                  CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+                 INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');
                  INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds');
                  INSERT INTO texture_sets VALUES(2,'textures/painted.dds');
                  INSERT INTO landscape_textures VALUES(0,1),(2116,NULL),(2117,2);",

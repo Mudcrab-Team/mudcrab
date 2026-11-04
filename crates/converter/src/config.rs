@@ -88,8 +88,8 @@ pub struct PipelineConfig {
     pub no_lod: bool,
     /// Build the merged-terrain outputs (#215) after the world database and the land textures:
     /// the land texture arrays, one merged mesh per exterior cell and the terrain chunk files.
-    /// Off by default, because the engine half that reads them has not landed, and converted
-    /// asset bytes are unchanged either way; generated terrain outputs are rebuilt every run.
+    /// Off by default; generated merged outputs are rebuilt every run. Publication of ordinary
+    /// default-land images is independent of this flag.
     #[serde(default)]
     pub merged_terrain: bool,
     /// Where entry 0 of the land texture table comes from; `white` unless a user selects the
@@ -235,22 +235,16 @@ impl PipelineConfig {
             self.schema_addons.is_empty() || self.record_reader == RecordReader::Inhouse,
             "schema add-ons require --record-reader inhouse"
         );
-        // The merged-terrain settings only mean something to a merged-terrain build, and the
-        // Skyrim.ini only to the skyrim-ini default. Checked here so a programmatic config is held to
-        // the same rules as the command line.
-        let terrain_default = TerrainDefaultTexture::default();
+        // Array downscaling needs merged terrain; default selection applies to every terrain path.
+        // Keep programmatic configuration subject to the same rules as the command line.
         color_eyre::eyre::ensure!(
-            self.merged_terrain
-                || (self.terrain_default_texture == terrain_default
-                    && self.terrain_ini.is_none()
-                    && !self.terrain_allow_downscale),
+            self.merged_terrain || !self.terrain_allow_downscale,
             "merged terrain settings require merged_terrain"
         );
         if let Some(ini) = &self.terrain_ini {
             color_eyre::eyre::ensure!(
-                self.merged_terrain
-                    && self.terrain_default_texture == TerrainDefaultTexture::SkyrimIni,
-                "terrain_ini requires merged_terrain and the skyrim-ini default texture"
+                self.terrain_default_texture == TerrainDefaultTexture::SkyrimIni,
+                "terrain_ini requires the skyrim-ini default texture"
             );
             color_eyre::eyre::ensure!(
                 ini.is_file(),
@@ -553,8 +547,7 @@ mod tests {
         }
     }
 
-    /// The merged-terrain settings are accepted only with the option, the ini only with the
-    /// skyrim-ini default, and the ini must be a file that exists.
+    /// Only array downscaling needs merged terrain; an INI needs SkyrimIni and an existing file.
     #[test]
     fn terrain_settings_need_the_merged_terrain_option_and_an_existing_ini() {
         let dir = tempfile::tempdir().unwrap();
@@ -570,13 +563,13 @@ mod tests {
         assert!(error.contains("require merged_terrain"), "{error}");
         config.terrain_allow_downscale = false;
         config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
-        assert!(config.validate().is_err());
+        config.validate().unwrap();
         config.terrain_default_texture = TerrainDefaultTexture::White;
 
-        // An ini needs the option and the skyrim-ini default; white with an ini is refused.
+        // An ini needs the skyrim-ini default; white with an ini is refused.
         config.terrain_ini = Some(ini.clone());
         let error = config.validate().unwrap_err().to_string();
-        assert!(error.contains("merged_terrain"), "{error}");
+        assert!(error.contains("skyrim-ini default texture"), "{error}");
         config.merged_terrain = true;
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("skyrim-ini default texture"), "{error}");

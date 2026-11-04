@@ -4439,7 +4439,7 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
         .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
-/// Orders stored layers, supplying Skyrim's implicit base for an unpainted quadrant.
+/// Orders stored layers, supplying the configured implicit base for an unpainted quadrant.
 pub(crate) fn quadrant_layers(
     terrain: &TerrainSnapshot,
     quadrant: u8,
@@ -4452,7 +4452,7 @@ pub(crate) fn quadrant_layers(
     layers.sort_by_key(|layer| (!layer.is_base, layer.layer, layer.texture_form_id));
     if layers.is_empty() {
         // The cell cache omits a quadrant with no texture assignments. It still draws Skyrim's
-        // default land, just like an explicit null BTXT base.
+        // configured default land, just like an explicit null BTXT base.
         static DEFAULT_BASES: std::sync::LazyLock<[TerrainLayerSnapshot; 4]> =
             std::sync::LazyLock::new(|| {
                 std::array::from_fn(|quadrant| TerrainLayerSnapshot {
@@ -4507,8 +4507,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry and nonzero LTEX dependencies. Zero bases use Skyrim's default
-/// pair; zero overlays retain their slots and weights without requiring a converted texture.
+/// Validates terrain geometry and nonzero LTEX dependencies. Zero bases use the pack's default
+/// images; zero overlays retain their slots and weights without requiring a converted texture.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
