@@ -379,7 +379,7 @@ fn version_four_archive_layout_rebuilds_before_current_version_reuse() {
     let dir = tempfile::tempdir().unwrap();
     let conn = fixture(dir.path());
     let (_, expected) = bake(&conn, dir.path(), None, "expected.rkyv");
-    assert_eq!(expected.version, 7);
+    assert_eq!(expected.version, shared::grass::GRASS_CACHE_VERSION);
     let old = VersionFourCache {
         version: 4,
         types: expected.types.clone(),

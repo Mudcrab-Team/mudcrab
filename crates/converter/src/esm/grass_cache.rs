@@ -2242,7 +2242,7 @@ mod tests {
             "v6 marker masks must never be reused"
         );
         let cache = read(&output);
-        assert_eq!(cache.version, 7);
+        assert_eq!(cache.version, shared::grass::GRASS_CACHE_VERSION);
         assert!(cache.cells.iter().all(|cell| {
             cell.quadrants
                 .iter()
