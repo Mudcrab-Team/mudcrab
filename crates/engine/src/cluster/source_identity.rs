@@ -39,12 +39,20 @@ pub struct SourcePrimitiveMesh(pub Handle<Mesh>);
 #[reflect(Component)]
 pub struct SourcePrimitiveTransform(pub Mat4);
 
-/// True when the raw document admits rigid resting geometry: no skins or morph targets.
-/// Node animation is permitted; a runtime pose change revokes its resting instance.
-/// This is a baseline fact, not a runtime permission to replace this entity.
+/// True when the raw document admits resting geometry: no morph targets, and skins only when
+/// the document has no animations (`shared::cluster_recipe::model_facts::model_rests`, the rule
+/// the producer bakes skins by). Node animation of unskinned models is permitted; a runtime pose
+/// change revokes its resting instance. This is a baseline fact, not a runtime permission to
+/// replace this entity.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Reflect)]
 #[reflect(Component)]
 pub struct SourceStaticModel(pub bool);
+
+/// Marks a joint of a skin in a source scene template. A joint usually has no mesh below it, yet
+/// moving it moves the skinned primitive, so a pose change on it revokes like a primitive's own.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[reflect(Component)]
+pub struct SourceSkinJoint;
 
 /// Register after glTF's plugin and before requesting cluster-backed models.
 pub struct SourceIdentityPlugin;
@@ -55,7 +63,8 @@ impl Plugin for SourceIdentityPlugin {
             .register_type::<SourceNodePose>()
             .register_type::<SourcePrimitiveMesh>()
             .register_type::<SourcePrimitiveTransform>()
-            .register_type::<SourceStaticModel>();
+            .register_type::<SourceStaticModel>()
+            .register_type::<SourceSkinJoint>();
         app.world_mut()
             .resource_mut::<GltfExtensionHandlers>()
             .0
@@ -82,11 +91,14 @@ impl Clone for SourceIdentityHandler {
 impl SourceIdentityHandler {
     fn begin_document(&mut self, source: &gltf::Gltf) {
         self.observed.clear();
-        self.static_model = source.skins().next().is_none()
-            && !source.meshes().any(|mesh| {
+        self.static_model = shared::cluster_recipe::model_facts::model_rests(
+            source.skins().next().is_some(),
+            source.meshes().any(|mesh| {
                 mesh.primitives()
                     .any(|primitive| primitive.morph_targets().next().is_some())
-            });
+            }),
+            source.animations().next().is_some(),
+        );
         self.default_scene = source
             .default_scene()
             .or_else(|| source.scenes().next())
@@ -150,6 +162,22 @@ impl SourceIdentityHandler {
             .collect();
         for (entity, pose) in poses {
             world.entity_mut(entity).insert(pose);
+        }
+        // The loader binds skins before this hook runs. Only a resting model's skin can stand
+        // behind a cluster instance, so only its joints guard one.
+        let joints: HashSet<Entity> = if !self.static_model {
+            HashSet::new()
+        } else {
+            world
+                .query::<&bevy::mesh::skinning::SkinnedMesh>()
+                .iter(world)
+                .flat_map(|skin| skin.joints.iter().copied())
+                .collect()
+        };
+        for joint in joints {
+            if let Ok(mut joint) = world.get_entity_mut(joint) {
+                joint.insert(SourceSkinJoint);
+            }
         }
         for (entity, mesh, transform, tag) in tags {
             world.entity_mut(entity).insert((
@@ -529,11 +557,14 @@ mod tests {
     }
 
     #[test]
-    fn raw_node_animation_keeps_resting_geometry_but_skin_and_morph_do_not() {
-        for variant in 0..3 {
+    fn node_animation_or_a_still_skin_keeps_resting_geometry_but_morphs_and_moving_skins_do_not() {
+        for variant in 0..4 {
             let mut value = serde_json::to_value(source(0).document.as_json()).unwrap();
             match variant {
-                0 => {
+                0 | 3 => {
+                    if variant == 3 {
+                        value["skins"] = json!([{"joints":[0]}]);
+                    }
                     value["accessors"].as_array_mut().unwrap().push(json!({
                         "bufferView":0,"componentType":5126,"count":3,
                         "type":"SCALAR","min":[0],"max":[1]
@@ -551,14 +582,15 @@ mod tests {
             let scene = dynamic.scenes().next().unwrap();
             let mut handler = SourceIdentityHandler::default();
             handler.begin_document(&dynamic);
-            assert_eq!(handler.static_model, variant == 0, "variant {variant}");
+            let rests = variant <= 1;
+            assert_eq!(handler.static_model, rests, "variant {variant}");
             let mut world = World::new();
             let entities = observe(&mut handler, &mut world, &scene_primitives(&scene));
             assert!(handler.complete_scene(&scene, &mut world));
             for entity in entities {
                 assert_eq!(
                     world.get::<SourceStaticModel>(entity),
-                    Some(&SourceStaticModel(variant == 0))
+                    Some(&SourceStaticModel(rests))
                 );
             }
             // Reusing a handler for a static document recomputes the trait.
@@ -566,6 +598,27 @@ mod tests {
             assert!(handler.static_model);
             assert!(!handler.clone().static_model);
         }
+    }
+
+    #[test]
+    fn every_skin_joint_in_a_completed_scene_is_marked() {
+        let source = source(0);
+        let scene = source.scenes().next().unwrap();
+        let mut handler = SourceIdentityHandler::default();
+        handler.begin_document(&source);
+        let mut world = World::new();
+        let entities = observe(&mut handler, &mut world, &scene_primitives(&scene));
+        let joint = world.spawn(Transform::default()).id();
+        let bystander = world.spawn(Transform::default()).id();
+        world
+            .entity_mut(entities[0])
+            .insert(bevy::mesh::skinning::SkinnedMesh {
+                joints: vec![joint],
+                ..default()
+            });
+        assert!(handler.complete_scene(&scene, &mut world));
+        assert!(world.get::<SourceSkinJoint>(joint).is_some());
+        assert!(world.get::<SourceSkinJoint>(bystander).is_none());
     }
 
     #[test]
