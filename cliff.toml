@@ -79,35 +79,20 @@ filter_unconventional = false
 commit_preprocessors = [
   { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "" },
 ]
-link_parsers = [
-  { pattern = "#(\\d+)", href = "https://github.com/Mudcrab-Team/mudcrab/issues/$1" },
-]
-# An array of regex based parsers for extracting data from the commit message.
-# Assigns commits to groups.
-# Optionally sets the commit's scope and can decide to exclude commits from further processing.
+# Titles are enforced as Conventional Commits (see docs/contributing/writing-prs.md),
+# so match on the type only. Commits that predate the rule fall into "Changed".
+# Skips come first so they win over the group rules below.
 commit_parsers = [
-  { body = ".*security", group = "Security" },
-  { message = "^feat", group = "Added" },
-  { message = "^[aA]dd", group = "Added" },
-  { message = "^[sS]upport", group = "Added" },
-  { message = "^.*: add", group = "Added" },
-  { message = "^.*: support", group = "Added" },
-  { message = "^doc", group = "Documentation" },
-  { message = "^perf", group = "Performance" },
-  { message = "^refactor", group = "Changed" },
-  { message = "^style", group = "Changed" },
-  { message = "^revert", group = "Removed" },
-  { message = "^[rR]emove", group = "Removed" },
-  { message = "^.*: remove", group = "Removed" },
-  { message = "^.*: delete", group = "Removed" },
-  { message = "^test", group = "Tests" },
-  { message = "^fix", group = "Fixed" },
-  { message = "^.*: fix", group = "Fixed" },
-  { message = "^chore\\(release\\): prepare", skip = true },
-  { message = "^chore\\(deps.*\\)", skip = true },
-  { message = "^chore\\(pr\\)", skip = true },
-  { message = "^chore\\(pull\\)", skip = true },
-  { message = "^chore|^ci|^build", group = "Tooling & CI" },
+  { message = "^chore(\\(release\\))?!?: prepare", skip = true },
+  { message = "^chore\\(deps[^)]*\\)", skip = true },
+  { message = "^feat(\\([^)]*\\))?!?:", group = "Added" },
+  { message = "^fix(\\([^)]*\\))?!?:", group = "Fixed" },
+  { message = "^perf(\\([^)]*\\))?!?:", group = "Performance" },
+  { message = "^docs(\\([^)]*\\))?!?:", group = "Documentation" },
+  { message = "^test(\\([^)]*\\))?!?:", group = "Tests" },
+  { message = "^revert(\\([^)]*\\))?!?:", group = "Removed" },
+  { message = "^(refactor|style)(\\([^)]*\\))?!?:", group = "Changed" },
+  { message = "^(chore|ci|build)(\\([^)]*\\))?!?:", group = "Tooling & CI" },
   { message = "^.*", group = "Changed" },
 ]
 # Exclude commits that are not matched by any commit parser.

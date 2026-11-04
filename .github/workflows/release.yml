@@ -138,7 +138,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.resolve_tag.outputs.tag }}
         run: |
-          git-cliff --current --tag "$TAG" --output RELEASE_NOTES.md
+          git-cliff --current --tag "$TAG" --strip all --output RELEASE_NOTES.md
 
       - name: Generate release-metadata.json
         env:
