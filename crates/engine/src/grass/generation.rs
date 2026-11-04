@@ -778,7 +778,10 @@ mod tests {
             expected.slot = old.candidate_slot();
             let mut actual = *new;
             actual.slot = new.candidate_slot();
-            assert_eq!(actual, expected, "LAND tint must preserve placement identity");
+            assert_eq!(
+                actual, expected,
+                "LAND tint must preserve placement identity"
+            );
             assert_eq!((old.slot >> 18) & 127, 127, "plain LAND is white");
             assert_eq!(new.slot >> 25, 127, "zero Color Range stays unit strength");
             let land = f64::from((new.slot >> 18) & 127) / 127.0;
