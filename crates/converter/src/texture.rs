@@ -411,10 +411,11 @@ pub(crate) fn publish_ktx2_file(output: &Path, ktx2: &[u8]) -> Result<()> {
     publish
 }
 
-/// Whether the converter copies this DDS's blocks instead of encoding them.
-/// Only the remaining textures are worth sending to the GPU encoder.
+/// Whether this DDS bypasses the lossy GPU encoder. Packed normals use the
+/// CPU's exact RGBA8 path; supported native formats retain their source blocks.
 pub(crate) fn preserves_native_blocks(dds: &Dds, encoding: TextureEncoding) -> bool {
     native_ktx2_format(dds, encoding).is_some()
+        || (encoding == TextureEncoding::NormalLinear && packed_rgba8_layout(dds).is_some())
 }
 
 /// Maps a DDS to its native KTX2 `VkFormat` when the source blocks can be
@@ -3406,6 +3407,13 @@ pub(crate) mod tests {
             .unwrap();
             let mut bytes = Vec::new();
             dds.write(&mut bytes).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("directional.dds");
+            std::fs::write(&source, &bytes).unwrap();
+            assert!(
+                !crate::texture_gpu::takes(&source, TextureEncoding::NormalLinear),
+                "lossy GPU encoder must decline packed normals"
+            );
             let encoded = TextureConverter::convert(&bytes, TextureEncoding::NormalLinear).unwrap();
             assert_eq!(
                 ktx2::Reader::new(&encoded).unwrap().header().format,
