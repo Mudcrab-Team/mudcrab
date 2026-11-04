@@ -1517,7 +1517,7 @@ fn packed_rgba8_layout(dds: &Dds) -> Option<PackedRgba8> {
 /// Block-compresses an uncompressed RGB(A) DDS to native BC7: the alpha profile
 /// when the layout has an alpha channel, the opaque profile otherwise (alpha at
 /// or near 255, as BC7 mode 6 can land a step or two below it). BC7 is
-/// used for every slot, so these textures keep the GPU format and memory the
+/// used for color/data slots; packed normals retain exact RGBA8 instead. Color/data keep the
 /// engine got before (it transcoded their UASTC to BC7 at load time). sRGB vs
 /// UNORM follows the slot encoding.
 fn convert_packed_to_native(
@@ -1526,6 +1526,15 @@ fn convert_packed_to_native(
     encoding: TextureEncoding,
     zstd_level: i32,
 ) -> Result<Vec<u8>> {
+    if encoding == TextureEncoding::NormalLinear {
+        // High-frequency tangent normals must not receive an additional lossy
+        // color encode. Preserve every decoded channel and supplied mip.
+        let mut levels = Vec::new();
+        for_each_packed_mip(dds, layout, |_, _, rgba| { levels.push(rgba); Ok(()) })?;
+        let result = write_native_ktx2(ktx2::Format::R8G8B8A8_UNORM, dds.get_width(), dds.get_height(), 1, 1, &levels, zstd_level)?;
+        validate_ktx2_against_dds(&result, dds, encoding, false)?;
+        return Ok(result);
+    }
     let format = if encoding.is_srgb() {
         ktx2::Format::BC7_SRGB_BLOCK
     } else {
@@ -3374,10 +3383,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn opaque_packed_formats_become_opaque_bc7_in_every_slot() {
+    fn packed_directional_normals_retain_every_channel_and_mip() {
+        for format in [D3DFormat::A8R8G8B8, D3DFormat::X8R8G8B8, D3DFormat::R8G8B8] {
+            let dds = packed_dds(format, 16, 8, 5, gradient);
+            let layout = packed_rgba8_layout(&dds).unwrap();
+            let mut expected = Vec::new();
+            for_each_packed_mip(&dds, layout, |_, _, rgba| { expected.push(rgba); Ok(()) }).unwrap();
+            let mut bytes = Vec::new();
+            dds.write(&mut bytes).unwrap();
+            let encoded = TextureConverter::convert(&bytes, TextureEncoding::NormalLinear).unwrap();
+            assert_eq!(ktx2::Reader::new(&encoded).unwrap().header().format, Some(ktx2::Format::R8G8B8A8_UNORM));
+            for (mip, rgba) in expected.iter().enumerate() {
+                assert_eq!(&decode_zstd_level(&encoded, mip), rgba, "mip {mip}");
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_packed_formats_become_opaque_bc7_in_color_and_data_slots() {
         for (encoding, expected) in [
             (TextureEncoding::ColorSrgb, ktx2::Format::BC7_SRGB_BLOCK),
-            (TextureEncoding::NormalLinear, ktx2::Format::BC7_UNORM_BLOCK),
             (TextureEncoding::DataLinear, ktx2::Format::BC7_UNORM_BLOCK),
         ] {
             for format in [D3DFormat::R8G8B8, D3DFormat::X8R8G8B8] {
@@ -3414,7 +3439,7 @@ pub(crate) mod tests {
         assert_packed_converts_with(
             D3DFormat::R8G8B8,
             (16, 16, 1),
-            TextureEncoding::NormalLinear,
+            TextureEncoding::DataLinear,
             ktx2::Format::BC7_UNORM_BLOCK,
             false,
             noise,

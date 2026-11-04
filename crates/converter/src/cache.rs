@@ -438,6 +438,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
+    "authored-tangent-frame",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -595,6 +596,9 @@ fn configuration_hash_with_identity(
         "texture_uastc_level": config.texture_uastc_level,
         "script_abi_version": config.script_abi_version,
     });
+    if schema == CONVERTER_SCHEMA_VERSION {
+        relevant["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
+    }
     // Actual DDS roles remain in per-source proofs rather than this broad identity.
     if let Some(identity) = identity {
         relevant["record_reader"] = identity.clone();
@@ -695,6 +699,9 @@ pub fn asset_configuration_hash_for_schema(
         }),
         _ => color_eyre::eyre::bail!("unsupported asset cache kind {source_ext}"),
     };
+    if source_ext == "dds" && schema == CONVERTER_SCHEMA_VERSION {
+        relevant["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
+    }
     if source_ext == "dds" && schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
     }

@@ -134,6 +134,7 @@ impl Model {
             let uvs = smesh.uvs_as_bytes();
             let triangles = smesh.triangles_as_bytes();
             let colors = smesh.colors_as_bytes();
+            let tangents = smesh.tangents_as_bytes();
 
             let mut append_attribute = |bytes: &[u8],
                                         component_type,
@@ -223,6 +224,9 @@ impl Model {
                     gltf::Semantic::Colors(0),
                     "COLORS",
                 );
+            }
+            if !tangents.is_empty() {
+                append_attribute(&tangents, accessor::ComponentType::F32, accessor::Type::Vec4, (tangents.len() / 16) as u64, gltf::Semantic::Tangents, "TANGENTS");
             }
             drop(append_attribute);
 
@@ -1330,6 +1334,7 @@ mod shared_skeleton_tests {
                 name: Some(name.to_owned()),
                 positions: vec![glam::Vec3::ZERO, glam::Vec3::X],
                 normals: Vec::new(),
+                tangents: Vec::new(),
                 uvs: Vec::new(),
                 triangles: Vec::new(),
                 colors: Vec::new(),

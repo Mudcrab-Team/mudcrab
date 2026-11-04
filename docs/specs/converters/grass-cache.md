@@ -44,6 +44,12 @@ and preserves authored GNAM species order. Only the grass artifact is invalidate
 Version seven excludes bases whose winning record header has Is Marker set,
 using the existing `statics.flags` projection. Older grass masks rebuild; the
 database schema, archive layout and other asset/cache identities are unchanged.
+Version eight accompanies preserved static NIF tangent frames (`TANGENT` XYZ and
+handedness) and lossless linear RGBA8 for packed normal textures, retaining every
+supplied mip. Mesh and texture settings proofs invalidate earlier converted bytes;
+the grass cache rebuilds under its new producer version. Vertex RGBA remains intact.
+Invalid optional authored tangent frames warn and are omitted; the runtime can
+reconstruct a frame from geometry and UVs when one is absent.
 Incomplete grass rules and missing model paths are skipped; unresolved/deleted
 species links are silently filtered. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce

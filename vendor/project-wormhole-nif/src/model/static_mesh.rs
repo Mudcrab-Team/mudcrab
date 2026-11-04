@@ -7,6 +7,8 @@ pub struct StaticMesh {
     pub name: Option<String>,
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// Authored tangent direction and glTF handedness; empty when unavailable.
+    pub tangents: Vec<glam::Vec4>,
     pub uvs: Vec<glam::Vec2>,
     pub triangles: Vec<glam::u16::U16Vec3>,
     pub colors: Vec<BSVec4>,
@@ -148,6 +150,10 @@ impl StaticMesh {
         bytes
     }
 
+    pub fn tangents_as_bytes(&self) -> Vec<u8> {
+        self.tangents.iter().flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes)).collect()
+    }
+
     pub fn uvs_as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         for uv in &self.uvs {
@@ -185,6 +191,7 @@ impl Default for StaticMesh {
             name: None,
             positions: Vec::new(),
             normals: Vec::new(),
+            tangents: Vec::new(),
             uvs: Vec::new(),
             triangles: Vec::new(),
             colors: Vec::new(),
