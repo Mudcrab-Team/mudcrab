@@ -670,6 +670,7 @@ mod tests {
                 .map(|instance| {
                     let mut instance = *instance;
                     instance.color = 0;
+                    instance.slot = instance.candidate_slot();
                     instance
                 })
                 .collect();

@@ -12,6 +12,7 @@ const MAX_FILE_BYTES: u64 = 65_536;
 #[serde(rename_all = "lowercase")]
 pub enum GrassMode {
     #[default]
+    Flat,
     D,
     E,
     F,
@@ -41,7 +42,7 @@ impl Default for GrassTuning {
     /// Flat-b appearance; authored colour variation remains enabled.
     fn default() -> Self {
         Self {
-            mode: GrassMode::D,
+            mode: GrassMode::Flat,
             brightness: 1.0,
             ambient_strength: 1.15,
             sun_strength: 0.1,
@@ -67,8 +68,15 @@ impl GrassTuning {
             mode,
             ..Self::default()
         };
+        if mode != GrassMode::Flat {
+            values.ambient_strength = 1.0;
+            values.sun_strength = 1.0;
+            values.sun_angle_weight = 1.0;
+            values.shadow_strength = 1.0;
+            values.saturation = 1.0;
+        }
         match mode {
-            GrassMode::D => {}
+            GrassMode::Flat | GrassMode::D => {}
             GrassMode::E => values.sun_angle_weight = 0.0,
             GrassMode::F => values.shadow_floor = 0.68,
         }
@@ -113,12 +121,13 @@ impl GrassTuning {
             .parse::<toml_edit::Document<String>>()
             .map_err(|error| format!("invalid grass tuning TOML: {error}"))?;
         let mode = match document.get("mode") {
-            None => GrassMode::D,
+            None => GrassMode::Flat,
             Some(value) => match value.as_str() {
+                Some("flat") => GrassMode::Flat,
                 Some("d") => GrassMode::D,
                 Some("e") => GrassMode::E,
                 Some("f") => GrassMode::F,
-                _ => return Err("mode must be \"d\", \"e\", or \"f\"".into()),
+                _ => return Err("mode must be \"flat\", \"d\", \"e\", or \"f\"".into()),
             },
         };
         let mut values = Self::preset(mode);

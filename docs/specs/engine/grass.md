@@ -427,3 +427,9 @@ the actual frame; they do not reread the file in the callback.
 Explicit `--shots` runs freeze wind time and allow `-on`/`-off` shot-name pairs
 to suppress grass draws while retaining placement and readiness accounting.
 No experimental gamma or alternate placement switches are included.
+
+The default tuning mode is `flat`; `d`, `e` and `f` remain explicit named presets
+for comparisons. Omitted mode selects `flat`, including an empty TOML file.
+All production startup paths use the tuning uniforms; there is no shading
+experiment environment switch. Authored normal maps use the preserved glTF frame
+and one DirectX Y conversion, consistent with the ordinary native material path.
