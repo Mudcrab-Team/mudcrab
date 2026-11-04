@@ -489,3 +489,18 @@ fn g3_brightness_byte_decodes_as_unit_range() {
         );
     }
 }
+
+/// Evaluate the production decoder with a tilted, asymmetric normal and rotated
+/// frame; unlike a flat normal this distinguishes swapped tangent axes/signs.
+#[test]
+fn directional_normal_fixture_uses_authored_axes_and_handedness() {
+    let shader = include_str!("shaders/grass.wgsl");
+    let source = lighting_fixture_function(shader,"tangent_normal").unwrap().replace("fn tangent_normal(","fn fixture(");
+    let args = [vec![0.8,0.3,0.9],vec![0.0,1.0,0.0],vec![0.0,0.0,-1.0],vec![1.0,0.0,0.0]];
+    let actual = lighting_fixture_run(&source,&args);
+    let length = 1.16_f32.sqrt();
+    assert_lighting_rgb(&actual,[-0.4/length,0.8/length,-0.6/length]);
+    let mut mirrored = args.clone(); mirrored[3][0] = -1.0;
+    let actual = lighting_fixture_run(&source,&mirrored);
+    assert_lighting_rgb(&actual,[0.4/length,0.8/length,-0.6/length]);
+}

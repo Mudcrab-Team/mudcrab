@@ -25,12 +25,15 @@ struct Grass {
     sun_color: vec4<f32>,
     ambient: vec4<f32>,
     uv_transform: mat3x3<f32>,
+    normal_params: vec4<f32>,
 }
 @group(#{GRASS_GROUP}) @binding(0) var<uniform> grass: Grass;
 @group(#{GRASS_GROUP}) @binding(1) var albedo: texture_2d<f32>;
 @group(#{GRASS_GROUP}) @binding(2) var albedo_sampler: sampler;
 @group(#{GRASS_GROUP}) @binding(3) var wind: texture_2d<f32>;
 @group(#{GRASS_GROUP}) @binding(4) var wind_sampler: sampler;
+@group(#{GRASS_GROUP}) @binding(5) var normal_map: texture_2d<f32>;
+@group(#{GRASS_GROUP}) @binding(6) var normal_sampler: sampler;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
@@ -44,6 +47,9 @@ struct Vertex {
     @location(3) color: vec4<f32>,
 #endif
     @location(4) packed: vec4<u32>,
+#ifdef TANGENT
+    @location(5) tangent: vec4<f32>,
+#endif
 }
 struct Varyings {
     @builtin(position) position: vec4<f32>,
@@ -52,6 +58,7 @@ struct Varyings {
     @location(2) normal: vec3<f32>,
     @location(3) light: vec3<f32>,
     @location(4) world_position: vec4<f32>,
+    @location(5) tangent: vec4<f32>,
 }
 fn signed_byte(value: u32) -> f32 {
     return f32(i32((value & 255u) ^ 128u) - 128) / 127.0;
@@ -74,21 +81,31 @@ fn vertex(input: Vertex) -> Varyings {
 #ifdef NORMAL
     n = normalize((grass.model_normal * vec4(input.normal,0.0)).xyz);
 #endif
+    var t = vec3(1.0,0.0,0.0);
+    var handedness = 0.0;
+#ifdef TANGENT
+    t = (grass.model * vec4(input.tangent.xyz,0.0)).xyz;
+    handedness = input.tangent.w * sign(determinant(mat3x3(grass.model[0].xyz,grass.model[1].xyz,grass.model[2].xyz)));
+#endif
     // xEdit GRAS.DATA flags: vertex lighting=1, uniform scaling=2, fit slope=4.
-    if (flags & 2u) != 0u { p *= scale; } else { p.y *= scale; n.y /= max(scale,0.001); }
-    p = rotate_y(p, rotation); n = rotate_y(n, rotation);
+    if (flags & 2u) != 0u { p *= scale; } else { p.y *= scale; n.y /= max(scale,0.001); t.y *= scale; }
+    p = rotate_y(p, rotation); n = rotate_y(n, rotation); t = rotate_y(t, rotation);
     if (flags & 4u) != 0u {
         let up = normalize(vec3(signed_byte(input.packed.z >> 8u), signed_byte(input.packed.z >> 24u), -signed_byte(input.packed.z >> 16u)));
         // Quantization can make a steep normal exactly parallel to Z.
         let axis = select(vec3(0.0,0.0,1.0),vec3(1.0,0.0,0.0),abs(up.z)>0.99);
         let tangent = normalize(cross(up, axis));
         let basis = mat3x3(tangent,up,cross(tangent,up));
-        p = basis*p; n = basis*n;
+        p = basis*p; n = basis*n; t = basis*t;
     }
     let absolute_xy = grass.absolute_grid.xy + xy;
     let phase = grass.fade.z / max(grass.height_wind.z,0.01);
     let gust = textureSampleLevel(wind,wind_sampler,absolute_xy / 8192.0 + vec2(phase*0.035,phase*0.02),0.0).r * 2.0 - 1.0;
-    if grass.height_wind.z > 0.0 { p.x += gust * max(p.y,0.0) * 0.10; p.z += gust * max(p.y,0.0) * 0.035; }
+    var sway = 1.0;
+#ifdef COLOR
+    sway = clamp(input.color.a,0.0,1.0);
+#endif
+    if grass.height_wind.z > 0.0 { p.x += gust * max(p.y,0.0) * 0.10 * sway; p.z += gust * max(p.y,0.0) * 0.035 * sway; }
     let root = (grass.world_from_cell * vec4(xy.x,height,-xy.y,1.0)).xyz;
     let world = grass.world_from_cell * vec4(p + vec3(xy.x,height,-xy.y),1.0);
     out.position = view.clip_from_world * world;
@@ -105,10 +122,11 @@ fn vertex(input: Vertex) -> Varyings {
     out.uv = (grass.uv_transform * vec3(out.uv,1.0)).xy;
     out.color = grass.color * vec4(vec3(brightness),1.0);
 #ifdef COLOR
-    // Preserve authored RGB tint. The current wind model leaves vertex alpha unused.
+    // Authored RGB tints albedo; alpha weights wind independently of coverage.
     out.color *= vec4(input.color.rgb,1.0);
 #endif
     out.normal = normalize((grass.world_from_cell * vec4(n,0.0)).xyz);
+    out.tangent = vec4((grass.world_from_cell * vec4(t,0.0)).xyz,handedness);
     out.light = lighting(out.normal);
     return out;
 }
@@ -159,8 +177,34 @@ fn directional_shadow(input:Varyings) -> f32 {
 #endif
     return 1.0;
 }
+// Native tangent-space decode; normal textures are linear data. Source NIF
+// bitangent handedness is retained, with no additional green-channel inversion.
+fn tangent_normal(sampled:vec3<f32>, n:vec3<f32>, t:vec3<f32>, b:vec3<f32>) -> vec3<f32> {
+    let v = sampled * 2.0 - vec3(1.0);
+    return normalize(t*v.x + b*v.y + n*v.z);
+}
+fn mapped_normal(input:Varyings) -> vec3<f32> {
+    let sampled = textureSample(normal_map,normal_sampler,input.uv).rgb;
+    let n = normalize(input.normal);
+    var t = input.tangent.xyz - n*dot(n,input.tangent.xyz);
+    var b = cross(n,t)*input.tangent.w;
+    // Older/modded GLBs can reconstruct a frame from retained position/UVs.
+    let px = dpdx(input.world_position.xyz); let py = dpdy(input.world_position.xyz);
+    let ux = dpdx(input.uv); let uy = dpdy(input.uv);
+    let det = ux.x*uy.y - ux.y*uy.x;
+    if input.tangent.w == 0.0 {
+        t = (px*uy.y - py*ux.y)*sign(det);
+        b = (py*ux.x - px*uy.x)*sign(det);
+        t -= n*dot(n,t); b -= n*dot(n,b);
+    }
+    if grass.normal_params.x == 0.0 || dot(t,t)<0.000001 || dot(b,b)<0.000001 { return n; }
+    return tangent_normal(sampled,n,normalize(t),normalize(b));
+}
 @fragment
-fn fragment(input:Varyings,@builtin(sample_index) sample_index:u32) -> Fragment {
+fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fragment {
+    var input = vertex_input;
+    input.normal = mapped_normal(input);
+    if grass.normal_params.x != 0.0 { input.light = lighting(input.normal); }
     let base = textureSample(albedo,albedo_sampler,input.uv) * input.color;
     var out:Fragment;
     out.mask = coverage(base.a,sample_index);

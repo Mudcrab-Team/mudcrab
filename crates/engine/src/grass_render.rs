@@ -132,12 +132,14 @@ struct GrassModel {
 struct PrimitiveTemplate {
     mesh: Handle<Mesh>,
     texture: Handle<Image>,
+    normal_texture: Handle<Image>,
     model: Mat4,
     model_normal: Mat4,
     color: Vec4,
     /// Authored mask threshold; negative means opaque and bypasses alpha coverage.
     cutoff: f32,
     uv_transform: Mat3,
+    normal_params: Vec4,
 }
 
 /// Root discovery, hierarchy traversal and primitive extraction resume between frames.
@@ -198,6 +200,7 @@ struct GrassPrimitive {
     instances: Arc<Vec<GrassInstance>>,
     mesh: Handle<Mesh>,
     texture: Handle<Image>,
+    normal_texture: Handle<Image>,
     wind: Handle<Image>,
     uniform: GrassUniform,
     model: Mat4,
@@ -231,6 +234,7 @@ struct GrassUniform {
     sun_color: Vec4,
     ambient: Vec4,
     uv_transform: Mat3,
+    normal_params: Vec4,
 }
 
 /// A small, shared wind field; generated data, not an authored grass replacement.
@@ -361,6 +365,8 @@ fn build_templates(
                         texture: material
                             .and_then(|material| material.base_color_texture.clone())
                             .unwrap_or_default(),
+                        normal_texture: material.and_then(|m| m.normal_map_texture.clone()).unwrap_or_default(),
+                        normal_params: Vec4::new(u32::from(material.is_some_and(|m| m.normal_map_texture.is_some())) as f32, 0.0, 0.0, 0.0),
                         model,
                         model_normal: model.inverse().transpose(),
                         color: material.map_or(Vec4::ONE, |material| {
@@ -477,6 +483,7 @@ fn attach_grass_primitives(
                 instances: batch.instances.clone(),
                 mesh: template.mesh.clone(),
                 texture: template.texture.clone(),
+                normal_texture: template.normal_texture.clone(),
                 wind: wind.0.clone(),
                 model: template.model,
                 slot_count: batch.slot_count,
@@ -503,6 +510,7 @@ fn attach_grass_primitives(
                     sun_color: Vec4::ZERO,
                     ambient: Vec4::ZERO,
                     uv_transform: template.uv_transform,
+                    normal_params: template.normal_params,
                 },
             };
             commands.entity(entity).with_children(|parent| {
@@ -615,6 +623,8 @@ impl GrassPipeline {
                         sampler(SamplerBindingType::Filtering),
                         texture_2d(TextureSampleType::Float { filterable: true }),
                         sampler(SamplerBindingType::Filtering),
+                        texture_2d(TextureSampleType::Float { filterable: true }),
+                        sampler(SamplerBindingType::Filtering),
                     ),
                 ),
             ),
@@ -666,6 +676,7 @@ impl SpecializedMeshPipeline for GrassPipeline {
             (Mesh::ATTRIBUTE_NORMAL, 1, "NORMAL"),
             (Mesh::ATTRIBUTE_UV_0, 2, "UV"),
             (Mesh::ATTRIBUTE_COLOR, 3, "COLOR"),
+            (Mesh::ATTRIBUTE_TANGENT, 5, "TANGENT"),
         ] {
             if layout.0.contains(attribute) {
                 attributes.push(attribute.at_shader_location(location));
@@ -888,6 +899,8 @@ fn prepare_grass(
             };
             texture
         };
+        let normal = if data.normal_texture == Handle::default() { &fallback.d2 }
+            else { let Some(image) = images.get(&data.normal_texture) else { continue; }; image };
         let key = Arc::as_ptr(&data.instances) as usize;
         let buffer = if let Some((_, buffer)) = buffers.0.get(&key) {
             buffer.clone()
@@ -920,6 +933,8 @@ fn prepare_grass(
                 &texture.sampler,
                 &wind.texture_view,
                 &wind.sampler,
+                &normal.texture_view,
+                &normal.sampler,
             )),
         );
         commands.entity(entity).insert(GrassGpu {
@@ -1807,6 +1822,7 @@ mod tests {
             instances: batch().instances,
             mesh: Handle::default(),
             texture: Handle::default(),
+            normal_texture: Handle::default(),
             wind: Handle::default(),
             model: Mat4::IDENTITY,
             slot_count: 4,
@@ -1823,6 +1839,7 @@ mod tests {
                 sun_color: Vec4::ONE,
                 ambient: Vec4::ONE,
                 uv_transform: Mat3::IDENTITY,
+                normal_params: Vec4::ZERO,
             },
         }
     }

@@ -153,20 +153,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("grass_cache.rkyv");
         let mut data = source();
-        data.version = 7;
+        data.version = GRASS_CACHE_VERSION;
         std::fs::write(&path, rkyv::to_bytes::<Error>(&data).unwrap()).unwrap();
         {
             let cache = GrassCache::open(&path).unwrap();
             assert_eq!(cache.cell_at(3, -9, -8), Some(7));
             assert_eq!(f32::from(cache.cell(42).unwrap().heights[0]), 205.0);
         }
-        for version in [5, 6] {
+        for version in [5, 6, 7] {
             data.version = version;
             std::fs::write(&path, rkyv::to_bytes::<Error>(&data).unwrap()).unwrap();
             let error = GrassCache::open(&path).err().unwrap().to_string();
             assert!(
                 error.contains(&format!(
-                    "unsupported grass cache version {version}; reconvert grass masks for version 7"
+                    "unsupported grass cache version {version}; reconvert grass masks for version {GRASS_CACHE_VERSION}"
                 )),
                 "{error}"
             );

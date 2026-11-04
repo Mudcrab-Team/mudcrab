@@ -27,37 +27,15 @@ the engine is running.
 Both merged terrain and its quadrant fallback supply the selected, welded
 height field to grass; cache heights never replace the surface actually drawn.
 
-Candidates follow a cell-shifted R2 sequence, seeded with cell ID and slot index.
-Every accepted instance retains its original slot index and batches retain slot
-order. Effective blend weight is shared among a texture's nominated species;
-weights for repeated species accumulate across layers. The INI type cap selects
-the first **N+1 resolved species** in each cached layer's winning LTEX GNAM
-occurrence order. The configured `iMaxGrassTypesPerTexure` remains the raw
-INI-equivalent N (default 2, effective count 3); zero admits one species, and
-programmatic maximum values saturate without overflow. The texture threshold rejects blend
-weights below its value. Both apply again after jitter. The converter preserves
-first occurrences and filters unresolved/deleted links without reordering survivors;
-the runtime never sorts the per-layer list by FormID. Only the global rule table
-and output batches use FormID order for lookup and deterministic organization.
-For example, LReachGrass01 nominates ReachGrass02, ReachGrass01, TundraGrass03;
-the default setting admits all three. The version gate rejects pre-marker
-producers and requests reconversion: v5 sorted lists cannot recover GNAM priority,
-and v6 masks can still contain header-flagged markers. See the
-[cache contract](../converters/grass-cache.md).
-The N+1 boundary follows the vanilla-compatible placement in
-[panthuncia/FasterNGIO](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L105-L128):
-three resolved entries for INI two, one for zero. This attributed public evidence
-establishes that replacement's behavior, not proof from Skyrim's binary. Its
-per-texture list is reused across spatial patches, without a random subset for
-each quadrant. Its thresholded per-species patches differ from MudCrab's
-opacity-weighted shared-slot competition; the boundary alone does not establish
-placement parity. The converter already removes unresolved/deleted links while
-preserving first occurrences. An admitted rule with no usable model still
-consumes its prefix place; the cap does not backfill from later GNAM entries.
-Species that fail slope
-or water rules cannot compete. Each eligible species scores its blended weight
-and density through a deterministic exponential race; the highest score wins.
-An independent density test controls occurrence. This deterministic sequence
+Each admitted species owns an R2 stream seeded from cell and species identity.
+The configured cap admits exactly N resolved entries in each LTEX's GNAM order
+(default two, zero none). Repeated nominations sum blend support without dividing
+by species count. Each species independently tests continuous support times authored
+density against one deterministic draw, reused at the final jittered root. Other
+species cannot steal its roots. This is MudCrab's native placement design.
+An admitted rule without a usable model still consumes its prefix place; the cap
+does not backfill from later GNAM entries. Output batches use FormID order.
+
 and weighted competition rule are MudCrab policy.
 
 Position range supplies deterministic XY jitter over the total span
@@ -192,7 +170,7 @@ These are empirical design evidence, not claims about Skyrim's internal shader
 or exact Colour Range distribution. The current implementation retains one-sided lighting and shadows, and adds the
 attributed luminance/range law above. Authored vertex RGB remains numerically
 unchanged, with no extra sRGB conversion, ambient retuning or weather changes.
-Instance size remains 16 bytes. The N+1 prefix can change species competition
+Instance size remains 16 bytes. The configured prefix can change species admission
 and instance counts; retained colour samples also increase CPU pool accounting.
 Grass enables 4x MSAA on the world camera, including while interactive renderer
 preferences change. The saved MSAA preference still applies to reflections and
@@ -291,7 +269,7 @@ that file; every other value is an explicit **MudCrab default**.
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
 | `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Raw N; effective species cap N+1 (zero admits one); INI spelling retained |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Exact resolved-species cap (zero admits none); INI spelling retained |
 | `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
 | `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
@@ -320,3 +298,22 @@ diagnostics report effective grass settings and each key's `--ini` path or
 candidate slots per cell versus 4,096 at 64. Authored mesh/node dimensions are
 preserved. Matching default inputs and terrain grounding does not establish
 exact Skyrim placement, variation, animation or visual parity.
+
+## Normal maps and authored wind weight
+
+Static grass keeps authored tangent XYZ and bitangent handedness through glTF.
+Normal textures are sampled as linear data in the fragment shader and transformed
+through that frame. Legacy geometry without TANGENT uses position/UV derivatives;
+degenerate frames or absent maps keep the geometric normal. NIF bitangent signs
+are retained without an extra green-channel inversion. Node reflection/nonuniform
+scale, instance yaw and slope transform the frame with the mesh. Both raster
+sides retain authored orientation. Wind displaces positions while retaining the
+undeformed shading frame, matching the existing native wind policy.
+
+Vertex alpha linearly weights wind displacement (absent colors use full weight).
+Zero alpha is motionless; alpha does not control opacity. Coverage uses texture
+and material alpha. Public study: Community Shaders contributors, RunGrass and
+GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
+project exceptions). Its alpha-weighted wind supports this interpretation; its
+feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
+and lighting formulas here remain native MudCrab choices.

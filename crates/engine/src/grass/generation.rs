@@ -38,13 +38,6 @@ fn unit(x: u32) -> f32 {
     (x >> 8) as f32 / 16_777_216.0
 }
 
-/// Generate species randomness independently of density and jitter channels.
-fn species_random(cell: u32, slot: u32, species: u32) -> f32 {
-    // Species IDs are data, not random-channel selectors. Keep this domain separate
-    // from density/jitter/scale channels even when a mod chooses a small FormID.
-    unit(hash(hash(cell, slot, 10), species, 11))
-}
-
 /// Evaluate the documented comparison modes. Modes 6/7 constrain the named side
 /// and allow the other side; this comparison is MudCrab placement policy.
 pub fn water_allowed(height: f32, water: Option<f32>, distance: u16, mode: u32) -> bool {
@@ -156,19 +149,9 @@ fn root_luminance(field: Option<&[f32]>, position: [u16; 2]) -> f32 {
 /// position. The cache retains each texture's GNAM order; native Skyrim selection is not
 /// reproduced by this deterministic placement algorithm.
 fn layer_weight(layer: &ArchivedGrassLayer, x: f32, y: f32, config: &EngineConfig) -> f32 {
-    let types = layer
-        .grass_ids
-        .len()
-        .min(config.effective_grass_species_cap());
-    if types == 0 || layer.weights.len() != GRASS_BLEND_SIDE * GRASS_BLEND_SIDE {
-        return 0.0;
-    }
+    if layer.weights.len() != GRASS_BLEND_SIDE * GRASS_BLEND_SIDE { return 0.0; }
     let weight = sample_grid(GRASS_BLEND_SIDE, x, y, |i| layer.weights[i].into());
-    if weight < config.grass_texture_threshold {
-        0.0
-    } else {
-        weight / types as f32
-    }
+    if weight < config.grass_texture_threshold { 0.0 } else { weight }
 }
 
 /// Generate one cell's species batches from the immutable cache with no main-thread terrain copy.
@@ -244,86 +227,35 @@ fn generate_field(
     let height_span = (height_max - height_min).max(1.0);
     let slots = ((GRASS_CELL_SIZE / config.grass_min_spacing).powi(2)).ceil() as u32;
     let mut instances: BTreeMap<u32, Vec<GrassInstance>> = BTreeMap::new();
-    // Multiple layers can nominate the same species; accumulate their blended suitability.
-    let mut weights = BTreeMap::<u32, f32>::new();
-    for slot in 0..slots {
-        let [x, y] = candidate(cell_id, slot);
+    // Each admitted species owns a deterministic stream. Other species cannot
+    // steal its roots or dilute its blend support.
+    let ids: std::collections::BTreeSet<u32> = cell.quadrants.iter()
+        .flat_map(|q| q.layers.iter())
+        .flat_map(|layer| layer.grass_ids.iter().take(config.effective_grass_species_cap()))
+        .map(|id| u32::from(*id)).collect();
+    for id in ids {
+        let Some(species) = cache.species(id) else { continue; };
+        let seed = hash(cell_id, id, 12);
+        for slot in 0..slots {
+        let [x, y] = candidate(seed, slot);
         let quadrant = (x * 2.0) as u8 + (y * 2.0) as u8 * 2;
-        let Some(mask) = cell.quadrants.iter().find(|q| q.quadrant == quadrant) else {
-            continue;
+        let Some(mask) = cell.quadrants.iter().find(|q| q.quadrant == quadrant) else { continue; };
+        let support = |mask: &shared::grass::ArchivedGrassQuadrant, x, y| -> f32 {
+            mask.layers.iter().filter(|layer| layer.grass_ids.iter()
+                .take(config.effective_grass_species_cap()).any(|grass| u32::from(*grass) == id))
+                .map(|layer| layer_weight(layer,x,y,config)).sum()
         };
-        let qx = (x * 2.0).fract();
-        let qy = (y * 2.0).fract();
-        let (height, normal, slope) = terrain(&height_at, x, y);
-        weights.clear();
-        for layer in mask.layers.iter() {
-            let per_type = layer_weight(layer, qx, qy, config);
-            if per_type <= 0.0 {
-                continue;
-            }
-            for id in layer
-                .grass_ids
-                .iter()
-                .take(config.effective_grass_species_cap())
-            {
-                *weights.entry((*id).into()).or_default() += per_type;
-            }
-        }
-        let mut winner = None;
-        let mut winning_score = f32::NEG_INFINITY;
-        for (&id, &weight) in &weights {
-            let Some(species) = cache.species(id) else {
-                continue;
-            };
-            if slope < f32::from(species.min_slope)
-                || slope > f32::from(species.max_slope)
-                || !water_allowed(
-                    height,
-                    water,
-                    species.units_from_water.into(),
-                    species.water_comparison.into(),
-                )
-            {
-                continue;
-            }
-            let suitability =
-                weight * f32::from(species.density) / 100.0 * config.grass_density_multiplier;
-            if suitability <= 0.0 {
-                continue;
-            }
-            // Exponential race: highest score wins, weighted by blended texture/density.
-            // Its probability is proportional to suitability, without list-order bias.
-            let score = suitability / -species_random(cell_id, slot, id).max(1.0e-7).ln();
-            if score > winning_score {
-                winning_score = score;
-                winner = Some((id, species));
-            }
-        }
-        let Some((id, species)) = winner else {
-            continue;
-        };
-        let density: f32 = weights
-            .iter()
-            .filter_map(|(&id, &w)| cache.species(id).map(|s| (s, w)))
-            .filter(|(s, _)| {
-                slope >= f32::from(s.min_slope)
-                    && slope <= f32::from(s.max_slope)
-                    && water_allowed(
-                        height,
-                        water,
-                        s.units_from_water.into(),
-                        s.water_comparison.into(),
-                    )
-            })
-            .map(|(s, w)| w * f32::from(s.density) / 100.0)
-            .sum();
-        if unit(hash(cell_id, slot, 4)) >= (density * config.grass_density_multiplier).min(1.0) {
+        let weight = support(mask,(x*2.0).fract(),(y*2.0).fract());
+        let (height, normal, slope) = terrain(&height_at,x,y);
+        if weight <= 0.0 || slope < f32::from(species.min_slope) || slope > f32::from(species.max_slope)
+            || !water_allowed(height,water,species.units_from_water.into(),species.water_comparison.into())
+            || unit(hash(seed,slot,4)) >= (weight*f32::from(species.density)/100.0*config.grass_density_multiplier).min(1.0) {
             continue;
         }
         let position_range: f32 = species.position_range.into();
-        // Match the precached placement's total jitter span; range is not a radius.
-        let px = x * GRASS_CELL_SIZE + (unit(hash(cell_id, slot, 5)) - 0.5) * position_range;
-        let py = y * GRASS_CELL_SIZE + (unit(hash(cell_id, slot, 6)) - 0.5) * position_range;
+        // Authored Position Range is a total jitter span, not a radius.
+        let px = x * GRASS_CELL_SIZE + (unit(hash(seed, slot, 5)) - 0.5) * position_range;
+        let py = y * GRASS_CELL_SIZE + (unit(hash(seed, slot, 6)) - 0.5) * position_range;
         // Clamping makes an artificial line of clumps on the cell boundary.
         if !(0.0..GRASS_CELL_SIZE).contains(&px) || !(0.0..GRASS_CELL_SIZE).contains(&py) {
             continue;
@@ -376,44 +308,7 @@ fn generate_field(
         {
             continue;
         }
-        if position_range != 0.0 {
-            // Reuse the original occurrence threshold at the final position. Sum
-            // every eligible species, rather than applying the winner's fraction
-            // again: competition has already accounted for that fraction.
-            let final_density: f32 = jmask
-                .layers
-                .iter()
-                .filter(|layer| !layer.grass_ids.is_empty())
-                .map(|layer| {
-                    let weight =
-                        layer_weight(layer, (jx * 2.0).fract(), (jy * 2.0).fract(), config);
-                    layer
-                        .grass_ids
-                        .iter()
-                        .take(config.effective_grass_species_cap())
-                        .filter_map(|id| cache.species((*id).into()))
-                        .filter(|rule| {
-                            jslope >= f32::from(rule.min_slope)
-                                && jslope <= f32::from(rule.max_slope)
-                                && water_allowed(
-                                    jh,
-                                    water,
-                                    rule.units_from_water.into(),
-                                    rule.water_comparison.into(),
-                                )
-                        })
-                        .map(|rule| weight * f32::from(rule.density) / 100.0)
-                        .sum::<f32>()
-                })
-                .sum();
-            if unit(hash(cell_id, slot, 4))
-                >= (final_density * config.grass_density_multiplier).min(1.0)
-            {
-                continue;
-            }
-        }
-        // iMinGrassSize controls candidate density. The reference precache permits
-        // nearby clumps; a second minimum-distance gate would thin density again.
+        if unit(hash(seed,slot,4)) >= (final_weight*f32::from(species.density)/100.0*config.grass_density_multiplier).min(1.0) { continue; }
         let height_range: f32 = species.height_range.into();
         // Runtime-only brightness: the cache format and species rules are unchanged.
         let color_range = f32::from(species.color_range).clamp(0.0, 1.0);
@@ -424,19 +319,20 @@ fn generate_field(
                 position_xy[1],
                 quantize(jh - height_min, height_span),
             ],
-            rotation: (hash(cell_id, slot, 7) & 255) as u8,
-            scale: ((1.0 + (unit(hash(cell_id, slot, 8)) * 2.0 - 1.0) * height_range)
+            rotation: (hash(seed, slot, 7) & 255) as u8,
+            scale: ((1.0 + (unit(hash(seed, slot, 8)) * 2.0 - 1.0) * height_range)
                 .clamp(0.0, 2.0)
                 * 127.5)
                 .round() as u8,
             color: brightness(
                 color_range,
-                unit(hash(cell_id, slot, 9)),
+                unit(hash(seed, slot, 9)),
                 root_luminance(luminance, position_xy),
             ),
             normal: jnormal,
             slot,
         });
+    }
     }
     for (id, instances) in instances {
         let species = cache
@@ -533,8 +429,18 @@ mod tests {
     }
 
     #[test]
-    /// LReachGrass01 admits its first N+1 resolved links despite descending FormIDs.
-    fn reach_gnam_order_selects_default_three_and_cap_edges() {
+    fn unrelated_species_do_not_change_target_population() {
+        let config = EngineConfig { grass_max_types_per_texture: 4, ..Default::default() };
+        let a = mapped(vec![species(7)],fixture(vec![layer(9,vec![7],0.45)]));
+        let b = mapped(vec![species(7),species(11)],fixture(vec![layer(9,vec![11,7],0.45)]));
+        let a = generate(&a,42,&config); let b = generate(&b,42,&config);
+        assert!(!a.batches[0].instances.is_empty());
+        assert_eq!(a.batches[0].instances,b.batches.iter().find(|b| b.grass_id==7).unwrap().instances);
+    }
+
+    #[test]
+    /// LReachGrass01 admits exactly its configured resolved links despite descending FormIDs.
+    fn reach_gnam_order_selects_exact_cap_edges() {
         // Literal official IDs: ReachGrass02, ReachGrass01, TundraGrass03.
         let order = vec![342275, 341137, 175315];
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -564,9 +470,9 @@ mod tests {
         let config = EngineConfig::default();
         assert_eq!(config.grass_max_types_per_texture, 2);
         for (cap, expected) in [
-            (2, vec![175315, 341137, 342275]),
-            (0, vec![342275]),
-            (1, vec![341137, 342275]),
+            (2, vec![341137, 342275]),
+            (0, vec![]),
+            (1, vec![342275]),
             (3, vec![175315, 341137, 342275]),
             (usize::MAX, vec![175315, 341137, 342275]),
         ] {
@@ -780,7 +686,7 @@ mod tests {
             assert_eq!(generated.batches[0].instances.len(), 41944);
             for instance in generated.batches[0].instances.iter() {
                 // An independently expanded double-precision expression pins the law.
-                let u = f64::from(unit(hash(42, instance.slot, 9)));
+                let u = f64::from(unit(hash(hash(42, 7, 12), instance.slot, 9)));
                 let r = f64::from(range);
                 let expected = (255.0 * (luminance * (1.0 - 2.0 * r + 2.0 * u * r)).clamp(0.0, 1.0))
                     .round() as u8;

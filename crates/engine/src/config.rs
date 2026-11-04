@@ -139,7 +139,7 @@ pub struct EngineConfig {
     pub grass_fade_end: f32,
     /// Generated CPU instance pool budget, including resident and recently used cells.
     pub grass_cache_mib: usize,
-    /// Raw Skyrim iMaxGrassTypesPerTexure setting; effective resolved-species cap is N+1.
+    /// Maximum resolved species admitted per texture in authored GNAM order.
     pub grass_max_types_per_texture: usize,
     /// Minimum painted texture contribution, in 0..=1.
     pub grass_texture_threshold: f32,
@@ -630,14 +630,9 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
-    /// Keep the imported INI value distinct from the effective resolved GNAM prefix.
+    /// Admit exactly the configured GNAM prefix length; zero disables species.
     pub(crate) fn effective_grass_species_cap(&self) -> usize {
-        // Vanilla-compatible boundary attributed to panthuncia/FasterNGIO (GPL v3),
-        // 5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40, ForEachTextureGrass:
-        // https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h
-        // This public implementation is evidence, not proof from Skyrim's binary.
-        // Raw zero admits one species; saturation safely handles programmatic usize::MAX.
-        self.grass_max_types_per_texture.saturating_add(1)
+        self.grass_max_types_per_texture
     }
 
     pub fn streaming_controls_enabled(&self) -> bool {
