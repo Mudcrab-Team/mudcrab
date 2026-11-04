@@ -805,7 +805,7 @@ mod tests {
         {
             let config = EngineConfig {
                 grass_min_spacing: spacing,
-                grass_max_types_per_texture: 3,
+                grass_max_types_per_texture: 4,
                 ..EngineConfig::default()
             };
             let warm = generate_on_terrain(&cache, 42, &config, &terrain);
@@ -951,7 +951,7 @@ mod tests {
             &cache,
             42,
             &EngineConfig {
-                grass_max_types_per_texture: 3,
+                grass_max_types_per_texture: 4,
                 ..config.clone()
             },
         );
