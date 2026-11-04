@@ -13,7 +13,12 @@ fn cull_uniform_uploads_once_until_shader_inputs_change() {
     params.instance_count = 17;
     let bytes = cull_params_to_upload(&mut uploaded, params).expect("new instances");
     assert_eq!(&bytes[108..112], &17_u32.to_ne_bytes());
-    assert_eq!(&bytes[124..128], &[0; 4]);
+    assert_eq!(&bytes[124..128], &[0; 4], "triangle limit");
+    assert_eq!(
+        &bytes[128..132],
+        &[0; 4],
+        "the host epoch is normalized away"
+    );
     assert!(cull_params_to_upload(&mut uploaded, params).is_none());
     uploaded = None;
     assert!(cull_params_to_upload(&mut uploaded, params).is_some());

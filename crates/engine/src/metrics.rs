@@ -399,6 +399,10 @@ struct BenchmarkReport {
     elapsed_seconds: f64,
     average_fps: f64,
     frame_ms_mean: f64,
+    /// The most draw commands the cluster path encoded for any one view in one frame, over the run;
+    /// absent without the cluster renderer. Vertex pulling holds it near the number of draw groups.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoded_draws_per_view: Option<u32>,
     frame_ms_p50: f64,
     frame_ms_p95: f64,
     frame_ms_p99: f64,
@@ -476,6 +480,8 @@ struct MeasurementInputs<'w> {
     meshes: Res<'w, Assets<Mesh>>,
     images: Res<'w, Assets<Image>>,
     file_route: Option<Res<'w, RouteRunner>>,
+    /// Present when the cluster renderer is installed.
+    cluster_draws: Option<Res<'w, crate::cluster::render::ClusterDrawStats>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -741,6 +747,10 @@ fn collect_and_finish(
         elapsed_seconds: total_ms / 1000.0,
         average_fps,
         frame_ms_mean: mean,
+        encoded_draws_per_view: measurements
+            .cluster_draws
+            .as_deref()
+            .map(crate::cluster::render::ClusterDrawStats::encoded_draws_per_view),
         frame_ms_p50: p50,
         frame_ms_p95: p95,
         frame_ms_p99: p99,

@@ -9,7 +9,7 @@ pub(crate) const STAGES: [(&str, &[u32]); 8] = [
     ("scatter_instances", &[0, 8, 11]),
     ("cull", &[0, 1, 2, 3, 6, 8, 11, 12]),
     ("prefix_draw_tiles", &[0, 8, 11, 13]),
-    ("prefix_draw_groups", &[5, 11, 13]),
+    ("prefix_draw_groups", &[0, 5, 11, 13]),
     ("scatter_clusters", &[0, 3, 4, 6, 7, 8, 11, 12, 13]),
     ("scatter_large_clusters", &[0, 3, 4, 6, 7, 8, 11, 12, 13]),
 ];
@@ -18,10 +18,13 @@ pub(crate) const STAGES: [(&str, &[u32]); 8] = [
 pub(crate) const DRAW_INDEXED_INDIRECT_BYTES: u64 =
     std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
 
+/// wgpu's four-word non-indexed indirect ABI: one record per draw group.
+pub(crate) const GROUP_ARGS_BYTES: u64 = std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64;
+
 /// Selection and first_index carried from cull to scatter without another storage binding.
 pub(crate) const SELECTED_CLUSTER_BYTES: u64 = 8;
 
-/// Exact 128-byte WGSL CullParams uniform, without host-only padding or offsets.
+/// Exact 144-byte WGSL CullParams uniform: the struct is padded to its 16-byte alignment.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct CullParams {
@@ -35,7 +38,12 @@ pub(crate) struct CullParams {
     pub orthographic: u32,
     pub terrain_error_pixels: f32,
     pub instance_mask_base: u32,
+    /// The triangles of the scene's largest cluster: the pulled draw's vertex count is three times
+    /// this, and the draw-group prefix writes it into every group's arguments.
+    pub triangle_limit: u32,
     pub epoch: u32,
+    /// Uniform structs round up to 16 bytes; Pod forbids implicit padding.
+    pub padding: [u32; 3],
 }
 
 #[cfg(test)]
@@ -261,6 +269,7 @@ mod tests {
                 "instance_mask_base",
                 offset_of!(CullParams, instance_mask_base),
             ),
+            ("triangle_limit", offset_of!(CullParams, triangle_limit)),
             ("epoch", offset_of!(CullParams, epoch)),
         ];
         assert_eq!(*span as usize, size_of::<CullParams>());
