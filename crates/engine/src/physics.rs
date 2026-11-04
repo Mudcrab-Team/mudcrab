@@ -557,10 +557,15 @@ impl Plugin for PlayerControlsPlugin {
                     cursor_lifecycle_system,
                     apply_teleport_player,
                     look_input_system,
-                    noclip_flight_system.run_if(crate::door_crossing::no_door_crossing),
+                    noclip_flight_system
+                        .run_if(crate::door_crossing::no_door_crossing)
+                        .run_if(crate::pacing::loading_controls_allowed),
                     // Nothing walks during a door crossing: the landing has no collision yet.
-                    walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
+                    walk_intent_system
+                        .run_if(crate::door_crossing::no_door_crossing)
+                        .run_if(crate::pacing::loading_controls_allowed),
                     toggle_mode_system.run_if(console_closed),
+                    // Collision placement must reach the camera while loading is covered.
                     walk_camera_follow_system,
                     sprint_fov_system,
                     overlay_system,
@@ -571,12 +576,16 @@ impl Plugin for PlayerControlsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                // Both hold release and movement pause while the destination is unloaded or
-                // gameplay input belongs to the console/settings menu.
-                (release_walk_spawn_hold, walk_movement_system)
+                // Collision-based placement progresses behind a loading cover. Input movement
+                // remains paused until placement and the final camera pose are admitted.
+                (
+                    release_walk_spawn_hold.run_if(walk_hold_release_allowed),
+                    walk_movement_system
+                        .run_if(crate::door_crossing::no_door_crossing)
+                        .run_if(crate::pacing::loading_controls_allowed)
+                        .run_if(console_closed),
+                )
                     .chain()
-                    .run_if(crate::door_crossing::no_door_crossing)
-                    .run_if(console_closed)
                     .before(PhysicsSet::SyncBackend),
             );
     }
@@ -1494,6 +1503,25 @@ pub struct WalkSpawnHold {
     destination: bool,
 }
 
+impl WalkSpawnHold {
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+fn walk_hold_release_allowed(
+    cover: Option<Res<crate::pacing::LoadingCover>>,
+    crossing: Option<Res<crate::door_crossing::DoorCrossing>>,
+    console: Option<Res<ConsoleState>>,
+    menu: Option<Res<crate::settings_ui::SettingsMenuState>>,
+) -> bool {
+    let crossing_active = crossing
+        .as_ref()
+        .is_some_and(|crossing| crossing.is_active());
+    let covered_load = cover.as_ref().is_some_and(|cover| cover.controls_blocked());
+    covered_load || (!crossing_active && console_closed(console, menu))
+}
+
 /// Validated local terrain height for the initial interactive player pose.
 #[derive(Debug, Default, Resource)]
 pub struct WalkSpawnGroundHeight(pub Option<f32>);
@@ -1879,10 +1907,24 @@ fn apply_teleport_player(
     mut intent: ResMut<WalkIntent>,
     mut body: TeleportBodyQuery,
     mut camera: Query<&mut Transform, (With<StreamingCamera>, Without<PlayerBody>)>,
+    (mut loading, crossing): (
+        Option<ResMut<crate::pacing::LoadingCover>>,
+        Option<Res<crate::door_crossing::DoorCrossing>>,
+    ),
+    mut commands: Commands,
 ) {
     let Some(teleport) = teleports.read().last().copied() else {
         return;
     };
+    // Load-screen doors already own the black hold and invalidate before moving
+    // the camera. Their final placement message must not start a second load.
+    if crossing
+        .as_ref()
+        .is_none_or(|crossing| !crossing.is_active())
+        && let Some(loading) = loading.as_deref_mut()
+    {
+        loading.begin_teleport(&mut commands);
+    }
     *hold = WalkSpawnHold::default();
     if *mode == MoveMode::Walk {
         hold.active = true;
@@ -1920,6 +1962,41 @@ fn apply_teleport_player(
 mod walk_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn uncovered_hold_release_preserves_door_console_and_settings_guards() {
+        let mut world = World::new();
+        assert!(world.run_system_once(walk_hold_release_allowed).unwrap());
+        world.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        assert!(!world.run_system_once(walk_hold_release_allowed).unwrap());
+        world.insert_resource(crate::door_crossing::DoorCrossing::default());
+        world.insert_resource(ConsoleState::default());
+        for (open, closing, capture_suppressed) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            {
+                let mut console = world.resource_mut::<ConsoleState>();
+                console.open = open;
+                console.closing = closing;
+                console.capture_suppressed = capture_suppressed;
+            }
+            assert!(!world.run_system_once(walk_hold_release_allowed).unwrap());
+        }
+        world.insert_resource(ConsoleState::default());
+        world.insert_resource(crate::settings_ui::SettingsMenuState::default());
+        for (open, closing) in [(true, false), (false, true)] {
+            {
+                let mut menu = world.resource_mut::<crate::settings_ui::SettingsMenuState>();
+                menu.open = open;
+                menu.closing = closing;
+            }
+            assert!(!world.run_system_once(walk_hold_release_allowed).unwrap());
+        }
+        world.insert_resource(crate::settings_ui::SettingsMenuState::default());
+        assert!(world.run_system_once(walk_hold_release_allowed).unwrap());
+    }
 
     #[test]
     fn alt_sprint_latches_until_movement_stops_or_controls_leave_walk() {
@@ -2141,6 +2218,10 @@ mod world_startup_tests {
     use bevy::{mesh::MeshPlugin, time::TimeUpdateStrategy};
 
     fn world_app() -> App {
+        world_app_with(|_| {})
+    }
+
+    fn world_app_with(extra: impl FnOnce(&mut App)) -> App {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -2165,6 +2246,7 @@ mod world_startup_tests {
         .insert_resource(TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_secs_f32(PHYSICS_TIMESTEP),
         ));
+        extra(&mut app);
         app.finish();
         app.update();
         app
@@ -2232,6 +2314,259 @@ mod world_startup_tests {
             .unwrap();
         assert!(text.0.starts_with("NOCLIP: OFF"));
         assert!(text.0.contains("waiting for WALK collision"));
+    }
+
+    #[test]
+    fn covered_walk_teleport_settles_collision_and_waits_for_final_camera_proof() {
+        const FIXTURE_PLATFORM_OVERLAP: f32 = 16.0;
+        use crate::cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness};
+        use crate::streaming::{ActiveSpace, RenderOrigin, StreamingWorld};
+        use crate::world::database::CellKey;
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let mut app = world_app_with(|app| {
+            app.insert_resource(crate::config::EngineConfig {
+                clusters: Some("selected".into()),
+                cluster_own_statics: true,
+                worldspace_id: 42,
+                stream_radius: 0,
+                ..default()
+            })
+            .init_resource::<ActiveSpace>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<StreamingWorld>();
+            crate::cluster::loading::install(app);
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(
+                    CellKey::Exterior {
+                        worldspace_id: 42,
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    root,
+                );
+        });
+        let ground = floor(&mut app, true);
+        let landing_feet = Vec3::new(0.0, 16.0, 0.0);
+        // Hold release validates collision and resolves overlap; it does not snap a
+        // free capsule downward. Make the late platform intersect the provisional
+        // capsule so the real placement search must move it while still covered.
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y += landing_feet.y + FIXTURE_PLATFORM_OVERLAP;
+        app.world_mut().write_message(TeleportPlayer {
+            position: landing_feet,
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        tick(&mut app, 1);
+        let before = app.world().resource::<ClusterLoadingGate>().generation();
+        let ready = || {
+            std::collections::HashMap::from([(
+                42,
+                ClusterWorldReadiness {
+                    applicable_cameras: 1,
+                    needed_batches: 1,
+                    ..default()
+                },
+            )])
+        };
+        app.world_mut()
+            .resource_mut::<ClusterLoadingGate>()
+            .publish(&package, 7, before, 1, ready());
+        tick(&mut app, 1);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending(),
+            "render proof cannot release the cover before collision placement"
+        );
+        let mut camera = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let provisional = camera.single(app.world()).unwrap().translation;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.world_mut().resource_mut::<WalkIntent>().wish_dir = Vec3::X;
+        app.world_mut().resource_mut::<WalkIntent>().target_speed = 300.0;
+        // Console ownership must not deadlock collision settling behind an explicit cover.
+        app.world_mut()
+            .resource_mut::<crate::console::ConsoleState>()
+            .open = true;
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 20);
+        assert!(
+            !app.world().resource::<WalkSpawnHold>().active,
+            "Rapier collision must settle while the loading cover remains up"
+        );
+        assert_mode(&mut app, MoveMode::Walk);
+        let settled = camera.single(app.world()).unwrap().translation;
+        let entity = body(&mut app);
+        let body_position = app.world().get::<Transform>(entity).unwrap().translation;
+        assert!((settled.y - body_position.y - MovementTuning::default().eye_height).abs() < 0.001);
+        assert_ne!(
+            settled.y, provisional.y,
+            "camera must follow final ground placement under cover"
+        );
+        assert_eq!(
+            settled.x, provisional.x,
+            "held movement intent must not move the covered player"
+        );
+        assert_eq!(settled.z, provisional.z);
+        let current = app.world().resource::<ClusterLoadingGate>().generation();
+        assert_ne!(
+            current, before,
+            "ground placement changes the proved camera pose"
+        );
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<ClusterLoadingGate>()
+                .publish(&package, 7, before, 2, ready())
+        );
+        app.world_mut()
+            .resource_mut::<crate::console::ConsoleState>()
+            .open = false;
+        app.insert_resource(CursorCapture::Captured);
+        app.world_mut().resource_mut::<WalkIntent>().wish_dir = Vec3::X;
+        app.world_mut().resource_mut::<WalkIntent>().target_speed = 300.0;
+        tick(&mut app, 4);
+        let still_covered = app.world().get::<Transform>(entity).unwrap().translation;
+        assert_eq!(
+            still_covered.x, body_position.x,
+            "covered movement must stay blocked even when the console releases input"
+        );
+        assert_eq!(still_covered.z, body_position.z);
+        assert_eq!(
+            app.world().resource::<ClusterLoadingGate>().generation(),
+            current,
+            "unchanged pending pose must not invalidate each frame"
+        );
+        app.world_mut()
+            .resource_mut::<ClusterLoadingGate>()
+            .publish(&package, 7, current, 3, ready());
+        tick(&mut app, 1);
+        assert!(
+            !app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+    }
+
+    #[test]
+    fn cluster_startup_cover_waits_for_initial_ground_placement_and_pose_acknowledgement() {
+        const FIXTURE_PLATFORM_OVERLAP: f32 = 16.0;
+        use crate::cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness};
+        use crate::pacing::startup::{StartupCover, StartupLoad, StartupLoadPlugin};
+        use crate::streaming::{ActiveSpace, RenderOrigin, StreamingWorld};
+        use crate::world::database::CellKey;
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let ready = || {
+            std::collections::HashMap::from([(
+                42,
+                ClusterWorldReadiness {
+                    applicable_cameras: 1,
+                    needed_batches: 1,
+                    ..default()
+                },
+            )])
+        };
+        let mut app = world_app_with(|app| {
+            app.insert_resource(crate::config::EngineConfig {
+                clusters: Some("selected".into()),
+                cluster_own_statics: true,
+                worldspace_id: 42,
+                stream_radius: 0,
+                ..default()
+            })
+            .init_resource::<ActiveSpace>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<StreamingWorld>()
+            .insert_resource(crate::cluster::package::PackageValidationStatus::Ready)
+            .insert_resource(crate::cluster::render::ClusterScene {
+                ready_revision: default(),
+                residency_revision: default(),
+                certificate: None,
+                inventory: None,
+                terrain_blocks: Vec::new(),
+                meshes: Vec::new(),
+                instances: Vec::new(),
+                origin_offset: Vec3::ZERO,
+                blocks: Vec::new(),
+            });
+            crate::cluster::loading::install(app);
+            app.add_plugins(StartupLoadPlugin);
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(
+                    CellKey::Exterior {
+                        worldspace_id: 42,
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    root,
+                );
+            let generation = app.world().resource::<ClusterLoadingGate>().generation();
+            app.world_mut()
+                .resource_mut::<ClusterLoadingGate>()
+                .publish(&package, 7, generation, 1, ready());
+        });
+        let ground = floor(&mut app, true);
+        let entity = body(&mut app);
+        let provisional_feet = app.world().get::<Transform>(entity).unwrap().translation.y
+            - body_height_above_feet(&MovementTuning::default());
+        // A support plane below an already-free capsule leaves its pose unchanged.
+        // This late platform overlaps the capsule, requiring actual relocation.
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y += provisional_feet + FIXTURE_PLATFORM_OVERLAP;
+        tick(&mut app, 30);
+        assert!(app.world().resource::<WalkSpawnHold>().active);
+        assert!(
+            app.world().resource::<StartupLoad>().cover_pending(),
+            "startup render readiness cannot bypass initial physics placement"
+        );
+        let mut covers = app
+            .world_mut()
+            .query_filtered::<&BackgroundColor, With<StartupCover>>();
+        assert_eq!(covers.single(app.world()).unwrap().0.to_srgba().alpha, 1.0);
+        let before = app.world().resource::<ClusterLoadingGate>().generation();
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        tick(&mut app, 20);
+        assert!(!app.world().resource::<WalkSpawnHold>().active);
+        assert!(app.world().resource::<StartupLoad>().cover_pending());
+        let current = app.world().resource::<ClusterLoadingGate>().generation();
+        assert_ne!(
+            current, before,
+            "grounded startup camera needs new render proof"
+        );
+        app.world_mut()
+            .resource_mut::<ClusterLoadingGate>()
+            .publish(&package, 7, current, 2, ready());
+        tick(&mut app, 30);
+        assert!(!app.world().resource::<StartupLoad>().cover_pending());
     }
 
     #[test]
@@ -2710,6 +3045,215 @@ mod world_startup_tests {
         crate::console::execute_line(app.world_mut(), "tcl");
         assert_mode(&mut app, MoveMode::Noclip);
         assert!(!app.world().resource::<WalkSpawnHold>().active);
+    }
+
+    fn paused_covered_teleport(settings: bool) -> (App, Entity) {
+        use crate::streaming::{ActiveSpace, RenderOrigin, StreamingWorld};
+        use crate::world::database::CellKey;
+        let mut app = world_app_with(|app| {
+            app.insert_resource(crate::config::EngineConfig {
+                clusters: Some("selected".into()),
+                worldspace_id: 42,
+                stream_radius: 0,
+                ..default()
+            })
+            .init_resource::<ActiveSpace>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<StreamingWorld>();
+            crate::cluster::loading::install(app);
+            let root = app.world_mut().spawn_empty().id();
+            app.world_mut()
+                .resource_mut::<StreamingWorld>()
+                .set_resident_for_test(
+                    CellKey::Exterior {
+                        worldspace_id: 42,
+                        grid_x: 0,
+                        grid_y: 0,
+                    },
+                    root,
+                );
+        });
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs(1),
+        ));
+        let ground = floor(&mut app, true);
+        // Require real late collision placement; no ready counter can discharge this hold.
+        app.world_mut()
+            .get_mut::<Transform>(ground)
+            .unwrap()
+            .translation
+            .y += 32.0;
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(0.0, 16.0, 0.0),
+            sampled_ground_y: Some(0.0),
+            yaw: 0.0,
+        });
+        app.update();
+        assert!(app.world().resource::<WalkSpawnHold>().is_active());
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+        // Faithfully include both capture and clock side effects of the real menu writers.
+        // Merely setting ConsoleState.open leaves FixedUpdate running and misses the defect.
+        app.insert_resource(CursorCapture::Released);
+        if settings {
+            app.init_resource::<crate::settings_ui::SettingsMenuState>();
+            app.world_mut()
+                .resource_mut::<crate::settings_ui::SettingsMenuState>()
+                .open = true;
+        } else {
+            app.world_mut()
+                .resource_mut::<crate::console::ConsoleState>()
+                .open = true;
+        }
+        app.world_mut()
+            .resource_mut::<Time<bevy::time::Virtual>>()
+            .pause();
+        app.world_mut()
+            .entity_mut(ground)
+            .remove::<ColliderDisabled>();
+        (app, ground)
+    }
+
+    #[test]
+    fn paused_covered_load_preserves_pause_and_resumes_collision_before_admission() {
+        use crate::cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness};
+        use crate::streaming::failure::LoadingRefusal;
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        for settings in [false, true] {
+            let (mut app, _ground) = paused_covered_teleport(settings);
+            let entity = body(&mut app);
+            let position = app.world().get::<Transform>(entity).unwrap().translation;
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            for _ in 0..65 {
+                app.update();
+                assert!(
+                    app.world()
+                        .resource::<Time<bevy::time::Virtual>>()
+                        .is_paused()
+                );
+                assert_eq!(
+                    app.world().get::<Transform>(entity).unwrap().translation,
+                    position
+                );
+                assert!(app.world().resource::<WalkSpawnHold>().is_active());
+                assert!(
+                    !app.world().contains_resource::<LoadingRefusal>(),
+                    "a user-paused load must not spend its real-time inactivity deadline"
+                );
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+            assert!(
+                app.world()
+                    .resource::<crate::pacing::LoadingCover>()
+                    .teleport_pending()
+            );
+            if settings {
+                app.world_mut()
+                    .resource_mut::<crate::settings_ui::SettingsMenuState>()
+                    .open = false;
+            } else {
+                app.world_mut()
+                    .resource_mut::<crate::console::ConsoleState>()
+                    .open = false;
+            }
+            app.insert_resource(CursorCapture::Captured);
+            app.world_mut()
+                .resource_mut::<Time<bevy::time::Virtual>>()
+                .unpause();
+            tick(&mut app, 20);
+            assert_mode(&mut app, MoveMode::Walk);
+            assert!(!app.world().resource::<WalkSpawnHold>().is_active());
+            assert_ne!(
+                app.world().get::<Transform>(entity).unwrap().translation.y,
+                position.y,
+                "real collision must resolve the late overlapping platform after resuming"
+            );
+            assert!(!app.world().contains_resource::<LoadingRefusal>());
+            let current = app.world().resource::<ClusterLoadingGate>().generation();
+            assert!(
+                app.world_mut()
+                    .resource_mut::<ClusterLoadingGate>()
+                    .publish(
+                        &package,
+                        7,
+                        current,
+                        1,
+                        std::collections::HashMap::from([(
+                            42,
+                            ClusterWorldReadiness {
+                                applicable_cameras: 1,
+                                needed_batches: 1,
+                                ..default()
+                            }
+                        )]),
+                    )
+            );
+            app.update();
+            assert!(
+                !app.world()
+                    .resource::<crate::pacing::LoadingCover>()
+                    .teleport_pending()
+            );
+            assert!(!app.world().contains_resource::<LoadingRefusal>());
+            assert_eq!(
+                exits
+                    .read(app.world().resource::<Messages<AppExit>>())
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn genuine_failure_while_user_paused_still_refuses_once() {
+        use crate::streaming::failure::LoadingRefusal;
+        for settings in [false, true] {
+            let (mut app, _ground) = paused_covered_teleport(settings);
+            let mut exits = app
+                .world()
+                .resource::<Messages<AppExit>>()
+                .get_cursor_current();
+            app.world_mut()
+                .resource_mut::<StreamingMetrics>()
+                .failed_far_stock_sources = 1;
+            app.update();
+            let reason = app.world().resource::<LoadingRefusal>().0.clone();
+            assert!(reason.contains("required source failed"));
+            let emitted: Vec<_> = exits
+                .read(app.world().resource::<Messages<AppExit>>())
+                .cloned()
+                .collect();
+            assert_eq!(emitted, [AppExit::error()]);
+            for _ in 0..4 {
+                app.update();
+                assert_eq!(app.world().resource::<LoadingRefusal>().0, reason);
+                assert!(
+                    app.world()
+                        .resource::<Time<bevy::time::Virtual>>()
+                        .is_paused()
+                );
+                assert_eq!(
+                    exits
+                        .read(app.world().resource::<Messages<AppExit>>())
+                        .count(),
+                    0
+                );
+            }
+        }
     }
 }
 
@@ -3520,12 +4064,17 @@ fn look_input_system(
     capture: Res<CursorCapture>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut intent: ResMut<LookIntent>,
+    cover: Option<Res<crate::pacing::LoadingCover>>,
 ) {
     let mut delta = Vec2::ZERO;
     for motion in mouse_motion.read() {
         delta += motion.delta;
     }
-    sample_look_intent(&capture, delta, &mut intent);
+    // Drain on covered frames too: input received while blocked must not replay
+    // when a controller releases its cover later in the same frame.
+    if cover.is_none_or(|cover| !cover.controls_blocked()) {
+        sample_look_intent(&capture, delta, &mut intent);
+    }
 }
 
 fn noclip_flight_system(
@@ -5170,6 +5719,130 @@ mod teleport_tests {
     }
 
     #[test]
+    fn common_teleport_raises_cluster_cover_and_pauses_player_until_render_admission() {
+        let mut app = headless::fixture_app();
+        crate::cluster::loading::install(&mut app);
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(CursorCapture::Captured);
+        let before = app
+            .world()
+            .resource::<crate::cluster::loading::ClusterLoadingGate>()
+            .generation();
+        let feet = Vec3::new(40_000.0, 900.0, -2_000.0);
+        app.world_mut().write_message(TeleportPlayer {
+            position: feet,
+            sampled_ground_y: None,
+            yaw: 1.0,
+        });
+        app.update();
+        let gate = app
+            .world()
+            .resource::<crate::cluster::loading::ClusterLoadingGate>();
+        assert_ne!(gate.generation(), before);
+        assert!(
+            app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+        let mut view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let landed = view.single(app.world()).unwrap().translation;
+        assert_eq!(
+            landed,
+            body_and_camera_for_feet(&MovementTuning::default(), feet).1
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        for _ in 0..20 {
+            app.update();
+        }
+        assert_eq!(view.single(app.world()).unwrap().translation, landed);
+    }
+
+    #[test]
+    fn ordinary_teleport_keeps_cover_absent_and_noclip_controls_available() {
+        let mut app = headless::fixture_app();
+        app.insert_resource(crate::config::EngineConfig {
+            clusters: None,
+            ..default()
+        });
+        assert!(
+            !app.world()
+                .contains_resource::<crate::pacing::LoadingCover>()
+        );
+        assert!(
+            !app.world()
+                .contains_resource::<crate::cluster::loading::ClusterLoadingGate>()
+        );
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(CursorCapture::Captured);
+        let feet = Vec3::new(40_000.0, 900.0, -2_000.0);
+        app.world_mut().write_message(TeleportPlayer {
+            position: feet,
+            sampled_ground_y: None,
+            yaw: 1.0,
+        });
+        app.update();
+        let mut view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let landed = view.single(app.world()).unwrap().translation;
+        assert_eq!(
+            landed,
+            body_and_camera_for_feet(&MovementTuning::default(), feet).1
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        for _ in 0..20 {
+            app.update();
+        }
+        assert_ne!(view.single(app.world()).unwrap().translation, landed);
+        assert!(
+            !app.world()
+                .contains_resource::<crate::pacing::LoadingCover>()
+        );
+        assert!(
+            !app.world()
+                .contains_resource::<crate::cluster::loading::ClusterLoadingGate>()
+        );
+    }
+
+    #[test]
+    fn door_crossing_teleport_does_not_request_a_second_neutral_cover() {
+        let mut app = headless::fixture_app();
+        crate::cluster::loading::install(&mut app);
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(crate::door_crossing::DoorCrossing::holding_for_test());
+        assert!(
+            !app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+        let feet = Vec3::new(40_000.0, 900.0, -2_000.0);
+        app.world_mut().write_message(TeleportPlayer {
+            position: feet,
+            sampled_ground_y: None,
+            yaw: 1.0,
+        });
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<crate::pacing::LoadingCover>()
+                .teleport_pending()
+        );
+        let mut view = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        assert_eq!(
+            view.single(app.world()).unwrap().translation,
+            body_and_camera_for_feet(&MovementTuning::default(), feet).1
+        );
+    }
+
+    #[test]
     fn teleport_player_moves_the_body_and_zeroes_its_velocity() {
         let mut app = headless::fixture_app();
         headless::place_player(&mut app, Vec3::new(0.0, 500.0, 0.0));
@@ -5229,5 +5902,118 @@ mod teleport_tests {
             .query_filtered::<&Transform, With<StreamingCamera>>();
         let at = view.single(app.world()).unwrap().translation;
         assert!((at - camera).length() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod covered_input_tests {
+    use super::*;
+
+    #[derive(Resource, Default)]
+    struct MouseStimulus(Option<Vec2>);
+
+    fn deliver_mouse_input(
+        mut input: ResMut<MouseStimulus>,
+        mut motion: MessageWriter<MouseMotion>,
+    ) {
+        if let Some(delta) = input.0.take() {
+            motion.write(MouseMotion { delta });
+        }
+    }
+    use crate::{
+        cluster::loading::{ClusterLoadingGate, ClusterWorldReadiness},
+        pacing::LoadingCover,
+        streaming::{ActiveSpace, RenderOrigin, StreamingWorld},
+        world::database::CellKey,
+    };
+
+    #[test]
+    fn covered_mouse_motion_is_drained_before_the_first_uncovered_frame() {
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = std::sync::Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let mut app = headless::fixture_app_with(|app| {
+            app.insert_resource(crate::config::EngineConfig {
+                clusters: Some("selected".into()),
+                worldspace_id: 42,
+                stream_radius: 0,
+                ..default()
+            })
+            .init_resource::<ActiveSpace>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<StreamingWorld>();
+            crate::cluster::loading::install(app);
+        });
+        app.init_resource::<MouseStimulus>()
+            .add_systems(PreUpdate, deliver_mouse_input);
+        app.insert_resource(MoveMode::Noclip);
+        app.insert_resource(CursorCapture::Captured);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(
+                CellKey::Exterior {
+                    worldspace_id: 42,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                root,
+            );
+        app.world_mut().write_message(TeleportPlayer {
+            position: Vec3::new(100.0, 900.0, -100.0),
+            sampled_ground_y: None,
+            yaw: 0.5,
+        });
+        app.update();
+        assert!(app.world().resource::<LoadingCover>().teleport_pending());
+        let look = *app.world().resource::<LookIntent>();
+        let mut cameras = app
+            .world_mut()
+            .query_filtered::<&Transform, With<StreamingCamera>>();
+        let rotation = cameras.single(app.world()).unwrap().rotation;
+        let generation = app.world().resource::<ClusterLoadingGate>().generation();
+        assert!(
+            app.world_mut()
+                .resource_mut::<ClusterLoadingGate>()
+                .publish(
+                    &package,
+                    7,
+                    generation,
+                    1,
+                    std::collections::HashMap::from([(
+                        42,
+                        ClusterWorldReadiness {
+                            applicable_cameras: 1,
+                            needed_batches: 1,
+                            ..default()
+                        }
+                    )]),
+                )
+        );
+        app.world_mut().resource_mut::<MouseStimulus>().0 = Some(Vec2::new(40.0, 20.0));
+        app.update();
+        assert!(
+            !app.world().resource::<LoadingCover>().teleport_pending(),
+            "release must come from actual current controller proof"
+        );
+        assert_eq!(app.world().resource::<LookIntent>().yaw, look.yaw);
+        assert_eq!(app.world().resource::<LookIntent>().pitch, look.pitch);
+        app.update();
+        assert_eq!(
+            app.world().resource::<LookIntent>().yaw,
+            look.yaw,
+            "covered motion must not replay when no fresh input arrives"
+        );
+        assert_eq!(app.world().resource::<LookIntent>().pitch, look.pitch);
+        assert_eq!(cameras.single(app.world()).unwrap().rotation, rotation);
+        app.world_mut().resource_mut::<MouseStimulus>().0 = Some(Vec2::new(10.0, 0.0));
+        app.update();
+        assert_ne!(
+            app.world().resource::<LookIntent>().yaw,
+            look.yaw,
+            "fresh motion must still steer ordinary uncovered play"
+        );
+        assert_ne!(cameras.single(app.world()).unwrap().rotation, rotation);
     }
 }

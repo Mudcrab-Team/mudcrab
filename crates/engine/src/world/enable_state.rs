@@ -46,6 +46,16 @@ impl Default for EnableStateResolver {
 }
 
 impl EnableStateResolver {
+    /// The caller owns dependency invalidation; unrelated cached references remain valid.
+    pub fn invalidate(&mut self, reference: u32) {
+        self.resolved.remove(&reference);
+    }
+
+    /// Explicit runtime state terminates parent traversal, including a cyclic chain.
+    pub fn seed(&mut self, reference: u32, state: EnableState) {
+        self.resolved.insert(reference, state);
+    }
+
     pub fn cached(&self, reference: u32) -> Option<EnableState> {
         self.resolved.get(&reference).copied()
     }
@@ -91,6 +101,17 @@ impl EnableStateResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_cache_invalidation_and_explicit_seed_replace_initial_state() {
+        let mut resolver = EnableStateResolver::default();
+        resolver.seed(1, Ok(false));
+        assert_eq!(resolver.cached(1), Some(Ok(false)));
+        resolver.invalidate(1);
+        assert_eq!(resolver.cached(1), None);
+        resolver.seed(PLAYER_REFERENCE, Ok(false));
+        assert_eq!(resolver.cached(PLAYER_REFERENCE), Some(Ok(false)));
+    }
 
     fn inputs(flags: u32, parent: Option<(u32, u32)>) -> InitialEnableInputs {
         InitialEnableInputs {

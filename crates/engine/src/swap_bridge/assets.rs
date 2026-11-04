@@ -20,6 +20,7 @@ use std::collections::HashSet;
 pub(crate) struct LandingAssets<'w, 's> {
     server: Option<Res<'w, AssetServer>>,
     children: Query<'w, 's, &'static Children>,
+    flat: Query<'w, 's, &'static crate::cluster::flat_source::FlatSourcePrimitives>,
     parts: Query<
         'w,
         's,
@@ -132,72 +133,116 @@ impl LandingAssets<'_, '_> {
     /// and are not checked.
     pub(crate) fn inspect_under(&self, root: Entity) -> LandingReport {
         let mut report = LandingReport::default();
-        for entity in std::iter::once(root).chain(self.children.iter_descendants(root)) {
-            let Ok((mesh, standard, terrain, water, palette, palette_depth)) =
-                self.parts.get(entity)
-            else {
-                continue;
-            };
-            if let Some(Mesh3d(handle)) = mesh {
-                self.check(
-                    handle.id().untyped(),
-                    || {
-                        self.meshes
-                            .as_ref()
-                            .is_some_and(|meshes| meshes.contains(handle.id()))
-                    },
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = standard {
-                self.check_material(
-                    handle,
-                    &self.standard,
-                    |this, m, report| this.check_dependencies(m, report),
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = terrain {
-                self.check_material(
-                    handle,
-                    &self.terrain,
-                    |this, m, report| this.check_dependencies(&m.base, report),
-                    &mut report,
-                );
-            }
-            if let Some(MeshMaterial3d(handle)) = water {
-                self.check_material(
-                    handle,
-                    &self.water,
-                    |this, m, report| this.check_dependencies(&m.base, report),
-                    &mut report,
-                );
-            }
-            // A palette surface under a depth override draws through a wrapper; its palette
-            // material is the source the wrapper was cloned from.
-            let palette = palette
-                .map(|material| &material.0)
-                .or_else(|| palette_depth.map(|source| &source.0));
-            if let Some(handle) = palette {
-                self.check_material(
-                    handle,
-                    &self.palette,
-                    // `ExtendedMaterial` reports no dependencies itself: its fields carry
-                    // no `#[dependency]`, so each half is visited on its own.
-                    |this, m, report| {
-                        this.check_dependencies(&m.base, report);
-                        this.check_dependencies(&m.extension, report);
-                    },
-                    &mut report,
-                );
-            }
-        }
+        crate::cluster::flat_source::visit_entities_under(
+            root,
+            &self.children,
+            &self.flat,
+            |entity| {
+                let Ok((mesh, standard, terrain, water, palette, palette_depth)) =
+                    self.parts.get(entity)
+                else {
+                    return;
+                };
+                if let Some(Mesh3d(handle)) = mesh {
+                    self.check(
+                        handle.id().untyped(),
+                        || {
+                            self.meshes
+                                .as_ref()
+                                .is_some_and(|meshes| meshes.contains(handle.id()))
+                        },
+                        &mut report,
+                    );
+                }
+                if let Some(MeshMaterial3d(handle)) = standard {
+                    self.check_material(
+                        handle,
+                        &self.standard,
+                        |this, m, report| this.check_dependencies(m, report),
+                        &mut report,
+                    );
+                }
+                if let Some(MeshMaterial3d(handle)) = terrain {
+                    self.check_material(
+                        handle,
+                        &self.terrain,
+                        |this, m, report| this.check_dependencies(&m.base, report),
+                        &mut report,
+                    );
+                }
+                if let Some(MeshMaterial3d(handle)) = water {
+                    self.check_material(
+                        handle,
+                        &self.water,
+                        |this, m, report| this.check_dependencies(&m.base, report),
+                        &mut report,
+                    );
+                }
+                // A palette surface under a depth override draws through a wrapper; its palette
+                // material is the source the wrapper was cloned from.
+                let palette = palette
+                    .map(|material| &material.0)
+                    .or_else(|| palette_depth.map(|source| &source.0));
+                if let Some(handle) = palette {
+                    self.check_material(
+                        handle,
+                        &self.palette,
+                        // `ExtendedMaterial` reports no dependencies itself: its fields carry
+                        // no `#[dependency]`, so each half is visited on its own.
+                        |this, m, report| {
+                            this.check_dependencies(&m.base, report);
+                            this.check_dependencies(&m.extension, report);
+                        },
+                        &mut report,
+                    );
+                }
+            },
+        );
         report
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn destination_dependencies_follow_flat_source_ownership() {
+        use crate::cluster::flat_source::FlatSourceOwner;
+        use bevy::ecs::system::SystemState;
+        let mut world = World::new();
+        let first = world.spawn_empty().id();
+        let second = world.spawn_empty().id();
+        let first_reference = world.spawn(ChildOf(first)).id();
+        let second_reference = world.spawn(ChildOf(second)).id();
+        let primitive = world
+            .spawn((FlatSourceOwner(first_reference), Mesh3d(Handle::default())))
+            .id();
+        let mut state = SystemState::<LandingAssets>::new(&mut world);
+        assert_eq!(
+            state.get(&world).unwrap().inspect_under(first).waiting,
+            1,
+            "a missing flat mesh must hold the landing"
+        );
+        assert_eq!(state.get(&world).unwrap().inspect_under(second).waiting, 0);
+        world.entity_mut(primitive).insert(ChildOf(first_reference));
+        assert_eq!(
+            state.get(&world).unwrap().inspect_under(first).waiting,
+            1,
+            "one actual asset dependency despite overlapping links"
+        );
+        world.entity_mut(primitive).remove::<ChildOf>();
+        world
+            .entity_mut(primitive)
+            .insert(FlatSourceOwner(second_reference));
+        assert_eq!(state.get(&world).unwrap().inspect_under(first).waiting, 0);
+        assert_eq!(state.get(&world).unwrap().inspect_under(second).waiting, 1);
+        world.entity_mut(primitive).remove::<FlatSourceOwner>();
+        assert_eq!(
+            state.get(&world).unwrap().inspect_under(second).waiting,
+            0,
+            "removed ownership cannot hold an unrelated landing"
+        );
+    }
     use super::*;
     use bevy::ecs::system::SystemState;
 

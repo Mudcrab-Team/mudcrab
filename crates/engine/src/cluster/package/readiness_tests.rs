@@ -59,6 +59,7 @@ fn install_batch(app: &mut App, batch: LazyBatch, in_flight: bool) {
         unrequested: if in_flight { Vec::new() } else { vec![0] },
         in_flight: if in_flight { vec![0] } else { Vec::new() },
         failed: Vec::new(),
+        demanded: default(),
         scenes_revision: 0,
         failed_revision: 0,
     });
@@ -552,4 +553,65 @@ fn settled_loader_does_no_batch_or_failure_scan_work() {
             .failed_cluster_batches,
         0
     );
+}
+
+#[test]
+fn actual_lazy_material_failure_commits_failed_batch_and_preserves_first_terminal_outcome() {
+    use crate::streaming::failure::{LoadingRefusal, refuse_loading};
+    for earlier in [None, Some("original terminal cell failure")] {
+        let mut app = app();
+        let source = app
+            .world()
+            .resource::<AssetServer>()
+            .add(WorldAsset::new(World::new()));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<AssetServer>()
+                .is_loaded_with_dependencies(source.id())
+        );
+        let mut wanted = batch();
+        wanted.key.material_index = Some(3);
+        wanted.requested = true;
+        wanted.scene = Some(source.clone());
+        install_batch(&mut app, wanted, true);
+        let before = app.world().resource::<LazyBatches>().failed_key();
+        if let Some(reason) = earlier {
+            refuse_loading(app.world_mut(), reason.into());
+        }
+        load(&mut app);
+        let lazy = app.world().resource::<LazyBatches>();
+        assert_eq!(lazy.failed_batches(), [0]);
+        assert_eq!(lazy.failed_key(), (before.0, before.1 + 1));
+        assert!(lazy.in_flight.is_empty());
+        assert!(lazy.batches[0].loading.is_none());
+        assert!(lazy.batches[0].scene.is_none());
+        assert_eq!(
+            app.world().resource::<ClusterBatchHandles>().ids().count(),
+            0
+        );
+        let refusal = app.world().get_resource::<LoadingRefusal>();
+        assert!(
+            refusal.is_some(),
+            "actual lazy metadata failure must share the terminal owner"
+        );
+        if let Some(reason) = earlier {
+            assert_eq!(refusal.unwrap().0, reason);
+        } else {
+            assert!(refusal.unwrap().0.contains("uncertified material slot 3"));
+        }
+        let emitted: Vec<_> = app
+            .world()
+            .resource::<Messages<AppExit>>()
+            .iter_current_update_messages()
+            .cloned()
+            .collect();
+        assert_eq!(emitted, [AppExit::error()]);
+        load(&mut app);
+        assert_eq!(
+            app.world().resource::<LazyBatches>().failed_key(),
+            (before.0, before.1 + 1)
+        );
+        assert_eq!(app.world().resource::<Messages<AppExit>>().len(), 1);
+    }
 }

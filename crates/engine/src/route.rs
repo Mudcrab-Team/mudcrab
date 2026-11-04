@@ -560,6 +560,7 @@ pub(crate) fn drive_route(
     origin: Res<RenderOrigin>,
     real_time: Res<Time<Real>>,
     tracker: Option<Res<PacingTracker>>,
+    cover: Option<Res<crate::pacing::LoadingCover>>,
     mut runner: ResMut<RouteRunner>,
     mut camera: Query<&mut Transform, With<StreamingCamera>>,
 ) {
@@ -569,9 +570,10 @@ pub(crate) fn drive_route(
     // Only a measuring run keeps the readiness the start waits for.
     let waits_for_world = runner.plan.start == RouteStart::WorldReady && config.measures_pacing();
     let ready = !waits_for_world
-        || tracker
-            .as_deref()
-            .is_some_and(PacingTracker::world_ready_reached);
+        || (cover.is_none_or(|cover| !cover.controls_blocked())
+            && tracker
+                .as_deref()
+                .is_some_and(PacingTracker::world_ready_reached));
     let frame = runner.step(
         real_time.delta_secs(),
         ready,
