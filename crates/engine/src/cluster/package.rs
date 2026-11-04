@@ -509,6 +509,70 @@ fn read_rows(connection: &Connection) -> Result<HashMap<(String, u32), MeshRow>,
     Ok(rows)
 }
 
+type PreloadedMeshes = HashMap<(String, u32), Result<ClusterMeshAsset, String>>;
+
+/// Re-read every mesh payload under the package's locks, check it against its launch digest and
+/// row, and keep only the validated header and the way back to the bytes. At most one file per
+/// worker is in memory at a time.
+fn preload_certified_meshes(
+    package: &Arc<super::reader::CertifiedPackage>,
+    rows: &HashMap<(String, u32), MeshRow>,
+    identity: &str,
+) -> PreloadedMeshes {
+    let entries: Vec<_> = rows.iter().collect();
+    let builder = shared::cluster::parse_hash(identity);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(entries.len().max(1));
+    let load = |row: &MeshRow| -> Result<ClusterMeshAsset, String> {
+        let builder = builder.ok_or("invalid package builder identity")?;
+        let payload = package
+            .envelope()
+            .reread_payload(&row.payload_path)
+            .map_err(|error| error.to_string())?;
+        let mut mesh = checked_certified_mesh(&payload, builder, &row.expected)?;
+        mesh.set_rehydrate_source(MeshRehydrateSource::new(
+            package.clone(),
+            row.payload_path.clone(),
+            builder,
+            row.expected,
+        )?);
+        // The scene keeps only the validated header and the way back to the bytes;
+        // tangent preparation and upload re-read them when needed.
+        mesh.release_certified_payload();
+        Ok(mesh)
+    };
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((key, row)) = entries.get(index) else {
+                            break;
+                        };
+                        done.push(((*key).clone(), load(row)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        let mut loaded = PreloadedMeshes::with_capacity(entries.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(done) => loaded.extend(done),
+                Err(_) => {
+                    // A worker panic leaves its meshes absent, which refuses the overlay below.
+                    error!("cluster mesh preload worker panicked");
+                }
+            }
+        }
+        loaded
+    })
+}
+
 /// Domain comes from the owning SQL table, never a missing reference mapping.
 #[derive(Clone, Copy)]
 enum ChunkDomain {
@@ -789,6 +853,9 @@ fn load_cluster_package(
     }
     let identity = validated.0.envelope().builder_identity.clone();
 
+    // Every mesh file is read and checked up front, in parallel, so the scene build does not wait
+    // on one file at a time; each result is consumed, or refused, where a block first names it.
+    let mut preloaded = preload_certified_meshes(&validated.0, &rows, &identity);
     let mut mesh_index: HashMap<(String, u32), u32> = HashMap::new();
     let mut scene_meshes: Vec<ClusterMeshAsset> = Vec::new();
     let mut batch_index: HashMap<(BatchKey, u32), u32> = HashMap::new();
@@ -855,27 +922,9 @@ fn load_cluster_package(
             let index = match mesh_index.get(&key) {
                 Some(index) => *index,
                 None => {
-                    let loaded = validated
-                        .0
-                        .envelope()
-                        .reread_payload(&row.payload_path)
-                        .map_err(|error| error.to_string())
-                        .and_then(|payload| {
-                            let builder = shared::cluster::parse_hash(&identity)
-                                .ok_or("invalid package builder identity")?;
-                            let mut mesh =
-                                checked_certified_mesh(&payload, builder, &row.expected)?;
-                            mesh.set_rehydrate_source(MeshRehydrateSource::new(
-                                validated.0.clone(),
-                                row.payload_path.clone(),
-                                builder,
-                                row.expected,
-                            )?);
-                            // The scene keeps only the validated header and the way back to the
-                            // bytes; tangent preparation and upload re-read them when needed.
-                            mesh.release_certified_payload();
-                            Ok(mesh)
-                        });
+                    let loaded = preloaded
+                        .remove(&key)
+                        .unwrap_or_else(|| Err("mesh was not preloaded".into()));
                     match loaded {
                         Ok(mesh) => {
                             let index = scene_meshes.len() as u32;
