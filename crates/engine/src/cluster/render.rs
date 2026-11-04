@@ -165,6 +165,11 @@ impl ClusterDummyMesh {
 struct ClusterMaterialPipelineKey {
     material: ErasedMaterialPipelineKey,
     tangents: bool,
+    /// Whether the vertex stage pulls its local index from the index pool (an adapter that cannot
+    /// read the draw count on the GPU) instead of receiving it from an index buffer. Fixed by
+    /// the scene's `ClusterGpu::use_count`, but part of the key so a pipeline built for one mode is
+    /// never found by the other.
+    vertex_pull: bool,
 }
 
 fn tangent_layout(
@@ -544,6 +549,25 @@ pub struct ClusterScene {
     pub blocks: Vec<SceneBlock>,
 }
 
+/// How many draw commands the cluster path encodes, shared between the render world that counts
+/// them and the main world's benchmark report. Each view counts the commands it encodes in a frame;
+/// the cull of the next frame publishes the largest per-view count, and the report carries the
+/// largest of those over the run.
+#[derive(Resource, Clone, Default)]
+pub struct ClusterDrawStats(Arc<std::sync::atomic::AtomicU32>);
+
+impl ClusterDrawStats {
+    /// The most draw commands any one view encoded in one frame so far.
+    pub fn encoded_draws_per_view(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn record(&self, per_view: u32) {
+        self.0
+            .fetch_max(per_view, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Narrow worker/render -> main receipt, using extraction's existing publication bridge.
 /// Receipts survive until AppExit is registered and the exact scene consumes them.
 #[derive(Resource, Clone, Default)]
@@ -739,8 +763,8 @@ pub struct ClusterSettings {
     /// in pixels. Terrain is broad and low in relief, so it can take a coarser threshold than
     /// objects without visible change; the same idea as a landscape LOD bias.
     pub terrain_error_pixels: f32,
-    /// Draw the whole argument list with `multi_draw_indexed_indirect` even where the adapter can
-    /// read the count on the GPU: keeps the fallback used by Metal testable on count-capable GPUs.
+    /// Draw by vertex pulling (one instanced `draw_indirect` per draw group) even where the adapter
+    /// can read the count on the GPU: keeps the path Metal uses testable on count-capable GPUs.
     /// Read when GPU buffers are created; change it before the first scene upload.
     pub fixed_count_draw: bool,
 }
@@ -811,12 +835,15 @@ impl Plugin for ClusterRenderPlugin {
             ExtractResourcePlugin::<super::package::TerrainBatchIds>::default(),
             ExtractResourcePlugin::<super::terrain::TerrainDrawReadiness>::default(),
         ));
-        app.init_resource::<UploadFailures>();
+        app.init_resource::<UploadFailures>()
+            .init_resource::<ClusterDrawStats>();
         let upload_failures = app.world().resource::<UploadFailures>().clone();
+        let draw_stats = app.world().resource::<ClusterDrawStats>().clone();
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app.insert_resource(upload_failures);
+        render_app.insert_resource(draw_stats);
         render_app.init_resource::<ShadowCacheMaterialDependencies>();
         {
             let mut dependencies = render_app
@@ -949,6 +976,8 @@ struct ViewGpu {
     /// cull's draw-group prefix: the vertex-pulled draw reads it as its arguments and the count path
     /// reads its draw count from word 1 of the same record.
     group_args: Buffer,
+    /// Draw commands this view encoded since the cull last published them (see [`ClusterDrawStats`]).
+    encoded_draws: std::sync::atomic::AtomicU32,
     params: Buffer,
     /// Exact contents last written to this allocation, including the first upload.
     params_uploaded: Option<CullParams>,
@@ -1584,8 +1613,9 @@ struct ClusterGpu {
     next_slot: u32,
     /// Immutable scheduling metadata; large meshes retain cooperative cluster scatter.
     large_instances: Vec<u32>,
-    /// Whether the adapter can read the draw count on the GPU (`multi_draw_indexed_indirect_count`); when
-    /// it cannot, the draw covers the whole list and the cull pass leaves unused entries empty.
+    /// Whether the adapter can read the draw count on the GPU (`multi_draw_indexed_indirect_count`).
+    /// When it cannot (Metal), each draw group is one instanced `draw_indirect` over its
+    /// `group_args` record and the vertex stage pulls its indices (see [`group_draw_call`]).
     use_count: bool,
     /// The source orders the views hold, shared between views with the same draw groups.
     order_cache: stable_order::OrderCache,
@@ -1649,8 +1679,9 @@ struct ClusterPipelines {
     compaction: [Option<CachedComputePipelineId>; 6],
     /// Moves the instances when the render origin changes.
     shift: Option<CachedComputePipelineId>,
-    /// Depth-only shadow pipelines, by whether the light needs unclipped depth (a sun cascade).
-    shadow: HashMap<bool, CachedRenderPipelineId>,
+    /// Depth-only shadow pipelines, by whether the light needs unclipped depth (a sun cascade) and
+    /// whether the vertex stage pulls its indices.
+    shadow: HashMap<(bool, bool), CachedRenderPipelineId>,
     /// Shadow pipelines of alpha-masked materials: the stock prepass fragment stage of the
     /// material behind the cluster vertex stage, keyed as the stock shadow queue keys it.
     shadow_mask: HashMap<ClusterMaterialPipelineKey, CachedRenderPipelineId>,
@@ -2694,6 +2725,7 @@ fn queue_cluster_batches(
                     type_id: asset_id.type_id(),
                 },
                 tangents,
+                vertex_pull: !gpu.use_count,
             };
             // What this batch resolved to last time, when none of its inputs has changed since:
             // the same material instance, prepared material (by revision, which moves when the
@@ -3093,6 +3125,7 @@ fn build_descriptor(
     draw_layout: &BindGroupLayoutDescriptor,
     asset_server: &AssetServer,
 ) -> Option<bevy::render::render_resource::RenderPipelineDescriptor> {
+    let vertex_pull = key.vertex_pull;
     let key = key.material;
     let mesh_key: MeshPipelineKey = key.mesh_key.downcast();
     let mut descriptor = material_pipeline
@@ -3132,10 +3165,16 @@ fn build_descriptor(
     }
     descriptor.vertex.shader =
         asset_server.load("embedded://engine/cluster/shaders/cluster_draw.wgsl");
+    if vertex_pull {
+        descriptor.vertex.shader_defs.push(VERTEX_PULL_DEF.into());
+    }
     descriptor.vertex.buffers.clear();
     descriptor.label = Some("cluster pipeline".into());
     Some(descriptor)
 }
+
+/// The shader def that switches the cluster draw shaders' vertex stages to vertex pulling.
+const VERTEX_PULL_DEF: &str = "CLUSTER_VERTEX_PULL";
 
 const COMPACTION_ENTRY_POINTS: [&str; 6] = [
     STAGES[1].0,
@@ -3219,6 +3258,7 @@ struct ClusterCullView {
 #[derive(bevy::ecs::system::SystemParam)]
 struct ClusterCullOutputs<'w> {
     shadow_inputs: Res<'w, ShadowMapExternalInputs>,
+    draw_stats: Option<Res<'w, ClusterDrawStats>>,
 }
 
 /// The cull passes of every view that draws clusters: the 3D camera and each shadow cascade or
@@ -3241,7 +3281,10 @@ fn run_cluster_cull(
     frame_count: Res<bevy::diagnostic::FrameCount>,
     outputs: ClusterCullOutputs,
 ) {
-    let ClusterCullOutputs { shadow_inputs } = outputs;
+    let ClusterCullOutputs {
+        shadow_inputs,
+        draw_stats,
+    } = outputs;
 
     let Some(mut gpu) = gpu else {
         for query_view in &views {
@@ -3259,6 +3302,20 @@ fn run_cluster_cull(
         }
         return;
     };
+    // The previous frame's draws are all encoded by now: publish the busiest view's count.
+    let encoded = gpu
+        .views
+        .values()
+        .map(|view_gpu| {
+            view_gpu
+                .encoded_draws
+                .swap(0, std::sync::atomic::Ordering::Relaxed)
+        })
+        .max()
+        .unwrap_or(0);
+    if let Some(draw_stats) = draw_stats.as_deref() {
+        draw_stats.record(encoded);
+    }
     // Invalidate previous arguments even if a dependency vanished this frame.
     // All stock handoff decisions must also retain their dependency proof.
     gpu.epoch = gpu.epoch.wrapping_add(1).max(1);
@@ -3327,7 +3384,6 @@ fn run_cluster_cull(
     let instance_count = gpu.total_instances;
     let instance_mask_base = gpu.batches.len().max(1) as u32;
     let triangle_limit = gpu.triangle_limit;
-    let use_count = gpu.use_count;
     let gpu_identity = gpu.identity;
     let layout = gpu.layout_epoch;
     let materials = gpu.generation;
@@ -3395,15 +3451,11 @@ fn run_cluster_cull(
             continue;
         }
         view_gpu.pending_cull = Some(inputs);
-        // Changed inputs start with empty arguments and counts.
-        let encoder = ctx.command_encoder();
-        // The draw reads only as many arguments as the count says where the adapter can read it
-        // on the GPU, and every one of those is written by the cull; only the fixed-count
-        // fallback draws the whole list and needs the unused tail to be empty draws.
-        if !use_count {
-            encoder.clear_buffer(&view_gpu.args, 0, None);
-        }
-        encoder.clear_buffer(&view_gpu.group_args, 0, None);
+        // Changed inputs start with empty group records; the cull rewrites every word of each. Every
+        // draw reads only slots the cull wrote: the count path as many arguments as the count says,
+        // the pulled path as many instances as its record says.
+        ctx.command_encoder()
+            .clear_buffer(&view_gpu.group_args, 0, None);
     }
     let active: Vec<&ViewGpu> = views
         .iter()
@@ -3700,6 +3752,7 @@ fn new_view_gpu(
         shadow_pipelines: HashMap::new(),
         args,
         group_args,
+        encoded_draws: std::sync::atomic::AtomicU32::new(0),
         params,
         params_uploaded: None,
         visible,
@@ -3924,6 +3977,39 @@ fn view_gpu<'a>(gpu: &'a ClusterGpu, view: &ExtractedView) -> Option<&'a ViewGpu
     gpu.views.get(&view.retained_view_entity)
 }
 
+/// How one draw group is encoded into a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupDrawCall {
+    /// An adapter that reads the draw count on the GPU: one indexed multi-draw over the group's
+    /// argument slice, whose count is word 1 of the group's `group_args` record.
+    IndexedCount {
+        args_offset: u64,
+        count_offset: u64,
+        max_count: u32,
+    },
+    /// One instanced non-indexed draw straight from the group's `group_args` record. The vertex
+    /// stage pulls its indices, so the cost of a group is one command however many clusters the
+    /// cull selected.
+    Indirect { offset: u64 },
+}
+
+/// The draw a group encodes. Without a GPU draw count the group is one `draw_indirect`: encoding
+/// one command per slot (a multi-draw over every slot the group could select) costs millions of CPU
+/// commands a frame on Metal.
+fn group_draw_call(use_count: bool, draw: &GroupDraw) -> GroupDrawCall {
+    if use_count {
+        GroupDrawCall::IndexedCount {
+            args_offset: draw.args_offset,
+            count_offset: draw.count_offset,
+            max_count: draw.max_count,
+        }
+    } else {
+        GroupDrawCall::Indirect {
+            offset: draw.group_args_offset,
+        }
+    }
+}
+
 /// `ONCE`: draw a group at most once per cull epoch in this view. With occlusion culling Bevy
 /// renders the camera prepass phases twice, early and late; its own meshes rewrite their indirect
 /// counts in between so each is drawn once, but a cluster group's arguments are the same in both
@@ -3970,20 +4056,28 @@ impl<P: PhaseItem, const ONCE: bool> RenderCommand<P> for DrawClusterIndirect<ON
                 return RenderCommandResult::Success;
             }
         }
-        pass.set_index_buffer(gpu.cluster_vertices.slice(..), IndexFormat::Uint16);
-        if gpu.use_count {
-            pass.multi_draw_indexed_indirect_count(
-                &view_gpu.args,
-                draw.args_offset,
-                &view_gpu.group_args,
-                draw.count_offset,
-                draw.max_count,
-            );
-        } else {
-            // No count on the GPU: draw the whole slice; the cull pass left the unused entries as
-            // zero indices, so they cost a skipped draw each and nothing else.
-            pass.multi_draw_indexed_indirect(&view_gpu.args, draw.args_offset, draw.max_count);
+        match group_draw_call(gpu.use_count, draw) {
+            GroupDrawCall::IndexedCount {
+                args_offset,
+                count_offset,
+                max_count,
+            } => {
+                pass.set_index_buffer(gpu.cluster_vertices.slice(..), IndexFormat::Uint16);
+                pass.multi_draw_indexed_indirect_count(
+                    &view_gpu.args,
+                    args_offset,
+                    &view_gpu.group_args,
+                    count_offset,
+                    max_count,
+                );
+            }
+            GroupDrawCall::Indirect { offset } => {
+                pass.draw_indirect(&view_gpu.group_args, offset);
+            }
         }
+        view_gpu
+            .encoded_draws
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         RenderCommandResult::Success
     }
 }
@@ -4031,6 +4125,7 @@ fn build_prepass_descriptor(
     draw_layout: &BindGroupLayoutDescriptor,
     asset_server: &AssetServer,
 ) -> Option<(RenderPipelineDescriptor, bool)> {
+    let vertex_pull = key.vertex_pull;
     let specializer = PrepassPipelineSpecializer {
         pipeline: prepass.clone(),
         properties: material.properties.clone(),
@@ -4049,6 +4144,9 @@ fn build_prepass_descriptor(
     descriptor.layout.push(draw_layout.clone());
     descriptor.vertex.shader =
         asset_server.load("embedded://engine/cluster/shaders/cluster_prepass.wgsl");
+    if vertex_pull {
+        descriptor.vertex.shader_defs.push(VERTEX_PULL_DEF.into());
+    }
     descriptor.vertex.buffers.clear();
     descriptor.label = Some("cluster prepass pipeline".into());
     Some((descriptor, empty_material))
@@ -4166,6 +4264,7 @@ fn queue_cluster_prepass(
                     type_id: asset_id.type_id(),
                 },
                 tangents,
+                vertex_pull: !gpu.use_count,
             };
             let pipeline = match pipelines.prepass.get(&pipeline_key) {
                 Some(id) => *id,
@@ -4311,6 +4410,7 @@ fn build_shadow_descriptor(
     prepass: &PrepassPipeline,
     shadow_layout: &BindGroupLayoutDescriptor,
     unclipped_depth: bool,
+    vertex_pull: bool,
     asset_server: &AssetServer,
 ) -> RenderPipelineDescriptor {
     // Without the adapter's depth clip control the depth is emulated (see the shader): a fragment
@@ -4322,6 +4422,11 @@ fn build_shadow_descriptor(
     } else {
         Vec::new()
     };
+    // The pulled entry is a vertex-stage concern; the depth-emulation fragment stage keeps its defs.
+    let mut vertex_defs = shader_defs.clone();
+    if vertex_pull {
+        vertex_defs.push(VERTEX_PULL_DEF.into());
+    }
     RenderPipelineDescriptor {
         label: Some("cluster shadow pipeline".into()),
         layout: vec![
@@ -4330,7 +4435,7 @@ fn build_shadow_descriptor(
         ],
         vertex: VertexState {
             shader: shader.clone(),
-            shader_defs: shader_defs.clone(),
+            shader_defs: vertex_defs,
             ..default()
         },
         fragment: emulate.then(|| FragmentState {
@@ -4385,6 +4490,7 @@ fn build_shadow_mask_descriptor(
     draw_layout: &BindGroupLayoutDescriptor,
     asset_server: &AssetServer,
 ) -> Option<RenderPipelineDescriptor> {
+    let vertex_pull = key.vertex_pull;
     let specializer = PrepassPipelineSpecializer {
         pipeline: prepass.clone(),
         properties: material.properties.clone(),
@@ -4397,6 +4503,9 @@ fn build_shadow_mask_descriptor(
     descriptor.layout.push(draw_layout.clone());
     descriptor.vertex.shader =
         asset_server.load("embedded://engine/cluster/shaders/cluster_shadow_mask.wgsl");
+    if vertex_pull {
+        descriptor.vertex.shader_defs.push(VERTEX_PULL_DEF.into());
+    }
     descriptor.vertex.buffers.clear();
     descriptor.label = Some("cluster shadow mask pipeline".into());
     Some(descriptor)
@@ -4426,6 +4535,7 @@ fn cutout_shadow_pipeline(
     cutout: &CutoutShadow,
     tangents: bool,
     unclipped: bool,
+    vertex_pull: bool,
     render_mesh: &RenderMesh,
     materials: &ErasedRenderAssets<PreparedMaterial>,
     prepass: &PrepassPipeline,
@@ -4448,6 +4558,7 @@ fn cutout_shadow_pipeline(
             material_key: cutout.material_key.clone(),
         },
         tangents,
+        vertex_pull,
     };
     if let Some(id) = shadow_mask.get(&key) {
         return Some(*id);
@@ -4550,14 +4661,17 @@ fn queue_cluster_shadows(
         } = &mut *pipelines;
         shadow_refusals.begin_plan(stamp);
         shadow_warmup.prepare(stamp, |unclipped, required| {
-            let opaque_pipeline = *shadow.entry(unclipped).or_insert_with(|| {
-                pipeline_cache.queue_render_pipeline(build_shadow_descriptor(
-                    &prepass,
-                    &gpu.shadow_layout,
-                    unclipped,
-                    &asset_server,
-                ))
-            });
+            let opaque_pipeline = *shadow
+                .entry((unclipped, !gpu.use_count))
+                .or_insert_with(|| {
+                    pipeline_cache.queue_render_pipeline(build_shadow_descriptor(
+                        &prepass,
+                        &gpu.shadow_layout,
+                        unclipped,
+                        !gpu.use_count,
+                        &asset_server,
+                    ))
+                });
             required.push(opaque_pipeline);
             let mut complete = layouts_ready;
             for (index, batch) in gpu.batches.iter().enumerate() {
@@ -4595,6 +4709,7 @@ fn queue_cluster_shadows(
                             cutout,
                             tangents,
                             unclipped,
+                            !gpu.use_count,
                             render_mesh,
                             &materials,
                             &prepass,
@@ -4660,14 +4775,18 @@ fn queue_cluster_shadows(
         // old dependencies; prepared-material deltas update members separately.
         shadow_inputs.reset_materials(key, frame_count.0);
         pipelines.shadow_refusals.begin_view(key);
-        let opaque_pipeline = *pipelines.shadow.entry(unclipped).or_insert_with(|| {
-            pipeline_cache.queue_render_pipeline(build_shadow_descriptor(
-                &prepass,
-                &gpu.shadow_layout,
-                unclipped,
-                &asset_server,
-            ))
-        });
+        let opaque_pipeline = *pipelines
+            .shadow
+            .entry((unclipped, !gpu.use_count))
+            .or_insert_with(|| {
+                pipeline_cache.queue_render_pipeline(build_shadow_descriptor(
+                    &prepass,
+                    &gpu.shadow_layout,
+                    unclipped,
+                    !gpu.use_count,
+                    &asset_server,
+                ))
+            });
         let mut groups = DrawGroups::new(gpu.batches.len());
         let mut group_of_key: HashMap<(CachedRenderPipelineId, Option<u32>), u32> = HashMap::new();
         let mut shadow_groups: Vec<ShadowGroup> = Vec::new();
@@ -4712,6 +4831,7 @@ fn queue_cluster_shadows(
                         cutout,
                         tangents,
                         unclipped,
+                        !gpu.use_count,
                         render_mesh,
                         &materials,
                         &prepass,
@@ -5559,6 +5679,7 @@ mod tests {
                 type_id: std::any::TypeId::of::<StandardMaterial>(),
             },
             tangents: true,
+            vertex_pull: false,
         };
         let mut pipelines = ClusterPipelines::default();
         let mut queued = 0;
@@ -5595,6 +5716,7 @@ mod tests {
                 ..key.material
             },
             tangents: key.tangents,
+            vertex_pull: key.vertex_pull,
         };
         assert_eq!(
             pipelines.forward_pipeline(
@@ -5966,6 +6088,7 @@ mod tangent_layout_regressions {
                 type_id: std::any::TypeId::of::<StandardMaterial>(),
             },
             tangents,
+            vertex_pull: false,
         }
     }
 
