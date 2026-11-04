@@ -801,7 +801,7 @@ fn load_cluster_package(
     let mut block_bounds: Vec<([f32; 3], [f32; 3])> = Vec::new();
     for chunk_source in &chunk_paths {
         let chunk = &chunk_source.path;
-        let payload = match validated.0.envelope().payload(chunk) {
+        let payload = match validated.0.envelope().reread_payload(chunk) {
             Ok(payload) => payload,
             Err(error) => {
                 stop_unusable_overlay(
@@ -823,6 +823,8 @@ fn load_cluster_package(
                 return;
             }
         };
+        // The block copied its tables out; nothing else needs the file's bytes.
+        drop(payload);
         if hex(&block.builder_identity) != identity {
             stop_unusable_overlay(
                 &mut commands,
@@ -856,7 +858,7 @@ fn load_cluster_package(
                     let loaded = validated
                         .0
                         .envelope()
-                        .payload(&row.payload_path)
+                        .reread_payload(&row.payload_path)
                         .map_err(|error| error.to_string())
                         .and_then(|payload| {
                             let builder = shared::cluster::parse_hash(&identity)
@@ -1221,10 +1223,6 @@ fn load_cluster_package(
                 return;
             }
         }
-    }
-    if let Err(error) = validated.0.envelope().release_consumed_payload_bytes() {
-        stop_unusable_overlay(&mut commands, &validated.0, error);
-        return;
     }
     commands.insert_resource(workers);
     commands.insert_resource(ClusterScene {
@@ -3187,10 +3185,11 @@ mod empty_certified_loader_tests {
     }
 
     #[test]
-    fn certified_payloads_stay_pinned_but_missing_mesh_metadata_stops_requested_clusters() {
+    fn payloads_changed_after_certification_are_refused_and_unchanged_ones_load() {
         use bevy::ecs::system::RunSystemOnce;
         use shared::cluster::{MclSection, read_mci, read_mcl};
         for corruption in [
+            "unchanged",
             "missing_block",
             "invalid_block",
             "invalid_mesh",
@@ -3270,7 +3269,9 @@ mod empty_certified_loader_tests {
                 .collect();
             assert_eq!(expected_meshes.len(), expected_mesh_keys.len());
             drop(db);
-            mutate_payload_for_pinning_test(root, corruption);
+            if corruption != "unchanged" {
+                mutate_payload_for_pinning_test(root, corruption);
+            }
             let mut app = App::new();
             app.insert_resource(PackageSource {
                 base: root.to_owned(),
@@ -3287,18 +3288,20 @@ mod empty_certified_loader_tests {
                 .run_system_once(load_cluster_package)
                 .unwrap();
             let exits = app.world().resource::<Messages<AppExit>>();
-            if corruption == "missing_mesh_row" {
-                // Metadata was not pinned by this repair. Keep the original fail-closed contract.
+            if corruption != "unchanged" {
+                // No payload bytes outlive certification, so a file that changed since then is
+                // re-read, fails its launch digest, and stops the overlay; so does missing
+                // mesh metadata.
                 assert!(
                     exits.iter_current_update_messages().any(AppExit::is_error),
-                    "{corruption}: missing live mesh metadata must stop the requested overlay"
+                    "{corruption}: a changed payload or missing mesh metadata must stop the requested overlay"
                 );
                 assert!(!app.world().contains_resource::<ClusterScene>());
                 assert!(!app.world().contains_resource::<LazyBatches>());
             } else {
                 assert!(
                     exits.iter_current_update_messages().next().is_none(),
-                    "{corruption}: an intact retained snapshot must keep the run alive"
+                    "{corruption}: untouched certified payloads must keep the run alive"
                 );
                 let scene = app.world().resource::<ClusterScene>();
                 assert!(Arc::ptr_eq(

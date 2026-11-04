@@ -31,13 +31,12 @@ fn fixture() -> Fixture {
         cluster_count: clusters,
     };
     let builder = shared::cluster::parse_hash(&package.envelope().builder_identity).unwrap();
-    let payload = package.envelope().payload(&relative).unwrap();
+    let payload = package.envelope().reread_payload(&relative).unwrap();
     let mut mesh = checked_certified_mesh(&payload, builder, &expected).unwrap();
     mesh.set_rehydrate_source(
         MeshRehydrateSource::new(package.clone(), relative.clone(), builder, expected).unwrap(),
     );
     drop(payload);
-    package.envelope().release_consumed_payload_bytes().unwrap();
     Fixture {
         mesh,
         package,
@@ -60,7 +59,7 @@ fn wait_for_wake(wake: &AtomicU64) {
 }
 
 #[test]
-fn initial_upload_uses_certified_snapshot_even_if_disk_changes_before_upload() {
+fn unreleased_mesh_uploads_the_bytes_it_was_loaded_with_without_a_reread() {
     let fixture = fixture();
     let original = fixture.mesh.snapshot().unwrap();
     let original_view = shared::cluster::read_mcl_validated(&original).unwrap();
@@ -226,14 +225,6 @@ fn reread_reapplies_typed_row_validation_and_retains_the_source_locks() {
     }
     let digest = fixture.package.envelope().payload_digest(&fixture.relative);
     assert_eq!(digest, Some(fixture.expected.content_hash));
-    assert!(
-        fixture
-            .package
-            .envelope()
-            .payload(&fixture.relative)
-            .is_err(),
-        "consumed snapshot unexpectedly retained"
-    );
 }
 
 #[test]
