@@ -301,12 +301,14 @@ exact Skyrim placement, variation, animation or visual parity.
 
 ## Normal maps and authored wind weight
 
-Static grass keeps authored tangent XYZ and bitangent handedness through glTF.
+Static grass keeps authored positions, normals and UVs; the converter builds
+an area-weighted UV tangent frame and exports its XYZ plus handedness.
 Normal textures are sampled as linear data in the fragment shader and transformed
 through that frame. Legacy geometry without TANGENT uses position/UV derivatives;
-degenerate frames or absent maps keep the geometric normal. NIF bitangents convert to the glTF convention; DirectX-tagged normal maps
+degenerate frames or absent maps keep the geometric normal. The frame follows Bevy's bitangent convention; DirectX-tagged normal maps
 flip Y once, matching the native material contract. Node reflection/nonuniform
-scale, instance yaw and slope transform the frame with the mesh. Both raster
+scale, instance yaw, slope and authored UV transforms move the frame with the mesh.
+The fragment re-orthogonalizes it against the interpolated normal. Both raster
 sides retain authored orientation. Wind displaces positions while retaining the
 undeformed shading frame, matching the existing native wind policy.
 

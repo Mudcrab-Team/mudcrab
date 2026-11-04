@@ -252,8 +252,8 @@ fn directional_shadow(input:Varyings) -> f32 {
 #endif
     return 1.0;
 }
-// Native tangent-space decode; normal textures are linear data. Source NIF
-// bitangent is converted to glTF handedness; DirectX-tagged maps flip Y once.
+// Native UV-frame decode; normal textures are linear data. The Bevy-compatible
+// frame uses B opposite increasing V; DirectX-tagged maps flip Y once.
 fn tangent_normal(sampled:vec3<f32>, n:vec3<f32>, t:vec3<f32>, b:vec3<f32>) -> vec3<f32> {
     let v = sampled * 2.0 - vec3(1.0);
     return normalize(t*v.x + b*v.y + n*v.z);
@@ -274,16 +274,18 @@ fn mapped_normal(input:Varyings) -> vec3<f32> {
         let u = grass.uv_transform[0].xy; let v = grass.uv_transform[1].xy;
         let uv_sign = sign(u.x*v.y-v.x*u.y);
         let authored_t = t;
-        t = (authored_t*v.y-b*u.y)*uv_sign;
-        b = (b*u.x-authored_t*v.x)*uv_sign;
+        t = (authored_t*v.y+b*u.y)*uv_sign;
+        b = (b*u.x+authored_t*v.x)*uv_sign;
     }
     if input.tangent.w == 0.0 {
         t = (px*uy.y - py*ux.y)*sign(det);
-        b = (py*ux.x - px*uy.x)*sign(det);
+        b = (px*uy.x - py*ux.x)*sign(det);
         t -= n*dot(n,t); b -= n*dot(n,b);
     }
     if grass.normal_params.x == 0.0 || dot(t,t)<0.000001 || dot(b,b)<0.000001 { return n; }
-    return tangent_normal(sampled,n,normalize(t),normalize(b));
+    t = normalize(t);
+    let orientation = select(-1.0,1.0,dot(cross(n,t),b) >= 0.0);
+    return tangent_normal(sampled,n,t,cross(n,t)*orientation);
 }
 @fragment
 fn fragment(vertex_input:Varyings,@builtin(sample_index) sample_index:u32) -> Fragment {
