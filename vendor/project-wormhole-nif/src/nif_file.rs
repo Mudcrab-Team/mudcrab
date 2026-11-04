@@ -276,7 +276,33 @@ impl Parse<&[u8]> for NifFile {
     }
 }
 
+/// Builds a model without rigid skin recovery, for animated callers.
+/// As before, unresolved joint names are validated when the model writes its GLB.
 pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, String> {
+    nif_to_model_inner(nif, skeleton, false, None, &mut Vec::new())
+}
+
+/// Keeps usable geometry when an individual legacy skin cannot be exported.
+/// Diagnostics contain one cause per affected shape, including weight rounding repairs.
+/// A resolver's unresolved rig must remain static rather than inventing a bone tree.
+pub fn nif_to_model_with_skin_fallback(
+    nif: &NifFile,
+    skeleton: Option<&NifFile>,
+    unresolved_skin: Option<&str>,
+) -> Result<(Model, Vec<(u32, String)>), String> {
+    let mut diagnostics = Vec::new();
+    let model = nif_to_model_inner(nif, skeleton, true, unresolved_skin, &mut diagnostics)?;
+    Ok((model, diagnostics))
+}
+
+/// Shares scene construction between strict animated exports and recoverable world assets.
+fn nif_to_model_inner(
+    nif: &NifFile,
+    skeleton: Option<&NifFile>,
+    recover_skin: bool,
+    unresolved_skin: Option<&str>,
+    diagnostics: &mut Vec<(u32, String)>,
+) -> Result<Model, String> {
     // Init empty model
     let mut model = Model::default();
 
@@ -287,8 +313,7 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
 
         // A provided skeleton supplies the bone tree. Without one the mesh is
         // a self-contained rig: its own joints and their ancestors are the only
-        // bones it has. The resolver decides which case applies; an unresolved
-        // skin is rejected before it reaches the exporter.
+        // bones it has. An unresolved rig instead uses the static shape path.
         match skeleton {
             Some(skeleton) => {
                 // Get nodes from skeleton
@@ -418,16 +443,53 @@ pub fn nif_to_model(nif: &NifFile, skeleton: Option<&NifFile>) -> Result<Model, 
 
                 bind_mesh_local_legacy_joints(nif, &mut mesh.bones);
             }
-            None => bind_self_contained_joints(nif, &mut mesh.bones),
+            None if unresolved_skin.is_none() => bind_self_contained_joints(nif, &mut mesh.bones),
+            None => {}
         }
 
-        let (meshes, material_indices) = if nif.get_skins().is_empty() {
-            legacy_skinned_meshes(nif, &mesh.bones)?
+        let (meshes, material_indices) = if nif.get_skins().is_empty() || unresolved_skin.is_some()
+        {
+            legacy_skinned_meshes(nif, &mesh.bones, recover_skin, unresolved_skin, diagnostics)?
         } else {
             (bsskin_meshes(nif, &mesh), nif.get_mesh_materials_ids())
         };
 
         model.skeletal_meshes = meshes;
+
+        if recover_skin {
+            let skinned_blocks = model
+                .skeletal_meshes
+                .iter()
+                .filter_map(|mesh| mesh.source_block)
+                .collect();
+            populate_static_scene_excluding(nif, &mut model, &skinned_blocks)?;
+            // Pure skins retain their original scene layout. Mixed rigs need
+            // the complete static ancestor chain for their rigid shapes.
+            if model.static_meshes.is_empty() {
+                model.static_nodes.clear();
+            }
+            for node in &model.static_nodes {
+                if node.mesh.is_none()
+                    || diagnostics
+                        .iter()
+                        .any(|(block, _)| *block == node.block_index)
+                {
+                    continue;
+                }
+                let skin = match &nif.blocks[node.block_index as usize] {
+                    NifBlock::BSLODTriShape(shape) => shape.bs_tri_shape.skin,
+                    NifBlock::BSSubIndexTriShape(shape) => shape.bs_tri_shape.skin,
+                    _ => continue,
+                };
+                if nif.skin_instance_at(skin).is_some() {
+                    diagnostics.push((
+                        node.block_index,
+                        "static skin fallback: skinning for this geometry type is unsupported"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
 
         let material = nif.get_materials();
 
@@ -577,9 +639,13 @@ fn bsskin_meshes(nif: &NifFile, mesh: &SkeletalMesh) -> Vec<SkeletalMesh> {
     meshes
 }
 
+/// Exports each legacy skin independently so a bad skin cannot discard its neighbours.
 fn legacy_skinned_meshes(
     nif: &NifFile,
     bones: &BoneTree,
+    recover_skin: bool,
+    unresolved_skin: Option<&str>,
+    diagnostics: &mut Vec<(u32, String)>,
 ) -> Result<(Vec<SkeletalMesh>, Vec<u8>), String> {
     let mut meshes = Vec::new();
     let mut material_indices = Vec::new();
@@ -599,12 +665,7 @@ fn legacy_skinned_meshes(
 
         let instance_block = shape.skin;
         let Some(instance) = nif.skin_instance_at(instance_block) else {
-            // A skinned file may still contain unskinned shapes (effects,
-            // helpers, rigid trap and ruin parts). A SkeletalMesh cannot carry
-            // an unskinned primitive; preserving them is a later #273 stage.
-            warn!(
-                "shape block {shape_index} ({block_type}, {name:?}) references no skin instance (block {instance_block}); leaving it out of the skeletal mesh set"
-            );
+            // Mixed-rig rigid shapes are emitted by the static scene path.
             continue;
         };
 
@@ -612,23 +673,59 @@ fn legacy_skinned_meshes(
             SkinInstanceRef::Ni(instance) => instance,
             SkinInstanceRef::Dismember(instance) => &instance.skin_instance,
             SkinInstanceRef::Bs(_) => {
-                warn!(
-                    "shape block {shape_index} ({block_type}, {name:?}) references BSSkinInstance block {instance_block}; the SSE BSSkin path handles those shapes"
-                );
+                if let Some(reason) = unresolved_skin {
+                    diagnostics.push((shape_index, format!("static skin fallback: {reason}")));
+                } else {
+                    warn!(
+                        "shape block {shape_index} ({block_type}, {name:?}) references BSSkinInstance block {instance_block}; the SSE BSSkin path handles those shapes"
+                    );
+                }
                 continue;
             }
         };
 
-        meshes.push(legacy_skinned_mesh(
-            nif,
-            shape_index,
-            block_type,
-            shape,
-            name,
-            instance,
-            instance_block,
-            bones,
-        )?);
+        let result = if let Some(reason) = unresolved_skin {
+            Err(reason.to_owned())
+        } else {
+            legacy_skinned_mesh(
+                nif,
+                shape_index,
+                block_type,
+                shape,
+                name,
+                instance,
+                instance_block,
+                bones,
+            )
+            .and_then(|(mesh, clamped)| {
+                let missing = mesh
+                    .skin
+                    .iter()
+                    .filter(|name| !bones.has_bone(name))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if recover_skin && !missing.is_empty() {
+                    return Err(format!(
+                        "skin joints could not be resolved against the bone tree: {}",
+                        missing.join(", ")
+                    ));
+                }
+                Ok((mesh, clamped))
+            })
+        };
+        match result {
+            Ok((mesh, clamped)) => {
+                meshes.push(mesh);
+                if clamped {
+                    diagnostics.push((shape_index, format!("clamped tiny negative skin weights within {SKIN_WEIGHT_ROUNDING_TOLERANCE} and renormalized")));
+                }
+            }
+            Err(error) if recover_skin => {
+                diagnostics.push((shape_index, format!("static skin fallback: {error}")));
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
         material_indices.push(shape_material_index(
             nif,
             shape_index,
@@ -882,6 +979,7 @@ fn insert_mesh_local_joint_chains(
     bound
 }
 
+/// Reads one skin without changing the shape geometry used by static recovery.
 fn legacy_skinned_mesh(
     nif: &NifFile,
     shape_index: u32,
@@ -891,7 +989,7 @@ fn legacy_skinned_mesh(
     instance: &NiSkinInstance,
     instance_block: u32,
     bones: &BoneTree,
-) -> Result<SkeletalMesh, String> {
+) -> Result<(SkeletalMesh, bool), String> {
     let skin_data = match nif.blocks.get(instance.data as usize) {
         Some(NifBlock::NiSkinData(data)) => data,
         _ => {
@@ -998,6 +1096,7 @@ fn legacy_skinned_mesh(
     }
     let mut joints = Vec::with_capacity(position_count);
     let mut weights = Vec::with_capacity(position_count);
+    let mut clamped = false;
     for (vertex_index, (raw_joints, raw_weights)) in influences.into_iter().enumerate() {
         let raw_weights = if padding_allowed
             && !in_use[vertex_index]
@@ -1008,6 +1107,9 @@ fn legacy_skinned_mesh(
         } else {
             raw_weights
         };
+        clamped |= raw_weights
+            .iter()
+            .any(|weight| *weight < 0.0 && *weight >= -SKIN_WEIGHT_ROUNDING_TOLERANCE);
         let (vertex_joints, vertex_weights) = normalize_vertex_influences(
             raw_joints,
             raw_weights,
@@ -1020,17 +1122,20 @@ fn legacy_skinned_mesh(
         weights.push(vertex_weights);
     }
 
-    Ok(SkeletalMesh {
-        name,
-        source_block: Some(shape_index),
-        mesh: Some(mesh),
-        weights,
-        joints,
-        bones: bones.clone(),
-        skin: joint_names,
-        inverse_bind_matrices,
-        morph_targets: Vec::new(),
-    })
+    Ok((
+        SkeletalMesh {
+            name,
+            source_block: Some(shape_index),
+            mesh: Some(mesh),
+            weights,
+            joints,
+            bones: bones.clone(),
+            skin: joint_names,
+            inverse_bind_matrices,
+            morph_targets: Vec::new(),
+        },
+        clamped,
+    ))
 }
 
 /// Fills each vertex channel from the shape buffer, then from the partition
@@ -1250,6 +1355,11 @@ fn influence_from_row(
     Ok((indices, weights))
 }
 
+/// Absolute weight tolerance (one thousandth of one percent). This includes the
+/// retail half-float rounding residue -0.0000038146973 without accepting substantive negatives.
+const SKIN_WEIGHT_ROUNDING_TOLERANCE: f32 = 1e-5;
+
+/// Clamps only tiny finite negative influences, then normalizes the remaining weights.
 fn normalize_vertex_influences(
     raw_joints: [u8; 4],
     raw_weights: [f32; 4],
@@ -1258,6 +1368,13 @@ fn normalize_vertex_influences(
     shape_index: u32,
     vertex_index: usize,
 ) -> Result<(U8Vec4, Vec4), String> {
+    let mut raw_weights = raw_weights;
+    for weight in &mut raw_weights {
+        if !weight.is_finite() || *weight < -SKIN_WEIGHT_ROUNDING_TOLERANCE {
+            return Err(format!("shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"));
+        }
+        *weight = weight.max(0.0);
+    }
     let total: f32 = raw_weights.iter().sum();
     if !total.is_finite() || total <= 0.0 {
         return Err(format!(
@@ -1273,11 +1390,6 @@ fn normalize_vertex_influences(
         // only the influences that actually move the vertex are validated.
         if weight == 0.0 {
             continue;
-        }
-        if !weight.is_finite() || weight < 0.0 {
-            return Err(format!(
-                "shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"
-            ));
         }
         let raw_index = usize::from(raw_joints[slot]);
         let joint = match palette {
@@ -1496,20 +1608,30 @@ pub fn nif_to_static_model(nif: &NifFile) -> Result<Model, String> {
 
 /// Adds supported NIF nodes and geometry to the static scene, retaining geometryless template nodes.
 fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String> {
+    populate_static_scene_excluding(nif, model, &BTreeSet::new())
+}
+
+/// Retains rigid geometry and its node transforms without duplicating exported skins.
+fn populate_static_scene_excluding(
+    nif: &NifFile,
+    model: &mut Model,
+    excluded: &BTreeSet<u32>,
+) -> Result<(), String> {
     let supported_blocks: BTreeSet<u32> = nif
         .blocks
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {
-            (block.as_node().is_ok()
-                || matches!(
-                    block,
-                    NifBlock::BSTriShape(_)
-                        | NifBlock::BSDynamicTriShape(_)
-                        | NifBlock::BSSubIndexTriShape(_)
-                        | NifBlock::BSLODTriShape(_)
-                        | NifBlock::NiTriShape(_)
-                ))
+            (!excluded.contains(&(index as u32))
+                && (block.as_node().is_ok()
+                    || matches!(
+                        block,
+                        NifBlock::BSTriShape(_)
+                            | NifBlock::BSDynamicTriShape(_)
+                            | NifBlock::BSSubIndexTriShape(_)
+                            | NifBlock::BSLODTriShape(_)
+                            | NifBlock::NiTriShape(_)
+                    )))
             .then_some(index as u32)
         })
         .collect();
@@ -1517,6 +1639,9 @@ fn populate_static_scene(nif: &NifFile, model: &mut Model) -> Result<(), String>
 
     for (index, block) in nif.blocks.iter().enumerate() {
         let block_index = index as u32;
+        if excluded.contains(&block_index) {
+            continue;
+        }
         match block {
             NifBlock::NiNode(node) | NifBlock::BSFadeNode(node) => {
                 model.static_nodes.push(static_node_from_av(
@@ -1701,53 +1826,23 @@ fn push_modern_static_shape(
             })
             .collect();
     }
-    if mesh.positions.is_empty() || mesh.triangles.is_empty() {
-        if let Some(partition) = nif
-            .blocks
-            .get(shape.skin as usize)
-            .and_then(|block| match block {
-                NifBlock::NiSkinInstance(instance) => nif
-                    .blocks
-                    .get(instance.skin_partition as usize)
-                    .and_then(|block| match block {
-                        NifBlock::NiSkinPartition(partition) => Some(partition),
-                        _ => None,
-                    }),
+    if let Some(partition) = nif
+        .skin_instance_at(shape.skin)
+        .and_then(|instance| match instance {
+            SkinInstanceRef::Ni(instance) => Some(instance),
+            SkinInstanceRef::Dismember(instance) => Some(&instance.skin_instance),
+            SkinInstanceRef::Bs(_) => None,
+        })
+        .and_then(
+            |instance| match nif.blocks.get(instance.skin_partition as usize) {
+                Some(NifBlock::NiSkinPartition(partition)) => Some(partition),
                 _ => None,
-            })
-        {
-            if mesh.positions.is_empty() {
-                mesh.positions = partition
-                    .vertex_data
-                    .iter()
-                    .filter_map(|vertex| vertex.position)
-                    .collect();
-                mesh.normals = partition
-                    .vertex_data
-                    .iter()
-                    .filter_map(|vertex| vertex.normal)
-                    .collect();
-                mesh.uvs = partition
-                    .vertex_data
-                    .iter()
-                    .filter_map(|vertex| vertex.uv)
-                    .collect();
-                mesh.colors = partition
-                    .vertex_data
-                    .iter()
-                    .filter_map(|vertex| vertex.vertex_colors)
-                    .map(|color| {
-                        BSVec4(glam::Vec4::new(
-                            f32::from(color.x) / 255.0,
-                            f32::from(color.y) / 255.0,
-                            f32::from(color.z) / 255.0,
-                            f32::from(color.w) / 255.0,
-                        ))
-                    })
-                    .collect();
-            }
-            mesh.triangles = partition.triangles.clone();
-        }
+            },
+        )
+    {
+        // Recover each absent channel independently: dynamic shapes already
+        // have live positions but keep their normals/UVs/triangles in the partition.
+        mesh = legacy_shape_mesh(shape, partition, name.clone());
     }
     if mesh.positions.is_empty()
         && shape.num_vertices == 0

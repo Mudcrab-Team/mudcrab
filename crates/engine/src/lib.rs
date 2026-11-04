@@ -16,6 +16,7 @@ pub mod doors;
 pub mod emittance;
 pub mod fingerprint;
 pub mod frame_budget;
+pub mod hdr_probe;
 pub mod indirect_metrics;
 pub mod lights;
 mod live_console;
@@ -50,6 +51,7 @@ pub mod terrain_merge;
 pub mod terrain_upload;
 pub mod tone_mapping;
 pub mod visibility_optimization;
+pub mod visual_profile;
 pub mod world;
 
 pub use app::run;

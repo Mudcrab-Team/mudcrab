@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -319,7 +320,10 @@ class ReplayLifecycleTests(unittest.TestCase):
         self.assertEqual(self.source_path.read_bytes(), self.source)
         self.assertEqual(GPU.sha256_file(self.capture), self.capture_hash)
         self.assertEqual(json.loads((self.output / 'receipt.json').read_text()), receipt)
-        self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
+        # Windows ignores mkdir mode bits and reports every directory as 0o777;
+        # the private-directory guarantee is a POSIX permission bit.
+        if os.name == 'posix':
+            self.assertEqual(self.output.stat().st_mode & 0o777, 0o700)
 
     def test_partial_replace_and_pixel_history_errors_restore_and_free(self):
         for fault in ('replace', 'history'):

@@ -131,7 +131,9 @@ class Arithmetic:
                 self.fmaf = ctypes.CDLL(None).fmaf
                 self.fmaf.argtypes = [ctypes.c_float] * 3
                 self.fmaf.restype = ctypes.c_float
-            except (AttributeError, OSError) as error:
+            except (AttributeError, OSError, TypeError) as error:
+                # Windows cannot load the process image by passing None, so the
+                # probe raises TypeError there even when no fmaf is reachable.
                 raise ValueError('System C99 fmaf unavailable; use explicit separate MAD mode') from error
 
     def add(self, a, b):

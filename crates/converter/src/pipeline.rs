@@ -24,7 +24,7 @@ use crate::{
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
-        albedo::{TerrainAtlas, TerrainTextureCache, TerrainTextures},
+        albedo::{LoadedDefault, TerrainAtlas, TerrainTextureCache, TerrainTextures},
         reuse::{LodManifest, LodReuse},
         terrain::{
             PreparedTerrainChunk, TerrainCellCache, TerrainChunk, exterior_terrain_cells,
@@ -170,6 +170,25 @@ pub struct PipelineReport {
 /// while usable records still publish; successful compatibility remaps are notices.
 pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
+}
+
+/// One line per projection omission category (#297): a lost light row warns, so the run is
+/// incomplete; an unresolved emittance target keeps the model's emission and is only noted.
+pub(crate) fn report_projection_omissions(
+    report: &mut PipelineReport,
+    omissions: &crate::esm::projection_omissions::ProjectionOmissions,
+) {
+    use crate::esm::projection_omissions::{Severity, summary_line};
+    for (category, outcome) in &omissions.categories {
+        let message = format!(
+            "world database projection left rows out: {}",
+            summary_line(category, outcome)
+        );
+        match outcome.severity {
+            Severity::DataLoss => report.warnings.push(message),
+            Severity::Fallback => report.notices.push(message),
+        }
+    }
 }
 
 /// A run's stop button. The command line sets it when the user interrupts (Ctrl+C); the pipeline
@@ -433,7 +452,7 @@ impl AssetPipeline {
         }
         let publication_started = Instant::now();
         report.publication_phase_elapsed_ms =
-            publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
+            publish_runtime_pack(&staging, &config.output_dir, &mut report, &output_lock)
                 .map_err(|error| failure(error, &staging, &cancellation))?;
         report.artifacts.push(PathBuf::from(
             shared::streaming_costs::STREAMING_COST_FILE_NAME,
@@ -442,27 +461,53 @@ impl AssetPipeline {
         report
             .phase_elapsed_ms
             .insert("runtime_publication".into(), report.publication_elapsed_ms);
+        // The runtime pack is published and sealed; everything below only maintains the
+        // ingestion cache. A failure here is a notice, never a failed conversion: the pack on
+        // disk is good and complete, so the run must not hand back a resume command for it.
         let cache_persistence_started = Instant::now();
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
-        if staging.join(".ingestion-cache").is_dir() {
-            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
-                .map_err(|error| failure(error, &staging, &cancellation))?;
+        if staging.join(".ingestion-cache").is_dir()
+            && let Err(error) =
+                persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
+        {
+            push_post_publication_notice(
+                &mut report.notices,
+                format!(
+                    "published the asset pack, but could not save the ingestion cache to {}: {error:#}",
+                    cache_root.display()
+                ),
+            );
         }
         report.phase_elapsed_ms.insert(
             "ingestion_cache_persistence".into(),
             cache_persistence_started.elapsed().as_millis(),
         );
         let manifest_reload_started = Instant::now();
-        let manifest =
-            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))
-                .map_err(|error| failure(error, &staging, &cancellation))?;
+        let published_manifest =
+            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"));
         report.phase_elapsed_ms.insert(
             "published_manifest_reload".into(),
             manifest_reload_started.elapsed().as_millis(),
         );
         let cache_pruning_started = Instant::now();
-        prune_stale_ingestion_blobs(&cache_root, &manifest)
-            .map_err(|error| failure(error, &staging, &cancellation))?;
+        match published_manifest {
+            Ok(manifest) => {
+                if let Err(error) = prune_stale_ingestion_blobs(&cache_root, &manifest) {
+                    push_post_publication_notice(
+                        &mut report.notices,
+                        format!(
+                            "published the asset pack, but stale ingestion-cache pruning failed: {error:#}"
+                        ),
+                    );
+                }
+            }
+            Err(error) => push_post_publication_notice(
+                &mut report.notices,
+                format!(
+                    "published the asset pack, but its conversion manifest could not be reloaded, so stale ingestion-cache pruning was skipped: {error:#}"
+                ),
+            ),
+        }
         report.phase_elapsed_ms.insert(
             "ingestion_cache_pruning".into(),
             cache_pruning_started.elapsed().as_millis(),
@@ -1549,6 +1594,7 @@ impl AssetPipeline {
                     integration.cache_cells,
                 ));
             }
+            report_projection_omissions(&mut report, &integration.projection_omissions);
             report.integration = Some(integration);
             report
                 .artifacts
@@ -1701,7 +1747,8 @@ fn reusable_manifest(
                     }
                 }
             }
-            matched
+            // Combined metadata proofs cannot name fixed-producer mesh contracts.
+            matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
             kind,
@@ -2056,6 +2103,7 @@ impl ConversionBatch<'_> {
                             }
                         }
 
+                        let mut unresolved_skin = None;
                         let skeleton = if source_kind == "nif" {
                             let resolution = crate::mesh::resolve_skeleton_with_index(
                                 &relative,
@@ -2072,28 +2120,13 @@ impl ConversionBatch<'_> {
                                     .or(Some(key)),
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
-                                    let err = eyre!(
-                                        "{}",
-                                        crate::mesh::unresolved_skeleton_diagnostic(
+                                    hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
+                                    unresolved_skin =
+                                        Some(crate::mesh::unresolved_skeleton_diagnostic(
                                             format_args!("NIF {}", relative.display()),
-                                            best_coverage
-                                        )
-                                    );
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
+                                            best_coverage,
+                                        ));
+                                    None
                                 }
                             }
                         } else {
@@ -2269,11 +2302,14 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => MeshConverter::convert_nif_to_glb_with_skeleton(
-                                            &source,
-                                            &target,
-                                            skeleton.as_deref(),
-                                        ),
+                                        "nif" => {
+                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
+                                                &source,
+                                                &target,
+                                                skeleton.as_deref(),
+                                                unresolved_skin.as_deref(),
+                                            )
+                                        }
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
@@ -4102,12 +4138,31 @@ impl PublicationTimings {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes the previous pack's removal fail after the swap, as a held or read-only backup
+    /// does on Windows, so tests can prove a failed cleanup never fails a published pack.
+    static FAIL_PREVIOUS_PACK_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Makes the post-publication ingestion-cache persistence fail, as a full disk does.
+    static FAIL_INGESTION_CACHE_PERSISTENCE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Names a failure that happened after the runtime pack was published. The pack on disk is
+/// complete, so the message is a notice: it is printed with the run's summary, kept in the JSON
+/// report, and logged, but it never makes a good pack look like a failed conversion or asks the
+/// user to resume a run that is already published.
+fn push_post_publication_notice(notices: &mut Vec<String>, message: String) {
+    warn!("{message}");
+    notices.push(message);
+}
+
 /// Publishes only runtime artifacts. Staging keeps `vfs/` and
 /// `.ingestion-cache/` as build workspace; those never land in `output`.
 fn publish_runtime_pack(
     staging: &Path,
     output: &Path,
-    report: &PipelineReport,
+    report: &mut PipelineReport,
     lock: &AssetLock,
 ) -> Result<BTreeMap<String, u128>> {
     let mut timings = PublicationTimings {
@@ -4167,7 +4222,14 @@ fn publish_runtime_pack(
         timings.measure("runtime_pack_costs", || {
             write_streaming_cost_catalog(&pack_staging)
         })?;
-        publish_directory_locked_with_timings(&pack_staging, output, true, lock, &mut timings)
+        publish_directory_locked_with_timings(
+            &pack_staging,
+            output,
+            true,
+            lock,
+            &mut timings,
+            &mut report.notices,
+        )
     })();
     if published.is_err() {
         let _ = fs::remove_dir_all(&pack_staging);
@@ -4193,6 +4255,10 @@ pub(crate) fn write_streaming_cost_catalog(pack: &Path) -> Result<()> {
 
 /// Publishes ingestion blobs into the persistent cache, repairing corrupt copies.
 fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_INGESTION_CACHE_PERSISTENCE.with(std::cell::Cell::get) {
+        bail!("injected ingestion cache persistence failure");
+    }
     let absolute = if cache_root.is_absolute() {
         cache_root.to_owned()
     } else {
@@ -4453,6 +4519,21 @@ async fn compile_lod_chunks_inline(
     };
     let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
     let mut texture_cache = TerrainTextureCache::default();
+    // Entry 0 of the land texture table, resolved exactly as the merged-terrain stage resolves it
+    // (#215), so a quadrant with no BTXT is painted the same texture at every distance. A
+    // configured default that cannot be used falls back to the generated white one, as entry 0
+    // does there, and the report names it instead of skipping the world.
+    let (default_diffuse, default_fallback) =
+        crate::terrain_pipeline::TerrainDefaultDiffuse::resolve(
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+        )?;
+    let (default_textures, default_error) =
+        LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
+    if let Some(reason) = default_fallback.or(default_error) {
+        report.lod_warnings.push(format!(
+            "terrain LOD default land texture falls back to the generated white one: {reason}"
+        ));
+    }
     let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
@@ -4567,6 +4648,7 @@ async fn compile_lod_chunks_inline(
             &connection,
             &staging.join("vfs"),
             &inputs,
+            &default_textures,
             &mut texture_cache,
         ) {
             Ok(textures) => textures,
@@ -5079,12 +5161,16 @@ fn publish_directory_locked(
     replace: bool,
     lock: &AssetLock,
 ) -> Result<()> {
+    // A metadata rebuild publishes into a new directory and never replaces an output, so it has
+    // no previous pack to clean up; a post-publish notice from here has no report to reach and
+    // only goes to the log.
     publish_directory_locked_with_timings(
         staging,
         output,
         replace,
         lock,
         &mut PublicationTimings::default(),
+        &mut Vec::new(),
     )
 }
 
@@ -5094,6 +5180,7 @@ fn publish_directory_locked_with_timings(
     replace: bool,
     lock: &AssetLock,
     timings: &mut PublicationTimings,
+    notices: &mut Vec<String>,
 ) -> Result<()> {
     timings.measure("destination_lock_validation", || {
         reject_symlink_output(output)?;
@@ -5126,14 +5213,32 @@ fn publish_directory_locked_with_timings(
         recover_interrupted_publication(output)
     })?;
     let (backup, _backup_lock, record_path) = timings.measure("backup_setup", || {
-        let backup = output.with_file_name(format!(
-            "{}{}",
-            publication_backup_prefix(output)?,
-            std::process::id()
-        ));
-        if backup.exists() {
-            bail!("refusing to overwrite stale backup {}", backup.display());
+        // A previous pack this process could not delete may still hold the first name: an
+        // owned leftover is stepped past, anything else is still refused.
+        let prefix = publication_backup_prefix(output)?;
+        let pid = std::process::id();
+        let leftovers = read_publication_leftovers(output)?;
+        let mut chosen = None;
+        for attempt in 0..MAX_PUBLICATION_LEFTOVERS {
+            let name = match attempt {
+                0 => format!("{prefix}{pid}"),
+                _ => format!("{prefix}{pid}-{attempt}"),
+            };
+            let candidate = output.with_file_name(&name);
+            if !candidate.exists() {
+                chosen = Some(candidate);
+                break;
+            }
+            if !leftovers.contains(&name) {
+                bail!("refusing to overwrite stale backup {}", candidate.display());
+            }
         }
+        let backup = chosen.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "{MAX_PUBLICATION_LEFTOVERS} undeletable previous packs of {} remain; delete them to publish",
+                output.display()
+            )
+        })?;
         let backup_lock = AssetLock::acquire_exclusive(&backup)?;
         let record_path = publication_record_path(output)?;
         Ok((backup, backup_lock, record_path))
@@ -5177,15 +5282,57 @@ fn publish_directory_locked_with_timings(
         }
         return Err(error).wrap_err("failed to publish converted assets");
     }
+    // The new pack is in place, so the only work left is deleting the previous pack. A failure
+    // here must not fail a conversion that published successfully: it is reported as a notice,
+    // and the backup moves to the leftover list, which every run retries. The record's job is
+    // done, so it is removed: kept, a later change to the pack (a repair) would make recovery
+    // refuse the remaining backup as an ambiguous publication. Only a failed list write keeps
+    // the record, so recovery still deletes the backup.
     if backup.exists() {
-        timings.measure("previous_pack_cleanup", || {
-            fs::remove_dir_all(backup).map_err(Into::into)
-        })?;
+        let cleanup: Result<()> = timings.measure("previous_pack_cleanup", || {
+            #[cfg(test)]
+            if FAIL_PREVIOUS_PACK_CLEANUP.with(std::cell::Cell::get) {
+                bail!("injected previous pack cleanup failure");
+            }
+            fs::remove_dir_all(&backup).map_err(Into::into)
+        });
+        if let Err(error) = cleanup {
+            push_post_publication_notice(
+                notices,
+                format!(
+                    "published the new pack, but could not remove the previous pack {}: {error:#}; the next run deletes it, or delete it yourself to free the space",
+                    backup.display()
+                ),
+            );
+            let name = backup
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .ok_or_else(|| color_eyre::eyre::eyre!("previous pack backup has no name"));
+            if let Err(list_error) = name.and_then(|name| add_publication_leftover(output, &name)) {
+                push_post_publication_notice(
+                    notices,
+                    format!(
+                        "could not list the previous pack {} for later removal: {list_error:#}; its ownership record is kept so the next run deletes it",
+                        backup.display()
+                    ),
+                );
+                return Ok(());
+            }
+        }
     }
     if record_path.is_file() {
-        timings.measure("ownership_record_cleanup", || {
-            fs::remove_file(record_path).map_err(Into::into)
-        })?;
+        let cleanup: Result<()> = timings.measure("ownership_record_cleanup", || {
+            fs::remove_file(&record_path).map_err(Into::into)
+        });
+        if let Err(error) = cleanup {
+            push_post_publication_notice(
+                notices,
+                format!(
+                    "published the new pack, but could not remove its ownership record {}: {error:#}; the next run retries removing it",
+                    record_path.display()
+                ),
+            );
+        }
     }
     Ok(())
 }
@@ -5345,6 +5492,8 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // The record is settled before the leftover list is retried: an interrupted recovery can
+    // list the record's own backup, which must stay until the record says it is garbage.
     let record_path = publication_record_path(output)?;
     let record = match record_path.symlink_metadata() {
         Ok(metadata) => {
@@ -5355,14 +5504,17 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
             serde_json::from_slice::<PublicationRecord>(&fs::read(&record_path)?)?
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let leftovers = retry_publication_leftovers(output, parent)?;
             if !output.exists() {
                 let prefix = publication_backup_prefix(output)?;
                 for entry in fs::read_dir(parent)? {
                     let entry = entry?;
                     let kind = entry.file_type()?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
                     ensure!(
                         !(kind.is_dir() || kind.is_symlink())
-                            || !entry.file_name().to_string_lossy().starts_with(&prefix),
+                            || !name.starts_with(&prefix)
+                            || (kind.is_dir() && leftovers.contains(&name)),
                         "unowned publication backup {}; manual recovery required",
                         entry.path().display()
                     );
@@ -5377,28 +5529,30 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         "publication record belongs to another destination"
     );
     ensure!(
-        Path::new(&record.backup_name).components().count() == 1
-            && !record.backup_name.contains(['/', '\\', ':'])
-            && record
-                .backup_name
-                .starts_with(&publication_backup_prefix(output)?),
+        is_owned_backup_name(output, &record.backup_name)?,
         "invalid owned backup name"
     );
     let backup = parent.join(&record.backup_name);
-    let _backup_lock = AssetLock::acquire_exclusive(&backup)?;
+    let backup_lock = AssetLock::acquire_exclusive(&backup)?;
     if output.exists() {
         let current = manifest_hash(output)?;
         if current == record.next_manifest_hash {
-            if backup.exists() {
-                verify_package_seal(
-                    output,
-                    &record.next_manifest_hash,
-                    &record.next_generated_artifacts,
-                )?;
-                validate_publication_package(output)?;
-                verify_publication_seal(&backup, &record)?;
-                crate::config::check_output_dir(&backup)?;
-                fs::remove_dir_all(&backup)?;
+            // The output is the sealed new pack, so the record's backup is the previous pack
+            // and holds nothing worth keeping. It is not re-verified: a delete that stopped
+            // halfway leaves a backup that can never satisfy its seal, and demanding it would
+            // fail every later run on a good pack. The strict seal stays only in the branch
+            // below, where the backup becomes the output again.
+            verify_package_seal(
+                output,
+                &record.next_manifest_hash,
+                &record.next_generated_artifacts,
+            )?;
+            validate_publication_package(output)?;
+            if !remove_publication_backup(&backup) {
+                // The record's job is done: the output is the new pack. The backup moves to
+                // the leftover list, which every run retries, so the next publication can
+                // write its own record.
+                add_publication_leftover(output, &record.backup_name)?;
             }
         } else {
             ensure!(
@@ -5412,7 +5566,37 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         fs::rename(&backup, output).wrap_err("failed to restore owned last-good assets")?;
     }
     fs::remove_file(record_path)?;
+    // A listed backup may be the record's own, so its lock is released before the retry.
+    drop(backup_lock);
+    retry_publication_leftovers(output, parent)?;
     Ok(())
+}
+
+/// Deletes a backup left by an interrupted cleanup and returns whether it is gone. The output is
+/// already the sealed new pack, so nothing in the backup is worth keeping: a delete that still
+/// fails names the leftover and never fails a run that has a good pack.
+fn remove_publication_backup(backup: &Path) -> bool {
+    #[cfg(test)]
+    let removed = if FAIL_PREVIOUS_PACK_CLEANUP.with(std::cell::Cell::get) {
+        Err(std::io::Error::other(
+            "injected previous pack cleanup failure",
+        ))
+    } else {
+        fs::remove_dir_all(backup)
+    };
+    #[cfg(not(test))]
+    let removed = fs::remove_dir_all(backup);
+    match removed {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "could not remove the previous pack {}: {error}; the next run retries, or delete it yourself to free the space",
+                backup.display()
+            );
+            false
+        }
+    }
 }
 
 fn verify_publication_seal(backup: &Path, record: &PublicationRecord) -> Result<()> {
@@ -5446,6 +5630,107 @@ fn verify_package_seal(
         );
     }
     Ok(())
+}
+
+/// Most stale backups one destination keeps a name for; past this, publication stops and asks
+/// for them to be deleted instead of growing the list without bound.
+const MAX_PUBLICATION_LEFTOVERS: usize = 64;
+
+/// Previous packs a run published over and then could not delete. They are owned (this
+/// destination made them and sealed their replacement), so every recovery retries deleting
+/// them, but they no longer block a new publication the way an in-flight record does.
+fn publication_leftovers_path(output: &Path) -> Result<PathBuf> {
+    let name = output
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("output has no name"))?;
+    Ok(output.with_file_name(format!(
+        ".{}.publication-leftovers.json",
+        name.to_string_lossy()
+    )))
+}
+
+/// A single path component under this destination's backup prefix.
+fn is_owned_backup_name(output: &Path, name: &str) -> Result<bool> {
+    Ok(Path::new(name).components().count() == 1
+        && !name.contains(['/', '\\', ':'])
+        && name.starts_with(&publication_backup_prefix(output)?))
+}
+
+fn read_publication_leftovers(output: &Path) -> Result<Vec<String>> {
+    let path = publication_leftovers_path(output)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let names: Vec<String> = serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("invalid publication leftover list {}", path.display()))?;
+    for name in &names {
+        ensure!(
+            is_owned_backup_name(output, name)?,
+            "invalid leftover backup name {name:?} in {}",
+            path.display()
+        );
+    }
+    Ok(names)
+}
+
+fn write_publication_leftovers(output: &Path, names: &[String]) -> Result<()> {
+    use std::io::Write;
+    let path = publication_leftovers_path(output)?;
+    if names.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| color_eyre::eyre::eyre!("leftover list has no parent"))?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&serde_json::to_vec_pretty(names)?)?;
+    file.as_file().sync_all()?;
+    file.persist(&path)?;
+    Ok(())
+}
+
+fn add_publication_leftover(output: &Path, name: &str) -> Result<()> {
+    let mut names = read_publication_leftovers(output)?;
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_owned());
+    }
+    write_publication_leftovers(output, &names)
+}
+
+/// Retries deleting every leftover backup and returns the ones still present. The caller holds
+/// the destination's exclusive lock.
+fn retry_publication_leftovers(output: &Path, parent: &Path) -> Result<Vec<String>> {
+    let names = read_publication_leftovers(output)?;
+    if names.is_empty() {
+        return Ok(names);
+    }
+    let mut remaining = Vec::new();
+    for name in names {
+        let backup = parent.join(&name);
+        // A reader still holding a leftover only delays its deletion; it never stops a run.
+        let _backup_lock = match AssetLock::acquire_exclusive(&backup) {
+            Ok(lock) => lock,
+            Err(error) if error.is_held() => {
+                warn!(
+                    "could not remove the previous pack {}: {error}; the next run retries",
+                    backup.display()
+                );
+                remaining.push(name);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !remove_publication_backup(&backup) {
+            remaining.push(name);
+        }
+    }
+    write_publication_leftovers(output, &remaining)?;
+    Ok(remaining)
 }
 
 fn publication_backup_prefix(output: &Path) -> Result<String> {
@@ -5940,9 +6225,9 @@ mod tests {
         );
     }
 
-    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    /// An adapter-10 combined proof preserves DDS/PEX candidates but cannot prove NIF contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
+    fn adapter10_combined_asset_proof_reuses_dds_and_pex_but_excludes_nif_without_relabeling() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
             directory.path().join("Data"),
@@ -5999,8 +6284,29 @@ mod tests {
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         assert_eq!(
-            reused.entries, manifest.entries,
-            "metadata-only adapter identity must preserve eligible asset candidates"
+            reused.entries,
+            [
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
+            .into(),
+            "combined metadata proof must retain DDS/PEX provenance and exclude unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);
@@ -6145,7 +6451,7 @@ mod tests {
     #[test]
     fn changed_default_bytes_change_persisted_lod_identity_and_only_defaulted_chunks() {
         use crate::lod::{
-            albedo::TerrainTextures,
+            albedo::{LoadedDefault, TerrainTextures},
             terrain::{TerrainCellInput, terrain_jobs},
         };
         use std::collections::HashMap;
@@ -6163,7 +6469,8 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let vfs = directory.path();
-        let default_path = vfs.join("textures/landscape/dirt02.dds");
+        let default_source = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
+        let default_path = vfs.join(&default_source);
         let grass_path = vfs.join("textures/landscape/grass.dds");
         fs::create_dir_all(default_path.parent().unwrap()).unwrap();
         let grass_bytes = dummy_content::dds::generate(
@@ -6224,7 +6531,13 @@ mod tests {
             )
             .unwrap();
             fs::write(&default_path, default_bytes).unwrap();
-            let textures = TerrainTextures::load(&connection, vfs, &cells).unwrap();
+            let (default, reason) = LoadedDefault::load(
+                &crate::terrain_pipeline::TerrainDefaultDiffuse::Image(default_source.clone()),
+                vfs,
+                &mut crate::lod::albedo::TerrainTextureCache::default(),
+            );
+            assert_eq!(reason, None);
+            let textures = TerrainTextures::load(&connection, vfs, &cells, &default).unwrap();
             let mut chunk_inputs = BTreeMap::new();
             let mut chunk_hashes = Vec::new();
             let mut default_inputs = BTreeMap::new();
@@ -6400,7 +6713,7 @@ mod tests {
         fs::write(staging.join("published.glb"), b"invalid GLB").unwrap();
         fs::write(staging.join("stale.glb"), b"stale GLB").unwrap();
         fs::write(staging.join(STREAMING_COST_FILE_NAME), b"old sidecar").unwrap();
-        let report = PipelineReport {
+        let mut report = PipelineReport {
             artifacts: vec![
                 "conversion-manifest.json".into(),
                 "scripts/papyrus_runtime.luau".into(),
@@ -6410,7 +6723,7 @@ mod tests {
             ..Default::default()
         };
         let lock = AssetLock::acquire_exclusive(&output).unwrap();
-        publish_runtime_pack(&staging, &output, &report, &lock).unwrap();
+        publish_runtime_pack(&staging, &output, &mut report, &lock).unwrap();
         let fingerprint = hash_file(&output.join("conversion-manifest.json")).unwrap();
         let catalog =
             StreamingCostCatalog::load(&output.join(STREAMING_COST_FILE_NAME), &fingerprint)
@@ -6441,12 +6754,12 @@ mod tests {
         write_test_runtime_pack(&output, "previous");
         write_test_runtime_pack(&staging, "next");
         fs::write(staging.join("conversion-manifest.json"), b"invalid JSON").unwrap();
-        let report = PipelineReport {
+        let mut report = PipelineReport {
             artifacts: vec!["conversion-manifest.json".into()],
             ..Default::default()
         };
         let lock = AssetLock::acquire_exclusive(&output).unwrap();
-        assert!(publish_runtime_pack(&staging, &output, &report, &lock).is_err());
+        assert!(publish_runtime_pack(&staging, &output, &mut report, &lock).is_err());
         assert_eq!(published_manifest(&output).configuration_hash, "previous");
         assert_eq!(
             fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
@@ -6481,6 +6794,107 @@ mod tests {
                 if boundary < 2 { "previous" } else { "next" }
             );
         }
+    }
+
+    /// A cleanup that died halfway leaves a backup that can never match its seal: files are
+    /// already gone. The output is the sealed new pack, so recovery must delete the remains
+    /// instead of refusing it, which would fail every later run on a good pack.
+    #[test]
+    fn recovery_discards_a_partially_deleted_backup_of_a_published_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        let staging = directory.path().join("staging");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        write_publication_record(&output, &backup, &staging).unwrap();
+        fs::rename(&output, &backup).unwrap();
+        fs::rename(&staging, &output).unwrap();
+        // The delete stopped after removing the previous pack's manifest and sealed script.
+        fs::remove_file(backup.join("conversion-manifest.json")).unwrap();
+        fs::remove_file(backup.join("scripts/papyrus_runtime.luau")).unwrap();
+
+        recover_interrupted_publication(&output).unwrap();
+
+        assert_eq!(published_manifest(&output).configuration_hash, "next");
+        assert!(!backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+    }
+
+    /// A previous pack that cannot be deleted after the swap must not fail the run or wedge the
+    /// next one: the new pack stays published, the run reports a notice, and recovery completes.
+    #[test]
+    fn failed_previous_pack_cleanup_never_blocks_this_or_the_next_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let output = directory.path().join("assets");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        let backup = output.with_extension(format!("backup-{}", std::process::id()));
+        let mut report = PipelineReport {
+            artifacts: vec![
+                "conversion-manifest.json".into(),
+                "scripts/papyrus_runtime.luau".into(),
+            ],
+            ..Default::default()
+        };
+        let lock = AssetLock::acquire_exclusive(&output).unwrap();
+
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+        let published = publish_runtime_pack(&staging, &output, &mut report, &lock);
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+
+        published.unwrap();
+        assert_eq!(published_manifest(&output).configuration_hash, "next");
+        assert!(backup.is_dir(), "the leftover backup is kept, not lost");
+        let backup_name = backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            std::slice::from_ref(&backup_name),
+            "the backup moves to the leftover list"
+        );
+        assert!(
+            !publication_record_path(&output).unwrap().exists(),
+            "a done record never meets a later change to the pack"
+        );
+        assert!(
+            report.notices.iter().any(|notice| notice
+                .contains("could not remove the previous pack")
+                && notice.contains(&backup.display().to_string())),
+            "notices: {:?}",
+            report.notices
+        );
+
+        // The next publication in the same process, with deletes still failing, publishes
+        // anyway: the first leftover's name stays taken and the second joins the list.
+        let staging = directory.path().join("staging-2");
+        write_test_runtime_pack(&staging, "third");
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+        let republished = publish_runtime_pack(&staging, &output, &mut report, &lock);
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+        republished.unwrap();
+        assert_eq!(published_manifest(&output).configuration_hash, "third");
+        let second_backup = output.with_extension(format!("backup-{}-1", std::process::id()));
+        assert!(backup.is_dir() && second_backup.is_dir());
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            [
+                backup_name,
+                second_backup
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert!(!publication_record_path(&output).unwrap().exists());
+
+        // Once deletes work again, one recovery clears both leftovers and the list.
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!backup.exists() && !second_backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
+        assert_eq!(published_manifest(&output).configuration_hash, "third");
     }
 
     #[tokio::test]
@@ -6691,6 +7105,53 @@ mod tests {
         drop(reader);
         recover_interrupted_publication(&output).unwrap();
         assert!(output.is_dir());
+    }
+
+    /// A recovery interrupted after listing its record's backup leaves both behind; the next
+    /// recovery settles the record first, so the listed backup is restored, not deleted.
+    #[test]
+    fn recovery_settles_the_record_before_retrying_a_listed_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        fs::create_dir_all(backup.join("scripts")).unwrap();
+        fs::write(backup.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        seal_test_backup(&output, &backup);
+        add_publication_leftover(&output, "assets.backup-123").unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(output.join("scripts/papyrus_runtime.luau").is_file());
+        assert!(!backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
+    }
+
+    /// A reader holding a leftover delays its deletion without failing recovery.
+    #[test]
+    fn recovery_keeps_a_leftover_held_by_a_reader_and_continues() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let leftover = directory.path().join("assets.backup-9");
+        write_test_runtime_pack(&output, "current");
+        fs::create_dir_all(&leftover).unwrap();
+        add_publication_leftover(&output, "assets.backup-9").unwrap();
+        let reader = AssetLock::acquire_shared(&leftover).unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(leftover.is_dir());
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            ["assets.backup-9"]
+        );
+        drop(reader);
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!leftover.exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
     }
 
     #[tokio::test]
@@ -10529,6 +10990,54 @@ mod tests {
         assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
     }
 
+    /// The pack is already published when the ingestion cache is written, so a cache write that
+    /// fails must leave a complete run, not a failure that sends the user back to resume it.
+    #[tokio::test]
+    async fn a_post_publication_cache_failure_keeps_the_published_pack_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new(
+                    "strings/readme.strings",
+                    b"cached asset",
+                )],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.extract_all_archive_files = true;
+
+        FAIL_INGESTION_CACHE_PERSISTENCE.with(|fail| fail.set(true));
+        let report = run_without_progress(config.clone()).await;
+        FAIL_INGESTION_CACHE_PERSISTENCE.with(|fail| fail.set(false));
+
+        assert!(report.complete, "warnings: {:?}", report.warnings);
+        assert_eq!(published_manifest(&output).complete, report.complete);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("could not save the ingestion cache")),
+            "notices: {:?}",
+            report.notices
+        );
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache/sha256");
+        assert!(
+            !cache.exists(),
+            "the injected failure skipped cache persistence"
+        );
+
+        // The next run publishes normally from the same inputs.
+        let rerun = run_without_progress(config).await;
+        assert!(rerun.complete);
+    }
+
     #[tokio::test]
     async fn an_interrupted_run_keeps_staging_and_resumes_from_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -10633,6 +11142,38 @@ mod tests {
             ..PipelineReport::default()
         };
         assert!(!conversion_is_complete(&warned));
+    }
+
+    /// A lost light row makes the run incomplete; an unresolved emittance target is a notice.
+    #[test]
+    fn projection_omissions_warn_on_data_loss_and_note_fallbacks() {
+        use crate::esm::projection_omissions::{OmissionCategory, ProjectionOmissions};
+        let mut fallback_only = ProjectionOmissions::default();
+        fallback_only.record(OmissionCategory::EmittanceTargetAbsent, 0xDEAD, "absent");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &fallback_only);
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.notices.len(), 1);
+        assert!(
+            report.notices[0].contains("emittance_target_absent: 1 record (fallback)"),
+            "{:?}",
+            report.notices
+        );
+        assert!(conversion_is_complete(&report));
+
+        let mut with_loss = fallback_only;
+        with_loss.record(OmissionCategory::LightShortData, 0x802, "short");
+        with_loss.record(OmissionCategory::LightShortData, 0x803, "short");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &with_loss);
+        assert_eq!(report.notices.len(), 1);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("light_short_data: 2 records (data_loss), e.g. 00000802"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!conversion_is_complete(&report));
     }
 
     /// Notices never hide failures or affect completeness, regardless of insertion order.

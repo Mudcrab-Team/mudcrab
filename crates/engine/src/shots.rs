@@ -176,6 +176,10 @@ pub struct Shot {
     pub reference: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// World points whose pre-tonemap color and output bytes are written to
+    /// `<out>/<name>.stages.json`.
+    #[serde(default)]
+    pub probes: Vec<crate::hdr_probe::ProbePoint>,
 }
 
 impl Shot {
@@ -254,6 +258,16 @@ impl Shot {
                  -90 and 90"
             );
             return Err(ShotsError(message));
+        }
+        let mut probe_names = HashSet::new();
+        for probe in &self.probes {
+            probe
+                .validate()
+                .map_err(|reason| ShotsError(format!("shot \"{name}\": {reason}")))?;
+            if !probe_names.insert(probe.name.as_str()) {
+                let message = format!("shot \"{name}\" has two probes named \"{}\"", probe.name);
+                return Err(ShotsError(message));
+            }
         }
         Ok(())
     }
@@ -587,6 +601,10 @@ pub struct ShotsRun {
     /// The current shot's PNG write, set by its capture observer once it has run: `None` while the
     /// screenshot is still on its way back from the renderer.
     capture: Option<Result<(), String>>,
+    /// The current shot's stage 3 read, when it names probes.
+    probes: Option<crate::hdr_probe::ProbeTicket>,
+    /// Stage 4 per probe and the profile, taken from the captured image by its observer.
+    stage_output: Option<StageOutput>,
     directory_made: bool,
     /// The render target's size when the last screenshot was requested.
     window_size: Option<(u32, u32)>,
@@ -631,6 +649,8 @@ impl ShotsRun {
             failure_baseline: Failures::default(),
             timed_out: false,
             capture: None,
+            probes: None,
+            stage_output: None,
             directory_made: false,
             window_size: None,
             log_started: false,
@@ -648,6 +668,20 @@ impl ShotsRun {
             ""
         };
         self.output_dir.join(format!("{}{suffix}.png", shot.name))
+    }
+
+    /// The stage receipt that sits next to [`Self::shot_path`]'s image: `<name>.stages.json`, or
+    /// `<name>-transition.stages.json` for a transition capture.
+    pub fn stages_path(&self, shot: &Shot) -> PathBuf {
+        self.shot_path(shot).with_extension("stages.json")
+    }
+
+    /// Removes the image and stage receipt an earlier run left for this capture. A receipt is
+    /// removed even when the shot no longer lists probes, so measurements from another run are
+    /// never left beside this run's image, whether or not the capture succeeds.
+    fn discard_previous_outputs(&self, shot: &Shot) -> Result<(), String> {
+        discard_previous_shot(&self.shot_path(shot))?;
+        discard_previous_shot(&self.stages_path(shot))
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -946,6 +980,28 @@ fn run_shots(
                 run.fail(message);
                 run.advance();
             } else if matches!(run.capture, Some(Ok(()))) {
+                match run.probes.as_ref().map(|probes| probes.finished()) {
+                    Some(None) if run.timer < CAPTURE_TIMEOUT_SECONDS => return,
+                    Some(None) => {
+                        let message = format!(
+                            "shot \"{}\": stage 3 probes did not read back within \
+                             {CAPTURE_TIMEOUT_SECONDS:.0} s",
+                            shot.name
+                        );
+                        run.fail(message);
+                        run.advance();
+                        return;
+                    }
+                    Some(Some(result)) => {
+                        let written = result.and_then(|samples| run.write_stages(shot, samples));
+                        if let Err(reason) = written {
+                            run.fail(format!("shot \"{}\": {reason}", shot.name));
+                            run.advance();
+                            return;
+                        }
+                    }
+                    None => {}
+                }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
                 run.note(line);
@@ -979,12 +1035,15 @@ fn request_capture(
 ) {
     let shot = &run.file.shots[run.shot];
     let path = run.shot_path(shot);
-    if let Err(reason) = discard_previous_shot(&path) {
+    if let Err(reason) = run.discard_previous_outputs(shot) {
         run.fail(reason);
         run.advance();
         return;
     }
-    let ticket = crate::capture_frame::CaptureTicket::new(run.failure_baseline);
+    let ticket = crate::capture_frame::CaptureTicket::new(run.failure_baseline)
+        .with_probes(shot.probes.clone());
+    run.probes = ticket.probes().cloned();
+    run.stage_output = None;
     let observed = ticket.clone();
     let position = shot.position;
     let rotation = shot_camera_rotation(shot.yaw, shot.pitch).to_array();
@@ -1022,7 +1081,15 @@ fn request_capture(
                         return Err("captured settled frame has pending or unavailable work".into());
                     }
                     let grading = receipt.grading.as_ref().ok_or("captured frame has no grading source receipt")?;
-                    write_shot(trigger.image.clone(), &path)?;
+                    let rgb = decode_shot(trigger.image.clone())?;
+                    if let Some(probes) = observed.probes() {
+                        run.stage_output = Some(StageOutput::read(
+                            &rgb,
+                            &probes.patches()?,
+                            receipt.visual_profile,
+                        )?);
+                    }
+                    write_shot(&rgb, &path)?;
                     let line = serde_json::json!({
                         "capture": index,
                         "kind": if transition { "transition" } else { "settled" },
@@ -1035,6 +1102,7 @@ fn request_capture(
                         "timed_out": run.timed_out,
                         "image": path,
                         "dimensions": dimensions,
+                        "visual_profile": receipt.visual_profile,
                         "color_grade": grading.color_grade,
                         "visual_preset": grading.visual_preset,
                         "preset_saturation": grading.preset_saturation,
@@ -1053,6 +1121,180 @@ fn request_capture(
     run.enter(Phase::Capture);
 }
 
+/// Why stage 1 has no value yet; removed when P1a observes raw albedo.
+const RAW_ALBEDO_PENDING: &str = "lands with P1a #360";
+/// Why stage 2 has no value yet; removed when P1c observes the pre-fog lighting sum.
+const LIT_PRE_FOG_PENDING: &str = "lands with P1c #362";
+
+/// What the observer reads from the captured image for a stage receipt.
+#[derive(Debug, Clone)]
+struct StageOutput {
+    /// Mean output byte per probe, in the order of the probes, or why there is none.
+    output: Vec<Result<[f32; 3], String>>,
+    visual_profile: Option<crate::visual_profile::VisualProfile>,
+}
+
+impl StageOutput {
+    /// Reads stage 4 over the patches stage 3 chose. The patches index the main texture, so the
+    /// image must be that texture's size; anything else would read a different region.
+    fn read(
+        rgb: &image::RgbImage,
+        capture: &crate::hdr_probe::ProbeCapture,
+        visual_profile: Option<crate::visual_profile::VisualProfile>,
+    ) -> Result<Self, String> {
+        let [width, height] = capture.viewport;
+        if rgb.dimensions() != (width, height) {
+            return Err(format!(
+                "stage 3 sampled a {width}x{height} view but the captured image is {}x{}",
+                rgb.width(),
+                rgb.height()
+            ));
+        }
+        let output = capture
+            .samples
+            .iter()
+            .map(|sample| {
+                let ([x, y], [width, height]) = sample
+                    .patch
+                    .ok_or_else(|| sample.unavailable.clone().unwrap_or("no patch".into()))?;
+                let mut sum = [0.0f64; 3];
+                for row in y..y + height {
+                    for column in x..x + width {
+                        let pixel = rgb.get_pixel_checked(column, row).ok_or_else(|| {
+                            format!("patch texel {column},{row} is outside the captured image")
+                        })?;
+                        for (total, byte) in sum.iter_mut().zip(pixel.0) {
+                            *total += f64::from(byte);
+                        }
+                    }
+                }
+                let count = f64::from(width * height);
+                Ok(sum.map(|total| (total / count) as f32))
+            })
+            .collect();
+        Ok(Self {
+            output,
+            visual_profile,
+        })
+    }
+}
+
+/// One probe's receipt row. Every stage is either a value or named under `unavailable` with its
+/// reason; a stage with neither is an error, never a bare `null`.
+fn stage_row(
+    point: &crate::hdr_probe::ProbePoint,
+    sample: &crate::hdr_probe::ProbeSample,
+    output: Option<&Result<[f32; 3], String>>,
+) -> Result<serde_json::Value, String> {
+    let mut unavailable = serde_json::Map::new();
+    unavailable.insert("raw_albedo".into(), RAW_ALBEDO_PENDING.into());
+    unavailable.insert("lit_pre_fog".into(), LIT_PRE_FOG_PENDING.into());
+    if sample.hdr_pre_tonemap.is_none() {
+        let reason = sample.unavailable.as_deref().ok_or_else(|| {
+            format!(
+                "probe \"{}\" has no stage 3 value and no reason",
+                point.name
+            )
+        })?;
+        unavailable.insert("hdr_pre_tonemap".into(), reason.into());
+    }
+    let output = match output {
+        Some(Ok(bytes)) => Some(*bytes),
+        Some(Err(reason)) => {
+            unavailable.insert("output".into(), reason.as_str().into());
+            None
+        }
+        None => return Err(format!("probe \"{}\" was not read for stage 4", point.name)),
+    };
+    Ok(serde_json::json!({
+        "name": point.name,
+        "world_position": point.position,
+        "patch_px": point.patch_px,
+        "patch": sample.patch,
+        "stages": {
+            "raw_albedo": null,
+            "lit_pre_fog": null,
+            "hdr_pre_tonemap": sample.hdr_pre_tonemap,
+            "output": output,
+        },
+        "unavailable": unavailable,
+    }))
+}
+
+/// Whether the build's worktree had uncommitted changes, as `build.rs` recorded it: `true`,
+/// `false`, or `"unknown"` when packaging supplied the commit without its dirty state.
+fn build_dirty() -> serde_json::Value {
+    match option_env!("MUDCRAB_BUILD_GIT_DIRTY") {
+        Some("true") => true.into(),
+        Some("false") => false.into(),
+        _ => "unknown".into(),
+    }
+}
+
+impl ShotsRun {
+    /// `<out>/<name>.stages.json`, in the format `docs/specs/engine/visual-profiles.md` defines.
+    /// Stages 1 and 2 are listed as unavailable until the packages that observe them land.
+    fn write_stages(
+        &self,
+        shot: &Shot,
+        capture: crate::hdr_probe::ProbeCapture,
+    ) -> Result<(), String> {
+        let output = self
+            .stage_output
+            .as_ref()
+            .ok_or("the captured image was not read for stage 4")?;
+        if capture.samples.len() != shot.probes.len() {
+            return Err(format!(
+                "stage 3 has {} samples for {} probes",
+                capture.samples.len(),
+                shot.probes.len()
+            ));
+        }
+        let probes = capture
+            .samples
+            .iter()
+            .zip(&shot.probes)
+            .enumerate()
+            .map(|(index, (sample, point))| stage_row(point, sample, output.output.get(index)))
+            .collect::<Result<Vec<_>, String>>()?;
+        let receipt = serde_json::json!({
+            "schema": 1,
+            "side": "mudcrab",
+            "visual_profile": output.visual_profile,
+            "build": option_env!("MUDCRAB_BUILD_GIT_COMMIT"),
+            "build_dirty": build_dirty(),
+            "viewport": capture.viewport,
+            "pose": {
+                "worldspace_id": shot.worldspace_id.unwrap_or(self.worldspace_id),
+                "interior_cell_id": shot.interior_cell_id,
+                "position": shot.position,
+                "yaw": shot.yaw,
+                "pitch": shot.pitch,
+                "hfov": shot.hfov,
+            },
+            "image": self.shot_path(shot),
+            "probes": probes,
+        });
+        let path = self.stages_path(shot);
+        let text = serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?;
+        fs::write(&path, text)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))
+    }
+}
+
+/// The captured image as the RGB bytes a shot's PNG holds, discarding alpha exactly as Bevy 0.19.0's
+/// `save_to_disk` does (`bevy_render` `view/window/screenshot.rs:143`: `dyn_img.to_rgb8()`).
+///
+/// `image` is taken by value because `Image::try_into_dynamic` consumes it (bevy_image 0.19.0,
+/// `image_texture_conversion.rs:168`); the observer only has a borrow of the event, so it clones,
+/// as Bevy's own `save_to_disk` does (`screenshot.rs:137`).
+fn decode_shot(image: Image) -> Result<image::RgbImage, String> {
+    Ok(image
+        .try_into_dynamic()
+        .map_err(|error| format!("the captured image could not be understood: {error}"))?
+        .to_rgb8())
+}
+
 /// Writes one captured image to `path`, or says why the image is not there to be compared.
 ///
 /// The run writes its screenshots itself rather than through Bevy's `save_to_disk`, which logs its
@@ -1064,18 +1306,13 @@ fn request_capture(
 /// match what the screenshot helper would have produced. The file is then checked to be a
 /// complete, non-empty PNG.
 ///
-/// `image` is taken by value because `Image::try_into_dynamic` consumes it (bevy_image 0.19.0,
-/// `image_texture_conversion.rs:168`); the observer only has a borrow of the event, so it clones,
-/// as Bevy's own `save_to_disk` does (`screenshot.rs:137`).
-fn write_shot(image: Image, path: &Path) -> Result<(), String> {
-    let dynamic = image
-        .try_into_dynamic()
-        .map_err(|error| format!("the captured image could not be understood: {error}"))?;
+/// The observer decodes the image once, with [`decode_shot`], and passes it here and to the stage 4
+/// read, so both see the same bytes.
+fn write_shot(rgb: &image::RgbImage, path: &Path) -> Result<(), String> {
     // Written to a temporary file next to the target and renamed only once it is a complete PNG,
     // so a failed or partial save never leaves a file at the shot's path.
     let partial = partial_path(path);
-    let written = dynamic
-        .to_rgb8()
+    let written = rgb
         .save(&partial)
         .map_err(|error| format!("the image could not be written: {error}"))
         .and_then(|()| {
@@ -1461,6 +1698,110 @@ mod tests {
     }
 
     #[test]
+    fn stage_4_reads_only_an_image_the_size_stage_3_sampled() {
+        use crate::hdr_probe::{ProbeCapture, ProbeSample};
+        let sample = |name: &str, patch| ProbeSample {
+            name: name.into(),
+            patch,
+            hdr_pre_tonemap: patch.map(|_| [0.5; 4]),
+            unavailable: patch.is_none().then(|| "off screen".into()),
+        };
+        let capture = ProbeCapture {
+            viewport: [4, 4],
+            samples: vec![
+                sample("inside", Some(([1, 1], [3, 3]))),
+                sample("off", None),
+                sample("beyond", Some(([3, 3], [3, 3]))),
+            ],
+        };
+        let mut rgb = image::RgbImage::new(4, 4);
+        for pixel in rgb.pixels_mut() {
+            *pixel = image::Rgb([10, 20, 30]);
+        }
+        let output = StageOutput::read(&rgb, &capture, None).expect("sizes agree");
+        assert_eq!(output.output[0], Ok([10.0, 20.0, 30.0]));
+        assert_eq!(output.output[1], Err("off screen".into()));
+        assert!(
+            output.output[2]
+                .as_ref()
+                .unwrap_err()
+                .contains("outside the captured image")
+        );
+
+        let message = StageOutput::read(&image::RgbImage::new(8, 4), &capture, None).unwrap_err();
+        assert!(message.contains("stage 3 sampled a 4x4 view"), "{message}");
+    }
+
+    #[test]
+    fn a_stage_row_names_a_reason_for_every_missing_stage() {
+        use crate::hdr_probe::{ProbePoint, ProbeSample};
+        let point = ProbePoint {
+            name: "thatch".into(),
+            position: [1.0, 2.0, 3.0],
+            patch_px: 5,
+        };
+        let mut sample = ProbeSample {
+            name: "thatch".into(),
+            patch: Some(([0, 0], [5, 5])),
+            hdr_pre_tonemap: Some([0.25; 4]),
+            unavailable: None,
+        };
+        let row = stage_row(&point, &sample, Some(&Err("outside".into()))).unwrap();
+        assert_eq!(row["stages"]["output"], serde_json::Value::Null);
+        assert_eq!(row["unavailable"]["output"], "outside");
+        assert_eq!(row["unavailable"]["raw_albedo"], RAW_ALBEDO_PENDING);
+        assert_eq!(row["unavailable"]["lit_pre_fog"], LIT_PRE_FOG_PENDING);
+        assert!(row["unavailable"].get("hdr_pre_tonemap").is_none());
+
+        sample.hdr_pre_tonemap = None;
+        let message = stage_row(&point, &sample, Some(&Ok([1.0; 3]))).unwrap_err();
+        assert!(
+            message.contains("no stage 3 value and no reason"),
+            "{message}"
+        );
+        sample.unavailable = Some("the patch holds a non-finite HDR value".into());
+        let row = stage_row(&point, &sample, Some(&Ok([1.0; 3]))).unwrap();
+        assert_eq!(
+            row["unavailable"]["hdr_pre_tonemap"],
+            "the patch holds a non-finite HDR value"
+        );
+        assert!(stage_row(&point, &sample, None).is_err());
+    }
+
+    #[test]
+    fn probes_parse_with_a_default_patch_and_bad_ones_are_refused() {
+        let pose = r#""name": "inn", "position": [21750, -44530, 140], "yaw": 90, "pitch": -3, "hfov": 80"#;
+        let file = ShotsFile::parse(&one_shot(&format!(
+            r#"{pose}, "probes": [{{"name": "thatch", "position": [1, 2, 3]}}, {{"name": "road", "position": [4, 5, 6], "patch_px": 9}}]"#
+        )))
+        .expect("probes parse");
+        let probes = &file.shots[0].probes;
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].patch_px, crate::hdr_probe::DEFAULT_PATCH_PX);
+        assert_eq!(probes[1].patch_px, 9);
+        assert!(
+            ShotsFile::parse(&one_shot(pose)).unwrap().shots[0]
+                .probes
+                .is_empty()
+        );
+        for (probes, expected) in [
+            (
+                r#"[{"name": "a", "position": [0, 0, 0]}, {"name": "a", "position": [1, 1, 1]}]"#,
+                "two probes named",
+            ),
+            (
+                r#"[{"name": "a", "position": [0, 0, 0], "patch_px": 4}]"#,
+                "patch_px must be odd",
+            ),
+            (r#"[{"name": "", "position": [0, 0, 0]}]"#, "no name"),
+        ] {
+            let text = one_shot(&format!(r#"{pose}, "probes": {probes}"#));
+            let message = ShotsFile::parse(&text).expect_err(expected).to_string();
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
     fn names_windows_cannot_create_are_refused_before_the_window_opens() {
         let pose = r#""position": [0, 0, 0], "yaw": 0, "pitch": 0, "hfov": 75"#;
         let refused = [
@@ -1530,6 +1871,36 @@ mod tests {
             "tower-east-0 frames=10 settled path=out/tower-east-0.png\n\
              FAILED: shot \"y-05f\": no screenshot reached the disk\n"
         );
+    }
+
+    #[test]
+    fn a_capture_clears_the_previous_image_and_stage_receipt() {
+        let pose = r#""name": "inn", "position": [0, 0, 0], "yaw": 0, "pitch": 0, "hfov": 75"#;
+        let file = ShotsFile::parse(&one_shot(pose)).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut run = ShotsRun::new(file, directory.path().into(), 60);
+        let shot = run.file.shots[0].clone();
+        assert_eq!(
+            run.stages_path(&shot),
+            directory.path().join("inn.stages.json")
+        );
+        // The shot lists no probes, so this run would write no receipt to replace the old one.
+        assert!(shot.probes.is_empty());
+        for path in [run.shot_path(&shot), run.stages_path(&shot)] {
+            fs::write(&path, b"old").unwrap();
+        }
+        run.discard_previous_outputs(&shot).unwrap();
+        assert!(!run.shot_path(&shot).exists());
+        assert!(!run.stages_path(&shot).exists());
+
+        run.transition_capture = true;
+        assert_eq!(
+            run.stages_path(&shot),
+            directory.path().join("inn-transition.stages.json")
+        );
+        fs::create_dir(run.stages_path(&shot)).unwrap();
+        let message = run.discard_previous_outputs(&shot).unwrap_err();
+        assert!(message.contains("inn-transition.stages.json"), "{message}");
     }
 
     #[test]
@@ -1929,7 +2300,7 @@ mod tests {
     fn a_captured_image_is_written_and_a_write_that_fails_is_an_error() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("shot.png");
-        write_shot(test_image(), &path).expect("the shot's PNG is written");
+        write_shot(&decode_shot(test_image()).unwrap(), &path).expect("the shot's PNG is written");
         assert!(path.is_file(), "the PNG is on disk");
         assert!(png_is_complete(&path), "the PNG is a whole stream");
         assert!(
@@ -1940,9 +2311,14 @@ mod tests {
         // A shot named `a.partial` beside one named `a`: writing `a` must not touch the other
         // shot's image, so the temporary name can never be a shot's own file name.
         let other_shot = directory.path().join("a.partial.png");
-        write_shot(test_image(), &other_shot).expect("the a.partial shot is written");
+        write_shot(&decode_shot(test_image()).unwrap(), &other_shot)
+            .expect("the a.partial shot is written");
         let before = fs::read(&other_shot).unwrap();
-        write_shot(test_image(), &directory.path().join("a.png")).expect("the a shot is written");
+        write_shot(
+            &decode_shot(test_image()).unwrap(),
+            &directory.path().join("a.png"),
+        )
+        .expect("the a shot is written");
         assert_eq!(
             fs::read(&other_shot).expect("a.partial's image is still there"),
             before,
@@ -1963,7 +2339,8 @@ mod tests {
         // A directory that is not there: the save's own error is the shot's failure - Bevy's
         // `save_to_disk` would have logged it and left the shot looking settled.
         let missing = directory.path().join("no-such-folder").join("shot.png");
-        let message = write_shot(test_image(), &missing).expect_err("nothing was written");
+        let message = write_shot(&decode_shot(test_image()).unwrap(), &missing)
+            .expect_err("nothing was written");
         assert!(message.contains("could not be written"), "{message}");
         assert!(
             !missing.exists(),
