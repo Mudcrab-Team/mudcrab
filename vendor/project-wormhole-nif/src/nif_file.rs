@@ -1430,39 +1430,6 @@ pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> Static
     let normals: Vec<Vec3> = tri_shape.get_vertex_normals();
     let uvs = tri_shape.get_vertex_uvs();
 
-    // NIF stores tangent XYZ plus split bitangent XYZ. glTF stores the sign
-    // of cross(N,T) relative to -B: NIF normal Y follows increasing texture V,
-    // opposite the glTF tangent convention. The existing DirectX material tag
-    // preserves source normal pixels and tells native shaders to flip Y once.
-    // Invalid optional frames are omitted locally.
-    let frames: Option<Vec<_>> = tri_shape
-        .vertex_data
-        .iter()
-        .map(|v| {
-            let n = v.normal?.try_normalize()?;
-            let t = v.tangent?;
-            let t = Vec3::new(t.x as f32, t.y as f32, t.z as f32) / 255.0 * 2.0 - Vec3::ONE;
-            let t = (t - n * n.dot(t)).try_normalize()?;
-            let b = Vec3::new(
-                v.bitangent_x?,
-                v.bitangent_y? / 255.0 * 2.0 - 1.0,
-                v.bitangent_z? / 255.0 * 2.0 - 1.0,
-            );
-            let orientation = n.cross(t).dot(b);
-            if !orientation.is_finite() || orientation.abs() < 1e-6 {
-                return None;
-            }
-            Some(t.extend(if orientation < 0.0 { 1.0 } else { -1.0 }))
-        })
-        .collect();
-    if let Some(frames) = frames {
-        mesh.tangents = frames;
-    } else if tri_shape.vertex_data.iter().any(|v| v.tangent.is_some()) {
-        log::warn!(
-            "NIF shape {:?}: omitted unusable optional tangent frame",
-            mesh.name
-        );
-    }
     mesh.positions.extend(positions);
     mesh.triangles.extend(triangles);
     mesh.normals.extend(normals);
@@ -1479,11 +1446,12 @@ pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> Static
             })
         }));
 
+    mesh.rebuild_uv_tangents();
     mesh
 }
 
 pub fn legacy_tri_shape_to_mesh(data: &NiTriShapeData, name: Option<String>) -> StaticMesh {
-    StaticMesh {
+    let mut mesh = StaticMesh {
         name,
         positions: data.positions.clone(),
         normals: data.normals.clone(),
@@ -1491,7 +1459,9 @@ pub fn legacy_tri_shape_to_mesh(data: &NiTriShapeData, name: Option<String>) -> 
         uvs: data.uvs.clone(),
         triangles: data.triangles.clone(),
         colors: data.colors.iter().copied().map(BSVec4).collect(),
-    }
+    };
+    mesh.rebuild_uv_tangents();
+    mesh
 }
 
 /// SLSF1 `Model_Space_Normals`: the shape's normal map holds model-space normals, so the
