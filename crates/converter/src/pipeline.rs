@@ -3468,6 +3468,12 @@ pub(crate) fn validate_artifact(
         // their transfer function (sRGB diffuse, linear normal) is a property of that class, not
         // of any source texture semantics. The stage that built them checked every layer and
         // level against the class; here the file's own shape is checked.
+        Some("ktx2")
+            if relative == Path::new("terrain/default-diffuse.ktx2")
+                || relative == Path::new("terrain/default-normal.ktx2") =>
+        {
+            crate::texture::inspect_runtime_ktx2(&fs::read(&path)?)?;
+        }
         Some("ktx2") if relative.starts_with("terrain") => {
             // A class can be many gigabytes and validation runs on every CPU job at once, so only
             // the header and the first level's index entry are read, never the pixel data.
@@ -3494,14 +3500,6 @@ pub(crate) fn validate_artifact(
                 "invalid KTX2 array {}",
                 path.display()
             );
-        }
-        Some("ktx2")
-            if matches!(
-                relative.to_str(),
-                Some("terrain/default-diffuse.ktx2" | "terrain/default-normal.ktx2")
-            ) =>
-        {
-            crate::texture::inspect_runtime_ktx2(&fs::read(&path)?)?;
         }
         Some("ktx2") => {
             let bytes = fs::read(&path)?;
@@ -6213,6 +6211,78 @@ mod tests {
         );
         assert_eq!(rx.try_recv().unwrap().stage, ProgressStage::LodChunks);
         assert!(!staging.exists());
+    }
+
+    /// Both readers publish configured defaults without LOD, including warm changes and metadata rebuilds.
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_default_land_survives_full_publication_and_metadata_rebuild() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        dummy_content::layout::prepare_directory(&data, false).unwrap();
+        dummy_content::layout::generate(
+            &data,
+            dummy_content::layout::DEFAULT_SEED,
+            dummy_content::layout::Formats::parse("dds,pex,nif,esm").unwrap(),
+        )
+        .unwrap();
+        let bytes = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(63),
+        )
+        .unwrap();
+        fs::create_dir_all(data.join("textures")).unwrap();
+        fs::write(data.join("textures/custom-default.dds"), &bytes).unwrap();
+        fs::write(data.join("textures/custom-normal.dds"), &bytes).unwrap();
+        let ini = directory.path().join("custom.ini");
+        fs::write(&ini,"[Landscape]\nsDefaultLandDiffuseTexture=custom-default.dds\nsDefaultLandNormalTexture=custom-normal.dds\n").unwrap();
+        for reader in [
+            crate::config::RecordReader::Legacy,
+            crate::config::RecordReader::Inhouse,
+        ] {
+            let output = directory.path().join(format!("assets-{reader:?}"));
+            let mut config = cpu_lod_config(&data, &output);
+            config.record_reader = reader;
+            config.no_lod = true;
+            config.cpu_jobs = 2;
+            config.terrain_default_texture = crate::config::TerrainDefaultTexture::White;
+            run_without_progress(config.clone()).await;
+            config.terrain_default_texture = crate::config::TerrainDefaultTexture::SkyrimIni;
+            config.terrain_ini = Some(ini.clone());
+            let report = run_without_progress(config.clone()).await;
+            assert!(report.complete, "{:?}", report.warnings);
+            let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+            let paths: (String, String) = connection
+                .query_row(
+                    "SELECT diffuse_path,normal_path FROM terrain_default_texture WHERE id=0",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                paths,
+                (
+                    "terrain/default-diffuse.ktx2".into(),
+                    "terrain/default-normal.ktx2".into()
+                )
+            );
+            assert!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM cells", [], |row| row.get::<_, u32>(0))
+                    .unwrap()
+                    > 0
+            );
+            let before = fs::read(output.join(&paths.0)).unwrap();
+            config.output_dir = directory.path().join(format!("rebuilt-{reader:?}"));
+            config.verify_cache = true;
+            let (tx, mut rx) = mpsc::channel(64);
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            let rebuilt = AssetPipeline::rebuild_metadata_async(config.clone(), &output, tx)
+                .await
+                .unwrap();
+            drain.await.unwrap();
+            assert!(rebuilt.complete, "{:?}", rebuilt.warnings);
+            assert_eq!(fs::read(config.output_dir.join(&paths.0)).unwrap(), before);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

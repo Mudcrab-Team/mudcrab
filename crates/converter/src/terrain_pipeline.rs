@@ -1304,6 +1304,8 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("normal omitted"))
         );
+        crate::pipeline::validate_artifacts(staging, &report.artifacts, &BTreeMap::new(), 1)
+            .unwrap();
         let first = fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap();
         crate::texture::inspect_ktx2(&first, crate::texture::TextureEncoding::ColorSrgb).unwrap();
         fs::write(
