@@ -153,7 +153,7 @@ fn add_import(
 }
 
 /// Supply desktop mesh/view constants and the grass pipeline's two bind-group arrangements.
-fn definitions(scene: bool, samples: u32, attributes: u8, tonemap: bool) -> Definitions {
+pub(crate) fn definitions(scene: bool, samples: u32, attributes: u8, tonemap: bool) -> Definitions {
     let mut defs = Definitions::new();
     for (name, value) in [
         ("SAMPLES", samples),
@@ -179,7 +179,7 @@ fn definitions(scene: bool, samples: u32, attributes: u8, tonemap: bool) -> Defi
     ] {
         defs.insert(name.into(), ShaderDefValue::UInt(value));
     }
-    for (bit, name) in [(1, "NORMAL"), (2, "UV"), (4, "COLOR")] {
+    for (bit, name) in [(1, "NORMAL"), (2, "UV"), (4, "COLOR"), (8, "TANGENT")] {
         if attributes & bit != 0 {
             defs.insert(name.into(), ShaderDefValue::Bool(true));
         }
@@ -200,7 +200,7 @@ fn definitions(scene: bool, samples: u32, attributes: u8, tonemap: bool) -> Defi
 }
 
 /// Compose unmodified production source and independently validate all of its entry points.
-fn compose(source: &str, defs: Definitions) -> Result<Module, String> {
+pub(crate) fn compose(source: &str, defs: Definitions) -> Result<Module, String> {
     let mut composer = Composer::default();
     let mut visiting = HashSet::new();
     for import in get_preprocessor_data(source).1 {
@@ -361,7 +361,7 @@ fn check_contract(module: &Module, scene: bool) {
 #[test]
 fn production_grass_baseline_and_depth_validate_with_real_bevy() {
     for samples in [1, 4] {
-        for attributes in 0..8 {
+        for attributes in 0..16 {
             for tonemap in [false, true] {
                 let module = compose(SHADER, definitions(false, samples, attributes, tonemap))
                     .unwrap_or_else(|error| panic!("baseline/depth samples={samples} attributes={attributes} tonemap={tonemap}:\n{error}"));
@@ -375,7 +375,7 @@ fn production_grass_baseline_and_depth_validate_with_real_bevy() {
 #[test]
 fn production_grass_scene_shadows_validate_with_real_bevy() {
     for samples in [1, 4] {
-        for attributes in 0..8 {
+        for attributes in 0..16 {
             for tonemap in [false, true] {
                 for filter in [
                     "SHADOW_FILTER_METHOD_HARDWARE_2X2",
@@ -401,7 +401,7 @@ fn production_grass_scene_shadows_validate_with_real_bevy() {
 fn production_grass_lut_tonemapping_validates_with_real_bevy() {
     for scene in [false, true] {
         for samples in [1, 4] {
-            for attributes in 0..8 {
+            for attributes in 0..16 {
                 let mut defs = definitions(scene, samples, attributes, true);
                 defs.remove("TONEMAP_METHOD_ACES_FITTED");
                 defs.insert(

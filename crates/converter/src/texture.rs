@@ -1530,8 +1530,19 @@ fn convert_packed_to_native(
         // High-frequency tangent normals must not receive an additional lossy
         // color encode. Preserve every decoded channel and supplied mip.
         let mut levels = Vec::new();
-        for_each_packed_mip(dds, layout, |_, _, rgba| { levels.push(rgba); Ok(()) })?;
-        let result = write_native_ktx2(ktx2::Format::R8G8B8A8_UNORM, dds.get_width(), dds.get_height(), 1, 1, &levels, zstd_level)?;
+        for_each_packed_mip(dds, layout, |_, _, rgba| {
+            levels.push(rgba);
+            Ok(())
+        })?;
+        let result = write_native_ktx2(
+            ktx2::Format::R8G8B8A8_UNORM,
+            dds.get_width(),
+            dds.get_height(),
+            1,
+            1,
+            &levels,
+            zstd_level,
+        )?;
         validate_ktx2_against_dds(&result, dds, encoding, false)?;
         return Ok(result);
     }
@@ -3388,11 +3399,18 @@ pub(crate) mod tests {
             let dds = packed_dds(format, 16, 8, 5, gradient);
             let layout = packed_rgba8_layout(&dds).unwrap();
             let mut expected = Vec::new();
-            for_each_packed_mip(&dds, layout, |_, _, rgba| { expected.push(rgba); Ok(()) }).unwrap();
+            for_each_packed_mip(&dds, layout, |_, _, rgba| {
+                expected.push(rgba);
+                Ok(())
+            })
+            .unwrap();
             let mut bytes = Vec::new();
             dds.write(&mut bytes).unwrap();
             let encoded = TextureConverter::convert(&bytes, TextureEncoding::NormalLinear).unwrap();
-            assert_eq!(ktx2::Reader::new(&encoded).unwrap().header().format, Some(ktx2::Format::R8G8B8A8_UNORM));
+            assert_eq!(
+                ktx2::Reader::new(&encoded).unwrap().header().format,
+                Some(ktx2::Format::R8G8B8A8_UNORM)
+            );
             for (mip, rgba) in expected.iter().enumerate() {
                 assert_eq!(&decode_zstd_level(&encoded, mip), rgba, "mip {mip}");
             }

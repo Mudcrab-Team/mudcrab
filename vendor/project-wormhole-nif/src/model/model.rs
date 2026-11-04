@@ -226,7 +226,14 @@ impl Model {
                 );
             }
             if !tangents.is_empty() {
-                append_attribute(&tangents, accessor::ComponentType::F32, accessor::Type::Vec4, (tangents.len() / 16) as u64, gltf::Semantic::Tangents, "TANGENTS");
+                append_attribute(
+                    &tangents,
+                    accessor::ComponentType::F32,
+                    accessor::Type::Vec4,
+                    (tangents.len() / 16) as u64,
+                    gltf::Semantic::Tangents,
+                    "TANGENTS",
+                );
             }
             drop(append_attribute);
 
