@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Measure the Mudcrab engine, compare two binaries statistically, and compare screenshots.
 
-Subcommands: run, compare, preflight, shots, visual, build, scenarios. The guide is
-docs/contributing/perf-loop.md. Standard library only; numpy and flip-evaluator are used for the
+Subcommands: run, compare, preflight, shots, visual, build, scenarios, and the analysis commands
+summarize, gpu-busy and samply-top. The guide is docs/contributing/perf-loop.md. Standard library only; numpy and flip-evaluator are used for the
 visual metric when they happen to be installed.
 
 Exit codes: 0 done, 2 bad usage or input, 3 refused (a guard, a failed preflight, or too few valid
@@ -10,6 +10,9 @@ runs), 4 a run or capture did not produce a valid result.
 """
 
 import argparse
+import bisect
+import collections
+import gzip
 import hashlib
 import itertools
 import json
@@ -65,6 +68,34 @@ DEFAULT_INVENTORY_TOLERANCE = 0.02
 TOP_CPU_SPANS = 8
 MIN_SPAN_SAMPLES = 5
 
+WINDOW_MODES = ("auto", "background", "visible", "hidden")
+BACKGROUND_FLAG = "--background-window"
+HIDDEN_FLAG = "--hidden-window"
+# What a hidden window does on macOS, measured on the dense Riverwood scenario: 10.45 ms/frame
+# hidden against 15.71 ms/frame visible with the same binary, and a Metal trace of the hidden run
+# recorded ~157,000 command buffers and no drawable acquisitions.
+HIDDEN_WINDOW_MACOS_WARNING = (
+    "the hidden window never acquires a drawable or presents on macOS, so these timings exclude "
+    "presentation and are not representative (Riverwood dense: 10.45 ms/frame hidden, 15.71 ms/frame "
+    "visible, same binary); use --window background or visible")
+PROFILERS = ("none", "samply", "metal-trace")
+METAL_TRACE_SOURCE = SCRIPTS_DIR / "profiling" / "metal_trace.m"
+METAL_TRACE_START_ACQUISITION = 600
+SAMPLY_RATE_HZ = 1000
+# Samply serialises and presymbolicates after the profiled process exits; a large profile takes a
+# while, and killing samply during that loses the whole capture.
+SAMPLY_FINALIZE_SECONDS = 240.0
+
+# Analysis thresholds. A frame is bound by the first resource that is busy for most of it.
+GPU_BUSY_BOUND = 0.90
+THREAD_BUSY_BOUND = 0.85
+WAIT_SHARE_RENDER_BOUND = 0.25
+WAIT_SHARE_MAIN_BOUND = 0.10
+PER_FRAME_SPAN_SHARE = 0.5
+COUNTER_SPAN_PREFIXES = ("assets_added/",)
+DEFAULT_TRACE_CROP_SECONDS = 1.0
+DEFAULT_SAMPLY_SKIP_SECONDS = 10.0
+
 
 class HarnessError(Exception):
     """An error with a stable name, so a verdict or an agent can match on it."""
@@ -106,7 +137,7 @@ def effective_duration(scenario, requested):
     return duration
 
 
-def build_engine_args(name, scenario, *, assets, out_dir, duration, warmup_frames, hidden, commit, run_id,
+def build_engine_args(name, scenario, *, assets, out_dir, duration, warmup_frames, window, commit, run_id,
                       frame_budget_ms, allow_incomplete=True):
     """The engine command line (without the binary) for one scenario run."""
     if scenario.get("needs_assets") and not assets:
@@ -135,13 +166,91 @@ def build_engine_args(name, scenario, *, assets, out_dir, duration, warmup_frame
         args += ["--assets", str(assets)]
         if allow_incomplete:
             args.append("--allow-incomplete-assets")
-    if hidden:
-        args.append("--hidden-window")
+    if window == "hidden":
+        args.append(HIDDEN_FLAG)
+    elif window == "background":
+        args.append(BACKGROUND_FLAG)
+    elif window != "visible":
+        raise HarnessError("bad_window_mode", f"{window!r} is not a concrete window mode (background, visible, hidden)")
     return args
 
 
 def fmt_number(value):
     return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+# --------------------------------------------------------------------------------------------
+# Window mode
+
+
+def cache_dir():
+    """Where probe results and compiled helpers are kept between invocations."""
+    override = os.environ.get("MUDCRAB_PERF_CACHE")
+    return Path(override) if override else Path.home() / ".cache" / "mudcrab-perf"
+
+
+def engine_help_text(engine, timeout=30.0):
+    """The engine's `--help` output. This starts the binary only to print usage and exit."""
+    try:
+        result = subprocess.run([str(engine), "--help"], capture_output=True, text=True, timeout=timeout,
+                                stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise HarnessError("help_probe_failed", f"{engine} --help: {error}") from error
+    return (result.stdout or "") + (result.stderr or "")
+
+
+_PROBE_MEMORY = {}
+
+
+def supports_background_window(engine, *, help_text=engine_help_text, cache_path=None):
+    """Whether the engine lists `--background-window`. Cached per binary SHA-256, on disk and in memory."""
+    sha = sha256_file(engine)
+    if sha in _PROBE_MEMORY:
+        return _PROBE_MEMORY[sha]
+    path = Path(cache_path) if cache_path else cache_dir() / "engine-flags.json"
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cached = {}
+    entry = cached.get(sha) if isinstance(cached, dict) else None
+    if isinstance(entry, dict) and isinstance(entry.get("background_window"), bool):
+        _PROBE_MEMORY[sha] = entry["background_window"]
+        return _PROBE_MEMORY[sha]
+    found = re.search(r"(?<![\w-])" + re.escape(BACKGROUND_FLAG) + r"(?![\w-])", help_text(engine)) is not None
+    cached = cached if isinstance(cached, dict) else {}
+    cached[sha] = {"background_window": found}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cached, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # the cache is an optimisation; an unwritable directory must not fail a run
+    _PROBE_MEMORY[sha] = found
+    return found
+
+
+def resolve_window(mode, engines, *, system=None, supports=supports_background_window, for_shots=False):
+    """The concrete window mode for `mode` when every binary in `engines` must use the same one.
+
+    `auto` is `background` when every engine lists `--background-window`, else `visible`. An explicit
+    `background` for an engine without the flag is refused here rather than left to fail as an
+    unknown option. A capture of pixels never uses a hidden window on macOS: its frames are black.
+    """
+    if mode not in WINDOW_MODES:
+        raise HarnessError("bad_window_mode", f"{mode!r}; choose from {', '.join(WINDOW_MODES)}")
+    system = system or platform.system()
+    if mode == "hidden" and for_shots and system == "Darwin":
+        raise HarnessError("hidden_window_black_frames",
+                           "a hidden window renders uniformly black frames on macOS; use --window "
+                           "background or visible for shots")
+    if mode == "auto":
+        return "background" if all(supports(e) for e in engines) else "visible"
+    if mode == "background":
+        missing = [str(e) for e in engines if not supports(e)]
+        if missing:
+            raise HarnessError("background_window_unsupported",
+                               f"{', '.join(missing)} does not list {BACKGROUND_FLAG}; "
+                               "use --window visible or a newer binary")
+    return mode
 
 
 # --------------------------------------------------------------------------------------------
@@ -202,14 +311,20 @@ def _terminate_group(proc, grace=5.0):
         return True
 
 
-def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace, poll=0.2, env=None):
+def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace, poll=0.2, env=None,
+                  terminate=None):
     """Run a command and return what happened.
 
     `is_done()` says the output the run exists for is complete. The engine has been seen to write
     its report and then never exit (a hang in pipelined-render teardown), so once the output is
     complete the process gets `grace` seconds to exit by itself and is killed after that. A
     process that never produces the output is killed at `timeout`.
+
+    `terminate(proc)` replaces the default kill of the whole process group. It must return only
+    once `proc` has exited, and say whether it had to stop anything: a profiler that is still
+    writing its file after the engine already exited is not a hang.
     """
+    terminate = terminate or (lambda proc: (_terminate_group(proc), True)[1])
     started = time.monotonic()
     done_at = None
     killed = False
@@ -229,12 +344,14 @@ def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace,
                 done_at = now
             if code is not None:
                 break
+            wanted = None
             if done_at is not None and now - done_at >= grace:
-                killed, reason = True, "hung_after_output"
+                wanted = "hung_after_output"
             elif now >= timeout:
-                killed, reason = True, "timeout"
-            if killed:
-                _terminate_group(proc)
+                wanted = "timeout"
+            if wanted:
+                if terminate(proc):
+                    killed, reason = True, wanted
                 code = proc.returncode
                 break
             time.sleep(poll)
@@ -258,30 +375,45 @@ VALID_CLASSES = ("ok", "hung_after_report")
 
 
 def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warmup_frames=None, timeout=None,
-                 grace=20.0, hidden=True, run_id=None, commit=None, frame_budget_ms=6.25, dry_run=False,
-                 extra_args=(), poll=0.2):
-    """Run one scenario and write run.json beside the report. Returns the run.json dict."""
+                 grace=20.0, window="visible", run_id=None, commit=None, frame_budget_ms=6.25, dry_run=False,
+                 extra_args=(), poll=0.2, profiler="none", samply=None,
+                 trace_start=METAL_TRACE_START_ACQUISITION, finalize_timeout=SAMPLY_FINALIZE_SECONDS,
+                 dylib_builder=None):
+    """Run one scenario and write run.json beside the report. Returns the run.json dict.
+
+    `window` is a concrete mode (background, visible or hidden); resolve `auto` first.
+    """
     out_dir = Path(out_dir)
     engine = str(engine)
     binary_sha = sha256_file(engine)
     commit = commit or binary_sha[:8]
     run_id = run_id or out_dir.name
-    window = effective_duration(scenario, duration)
+    duration_window = effective_duration(scenario, duration)
     args = build_engine_args(name, scenario, assets=assets, out_dir=out_dir, duration=duration,
-                             warmup_frames=warmup_frames, hidden=hidden, commit=commit, run_id=run_id,
+                             warmup_frames=warmup_frames, window=window, commit=commit, run_id=run_id,
                              frame_budget_ms=frame_budget_ms) + list(extra_args)
     command = [engine] + args
     if dry_run:
-        return {"command": command}
+        plan = plan_profiler(profiler, command, out_dir, samply=samply, trace_start=trace_start)
+        return {"command": plan["launch_command"], "env": plan["env"]}
+    if profiler == "samply":
+        samply = find_samply(samply)
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
+    dylib = (dylib_builder or metal_trace_dylib)(out_dir) if profiler == "metal-trace" else None
+    plan = plan_profiler(profiler, command, out_dir, samply=samply, trace_start=trace_start, dylib=dylib)
+    env = dict(os.environ, **plan["env"]) if plan["env"] else None
     report_path = out_dir / "report.json"
     # The default wall limit leaves room for loading the world, which the window includes.
-    timeout = timeout if timeout is not None else window + 120
-    watch = watch_process(command, stdout_path=out_dir / "stdout.log", stderr_path=out_dir / "stderr.log",
+    timeout = timeout if timeout is not None else duration_window + 120
+    terminate = None
+    if profiler == "samply":
+        terminate = lambda proc: terminate_engine_under_samply(proc, engine, finalize_timeout=finalize_timeout)
+    watch = watch_process(plan["launch_command"], stdout_path=out_dir / "stdout.log",
+                          stderr_path=out_dir / "stderr.log",
                           is_done=lambda: read_complete_report(report_path) is not None,
-                          timeout=timeout, grace=grace, poll=poll)
+                          timeout=timeout, grace=grace, poll=poll, env=env, terminate=terminate)
     report = read_complete_report(report_path)
     classification = classify(watch)
     warnings = []
@@ -295,6 +427,17 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
         if ready is not None and warmup is not None and ready > warmup:
             warnings.append(f"world ready at frame {ready}, after the {warmup}-frame warm-up: "
                             "the measured frames include loading; raise --warmup-frames")
+    if window == "hidden" and platform.system() == "Darwin":
+        warnings.append(HIDDEN_WINDOW_MACOS_WARNING)
+    outputs = {}
+    for label, path in plan["outputs"].items():
+        present = Path(path).is_file() and Path(path).stat().st_size > 0
+        outputs[label] = {"path": path, "present": present}
+        if not present:
+            warnings.append(f"the {profiler} {label} was not written: {path}")
+    if profiler != "none":
+        warnings.append(f"profiled with {profiler}: timings carry the profiler's overhead and are not "
+                        "comparable with unprofiled runs")
     run = {
         "scenario": name,
         "classification": classification,
@@ -302,8 +445,9 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
         "command": command,
         "binary": engine,
         "binary_sha256": binary_sha,
-        "hidden_window": hidden,
-        "duration_seconds": window,
+        "window_mode": window,
+        "hidden_window": window == "hidden",
+        "duration_seconds": duration_window,
         "timeout_seconds": timeout,
         "grace_seconds": grace,
         "exit_code": watch["exit_code"],
@@ -316,10 +460,171 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
         "report": str(report_path) if report is not None else None,
         "warnings": warnings,
     }
+    if profiler != "none":
+        run["profiler"] = {"name": profiler, "launch_command": plan["launch_command"],
+                           "env": plan["env"], "outputs": outputs}
     if watch.get("error"):
         run["error"] = watch["error"]
     (out_dir / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     return run
+
+
+# --------------------------------------------------------------------------------------------
+# Profilers
+
+
+def list_processes():
+    """(pid, ppid, command line) of every process, from `ps`."""
+    out = _command_output(["ps", "-axo", "pid=,ppid=,command="]) or ""
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2] if len(parts) > 2 else ""))
+    return rows
+
+
+def find_engine_pid(root_pid, engine, processes):
+    """The pid of `engine` among the descendants of `root_pid`, or None.
+
+    `processes` is a list of (pid, ppid, command). Samply starts the engine as its child; the
+    engine is recognised by its executable path (or name, when launched through a relative path).
+    """
+    children = collections.defaultdict(list)
+    for pid, ppid, command in processes:
+        children[ppid].append((pid, command))
+    engine = str(engine)
+    names = {engine, Path(engine).name}
+    queue = list(children.get(root_pid, []))
+    seen = set()
+    while queue:
+        pid, command = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        tokens = command.split()
+        # A script engine shows up as `interpreter script ...`, a binary as `binary ...`.
+        if any(t in names for t in tokens[:2]) or (tokens and Path(tokens[0]).name == Path(engine).name):
+            return pid
+        queue.extend(children.get(pid, []))
+    return None
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def terminate_engine_under_samply(proc, engine, *, grace=5.0, finalize_timeout=SAMPLY_FINALIZE_SECONDS,
+                                  processes=list_processes, send_signal=os.kill, alive=pid_alive,
+                                  sleep=time.sleep, clock=time.monotonic):
+    """Stop the engine that samply is recording and let samply write its profile.
+
+    Signalling samply, or the whole process group, would end the recording before the profile is
+    saved. Only the engine gets SIGTERM (SIGKILL after `grace`); samply sees its child exit, writes
+    the file and exits by itself. If it has not exited after `finalize_timeout` it gets SIGINT, which
+    also makes it save, and the group is killed only if that is ignored as well. Returns True when
+    an engine process had to be stopped, False when it had already exited (samply was only still
+    saving).
+    """
+    stopped = False
+    pid = find_engine_pid(proc.pid, engine, processes())
+    if pid is not None and alive(pid):
+        stopped = True
+        send_signal(pid, signal.SIGTERM)
+        deadline = clock() + grace
+        while alive(pid) and clock() < deadline:
+            sleep(0.1)
+        if alive(pid):
+            send_signal(pid, signal.SIGKILL)
+    elif pid is None and proc.poll() is None:
+        # No engine below samply: nothing else can be ended without losing the profile.
+        stopped = True
+        send_signal(proc.pid, signal.SIGINT)
+    deadline = clock() + finalize_timeout
+    while proc.poll() is None and clock() < deadline:
+        sleep(0.2)
+    if proc.poll() is None:
+        send_signal(proc.pid, signal.SIGINT)
+        deadline = clock() + 30.0
+        while proc.poll() is None and clock() < deadline:
+            sleep(0.2)
+    if proc.poll() is None:
+        _terminate_group(proc)
+    return stopped
+
+
+def metal_trace_dylib(run_dir, *, source=METAL_TRACE_SOURCE, cache_root=None, runner=None):
+    """The compiled Metal trace observer, copied into the run directory.
+
+    The dylib is compiled with the command from scripts/profiling/README.md into a cache keyed by the
+    SHA-256 of the source, so an unchanged source is compiled once. The copy in the run directory
+    is the one the run loads, which keeps the evidence directory self-contained.
+    """
+    runner = runner or _run
+    source = Path(source)
+    if not source.is_file():
+        raise HarnessError("profiler_unavailable", f"{source} is missing")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    cached = (Path(cache_root) if cache_root else cache_dir()) / "metal-trace" / digest / "libmudcrab_metal_trace.dylib"
+    if not cached.is_file():
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        partial = cached.with_name(cached.name + ".partial")
+        command = ["clang", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror", "-dynamiclib", str(source),
+                   "-o", str(partial), "-framework", "Foundation", "-framework", "Metal",
+                   "-framework", "QuartzCore", "-framework", "AppKit"]
+        try:
+            result = runner(command)
+        except OSError as error:
+            raise HarnessError("profiler_unavailable", f"clang could not be started: {error}") from error
+        if result.returncode != 0:
+            raise HarnessError("profiler_build_failed", (result.stderr or "").strip()[-2000:])
+        os.replace(partial, cached)
+    target = Path(run_dir) / cached.name
+    shutil.copy2(cached, target)
+    return target
+
+
+def find_samply(explicit=None):
+    candidates = [explicit] if explicit else [shutil.which("samply"), str(Path.home() / ".cargo" / "bin" / "samply")]
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise HarnessError("profiler_unavailable", "samply was not found; `cargo install --locked samply` or pass --samply")
+
+
+def plan_profiler(profiler, command, out_dir, *, samply=None, trace_start=METAL_TRACE_START_ACQUISITION,
+                  dylib=None, environ=None):
+    """The launch command, extra environment and output files of a run under `profiler`.
+
+    Pure apart from locating samply: nothing is compiled or started here.
+    """
+    out_dir = Path(out_dir).resolve()
+    plan = {"profiler": profiler, "launch_command": list(command), "env": {}, "outputs": {}}
+    if profiler == "none":
+        return plan
+    if profiler == "samply":
+        profile = out_dir / "cpu-profile.json.gz"
+        plan["launch_command"] = [samply or "samply", "record", "--save-only", "--unstable-presymbolicate",
+                                  "--rate", str(SAMPLY_RATE_HZ), "--output", str(profile), "--"] + list(command)
+        plan["outputs"] = {"profile": str(profile), "symbols": str(profile.with_name(profile.name[:-3] + ".syms.json"))}
+        return plan
+    if profiler == "metal-trace":
+        trace = out_dir / "native.ndjson"
+        plan["env"] = {
+            "DYLD_INSERT_LIBRARIES": str(dylib or out_dir / "libmudcrab_metal_trace.dylib"),
+            # The observer opens the file exclusively and refuses to overwrite it.
+            "MUDCRAB_METAL_TRACE_FILE": str(trace),
+            "MUDCRAB_METAL_TRACE_START_ACQUISITION": str(int(trace_start)),
+        }
+        plan["outputs"] = {"trace": str(trace)}
+        return plan
+    raise HarnessError("bad_profiler", f"{profiler!r}; choose from {', '.join(PROFILERS)}")
 
 
 # --------------------------------------------------------------------------------------------
@@ -511,6 +816,20 @@ def check_fingerprints(base_fingerprints, cand_fingerprints):
     return problems
 
 
+def window_mode_of(run):
+    """The window mode a run used. Runs recorded before the mode existed only say hidden or not."""
+    return run.get("window_mode") or ("hidden" if run.get("hidden_window") else "visible")
+
+
+def check_window_modes(base_runs, cand_runs):
+    """Base and candidate must have run in one window mode: presentation cost differs between modes."""
+    modes = {("base", window_mode_of(r)) for r in base_runs} | {("cand", window_mode_of(r)) for r in cand_runs}
+    names = {mode for _, mode in modes}
+    if len(names) <= 1:
+        return []
+    return [f"{side} ran with window mode {mode}" for side, mode in sorted(modes)]
+
+
 def check_inventory(base_scenes, cand_scenes, *, tolerance=DEFAULT_INVENTORY_TOLERANCE):
     """The two sides must have drawn the same scene; a smaller scene is not an optimisation."""
     problems = []
@@ -548,6 +867,10 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
     if len(usable) < 2:
         result.update(status="refused", error="too_few_valid_pairs",
                       details=[f"{len(usable)} of {len(pairs)} pairs had a valid run on both sides"])
+        return result
+    problems = check_window_modes([p["base"]["run"] for p in usable], [p["cand"]["run"] for p in usable])
+    if problems:
+        result.update(status="refused", error="window_mode_mismatch", details=problems)
         return result
     problems = check_fingerprints([p["base"]["fingerprint"] for p in usable],
                                   [p["cand"]["fingerprint"] for p in usable])
@@ -618,6 +941,10 @@ def summary_markdown(verdict):
              f"- pairs requested: {verdict['pairs']}, min effect {verdict['min_effect'] * 100:.1f}%, "
              f"seed {verdict['seed']}",
              f"- overall: **{verdict['overall']}**"]
+    if verdict.get("window_mode"):
+        lines.append(f"- window mode: {verdict['window_mode']}")
+    if verdict.get("window_mode") == "hidden" and verdict.get("platform") == "Darwin":
+        lines.append(f"- WARNING: {HIDDEN_WINDOW_MACOS_WARNING}")
     if verdict["same_binary"]:
         lines.append("- same binary on both sides: this is a noise-floor run, every verdict should be `noise`")
     for check in verdict.get("preflight", []):
@@ -674,7 +1001,8 @@ def compare(args):
                            + " (pass --force to measure anyway)")
     sides = {"base": args.base, "cand": args.cand}
     rows = {name: [] for name in names}
-    hidden = not args.visible
+    window = resolve_window(args.window, [args.base, args.cand])
+    print(f"window mode: {window} (requested {args.window})", file=sys.stderr)
     for pair in range(args.pairs):
         order = ("base", "cand") if pair % 2 == 0 else ("cand", "base")
         for name in names:
@@ -684,7 +1012,7 @@ def compare(args):
                 print(f"run {name} pair {pair} {side} ...", file=sys.stderr, flush=True)
                 run = run_scenario(sides[side], name, scenarios_all[name], assets=args.assets, out_dir=run_dir,
                                    duration=args.duration, warmup_frames=args.warmup_frames,
-                                   timeout=args.timeout, grace=args.grace, hidden=hidden,
+                                   timeout=args.timeout, grace=args.grace, window=window,
                                    run_id=f"{name}-{pair:02d}-{side}", commit=side)
                 print(f"  -> {run['classification']} in {run['wall_seconds']}s", file=sys.stderr, flush=True)
                 loaded[side] = load_run(run_dir)
@@ -695,7 +1023,7 @@ def compare(args):
         "base": {"path": str(args.base), "sha256": sha256_file(args.base)},
         "cand": {"path": str(args.cand), "sha256": sha256_file(args.cand)},
         "pairs": args.pairs, "min_effect": args.min_effect, "seed": args.seed,
-        "hidden_window": hidden,
+        "window_mode": window, "hidden_window": window == "hidden", "platform": platform.system(),
         "preflight": checks,
         "scenarios": {},
     }
@@ -813,15 +1141,19 @@ def read_shot_names(shots_file):
 
 
 def capture_shots(engine, shots_file, assets, out_dir, *, worldspace="0x3c", timeout=300.0, grace=15.0,
-                  extra_args=(), poll=0.2):
-    """Capture with a visible window: a hidden window gives black frames on macOS."""
+                  extra_args=(), poll=0.2, window="visible"):
+    """Capture screenshots. A hidden window gives black frames on macOS, so it is refused there."""
+    if window == "hidden" and platform.system() == "Darwin":
+        raise HarnessError("hidden_window_black_frames", "shots never use a hidden window on macOS")
     out_dir = Path(out_dir)
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
     names = read_shot_names(shots_file)
     command = [str(engine), "--assets", str(assets), "--allow-incomplete-assets", "--worldspace", worldspace,
-               "--shots", str(shots_file), "--shots-out", str(out_dir)] + list(extra_args)
+               "--shots", str(shots_file), "--shots-out", str(out_dir)]
+    command += {"hidden": [HIDDEN_FLAG], "background": [BACKGROUND_FLAG]}.get(window, [])
+    command += list(extra_args)
 
     def all_written():
         return all((out_dir / f"{n}.png").is_file() and (out_dir / f"{n}.png").stat().st_size > 0 for n in names)
@@ -831,7 +1163,7 @@ def capture_shots(engine, shots_file, assets, out_dir, *, worldspace="0x3c", tim
                           timeout=timeout, grace=grace, poll=poll)
     classification = classify(watch)
     run = {"classification": classification, "valid": classification in VALID_CLASSES, "command": command,
-           "binary_sha256": sha256_file(engine), "shots": names, "exit_code": watch["exit_code"],
+           "window_mode": window, "binary_sha256": sha256_file(engine), "shots": names, "exit_code": watch["exit_code"],
            "killed": watch["killed"], "wall_seconds": watch["wall_seconds"]}
     (out_dir.parent / f"{out_dir.name}.run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
     return run
@@ -1170,6 +1502,791 @@ def build(ref, *, repo, worktree_root, bin_dir, runner=_run, free_bytes=None, ke
 
 
 # --------------------------------------------------------------------------------------------
+# Analysing a run: summarize
+
+
+def resolve_report_path(run_dir, run):
+    """The report of a run directory. run.json may hold a path relative to where the run started."""
+    run_dir = Path(run_dir)
+    recorded = run.get("report")
+    for candidate in ([Path(recorded)] if recorded else []) + [run_dir / "report.json"]:
+        if candidate.is_file():
+            return candidate
+    raise HarnessError("report_missing", f"{run_dir} has no report.json (the run produced no complete report)")
+
+
+def load_run_for_analysis(run_dir):
+    run_dir = Path(run_dir)
+    try:
+        run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise HarnessError("run_unreadable", f"{run_dir}/run.json: {error}") from error
+    report = json.loads(resolve_report_path(run_dir, run).read_text(encoding="utf-8"))
+    return run, report
+
+
+def span_row(name, summary, frames):
+    count = summary.get("count") or 0
+    return {"name": name, "count": count, "mean_ms": summary.get("mean"), "p95_ms": summary.get("p95"),
+            "worst_ms": summary.get("worst"), "total_ms": summary.get("total"),
+            "ms_per_frame": (summary.get("total") or 0.0) / frames if frames else None}
+
+
+def split_cpu_spans(report):
+    """Split the report's CPU spans and schedules by how often they fire.
+
+    A span that fires about once per frame (count at least half the measured frames) adds to the
+    frame time, so it is ranked by its mean. The rest are asynchronous latencies: a database
+    request or an asset becoming ready is measured from submission to completion across many
+    frames, and its mean says nothing about frame cost. A span whose mean exceeds twice the frame
+    time cannot be a per-frame cost whatever its count (`assets/model_ready` has about as many
+    samples as the window has frames only because a scene has about as many assets). Counter-like
+    spans (`assets_added/*` hold counts, not milliseconds) are listed apart.
+    """
+    frames = report.get("frames") or 0
+    frame_ms = report.get("frame_ms_mean")
+    cpu = report.get("cpu") or {}
+    per_frame, asynchronous, counters = [], [], []
+    for group in ("schedules", "spans"):
+        for name, summary in sorted((cpu.get(group) or {}).items()):
+            row = span_row(name, summary, frames)
+            if name.startswith(COUNTER_SPAN_PREFIXES):
+                counters.append(row)
+            elif (frames and row["count"] >= PER_FRAME_SPAN_SHARE * frames
+                  and (not frame_ms or (row["mean_ms"] or 0.0) <= 2 * frame_ms)):
+                per_frame.append(row)
+            else:
+                asynchronous.append(row)
+    per_frame.sort(key=lambda r: -(r["mean_ms"] or 0.0))
+    asynchronous.sort(key=lambda r: -(r["mean_ms"] or 0.0))
+    return per_frame, asynchronous, counters
+
+
+def span_mean(report, name):
+    summary = ((report.get("cpu") or {}).get("spans") or {}).get(name)
+    return summary.get("mean") if isinstance(summary, dict) else None
+
+
+def thread_budget(report):
+    """Where the frame time goes: main world, extraction, the wait for the render thread, the render thread."""
+    frame = report.get("frame_ms_mean")
+    budget = {"frame_ms": frame,
+              "main_world_ms": span_mean(report, "render_world/main_world"),
+              "extract_ms": span_mean(report, "render_world/extract"),
+              "wait_for_render_thread_ms": span_mean(report, "render_world/wait_for_render_thread"),
+              "render_thread_ms": span_mean(report, "render_world/render_thread"),
+              "render_prepare_ms": span_mean(report, "render_world/render/prepare"),
+              "render_graph_and_present_ms": span_mean(report, "render_world/render/graph_and_present")}
+    budget["shares"] = {key[:-3]: (value / frame if frame and value is not None else None)
+                        for key, value in budget.items() if key.endswith("_ms") and key != "frame_ms"}
+    return budget
+
+
+def classify_bound(budget, gpu=None):
+    """gpu-bound, render-thread-bound, main-thread-bound or unclear, with the numbers behind it."""
+    frame = budget.get("frame_ms")
+    shares = budget.get("shares", {})
+    if gpu and gpu.get("busy_fraction") is not None and gpu["busy_fraction"] >= GPU_BUSY_BOUND:
+        per_frame = gpu.get("gpu_ms_per_frame")
+        numbers = f"GPU busy {gpu['busy_fraction'] * 100:.0f}% of wall"
+        if per_frame is not None and frame:
+            numbers += f" ({per_frame:.1f} ms of {frame:.1f} ms per frame)"
+        verdict = {"class": "gpu-bound", "evidence": [numbers]}
+        if gpu.get("acquisitions") == 0:
+            verdict["evidence"].append("the trace has no drawable acquisitions: presentation is not included")
+        return verdict
+    if not frame or shares.get("render_thread") is None or shares.get("wait_for_render_thread") is None:
+        return {"class": "unclear", "evidence": ["the report has no render_world thread spans"]}
+    render, wait = shares["render_thread"], shares["wait_for_render_thread"]
+    main = (shares.get("main_world") or 0.0) + (shares.get("extract") or 0.0)
+    numbers = (f"render thread {budget['render_thread_ms']:.1f} ms = {render * 100:.0f}% of the "
+               f"{frame:.1f} ms frame; main world + extract {main * 100:.0f}%; "
+               f"main thread waits for the render thread {wait * 100:.0f}%")
+    if render >= THREAD_BUSY_BOUND and wait >= WAIT_SHARE_RENDER_BOUND:
+        evidence = [numbers]
+        if gpu is None:
+            evidence.append("render thread time includes waiting on the GPU and on presentation; "
+                            "run gpu-busy on a Metal trace to tell CPU work from GPU wait")
+        return {"class": "render-thread-bound", "evidence": evidence}
+    if main >= THREAD_BUSY_BOUND and wait < WAIT_SHARE_MAIN_BOUND:
+        return {"class": "main-thread-bound", "evidence": [numbers]}
+    evidence = [numbers]
+    if gpu and gpu.get("busy_fraction") is not None:
+        evidence.append(f"GPU busy {gpu['busy_fraction'] * 100:.0f}% of wall, below {GPU_BUSY_BOUND * 100:.0f}%")
+    return {"class": "unclear", "evidence": evidence}
+
+
+def summarize_run(run_dir, gpu=None):
+    """Everything `summarize` prints, as a dict."""
+    run, report = load_run_for_analysis(run_dir)
+    per_frame, asynchronous, counters = split_cpu_spans(report)
+    budget = thread_budget(report)
+    fingerprint = report.get("fingerprint") or {}
+    system = (report.get("system") or {}).get("os") or ""
+    warnings = list(run.get("warnings") or [])
+    if run.get("classification") not in (None, "ok", "hung_after_report"):
+        warnings.append(f"the run is classified {run['classification']}")
+    mode = window_mode_of(run)
+    if mode == "hidden" and (system.startswith("macOS") or platform.system() == "Darwin"):
+        warnings.append(HIDDEN_WINDOW_MACOS_WARNING)
+    if report.get("world_ready_reached") is False and not any("never became ready" in w for w in warnings):
+        warnings.append("the world never became ready inside the window")
+    ready, warmup = report.get("frames_to_world_ready"), report.get("warmup_frames")
+    if ready is not None and warmup is not None and ready > warmup and not any("world ready at frame" in w for w in warnings):
+        warnings.append(f"world ready at frame {ready}, after the {warmup}-frame warm-up")
+    passes = (report.get("gpu_passes") or {}).get("passes") or {}
+    if passes and not any((_mean_of(v) or 0) > 0 for v in passes.values()):
+        warnings.append("every GPU pass timing is zero (Metal timestamp queries): the report has no GPU split")
+    if gpu and gpu.get("never_acquired_drawable"):
+        warnings.append(gpu["never_acquired_message"])
+    frames = {key: report.get(key) for key in ("frames", "warmup_frames", "elapsed_seconds", "average_fps",
+                                              "frame_ms_mean", "frame_ms_p50", "frame_ms_p95", "frame_ms_p99",
+                                              "frame_ms_worst")}
+    return {
+        "run_dir": str(run_dir), "scenario": run.get("scenario") or report.get("scenario"),
+        "classification": run.get("classification"), "window_mode": mode,
+        "binary_sha256": run.get("binary_sha256"), "profiler": (run.get("profiler") or {}).get("name"),
+        "resolution": fingerprint.get("resolution"), "frames": frames,
+        "per_frame_spans": per_frame, "asynchronous_latencies": asynchronous, "counters": counters,
+        "thread_budget": budget, "gpu": gpu, "bound": classify_bound(budget, gpu),
+        "scene": {**extract_scene(report), "entity_count": report.get("entity_count"),
+                  "world_ready_reached": report.get("world_ready_reached"),
+                  "frames_to_world_ready": ready},
+        "fingerprint": fingerprint, "warnings": warnings,
+    }
+
+
+def _ms(value, digits=2):
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def format_summary(summary, top=8):
+    f = summary["frames"]
+    lines = [f"run {summary['run_dir']}",
+             f"scenario {summary['scenario']}, window {summary['window_mode']}"
+             + (f", profiler {summary['profiler']}" if summary.get("profiler") else "")
+             + (f", resolution {summary['resolution'][0]}x{summary['resolution'][1]}" if summary.get("resolution") else ""),
+             "",
+             f"frames: {f['frames']} measured in {_ms(f['elapsed_seconds'], 1)} s, mean {_ms(f['frame_ms_mean'])} ms "
+             f"({_ms(f['average_fps'], 1)} fps), p50 {_ms(f['frame_ms_p50'])}, p95 {_ms(f['frame_ms_p95'])}, "
+             f"p99 {_ms(f['frame_ms_p99'])}, worst {_ms(f['frame_ms_worst'])} ms"]
+    b = summary["thread_budget"]
+    lines += ["", "thread budget (mean ms per frame; spans nest and threads overlap, so rows do not add up)"]
+    for label, key in (("frame time", "frame_ms"), ("main world", "main_world_ms"), ("extract", "extract_ms"),
+                       ("wait for render thread", "wait_for_render_thread_ms"),
+                       ("render thread", "render_thread_ms"), ("  render/prepare", "render_prepare_ms"),
+                       ("  render/graph_and_present", "render_graph_and_present_ms")):
+        value = b.get(key)
+        share = "" if key == "frame_ms" or value is None or not b.get("frame_ms") else f"  {value / b['frame_ms'] * 100:4.0f}% of frame"
+        lines.append(f"  {label:28} {_ms(value):>8}{share}")
+    gpu = summary.get("gpu")
+    if gpu:
+        lines.append(f"  {'gpu busy (trace)':28} {_ms(gpu.get('gpu_ms_per_frame')):>8}"
+                     f"  {(gpu.get('busy_fraction') or 0) * 100:4.0f}% of wall")
+    lines += ["", f"bound: {summary['bound']['class']}"] + [f"  {e}" for e in summary["bound"]["evidence"]]
+    lines += ["", f"per-frame CPU spans (count >= half the frames; mean ms, ranked)"]
+    lines += [f"  {r['name']:52} {_ms(r['mean_ms'], 3):>9} ms  p95 {_ms(r['p95_ms'], 3):>8}  n={r['count']}"
+              for r in summary["per_frame_spans"][:top]] or ["  none"]
+    lines += ["", "asynchronous latencies (submission to completion; not frame cost; mean ms, ranked)"]
+    lines += [f"  {r['name']:52} {_ms(r['mean_ms'], 1):>9} ms  p95 {_ms(r['p95_ms'], 1):>8}  n={r['count']}"
+              for r in summary["asynchronous_latencies"][:top]] or ["  none"]
+    s = summary["scene"]
+    lines += ["", f"scene: {s.get('mesh_entities')} mesh entities, {s.get('terrain_patches')} terrain patches, "
+                  f"{s.get('water_surfaces')} water surfaces, {s.get('entity_count')} entities; world ready at frame "
+                  f"{s.get('frames_to_world_ready')}"]
+    if summary["warnings"]:
+        lines += ["", "warnings"] + [f"  - {w}" for w in summary["warnings"]]
+    return "\n".join(lines) + "\n"
+
+
+def _delta(a, b):
+    """(a, b, b - a, percent change) with None when either side is missing."""
+    if a is None or b is None:
+        return a, b, None, None
+    return a, b, b - a, ((b - a) / a * 100.0 if a else None)
+
+
+def compare_summaries(base, this):
+    """Per-metric deltas between two summaries: `base` is the --against run, `this` the primary run."""
+    rows = []
+
+    def add(group, name, a, b):
+        a, b, d, pct = _delta(a, b)
+        rows.append({"group": group, "metric": name, "against": a, "this": b, "delta": d, "percent": pct})
+
+    for key in ("frame_ms_mean", "frame_ms_p50", "frame_ms_p95", "frame_ms_p99", "average_fps"):
+        add("frame", key, base["frames"].get(key), this["frames"].get(key))
+    for key in ("main_world_ms", "extract_ms", "wait_for_render_thread_ms", "render_thread_ms",
+                "render_prepare_ms", "render_graph_and_present_ms"):
+        add("thread", key, base["thread_budget"].get(key), this["thread_budget"].get(key))
+    if base.get("gpu") and this.get("gpu"):
+        add("gpu", "busy_fraction", base["gpu"].get("busy_fraction"), this["gpu"].get("busy_fraction"))
+        add("gpu", "gpu_ms_per_frame", base["gpu"].get("gpu_ms_per_frame"), this["gpu"].get("gpu_ms_per_frame"))
+    for group, key in (("per-frame span", "per_frame_spans"), ("async span", "asynchronous_latencies")):
+        left = {r["name"]: r["mean_ms"] for r in base[key]}
+        right = {r["name"]: r["mean_ms"] for r in this[key]}
+        for name in sorted(set(left) | set(right)):
+            add(group, name, left.get(name), right.get(name))
+    notes = []
+    if base["window_mode"] != this["window_mode"]:
+        notes.append(f"window modes differ ({base['window_mode']} vs {this['window_mode']}): presentation cost "
+                     "is part of the difference")
+    if base.get("scenario") != this.get("scenario"):
+        notes.append(f"scenarios differ ({base.get('scenario')} vs {this.get('scenario')})")
+    notes += [f"conditions differ: {line}" for line in fingerprint_diff(base.get("fingerprint"), this.get("fingerprint"))]
+    for key in SCENE_COUNTS:
+        a, b = base["scene"].get(key), this["scene"].get(key)
+        if a is not None and b is not None and abs(a - b) > max(DEFAULT_INVENTORY_TOLERANCE * max(a, b), INVENTORY_ABSOLUTE_SLACK):
+            notes.append(f"scene differs: {key} {a} vs {b}")
+    return {"against": base["run_dir"], "this": this["run_dir"], "rows": rows, "notes": notes}
+
+
+def format_comparison(comparison, top=8):
+    lines = ["", f"changes: {comparison['this']} (this) against {comparison['against']}"]
+    for note in comparison["notes"]:
+        lines.append(f"  note: {note}")
+    groups = collections.OrderedDict()
+    for row in comparison["rows"]:
+        groups.setdefault(row["group"], []).append(row)
+    for group, rows in groups.items():
+        if group.endswith("span"):
+            rows = sorted((r for r in rows if r["delta"] is not None), key=lambda r: -abs(r["delta"]))[:top]
+        lines.append(f"  {group}")
+        for r in rows:
+            pct = "" if r["percent"] is None else f" ({r['percent']:+.0f}%)"
+            digits = 3 if r["metric"] == "busy_fraction" else 2
+            delta = "n/a" if r["delta"] is None else f"{r['delta']:+.{digits}f}"
+            lines.append(f"    {r['metric']:50} {_ms(r['against'], digits):>9} -> {_ms(r['this'], digits):>9}  {delta}{pct}")
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------------------------
+# Analysing a run: gpu-busy (Metal trace)
+
+TRACE_PREFIX = b'{"type":"'
+# The observer writes compact JSON; any other spacing still parses, just through the slower pattern.
+TRACE_TYPE_PATTERN = re.compile(rb'\{\s*"type"\s*:\s*"([^"]*)"')
+TRACE_LOSS_COUNTERS = ("dropped", "exceptions", "hook_failures", "thread_cpu_clock_failures",
+                       "trace_config_errors", "capture_config_errors")
+NEVER_ACQUIRED_MESSAGE = ("this run never acquired a drawable (hidden window?): timings exclude presentation")
+
+
+def merge_intervals(intervals):
+    """Sorted, non-overlapping union of (start, end) pairs."""
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def analyze_metal_trace(path, *, fps=None, crop=DEFAULT_TRACE_CROP_SECONDS):
+    """Stream a native Metal trace (ndjson) and report GPU busy time, command buffers and drawables.
+
+    The files are hundreds of megabytes, so lines are read as bytes and only those of a type the
+    analysis needs are decoded. A truncated or malformed line, and a capture with dropped events,
+    are reported rather than refused: the counts say how much to trust the numbers.
+    """
+    path = Path(path)
+    counts = collections.Counter()
+    bad_lines = 0
+    begin = None
+    intervals, invalid_completed = [], 0
+    acquisitions, presents, present_encodes = [], [], []
+    health_last, loss_max, rows_attempted_max = None, collections.Counter(), 0
+    lines = 0
+    with open(path, "rb") as handle:
+        for raw in handle:
+            if raw.startswith(TRACE_PREFIX):
+                kind = raw[len(TRACE_PREFIX):raw.find(b'"', len(TRACE_PREFIX))]
+            else:
+                match = TRACE_TYPE_PATTERN.match(raw)
+                if match is None:
+                    if raw.strip():
+                        bad_lines += 1
+                    continue
+                kind = match.group(1)
+            lines += 1
+            counts[kind] += 1
+            if kind not in (b"completed", b"acquire_end", b"presented", b"present_encode_begin", b"health",
+                            b"trace_begin"):
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                bad_lines += 1
+                continue
+            if kind == b"completed":
+                start, finish = row.get("gpu_start_s") or 0.0, row.get("gpu_end_s") or 0.0
+                # Empty command buffers (transitions, pre-passes) complete with start == end.
+                if row.get("gpu_time_valid") and finish >= start > 0:
+                    intervals.append((start, finish))
+                else:
+                    invalid_completed += 1
+            elif kind == b"acquire_end":
+                acquisitions.append((row.get("end_ns") or row.get("host_ns") or 0) / 1e9)
+            elif kind == b"presented":
+                presents.append((row.get("host_ns") or 0) / 1e9)
+            elif kind == b"present_encode_begin":
+                present_encodes.append((row.get("host_ns") or 0) / 1e9)
+            elif kind == b"health":
+                health_last = row
+                for counter in TRACE_LOSS_COUNTERS:
+                    loss_max[counter] = max(loss_max[counter], row.get(counter) or 0)
+                rows_attempted_max = max(rows_attempted_max, row.get("rows_attempted") or 0)
+            else:
+                begin = row
+    result = {"path": str(path), "size_bytes": path.stat().st_size, "lines": lines, "bad_lines": bad_lines,
+              "event_counts": {k.decode(): v for k, v in counts.most_common(12)}}
+    warnings = []
+    max_rows = (begin or {}).get("max_rows")
+    row_cap = bool(max_rows and rows_attempted_max > max_rows)
+    health = {"records": counts[b"health"], "rows_attempted": rows_attempted_max, "max_rows": max_rows,
+              "row_cap_reached": row_cap, "loss_max": dict(loss_max),
+              "last": None if health_last is None else {k: health_last.get(k) for k in
+                                                       TRACE_LOSS_COUNTERS + ("enabled", "acquired",
+                                                                              "present_encode_calls",
+                                                                              "presented_callbacks",
+                                                                              "commits", "completed")}}
+    result["health"] = health
+    for counter, value in sorted(loss_max.items()):
+        if value:
+            warnings.append(f"health: {counter} = {value}: the trace lost events; the numbers are a close "
+                            "estimate, not an exact count" if counter == "dropped" else f"health: {counter} = {value}")
+    if row_cap:
+        warnings.append(f"the trace reached its row cap ({rows_attempted_max} of {max_rows} rows): the end of "
+                        "the run is not recorded")
+    if bad_lines:
+        warnings.append(f"{bad_lines} lines could not be parsed and were skipped (a truncated file?)")
+    if health_last is None:
+        warnings.append("the trace has no health records: capture completeness is unknown")
+    result["acquisitions"] = len(acquisitions)
+    result["presents"] = len(presents)
+    result["present_encodes"] = len(present_encodes)
+    if not intervals:
+        warnings.append("no completed command buffer has a valid GPU time")
+        result.update(window=None, busy_fraction=None, busy_seconds=None, gpu_ms_per_frame=None,
+                      frame_ms=None, command_buffers={"valid": 0, "invalid": invalid_completed, "in_window": 0,
+                                                     "per_frame": None},
+                      acquisitions_in_window=0, presents_in_window=0, never_acquired_drawable=False,
+                      warnings=warnings)
+        return result
+    first, last = min(s for s, _ in intervals), max(e for _, e in intervals)
+    lo, hi = first + crop, last - crop
+    if hi <= lo:
+        warnings.append(f"the trace covers {last - first:.1f} s, too short to crop {crop:g} s at both ends; "
+                        "no crop was applied")
+        lo, hi, crop = first, last, 0.0
+    clipped = [(max(s, lo), min(e, hi)) for s, e in intervals if e > lo and s < hi]
+    busy = sum(e - s for s, e in merge_intervals(clipped))
+    seconds = hi - lo
+    in_window = sum(1 for s, _ in intervals if lo <= s < hi)
+    acquired_in_window = sum(1 for t in acquisitions if lo <= t < hi)
+    presented_in_window = sum(1 for t in presents if lo <= t < hi)
+    if fps:
+        frames, frames_source = seconds * fps, "report fps"
+    elif presented_in_window:
+        frames, frames_source = float(presented_in_window), "presents in the window"
+    elif acquired_in_window:
+        frames, frames_source = float(acquired_in_window), "acquisitions in the window"
+    else:
+        frames, frames_source = None, None
+    fraction = busy / seconds if seconds > 0 else None
+    result.update(
+        window={"start_s": lo, "end_s": hi, "seconds": seconds, "crop_seconds": crop,
+                "trace_seconds": last - first},
+        busy_seconds=busy, busy_fraction=fraction,
+        frames_in_window=frames, frames_source=frames_source, fps=fps,
+        frame_ms=(1000.0 / fps) if fps else None,
+        gpu_ms_per_frame=(busy / frames * 1000.0) if frames else None,
+        command_buffers={"valid": len(intervals), "invalid": invalid_completed, "in_window": in_window,
+                         "per_frame": (in_window / frames) if frames else None},
+        acquisitions_in_window=acquired_in_window, presents_in_window=presented_in_window)
+    never = not acquisitions and bool(intervals)
+    result["never_acquired_drawable"] = never
+    if never:
+        result["never_acquired_message"] = NEVER_ACQUIRED_MESSAGE
+        warnings.append(NEVER_ACQUIRED_MESSAGE)
+    result["warnings"] = warnings
+    return result
+
+
+def format_gpu_busy(r):
+    lines = [f"trace {r['path']} ({r['size_bytes'] / 1e6:.0f} MB, {r['lines']} rows"
+             + (f", {r['bad_lines']} unreadable" if r["bad_lines"] else "") + ")"]
+    w = r.get("window")
+    if w is None:
+        lines.append("no GPU intervals: nothing to report")
+    else:
+        lines.append(f"window: {w['seconds']:.1f} s of {w['trace_seconds']:.1f} s recorded "
+                     f"(cropped {w['crop_seconds']:g} s at both ends)")
+        lines.append(f"gpu busy: {r['busy_fraction'] * 100:.1f}% of wall ({r['busy_seconds']:.2f} s, union of "
+                     "command-buffer GPU intervals)")
+        if r.get("gpu_ms_per_frame") is not None:
+            frame = f" of a {r['frame_ms']:.2f} ms frame" if r.get("frame_ms") else ""
+            lines.append(f"gpu ms/frame: {r['gpu_ms_per_frame']:.2f}{frame} (frames from {r['frames_source']}"
+                         + (f", {r['fps']:.1f} fps" if r.get("fps") else "") + ")")
+        cb = r["command_buffers"]
+        per = f", {cb['per_frame']:.1f} per frame" if cb["per_frame"] is not None else ""
+        lines.append(f"command buffers: {cb['in_window']} in the window{per} ({cb['valid']} with a valid GPU time "
+                     f"in all, {cb['invalid']} without)")
+    lines.append(f"drawable acquisitions: {r['acquisitions']} ({r['acquisitions_in_window']} in the window); "
+                 f"presents: {r['presents']} presented callbacks, {r['present_encodes']} present encodes")
+    h = r["health"]
+    lost = {k: v for k, v in h["loss_max"].items() if v}
+    lines.append("health: " + (", ".join(f"{k} {v}" for k, v in lost.items()) if lost else "no drops or errors")
+                 + f"; rows {h['rows_attempted']}/{h['max_rows']}")
+    for warning in r["warnings"]:
+        lines.append(f"warning: {warning}")
+    return "\n".join(lines) + "\n"
+
+
+def gpu_from_trace(trace, report_path=None, crop=DEFAULT_TRACE_CROP_SECONDS, fps=None):
+    if report_path and fps is None:
+        try:
+            fps = json.loads(Path(report_path).read_text(encoding="utf-8")).get("average_fps")
+        except (OSError, ValueError) as error:
+            raise HarnessError("report_unreadable", f"{report_path}: {error}") from error
+    return analyze_metal_trace(trace, fps=fps, crop=crop)
+
+
+# --------------------------------------------------------------------------------------------
+# Analysing a run: samply-top
+
+SAMPLY_UNIT_MS = {"ms": 1.0, "s": 1000.0, "µs": 1e-3, "us": 1e-3, "ns": 1e-6}
+UNNAMED_THREAD = re.compile(r"^Thread <\d+>$")
+ROLE_POOLS = (("Async Compute Task Pool", "async-compute"), ("Compute Task Pool", "compute"),
+              ("IO Task Pool", "io"))
+DEFAULT_THREAD_ROLES = ("main", "render", "compute")
+# Leaf functions where a thread parks or waits. Their CPU is what the thread used since its previous
+# sample, which includes work done just before it parked, so it is reported apart from execution.
+PARKING_ENDPOINTS = re.compile(
+    r"__psynch_cvwait|__psynch_mutexwait|mach_msg2?_trap|semaphore_wait_trap|__ulock_wait2?|kevent(?:_qos|64)?$|"
+    r"__semwait_signal|_?pthread_cond_wait|__workq_kernreturn|__select|<parking::Inner>::park|nextDrawable")
+# The render thread is the pipelined-rendering thread; it has no name of its own.
+RENDER_THREAD_MARKER = "pipelined_rendering"
+UNIVERSAL_SHARE = 0.995
+
+
+def read_json_file(path):
+    """JSON from a plain or gzip-compressed file, decided by the gzip magic number."""
+    raw = Path(path).read_bytes()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
+
+
+def samply_sidecar_path(profile_path):
+    """`cpu-profile.json.gz` is accompanied by `cpu-profile.json.syms.json`."""
+    profile_path = Path(profile_path)
+    stem = profile_path.name[:-3] if profile_path.name.endswith(".gz") else profile_path.name
+    return profile_path.with_name(stem + ".syms.json")
+
+
+class SymbolTable:
+    """Address lookup for one library from the symbols sidecar."""
+
+    def __init__(self, entry, strings):
+        self.strings = strings
+        self.table = entry.get("symbol_table") or []
+        self.known = {address: index for address, index in entry.get("known_addresses") or []}
+        self.rvas = [row["rva"] for row in self.table]
+
+    def resolve(self, address):
+        """(symbol name, start address) or None."""
+        index = self.known.get(address)
+        if index is None:
+            position = bisect.bisect_right(self.rvas, address) - 1
+            if position < 0:
+                return None
+            row = self.table[position]
+            if not row["rva"] <= address < row["rva"] + max(row.get("size", 0), 1):
+                return None
+            index = position
+        row = self.table[index]
+        name = self.strings[row["symbol"]] if row["symbol"] < len(self.strings) else None
+        if not name or name == "UNKNOWN":
+            return None
+        return name, row["rva"]
+
+
+def debug_id_of(breakpad_id):
+    """A breakpad id (32 hex digits and an age) as the dashed lower-case id the sidecar uses."""
+    h = (breakpad_id or "")[:32].lower()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}" if len(h) == 32 else h
+
+
+def load_samply(profile_path):
+    profile_path = Path(profile_path)
+    try:
+        profile = read_json_file(profile_path)
+    except (OSError, ValueError) as error:
+        raise HarnessError("profile_unreadable", f"{profile_path}: {error}") from error
+    sidecar = samply_sidecar_path(profile_path)
+    syms = None
+    if sidecar.is_file():
+        try:
+            syms = read_json_file(sidecar)
+        except (OSError, ValueError) as error:
+            raise HarnessError("symbols_unreadable", f"{sidecar}: {error}") from error
+    return profile, syms, sidecar
+
+
+def symbol_tables(profile, syms):
+    """One SymbolTable per profile library index (None when the sidecar has no entry for it)."""
+    by_id = {}
+    if syms:
+        for entry in syms.get("data") or []:
+            by_id[(entry.get("debug_name"), entry.get("debug_id"))] = SymbolTable(entry, syms.get("string_table") or [])
+    return [by_id.get((lib.get("debugName"), debug_id_of(lib.get("breakpadId")))) for lib in profile.get("libs") or []]
+
+
+def analyze_samply_thread(thread, libs, tables, *, cut_ms, unit_ms):
+    """Self and inclusive CPU per function for one thread, from `samples.threadCPUDelta`.
+
+    The delta is the CPU time the thread used since its previous sample, in the units named by
+    `meta.sampleUnits`; it is attributed to the sample's stack as a sampling estimate and is not
+    multiplied by the sample weight. A parked thread reports about zero, which keeps waits out.
+    """
+    samples, stacks, frames = thread["samples"], thread["stackTable"], thread["frameTable"]
+    funcs, resources, names = thread["funcTable"], thread["resourceTable"], thread["stringArray"]
+    cpu_by_stack = collections.defaultdict(float)
+    samples_by_stack = collections.Counter()
+    kept = 0
+    first = last = None
+    for stack, cpu, time_ms in zip(samples["stack"], samples["threadCPUDelta"], samples["time"]):
+        if stack is None or time_ms < cut_ms:
+            continue
+        cpu_by_stack[stack] += (cpu or 0) * unit_ms
+        samples_by_stack[stack] += 1
+        kept += 1
+        first = time_ms if first is None else first
+        last = time_ms
+    frame_cache = {}
+
+    def frame_key(frame):
+        cached = frame_cache.get(frame)
+        if cached is None:
+            func = frames["func"][frame]
+            resource = funcs["resource"][func]
+            lib_index = resources["lib"][resource] if resource is not None and resource >= 0 else None
+            lib = libs[lib_index] if lib_index is not None and lib_index >= 0 else {}
+            lib_name = lib.get("debugName") or lib.get("name") or "?"
+            address = frames["address"][frame]
+            table = tables[lib_index] if lib_index is not None and 0 <= lib_index < len(tables) else None
+            hit = table.resolve(address) if table is not None and address is not None and address >= 0 else None
+            if hit is not None:
+                cached = ((lib_name, hit[0], hit[1]), True, address)
+            else:
+                text = names[funcs["name"][func]]
+                already_named = not re.fullmatch(r"0x[0-9a-fA-F]+", text)
+                shown = text if already_named else f"{lib_name}+0x{address:x}" if address is not None and address >= 0 else text
+                cached = ((lib_name, shown, None), already_named, (lib_name, address))
+            frame_cache[frame] = cached
+        return cached
+
+    self_ms, inclusive_ms = collections.defaultdict(float), collections.defaultdict(float)
+    leaf_unresolved_ms = leaf_unresolved_samples = 0
+    leaf_addresses, stack_addresses = set(), set()
+    for stack, cpu in cpu_by_stack.items():
+        seen = set()
+        node, leaf = stack, True
+        while node is not None:
+            key, resolved, address = frame_key(stacks["frame"][node])
+            if leaf:
+                self_ms[key] += cpu
+                if not resolved:
+                    leaf_unresolved_ms += cpu
+                    leaf_unresolved_samples += samples_by_stack[stack]
+                    leaf_addresses.add(address)
+                leaf = False
+            if key not in seen:
+                seen.add(key)
+                inclusive_ms[key] += cpu
+            if not resolved:
+                stack_addresses.add(address)
+            node = stacks["prefix"][node]
+    return {"name": thread.get("name"), "tid": thread.get("tid"), "is_main": bool(thread.get("isMainThread")),
+            "samples": kept, "cpu_ms": sum(cpu_by_stack.values()), "first_ms": first, "last_ms": last,
+            "self_ms": dict(self_ms), "inclusive_ms": dict(inclusive_ms),
+            "unresolved": {"leaf_samples": leaf_unresolved_samples, "leaf_cpu_ms": leaf_unresolved_ms,
+                           "leaf_addresses": leaf_addresses, "stack_addresses": stack_addresses}}
+
+
+def assign_thread_groups(analyses):
+    """Group threads: main, render (the busiest unnamed thread), pools aggregated, others by name."""
+    unnamed = [a for a in analyses if not a["is_main"] and UNNAMED_THREAD.match(a["name"] or "")]
+    marked = [a for a in unnamed if any(RENDER_THREAD_MARKER in key[1] for key in a["inclusive_ms"])]
+    render = max(marked or unnamed, key=lambda a: a["cpu_ms"], default=None)
+    groups = collections.OrderedDict()
+    for a in analyses:
+        name = a["name"] or ""
+        if a["is_main"]:
+            group = "main"
+        elif a is render and a["cpu_ms"] > 0:
+            group = "render"
+        else:
+            group = next((role for prefix, role in ROLE_POOLS if name.startswith(prefix)), None)
+            group = group or name or f"thread {a['tid']}"
+        groups.setdefault(group, []).append(a)
+    return groups
+
+
+def merge_group(threads):
+    merged = {"threads": [t["name"] for t in threads], "samples": sum(t["samples"] for t in threads),
+              "cpu_ms": sum(t["cpu_ms"] for t in threads), "self_ms": collections.defaultdict(float),
+              "inclusive_ms": collections.defaultdict(float)}
+    for t in threads:
+        for key, value in t["self_ms"].items():
+            merged["self_ms"][key] += value
+        for key, value in t["inclusive_ms"].items():
+            merged["inclusive_ms"][key] += value
+    return merged
+
+
+def analyze_samply(profile_path, *, skip_seconds=DEFAULT_SAMPLY_SKIP_SECONDS):
+    profile, syms, sidecar = load_samply(profile_path)
+    meta = profile.get("meta") or {}
+    unit = (meta.get("sampleUnits") or {}).get("threadCPUDelta", "µs")
+    if unit not in SAMPLY_UNIT_MS:
+        raise HarnessError("profile_units", f"threadCPUDelta is in {unit!r}; known units: {', '.join(SAMPLY_UNIT_MS)}")
+    threads = profile.get("threads") or []
+    starts = [t.get("processStartupTime") for t in threads if t.get("processStartupTime") is not None]
+    origin = min(starts) if starts else 0.0
+    cut_ms = origin + skip_seconds * 1000.0
+    tables = symbol_tables(profile, syms)
+    analyses = [analyze_samply_thread(t, profile.get("libs") or [], tables, cut_ms=cut_ms, unit_ms=SAMPLY_UNIT_MS[unit])
+                for t in threads if t.get("samples") and t["samples"].get("length")]
+    analyses = [a for a in analyses if a["samples"]]
+    groups = assign_thread_groups(analyses)
+    ends = [a["last_ms"] for a in analyses if a["last_ms"] is not None]
+    window_s = (max(ends) - cut_ms) / 1000.0 if ends else 0.0
+    total_samples = sum(a["samples"] for a in analyses)
+    total_cpu = sum(a["cpu_ms"] for a in analyses)
+    unresolved = {
+        "samples": sum(a["unresolved"]["leaf_samples"] for a in analyses),
+        "total_samples": total_samples,
+        "cpu_ms": sum(a["unresolved"]["leaf_cpu_ms"] for a in analyses),
+        "total_cpu_ms": total_cpu,
+        "leaf_addresses": len(set().union(*[a["unresolved"]["leaf_addresses"] for a in analyses])) if analyses else 0,
+        "stack_addresses": len(set().union(*[a["unresolved"]["stack_addresses"] for a in analyses])) if analyses else 0,
+    }
+    return {"profile": str(profile_path), "symbols": str(sidecar) if syms is not None else None,
+            "skip_seconds": skip_seconds, "window_seconds": window_s, "unit": unit,
+            "threads_with_samples": len(analyses), "groups": groups, "unresolved": unresolved,
+            "merged": {name: merge_group(ts) for name, ts in groups.items()}}
+
+
+def select_groups(analysis, thread):
+    names = list(analysis["merged"])
+    if thread is None:
+        return [n for n in DEFAULT_THREAD_ROLES if n in analysis["merged"]]
+    if thread == "all":
+        return [n for n in names if analysis["merged"][n]["cpu_ms"] >= 50.0]
+    wanted = thread.lower()
+    chosen = [n for n in names if n.lower() == wanted]
+    if not chosen:
+        chosen = [n for n in names if wanted in n.lower()
+                  or any(wanted in (t or "").lower() for t in analysis["merged"][n]["threads"])]
+    if not chosen:
+        raise HarnessError("no_such_thread", f"{thread}; available: {', '.join(names)}")
+    return chosen
+
+
+def function_label(key, width=110):
+    lib, name, _ = key
+    text = f"{name}  [{lib}]"
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def top_functions(values, n):
+    return sorted(values.items(), key=lambda kv: -kv[1])[:n]
+
+
+def format_samply_top(analysis, thread=None, top=25):
+    lines = [f"profile {analysis['profile']}",
+             f"window: after the first {analysis['skip_seconds']:g} s, {analysis['window_seconds']:.1f} s; "
+             f"CPU from threadCPUDelta ({analysis['unit']} converted to ms), {analysis['threads_with_samples']} threads"]
+    u = analysis["unresolved"]
+    if analysis["symbols"] is None:
+        lines.append("symbols: no .syms.json sidecar found, names are raw addresses")
+    pct = (lambda a, b: f"{a / b * 100:.1f}%" if b else "n/a")
+    lines.append(f"unsymbolicated: {u['samples']} of {u['total_samples']} samples ({pct(u['samples'], u['total_samples'])}), "
+                 f"{u['cpu_ms']:.0f} of {u['total_cpu_ms']:.0f} CPU ms ({pct(u['cpu_ms'], u['total_cpu_ms'])}) at the leaf; "
+                 f"{u['leaf_addresses']} distinct leaf addresses, {u['stack_addresses']} in all stacks")
+    for name in select_groups(analysis, thread):
+        g = analysis["merged"][name]
+        count = len(g["threads"])
+        window = analysis["window_seconds"] or 1.0
+        lines += ["", f"== {name}: {count} thread{'s' if count != 1 else ''} ({g['threads'][0]}{', ...' if count > 1 else ''}), "
+                      f"{g['cpu_ms']:.0f} CPU ms = {g['cpu_ms'] / window / 1000.0 * 100:.0f}% of one core over the window, "
+                      f"{g['samples']} samples"]
+        parking = sum(ms for fn, ms in g["self_ms"].items() if PARKING_ENDPOINTS.search(fn[1]))
+        lines.append(f"  parking endpoints (marked *): {parking:.0f} CPU ms = "
+                     f"{parking / g['cpu_ms'] * 100 if g['cpu_ms'] else 0:.0f}% of the thread's CPU; "
+                     "it includes work done just before parking, so read it apart from function execution")
+        for title, key in (("self CPU ms", "self_ms"), ("inclusive CPU ms (rows overlap)", "inclusive_ms")):
+            lines.append(f"  {title:>8}   share  function")
+            rows = top_functions(g[key], top + 40 if key == "inclusive_ms" else top)
+            omitted = 0
+            shown = 0
+            for fn, ms in rows:
+                if key == "inclusive_ms" and g["cpu_ms"] and ms >= UNIVERSAL_SHARE * g["cpu_ms"]:
+                    omitted += 1
+                    continue
+                if shown >= top:
+                    break
+                shown += 1
+                mark = "*" if PARKING_ENDPOINTS.search(fn[1]) else " "
+                lines.append(f"  {ms:10.1f}  {ms / g['cpu_ms'] * 100 if g['cpu_ms'] else 0:5.1f}%{mark} {function_label(fn)}")
+            if omitted:
+                lines.append(f"  ({omitted} root frames on every sample omitted)")
+    return "\n".join(lines) + "\n"
+
+
+def compare_samply(this, other, thread=None, top=25):
+    """Largest per-function changes in CPU ms per second of window, `other` being the baseline."""
+    out = {}
+    for name in select_groups(this, thread):
+        if name not in other["merged"]:
+            continue
+        entry = {}
+        for key in ("self_ms", "inclusive_ms"):
+            a = {k: v / (other["window_seconds"] or 1.0) for k, v in other["merged"][name][key].items()}
+            b = {k: v / (this["window_seconds"] or 1.0) for k, v in this["merged"][name][key].items()}
+            rows = [(k, a.get(k, 0.0), b.get(k, 0.0), b.get(k, 0.0) - a.get(k, 0.0)) for k in set(a) | set(b)]
+            entry[key] = sorted(rows, key=lambda r: -abs(r[3]))[:top]
+        out[name] = entry
+    return out
+
+
+def format_samply_comparison(changes, this, other):
+    lines = ["", f"changes in CPU ms per second of window: {this['profile']} (this) against {other['profile']}"]
+    for name, entry in changes.items():
+        lines += ["", f"== {name}"]
+        for title, key in (("self", "self_ms"), ("inclusive", "inclusive_ms")):
+            lines.append(f"  {title}: against -> this (ms/s)   change  function")
+            for fn, a, b, d in entry[key]:
+                lines.append(f"  {a:9.2f} -> {b:9.2f}  {d:+9.2f}  {function_label(fn, 100)}")
+    return "\n".join(lines) + "\n"
+
+
+def samply_json(analysis, thread, top):
+    groups = {}
+    for name in select_groups(analysis, thread):
+        g = analysis["merged"][name]
+        groups[name] = {"threads": g["threads"], "samples": g["samples"], "cpu_ms": g["cpu_ms"],
+                        "self": [{"function": f"{k[1]}", "library": k[0], "ms": v} for k, v in top_functions(g["self_ms"], top)],
+                        "inclusive": [{"function": f"{k[1]}", "library": k[0], "ms": v}
+                                      for k, v in top_functions(g["inclusive_ms"], top)]}
+    return {"profile": analysis["profile"], "symbols": analysis["symbols"], "skip_seconds": analysis["skip_seconds"],
+            "window_seconds": analysis["window_seconds"], "unresolved": analysis["unresolved"], "groups": groups}
+
+
+# --------------------------------------------------------------------------------------------
 # Command line
 
 
@@ -1177,20 +2294,26 @@ def cmd_run(args):
     scenarios = load_scenarios()
     if args.scenario not in scenarios:
         raise HarnessError("unknown_scenario", f"{args.scenario}; known: {', '.join(scenarios)}")
+    window = resolve_window(args.window, [args.engine])
     run = run_scenario(args.engine, args.scenario, scenarios[args.scenario], assets=args.assets, out_dir=args.out,
                        duration=args.duration, warmup_frames=args.warmup_frames, timeout=args.timeout,
-                       grace=args.grace, hidden=not args.visible, dry_run=args.dry_run)
+                       grace=args.grace, window=window, dry_run=args.dry_run, profiler=args.profiler,
+                       samply=args.samply, trace_start=args.metal_trace_start_acquisition,
+                       finalize_timeout=args.samply_finalize_timeout)
     if args.dry_run:
-        print(" ".join(run["command"]))
+        env = " ".join(f"{k}={v}" for k, v in sorted(run["env"].items()))
+        print((env + " " if env else "") + " ".join(run["command"]))
         return 0
-    print(json.dumps({k: run[k] for k in ("classification", "valid", "exit_code", "wall_seconds", "warnings")}))
+    print(json.dumps({k: run[k] for k in ("classification", "valid", "exit_code", "wall_seconds", "window_mode",
+                                          "warnings")}))
     return 0 if run["valid"] else 4
 
 
 def cmd_shots(args):
+    window = resolve_window(args.window, [args.engine], for_shots=True)
     run = capture_shots(args.engine, args.shots, args.assets, args.out, worldspace=args.worldspace,
-                        timeout=args.timeout, grace=args.grace)
-    print(json.dumps({k: run[k] for k in ("classification", "valid", "exit_code", "wall_seconds")}))
+                        timeout=args.timeout, grace=args.grace, window=window)
+    print(json.dumps({k: run[k] for k in ("classification", "valid", "exit_code", "wall_seconds", "window_mode")}))
     return 0 if run["valid"] else 4
 
 
@@ -1217,6 +2340,50 @@ def cmd_build(args):
     return 0
 
 
+def cmd_summarize(args):
+    gpu = None
+    if args.gpu_trace:
+        fps = load_run_for_analysis(args.run_dir)[1].get("average_fps")
+        gpu = gpu_from_trace(args.gpu_trace, crop=args.crop, fps=fps)
+    summary = summarize_run(args.run_dir, gpu)
+    text = format_summary(summary, top=args.top)
+    result = {"summary": summary}
+    if args.against:
+        other = summarize_run(args.against)
+        result["comparison"] = compare_summaries(other, summary)
+        text += format_comparison(result["comparison"], top=args.top)
+    print(text, end="")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    return 0
+
+
+def cmd_gpu_busy(args):
+    result = gpu_from_trace(args.trace, args.report, args.crop)
+    print(format_gpu_busy(result), end="")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return 0
+
+
+def cmd_samply_top(args):
+    analysis = analyze_samply(args.profile, skip_seconds=args.skip)
+    text = format_samply_top(analysis, args.thread, args.top)
+    result = {"this": samply_json(analysis, args.thread, args.top)}
+    if args.against:
+        other = analyze_samply(args.against, skip_seconds=args.skip)
+        changes = compare_samply(analysis, other, args.thread, args.top)
+        text += format_samply_comparison(changes, analysis, other)
+        result["against"] = samply_json(other, args.thread, args.top)
+        result["changes"] = {name: {key: [{"function": k[1], "library": k[0], "against_ms_per_s": a,
+                                           "this_ms_per_s": b, "change": d} for k, a, b, d in rows]
+                                    for key, rows in entry.items()} for name, entry in changes.items()}
+    print(text, end="")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return 0
+
+
 def cmd_scenarios(_args):
     for name, scenario in load_scenarios().items():
         needs = "assets" if scenario.get("needs_assets") else "no assets"
@@ -1228,13 +2395,21 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def add_window_option(p):
+        p.add_argument("--window", choices=WINDOW_MODES, default="auto",
+                       help="auto (background when the engine lists --background-window, else visible), "
+                            "background (visible, under other windows, no focus), visible, or hidden "
+                            "(on macOS it never presents: not representative for timing, black for shots)")
+        p.add_argument("--visible", action="store_const", const="visible", dest="window",
+                       help="alias for --window visible")
+
     def timing_options(p):
         p.add_argument("--duration", type=float, help="seconds per window (scenario default, else 60)")
         p.add_argument("--warmup-frames", type=int, help="frames before measuring (scenario default)")
         p.add_argument("--timeout", type=float, help="wall-clock limit per run (default duration + 120)")
         p.add_argument("--grace", type=float, default=20.0,
                        help="seconds an engine gets to exit after writing its report before it is killed")
-        p.add_argument("--visible", action="store_true", help="do not pass --hidden-window")
+        add_window_option(p)
 
     p = sub.add_parser("run", help="run one scenario under the watchdog")
     p.add_argument("--engine", required=True)
@@ -1242,6 +2417,14 @@ def build_parser():
     p.add_argument("--assets")
     p.add_argument("--out", required=True)
     p.add_argument("--dry-run", action="store_true", help="print the command and exit")
+    p.add_argument("--profiler", choices=PROFILERS, default="none",
+                   help="samply (CPU stacks), metal-trace (native GPU timeline) or none; a profiled run "
+                        "is not comparable with an unprofiled one")
+    p.add_argument("--samply", help="path of the samply binary (default: PATH, then ~/.cargo/bin)")
+    p.add_argument("--samply-finalize-timeout", type=float, default=SAMPLY_FINALIZE_SECONDS,
+                   help="seconds samply gets to write its profile after the engine has stopped")
+    p.add_argument("--metal-trace-start-acquisition", type=int, default=METAL_TRACE_START_ACQUISITION,
+                   help="native drawable acquisition number at which the Metal trace starts recording")
     timing_options(p)
     p.set_defaults(func=cmd_run)
 
@@ -1265,7 +2448,7 @@ def build_parser():
     p.add_argument("--out", help="directory whose disk is checked")
     p.set_defaults(func=preflight)
 
-    p = sub.add_parser("shots", help="capture reference shots with a visible window")
+    p = sub.add_parser("shots", help="capture reference shots (never with a hidden window on macOS)")
     p.add_argument("--engine", required=True)
     p.add_argument("--shots", required=True)
     p.add_argument("--assets", required=True)
@@ -1273,6 +2456,7 @@ def build_parser():
     p.add_argument("--worldspace", default="0x3c")
     p.add_argument("--timeout", type=float, default=300.0)
     p.add_argument("--grace", type=float, default=15.0)
+    add_window_option(p)
     p.set_defaults(func=cmd_shots)
 
     p = sub.add_parser("visual", help="compare two directories of PNGs")
@@ -1293,6 +2477,33 @@ def build_parser():
     p.add_argument("--keep-worktree", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("summarize", help="frame stats, thread budget, bound classification and CPU spans of a run")
+    p.add_argument("run_dir")
+    p.add_argument("--against", help="another run directory: print per-metric changes (this run against it)")
+    p.add_argument("--gpu-trace", help="native.ndjson of this run: adds GPU busy time to the classification")
+    p.add_argument("--crop", type=float, default=DEFAULT_TRACE_CROP_SECONDS, help="seconds cropped from each end of the trace")
+    p.add_argument("--top", type=int, default=TOP_CPU_SPANS)
+    p.add_argument("--json", metavar="OUT", help="also write the analysis as JSON")
+    p.set_defaults(func=cmd_summarize)
+
+    p = sub.add_parser("gpu-busy", help="GPU busy fraction and command buffers from a native Metal trace")
+    p.add_argument("trace", help="native.ndjson written by --profiler metal-trace")
+    p.add_argument("--report", help="report.json of the same run: its average_fps gives GPU ms per frame")
+    p.add_argument("--crop", type=float, default=DEFAULT_TRACE_CROP_SECONDS, help="seconds cropped from each end")
+    p.add_argument("--json", metavar="OUT", help="also write the result as JSON")
+    p.set_defaults(func=cmd_gpu_busy)
+
+    p = sub.add_parser("samply-top", help="top functions by self and inclusive CPU time of a Samply profile")
+    p.add_argument("profile", help="cpu-profile.json.gz; cpu-profile.json.syms.json must sit beside it")
+    p.add_argument("--thread", help="main, render, compute, io, async-compute, all, or part of a thread name "
+                                    "(default: main, render and compute)")
+    p.add_argument("--top", type=int, default=15)
+    p.add_argument("--skip", type=float, default=DEFAULT_SAMPLY_SKIP_SECONDS,
+                   help="seconds from process start to drop, so loading is not ranked")
+    p.add_argument("--against", metavar="OTHER", help="another profile: the biggest per-function changes")
+    p.add_argument("--json", metavar="OUT", help="also write the result as JSON")
+    p.set_defaults(func=cmd_samply_top)
 
     p = sub.add_parser("scenarios", help="list scenarios")
     p.set_defaults(func=cmd_scenarios)

@@ -1,8 +1,11 @@
+import gzip
 import importlib.util
+import io
 import json
 import os
 import random
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -579,7 +582,7 @@ class ScenarioFileTest(unittest.TestCase):
     def test_flags_exist_in_the_engine(self):
         for name, scenario in self.scenarios.items():
             args = perf.build_engine_args(name, scenario, assets="/assets", out_dir="/out", duration=10,
-                                          warmup_frames=None, hidden=True, commit="c", run_id="r",
+                                          warmup_frames=None, window="hidden", commit="c", run_id="r",
                                           frame_budget_ms=6.25)
             for flag in (a for a in args if a.startswith("--")):
                 self.assertIn(flag, self.known_flags, f"{name}: {flag} is not an engine flag")
@@ -784,6 +787,750 @@ class SummaryTest(unittest.TestCase):
         self.assertNotIn("| cpu/x |", text)
         self.assertIn("noise-floor run", text)
         self.assertIn("preflight fail", text)
+
+
+class WindowModeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.engine = make_fake_engine(self.tmp.name)
+        self.cache = Path(self.tmp.name) / "flags.json"
+        perf._PROBE_MEMORY.clear()
+        self.addCleanup(perf._PROBE_MEMORY.clear)
+
+    def test_probe_reads_the_flag_from_help_and_caches_by_sha(self):
+        calls = []
+
+        def help_text(engine):
+            calls.append(engine)
+            return "Options:\n  --hidden-window\n  --background-window   place under other windows\n"
+
+        self.assertTrue(perf.supports_background_window(self.engine, help_text=help_text, cache_path=self.cache))
+        self.assertTrue(perf.supports_background_window(self.engine, help_text=help_text, cache_path=self.cache))
+        perf._PROBE_MEMORY.clear()
+        self.assertTrue(perf.supports_background_window(self.engine, help_text=help_text, cache_path=self.cache))
+        self.assertEqual(len(calls), 1)
+        self.assertIn(perf.sha256_file(self.engine), json.loads(self.cache.read_text()))
+
+    def test_probe_does_not_match_a_longer_flag(self):
+        found = perf.supports_background_window(self.engine, cache_path=self.cache,
+                                                help_text=lambda e: "--background-window-color <C>\n")
+        self.assertFalse(found)
+
+    def test_a_changed_binary_is_probed_again(self):
+        calls = []
+        text = lambda e: calls.append(1) or "--background-window"
+        perf.supports_background_window(self.engine, help_text=text, cache_path=self.cache)
+        self.engine.write_text(self.engine.read_text() + "\n# changed\n", encoding="utf-8")
+        perf.supports_background_window(self.engine, help_text=text, cache_path=self.cache)
+        self.assertEqual(len(calls), 2)
+
+    def test_auto_prefers_background_only_when_every_engine_lists_it(self):
+        resolve = perf.resolve_window
+        self.assertEqual(resolve("auto", ["a", "b"], supports=lambda e: True), "background")
+        self.assertEqual(resolve("auto", ["a", "b"], supports=lambda e: e == "a"), "visible")
+        self.assertEqual(resolve("visible", ["a"], supports=lambda e: True), "visible")
+        self.assertEqual(resolve("hidden", ["a"], supports=lambda e: True), "hidden")
+
+    def test_explicit_background_needs_the_flag(self):
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.resolve_window("background", ["old-engine"], supports=lambda e: False)
+        self.assertEqual(caught.exception.name, "background_window_unsupported")
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.resolve_window("sideways", ["a"], supports=lambda e: True)
+        self.assertEqual(caught.exception.name, "bad_window_mode")
+
+    def test_shots_never_use_hidden_on_macos(self):
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.resolve_window("hidden", ["a"], system="Darwin", for_shots=True)
+        self.assertEqual(caught.exception.name, "hidden_window_black_frames")
+        self.assertEqual(perf.resolve_window("hidden", ["a"], system="Linux", for_shots=True), "hidden")
+        with mock.patch.object(perf.platform, "system", return_value="Darwin"):
+            with self.assertRaises(perf.HarnessError):
+                perf.capture_shots("e", "s.json", "assets", Path(self.tmp.name) / "shots", window="hidden")
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                code = perf.main(["shots", "--engine", "e", "--shots", "s", "--assets", "a", "--out", "o",
+                                  "--window", "hidden"])
+            self.assertEqual(code, 2)
+            self.assertIn("hidden_window_black_frames", stderr.getvalue())
+
+    def test_engine_flag_per_mode(self):
+        scenario = {"needs_assets": False, "args": []}
+        flags = {}
+        for mode in ("hidden", "background", "visible"):
+            args = perf.build_engine_args("synthetic", scenario, assets=None, out_dir="/o", duration=5,
+                                          warmup_frames=None, window=mode, commit="c", run_id="r",
+                                          frame_budget_ms=6.25)
+            flags[mode] = {a for a in args if a in ("--hidden-window", "--background-window")}
+        self.assertEqual(flags, {"hidden": {"--hidden-window"}, "background": {"--background-window"},
+                                 "visible": set()})
+        with self.assertRaises(perf.HarnessError):
+            perf.build_engine_args("synthetic", scenario, assets=None, out_dir="/o", duration=5,
+                                   warmup_frames=None, window="auto", commit="c", run_id="r", frame_budget_ms=6.25)
+
+    def test_visible_is_an_alias_and_auto_is_the_default(self):
+        parse = perf.build_parser().parse_args
+        base = ["run", "--engine", "e", "--scenario", "s", "--out", "o"]
+        self.assertEqual(parse(base).window, "auto")
+        self.assertEqual(parse(base + ["--visible"]).window, "visible")
+        self.assertEqual(parse(base + ["--window", "background"]).window, "background")
+        self.assertEqual(parse(["compare", "--base", "a", "--cand", "b", "--scenarios", "s", "--out", "o",
+                                "--visible"]).window, "visible")
+
+    def test_run_records_the_mode_and_warns_about_hidden_on_macos(self):
+        scenario = {"needs_assets": False, "args": []}
+        with mock.patch.dict(os.environ, {"FAKE_MODE": "ok"}), \
+                mock.patch.object(perf.platform, "system", return_value="Darwin"):
+            run = perf.run_scenario(self.engine, "synthetic", scenario, assets=None,
+                                    out_dir=Path(self.tmp.name) / "hidden", duration=1, timeout=10, grace=1,
+                                    poll=0.05, window="hidden")
+            visible = perf.run_scenario(self.engine, "synthetic", scenario, assets=None,
+                                        out_dir=Path(self.tmp.name) / "visible", duration=1, timeout=10,
+                                        grace=1, poll=0.05, window="background")
+        self.assertEqual(run["window_mode"], "hidden")
+        self.assertIn("--hidden-window", run["command"])
+        self.assertTrue(any("never acquires a drawable" in w for w in run["warnings"]))
+        self.assertEqual(visible["window_mode"], "background")
+        self.assertIn("--background-window", visible["command"])
+        self.assertFalse(any("drawable" in w for w in visible["warnings"]))
+        stored = json.loads((Path(self.tmp.name) / "hidden" / "run.json").read_text())
+        self.assertEqual(stored["window_mode"], "hidden")
+
+    def test_compare_refuses_runs_in_different_window_modes(self):
+        def pair(base_mode, cand_mode):
+            base, cand = run_entry(), run_entry()
+            base["run"]["window_mode"], cand["run"]["window_mode"] = base_mode, cand_mode
+            return {"base": base, "cand": cand}
+
+        result = perf.analyze_scenario("s", [pair("visible", "hidden")] * 3, seed=1, min_effect=0.02)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["error"], "window_mode_mismatch")
+        ok = perf.analyze_scenario("s", [pair("visible", "visible")] * 3, seed=1, min_effect=0.02)
+        self.assertEqual(ok["status"], "ok")
+
+    def test_runs_without_a_recorded_mode_read_as_hidden_or_visible(self):
+        self.assertEqual(perf.window_mode_of({"hidden_window": True}), "hidden")
+        self.assertEqual(perf.window_mode_of({"hidden_window": False}), "visible")
+        self.assertEqual(perf.window_mode_of({"window_mode": "background", "hidden_window": False}), "background")
+
+    def test_summary_warns_about_hidden_on_macos_only(self):
+        verdict = {"base": {"path": "b", "sha256": "a" * 64}, "cand": {"path": "c", "sha256": "b" * 64},
+                   "pairs": 6, "min_effect": 0.02, "seed": 1, "same_binary": False, "overall": "noise",
+                   "scenarios": {}, "window_mode": "hidden", "platform": "Darwin"}
+        self.assertIn("never acquires a drawable", perf.summary_markdown(verdict))
+        verdict["platform"] = "Linux"
+        self.assertNotIn("never acquires a drawable", perf.summary_markdown(verdict))
+        verdict.update(platform="Darwin", window_mode="background")
+        text = perf.summary_markdown(verdict)
+        self.assertNotIn("never acquires a drawable", text)
+        self.assertIn("window mode: background", text)
+
+
+class ProfilerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_samply_command_wraps_the_engine(self):
+        plan = perf.plan_profiler("samply", ["/bin/engine", "--x", "1"], self.root / "run", samply="/opt/samply")
+        out = (self.root / "run").resolve()
+        self.assertEqual(plan["launch_command"], [
+            "/opt/samply", "record", "--save-only", "--unstable-presymbolicate", "--rate", "1000",
+            "--output", str(out / "cpu-profile.json.gz"), "--", "/bin/engine", "--x", "1"])
+        self.assertEqual(plan["env"], {})
+        self.assertTrue(plan["outputs"]["symbols"].endswith("cpu-profile.json.syms.json"))
+
+    def test_metal_trace_sets_the_observer_environment(self):
+        plan = perf.plan_profiler("metal-trace", ["/bin/engine"], self.root / "run", trace_start=900)
+        out = (self.root / "run").resolve()
+        self.assertEqual(plan["launch_command"], ["/bin/engine"])
+        self.assertEqual(plan["env"]["MUDCRAB_METAL_TRACE_FILE"], str(out / "native.ndjson"))
+        self.assertTrue(os.path.isabs(plan["env"]["MUDCRAB_METAL_TRACE_FILE"]))
+        self.assertEqual(plan["env"]["MUDCRAB_METAL_TRACE_START_ACQUISITION"], "900")
+        self.assertEqual(plan["env"]["DYLD_INSERT_LIBRARIES"], str(out / "libmudcrab_metal_trace.dylib"))
+        default = perf.plan_profiler("metal-trace", ["/bin/engine"], self.root / "run")
+        self.assertEqual(default["env"]["MUDCRAB_METAL_TRACE_START_ACQUISITION"], "600")
+
+    def test_none_leaves_the_command_alone(self):
+        plan = perf.plan_profiler("none", ["/bin/engine"], self.root)
+        self.assertEqual((plan["launch_command"], plan["env"], plan["outputs"]), (["/bin/engine"], {}, {}))
+        with self.assertRaises(perf.HarnessError):
+            perf.plan_profiler("perf", ["/bin/engine"], self.root)
+
+    def test_dry_run_shows_the_wrapped_command_and_environment(self):
+        scenario = {"needs_assets": False, "args": []}
+        engine = make_fake_engine(self.root)
+        run = perf.run_scenario(engine, "synthetic", scenario, assets=None, out_dir=self.root / "r", dry_run=True,
+                                profiler="samply", samply="/opt/samply")
+        self.assertEqual(run["command"][:2], ["/opt/samply", "record"])
+        self.assertIn(str(engine), run["command"])
+        run = perf.run_scenario(engine, "synthetic", scenario, assets=None, out_dir=self.root / "r", dry_run=True,
+                                profiler="metal-trace", trace_start=7)
+        self.assertEqual(run["env"]["MUDCRAB_METAL_TRACE_START_ACQUISITION"], "7")
+
+    def test_dylib_is_compiled_once_per_source_hash(self):
+        source = self.root / "metal_trace.m"
+        source.write_text("// v1", encoding="utf-8")
+        commands = []
+
+        def runner(command):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"dylib")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        first = self.root / "run1"
+        first.mkdir()
+        copy = perf.metal_trace_dylib(first, source=source, cache_root=self.root / "cache", runner=runner)
+        self.assertEqual(copy.read_bytes(), b"dylib")
+        self.assertEqual(copy.parent, first)
+        command = commands[0]
+        for flag in ("-fobjc-arc", "-O2", "-Werror", "-dynamiclib", "AppKit", "QuartzCore", "Metal", "Foundation"):
+            self.assertIn(flag, command)
+        second = self.root / "run2"
+        second.mkdir()
+        perf.metal_trace_dylib(second, source=source, cache_root=self.root / "cache", runner=runner)
+        self.assertEqual(len(commands), 1)
+        source.write_text("// v2", encoding="utf-8")
+        perf.metal_trace_dylib(second, source=source, cache_root=self.root / "cache", runner=runner)
+        self.assertEqual(len(commands), 2)
+
+    def test_compile_failure_is_a_named_error(self):
+        source = self.root / "metal_trace.m"
+        source.write_text("x", encoding="utf-8")
+        failing = lambda command: subprocess.CompletedProcess(command, 1, "", "error: boom")
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.metal_trace_dylib(self.root, source=source, cache_root=self.root / "c", runner=failing)
+        self.assertEqual(caught.exception.name, "profiler_build_failed")
+
+    def test_the_engine_is_found_below_samply(self):
+        table = [(1, 0, "/sbin/launchd"), (100, 1, "/opt/samply record --output x -- /bin/engine --a"),
+                 (101, 100, "/bin/engine --a"), (102, 101, "/bin/helper"), (300, 1, "/bin/engine --other")]
+        self.assertEqual(perf.find_engine_pid(100, "/bin/engine", table), 101)
+        self.assertIsNone(perf.find_engine_pid(100, "/bin/missing", table))
+        scripted = [(100, 1, "samply"), (101, 100, "/usr/bin/python3 /tmp/fake-engine --a")]
+        self.assertEqual(perf.find_engine_pid(100, "/tmp/fake-engine", scripted), 101)
+
+    def _terminate(self, table, alive_after_term=False, proc_exits_after=("signal",)):
+        events = []
+        alive = {101: True}
+        proc = mock.Mock(pid=100)
+        state = {"exited": False}
+        proc.poll.side_effect = lambda: 0 if state["exited"] else None
+
+        def send_signal(pid, sig):
+            events.append((pid, sig))
+            if pid == 101 and (sig == perf.signal.SIGKILL or not alive_after_term):
+                alive[101] = False
+                state["exited"] = True
+            if pid == 100 and sig == perf.signal.SIGINT:
+                state["exited"] = True
+
+        result = perf.terminate_engine_under_samply(
+            proc, "/bin/engine", grace=0.0, finalize_timeout=0.5, processes=lambda: table, send_signal=send_signal,
+            alive=lambda pid: alive.get(pid, False), sleep=lambda s: None, clock=iter(range(0, 10000)).__next__)
+        return result, events
+
+    def test_only_the_engine_is_signalled_never_samply(self):
+        table = [(100, 1, "/opt/samply record -- /bin/engine"), (101, 100, "/bin/engine --a")]
+        result, events = self._terminate(table)
+        self.assertTrue(result)
+        self.assertEqual(events, [(101, perf.signal.SIGTERM)])
+
+    def test_a_stuck_engine_gets_sigkill_and_still_not_samply(self):
+        table = [(100, 1, "/opt/samply record -- /bin/engine"), (101, 100, "/bin/engine --a")]
+        result, events = self._terminate(table, alive_after_term=True)
+        self.assertTrue(result)
+        self.assertEqual(events, [(101, perf.signal.SIGTERM), (101, perf.signal.SIGKILL)])
+
+    def test_without_an_engine_samply_is_interrupted_so_it_saves(self):
+        result, events = self._terminate([(100, 1, "/opt/samply record -- /bin/engine")])
+        self.assertTrue(result)
+        self.assertEqual(events, [(100, perf.signal.SIGINT)])
+
+    def test_an_exited_engine_means_samply_was_only_saving(self):
+        proc = mock.Mock(pid=100)
+        polls = iter([None, None, 0, 0, 0])
+        proc.poll.side_effect = lambda: next(polls)
+        signalled = []
+        result = perf.terminate_engine_under_samply(
+            proc, "/bin/engine", processes=lambda: [(100, 1, "/opt/samply record -- /bin/engine")],
+            send_signal=lambda pid, sig: signalled.append((pid, sig)), alive=lambda pid: False,
+            sleep=lambda s: None, finalize_timeout=60.0, clock=iter(range(0, 10000)).__next__)
+        self.assertTrue(result)  # no engine below samply and samply still running: it is interrupted
+        proc2 = mock.Mock(pid=100)
+        proc2.poll.side_effect = lambda: 0
+        self.assertFalse(perf.terminate_engine_under_samply(
+            proc2, "/bin/engine", processes=lambda: [], send_signal=lambda *a: self.fail("signalled"),
+            alive=lambda pid: False, sleep=lambda s: None))
+
+    def test_watchdog_does_not_call_a_still_saving_profiler_a_hang(self):
+        script = self.root / "slow"
+        script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(1.5)\n", encoding="utf-8")
+        script.chmod(0o755)
+        watch = perf.watch_process([str(script)], stdout_path=self.root / "o", stderr_path=self.root / "e",
+                                   is_done=lambda: True, timeout=30, grace=0.2, poll=0.05,
+                                   terminate=lambda proc: (proc.wait(), False)[1])
+        self.assertFalse(watch["killed"])
+        self.assertEqual(watch["exit_code"], 0)
+        self.assertEqual(perf.classify(watch), "ok")
+
+    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    def test_hung_engine_under_a_fake_samply_is_killed_and_the_profile_is_still_written(self):
+        engine = make_fake_engine(self.root)
+        fake_samply = self.root / "samply"
+        fake_samply.write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import subprocess, sys, time
+            args = sys.argv[1:]
+            output = args[args.index("--output") + 1]
+            child = subprocess.Popen(args[args.index("--") + 1:])
+            child.wait()
+            time.sleep(0.5)
+            open(output, "wb").write(b"profile")
+            open(output[:-3] + ".syms.json", "w").write("{{}}")
+            """), encoding="utf-8")
+        fake_samply.chmod(0o755)
+        scenario = {"needs_assets": False, "args": []}
+        with mock.patch.dict(os.environ, {"FAKE_MODE": "hang"}):
+            run = perf.run_scenario(engine, "synthetic", scenario, assets=None, out_dir=self.root / "out",
+                                    duration=1, timeout=30, grace=1, poll=0.05, window="visible",
+                                    profiler="samply", samply=str(fake_samply), finalize_timeout=20)
+        self.assertEqual(run["classification"], "hung_after_report")
+        self.assertTrue(run["valid"])
+        self.assertTrue(run["killed"])
+        outputs = run["profiler"]["outputs"]
+        self.assertTrue(outputs["profile"]["present"], "samply was killed before it saved its profile")
+        self.assertTrue(outputs["symbols"]["present"])
+        self.assertTrue(any("profiled with samply" in w for w in run["warnings"]))
+
+    def test_a_missing_samply_is_a_named_error(self):
+        with mock.patch.object(perf.shutil, "which", return_value=None), \
+                mock.patch.object(perf.Path, "home", return_value=self.root):
+            with self.assertRaises(perf.HarnessError) as caught:
+                perf.find_samply()
+        self.assertEqual(caught.exception.name, "profiler_unavailable")
+
+
+def make_bundle(directory, *, scenario="dense", window="hidden", frame_ms=10.0, spans=None, frames=1000,
+                relative_report=False, passes=None, fingerprint=None):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    span = lambda count, mean: {"count": count, "total": count * mean, "mean": mean, "p50": mean, "p95": mean * 1.2,
+                                "p99": mean * 1.5, "worst": mean * 3, "minimum": mean * 0.5}
+    default = {
+        "render_world/main_world": span(frames, 3.0), "render_world/extract": span(frames, 0.5),
+        "render_world/wait_for_render_thread": span(frames, 6.5), "render_world/render_thread": span(frames, 9.5),
+        "render_world/render/prepare": span(frames, 4.0), "render_world/render/graph_and_present": span(frames, 4.5),
+        "lod/db_request_total": span(3, 300.0), "assets/model_ready": span(frames - 100, 350.0),
+        "assets_added/mesh": span(frames, 20.0), "streaming/frame_commit": span(40, 0.9),
+    }
+    default.update(spans or {})
+    report = {"frames": frames, "warmup_frames": 300, "elapsed_seconds": frames * frame_ms / 1000,
+              "average_fps": 1000 / frame_ms, "frame_ms_mean": frame_ms, "frame_ms_p50": frame_ms,
+              "frame_ms_p95": frame_ms * 1.2, "frame_ms_p99": frame_ms * 1.5, "frame_ms_worst": frame_ms * 4,
+              "entity_count": 500, "world_ready_reached": True, "frames_to_world_ready": 80,
+              "scene": {"mesh_entities": 100, "terrain_patches": 4, "water_surfaces": 1},
+              "system": {"os": "macOS 26.2"}, "fingerprint": fingerprint or {"resolution": [100, 100], "commit": "x"},
+              "gpu_passes": {"passes": passes or {}},
+              "cpu": {"schedules": {"main_schedule/PostUpdate": span(frames + 300, 2.0)}, "spans": default}}
+    (directory / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    run = {"scenario": scenario, "classification": "ok", "valid": True, "window_mode": window,
+           "binary_sha256": "ab" * 32, "warnings": [],
+           "report": "relative/elsewhere/report.json" if relative_report else str(directory / "report.json")}
+    (directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    return directory
+
+
+class SummarizeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_spans_split_into_per_frame_and_asynchronous(self):
+        run = make_bundle(self.root / "a")
+        summary = perf.summarize_run(run)
+        per_frame = [r["name"] for r in summary["per_frame_spans"]]
+        asynchronous = [r["name"] for r in summary["asynchronous_latencies"]]
+        self.assertEqual(per_frame[0], "render_world/render_thread")
+        self.assertIn("main_schedule/PostUpdate", per_frame)
+        self.assertIn("lod/db_request_total", asynchronous)
+        self.assertIn("streaming/frame_commit", asynchronous)
+        # a latency far above the frame time is not a per-frame cost even when its count is high
+        self.assertIn("assets/model_ready", asynchronous)
+        self.assertNotIn("assets/model_ready", per_frame)
+        self.assertEqual([r["name"] for r in summary["counters"]], ["assets_added/mesh"])
+        means = {r["name"]: r["mean_ms"] for r in summary["asynchronous_latencies"]}
+        self.assertEqual(asynchronous, sorted(asynchronous, key=lambda n: -means[n]))
+        self.assertEqual(sorted(r["mean_ms"] for r in summary["per_frame_spans"])[::-1],
+                         [r["mean_ms"] for r in summary["per_frame_spans"]])
+
+    def test_the_report_path_in_run_json_may_be_relative_to_somewhere_else(self):
+        run = make_bundle(self.root / "a", relative_report=True)
+        self.assertEqual(perf.summarize_run(run)["frames"]["frames"], 1000)
+
+    def test_missing_report_is_a_named_error(self):
+        (self.root / "empty").mkdir()
+        (self.root / "empty" / "run.json").write_text("{}", encoding="utf-8")
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.summarize_run(self.root / "empty")
+        self.assertEqual(caught.exception.name, "report_missing")
+
+    def test_bound_classification(self):
+        budget = lambda frame, main, wait, render: perf.thread_budget({
+            "frame_ms_mean": frame, "cpu": {"spans": {
+                "render_world/main_world": {"mean": main}, "render_world/extract": {"mean": 0.2},
+                "render_world/wait_for_render_thread": {"mean": wait}, "render_world/render_thread": {"mean": render}}}})
+        self.assertEqual(perf.classify_bound(budget(10, 3, 6.5, 9.7))["class"], "render-thread-bound")
+        self.assertEqual(perf.classify_bound(budget(10, 9.5, 0.2, 3))["class"], "main-thread-bound")
+        self.assertEqual(perf.classify_bound(budget(10, 4, 3, 5))["class"], "unclear")
+        gpu = {"busy_fraction": 0.96, "gpu_ms_per_frame": 14.6, "acquisitions": 900}
+        bound = perf.classify_bound(budget(15.2, 3, 12, 14.5), gpu)
+        self.assertEqual(bound["class"], "gpu-bound")
+        self.assertIn("96%", bound["evidence"][0])
+        self.assertIn("14.6 ms of 15.2 ms", bound["evidence"][0])
+        low = perf.classify_bound(budget(10, 4, 3, 5), {"busy_fraction": 0.6, "acquisitions": 10})
+        self.assertEqual(low["class"], "unclear")
+        self.assertIn("GPU busy 60%", low["evidence"][-1])
+        self.assertEqual(perf.classify_bound(perf.thread_budget({"frame_ms_mean": 10.0}))["class"], "unclear")
+
+    def test_render_thread_bound_without_a_trace_points_at_gpu_busy(self):
+        text = perf.format_summary(perf.summarize_run(make_bundle(self.root / "a")))
+        self.assertIn("bound: render-thread-bound", text)
+        self.assertIn("gpu-busy", text)
+        self.assertIn("asynchronous latencies", text)
+        self.assertIn("never acquires a drawable", text)
+
+    def test_zero_pass_timings_and_late_world_ready_are_warned(self):
+        run = make_bundle(self.root / "a", passes={"render/x/elapsed_gpu": {"mean": 0.0}})
+        report = json.loads((run / "report.json").read_text())
+        report["frames_to_world_ready"] = 500
+        (run / "report.json").write_text(json.dumps(report))
+        warnings = perf.summarize_run(run)["warnings"]
+        self.assertTrue(any("GPU pass timing is zero" in w for w in warnings))
+        self.assertTrue(any("world ready at frame 500" in w for w in warnings))
+
+    def test_against_reports_changes_and_conditions(self):
+        a = make_bundle(self.root / "a", window="visible", frame_ms=15.0,
+                        fingerprint={"resolution": [3024, 1800], "commit": "x"})
+        b = make_bundle(self.root / "b", window="hidden", frame_ms=10.0,
+                        fingerprint={"resolution": [3200, 1800], "commit": "y"})
+        comparison = perf.compare_summaries(perf.summarize_run(a), perf.summarize_run(b))
+        mean = next(r for r in comparison["rows"] if r["metric"] == "frame_ms_mean")
+        self.assertEqual((mean["against"], mean["this"]), (15.0, 10.0))
+        self.assertAlmostEqual(mean["percent"], -100 / 3, places=3)
+        self.assertTrue(any("window modes differ" in n for n in comparison["notes"]))
+        self.assertTrue(any("resolution" in n for n in comparison["notes"]))
+        self.assertFalse(any("commit" in n for n in comparison["notes"]))
+
+    def test_command_writes_json_and_prints_text(self):
+        a = make_bundle(self.root / "a")
+        b = make_bundle(self.root / "b", frame_ms=12.0)
+        out = self.root / "out.json"
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            code = perf.main(["summarize", str(a), "--against", str(b), "--json", str(out)])
+        self.assertEqual(code, 0)
+        self.assertIn("changes:", stdout.getvalue())
+        data = json.loads(out.read_text())
+        self.assertEqual(data["summary"]["bound"]["class"], "render-thread-bound")
+        self.assertIn("rows", data["comparison"])
+
+
+def write_trace(path, rows, tail=b""):
+    with open(path, "wb") as handle:
+        for row in rows:
+            handle.write(json.dumps(row).encode() + b"\n")
+        handle.write(tail)
+
+
+def completed(start, end, valid=True):
+    return {"type": "completed", "cb_id": 1, "host_ns": int(end * 1e9), "gpu_start_s": start, "gpu_end_s": end,
+            "gpu_time_valid": valid}
+
+
+class GpuBusyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "native.ndjson"
+
+    def rows(self, acquisitions=True, extra_health=None):
+        rows = [{"type": "trace_begin", "max_rows": 1000000}, {"type": "hook_installed", "name": "x"}]
+        for i in range(200):  # 0.05 s busy every 0.1 s: half of the wall time
+            rows.append(completed(100 + i * 0.1, 100 + i * 0.1 + 0.05))
+            if i % 3 == 0:  # an overlapping command buffer must not count twice
+                rows.append(completed(100 + i * 0.1 + 0.01, 100 + i * 0.1 + 0.04))
+        rows.append(completed(105.0, 105.0))  # empty command buffers complete with start == end
+        rows.append(completed(0.0, 0.0, valid=False))
+        if acquisitions:
+            for i in range(20):
+                t = 105 + i * 0.5
+                rows.append({"type": "acquire_end", "host_ns": int(t * 1e9), "end_ns": int((t + 0.001) * 1e9)})
+                rows.append({"type": "presented", "host_ns": int((t + 0.01) * 1e9)})
+                rows.append({"type": "present_encode_begin", "host_ns": int(t * 1e9)})
+        health = {"type": "health", "rows_attempted": 500, "dropped": 0, "exceptions": 0, "hook_failures": 0,
+                  "thread_cpu_clock_failures": 0, "enabled": True}
+        health.update(extra_health or {})
+        rows.append(health)
+        return rows
+
+    def test_busy_fraction_is_the_union_of_intervals_cropped_at_both_ends(self):
+        write_trace(self.path, self.rows())
+        result = perf.analyze_metal_trace(self.path, fps=50.0, crop=1.0)
+        self.assertAlmostEqual(result["busy_fraction"], 0.5, delta=0.01)
+        self.assertAlmostEqual(result["window"]["seconds"], 17.95, places=2)
+        self.assertAlmostEqual(result["gpu_ms_per_frame"], 10.0, delta=0.25)
+        self.assertAlmostEqual(result["frame_ms"], 20.0)
+        cb = result["command_buffers"]
+        self.assertEqual(cb["invalid"], 1)
+        self.assertAlmostEqual(cb["per_frame"], cb["in_window"] / (17.95 * 50), places=6)
+        self.assertGreater(cb["in_window"], 180)
+        self.assertEqual(result["acquisitions"], 20)
+        self.assertEqual(result["presents"], 20)
+        self.assertEqual(result["present_encodes"], 20)
+        self.assertEqual(result["acquisitions_in_window"], 20)
+        self.assertFalse(result["never_acquired_drawable"])
+        self.assertEqual(result["warnings"], [])
+
+    def test_crop_changes_the_window_not_the_ratio(self):
+        write_trace(self.path, self.rows())
+        wide = perf.analyze_metal_trace(self.path, fps=50.0, crop=0.0)
+        narrow = perf.analyze_metal_trace(self.path, fps=50.0, crop=5.0)
+        self.assertGreater(wide["window"]["seconds"], narrow["window"]["seconds"])
+        self.assertAlmostEqual(narrow["busy_fraction"], 0.5, delta=0.02)
+
+    def test_without_a_report_frames_come_from_presents(self):
+        write_trace(self.path, self.rows())
+        result = perf.analyze_metal_trace(self.path)
+        self.assertEqual(result["frames_source"], "presents in the window")
+        self.assertIsNone(result["frame_ms"])
+        self.assertIsNotNone(result["gpu_ms_per_frame"])
+
+    def test_no_acquisitions_is_said_plainly(self):
+        write_trace(self.path, self.rows(acquisitions=False))
+        result = perf.analyze_metal_trace(self.path, fps=50.0)
+        self.assertTrue(result["never_acquired_drawable"])
+        self.assertEqual(result["acquisitions"], 0)
+        text = perf.format_gpu_busy(result)
+        self.assertIn("this run never acquired a drawable (hidden window?): timings exclude presentation", text)
+
+    def test_dropped_events_are_reported_not_refused(self):
+        write_trace(self.path, self.rows(extra_health={"dropped": 18, "rows_attempted": 1000001}))
+        result = perf.analyze_metal_trace(self.path, fps=50.0)
+        self.assertEqual(result["health"]["loss_max"]["dropped"], 18)
+        self.assertTrue(result["health"]["row_cap_reached"])
+        text = perf.format_gpu_busy(result)
+        self.assertIn("dropped 18", text)
+        self.assertIn("row cap", text)
+        self.assertAlmostEqual(result["busy_fraction"], 0.5, delta=0.01)
+
+    def test_malformed_and_truncated_lines_are_skipped(self):
+        write_trace(self.path, self.rows(), tail=b'not json at all\n{"type":"completed","cb_id":9,"gpu_start')
+        result = perf.analyze_metal_trace(self.path, fps=50.0)
+        self.assertEqual(result["bad_lines"], 2)
+        self.assertAlmostEqual(result["busy_fraction"], 0.5, delta=0.01)
+
+    def test_trace_shorter_than_the_crop_is_not_cropped(self):
+        write_trace(self.path, [completed(10.0, 10.5), completed(10.6, 11.0)])
+        result = perf.analyze_metal_trace(self.path, fps=10.0, crop=1.0)
+        self.assertEqual(result["window"]["crop_seconds"], 0.0)
+        self.assertTrue(any("too short" in w for w in result["warnings"]))
+        self.assertAlmostEqual(result["busy_fraction"], 0.9 / 1.0, places=6)
+
+    def test_empty_trace_has_no_intervals(self):
+        write_trace(self.path, [{"type": "trace_begin", "max_rows": 10}])
+        result = perf.analyze_metal_trace(self.path)
+        self.assertIsNone(result["busy_fraction"])
+        self.assertIn("nothing to report", perf.format_gpu_busy(result))
+
+    def test_command_uses_the_report_fps_and_writes_json(self):
+        write_trace(self.path, self.rows())
+        report = Path(self.tmp.name) / "report.json"
+        report.write_text(json.dumps({"average_fps": 50.0}), encoding="utf-8")
+        out = Path(self.tmp.name) / "gpu.json"
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            code = perf.main(["gpu-busy", str(self.path), "--report", str(report), "--json", str(out)])
+        self.assertEqual(code, 0)
+        self.assertIn("gpu busy: 50.", stdout.getvalue())
+        self.assertAlmostEqual(json.loads(out.read_text())["gpu_ms_per_frame"], 10.0, delta=0.25)
+
+    def test_summarize_adds_the_trace_to_the_bound(self):
+        bundle = make_bundle(Path(self.tmp.name) / "run", frame_ms=20.0)
+        rows = self.rows()
+        # make the GPU busy for nearly the whole window
+        rows = [r for r in rows if r["type"] != "completed"] + [completed(100.0, 120.0)]
+        write_trace(self.path, rows)
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            perf.main(["summarize", str(bundle), "--gpu-trace", str(self.path)])
+        self.assertIn("bound: gpu-bound", stdout.getvalue())
+
+
+def make_thread(name, samples, *, is_main=False, tid="1", start_ms=100.0):
+    """A thread in Samply's processed format. samples: (time_ms, [leaf address, ..., root address], cpu_us)."""
+    addresses = sorted({a for _, stack, _ in samples for a in stack})
+    frame_of = {a: i for i, a in enumerate(addresses)}
+    strings = [f"0x{a:x}" for a in addresses]
+    stack_ids, table_frame, table_prefix = {}, [], []
+    sample_stack = []
+    for _, stack, _ in samples:
+        prefix = None
+        for address in reversed(stack):
+            key = (prefix, address)
+            if key not in stack_ids:
+                stack_ids[key] = len(table_frame)
+                table_frame.append(frame_of[address])
+                table_prefix.append(prefix)
+            prefix = stack_ids[key]
+        sample_stack.append(prefix)
+    n = len(addresses)
+    return {
+        "name": name, "tid": tid, "isMainThread": is_main, "processStartupTime": start_ms,
+        "frameTable": {"length": n, "address": list(addresses), "func": list(range(n))},
+        "funcTable": {"length": n, "name": list(range(n)), "resource": [0] * n},
+        "resourceTable": {"length": 1, "lib": [0]},
+        "stackTable": {"length": len(table_frame), "frame": table_frame, "prefix": table_prefix},
+        "stringArray": strings,
+        "samples": {"length": len(samples), "stack": sample_stack, "time": [t for t, _, _ in samples],
+                    "weight": [5] * len(samples), "threadCPUDelta": [c for _, _, c in samples]},
+    }
+
+
+SYMBOLS = {
+    0x10: "bevy_render::render_system", 0x20: "wgpu_core::queue_submit", 0x30: "__psynch_cvwait",
+    0x40: "bevy_render::pipelined_rendering::run", 0x50: "main_loop", 0x60: "compute_work",
+}
+
+
+def write_samply(directory, threads, *, unit="µs", name="cpu-profile"):
+    directory = Path(directory)
+    profile = {"meta": {"sampleUnits": {"threadCPUDelta": unit, "time": "ms"}},
+               "libs": [{"name": "engine", "debugName": "engine", "breakpadId": "0123456789ABCDEF0123456789ABCDEF0"}],
+               "threads": threads}
+    strings = ["UNKNOWN"] + list(SYMBOLS.values())
+    table = [{"rva": a, "size": 16, "symbol": i + 1} for i, a in enumerate(SYMBOLS)]
+    syms = {"string_table": strings,
+            "data": [{"debug_name": "engine", "debug_id": "01234567-89ab-cdef-0123-456789abcdef",
+                      "symbol_table": table, "known_addresses": [[a, i] for i, a in enumerate(SYMBOLS)]}]}
+    path = directory / f"{name}.json.gz"
+    path.write_bytes(gzip.compress(json.dumps(profile).encode()))
+    (directory / f"{name}.json.syms.json").write_text(json.dumps(syms), encoding="utf-8")
+    return path
+
+
+class SamplyTopTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        # the profile starts at 100 ms; the first 10 s after that are dropped
+        loading = 5000.0
+        steady = 20000.0
+        self.threads = [
+            make_thread("engine-main", [(loading, [0x10, 0x50], 9_000_000),
+                                        (steady, [0x10, 0x50], 2000), (steady + 1, [0x30, 0x50], 8000),
+                                        (steady + 2, [0x99, 0x50], 1000)], is_main=True, tid="1"),
+            make_thread("Thread <7>", [(steady, [0x20, 0x10, 0x40], 4000), (steady + 1, [0x30, 0x40], 1000)], tid="7"),
+            make_thread("Thread <8>", [(steady, [0x60], 50_000)], tid="8"),
+            make_thread("Compute Task Pool (0)", [(steady, [0x60], 3000), (steady + 1, [0x30], 500)], tid="2"),
+            make_thread("Compute Task Pool (1)", [(steady, [0x60], 2000)], tid="3"),
+        ]
+        self.path = write_samply(self.root, self.threads)
+
+    def test_sidecar_path_is_the_same_basename(self):
+        self.assertEqual(perf.samply_sidecar_path("/x/cpu-profile.json.gz").name, "cpu-profile.json.syms.json")
+        self.assertEqual(perf.samply_sidecar_path("/x/p.json").name, "p.json.syms.json")
+
+    def test_cpu_comes_from_thread_cpu_delta_in_the_declared_units_without_weights(self):
+        analysis = perf.analyze_samply(self.path, skip_seconds=10)
+        main = analysis["merged"]["main"]
+        self_ms = {k[1]: v for k, v in main["self_ms"].items()}
+        # 2000 us = 2 ms; the sample weight of 5 is ignored; the loading sample is cropped away
+        self.assertAlmostEqual(self_ms["bevy_render::render_system"], 2.0)
+        self.assertAlmostEqual(self_ms["__psynch_cvwait"], 8.0)
+        self.assertAlmostEqual(main["cpu_ms"], 11.0)
+        self.assertEqual(main["samples"], 3)
+
+    def test_units_are_honoured(self):
+        path = write_samply(self.root, self.threads, unit="ms", name="ms")
+        main = perf.analyze_samply(path, skip_seconds=10)["merged"]["main"]
+        self.assertAlmostEqual(main["cpu_ms"], 11000.0)
+
+    def test_inclusive_counts_a_function_once_per_stack(self):
+        analysis = perf.analyze_samply(self.path, skip_seconds=10)
+        inclusive = {k[1]: v for k, v in analysis["merged"]["main"]["inclusive_ms"].items()}
+        self.assertAlmostEqual(inclusive["main_loop"], 11.0)
+        self.assertAlmostEqual(inclusive["bevy_render::render_system"], 2.0)
+
+    def test_groups_main_render_compute(self):
+        groups = perf.analyze_samply(self.path, skip_seconds=10)["groups"]
+        self.assertEqual([t["name"] for t in groups["main"]], ["engine-main"])
+        # the render thread is the unnamed thread running the pipelined-rendering loop, not the busiest one
+        self.assertEqual([t["name"] for t in groups["render"]], ["Thread <7>"])
+        self.assertEqual(sorted(t["name"] for t in groups["compute"]), ["Compute Task Pool (0)", "Compute Task Pool (1)"])
+        merged = perf.analyze_samply(self.path, skip_seconds=10)["merged"]["compute"]
+        self.assertAlmostEqual(merged["self_ms"][next(k for k in merged["self_ms"] if k[1] == "compute_work")], 5.0)
+
+    def test_unsymbolicated_samples_and_addresses_are_counted(self):
+        analysis = perf.analyze_samply(self.path, skip_seconds=10)
+        u = analysis["unresolved"]
+        # 0x99 is in no symbol range; the busy unnamed thread's 0x60 is symbolicated
+        self.assertEqual(u["samples"], 1)
+        self.assertEqual(u["leaf_addresses"], 1)
+        text = perf.format_samply_top(analysis)
+        self.assertIn("unsymbolicated: 1 of", text)
+        self.assertIn("engine+0x99", text)
+
+    def test_skip_drops_loading(self):
+        everything = perf.analyze_samply(self.path, skip_seconds=0)["merged"]["main"]["cpu_ms"]
+        self.assertAlmostEqual(everything, 9000.0 + 11.0)
+
+    def test_output_marks_parking_endpoints_and_hides_root_frames(self):
+        text = perf.format_samply_top(perf.analyze_samply(self.path, skip_seconds=10), top=5)
+        self.assertIn("== main:", text)
+        self.assertIn("== render:", text)
+        self.assertIn("== compute: 2 threads", text)
+        self.assertRegex(text, r"%\* __psynch_cvwait")
+        self.assertIn("parking endpoints (marked *)", text)
+        self.assertIn("root frames on every sample omitted", text)
+
+    def test_thread_selection(self):
+        analysis = perf.analyze_samply(self.path, skip_seconds=10)
+        self.assertEqual(perf.select_groups(analysis, None), ["main", "render", "compute"])
+        self.assertEqual(perf.select_groups(analysis, "compute"), ["compute"])
+        self.assertEqual(perf.select_groups(analysis, "engine-main"), ["main"])
+        with self.assertRaises(perf.HarnessError) as caught:
+            perf.select_groups(analysis, "nope")
+        self.assertEqual(caught.exception.name, "no_such_thread")
+
+    def test_against_lists_the_biggest_changes(self):
+        other_threads = [make_thread("engine-main", [(20000.0, [0x10, 0x50], 2000), (20001.0, [0x30, 0x50], 1000)],
+                                     is_main=True, tid="1")]
+        other = perf.analyze_samply(write_samply(self.root, other_threads, name="other"), skip_seconds=10)
+        this = perf.analyze_samply(self.path, skip_seconds=10)
+        changes = perf.compare_samply(this, other, "main", top=5)
+        rows = changes["main"]["self_ms"]
+        self.assertEqual(rows[0][0][1], "__psynch_cvwait")
+        self.assertGreater(rows[0][3], 0)
+        self.assertIn("changes in CPU ms per second", perf.format_samply_comparison(changes, this, other))
+
+    def test_missing_sidecar_leaves_raw_addresses(self):
+        (self.root / "cpu-profile.json.syms.json").unlink()
+        analysis = perf.analyze_samply(self.path, skip_seconds=10)
+        self.assertIsNone(analysis["symbols"])
+        self.assertEqual(analysis["unresolved"]["samples"], analysis["unresolved"]["total_samples"])
+        self.assertIn("no .syms.json sidecar", perf.format_samply_top(analysis))
+
+    def test_command_prints_and_writes_json(self):
+        out = self.root / "top.json"
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            code = perf.main(["samply-top", str(self.path), "--top", "3", "--thread", "main", "--against",
+                              str(self.path), "--json", str(out)])
+        self.assertEqual(code, 0)
+        self.assertIn("== main:", stdout.getvalue())
+        data = json.loads(out.read_text())
+        self.assertEqual(data["this"]["groups"]["main"]["self"][0]["function"], "__psynch_cvwait")
+        self.assertIn("main", data["changes"])
 
 
 if __name__ == "__main__":
