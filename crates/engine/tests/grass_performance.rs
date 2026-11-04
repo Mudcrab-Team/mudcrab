@@ -307,7 +307,12 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         total_instances += count;
         for batch in &warm.batches {
             assert_eq!(batch.slot_count, slots);
-            assert!(batch.instances.iter().all(|instance| instance.candidate_slot() < slots));
+            assert!(
+                batch
+                    .instances
+                    .iter()
+                    .all(|instance| instance.candidate_slot() < slots)
+            );
             assert!(
                 batch
                     .instances
