@@ -120,6 +120,9 @@ pub struct EffectPalette {
     #[sampler(102)]
     #[dependency]
     palette: Handle<Image>,
+    // Keep the labeled dependency alive while this material is alive.
+    #[dependency]
+    image_holder: Option<Handle<EffectPaletteImage>>,
 }
 
 #[derive(ShaderType, Reflect, Debug, Clone, Copy, PartialEq)]
@@ -143,6 +146,7 @@ impl EffectPalette {
                 ),
             },
             palette,
+            image_holder: None,
         }
     }
 
@@ -503,14 +507,15 @@ impl GltfExtensionHandler for NativeMaterialHandler {
         match palette {
             Some((lookup, image)) => {
                 let holder = format!("{label}/nif_palette_image");
-                context.add_labeled_asset(
+                let image_holder = context.add_labeled_asset(
                     holder.clone(),
                     EffectPaletteImage {
                         image: image.clone(),
                     },
                 );
                 let depth = native_depth_state(source, material.alpha_mode);
-                let material = effect_palette_material(lookup, material, image);
+                let mut material = effect_palette_material(lookup, material, image);
+                material.extension.image_holder = Some(image_holder);
                 if let Some(state) = depth {
                     self.depth_states.insert(label.to_owned(), state);
                     let depth_material = depth_material(material.clone(), state);

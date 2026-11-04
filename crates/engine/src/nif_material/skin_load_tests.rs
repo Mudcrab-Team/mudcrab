@@ -842,3 +842,57 @@ fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
     assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.3));
     assert!(SkyrimSkinKey::from(&material.extension).hair);
 }
+
+#[test]
+fn palette_scene_keeps_its_labeled_image_dependency_alive() {
+    let directory = tempfile::tempdir().unwrap();
+    write_model_space_gltf(directory.path(), 0);
+    let path = directory.path().join("body.gltf");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["extensionsUsed"] = serde_json::json!(["OPEN_SKYRIM_material"]);
+    document["materials"][0] = serde_json::json!({"extensions": {"OPEN_SKYRIM_material": {
+        "shaderFamily": "effect", "shaderFlags1": 16,
+        "textureSlots": [{"semantic": "greyscale", "texture": 1}]
+    }}});
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let mut app = loader_app(directory.path());
+    let scene: Handle<WorldAsset> = app
+        .world()
+        .resource::<AssetServer>()
+        .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+    wait_for_dependencies(&mut app, &scene);
+    let mut scene_world = app
+        .world_mut()
+        .resource_mut::<Assets<WorldAsset>>()
+        .remove(&scene)
+        .unwrap()
+        .world;
+    let mut query = scene_world.query::<&MeshMaterial3d<EffectPaletteMaterial>>();
+    let material_handle = query.single(&scene_world).unwrap().0.clone();
+    let material = app
+        .world()
+        .resource::<Assets<EffectPaletteMaterial>>()
+        .get(&material_handle)
+        .unwrap();
+    let holder = material
+        .extension
+        .image_holder
+        .as_ref()
+        .expect("palette image holder");
+    let holder_id = holder.id();
+    for _ in 0..10 {
+        app.update();
+    }
+    assert!(
+        app.world()
+            .resource::<Assets<EffectPaletteImage>>()
+            .get(holder_id)
+            .is_some()
+    );
+    assert!(
+        app.world()
+            .resource::<AssetServer>()
+            .is_loaded_with_dependencies(&scene)
+    );
+}
