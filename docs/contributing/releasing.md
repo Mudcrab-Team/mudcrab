@@ -29,6 +29,16 @@ All crates inherit one version from `[workspace.package]` in the root `Cargo.tom
 
 The workflow refuses a tag whose commit has no successful `tests_pass` run, so wait for CI on the merge commit before tagging.
 
+## What users download
+
+Each release carries archives per target, a Windows setup wizard (`mudcrab-vX.Y.Z-windows-x64-setup.exe`), `SHA256SUMS.txt` and `release-metadata.json`.
+
+- **Windows, interactive**: the setup wizard (Start Menu entries, uninstaller, per-user or all-users install). This is the recommended path.
+- **Windows, scripted**: `scripts/install.ps1` unpacks the zip into `%LOCALAPPDATA%\Mudcrab\bin` and creates shortcuts. It does not touch `PATH`, because the binaries have generic names (`engine.exe`, `converter.exe`), and it has no uninstaller.
+- **Linux and macOS**: `scripts/install.sh` installs into `~/.local/share/mudcrab` and links the binaries into `~/.local/bin` as `mudcrab-launcher`, `mudcrab-engine`, `mudcrab-converter` and `mudcrab-world-inspect`. The real files keep their plain names because the launcher looks for `engine` next to itself.
+
+Both installer scripts verify the archive against `SHA256SUMS.txt` and stop if it cannot be fetched or does not match. `latest` resolves to the newest non-prerelease release; set `MUDCRAB_VERSION` to pick another tag.
+
 > **Note on macOS builds**: macOS binaries are currently distributed unsigned and unnotarized until Apple Developer code-signing certificates are provisioned. macOS users may need to clear the quarantine flag (`xattr -d com.apple.quarantine <binary>`) or allow the application in System Settings > Privacy & Security.
 
 > **Note on Windows builds**: the Windows setup wizard and binaries are unsigned, so SmartScreen may warn on first run ("More info" > "Run anyway").

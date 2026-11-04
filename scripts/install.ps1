@@ -5,14 +5,15 @@
 # "Hey you, you're finally awake."
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 renders a progress bar that slows Invoke-WebRequest by an order of magnitude.
+$ProgressPreference = 'SilentlyContinue'
 
 $Repo = "Mudcrab-Team/mudcrab"
 $Target = "x86_64-pc-windows-msvc"
 
 # 1. Architecture Check
 if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64" -and $env:PROCESSOR_ARCHITEW6432 -ne "AMD64") {
-    Write-Error "Mudcrab currently requires 64-bit Windows (x86_64 / AMD64)."
-    exit 1
+    throw "Mudcrab currently requires 64-bit Windows (x86_64 / AMD64)."
 }
 
 Write-Host "==> Detected Windows 64-bit ($Target)" -ForegroundColor Cyan
@@ -22,20 +23,23 @@ $Tag = $env:MUDCRAB_VERSION
 
 if (-not $Tag -or $Tag -eq "latest") {
     Write-Host "==> Resolving latest Mudcrab release..." -ForegroundColor Cyan
+    # /releases/latest redirects to /releases/tag/<tag>; with no published release it
+    # redirects to /releases instead, which must not be mistaken for a tag.
+    $Response = $null
     try {
         $Request = [System.Net.WebRequest]::Create("https://github.com/$Repo/releases/latest")
         $Request.AllowAutoRedirect = $true
         $Response = $Request.GetResponse()
-        $Tag = $Response.ResponseUri.Segments[-1].Trim('/')
-        $Response.Close()
+        $FinalPath = $Response.ResponseUri.AbsolutePath
     } catch {
-        $Tag = "v0.1.0"
+        throw "Could not resolve the latest Mudcrab release: $_"
+    } finally {
+        if ($Response) { $Response.Close() }
     }
-
-    if (-not $Tag -or $Tag -eq "latest") {
-        $Tag = "v0.1.0"
-        Write-Warning "No published releases found yet on $Repo. Defaulting to $Tag."
+    if ($FinalPath -notmatch '/releases/tag/([^/]+)/?$') {
+        throw "No published release found for $Repo. Set MUDCRAB_VERSION to install a specific tag."
     }
+    $Tag = $Matches[1]
 } else {
     if (-not $Tag.StartsWith("v")) {
         $Tag = "v$Tag"
@@ -64,81 +68,68 @@ try {
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempZip -UseBasicParsing
 } catch {
-    Write-Error "Failed to download Mudcrab from: $DownloadUrl`nVerify that release $Tag exists."
-    exit 1
+    throw "Failed to download Mudcrab from: $DownloadUrl`nVerify that release $Tag exists."
 }
 
 # 4.1 Verify Checksum
 Write-Host "==> Verifying SHA256 checksum..." -ForegroundColor Cyan
-$ChecksumMismatch = $false
-$ChecksumError = $null
 try {
     # Do not accept a checksum file left behind by a previous installation attempt.
     if (Test-Path $TempChecksums) {
         Remove-Item -Path $TempChecksums -Force
     }
-    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction Stop
-    if (Test-Path $TempChecksums) {
-        $ExpectedHash = $null
-        Get-Content $TempChecksums | ForEach-Object {
-            $Parts = $_ -split '\s+'
-            if ($Parts.Length -ge 2 -and $Parts[1] -eq $ArchiveFileName) {
-                $ExpectedHash = $Parts[0].Trim().ToLower()
-            }
-        }
-
-        if ($ExpectedHash) {
-            $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
-            if ($ActualHash -ne $ExpectedHash) {
-                $ChecksumMismatch = $true
-            } else {
-                Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
-            }
-        } else {
-            throw "No entry for $ArchiveFileName in SHA256SUMS.txt."
-        }
-    } else {
-        throw "SHA256SUMS.txt was not downloaded."
+    try {
+        Invoke-WebRequest -Uri $ChecksumUrl -OutFile $TempChecksums -UseBasicParsing -ErrorAction Stop
+    } catch {
+        throw "Checksum verification failed: $_"
     }
-} catch {
-    $ChecksumError = "Checksum verification failed: $_"
+    if (-not (Test-Path $TempChecksums)) {
+        throw "Checksum verification failed: SHA256SUMS.txt was not downloaded."
+    }
+
+    $ExpectedHash = $null
+    foreach ($Line in Get-Content $TempChecksums) {
+        $Parts = $Line -split '\s+'
+        if ($Parts.Length -ge 2 -and $Parts[1].TrimStart('*') -eq $ArchiveFileName) {
+            $ExpectedHash = $Parts[0].Trim().ToLower()
+        }
+    }
+    if (-not $ExpectedHash) {
+        throw "Checksum verification failed: No entry for $ArchiveFileName in SHA256SUMS.txt."
+    }
+
+    $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
+    if ($ActualHash -ne $ExpectedHash) {
+        throw "Checksum verification failed!`nExpected: $ExpectedHash`nGot:      $ActualHash"
+    }
+    Write-Host "[OK] Checksum verified ($ExpectedHash)" -ForegroundColor Green
 } finally {
     if (Test-Path $TempChecksums) {
         Remove-Item -Path $TempChecksums -Force -ErrorAction SilentlyContinue
     }
 }
 
-if ($ChecksumError) {
-    Write-Error $ChecksumError
-    exit 1
-}
-
-if ($ChecksumMismatch) {
-    Write-Error "Checksum verification failed!`nExpected: $ExpectedHash`nGot:      $ActualHash"
-    exit 1
-}
-
 # 5. Extract Binaries
 Write-Host "==> Installing binaries to $BinDir..." -ForegroundColor Cyan
+$StageDir = Join-Path $TempDir "mudcrab-$Tag-stage"
 try {
-    Expand-Archive -Path $TempZip -DestinationPath $BinDir -Force
+    if (Test-Path $StageDir) { Remove-Item -Path $StageDir -Recurse -Force }
+    Expand-Archive -Path $TempZip -DestinationPath $StageDir -Force
+    try {
+        Copy-Item -Path "$StageDir\*" -Destination $BinDir -Recurse -Force
+    } catch {
+        throw "Could not replace the installed files in $BinDir. Close Mudcrab (launcher, engine, converter) and run the installer again.`n$_"
+    }
 } finally {
     if (Test-Path $TempZip) {
         Remove-Item -Path $TempZip -Force -ErrorAction SilentlyContinue
     }
+    if (Test-Path $StageDir) {
+        Remove-Item -Path $StageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
-# 6. Add to User PATH if missing
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$NormalizedBin = $BinDir.TrimEnd('\')
-$PathEntries = @($UserPath -split ';' | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
-if ($PathEntries -notcontains $NormalizedBin) {
-    Write-Host "==> Adding $BinDir to User PATH..." -ForegroundColor Cyan
-    [Environment]::SetEnvironmentVariable("Path", "$BinDir;$UserPath", "User")
-    $env:Path = "$BinDir;$env:Path"
-}
-
-# 7. Create Shortcuts (Desktop & Start Menu)
+# 6. Create Shortcuts (Desktop & Start Menu)
 try {
     $LauncherExe = "$BinDir\launcher.exe"
     if (Test-Path $LauncherExe) {
@@ -172,4 +163,4 @@ try {
 
 Write-Host ""
 Write-Host "Mudcrab $Tag successfully installed!" -ForegroundColor Green
-Write-Host "Run 'launcher.exe' or open Mudcrab from your Desktop/Start Menu." -ForegroundColor Yellow
+Write-Host "Open Mudcrab from your Desktop/Start Menu, or run $BinDir\launcher.exe." -ForegroundColor Yellow
