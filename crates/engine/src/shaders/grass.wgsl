@@ -194,6 +194,15 @@ fn mapped_normal(input:Varyings) -> vec3<f32> {
     let px = dpdx(input.world_position.xyz); let py = dpdy(input.world_position.xyz);
     let ux = dpdx(input.uv); let uy = dpdy(input.uv);
     let det = ux.x*uy.y - ux.y*uy.x;
+    if input.tangent.w != 0.0 {
+        // The normal texture uses transformed UVs, so its frame follows the
+        // inverse UV transform too. A singular mapping falls back below.
+        let u = grass.uv_transform[0].xy; let v = grass.uv_transform[1].xy;
+        let uv_sign = sign(u.x*v.y-v.x*u.y);
+        let authored_t = t;
+        t = (authored_t*v.y-b*u.y)*uv_sign;
+        b = (b*u.x-authored_t*v.x)*uv_sign;
+    }
     if input.tangent.w == 0.0 {
         t = (px*uy.y - py*ux.y)*sign(det);
         b = (py*ux.x - px*uy.x)*sign(det);
