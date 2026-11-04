@@ -39,6 +39,15 @@ fn previous_texture_proof(config: &PipelineConfig) -> String {
 
 #[tokio::test]
 async fn warm_packed_normal_rebuilds_old_bc7_and_skips_bad_model() {
+    check_warm_packed_normal(false).await;
+}
+
+#[tokio::test]
+async fn combined_proof_rebuilds_old_bc7_and_skips_bad_model() {
+    check_warm_packed_normal(true).await;
+}
+
+async fn check_warm_packed_normal(combined_proof: bool) {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     layout::prepare_directory(&data, false).unwrap();
@@ -76,6 +85,7 @@ async fn warm_packed_normal_rebuilds_old_bc7_and_skips_bad_model() {
     config.no_lod = true;
     config.cpu_jobs = 2;
     config.io_jobs = 1;
+    config.record_reader = converter::config::RecordReader::Inhouse;
     assert!(publish(&config).await.complete);
     let mut saved = manifest(&output);
     let neighbour = saved
@@ -107,6 +117,22 @@ async fn warm_packed_normal_rebuilds_old_bc7_and_skips_bad_model() {
     saved
         .asset_configuration_hashes
         .insert("dds".into(), previous_texture_proof(&config));
+    if combined_proof {
+        // Literal historical recipe: a combined reader proof predates per-kind contracts.
+        let mut identity = converter::esm::inhouse::reader_identity(config.record_reader);
+        identity["adapter_version"] = serde_json::json!(10);
+        let historical = serde_json::json!({
+            "schema": CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode":"cpu"},
+            "script_abi_version": config.script_abi_version,
+            "record_reader": identity,
+        });
+        saved.configuration_hash = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+        saved.asset_configuration_hashes.clear();
+    }
     saved
         .save(&output.join("conversion-manifest.json"))
         .unwrap();
