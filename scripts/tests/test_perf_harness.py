@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import random
 import re
 import stat
 import subprocess
@@ -87,32 +88,68 @@ class StatsTest(unittest.TestCase):
         draws = {perf.bootstrap_ci(ratios, seed=seed, samples=20) for seed in range(1, 6)}
         self.assertGreater(len(draws), 1)
 
-    def test_verdict_needs_ci_and_effect_size(self):
+    def test_wilcoxon_matches_exact_tables(self):
+        p = perf.wilcoxon_signed_rank_p
+        # all n differences positive: two-sided p = 2 / 2**n
+        self.assertAlmostEqual(p([1, 2, 3, 4, 5, 6]), 2 / 64)
+        self.assertAlmostEqual(p([1, 2, 3, 4, 5]), 2 / 32)
+        self.assertAlmostEqual(p([-1, -2, -3, -4, -5, -6, -7, -8]), 2 / 256)
+        # n=8, the smallest rank negative: W+ = 35; W+ of 35 or 36 is 2 of 256 sign patterns per tail
+        self.assertAlmostEqual(p([-1, 2, 3, 4, 5, 6, 7, 8]), 4 / 256)
+        self.assertEqual(p([]), 1.0)
+        self.assertEqual(p([0.0, 0.0]), 1.0)
+        # symmetric data is as far from significant as it gets
+        self.assertEqual(p([-3, -2, -1, 1, 2, 3]), 1.0)
+
+    def test_wilcoxon_handles_ties(self):
+        # all six equal and positive: still every sign pattern but one is less extreme
+        self.assertAlmostEqual(perf.wilcoxon_signed_rank_p([0.5] * 6), 2 / 64)
+
+    def test_noise_rarely_gives_a_verdict(self):
+        # Same-binary runs: ratios scatter symmetrically around 1. The false-positive rate per metric
+        # must stay near the 5% level, not the ~25% a 3-pair bootstrap interval gives.
+        rng = random.Random(11)
+        trials, positives = 400, 0
+        for _ in range(trials):
+            base = [10.0] * perf.MIN_PAIRS_FOR_VERDICT
+            cand = [10.0 * rng.lognormvariate(0, 0.05) for _ in base]
+            result = perf.compare_metric("frame_ms_mean", base, cand, seed=1, min_effect=0.02, samples=200)
+            positives += result["verdict"] != "noise"
+        self.assertLess(positives / trials, 0.07)
+
+    def test_verdict_needs_significance_and_effect_size(self):
         v = perf.verdict_for
-        self.assertEqual(v(0.90, 0.88, 0.93, min_effect=0.02), "improved")
-        self.assertEqual(v(1.10, 1.05, 1.14, min_effect=0.02), "regressed")
-        # CI contains 1.0
-        self.assertEqual(v(0.95, 0.90, 1.02, min_effect=0.02), "noise")
-        # CI excludes 1.0 but the effect is below the minimum
-        self.assertEqual(v(0.99, 0.985, 0.995, min_effect=0.02), "noise")
+        self.assertEqual(v(0.90, 0.03, min_effect=0.02), "improved")
+        self.assertEqual(v(1.10, 0.03, min_effect=0.02), "regressed")
+        self.assertEqual(v(0.95, 0.20, min_effect=0.02), "noise")
+        # significant but below the minimum effect
+        self.assertEqual(v(0.99, 0.01, min_effect=0.02), "noise")
         # exactly at the minimum effect counts
-        self.assertEqual(v(1.02, 1.01, 1.03, min_effect=0.02), "regressed")
+        self.assertEqual(v(1.02, 0.01, min_effect=0.02), "regressed")
+        self.assertEqual(v(1.20, None, min_effect=0.02), "noise")
 
     def test_higher_is_better_flips_direction(self):
-        self.assertEqual(perf.verdict_for(1.2, 1.1, 1.3, min_effect=0.02, higher_is_better=True), "improved")
-        self.assertEqual(perf.verdict_for(0.8, 0.7, 0.9, min_effect=0.02, higher_is_better=True), "regressed")
+        self.assertEqual(perf.verdict_for(1.2, 0.01, min_effect=0.02, higher_is_better=True), "improved")
+        self.assertEqual(perf.verdict_for(0.8, 0.01, min_effect=0.02, higher_is_better=True), "regressed")
 
     def test_compare_metric_detects_a_consistent_regression(self):
-        base = [10.0, 10.2, 9.9, 10.1, 10.0]
-        cand = [11.5, 11.6, 11.3, 11.6, 11.4]
+        base = [10.0, 10.2, 9.9, 10.1, 10.0, 10.1]
+        cand = [11.5, 11.6, 11.3, 11.6, 11.4, 11.5]
         result = perf.compare_metric("frame_ms_mean", base, cand, seed=3, min_effect=0.02, samples=2000)
         self.assertEqual(result["verdict"], "regressed")
-        self.assertEqual(result["pairs"], 5)
+        self.assertEqual(result["pairs"], 6)
         self.assertGreater(result["ratio_median"], 1.1)
+        self.assertLessEqual(result["p_value"], 0.05)
+
+    def test_five_consistent_pairs_are_not_enough(self):
+        base = [10.0] * 5
+        cand = [11.5] * 5
+        result = perf.compare_metric("frame_ms_mean", base, cand, seed=3, min_effect=0.02, samples=200)
+        self.assertEqual(result["verdict"], "insufficient_pairs")
 
     def test_compare_metric_is_noise_when_pairs_disagree(self):
-        base = [10.0, 10.0, 10.0, 10.0, 10.0]
-        cand = [10.5, 9.6, 10.2, 9.8, 10.1]
+        base = [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+        cand = [10.5, 9.6, 10.2, 9.8, 10.1, 9.9]
         result = perf.compare_metric("frame_ms_mean", base, cand, seed=3, min_effect=0.02, samples=2000)
         self.assertEqual(result["verdict"], "noise")
 
@@ -134,7 +171,7 @@ class GuardTest(unittest.TestCase):
         return [run_entry(metrics=frame_metrics(1.0, 0.01 * i), **kwargs) for i in range(count)]
 
     def test_same_conditions_compare(self):
-        result = self.analyze(self.runs(4), self.runs(4))
+        result = self.analyze(self.runs(6), self.runs(6))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["summary_verdict"], "noise")
 
@@ -199,8 +236,8 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(result["error"], "too_few_valid_pairs")
 
     def test_a_real_regression_is_reported(self):
-        base = [run_entry(metrics=frame_metrics(1.0, 0.02 * i)) for i in range(5)]
-        cand = [run_entry(metrics=frame_metrics(1.2, 0.02 * i)) for i in range(5)]
+        base = [run_entry(metrics=frame_metrics(1.0, 0.02 * i)) for i in range(6)]
+        cand = [run_entry(metrics=frame_metrics(1.2, 0.02 * i)) for i in range(6)]
         result = self.analyze(base, cand)
         self.assertEqual(result["summary_verdict"], "regressed")
         self.assertEqual(result["metrics"]["average_fps"]["verdict"], "regressed")
@@ -460,6 +497,18 @@ class VisualTest(unittest.TestCase):
             self.assertEqual(result["metric"], "stdlib")
             self.assertEqual(result["review"], [])
             self.assertTrue(Path(tmp, "out", "visual.json").is_file())
+
+    # A wrong keyword for flip-evaluator does not raise at import time, and choose_metric then
+    # falls back to the stdlib metric with only a warning, so check the real call wherever it can.
+    @unittest.skipUnless(perf.flip_available(), "flip-evaluator and numpy are not installed")
+    def test_flip_runs_when_installed(self):
+        self.assertEqual(perf.choose_metric(), ("flip", None))
+        with tempfile.TemporaryDirectory() as tmp:
+            base, cand = self.make_dirs(tmp, ["a"], shift=90)
+            result = perf.visual_compare(base, cand, Path(tmp, "out"))
+            self.assertEqual(result["metric"], "flip")
+            self.assertEqual(result["overall"], "fail")
+            self.assertTrue(Path(tmp, "out", "a.flip.png").is_file())
 
     def test_a_changed_shot_fails_and_is_queued_for_review(self):
         with tempfile.TemporaryDirectory() as tmp:

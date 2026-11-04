@@ -58,23 +58,27 @@ measurement.
 
 ```sh
 python3 scripts/perf/perf.py compare --base bins/engine-main-<sha> --cand bins/engine-<branch>-<sha> \
-  --scenarios synthetic,dense --pairs 5 --assets modern_assets_real --duration 30 \
+  --scenarios synthetic,dense --pairs 6 --assets modern_assets_real --duration 30 \
   --out evidence/perf/<topic>
 ```
 
 Runs are interleaved in pairs and the side that goes first alternates (base, candidate; candidate,
 base; ...), so thermal drift and background load land on both sides. For each metric the harness
-takes the candidate/base ratio inside each pair, the median of those ratios, and a seeded
-bootstrap 95% interval of that median (10,000 resamples of whole pairs, `--seed`).
+takes the candidate/base ratio inside each pair, the median of those ratios, an exact two-sided
+Wilcoxon signed-rank test on the log ratios (`p` in the table), and a seeded bootstrap 95% interval
+of the median (10,000 resamples of whole pairs, `--seed`) for reading the spread.
 
-A verdict is `improved` or `regressed` only when the interval excludes 1.0 **and** the median
-effect is at least `--min-effect` (0.02). Otherwise it is `noise`. Times are lower-is-better;
+A verdict is `improved` or `regressed` only when `p` is at most 0.05 **and** the median effect is
+at least `--min-effect` (0.02). Otherwise it is `noise`. The bootstrap interval does not decide
+anything: with few pairs it is roughly [smallest ratio, largest ratio], so with three pairs it
+excludes 1.0 about a quarter of the time when nothing changed. Times are lower-is-better;
 `average_fps` is higher-is-better. Metrics: frame time mean, p50, p95, p99 and fps; the mean of
 every GPU pass that reports a non-zero time (Metal's timestamp queries often read all zero, and
 those passes are skipped); the means of the eight most expensive CPU spans and schedules; process
 memory peak when the report has one. The scenario's summary verdict is drawn from the four frame
 time metrics only; the others are listed when they are not noise. A pair is dropped when either
-run is not usable, and a verdict needs at least three usable pairs.
+run is not usable, and a verdict needs at least six usable pairs (the default `--pairs`): with
+five or fewer the test cannot reach 0.05 even when every pair moves the same way.
 
 `verdict.json` has everything (including per-pair ratios and every run's class); `summary.md` is
 the table to paste. Exit code 3 means refused.
@@ -98,16 +102,22 @@ other systems the machine checks are skipped. A non-empty `--out` also needs `--
 
 ### Noise floor
 
-Run `compare` with the same binary as base and candidate. Every verdict must be `noise`; the width
-of the intervals is the smallest effect that setup can resolve. Do this once per machine state and
+Run `compare` with the same binary as base and candidate. Every verdict must be `noise`; the spread
+of the per-pair ratios shows roughly how small an effect that setup can resolve. Do this once per machine state and
 scenario, and again whenever the numbers look odd.
 
-On an M4 Pro with a 20 s window, 3 pairs and 300 warm-up frames, the Riverwood `dense` interval for
-`frame_ms_mean` was 0.86 to 1.07 and for `synthetic` 0.94 to 1.06: with three pairs only changes of
-about 10% or more can be told from noise. The cure is more pairs (5 to 9) and longer windows, not a
-smaller `--min-effect`. Of three pairs of `synthetic`, one run was `hung_after_report`, and one
-`dense` run never reached world-ready; both are in the run warnings, so check them before trusting
-a close call.
+On an M4 Pro (macOS, Metal, hidden window, 20 s windows, 300 warm-up frames), `synthetic` with the
+same binary on both sides gave `noise` for every metric over 6 pairs; the frame-time ratios fell
+between 1.011 and 1.099 with p from 0.062 to 0.156. The bootstrap interval for `frame_ms_p99` there
+was 1.000 to 1.204, a hair from excluding 1.0, which is why it does not decide verdicts. As a positive
+control, the same binary run under `taskpolicy -c background` (efficiency cores only, same
+fingerprint) came out `regressed` on every frame metric with ratios around 6 and p = 0.031, the
+smallest value six pairs allow. That shows the path end to end, not the smallest effect the setup
+can resolve; for close calls use more pairs and longer windows rather than a smaller `--min-effect`.
+
+Across those 24 runs, 5 were `hung_after_report` (the report was complete and the engine did not
+exit; see #525) and were kept. Run warnings in `summary.md` also list runs that never reached
+world-ready or failed the engine's own acceptance gate; check them before trusting a close call.
 
 ## Screenshots
 
@@ -128,7 +138,15 @@ four 1280x720 poses around Riverwood (Tamriel, grid 5,-12 and 5,-11). The file f
 heat map beside `visual.json`) when `flip-evaluator` and numpy are importable, and otherwise its
 own metric: mean absolute difference on the 0-255 scale and the fraction of colour samples that
 differ by more than 8, with the PNG decoded in pure Python (8-bit, non-interlaced). `visual.json`
-records which metric ran. The pure-Python path takes about a second per 1280x720 pair.
+records which metric ran. The pure-Python path takes about a second per 1280x720 pair. To run
+FLIP without installing anything globally:
+
+```sh
+uv run --no-project --with flip-evaluator --with numpy \
+  python scripts/perf/perf.py visual --base <dir> --cand <dir> --out <dir>
+```
+
+`visual` exits 3 when any shot fails, so a script or agent can stop on it.
 
 A shot fails when a frame is blank (uniform, or near black), when it is missing or undecodable,
 when the sizes differ, or when a metric exceeds its limit: the noise floor for that shot plus a
@@ -180,7 +198,7 @@ while and `target/` is 9 to 20 GiB; check the disk first.
    altered what is drawn.
 6. If the verdict is `improved` or `noise` with a plausible win, run `shots` for both binaries and
    `visual` with a noise floor; look at everything on the `review` list.
-7. Record the result: scenario, pairs, medians, interval, verdict, visual outcome, commit. Keep
+7. Record the result: scenario, pairs, medians, p, interval, verdict, visual outcome, commit. Keep
    failed and noise results as well as wins; a note that something made no difference saves the
    next attempt.
 8. Only then open a PR, with `summary.md` and the before/after images as evidence.

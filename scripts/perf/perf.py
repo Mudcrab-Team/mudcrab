@@ -36,9 +36,12 @@ DEFAULT_DURATION = 60.0
 DEFAULT_MIN_EFFECT = 0.02
 DEFAULT_SEED = 1
 BOOTSTRAP_SAMPLES = 10000
-# A bootstrap over fewer pairs than this cannot exclude 1.0 for any reason except that every pair
-# moved the same way, so a verdict needs at least this many usable pairs.
-MIN_PAIRS_FOR_VERDICT = 3
+# Significance comes from an exact two-sided Wilcoxon signed-rank test on log ratios. Below six
+# pairs its smallest attainable p-value is 0.0625, so no difference could ever be significant.
+# A percentile bootstrap of the median is not used for the decision: with three pairs its interval
+# is about [min, max] and excludes 1.0 a quarter of the time when nothing changed.
+MIN_PAIRS_FOR_VERDICT = 6
+SIGNIFICANCE = 0.05
 MIN_FREE_BUILD_GIB = 15
 MIN_FREE_RUN_GIB = 5
 ROUTE_READINESS_SECONDS = 60
@@ -408,10 +411,41 @@ def bootstrap_ci(ratios, *, seed, samples=BOOTSTRAP_SAMPLES, alpha=0.05):
     return percentile_sorted(medians, alpha / 2), percentile_sorted(medians, 1 - alpha / 2)
 
 
-def verdict_for(ratio, lo, hi, *, min_effect, higher_is_better=False):
-    """improved / regressed / noise. Significant only if the CI excludes 1.0 and the effect is big enough."""
-    excludes_one = lo > 1.0 or hi < 1.0
-    if not (excludes_one and abs(ratio - 1.0) >= min_effect):
+def wilcoxon_signed_rank_p(differences):
+    """Exact two-sided p-value of the Wilcoxon signed-rank test, conditional on the observed ranks.
+
+    Zero differences are dropped; tied magnitudes get average ranks. Ranks are doubled so the
+    distribution of the positive rank sum can be counted over integers.
+    """
+    values = [d for d in differences if d != 0]
+    n = len(values)
+    if n == 0:
+        return 1.0
+    order = sorted(range(n), key=lambda i: abs(values[i]))
+    doubled = [0] * n
+    start = 0
+    while start < n:
+        end = start
+        while end + 1 < n and abs(values[order[end + 1]]) == abs(values[order[start]]):
+            end += 1
+        for k in range(start, end + 1):
+            doubled[order[k]] = start + end + 2  # twice the average of 1-based ranks start+1..end+1
+        start = end + 1
+    total = sum(doubled)
+    counts = [0] * (total + 1)
+    counts[0] = 1
+    for rank in doubled:
+        for s in range(total, rank - 1, -1):
+            counts[s] += counts[s - rank]
+    observed = sum(r for r, v in zip(doubled, values) if v > 0)
+    extreme = min(observed, total - observed)
+    tail = sum(counts[s] for s in range(total + 1) if s <= extreme or s >= total - extreme)
+    return min(1.0, tail / 2**n)
+
+
+def verdict_for(ratio, p_value, *, min_effect, higher_is_better=False):
+    """improved / regressed / noise. Significant only if the test rejects and the effect is big enough."""
+    if p_value is None or p_value > SIGNIFICANCE or abs(ratio - 1.0) < min_effect:
         return "noise"
     worse = ratio < 1.0 if higher_is_better else ratio > 1.0
     return "regressed" if worse else "improved"
@@ -432,16 +466,14 @@ def compare_metric(name, base_values, cand_values, *, seed, min_effect, samples=
         "ratios": ratios,
         "ratio_median": median(ratios),
     })
+    lo, hi = bootstrap_ci(ratios, seed=seed, samples=samples) if len(pairs) >= 2 else (None, None)
+    p_value = wilcoxon_signed_rank_p([math.log(r) for r in ratios if r > 0])
+    result.update({"ci_lo": lo, "ci_hi": hi, "p_value": p_value})
     if len(pairs) < MIN_PAIRS_FOR_VERDICT:
-        result.update({"ci_lo": None, "ci_hi": None, "verdict": "insufficient_pairs"})
+        result["verdict"] = "insufficient_pairs"
         return result
-    lo, hi = bootstrap_ci(ratios, seed=seed, samples=samples)
-    result.update({
-        "ci_lo": lo,
-        "ci_hi": hi,
-        "verdict": verdict_for(result["ratio_median"], lo, hi, min_effect=min_effect,
-                               higher_is_better=result["higher_is_better"]),
-    })
+    result["verdict"] = verdict_for(result["ratio_median"], p_value, min_effect=min_effect,
+                                    higher_is_better=result["higher_is_better"])
     return result
 
 
@@ -601,7 +633,7 @@ def summary_markdown(verdict):
                      f"summary verdict **{scenario['summary_verdict']}**")
         for warning in scenario.get("run_warnings", []):
             lines.append(f"- warning: {warning}")
-        lines += ["", "| metric | base median | cand median | ratio (95% CI) | verdict |", "|---|---:|---:|---:|---|"]
+        lines += ["", "| metric | base median | cand median | ratio (95% CI) | p | verdict |", "|---|---:|---:|---:|---:|---|"]
         hidden = 0
         for metric, row in scenario["metrics"].items():
             if metric not in PRIMARY_METRICS and metric != "average_fps" and row["verdict"] == "noise":
@@ -609,9 +641,10 @@ def summary_markdown(verdict):
                 continue
             ratio = "n/a" if row.get("ratio_median") is None else f"{row['ratio_median']:.3f}"
             ci = "" if row.get("ci_lo") is None else f" ({row['ci_lo']:.3f} to {row['ci_hi']:.3f})"
+            p_text = "n/a" if row.get("p_value") is None else f"{row['p_value']:.3f}"
             lines.append(f"| {metric} | {format_value(metric, row.get('base_median'))} | "
                          f"{format_value(metric, row.get('cand_median'))} | "
-                         f"{ratio}{ci} | {row['verdict']} |")
+                         f"{ratio}{ci} | {p_text} | {row['verdict']} |")
         if hidden:
             lines.append("")
             lines.append(f"{hidden} other metrics (GPU passes, CPU spans, memory) were noise and are not listed; "
@@ -954,7 +987,7 @@ def flip_diff(a, b, heatmap_path=None):
         array = array[:, :, :3] if channels >= 3 else np.repeat(array[:, :, :1], 3, axis=2)
         return array.astype(np.float32) / 255.0
 
-    error_map, mean, _ = flip.evaluate(rgb(a), rgb(b), "LDR", inputsRGB=True, applyMagmaMap=False,
+    error_map, mean, _ = flip.evaluate(rgb(a), rgb(b), "LDR", inputsRGB=True, applyMagma=False,
                                        computeMeanError=True)
     error = np.asarray(error_map, dtype=np.float32).reshape(a[1], a[0])
     result = {"mean_flip": float(mean), "p99_flip": float(np.percentile(error, 99)),
@@ -1216,7 +1249,7 @@ def build_parser():
     p.add_argument("--base", required=True)
     p.add_argument("--cand", required=True)
     p.add_argument("--scenarios", required=True, help="comma-separated scenario names")
-    p.add_argument("--pairs", type=int, default=5)
+    p.add_argument("--pairs", type=int, default=MIN_PAIRS_FOR_VERDICT)
     p.add_argument("--assets")
     p.add_argument("--out", required=True)
     p.add_argument("--min-effect", type=float, default=DEFAULT_MIN_EFFECT)
