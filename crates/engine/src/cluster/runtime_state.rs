@@ -331,6 +331,16 @@ fn subtree_affects_owned_source(
     false
 }
 
+/// Physics writeback round-trips a static body's pose through its own representation, which can
+/// return the opposite-sign quaternion or move a component by an ulp. `q` and `-q` are the same
+/// rotation, so that half of the check is a correction of the comparator, not a tolerance; the
+/// translation and scale slack only absorbs the ulp drift and sits far below anything visible.
+fn same_pose(current: &Transform, resting: &Transform) -> bool {
+    current.translation.abs_diff_eq(resting.translation, 0.01)
+        && current.rotation.dot(resting.rotation).abs() >= 1.0 - 1e-6
+        && current.scale.abs_diff_eq(resting.scale, 1e-4)
+}
+
 /// Stock transform/visibility writers that predate the logical state event still revoke
 /// the resting instance. Cell retirement and rebasing change its parent, not this pose.
 fn observe_changed_reference_poses(
@@ -343,7 +353,7 @@ fn observe_changed_reference_poses(
     (mut state, mut commands): (ResMut<RuntimeReferenceState>, Commands),
 ) {
     for (form, resting, current, visible) in &roots {
-        let cause = if *current != resting.0 {
+        let cause = if !same_pose(current, &resting.0) {
             Some("resting pose changed")
         } else if visible == Some(&Visibility::Hidden) && !state.disabled.contains(&form.0) {
             Some("reference visibility changed")
@@ -358,7 +368,7 @@ fn observe_changed_reference_poses(
         }
     }
     for (entity, current, resting) in &changed_nodes {
-        if *current == resting.0 {
+        if same_pose(current, &resting.0) {
             continue;
         }
         let mut at = Some(entity);
@@ -1162,6 +1172,129 @@ mod tests {
             })
             .in_set(bevy::app::AnimationSystems),
         );
+        app.update();
+        assert!(app.world().resource::<RuntimeReferenceState>().contains(7));
+    }
+
+    fn next_ulp(value: f32) -> f32 {
+        f32::from_bits(value.to_bits() + 1)
+    }
+
+    fn resting_pose() -> Transform {
+        Transform {
+            translation: Vec3::new(1234.5, -987.25, 64.0),
+            rotation: Quat::from_euler(EulerRot::YXZ, 0.7, -0.2, 0.4),
+            scale: Vec3::splat(1.25),
+        }
+    }
+
+    #[test]
+    fn sign_flipped_quaternion_is_the_same_pose() {
+        let resting = resting_pose();
+        let flipped = Transform {
+            rotation: -resting.rotation,
+            ..resting
+        };
+        assert_ne!(flipped, resting);
+        assert!(same_pose(&flipped, &resting));
+    }
+
+    #[test]
+    fn one_ulp_translation_drift_is_the_same_pose() {
+        let resting = resting_pose();
+        let drifted = Transform {
+            translation: resting.translation.map(next_ulp),
+            ..resting
+        };
+        assert_ne!(drifted, resting);
+        assert!(same_pose(&drifted, &resting));
+    }
+
+    #[test]
+    fn a_tenth_of_a_unit_move_is_a_different_pose() {
+        let resting = resting_pose();
+        let moved = Transform {
+            translation: resting.translation + Vec3::new(0.1, 0.0, 0.0),
+            ..resting
+        };
+        assert!(!same_pose(&moved, &resting));
+    }
+
+    #[test]
+    fn a_one_degree_rotation_is_a_different_pose() {
+        let resting = resting_pose();
+        let turned = Transform {
+            rotation: Quat::from_rotation_y(1.0_f32.to_radians()) * resting.rotation,
+            ..resting
+        };
+        assert!(!same_pose(&turned, &resting));
+    }
+
+    #[test]
+    fn a_scale_change_is_a_different_pose() {
+        let resting = resting_pose();
+        let scaled = Transform {
+            scale: resting.scale + Vec3::splat(0.01),
+            ..resting
+        };
+        assert!(!same_pose(&scaled, &resting));
+    }
+
+    #[test]
+    fn physics_style_pose_round_trip_does_not_revoke_the_resting_reference() {
+        let mut app = app();
+        let resting = resting_pose();
+        let root = app
+            .world_mut()
+            .spawn((FormId(7), RestingReferencePose(resting), resting))
+            .id();
+        app.update();
+        *app.world_mut().get_mut::<Transform>(root).unwrap() = Transform {
+            translation: resting.translation.map(next_ulp),
+            rotation: -resting.rotation,
+            scale: resting.scale,
+        };
+        app.update();
+        assert!(!app.world().resource::<RuntimeReferenceState>().contains(7));
+        app.world_mut()
+            .get_mut::<Transform>(root)
+            .unwrap()
+            .translation
+            .x += 0.1;
+        app.update();
+        assert!(app.world().resource::<RuntimeReferenceState>().contains(7));
+    }
+
+    #[test]
+    fn physics_style_pose_round_trip_on_a_source_node_does_not_revoke_the_reference() {
+        let mut app = app();
+        let resting = resting_pose();
+        let root = app
+            .world_mut()
+            .spawn((
+                FormId(7),
+                RestingReferencePose(Transform::default()),
+                Transform::default(),
+            ))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((ChildOf(root), SourceNodePose(resting), resting))
+            .id();
+        app.update();
+        assert!(!app.world().resource::<RuntimeReferenceState>().contains(7));
+        *app.world_mut().get_mut::<Transform>(child).unwrap() = Transform {
+            translation: resting.translation.map(next_ulp),
+            rotation: -resting.rotation,
+            scale: resting.scale,
+        };
+        app.update();
+        assert!(!app.world().resource::<RuntimeReferenceState>().contains(7));
+        app.world_mut()
+            .get_mut::<Transform>(child)
+            .unwrap()
+            .translation
+            .x += 0.1;
         app.update();
         assert!(app.world().resource::<RuntimeReferenceState>().contains(7));
     }
