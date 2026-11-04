@@ -38,7 +38,9 @@ therefore be all zero even when timestamp queries are reported as supported. Do 
 as GPU costs. Metal Performance HUD encoder timing also conflicts with application-owned counter
 sample buffers. For that method, use the measurement-only `native-hud-counters.patch` and its
 [capture steps](../../scripts/profiling/README.md#controls-and-optional-capture). Its instrumented result is
-not an unprofiled FPS comparison. The [native Metal investigation](../research/metal-native-timeline-20261009.md)
+not an unprofiled FPS comparison. The patch applies to `f9653bfd`, not current main; run
+`git apply --check` on the chosen source and update the patch before using it on a newer revision.
+The [native Metal investigation](../research/metal-native-timeline-20261009.md)
 explains the counter restriction and the earlier measurements.
 
 ## Build and capture CPU stacks
