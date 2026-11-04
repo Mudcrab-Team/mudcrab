@@ -636,9 +636,9 @@ mod tests {
             assert_eq!(old.color, 255);
             let expected_byte = (f64::from(new.position[0]) * 224.0 / 65535.0).round() as u8;
             assert_eq!(new.color, expected_byte, "slot {} encoded root", new.slot);
-            let candidate_x = candidate(42, new.slot)[0];
+            let candidate_x = candidate(hash(42, 7, 12), new.slot)[0];
             jitter_matters |= (candidate_x * 224.0).round() as u8 != expected_byte;
-            let raw_x = candidate_x * 4096.0 + (unit(hash(42, new.slot, 5)) - 0.5) * 64.0;
+            let raw_x = candidate_x * 4096.0 + (unit(hash(hash(42, 7, 12), new.slot, 5)) - 0.5) * 64.0;
             quantization_matters |=
                 (f64::from(raw_x) * 224.0 / 4096.0).round() as u8 != expected_byte;
             let mut expected = *old;
@@ -788,7 +788,7 @@ mod tests {
         let cache = mapped(rules, fixture(vec![painted]));
         let config = EngineConfig {
             grass_texture_threshold: 0.5,
-            grass_max_types_per_texture: 0,
+            grass_max_types_per_texture: 1,
             ..EngineConfig::default()
         };
         let generated = generate(&cache, 42, &config);
@@ -813,7 +813,7 @@ mod tests {
             &cache,
             42,
             &EngineConfig {
-                grass_max_types_per_texture: 1,
+                grass_max_types_per_texture: 2,
                 ..config
             },
         );
@@ -852,8 +852,8 @@ mod tests {
     }
 
     #[test]
-    /// Verify blended layers and many species compete without list order bias.
-    fn blended_layers_and_many_species_compete_without_list_order_bias() {
+    /// Verify each species receives its layer support without species averaging.
+    fn blended_layers_and_many_species_keep_independent_support() {
         let cache = mapped(
             vec![species(7), species(11), species(13)],
             fixture(vec![layer(9, vec![7], 0.8), layer(10, vec![11, 13], 0.2)]),
@@ -865,7 +865,7 @@ mod tests {
             .map(|b| (b.grass_id, b.instances.len()))
             .collect();
         assert_eq!(counts.len(), 3, "{counts:?}");
-        assert!(counts[0].1 > counts[1].1 * 4, "{counts:?}");
+        assert!(counts[0].1 > counts[1].1 * 3 && counts[0].1 < counts[1].1 * 5, "{counts:?}");
         assert!(counts[1].1 > 50 && counts[2].1 > 50, "{counts:?}");
     }
 
@@ -913,7 +913,7 @@ mod tests {
             .collect();
         assert!(points.iter().all(|p| p[0] >= 2048.0 || p[1] >= 2048.0));
         for (point, instance) in points.iter().zip(generated.batches[0].instances.iter()) {
-            let original = candidate(42, instance.slot);
+            let original = candidate(hash(42, 7, 12), instance.slot);
             for axis in 0..2 {
                 assert!(
                     (point[axis] - original[axis] * GRASS_CELL_SIZE).abs() <= 80.05,
@@ -1003,21 +1003,20 @@ mod tests {
                 .sum::<usize>()
                 > 100
         );
-        // In each quadrant, x <= 896 has total density 0.5 and x >= 1024
-        // has total density 0.01. This band stays painted on both sides.
+        // Species 7 has occurrence .2 on the dense side and .004 on the sparse side.
         let crossed_candidates = (0..4096)
             .filter(|&slot| {
-                let [x, _] = candidate(42, slot);
-                let px = x * GRASS_CELL_SIZE + (unit(hash(42, slot, 5)) - 0.5) * 768.0;
-                let threshold = unit(hash(42, slot, 4));
+                let [x, _] = candidate(hash(42, 7, 12), slot);
+                let px = x * GRASS_CELL_SIZE + (unit(hash(hash(42, 7, 12), slot, 5)) - 0.5) * 768.0;
+                let threshold = unit(hash(hash(42, 7, 12), slot, 4));
                 (0.0..GRASS_CELL_SIZE).contains(&px)
                     && x * GRASS_CELL_SIZE % 2048.0 <= 896.0
                     && px % 2048.0 >= 1024.0
-                    && (0.01..0.5).contains(&threshold)
+                    && (0.004..0.2).contains(&threshold)
             })
             .count();
         assert!(
-            crossed_candidates > 30,
+            crossed_candidates > 5,
             "fixture must distinguish source/final density"
         );
         for batch in &generated.batches {
@@ -1025,18 +1024,17 @@ mod tests {
                 let px = f32::from(instance.position[0]) / 65535.0 * GRASS_CELL_SIZE;
                 if px % 2048.0 >= 1024.1 {
                     assert!(
-                        unit(hash(42, instance.slot, 4)) < 0.01,
+                        unit(hash(hash(42, batch.grass_id, 12), instance.slot, 4)) < 0.02 * if batch.grass_id == 7 { 0.2 } else { 0.8 },
                         "slot {} survived on the sparse side using its source density",
                         instance.slot
                     );
                 }
             }
         }
-        // Species 7 receives only 0.1 individual suitability on the dense side;
-        // occurrence must still use both species' combined 0.5 density.
+        // Species 7 retains .2 suitability, with no second independent density draw.
         assert!(generated.batches[0].instances.iter().any(|instance| {
             let px = f32::from(instance.position[0]) / 65535.0 * GRASS_CELL_SIZE;
-            px % 2048.0 <= 895.9 && unit(hash(42, instance.slot, 4)) > 0.15
+            px % 2048.0 <= 895.9 && unit(hash(hash(42, 7, 12), instance.slot, 4)) > 0.15
         }));
     }
 }
