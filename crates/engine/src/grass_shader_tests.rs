@@ -451,7 +451,7 @@ fn unlit_shadow_variants_validate_with_real_bevy() {
         Some("GRASS_SHADING_F"),
         Some("GRASS_TUNING"),
     ] {
-        for attributes in 0..8 {
+        for attributes in 0..16 {
             for scene in [false, true] {
                 for samples in [1, 4] {
                     for tonemap in [false, true] {

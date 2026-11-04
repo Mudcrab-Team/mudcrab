@@ -655,7 +655,6 @@ fn update_grass_uniforms(
 
 #[derive(Resource)]
 struct GrassPipeline {
-    tuning: bool,
     shader: Handle<Shader>,
     view_layout: BindGroupLayoutDescriptor,
     batch_layout: BindGroupLayoutDescriptor,
@@ -664,9 +663,7 @@ struct GrassPipeline {
 
 /// Load the grass shader and initialize its render pipeline resource.
 fn init_pipeline(mut commands: Commands, server: Res<AssetServer>) {
-    let mut pipeline =
-        GrassPipeline::new(load_embedded_asset!(server.as_ref(), "shaders/grass.wgsl"));
-    pipeline.tuning = true;
+    let pipeline = GrassPipeline::new(load_embedded_asset!(server.as_ref(), "shaders/grass.wgsl"));
     commands.insert_resource(pipeline);
 }
 
@@ -674,7 +671,6 @@ impl GrassPipeline {
     /// Create grass view and batch layouts for the supplied shader.
     fn new(shader: Handle<Shader>) -> Self {
         Self {
-            tuning: true,
             shader,
             scene: None,
             view_layout: BindGroupLayoutDescriptor::new(
@@ -747,9 +743,7 @@ impl SpecializedMeshPipeline for GrassPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut attributes = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0)];
         let mut defs = vec![];
-        if self.tuning {
-            defs.push("GRASS_TUNING".into());
-        }
+        defs.push("GRASS_TUNING".into());
         for (attribute, location, name) in [
             (Mesh::ATTRIBUTE_NORMAL, 1, "NORMAL"),
             (Mesh::ATTRIBUTE_UV_0, 2, "UV"),
@@ -1648,6 +1642,13 @@ mod tests {
                 &layout,
             )
             .unwrap();
+        assert!(
+            descriptor
+                .vertex
+                .shader_defs
+                .contains(&"GRASS_TUNING".into()),
+            "fileless production pipeline must include tuning"
+        );
         let mut defs = crate::grass_shader_tests::definitions(false, 4, 15, false);
         for def in &descriptor.vertex.shader_defs {
             match def {
