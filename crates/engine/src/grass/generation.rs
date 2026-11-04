@@ -888,8 +888,8 @@ mod tests {
                 vec![7, 8, 9, 10, 11, 12, 13, 14]
             );
             let count: usize = warm.batches.iter().map(|batch| batch.instances.len()).sum();
-            assert!(count > 500 && count <= slots);
-            assert!(warm.bytes + terrain.bytes() <= slots * 32 + 32 * 1024);
+            assert!(count > 500 && count <= slots * 8);
+            assert!(warm.bytes + terrain.bytes() <= slots * 8 * 32 + 32 * 1024);
             assert!(
                 warm.batches
                     .iter()

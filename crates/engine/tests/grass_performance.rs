@@ -296,11 +296,11 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         );
         let count: usize = warm.batches.iter().map(|batch| batch.instances.len()).sum();
         assert!(
-            count > 500 && count <= slots as usize,
+            count > 500 && count <= slots as usize * GRASS_COUNT as usize,
             "nonvacuous bounded output: {count}"
         );
         assert!(
-            warm.bytes <= slots as usize * 32 + 32 * 1024,
+            warm.bytes <= slots as usize * GRASS_COUNT as usize * 32 + 32 * 1024,
             "cell allocation budget exceeded: {}",
             warm.bytes
         );

@@ -75,3 +75,9 @@ Keep converted game data, generated packs, captures, profiling output and binari
 outside the source repository. Report backend, GPU/driver, source state, asset
 provenance and remaining limitations alongside measurements. A static capture
 does not establish movement behavior or visual parity with retail Skyrim.
+
+Independent species each have the listed candidate count. The eight-species
+fixture's total output bound is eight times that per-species count; allocation
+remains bounded by 32 bytes per potential instance plus 32 KiB of cell overhead.
+The existing 10/50/100 ms worker ceilings are unchanged. Measured times must come
+from the current release tests, not the earlier shared-population implementation.
