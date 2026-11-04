@@ -302,6 +302,17 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
             with self.assertRaisesRegex(ValueError, "rejected engine grass tuning"):
                 TUNING.engine_grass_tuning_receipt(self.root / "engine", target / "grass-tuning.toml")
 
+    def test_cpu_policy_metadata_is_separate_from_frame_tuning(self):
+        path = self.root / "native.toml"
+        path.write_text("brightness = 1.15\n", encoding="utf-8")
+        appearance = self.tuning_receipt(path)
+        native = {**appearance, "grass_snow_gate": False,
+                  "range": {"grass_radius": 2, "cache_mib": 256}}
+        with patch.object(TUNING.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(native))):
+            actual = TUNING.engine_grass_tuning_receipt(self.root / "engine", path)
+        self.assertEqual(actual, appearance)
+
     def test_environment_grass_tuning_is_frozen_and_receipted(self):
         config, engine, assets, source = self.make_campaign()
         selected = self.root / "environment.toml"

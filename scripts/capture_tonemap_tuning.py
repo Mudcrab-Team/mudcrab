@@ -205,7 +205,9 @@ def engine_grass_tuning_receipt(engine, path):
     require(isinstance(value.get("path"), str) and Path(value["path"]).resolve() == path.resolve(),
             "Engine grass tuning receipt path differs")
     require(value.get("sha256", "").lower() == sha256(path), "Engine grass tuning receipt hash differs")
-    return value
+    # Range and compiled policy are CPU-info provenance; captured-frame tuning
+    # contains only the frame-bound appearance receipt.
+    return {key: field for key, field in value.items() if key not in ("range", "grass_snow_gate")}
 
 
 def grass_tuning_environment():
