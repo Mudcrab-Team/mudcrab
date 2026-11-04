@@ -30,6 +30,10 @@ struct UploadState {
     terrain_only: Option<bool>,
     /// A replacement scene may request the same mesh while an old request is in flight.
     waiters: Vec<Arc<AtomicU64>>,
+    /// The tangent proof a non-terrain preparation reaches, computed from the bytes while the
+    /// loader still held them. Only this flag is kept, never the words, so a released mesh can be
+    /// proved without another read.
+    proof_hint: Option<bool>,
 }
 
 struct MeshUpload {
@@ -180,6 +184,7 @@ impl ClusterMeshAsset {
                     failure: None,
                     terrain_only: None,
                     waiters: Vec::new(),
+                    proof_hint: None,
                 }),
                 proof: AtomicU8::new(0),
                 #[cfg(test)]
@@ -236,6 +241,25 @@ impl ClusterMeshAsset {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .payload = None;
+    }
+
+    /// Record what non-terrain tangent preparation will conclude, from the bytes this mesh still
+    /// holds, so a later `prepare` of the released mesh needs no re-read. The tangent words are
+    /// dropped; upload regenerates them from its own read and checks the proof against this one.
+    pub(crate) fn record_tangent_proof(&self) -> Result<(), String> {
+        let mut state = self
+            .upload
+            .state
+            .lock()
+            .map_err(|_| "mesh payload lock poisoned")?;
+        let payload = state
+            .payload
+            .as_ref()
+            .ok_or("mesh payload released before its tangent proof was recorded")?;
+        let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+        let usable = self.generate_tangent_words(&view).usable;
+        state.proof_hint = Some(usable);
+        Ok(())
     }
 
     /// The mesh as the stock path sees it: one ordinary indexed triangle list of the source
@@ -350,9 +374,10 @@ impl ClusterMeshAsset {
                 payload.tangents = Some(prepared);
                 usable
             }
-            // Released before any proof: prove it from a re-read that is dropped right after,
-            // so preparing every mesh of the scene never holds more than the workers' own files.
-            // Upload re-reads again; only the proof persists, as after an upload.
+            // Released before any proof: use the proof recorded at load, or else prove it from a
+            // re-read that is dropped right after, so preparing every mesh of the scene never
+            // holds more than the workers' own files. Upload re-reads again and checks the proof;
+            // only the proof persists, as after an upload.
             None => {
                 let source = self
                     .source
@@ -360,6 +385,8 @@ impl ClusterMeshAsset {
                     .ok_or("mesh payload released before preparation")?;
                 if terrain_only {
                     false
+                } else if let Some(usable) = state.proof_hint {
+                    usable
                 } else {
                     let rebuilt = source.read_mesh()?;
                     rebuilt.prepare(false)?;

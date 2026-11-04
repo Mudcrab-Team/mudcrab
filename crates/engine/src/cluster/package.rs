@@ -514,10 +514,15 @@ type PreloadedMeshes = HashMap<(String, u32), Result<ClusterMeshAsset, String>>;
 /// Re-read every mesh payload under the package's locks, check it against its launch digest and
 /// row, and keep only the validated header and the way back to the bytes. At most one file per
 /// worker is in memory at a time.
+///
+/// Meshes not in `terrain_keys` also get their tangent proof recorded from the bytes in hand, so
+/// preparing them later needs no read. Terrain meshes are prepared without tangents when only
+/// terrain uses them, which this step cannot know yet; they keep the read in preparation.
 fn preload_certified_meshes(
     package: &Arc<super::reader::CertifiedPackage>,
     rows: &HashMap<(String, u32), MeshRow>,
     identity: &str,
+    terrain_keys: &std::collections::HashSet<(String, u32)>,
 ) -> PreloadedMeshes {
     let entries: Vec<_> = rows.iter().collect();
     let builder = shared::cluster::parse_hash(identity);
@@ -525,7 +530,7 @@ fn preload_certified_meshes(
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(entries.len().max(1));
-    let load = |row: &MeshRow| -> Result<ClusterMeshAsset, String> {
+    let load = |key: &(String, u32), row: &MeshRow| -> Result<ClusterMeshAsset, String> {
         let builder = builder.ok_or("invalid package builder identity")?;
         let payload = package
             .envelope()
@@ -538,8 +543,11 @@ fn preload_certified_meshes(
             builder,
             row.expected,
         )?);
-        // The scene keeps only the validated header and the way back to the bytes;
-        // tangent preparation and upload re-read them when needed.
+        if !terrain_keys.contains(key) {
+            mesh.record_tangent_proof()?;
+        }
+        // The scene keeps only the validated header, the proof and the way back to the bytes;
+        // upload re-reads them when needed.
         mesh.release_certified_payload();
         Ok(mesh)
     };
@@ -553,7 +561,7 @@ fn preload_certified_meshes(
                         let Some((key, row)) = entries.get(index) else {
                             break;
                         };
-                        done.push(((*key).clone(), load(row)));
+                        done.push(((*key).clone(), load(key, row)));
                     }
                     done
                 })
@@ -855,7 +863,16 @@ fn load_cluster_package(
 
     // Every mesh file is read and checked up front, in parallel, so the scene build does not wait
     // on one file at a time; each result is consumed, or refused, where a block first names it.
-    let mut preloaded = preload_certified_meshes(&validated.0, &rows, &identity);
+    let terrain_keys: std::collections::HashSet<(String, u32)> = rows
+        .keys()
+        .filter(|(hash, primitive)| {
+            terrain
+                .as_ref()
+                .is_some_and(|terrain| terrain.block_for_mesh(hash, *primitive).is_some())
+        })
+        .cloned()
+        .collect();
+    let mut preloaded = preload_certified_meshes(&validated.0, &rows, &identity, &terrain_keys);
     let mut mesh_index: HashMap<(String, u32), u32> = HashMap::new();
     let mut scene_meshes: Vec<ClusterMeshAsset> = Vec::new();
     let mut batch_index: HashMap<(BatchKey, u32), u32> = HashMap::new();

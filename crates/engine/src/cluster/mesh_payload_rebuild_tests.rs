@@ -14,15 +14,20 @@ struct Fixture {
 
 /// A mesh loaded as the package loads it, still holding the bytes it was validated from.
 fn fixture() -> Fixture {
-    fixture_with(false)
+    fixture_with(false, false)
 }
 
 /// A mesh as the scene keeps it: validated header, a retained source and no bytes.
 fn released_fixture() -> Fixture {
-    fixture_with(true)
+    fixture_with(true, false)
 }
 
-fn fixture_with(release: bool) -> Fixture {
+/// As the package preload keeps it: released, with the tangent proof recorded from the bytes in hand.
+fn proved_released_fixture() -> Fixture {
+    fixture_with(true, true)
+}
+
+fn fixture_with(release: bool, prove: bool) -> Fixture {
     let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
     let package =
         Arc::new(crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap());
@@ -47,6 +52,9 @@ fn fixture_with(release: bool) -> Fixture {
         MeshRehydrateSource::new(package.clone(), relative.clone(), builder, expected).unwrap(),
     );
     drop(payload);
+    if prove {
+        mesh.record_tangent_proof().unwrap();
+    }
     if release {
         mesh.release_certified_payload();
     }
@@ -266,6 +274,39 @@ fn released_mesh_proves_tangents_through_one_reread_and_keeps_no_bytes() {
         fixture.mesh.with_upload(|_, _| ()).unwrap().is_none(),
         "nothing is resident to upload until the upload requests its own reread"
     );
+}
+
+#[test]
+fn recorded_proof_prepares_a_released_mesh_without_a_read_and_matches_the_read_proof() {
+    bevy::tasks::IoTaskPool::get_or_init(Default::default);
+    let read = released_fixture();
+    read.mesh.prepare_tangents().unwrap();
+    let fixture = proved_released_fixture();
+    let envelope = fixture.package.envelope();
+    let before = envelope.reread_count();
+    assert_eq!(fixture.mesh.prepared_tangents_usable(), None);
+    fixture.mesh.prepare_tangents().unwrap();
+    assert_eq!(
+        fixture.mesh.prepared_tangents_usable(),
+        read.mesh.prepared_tangents_usable(),
+        "the recorded proof is the proof a read would reach"
+    );
+    assert_eq!(envelope.reread_count(), before, "preparation read the file");
+    assert_eq!(
+        fixture.mesh.resident_estimate().unwrap().raw_payload_bytes,
+        0
+    );
+    // Upload still re-reads once, regenerates the words and checks the proof it was given.
+    let wake = Arc::new(AtomicU64::new(0));
+    assert!(
+        !fixture
+            .mesh
+            .request_upload(wake.clone(), |reason| panic!("{reason}"))
+            .unwrap()
+    );
+    wait_for_wake(&wake);
+    assert_eq!(envelope.reread_count(), before + 1);
+    assert!(fixture.mesh.with_upload(|_, _| ()).unwrap().is_some());
 }
 
 #[test]
