@@ -595,9 +595,10 @@ pub fn prepare_mapping<'a>(
 }
 
 /// Supplies the bytes of one chunk payload by its package-relative path, for a caller that keeps
-/// its own launch receipt and re-reads under its own source lock. `check_structure_with_payloads`
-/// still hashes whatever comes back against the chunk's row, and keeps only one chunk's bytes at
-/// a time.
+/// its own launch receipt and re-reads under its own source lock. Chunks are asked for in
+/// CPU-sized batches, each batch read in parallel, so the loader must be `Sync`.
+/// `check_structure_with_payloads` still hashes whatever comes back against the chunk's row and
+/// keeps only one batch's bytes at a time.
 pub type PayloadLoader<'a> = dyn Fn(&str) -> Result<HashedPayload, String> + Sync + 'a;
 
 /// Prepare with chunk bytes supplied by `load` instead of read from `package`. A loader error
@@ -609,7 +610,7 @@ pub fn prepare_mapping_with_loader<'a>(
     load: &PayloadLoader<'_>,
 ) -> Result<PreparedMapping<'a>, MappingError> {
     let (instances, groups) =
-        check_structure_with_payloads(connection, package, expected_built_from, false, Some(load))?;
+        check_structure_with_payloads(connection, package, expected_built_from, true, Some(load))?;
     Ok(PreparedMapping {
         connection,
         instances,
@@ -1820,6 +1821,28 @@ mod parallel_tests {
                     .cloned()
                     .ok_or_else(|| "payload missing from the supplied set".to_string())
             })
+        }
+
+        #[test]
+        fn loader_is_asked_once_for_every_chunk() {
+            let fixture = mapped_fixture();
+            let payloads = capture(&fixture);
+            let asked = std::sync::Mutex::new(Vec::new());
+            let prepared =
+                prepare_mapping_with_loader(&fixture.connection, &fixture.root, None, &|path| {
+                    asked.lock().unwrap().push(path.to_owned());
+                    payloads
+                        .get(path)
+                        .cloned()
+                        .ok_or_else(|| "payload missing from the supplied set".to_string())
+                })
+                .unwrap();
+            validate_prepared_mapping_parallel(prepared, &fixture.authority).unwrap();
+            let mut asked = asked.into_inner().unwrap();
+            asked.sort();
+            let mut expected: Vec<_> = payloads.keys().cloned().collect();
+            expected.sort();
+            assert_eq!(asked, expected);
         }
 
         #[test]
