@@ -4,6 +4,9 @@ use crate::{config::EngineConfig, world::grass_cache::GrassCache};
 use shared::grass::{ArchivedGrassLayer, GRASS_BLEND_SIDE, GRASS_CELL_SIZE, GRASS_EXCLUSION_SIDE};
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
+/// Whether the separately prepared majority-support policy is compiled into placement.
+pub const MAJORITY_GRASS_SUPPORT: bool = false;
+
 pub struct GeneratedGrass {
     pub batches: Vec<GrassBatch>,
     pub generation_micros: u64,
