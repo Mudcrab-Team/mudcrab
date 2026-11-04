@@ -57,3 +57,6 @@ pub mod world;
 pub use app::run;
 
 mod mesh_residency_audit;
+
+#[doc(hidden)]
+pub mod collision_measure;

@@ -389,6 +389,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
+    #[cfg(feature = "collision-measure")]
+    if std::env::var_os("MUDCRAB_COLLISION_MEASURE").is_some() {
+        app.add_plugins(crate::collision_measure::MeasurePlugin);
+    }
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
     }

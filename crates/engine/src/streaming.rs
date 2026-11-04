@@ -1979,13 +1979,14 @@ fn fixed_collision_tier(record_type: Option<&str>, path: &str) -> Option<FixedCo
         Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
         Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
         Some("CONT")
-            if matches!(
-                path,
-                "meshes/clutter/barrel01.glb"
-                    | "meshes/clutter/tgbarrel01.glb"
-                    | "meshes/clutter/sovngarde/sovbarrel01.glb"
-                    | "meshes/clutter/sburialurn01.glb"
-            ) =>
+            if !crate::collision_measure::disabled()
+                && matches!(
+                    path,
+                    "meshes/clutter/barrel01.glb"
+                        | "meshes/clutter/tgbarrel01.glb"
+                        | "meshes/clutter/sovngarde/sovbarrel01.glb"
+                        | "meshes/clutter/sburialurn01.glb"
+                ) =>
         {
             Some(FixedCollisionTier::VerifiedContainer)
         }

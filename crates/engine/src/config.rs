@@ -666,6 +666,10 @@ impl EngineConfig {
     /// limit: the jump moves only the camera, and in WALK the camera follow would put it straight
     /// back at the player's body.
     pub fn interactive_world_physics(&self) -> bool {
+        #[cfg(feature = "collision-measure")]
+        if std::env::var_os("MUDCRAB_COLLISION_MEASURE").is_some() {
+            return true;
+        }
         !self.headless
             && !self.hidden_window
             && self.benchmark_jump.is_none()
