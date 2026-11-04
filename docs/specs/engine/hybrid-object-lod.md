@@ -166,9 +166,10 @@ A main-camera cut or occlusion result cannot establish another view's coverage.
 Keep shadow range independent of camera far; measure the cost of every view.
 
 Probe adapter capabilities at startup. Native multi-draw with GPU draw count
-may be used where supported; Metal needs a bounded path without that count
-variant, such as fixed-capacity indirect slots with zeroed unused commands.
-Measure the CPU-loop cost rather than assuming parity with Vulkan or DX12.
+may be used where supported. Metal's bounded path is one instanced
+`draw_indirect` per draw group with vertex pulling, whose arguments the cull
+writes; the fixed-capacity slot list was measured at tens of millions of CPU
+encoded commands per frame and is not acceptable.
 Do not require mesh shaders or 64-bit atomics.
 
 Reserve complete coarse coverage before admitting/refining a cluster object.
