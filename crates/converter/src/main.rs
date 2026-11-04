@@ -1278,7 +1278,7 @@ terrain and ordinary assets remain available. Omit it on a later run to build LO
 textures: the land texture arrays, one merged mesh per exterior cell and the terrain chunk
 files. It is off by default because the engine does not read those outputs yet.
 --terrain-default-texture picks what a cell quadrant with no BTXT blends: the generated
-white texture (default), or the game's own [Landscape] default.
+white texture, or the game's own [Landscape] default (the default selection).
 --terrain-ini names the Skyrim.ini that default is read from; without it the built-in
 textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
 not name. A default that cannot be converted leaves the white texture, and the report says so.
@@ -1971,7 +1971,7 @@ mod tests {
             verify_cache: true,
             no_lod: false,
             merged_terrain: false,
-            terrain_default_texture: TerrainDefaultTexture::White,
+            terrain_default_texture: TerrainDefaultTexture::SkyrimIni,
             terrain_ini: None,
             terrain_allow_downscale: false,
             verbose: false,
@@ -2011,7 +2011,7 @@ mod tests {
         assert!(terrain.merged_terrain);
         assert_eq!(
             terrain.terrain_default_texture,
-            TerrainDefaultTexture::White
+            TerrainDefaultTexture::SkyrimIni
         );
         let terrain = parse_cli(vec![
             "Data".into(),
@@ -2031,7 +2031,13 @@ mod tests {
         );
         // The default texture is named even when it is the default, and the ini and the
         // downscale allowance travel with the resume: none of them may switch silently.
-        let white = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        let white = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "white",
+        ]))
+        .unwrap();
         assert!(
             resume_command("converter", &white, staging)
                 .ends_with(" --merged-terrain --terrain-default-texture white")
@@ -2121,7 +2127,10 @@ mod tests {
             "--terrain-ini",
             "S.ini",
         ]));
-        assert!(ini_without_default.is_err(), "the default is white");
+        assert!(
+            ini_without_default.is_ok(),
+            "the default now reads Skyrim INI settings"
+        );
 
         // The ini value is a path: the next option is not taken as one.
         let error = parse_cli(args(&[

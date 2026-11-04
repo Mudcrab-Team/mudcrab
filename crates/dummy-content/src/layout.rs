@@ -247,13 +247,19 @@ pub fn generate(root: &Path, seed: u64, formats: Formats) -> Result<Vec<PathBuf>
                 &mut rng,
             )?,
         ),
-        // Skyrim paints a landscape quadrant with no texture of its own in this one, so a
-        // terrain LOD bake of the generated world needs it. Last, so the bytes of the files
-        // above do not move.
+        // Skyrim's built-in default pair is needed by unpainted quadrant and LOD fixtures.
+        // Append the normal to preserve the existing loose texture bytes.
         (
             "textures/landscape/dirt02.dds",
             dds::generate(
                 &dds::Spec::new(dds::Format::Bc1Unorm, 64, 64).with_mip_levels(7),
+                &mut rng,
+            )?,
+        ),
+        (
+            "textures/landscape/dirt02_n.dds",
+            dds::generate(
+                &dds::Spec::new(dds::Format::Bc5Unorm, 64, 64).with_mip_levels(7),
                 &mut rng,
             )?,
         ),
@@ -431,7 +437,7 @@ fn ensure_no_symlink_components(root: &Path, relative: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    const EXPECTED_FILES: [&str; 14] = [
+    const EXPECTED_FILES: [&str; 15] = [
         "scripts/generated.pex",
         "scripts/second.pex",
         "textures/generated_color.dds",
@@ -440,6 +446,7 @@ mod tests {
         "textures/generated_cube.dds",
         "textures/generated_volume.dds",
         "textures/landscape/dirt02.dds",
+        "textures/landscape/dirt02_n.dds",
         "meshes/generated.nif",
         "Skyrim - Misc.bsa",
         "Skyrim - Meshes.bsa",

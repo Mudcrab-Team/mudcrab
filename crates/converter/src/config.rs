@@ -39,10 +39,10 @@ pub enum TextureEncoder {
 #[serde(rename_all = "snake_case")]
 pub enum TerrainDefaultTexture {
     /// A generated white diffuse, with no normal map.
-    #[default]
     White,
     /// `[Landscape] sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture` of a Skyrim.ini
     /// (`terrain_ini`), or the built-in Dirt02 paths without one.
+    #[default]
     SkyrimIni,
 }
 
@@ -92,8 +92,7 @@ pub struct PipelineConfig {
     /// default-land images is independent of this flag.
     #[serde(default)]
     pub merged_terrain: bool,
-    /// Where entry 0 of the land texture table comes from; `white` unless a user selects the
-    /// game's own default.
+    /// The null-base terrain default; Skyrim's INI/built-in Dirt02 unless white is selected.
     #[serde(default)]
     pub terrain_default_texture: TerrainDefaultTexture,
     /// The `Skyrim.ini` a `skyrim_ini` default texture is read from. `None` uses the built-in
@@ -582,6 +581,32 @@ mod tests {
         config.terrain_ini = Some(dir.path().to_path_buf());
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("not a readable file"), "{error}");
+    }
+
+    /// New and unstamped configs follow Skyrim; explicitly saved white stays white.
+    #[test]
+    fn terrain_default_policy_uses_skyrim_and_preserves_explicit_white() {
+        let config = PipelineConfig::new("Data", "pack");
+        assert_eq!(
+            config.terrain_default_texture,
+            TerrainDefaultTexture::SkyrimIni
+        );
+        let mut serialized = serde_json::to_value(&config).unwrap();
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("terrain_default_texture");
+        let old: PipelineConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(
+            old.terrain_default_texture,
+            TerrainDefaultTexture::SkyrimIni
+        );
+        serialized["terrain_default_texture"] = serde_json::json!("white");
+        let explicit: PipelineConfig = serde_json::from_value(serialized).unwrap();
+        assert_eq!(
+            explicit.terrain_default_texture,
+            TerrainDefaultTexture::White
+        );
     }
 
     /// New and older unstamped configurations use in-house while explicit legacy stays selected.

@@ -36,6 +36,19 @@ streaming resource reservations. Zero overlays keep their unresolved slots and w
 A missing nonzero LTEX diffuse retains the existing validation error; #500 addresses that
 separate case.
 
+New conversions default to `skyrim-ini`, including built-in Dirt02 when no INI is supplied.
+Use `--terrain-default-texture white` to retain the previous generated-white policy; this option
+also applies without `--merged-terrain`. Reconvert existing packs, including LOD and merged
+arrays. Default images are rebuilt from current source bytes; LOD source hashes already
+invalidate affected chunks without globally invalidating unrelated ingestion caches.
+
+MO2 conversions with `--no-lod` stage only the winning configured default DDS inputs;
+other MO2 assets retain direct, read-only source access.
+
+When no cached quadrant needs an implicit default, the converter records unused white metadata
+and does not require default images. Texture-only and fully painted packs therefore remain
+complete without otherwise unused Skyrim assets. A used but unusable default still warns.
+
 Old packs without this metadata retain white in the quadrant path. Reconvert to record a
 configured default; regenerate LOD and, when enabled, merged arrays as one compatible pack.
 Merged admission and baked array entry 0 are unchanged: the runtime does not fall back from

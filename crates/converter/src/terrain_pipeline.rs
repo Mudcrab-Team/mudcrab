@@ -36,7 +36,7 @@
 //! # The default texture
 //!
 //! Entry 0 of the table stands for a cell quadrant with no BTXT (or a null one). With `white`
-//! (the default) that is the array builder's generated 4 x 4 white diffuse; with `skyrim-ini` it
+//! that is the array builder's generated 4 x 4 white diffuse; with `skyrim-ini` (the default) it
 //! is `[Landscape] sDefaultLandDiffuseTexture` and `sDefaultLandNormalTexture` from the
 //! configured Skyrim.ini if a path to one is configured, else the built-in
 //! `textures/landscape/Dirt02.dds` and `Dirt02_N.dds` (which also stand in for a key the ini does
@@ -154,7 +154,7 @@ impl TerrainOptions {
 /// same texture on both sides of the LOD switch distance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerrainDefaultDiffuse {
-    /// The generated white diffuse: `TerrainDefaultTexture::White`, the default.
+    /// The generated white diffuse, explicitly selected or used as a fallback.
     GeneratedWhite,
     /// The DDS a `skyrim-ini` conversion selected, as a canonical Bethesda path relative to the
     /// converted output root: `vfs/<path>` holds the source.

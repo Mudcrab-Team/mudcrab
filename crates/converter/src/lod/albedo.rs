@@ -140,7 +140,7 @@ impl LoadedDefault {
     }
 }
 
-/// The generated white diffuse entry 0 of the land texture table holds with the default `white`
+/// The generated white diffuse entry 0 of the land texture table holds with an explicit `white`
 /// selection: one white texel in every tier, painted like any other default.
 fn generated_white_tiers() -> [LinearImage; 3] {
     std::array::from_fn(|_| LinearImage {
@@ -1993,7 +1993,7 @@ mod tests {
         // A quadrant with no BTXT: the one that paints entry 0.
         let null_base = || cell(vec![layer(0, true, 0.0)]);
 
-        // The default `white` selection: the Dirt02 file is present, and it must not be read.
+        // The explicit `white` selection: the Dirt02 file is present, and it must not be read.
         let white = null_base();
         let textures = TerrainTextures::load(
             &connection,
