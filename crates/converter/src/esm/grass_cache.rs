@@ -2774,9 +2774,24 @@ mod ground_contact_band_tests {
     use super::*;
     #[test]
     fn ground_contact_band_keeps_ties_and_releases_elevated_surfaces() {
-        for (height, expected) in [(-8.001,false),(-8.0,true),(40.0,true),(128.0,true),(128.001,false),(500.0,false)] {
-            let triangle = [DVec3::new(0.0,0.0,height),DVec3::new(4.0,0.0,height),DVec3::new(0.0,6.0,height)];
-            assert_eq!(triangle_covers(triangle,DVec3::new(1.0,2.0,0.0)),expected,"height {height}");
+        for (height, expected) in [
+            (-8.001, false),
+            (-8.0, true),
+            (40.0, true),
+            (128.0, true),
+            (128.001, false),
+            (500.0, false),
+        ] {
+            let triangle = [
+                DVec3::new(0.0, 0.0, height),
+                DVec3::new(4.0, 0.0, height),
+                DVec3::new(0.0, 6.0, height),
+            ];
+            assert_eq!(
+                triangle_covers(triangle, DVec3::new(1.0, 2.0, 0.0)),
+                expected,
+                "height {height}"
+            );
         }
     }
 }
