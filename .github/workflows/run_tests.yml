@@ -115,6 +115,10 @@ jobs:
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
 
+      - name: Test Windows installer checksum handling
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
