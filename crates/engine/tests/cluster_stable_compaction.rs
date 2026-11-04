@@ -646,9 +646,10 @@ struct Job {
     table: Vec<u32>,
     /// Unused by the legacy shader.
     order: Vec<u32>,
-    /// Count mode leaves unused arguments alone; fixed mode clears them first.
+    /// The legacy frame is the fixed-count one and clears its arguments; the stable frame never
+    /// does, in either mode, as in production.
     count_mode: bool,
-    /// Fill scratch and visible (and in count mode the arguments) with a pattern first,
+    /// Fill scratch, visible and the arguments with a pattern first,
     /// so stale reads and writes outside the expected slots are visible.
     poison: bool,
 }
@@ -738,7 +739,7 @@ fn assert_exact(
     out: &Output,
     bases: &[u32],
     expected: &[Vec<Draw>],
-    count_mode: bool,
+    _count_mode: bool,
     poisoned: bool,
 ) {
     assert_eq!(
@@ -785,9 +786,8 @@ fn assert_exact(
     }
     for slot in (0..slots).filter(|&slot| !used[slot]) {
         let args = &out.args[slot * INDEXED_ARG_WORDS..(slot + 1) * INDEXED_ARG_WORDS];
-        if !count_mode {
-            assert_eq!(args, &[0; 5], "{label}: unused argument slot {slot}");
-        } else if poisoned {
+        // Production clears no argument list: only slots the cull wrote are ever drawn.
+        if poisoned {
             assert_eq!(args, &[POISON; 5], "{label}: stray argument at slot {slot}");
         }
         if poisoned {
@@ -832,7 +832,7 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
                 .iter()
                 .flat_map(|&base| [TRIANGLE_LIMIT * 3, 1, 0, base])
                 .collect(),
-            args: vec![if count_mode { POISON } else { 0 }; slots * INDEXED_ARG_WORDS],
+            args: vec![POISON; slots * INDEXED_ARG_WORDS],
             args_words: INDEXED_ARG_WORDS,
             visible: vec![POISON; (slots + 1) * 4],
             list: Vec::new(),
@@ -1170,11 +1170,9 @@ impl Gpu {
             let poison = vec![POISON; view.slots as usize * 4];
             self.queue
                 .write_buffer(&view.visible, 0, bytemuck::cast_slice(&poison));
-            if job.count_mode {
-                let poison = vec![POISON; view.slots as usize * view.args_words];
-                self.queue
-                    .write_buffer(&view.args, 0, bytemuck::cast_slice(&poison));
-            }
+            let poison = vec![POISON; view.slots as usize * view.args_words];
+            self.queue
+                .write_buffer(&view.args, 0, bytemuck::cast_slice(&poison));
         }
         self.queue.write_buffer(
             &view.visible,
@@ -1209,9 +1207,6 @@ impl Gpu {
             .create_command_encoder(&CommandEncoderDescriptor::default());
         for &(bound, job) in runs {
             self.upload(bound, job);
-            if !job.count_mode {
-                encoder.clear_buffer(&bound.view.args, 0, None);
-            }
         }
         for stage in 0..STAGES.len() {
             for &(bound, job) in runs {
@@ -1817,10 +1812,6 @@ impl Gpu {
                 if needed || force {
                     self.upload(&view.bound, job);
                     view.uniform = Some(job.params);
-                    if !job.count_mode {
-                        encoder.clear_buffer(&view.bound.view.args, 0, None);
-                        work[index].clears += 1;
-                    }
                     encoder.clear_buffer(&view.bound.view.group_args, 0, None);
                     work[index].clears += 1;
                 }
@@ -1878,15 +1869,12 @@ fn assert_reuse_output(label: &str, retained: &Output, forced: &Output) {
     );
 }
 
-fn assert_reuse_work(label: &str, work: &EncodedWork, job: &Job, recompute: bool) {
+fn assert_reuse_work(label: &str, work: &EncodedWork, _job: &Job, recompute: bool) {
     for (stage, &(name, _)) in STAGES.iter().enumerate() {
         assert_eq!(work.stages[stage], u32::from(recompute), "{label}: {name}");
     }
-    let clears = if recompute {
-        1 + u32::from(!job.count_mode)
-    } else {
-        0
-    };
+    // Only the group records are cleared; the argument list is never cleared.
+    let clears = u32::from(recompute);
     assert_eq!(work.clears, clears, "{label}: output clears");
 }
 
