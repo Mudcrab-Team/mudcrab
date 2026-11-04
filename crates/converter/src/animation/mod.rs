@@ -276,7 +276,7 @@ fn build_clip(
         };
         let samples = (0..frame_count as usize)
             .map(|frame| decoded.sample(track_index, frame))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         tracks.push(TransformTrack {
             bone_index,
             bone_name,

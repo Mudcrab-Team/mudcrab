@@ -61,8 +61,8 @@ jobs:
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/lod-experiment/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|\.cargo/.*|\.github/workflows/.*)$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
           check_pattern "check_z_fighting_audit" '^(scripts/audit-z-fighting\.py|scripts/tests/test_audit_z_fighting\.py|\.github/workflows/run_tests\.yml)$'
@@ -114,6 +114,27 @@ jobs:
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
 
+      - name: Test Skyrim capture, replay and comparison helpers
+        run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Test Riverwood asset reuse audit
+        run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
+
+      - name: Test phase 1 LOD capture
+        run: python3 -B -m unittest discover -s scripts/tests -p test_capture_lod_phase1.py -v
+
+      - name: Test tonemap tuning capture evidence
+        run: python3 -B -m unittest discover -s scripts/tests -p test_capture_tonemap_tuning.py -v
+
+      - name: Test streaming comparison analysis
+        run: python3 -B -m unittest discover -s scripts/tests -p test_streaming_comparison_analysis.py -v
+
+      - name: Test streaming comparison runner
+        run: python3 -B -m unittest discover -s scripts/tests -p test_streaming_comparison_runner.py -v
+
+      - name: Test recorded comparison value matching
+        run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -129,6 +150,9 @@ jobs:
 
       - name: Verify LOD acceptance summary checks
         run: python3 -m unittest discover -s scripts/tests -p test_lod_acceptance_summary.py -v
+
+      - name: Verify stage receipt comparison
+        run: python3 -m unittest discover -s scripts/tests -p test_compare_stage_receipts.py -v
 
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v

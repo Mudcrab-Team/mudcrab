@@ -3,7 +3,10 @@
 mod common;
 
 use converter::mesh::MeshConverter;
-use dummy_content::nif::{BodyShape, BoxBody, StaticShape, static_shape_with_bodies};
+use dummy_content::nif::{
+    BodyShape, BoxBody, RootTransform, StaticShape, static_shape_with_bodies,
+    static_shape_with_root_transform,
+};
 use shared::collision::{BodyKind, COLLISION_ASSET_VERSION, CollisionAsset, CollisionShape};
 use std::{fs, path::Path};
 
@@ -353,6 +356,110 @@ fn rotated_rigid_body_t_rotates_the_tensor_and_moves_the_center_into_the_shape_f
         .map(|axis| points.iter().map(|p| p[axis]).sum::<f32>() / points.len() as f32)
         .collect();
     assert_close(&centroid, &[70.0, 0.0, 0.0], "shape centroid");
+}
+
+#[test]
+fn the_root_nodes_own_transform_moves_neither_render_nodes_nor_collision() {
+    // As countercornerin01.nif: the root BSFadeNode is rotated 90 degrees about Z (rows
+    // (0, -1, 0), (1, 0, 0), (0, 0, 1)); here it is also translated and scaled.
+    let root = RootTransform {
+        translation: [10.0, 20.0, 30.0],
+        rotation: [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        scale: 2.0,
+    };
+    let mut body = crate_body();
+    body.transform = Some(([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("root.nif");
+    let output = directory.path().join("root.glb");
+    fs::write(
+        &input,
+        static_shape_with_root_transform(&QUAD, &[body], root).unwrap(),
+    )
+    .unwrap();
+    MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+    let (gltf, asset) = read_glb(&output);
+
+    // glTF nodes: root, shape, then the body node.
+    assert_eq!(gltf["nodes"][0]["children"], serde_json::json!([1, 2]));
+    for field in ["rotation", "translation", "scale", "matrix"] {
+        assert!(gltf["nodes"][0].get(field).is_none(), "root {field}");
+    }
+    // The body sits 1 Havok unit (70 Creation units) along the unrotated root's x axis.
+    let CollisionShape::Hull { points } = &asset.shapes[0] else {
+        panic!("expected a hull");
+    };
+    let centroid: Vec<f32> = (0..3)
+        .map(|axis| points.iter().map(|p| p[axis]).sum::<f32>() / points.len() as f32)
+        .collect();
+    assert_close(&centroid, &[70.0, 0.0, 0.0], "shape centroid");
+}
+
+/// Rewrites the GLB's JSON chunk, keeping its binary chunk.
+fn patch_glb_json(path: &Path, patch: impl FnOnce(&mut serde_json::Value)) {
+    let bytes = fs::read(path).unwrap();
+    let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+    patch(&mut document);
+    let mut json = serde_json::to_vec(&document).unwrap();
+    json.resize(json.len().next_multiple_of(4), b' ');
+    let rest = &bytes[20 + json_len..];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&((20 + json.len() + rest.len()) as u32).to_le_bytes());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    out.extend_from_slice(rest);
+    fs::write(path, out).unwrap();
+}
+
+#[test]
+fn annotation_rejects_a_glb_that_keeps_the_nif_root_transform() {
+    let root = RootTransform {
+        translation: [10.0, 20.0, 30.0],
+        rotation: [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        scale: 2.0,
+    };
+    let mut body = crate_body();
+    body.transform = Some(([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("root.nif");
+    let output = directory.path().join("root.glb");
+    fs::write(
+        &input,
+        static_shape_with_root_transform(&QUAD, &[body], root).unwrap(),
+    )
+    .unwrap();
+    MeshConverter::convert_nif_to_glb(&input, &output).unwrap();
+
+    // A GLB from this converter has an untransformed root, so its collision can be refreshed.
+    let collision = MeshConverter::annotate_glb_collision(&input, &output).unwrap();
+    let CollisionShape::Hull { points } = &collision.shapes[0] else {
+        panic!("expected a hull");
+    };
+    let centroid: Vec<f32> = (0..3)
+        .map(|axis| points.iter().map(|p| p[axis]).sum::<f32>() / points.len() as f32)
+        .collect();
+    assert_close(&centroid, &[70.0, 0.0, 0.0], "annotated centroid");
+
+    // An earlier converter kept the root's transform on node 0. Its render nodes would still
+    // move the hull to [10, 30, -160]; annotation refuses rather than placing it at [70, 0, 0].
+    patch_glb_json(&output, |document| {
+        document["nodes"][0]["translation"] = serde_json::json!([10.0, 30.0, -20.0]);
+        document["nodes"][0]["rotation"] = serde_json::json!([0.0, 0.0, 0.70710677, 0.70710677]);
+        document["nodes"][0]["scale"] = serde_json::json!([2.0, 2.0, 2.0]);
+    });
+    let before = fs::read(&output).unwrap();
+    let error = MeshConverter::annotate_glb_collision(&input, &output).unwrap_err();
+    assert!(format!("{error:#}").contains("reconvert"), "{error:#}");
+    assert_eq!(
+        fs::read(&output).unwrap(),
+        before,
+        "a rejected GLB is left as it was"
+    );
 }
 
 #[test]
