@@ -477,3 +477,136 @@ fn unlit_shadow_variants_validate_with_real_bevy() {
         }
     }
 }
+
+/// Follow a compiled argument through loads/swizzles to its actual view uniform.
+fn expression_global(
+    function: &wgpu::naga::Function,
+    expression: wgpu::naga::Handle<wgpu::naga::Expression>,
+) -> Option<wgpu::naga::Handle<wgpu::naga::GlobalVariable>> {
+    use wgpu::naga::Expression as E;
+    match function.expressions[expression] {
+        E::GlobalVariable(global) => Some(global),
+        E::Load { pointer } => expression_global(function, pointer),
+        E::AccessIndex { base, .. } => expression_global(function, base),
+        E::Swizzle { vector, .. } => expression_global(function, vector),
+        _ => None,
+    }
+}
+
+/// Real Bevy apply_fog receives the view's fog, eye and each grass fragment's position.
+#[test]
+fn grass_fog_uses_view_uniforms_before_tonemapping() {
+    use wgpu::naga::{Expression as E, Statement};
+    for tonemap in [false, true] {
+        let mut defs = definitions(true, 4, 15, tonemap);
+        defs.insert("GRASS_TUNING".into(), ShaderDefValue::Bool(true));
+        defs.insert("DISTANCE_FOG".into(), ShaderDefValue::Bool(true));
+        let module = compose(SHADER, defs).expect("real fog shader validates");
+        let (helper_handle, helper) = module
+            .functions
+            .iter()
+            .find(|(_, function)| function.name.as_deref() == Some("grass_fog"))
+            .expect("grass fog helper");
+        let (callee, arguments) = helper
+            .body
+            .iter()
+            .find_map(|statement| {
+                if let Statement::Call {
+                    function,
+                    arguments,
+                    ..
+                } = statement
+                {
+                    Some((*function, arguments))
+                } else {
+                    None
+                }
+            })
+            .expect("grass must call native fog");
+        assert!(
+            module.functions[callee]
+                .name
+                .as_deref()
+                .unwrap()
+                .contains("apply_fog")
+        );
+        assert_eq!(arguments.len(), 5);
+        for (index, binding) in [(0, 13), (3, 0)] {
+            let global =
+                expression_global(helper, arguments[index]).expect("prepared view uniform");
+            let resource = module.global_variables[global].binding.as_ref().unwrap();
+            assert_eq!((resource.group, resource.binding), (0, binding));
+        }
+        for (index, expected) in [(1, 0), (2, 1), (4, 2)] {
+            assert!(
+                matches!(helper.expressions[arguments[index]], E::FunctionArgument(actual) if actual == expected)
+            );
+        }
+        let fragment = &module
+            .entry_points
+            .iter()
+            .find(|entry| entry.name == "fragment")
+            .unwrap()
+            .function;
+        let calls: Vec<_> = fragment
+            .body
+            .iter()
+            .filter_map(|statement| {
+                if let Statement::Call { function, .. } = statement {
+                    Some(*function)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let fog_index = calls
+            .iter()
+            .position(|handle| *handle == helper_handle)
+            .expect("fragment fog path");
+        if tonemap {
+            let tone_index = calls
+                .iter()
+                .position(|handle| {
+                    module.functions[*handle]
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.contains("tone_mapping"))
+                })
+                .expect("tone mapping call");
+            assert!(
+                fog_index < tone_index,
+                "fog must compose in linear HDR before tone mapping"
+            );
+        }
+        assert!(SHADER.contains("grass_fog(out.color,input.world_position.xyz,input.position.xy)"));
+    }
+}
+
+/// With no DistanceFog component the compiled helper returns its exact input RGBA.
+#[test]
+fn grass_without_distance_fog_returns_unchanged_hdr() {
+    use wgpu::naga::{Expression as E, Statement};
+    for scene in [false, true] {
+        let mut defs = definitions(scene, 4, 15, false);
+        defs.insert("GRASS_TUNING".into(), ShaderDefValue::Bool(true));
+        let module = compose(SHADER, defs).unwrap();
+        let (_, helper) = module
+            .functions
+            .iter()
+            .find(|(_, function)| function.name.as_deref() == Some("grass_fog"))
+            .unwrap();
+        assert!(
+            !helper
+                .body
+                .iter()
+                .any(|statement| matches!(statement, Statement::Call { .. }))
+        );
+        let Statement::Return { value: Some(value) } = helper.body.last().unwrap() else {
+            panic!("fog-disabled return")
+        };
+        assert!(
+            matches!(helper.expressions[*value], E::FunctionArgument(0)),
+            "all input HDR channels and alpha must pass through unchanged"
+        );
+    }
+}

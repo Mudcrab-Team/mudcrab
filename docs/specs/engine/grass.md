@@ -160,7 +160,13 @@ the direct sun term, retaining the existing ambient response and exposure:
 `(ambient + sun * Lambert * visibility) * exposure / pi`. With no directional
 light there is no direct term; disabled shadows use visibility 1. Shadowing never
 changes texture/material alpha, sample coverage or depth-prepass cutouts. Grass
-still does not cast shadows or add local lights or fog; this is not full PBR parity.
+still does not cast shadows or add local lights; this is not full PBR parity.
+
+After exposure-scaled lighting, grass uses Bevy's existing `apply_fog` with the
+same prepared view fog uniforms and specialization as terrain, before tone
+mapping. Each surviving alpha-tested fragment supplies its own world position.
+No DistanceFog component leaves the HDR color unchanged; fog parameters and the
+fog model remain owned by the existing camera/sky setup.
 
 Controlled matched-view measurements from the 2026-10-27 grass colour-layer
 experiment and back-light sweep favored k=0 in all five sampled biomes. The

@@ -364,6 +364,11 @@ fn shader_shading_fixture_with_tuning(
         .expect("fragment tone mapping boundary")
         .0;
     let fragment = fragment
+        // These fixtures isolate lighting. Fog composition has its own real-import checks.
+        .replace(
+            "out.color = grass_fog(out.color,input.world_position.xyz,input.position.xy);",
+            "",
+        )
         .replace("directional_shadow(input)", "synthetic_shadow")
         .replace("input.normal", "normal")
         .replace("input.light", "vertex_light(vertex_normal)")
