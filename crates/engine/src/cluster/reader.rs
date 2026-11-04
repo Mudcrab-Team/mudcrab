@@ -11,7 +11,7 @@ use shared::{
     cluster::parse_hash,
     cluster_mapping::{
         AuthoritativeInputs, CoverageState, DIGEST_VERSION, ReferenceSnapshot,
-        prepare_mapping_with_payloads, validate_prepared_mapping_parallel,
+        prepare_mapping_with_loader, validate_prepared_mapping_parallel,
     },
     cluster_recipe::{
         authority::CoreAuthority,
@@ -237,11 +237,17 @@ impl CertifiedPackage {
                 Ok(())
             },
             || {
-                Ok(prepare_mapping_with_payloads(
+                // One chunk at a time, each re-read and checked against its launch digest under
+                // the envelope's source locks; no chunk bytes outlive the check of that chunk.
+                Ok(prepare_mapping_with_loader(
                     &connection,
                     &envelope.overlay,
                     Some(&envelope.core_identity),
-                    &envelope.payloads()?,
+                    &|relative| {
+                        envelope
+                            .reread_payload(relative)
+                            .map_err(|error| format!("{error:#}"))
+                    },
                 )?)
             },
             overlap,
