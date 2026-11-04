@@ -729,6 +729,7 @@ mod tests {
             terrain_gauges: default(),
             terrain_coverage: default(),
             visual_profile: None,
+            grass_snow_gate: false,
             grass_tuning: Some(
                 serde_json::json!({"path": "first.toml", "sha256": "first", "effective": {"brightness": 0.6}}),
             ),
