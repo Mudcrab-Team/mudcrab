@@ -59,7 +59,8 @@ fn alpha_fixture_expression(
 }
 
 /// Parse, validate and execute source extracted from the production vertex and pass code.
-/// Only uniforms/attributes and texture sampling are substituted with synthetic inputs.
+/// Uniforms/attributes and sampling use synthetic inputs. Normal/lighting setup is
+/// outside this opacity fixture and must leave the sampled color unchanged.
 fn shader_alpha_fixture(
     material: [f32; 4],
     brightness: f32,
@@ -93,6 +94,16 @@ fn shader_alpha_fixture(
             };
             let body = shader.split_once(entry).expect("shader pass").1;
             let body = body.split_once('{').expect("pass body").1;
+            let body = if matches!(path, AlphaFixturePath::Fragment) {
+                let start = body.find("    let base =").expect("fragment opacity sample");
+                assert!(
+                    !body[..start].contains("input.color"),
+                    "fragment setup must not rewrite the sampled color"
+                );
+                &body[start..]
+            } else {
+                body
+            };
             let sampling = body.split_once(end).expect("end of sampling expressions").0;
             let sampling = sampling
                 .replace("textureSample(albedo,albedo_sampler,input.uv)", "texel")
