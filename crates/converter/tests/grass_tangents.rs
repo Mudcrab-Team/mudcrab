@@ -46,9 +46,11 @@ fn converted_tangent_frame_follows_mirrored_uv_axes() {
         let reader = primitive.reader(|_| Some(blob));
         let tangents: Vec<_> = reader.read_tangents().unwrap().collect();
         assert_eq!(tangents.len(), 3);
-        // For the literal asymmetric UV triangle, U follows (2.2,2.1,0).
-        // Half-float UV storage introduces a bounded small angular difference.
-        let expected = Vec3::new(2.2, 2.1, 0.0).normalize();
+        // U follows (2.2,2.1,0) before projection against the retained normal.
+        // Packed UNORM normals encode zero as128, giving N=(1/255,1/255,1).
+        // Its tangent therefore has a small negative Z component. Half-float UV
+        // storage and projection of X/Y introduce only a bounded small difference.
+        let expected = Vec3::new(2.2, 2.1, -4.3 / 255.0).normalize();
         for tangent in tangents {
             assert!(
                 Vec3::from_array([tangent[0], tangent[1], tangent[2]]).distance(expected) < 0.002
