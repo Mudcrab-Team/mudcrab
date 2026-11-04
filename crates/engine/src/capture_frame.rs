@@ -59,6 +59,7 @@ pub(crate) struct CaptureFrame {
     pub grading: Option<CaptureGrade>,
     /// Tuning values sampled in the same extraction as the photographed frame.
     pub grass_tuning: Option<serde_json::Value>,
+    pub grass_snow_gate: bool,
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -347,6 +348,7 @@ fn extract_capture_frames(
             work,
             visual_profile: visual_profile.as_deref().copied(),
             grass_tuning: grass_tuning.as_ref().map(|state| state.receipt()),
+            grass_snow_gate: crate::grass::generation::MAJORITY_GRASS_SUPPORT,
             grading: capture_grade_with_overrides(
                 grade_source.as_deref(),
                 tone_source.as_deref(),

@@ -294,6 +294,7 @@ mod tests {
             terrain_gauges: default(),
             visual_profile: Some(crate::visual_profile::VisualProfile::Mudcrab),
             grass_tuning: None,
+            grass_snow_gate: false,
             grading: Some(CaptureGrade {
                 color_grade: "snapshot-srgb".into(),
                 visual_preset: "cool-gray".into(),

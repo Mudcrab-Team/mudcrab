@@ -8,8 +8,19 @@ fn main() -> color_eyre::Result<()> {
     match EngineConfig::from_env() {
         Ok(ConfigAction::Run(config)) => {
             if config.grass_tuning_info {
-                let state = engine::grass_tuning::GrassTuningState::new(config.grass_tuning);
-                println!("{}", serde_json::to_string(&state.receipt())?);
+                let state =
+                    engine::grass_tuning::GrassTuningState::new(config.grass_tuning.clone());
+                let mut receipt = state.receipt();
+                receipt["grass_snow_gate"] =
+                    serde_json::json!(engine::grass::generation::MAJORITY_GRASS_SUPPORT);
+                receipt["range"] = serde_json::json!({
+                    "stream_radius": config.stream_radius,
+                    "grass_radius": config.effective_grass_radius(),
+                    "fade": config.effective_grass_fade(),
+                    "cache_mib": config.grass_cache_mib,
+                    "uploads_per_frame": config.grass_uploads_per_frame,
+                });
+                println!("{}", serde_json::to_string(&receipt)?);
                 return Ok(());
             }
             engine::run(*config)
