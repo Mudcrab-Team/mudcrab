@@ -347,7 +347,7 @@ terrain shadow filtering and display tone mapping retain the production paths.
 
 | Knob | Default | Accepted range | Effect |
 | --- | --- | --- | --- |
-| brightness | 1 | 0..8 | Final linear HDR RGB multiplier |
+| brightness | 1.15 | 0..8 | Final linear HDR RGB multiplier |
 | ambient_strength | 1.15 | 0..8 | Ambient/sky multiplier (D/E) |
 | sun_strength | .1 | 0..8 | Direct diffuse and specular sun multiplier (D/E) |
 | sun_angle_weight | 0 | 0..1 | Interpolate between sun-facing and wrapped normal response |
@@ -402,7 +402,7 @@ scene differences and local shadows prevent it from proving a Skyrim match.
 ## Default appearance and tuning
 
 Without a file, grass uses flat-b: sun angle weight 0, sun strength 0.1,
-shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.0.
+shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.15.
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most

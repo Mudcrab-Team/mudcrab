@@ -43,7 +43,7 @@ impl Default for GrassTuning {
     fn default() -> Self {
         Self {
             mode: GrassMode::Flat,
-            brightness: 1.0,
+            brightness: 1.15,
             ambient_strength: 1.15,
             sun_strength: 0.1,
             sun_angle_weight: 0.0,
@@ -69,6 +69,7 @@ impl GrassTuning {
             ..Self::default()
         };
         if mode != GrassMode::Flat {
+            values.brightness = 1.0;
             values.ambient_strength = 1.0;
             values.sun_strength = 1.0;
             values.sun_angle_weight = 1.0;
@@ -291,7 +292,7 @@ mod tests {
         assert_eq!(
             d.as_uniforms(),
             [
-                Vec4::new(1., 1.15, 0.1, 0.),
+                Vec4::new(1.15, 1.15, 0.1, 0.),
                 Vec4::new(0., 0.3, 0., 0.),
                 Vec4::new(0.75, 1., 1., 0.),
                 Vec4::new(0., 0.5, 0., 0.)
@@ -406,7 +407,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("later.toml");
         let mut state = GrassTuningState::new(Some(path.clone()));
-        assert_eq!(state.effective.brightness, 1.0);
+        assert_eq!(state.effective.brightness, 1.15);
         std::fs::write(&path, "brightness=0.6").unwrap();
         assert!(!state.poll_at(Duration::from_millis(999)));
         assert!(state.poll_at(Duration::from_secs(1)));

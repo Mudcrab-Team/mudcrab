@@ -1,5 +1,5 @@
 # Production defaults; overrides can be edited while running.
-brightness = 1.0
+brightness = 1.15
 sun_angle_weight = 0.0
 sun_strength = 0.1
 shadow_strength = 0.3
