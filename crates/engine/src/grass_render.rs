@@ -763,6 +763,12 @@ impl SpecializedMeshPipeline for GrassPipeline {
             defs.push("GRASS_SCENE".into());
         }
         defs.push(bevy::shader::ShaderDefVal::UInt(
+            // Bevy's fog entry point shares the PBR library's import graph.
+            // Its unused material bindings are removed when composing apply_fog.
+            "MATERIAL_BIND_GROUP".into(),
+            3,
+        ));
+        defs.push(bevy::shader::ShaderDefVal::UInt(
             "GRASS_GROUP".into(),
             if key.scene.is_some() { 2 } else { 1 },
         ));

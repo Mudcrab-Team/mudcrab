@@ -168,6 +168,7 @@ pub(crate) fn definitions(scene: bool, samples: u32, attributes: u8, tonemap: bo
         ),
         ("MAX_RECT_LIGHTS", bevy::pbr::MAX_RECT_LIGHTS as u32),
         ("AVAILABLE_STORAGE_BUFFER_BINDINGS", 8),
+        ("MATERIAL_BIND_GROUP", 3),
         (
             "TONEMAPPING_LUT_TEXTURE_BINDING_INDEX",
             if scene { 18 } else { 1 },
