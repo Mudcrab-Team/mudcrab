@@ -15,7 +15,7 @@ use gltf::json::mesh::Primitive;
 use gltf::json::scene::UnitQuaternion;
 use gltf::json::texture::Info;
 use gltf::json::validation::{Checked, USize64};
-use gltf::{Semantic, json::*};
+use gltf::{json::*, Semantic};
 use project_wormhole_ba2::dev::ensure_texture_parent;
 use project_wormhole_ba2::dev::normalize_esm_path;
 use project_wormhole_esm::structs::geometry::Quaternion;
@@ -1967,8 +1967,8 @@ fn static_node_from_av(
             .get_string(av.object.name as usize)
             .ok()
             .map(str::to_owned),
-        translation: av.translation.0.0,
-        rotation: av.rotation.0.0,
+        translation: av.translation.0 .0,
+        rotation: av.rotation.0 .0,
         scale: av.scale.0,
         children,
         mesh,
@@ -2720,16 +2720,16 @@ pub fn push_nodes_to_root(root: &mut Root, nif: &NifFileV3) -> Result<(), String
             None
         } else {
             Some([
-                node.av.translation.0.0.x,
-                node.av.translation.0.0.y,
-                node.av.translation.0.0.z,
+                node.av.translation.0 .0.x,
+                node.av.translation.0 .0.y,
+                node.av.translation.0 .0.z,
             ])
         };
 
         let rotation = if node.av.rotation == NifRotation::default() {
             None
         } else {
-            let q = glam::Quat::from_mat3(&node.av.rotation.0.0);
+            let q = glam::Quat::from_mat3(&node.av.rotation.0 .0);
 
             Some(UnitQuaternion([q.x, q.y, q.z, q.w]))
 
@@ -2997,11 +2997,9 @@ mod smooth_normal_tests {
         assert_close(normals[0], -Vec3::Z);
         // A vertex no triangle uses still gets a valid unit normal.
         assert_close(normals[3], Vec3::Z);
-        assert!(
-            normals
-                .iter()
-                .all(|normal| (normal.length() - 1.0).abs() < 1e-5)
-        );
+        assert!(normals
+            .iter()
+            .all(|normal| (normal.length() - 1.0).abs() < 1e-5));
     }
 
     #[test]
