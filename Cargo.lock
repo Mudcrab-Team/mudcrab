@@ -4205,6 +4205,7 @@ dependencies = [
  "crossbeam-channel",
  "mo2",
  "rusqlite",
+ "serde",
  "serde_json",
  "shared",
  "tempfile",
