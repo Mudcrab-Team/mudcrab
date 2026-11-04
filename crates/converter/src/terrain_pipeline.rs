@@ -1327,6 +1327,18 @@ mod tests {
             fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap(),
             first
         );
+        let changed = dummy_content::dds::generate(
+            &dummy_content::dds::Spec::new(dummy_content::dds::Format::Bc1Unorm, 16, 16),
+            &mut dummy_content::rng::Rng::new(91),
+        )
+        .unwrap();
+        fs::write(staging.join("vfs/textures/custom.dds"), changed).unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_ne!(
+            fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap(),
+            first,
+            "unchanged settings must not reuse stale default pixels"
+        );
         config.terrain_default_texture = TerrainDefaultTexture::White;
         super::publish_default_land(staging, &config, &mut report).unwrap();
         assert_eq!(read(), (None, None, None));
