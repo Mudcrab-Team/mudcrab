@@ -872,6 +872,12 @@ fn grass_tuning_specular_strength_and_f_bypass() {
 /// frame; unlike a flat normal this distinguishes swapped tangent axes/signs.
 #[test]
 fn directional_normal_fixture_uses_authored_axes_and_handedness() {
+    let assert_normal = |actual: Vec<f32>, expected: [f32; 3]| {
+        assert_eq!(actual.len(), 3);
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.000002);
+        }
+    };
     let shader = include_str!("shaders/grass.wgsl");
     let source = lighting_fixture_function(shader, "tangent_normal")
         .unwrap()
@@ -884,11 +890,11 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     ];
     let actual = lighting_fixture_run(&source, &args);
     let length = 1.16_f32.sqrt();
-    assert_lighting_rgb(&actual, [-0.4 / length, 0.8 / length, -0.6 / length]);
+    assert_normal(actual, [-0.4 / length, 0.8 / length, -0.6 / length]);
     let mut mirrored = args.clone();
     mirrored[3][0] = -1.0;
     let actual = lighting_fixture_run(&source, &mirrored);
-    assert_lighting_rgb(&actual, [0.4 / length, 0.8 / length, -0.6 / length]);
+    assert_normal(actual, [0.4 / length, 0.8 / length, -0.6 / length]);
 }
 
 #[test]
