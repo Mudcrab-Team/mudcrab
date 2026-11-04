@@ -10695,3 +10695,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod collision_placement_probe;
