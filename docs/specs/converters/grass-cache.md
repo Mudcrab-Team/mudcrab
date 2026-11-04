@@ -204,3 +204,13 @@ in the same transaction as the repaired assets and database.
 If `cell_cache_preserved.rkyv` is absent, normal conversion regenerates the full
 terrain projection. Metadata rebuild is another route when a complete verified
 asset pack is available; repair never substitutes the capped runtime terrain cache.
+
+## Optional ground-contact policy
+
+The native 128-unit band keeps intersections from terrain minus 8 through terrain
+plus 128, including ties. It derives from the measured terrestrial grass envelope
+(94.49 units), rounded to the 32-unit mask grid plus one interval of margin.
+Elevated surfaces above that band release their mask samples; grounded parts of
+the same model still block. Tall aquatic grass is outside that measured envelope.
+The dependency discriminator invalidates warm masks. This policy is prepared
+separately pending visual acceptance; it is not a category/model denylist.
