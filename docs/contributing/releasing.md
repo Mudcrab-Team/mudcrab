@@ -25,11 +25,15 @@ All crates inherit one version from `[workspace.package]` in the root `Cargo.tom
    git push origin vX.Y.Z
    ```
 
-3. The tag push publishes the release.
+3. The tag push builds the release and creates it as a **draft**. Check the notes and binaries, then publish it from the Releases page.
+
+The workflow refuses a tag whose commit has no successful `tests_pass` run, so wait for CI on the merge commit before tagging.
 
 > **Note on macOS builds**: macOS binaries are currently distributed unsigned and unnotarized until Apple Developer code-signing certificates are provisioned. macOS users may need to clear the quarantine flag (`xattr -d com.apple.quarantine <binary>`) or allow the application in System Settings > Privacy & Security.
 
-To inspect it before it goes public, run the `release` workflow by hand (**Actions → release → Run workflow**) with the tag. It defaults to a **draft**; publish it from the Releases page when the notes and binaries look right. The tag must already exist, because the workflow builds that tag's commit, not the branch you run it from.
+> **Note on Windows builds**: the Windows setup wizard and binaries are unsigned, so SmartScreen may warn on first run ("More info" > "Run anyway").
+
+To inspect it before it goes public, run the `release` workflow by hand (**Actions → release → Run workflow**) with the tag. The `skip_ci_gate` option bypasses the `tests_pass` check; use it only in a fork or for a dry run. It defaults to a **draft**; publish it from the Releases page when the notes and binaries look right. The tag must already exist, because the workflow builds that tag's commit, not the branch you run it from.
 
 A tag with a suffix, such as `v0.2.0-rc.1`, needs `0.2.0-rc.1` as the Cargo version. It is published as a prerelease, so the installers don't pick it up as the latest release.
 

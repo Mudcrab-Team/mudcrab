@@ -3,6 +3,9 @@ name: pr_title
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # Lets this job be a required check in the merge queue. The title was already
+  # validated on the PR, so the queue run has nothing left to check.
+  merge_group:
 
 permissions:
   pull-requests: read
@@ -12,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate Conventional Commit PR title
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |

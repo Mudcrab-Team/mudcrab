@@ -14,6 +14,10 @@ on:
         description: 'Publish as Draft release'
         type: boolean
         default: true
+      skip_ci_gate:
+        description: 'Skip the "tests_pass succeeded on this commit" check (forks and dry runs only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +31,9 @@ jobs:
   preflight:
     name: Preflight & Metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
     outputs:
       tag: ${{ steps.resolve_tag.outputs.tag }}
       is_draft: ${{ steps.resolve_tag.outputs.is_draft }}
@@ -34,7 +41,7 @@ jobs:
       commit: ${{ steps.resolve_tag.outputs.commit }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -49,34 +56,38 @@ jobs:
         env:
           INPUT_TAG: ${{ github.event.inputs.tag }}
           INPUT_DRAFT: ${{ github.event.inputs.draft }}
+          INPUT_SKIP_CI_GATE: ${{ github.event.inputs.skip_ci_gate }}
           REF_NAME: ${{ github.ref_name }}
           EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG:-$REF_NAME}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "is_draft=${INPUT_DRAFT}" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_draft=false" >> "$GITHUB_OUTPUT"
-          fi
-
+          # Validate before anything is written to $GITHUB_OUTPUT: a multi-line
+          # dispatch input must not be able to inject extra outputs.
           SEMVER_REGEX='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z.-]+))?(\+([0-9A-Za-z.-]+))?$'
           if [[ ! "$TAG" =~ $SEMVER_REGEX ]]; then
-            echo "::error::Release tag '$TAG' does not follow SemVer 2.0 (e.g. v0.1.0)!"
+            echo "::error::Release tag is not SemVer 2.0 (e.g. v0.1.0)!"
             exit 1
           fi
 
-          if [[ "${TAG%%+*}" == *-* ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          # Tag pushes always create a draft; promote it from the Releases page.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_DRAFT" = "false" ]; then
+            IS_DRAFT=false
           else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            IS_DRAFT=true
+          fi
+
+          if [[ "${TAG%%+*}" == *-* ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
           fi
 
           # The tag must exist; every job builds this exact commit.
           COMMIT="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
-          echo "commit=${COMMIT}" >> "$GITHUB_OUTPUT"
 
           # Verify tag commit is reachable from origin/main or origin/release/*
           git fetch origin main 'release/*:refs/remotes/origin/release/*'
@@ -87,9 +98,21 @@ jobs:
             fi
           fi
 
+          # The commit must have passed the full test pipeline (latest tests_pass run wins).
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_SKIP_CI_GATE" = "true" ]; then
+            echo "::warning::Skipping the tests_pass gate for $COMMIT (skip_ci_gate=true)."
+          else
+            CI_RESULT="$(gh api "repos/${REPO}/commits/${COMMIT}/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name == "tests_pass")] | sort_by(.started_at) | last | .conclusion // "missing"')"
+            if [ "$CI_RESULT" != "success" ]; then
+              echo "::error::tests_pass is '${CI_RESULT}' for $COMMIT; refusing to release a commit that did not pass CI."
+              exit 1
+            fi
+          fi
+
           git checkout --detach "$COMMIT"
 
-          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "shared").version')"
+          CARGO_VERSION="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "shared").version')"
           TAG_VERSION="${TAG#v}"
           if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
             echo "::error::Tag '$TAG' does not match Cargo.toml workspace version '$CARGO_VERSION'!"
@@ -97,8 +120,17 @@ jobs:
           fi
           echo "Tag $TAG matches workspace version $CARGO_VERSION at $COMMIT."
 
+          {
+            echo "tag=${TAG}"
+            echo "is_draft=${IS_DRAFT}"
+            echo "is_prerelease=${IS_PRERELEASE}"
+            echo "commit=${COMMIT}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install git-cliff
-        uses: taiki-e/install-action@2c5a065444fe3f40756405ba5abfcf6a873b33ab # git-cliff
+        uses: taiki-e/install-action@2c5a065444fe3f40756405ba5abfcf6a873b33ab
+        with:
+          tool: git-cliff
 
       - name: Generate Changelog with git-cliff
         env:
@@ -113,10 +145,10 @@ jobs:
           RELEASE_TAG: ${{ steps.resolve_tag.outputs.tag }}
           RELEASE_COMMIT: ${{ steps.resolve_tag.outputs.commit }}
         run: |
-          cargo run -p shared --bin release_metadata > release-metadata.json
+          cargo run --locked -p shared --bin release_metadata > release-metadata.json
 
       - name: Upload preflight artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: preflight-metadata
           path: |
@@ -147,7 +179,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.preflight.outputs.commit }}
           persist-credentials: false
@@ -176,7 +208,7 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: |
-          cargo build --release --target ${{ matrix.target }} \
+          cargo build --locked --release --target ${{ matrix.target }} \
             -p launcher -p engine -p converter \
             --bin launcher --bin engine --bin converter --bin world-inspect
 
@@ -229,6 +261,9 @@ jobs:
         run: |
           CLEAN_VERSION="${TAG#v}"
           ISCC_PATH="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if [ ! -x "$ISCC_PATH" ]; then
+            choco install innosetup --no-progress -y
+          fi
           "$ISCC_PATH" \
             "/DAppVersion=${CLEAN_VERSION}" \
             "/DStagingDir=$(cygpath -w "$(pwd)/target/${TARGET}/staging")" \
@@ -238,7 +273,7 @@ jobs:
           sha256sum "${SETUP_EXE}" > "${SETUP_EXE}.sha256"
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bundle-${{ matrix.target }}
           path: |
@@ -253,20 +288,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.preflight.outputs.commit }}
-          persist-credentials: false
-
       - name: Download preflight artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: preflight-metadata
           path: ./dist
 
       - name: Download all bundle artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: ./artifacts
 
