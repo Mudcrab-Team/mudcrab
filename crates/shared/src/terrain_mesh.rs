@@ -891,6 +891,7 @@ mod tests {
         assert!(serde_json::from_str::<LandTextureTable>(&typo).is_err());
     }
 
+    /// Absolute, drive, UNC, parent and encoded paths are refused before any reader opens them.
     #[test]
     fn validate_refuses_array_paths_that_leave_the_pack() {
         table(3).validate().unwrap();
@@ -942,6 +943,7 @@ mod tests {
         }
     }
 
+    /// A path that only matches after normalising is refused as written, unused arrays included.
     #[test]
     fn validate_refuses_normalized_array_paths_before_readers_use_the_original() {
         for path in [
@@ -972,6 +974,7 @@ mod tests {
         }
     }
 
+    /// An array path names exactly one nonempty file directly under `terrain/`.
     #[test]
     fn validate_requires_one_array_filename_under_terrain() {
         for path in [
