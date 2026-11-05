@@ -37,6 +37,8 @@ Each release carries archives per target, a Windows setup wizard (`mudcrab-vX.Y.
 - **Windows, scripted**: `scripts/install.ps1` unpacks the zip into `%LOCALAPPDATA%\Mudcrab\bin` and creates shortcuts. It does not touch `PATH`, because the binaries have generic names (`engine.exe`, `converter.exe`), and it has no uninstaller.
 - **Linux and macOS**: `scripts/install.sh` installs into `~/.local/share/mudcrab` and links the binaries into `~/.local/bin` as `mudcrab-launcher`, `mudcrab-engine`, `mudcrab-converter` and `mudcrab-world-inspect`. The real files keep their plain names because the launcher looks for `engine` next to itself.
 
+The launcher writes its converted output to `modern_assets` in its working directory, so the shortcuts set one: the install folder (`~/.local/share/mudcrab`) for the Linux menu entry, `%LOCALAPPDATA%\\Mudcrab` for the Windows wizard and script. Started from a terminal, it uses whatever folder you are in.
+
 Both installer scripts verify the archive against `SHA256SUMS.txt` and stop if it cannot be fetched or does not match. `latest` resolves to the newest non-prerelease release; set `MUDCRAB_VERSION` to pick another tag.
 
 > **Note on macOS builds**: macOS binaries are currently distributed unsigned and unnotarized until Apple Developer code-signing certificates are provisioned. macOS users may need to clear the quarantine flag (`xattr -d com.apple.quarantine <binary>`) or allow the application in System Settings > Privacy & Security.

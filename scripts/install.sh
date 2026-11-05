@@ -184,11 +184,15 @@ Got:      ${ACTUAL_HASH}"
         mkdir -p "$APPS_DIR"
         # Desktop Entry Exec: quote the path and escape \ " ` $ inside the quotes.
         DESKTOP_EXEC="$(printf '%s' "${BIN_DIR}/mudcrab-launcher" | sed -e 's/[\\"`$]/\\&/g')"
+        # Start in the install dir: the launcher writes its converted output to
+        # ./modern_assets, and a menu launch would otherwise use the home directory.
+        DESKTOP_PATH="$(printf '%s' "${INSTALL_DIR}" | sed -e 's/\\/&&/g')"
         cat <<EOF > "${APPS_DIR}/mudcrab.desktop"
 [Desktop Entry]
 Name=Mudcrab
 Comment=Modern Skyrim Engine and Converter
 Exec="${DESKTOP_EXEC}"
+Path=${DESKTOP_PATH}
 Terminal=false
 Type=Application
 Categories=Game;

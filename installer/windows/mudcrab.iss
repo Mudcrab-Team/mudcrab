@@ -59,12 +59,17 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Ingest all staged binaries and assets from the unified staging seam
 Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Dirs]
+; The launcher writes its converted output to ./modern_assets, so the shortcuts start
+; in a folder the user can always write to ({app} may be under Program Files).
+Name: "{localappdata}\Mudcrab"
+
 [Icons]
-Name: "{group}\Mudcrab Launcher"; Filename: "{app}\launcher.exe"; WorkingDir: "{app}"
-Name: "{group}\Mudcrab Engine"; Filename: "{app}\engine.exe"; WorkingDir: "{app}"
-Name: "{group}\Mudcrab Converter"; Filename: "{app}\converter.exe"; WorkingDir: "{app}"
+Name: "{group}\Mudcrab Launcher"; Filename: "{app}\launcher.exe"; WorkingDir: "{localappdata}\Mudcrab"
+Name: "{group}\Mudcrab Engine"; Filename: "{app}\engine.exe"; WorkingDir: "{localappdata}\Mudcrab"
+Name: "{group}\Mudcrab Converter"; Filename: "{app}\converter.exe"; WorkingDir: "{localappdata}\Mudcrab"
 Name: "{group}\{cm:UninstallProgram,Mudcrab}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Mudcrab"; Filename: "{app}\launcher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\Mudcrab"; Filename: "{app}\launcher.exe"; WorkingDir: "{localappdata}\Mudcrab"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\launcher.exe"; Description: "{cm:LaunchProgram,Mudcrab}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\launcher.exe"; WorkingDir: "{localappdata}\Mudcrab"; Description: "{cm:LaunchProgram,Mudcrab}"; Flags: nowait postinstall skipifsilent
