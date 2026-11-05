@@ -228,8 +228,8 @@ pub enum LandTextureFormat {
 #[derive(Debug, Clone, PartialEq, SerdeSerialize, SerdeDeserialize)]
 pub struct LandTextureArray {
     /// Path relative to the converted output root, e.g. `terrain/land-diffuse-bc1-1024.ktx2`.
-    /// [`LandTextureTable::validate`] refuses any other shape, so a reader may open it under
-    /// the pack root without checking it again.
+    /// [`LandTextureTable::validate`] refuses any other shape. The check reads the path string
+    /// only: a symlink at this path inside the pack can still resolve outside the pack root.
     pub path: String,
     pub usage: LandTextureUsage,
     pub format: LandTextureFormat,
@@ -507,8 +507,8 @@ fn validate_array_path(array: usize, path: &str) -> Result<(), TerrainMeshError>
 }
 
 impl LandTextureTable {
-    /// Checks the version, the array shapes, that every array path stays inside the pack (see
-    /// [`LandTextureArray::path`]), that entries are dense by id with no repeated LTEX, and that
+    /// Checks the version, the array shapes, that every array path has the one shape the
+    /// converter writes (a lexical check, see [`LandTextureArray::path`]), that entries are dense by id with no repeated LTEX, and that
     /// every entry names an existing array layer.
     pub fn validate(&self) -> Result<(), TerrainMeshError> {
         if self.format_version != TERRAIN_MESH_FORMAT_VERSION {
