@@ -321,6 +321,7 @@ pub(crate) fn default_land_sources(config: &PipelineConfig) -> Result<Vec<PathBu
 
 /// The built-in `[Landscape]` default diffuse of Skyrim: what a `skyrim-ini` conversion names when
 /// it has no Skyrim.ini, or the ini names no diffuse.
+#[cfg(test)]
 pub(crate) fn builtin_default_diffuse() -> Result<String> {
     canonical_asset_path(DIRT02_DIFFUSE, AssetKind::Texture, "dds")
 }
