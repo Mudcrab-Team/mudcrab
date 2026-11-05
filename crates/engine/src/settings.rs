@@ -1119,6 +1119,7 @@ pub(crate) fn apply_render_settings(
         }
         if previous.as_ref().is_none_or(|previous| {
             previous.window_size != settings.window_size
+                || previous.window_mode != settings.window_mode
                 || previous.window_size_override != settings.window_size_override
         }) {
             let (width, height, scale_override) = match settings.window_size_override {
@@ -1356,6 +1357,44 @@ mod tests {
                 window.resolution.physical_height()
             ),
             (width * 3, height * 3)
+        );
+    }
+
+    #[test]
+    fn window_mode_change_does_not_lose_pending_preference_size() {
+        let mut app = App::new();
+        let settings = RenderingSettings {
+            window_size_override: Some((1920, 1080)),
+            ..default()
+        };
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(settings)
+            .add_systems(Update, apply_render_settings);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_scale_factor(2.0);
+        app.update();
+        app.update();
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .window_size = 0;
+        app.update();
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .window_mode = 1;
+        app.update();
+        let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        let (width, height) = WINDOW_SIZES[0];
+        assert_eq!(
+            (resolution.physical_width(), resolution.physical_height()),
+            (width * 2, height * 2)
         );
     }
 
