@@ -1649,6 +1649,8 @@ mod tests {
         assert!(!door_view_blocked(None, 100.0));
     }
 
+    /// A ray hits a rotated door's bounds only toward the door and within reach, and never
+    /// hits a door whose scale is zero, flat or not finite.
     #[test]
     fn a_ray_tests_the_oriented_bounds() {
         let bounds =
