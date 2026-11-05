@@ -1296,6 +1296,7 @@ mod tests {
         grade_mode_changed: bool,
     }
 
+    /// Records, after the apply, whether the settings and the scene grade mode changed.
     fn probe_settings_apply(
         settings: Res<RenderingSettings>,
         mode: Option<Res<crate::color_pipeline::SceneGradeMode>>,
@@ -1305,6 +1306,7 @@ mod tests {
         probe.grade_mode_changed = mode.is_some_and(|mode| mode.is_changed());
     }
 
+    /// With nothing changed, the apply leaves the settings and the scene grade untouched.
     #[test]
     fn settled_render_settings_are_not_reapplied_every_frame() {
         let mut app = App::new();

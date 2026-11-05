@@ -661,10 +661,12 @@ mod tests {
     #[derive(Resource, Default)]
     struct ConsoleStateProbe(Option<bool>);
 
+    /// Records, at the end of the frame, whether `ConsoleState` was marked changed.
     fn probe_console_state(state: Res<ConsoleState>, mut probe: ResMut<ConsoleStateProbe>) {
         probe.0 = Some(state.is_changed());
     }
 
+    /// A closed console with no input leaves `ConsoleState` untouched frame after frame.
     #[test]
     fn settled_closed_console_does_not_dirty_its_state() {
         let mut app = console_app();
