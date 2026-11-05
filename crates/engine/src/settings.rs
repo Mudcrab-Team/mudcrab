@@ -713,6 +713,8 @@ pub struct SettingsFile {
     stored: RenderingSettings,
     /// The explicit launch options from the run that loaded `stored`.
     launch_overrides: Vec<String>,
+    /// Resolved launch radii under grass coverage, restored independently unless edited.
+    grass_coverage: Option<(i32, i32)>,
     preserve_unavailable_record_mode: bool,
     unavailable_record_mode_replaced: bool,
 }
@@ -724,6 +726,7 @@ impl SettingsFile {
             status: "Changes apply now. This preview does not save preferences.".into(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
+            grass_coverage: None,
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
         }
@@ -758,6 +761,15 @@ impl SettingsFile {
     fn persisted(&self, settings: &RenderingSettings) -> RenderingSettings {
         let mut persisted = settings.clone();
         persisted.take_launch_owned_values(&self.stored, &self.launch_overrides);
+        if let Some((stream_radius, unload_radius)) = self.grass_coverage {
+            if persisted.stream_radius == stream_radius {
+                persisted.stream_radius = self.stored.stream_radius;
+            }
+            if persisted.unload_radius == unload_radius {
+                // A menu edit to the stream ring still needs a covering unload ring.
+                persisted.unload_radius = self.stored.unload_radius.max(persisted.stream_radius);
+            }
+        }
         if self.preserve_unavailable_record_mode && !self.unavailable_record_mode_replaced {
             persisted.color_grade = self.stored.color_grade;
         }
@@ -795,6 +807,7 @@ fn prepare_settings_at(
         status: "Changes apply now. Choose Save to keep them across runs.".into(),
         stored: RenderingSettings::default(),
         launch_overrides: config.settings_overrides.clone(),
+        grass_coverage: None,
         preserve_unavailable_record_mode: false,
         unavailable_record_mode_replaced: false,
     };
@@ -832,7 +845,18 @@ fn prepare_settings_at(
             Err(error) => file.status = format!("Could not read settings: {error}"),
         }
     }
+    let before_coverage = (settings.stream_radius, settings.unload_radius);
     settings.retain_grass_coverage(config);
+    let after_coverage = (settings.stream_radius, settings.unload_radius);
+    // Launch parsing already widens the radii when no preference file is present.
+    let automatic_grass = config.grass
+        && config.loads_world()
+        && config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "grass:stream-radius");
+    file.grass_coverage =
+        (before_coverage != after_coverage || automatic_grass).then_some(after_coverage);
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
     if let Some(profile) = crate::visual_profile::VisualProfile::from_index(settings.visual_profile)
@@ -1280,6 +1304,90 @@ mod tests {
         assert_eq!(config.effective_grass_radius(), 7);
     }
 
+    /// Saving unrelated preferences never turns automatic grass coverage into terrain preferences.
+    #[test]
+    fn g3_grass_automatic_radii_do_not_persist() {
+        for saved in [None, Some((4, 6))] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            if let Some((stream_radius, unload_radius)) = saved {
+                save_settings(
+                    &path,
+                    &RenderingSettings {
+                        stream_radius,
+                        unload_radius,
+                        ..default()
+                    },
+                )
+                .unwrap();
+            }
+            let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            assert_eq!((settings.stream_radius, settings.unload_radius), (8, 9));
+            settings.exposure_ev100 = 8.5;
+            file.save(&settings);
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
+            assert_eq!(
+                (reloaded.stream_radius, reloaded.unload_radius),
+                saved.unwrap_or((2, 3))
+            );
+            assert_eq!(reloaded.exposure_ev100, 8.5);
+            assert_eq!((settings.stream_radius, settings.unload_radius), (8, 9));
+        }
+    }
+
+    /// Menu radius edits persist independently while the unload ring keeps covering terrain.
+    #[test]
+    fn g3_grass_menu_radius_edits_persist() {
+        for (label, direction, expected) in [
+            ("Full-detail radius (cells)", 1, (9, 10)),
+            ("Unload radius (cells)", 1, (2, 10)),
+            ("Unload radius (cells)", -1, (2, 8)),
+            ("Full-detail radius (cells)", -1, (7, 7)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut config = launch(&["--grass", "--grass-radius", "7"].map(String::from));
+            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let radius = SETTING_SPECS
+                .iter()
+                .find(|setting| setting.label == label)
+                .unwrap();
+            radius.adjust(&mut settings, direction);
+            file.save(&settings);
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
+            assert_eq!(
+                (reloaded.stream_radius, reloaded.unload_radius),
+                expected,
+                "{label} {direction}"
+            );
+        }
+    }
+
+    /// Grass launch radii beyond the menu limit must not prevent saving other settings.
+    #[test]
+    fn g3_grass_large_launch_radii_allow_saving_preferences() {
+        for radius in [16, 24, 32] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut config = launch(&[
+                "--grass".into(),
+                "--grass-radius".into(),
+                radius.to_string(),
+            ]);
+            let (mut settings, mut file) = prepare_settings_at(&mut config, Some(path.clone()));
+            assert_eq!(settings.stream_radius, radius + 1);
+            settings.exposure_ev100 = 8.5;
+            file.save(&settings);
+            assert!(file.status.starts_with("Settings saved"), "{}", file.status);
+            let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
+            assert_eq!((reloaded.stream_radius, reloaded.unload_radius), (2, 3));
+            assert_eq!(reloaded.exposure_ev100, 8.5);
+        }
+    }
+
     /// Grass imported through the shared INI reader requires the same terrain coverage as CLI grass.
     #[test]
     fn g3_ini_grass_radius_survives_saved_preference_loading() {
@@ -1399,6 +1507,7 @@ mod tests {
             let persisted =
                 serde_json::from_slice::<RenderingSettings>(&std::fs::read(&path).unwrap())
                     .unwrap();
+            assert_eq!(persisted.stream_radius, 2);
             assert_eq!(persisted.msaa, index);
             assert_eq!(persisted.exposure_ev100, 8.5);
         }
@@ -2089,6 +2198,7 @@ mod tests {
                 status: String::new(),
                 stored: RenderingSettings::default(),
                 launch_overrides: Vec::new(),
+                grass_coverage: None,
                 preserve_unavailable_record_mode: false,
                 unavailable_record_mode_replaced: false,
             };
@@ -2271,6 +2381,7 @@ mod tests {
             status: String::new(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
+            grass_coverage: None,
             preserve_unavailable_record_mode: false,
             unavailable_record_mode_replaced: false,
         };

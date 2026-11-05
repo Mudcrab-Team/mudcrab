@@ -36,8 +36,6 @@ species cannot steal its roots. This is MudCrab's native placement design.
 An admitted rule without a usable model still consumes its prefix place; the cap
 does not backfill from later GNAM entries. Output batches use FormID order.
 
-and weighted competition rule are MudCrab policy.
-
 Position range supplies deterministic XY jitter over the total span
 `-range/2..range/2`, matching the earlier precached implementation. Jitter that
 leaves the cell is rejected instead of being clamped into an artificial edge row.
@@ -82,11 +80,12 @@ Slope is evaluated
 in degrees from the rendered terrain triangle's geometric normal. Height uses
 the terrain mesh's anti-diagonal triangles, including after position jitter;
 bilinear height interpolation can bury grass on a nonplanar quad. The spacing option controls the
-candidate count `ceil((4096 / spacing)^2)`. It does not impose another minimum
-distance between accepted clumps: that extra rejection thinned coverage compared
-with the precached reference, which permits neighboring clumps to overlap. R2
-candidates and weighted species competition remain deterministic; individual
-placements are not identical to the old world-aligned lattice.
+candidate count `ceil((4096 / spacing)^2)` per species per cell. It does not impose
+another minimum distance between accepted clumps: that extra rejection thinned
+coverage compared with the precached reference, which permits neighboring clumps
+to overlap. R2 candidates and independent per-species acceptance remain
+deterministic; individual placements are not identical to the old world-aligned
+lattice.
 
 Water comparison mode names come from [xEdit's GRAS definition](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas).
 With signed distance `d = terrain_height - water_height` and record distance
@@ -301,7 +300,7 @@ diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
 
 `iMinGrassSize` controls density, not mesh height: spacing 20 provides 41,944
-candidate slots per cell versus 4,096 at 64. Authored mesh/node dimensions are
+candidate slots per species per cell versus 4,096 at 64. Authored mesh/node dimensions are
 preserved. Matching default inputs and terrain grounding does not establish
 exact Skyrim placement, variation, animation or visual parity.
 
