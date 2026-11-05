@@ -937,9 +937,23 @@ pub(crate) fn apply_render_settings(
     mut sky_palette: Option<ResMut<crate::sky::SkyPalette>>,
     mut targets: RenderSettingsTargets,
     mut previous: Local<Option<RenderingSettings>>,
+    mut pending_window_size: Local<Option<(u32, u32)>>,
     adapter: Option<Res<RenderAdapter>>,
     mut file: Option<ResMut<SettingsFile>>,
 ) {
+    if let Some((width, height)) = pending_window_size.take() {
+        let window_setting_changed = settings.is_changed()
+            && previous.as_ref().is_some_and(|old| {
+                old.window_size != settings.window_size
+                    || old.window_mode != settings.window_mode
+                    || old.window_size_override != settings.window_size_override
+            });
+        if !window_setting_changed {
+            for mut window in &mut targets.windows {
+                window.resolution.set(width as f32, height as f32);
+            }
+        }
+    }
     if !settings.is_changed() {
         return;
     }
@@ -1107,12 +1121,19 @@ pub(crate) fn apply_render_settings(
             previous.window_size != settings.window_size
                 || previous.window_size_override != settings.window_size_override
         }) {
-            if let Some((width, height)) = settings.window_size_override {
-                window.resolution.set_scale_factor_override(Some(1.0));
-                window.resolution.set(width as f32, height as f32);
+            let (width, height, scale_override) = match settings.window_size_override {
+                Some((width, height)) => (width, height, Some(1.0)),
+                None => {
+                    let (width, height) = WINDOW_SIZES[settings.window_size];
+                    (width, height, None)
+                }
+            };
+            let old_scale = window.resolution.scale_factor();
+            window.resolution.set_scale_factor_override(scale_override);
+            if old_scale != window.resolution.scale_factor() {
+                // Let bevy_winit reconcile the scale before requesting the final size.
+                *pending_window_size = Some((width, height));
             } else {
-                let (width, height) = WINDOW_SIZES[settings.window_size];
-                window.resolution.set_scale_factor_override(None);
                 window.resolution.set(width as f32, height as f32);
             }
         }
@@ -1283,18 +1304,57 @@ mod tests {
             let window = app.world().get::<Window>(window).unwrap();
             assert_eq!(window.resolution.scale_factor_override(), Some(1.0));
             assert_eq!(window.resolution.base_scale_factor(), 2.0);
-            assert_eq!(window.resolution.physical_width(), 1920);
-            assert_eq!(window.resolution.physical_height(), 1080);
+            assert_ne!(
+                (
+                    window.resolution.physical_width(),
+                    window.resolution.physical_height()
+                ),
+                (1920, 1080)
+            );
         }
+        // Simulate the backend's scale reconciliation before the next Update.
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(640, 360);
+        app.update();
+        let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        assert_eq!(
+            (resolution.physical_width(), resolution.physical_height()),
+            (1920, 1080)
+        );
+        // Simulate a display-scale change while the shot override is active.
+        let mut native_window = app.world_mut().get_mut::<Window>(window).unwrap();
+        native_window.resolution.set_scale_factor(3.0);
+        drop(native_window);
         app.world_mut()
             .resource_mut::<RenderingSettings>()
             .window_size = 0;
         app.update();
+        assert_eq!(
+            app.world()
+                .get::<Window>(window)
+                .unwrap()
+                .resolution
+                .scale_factor_override(),
+            None
+        );
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(5760, 3240);
+        app.update();
         let window = app.world().get::<Window>(window).unwrap();
         let (width, height) = WINDOW_SIZES[0];
-        assert_eq!(window.resolution.scale_factor_override(), None);
-        assert_eq!(window.resolution.physical_width(), width * 2);
-        assert_eq!(window.resolution.physical_height(), height * 2);
+        assert_eq!(
+            (
+                window.resolution.physical_width(),
+                window.resolution.physical_height()
+            ),
+            (width * 3, height * 3)
+        );
     }
 
     #[test]
