@@ -25,12 +25,12 @@ AppPublisherURL=https://mudcrab.dev
 AppSupportURL=https://github.com/Mudcrab-Team/mudcrab/issues
 AppUpdatesURL=https://mudcrab.dev
 
-; Dual-mode: per-user install by default (no UAC elevation prompt needed),
-; or administrative all-users install if run as admin or selected in dialog.
+; Per-user install only: no UAC prompt, and {autopf} resolves to
+; %LOCALAPPDATA%\Programs. The launcher writes its converted output next to its
+; working directory, so everything it touches must belong to the running user.
 DefaultDirName={autopf}\Mudcrab
 DefaultGroupName=Mudcrab
 AllowNoIcons=yes
-PrivilegesRequiredOverridesAllowed=dialog
 PrivilegesRequired=lowest
 
 ; License agreement step
