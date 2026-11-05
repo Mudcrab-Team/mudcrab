@@ -757,6 +757,8 @@ impl SettingsFile {
     pub fn save(&mut self, settings: &RenderingSettings) {
         self.status = match self.path.as_ref() {
             Some(path) => match save_settings(path, &self.persisted(settings)) {
+                Ok(()) if self.launch_overrides.iter().any(|flag| flag == "--start-shot") =>
+                    "Settings saved. IO-thread changes apply after restart. Save preserves the pre-launch FOV, window mode, and window size.".into(),
                 Ok(()) => "Settings saved. IO-thread changes apply after restart.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
@@ -1106,8 +1108,8 @@ pub(crate) fn apply_render_settings(
                 || previous.window_size_override != settings.window_size_override
         }) {
             if let Some((width, height)) = settings.window_size_override {
-                window.resolution = bevy::window::WindowResolution::new(width, height)
-                    .with_scale_factor_override(1.0);
+                window.resolution.set_scale_factor_override(Some(1.0));
+                window.resolution.set(width as f32, height as f32);
             } else {
                 let (width, height) = WINDOW_SIZES[settings.window_size];
                 window.resolution.set_scale_factor_override(None);
@@ -1238,6 +1240,25 @@ mod tests {
     }
 
     #[test]
+    fn start_shot_save_reports_preserved_framing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut file = SettingsFile::session_only();
+        file.path = Some(directory.path().join("settings.json"));
+        let mut settings = RenderingSettings::default();
+        file.save(&settings);
+        assert_eq!(
+            file.status,
+            "Settings saved. IO-thread changes apply after restart."
+        );
+        file.apply_start_shot(&mut settings, 60.0, (1920, 1080));
+        file.save(&settings);
+        assert!(
+            file.status
+                .contains("Save preserves the pre-launch FOV, window mode, and window size")
+        );
+    }
+
+    #[test]
     fn preference_size_uses_display_scale_after_start_shot() {
         let mut app = App::new();
         let settings = RenderingSettings {
@@ -1252,11 +1273,18 @@ mod tests {
             .world_mut()
             .spawn((Window::default(), PrimaryWindow))
             .id();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_scale_factor(2.0);
         app.update();
         {
-            let mut window = app.world_mut().get_mut::<Window>(window).unwrap();
+            let window = app.world().get::<Window>(window).unwrap();
             assert_eq!(window.resolution.scale_factor_override(), Some(1.0));
-            window.resolution.set_scale_factor(2.0);
+            assert_eq!(window.resolution.base_scale_factor(), 2.0);
+            assert_eq!(window.resolution.physical_width(), 1920);
+            assert_eq!(window.resolution.physical_height(), 1080);
         }
         app.world_mut()
             .resource_mut::<RenderingSettings>()
