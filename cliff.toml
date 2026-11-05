@@ -72,6 +72,13 @@ footer = """
 # Remove leading and trailing whitespaces from the changelog's body.
 trim = true
 
+[bump]
+# Below 1.0.0 a breaking change (`!` title) bumps the minor, never to 1.0.0.
+# 1.0.0 is a deliberate decision, not something a commit can trigger.
+breaking_always_bump_major = false
+features_always_bump_minor = true
+initial_tag = "v0.1.0"
+
 [git]
 tag_pattern = "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-([0-9A-Za-z.-]+))?(\\+([0-9A-Za-z.-]+))?$"
 conventional_commits = true

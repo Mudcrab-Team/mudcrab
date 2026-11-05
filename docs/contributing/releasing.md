@@ -10,7 +10,8 @@ All crates inherit one version from `[workspace.package]` in the root `Cargo.tom
 
 - **Patch** (`0.1.0` → `0.1.1`): only `fix`, `perf`, `docs` or `chore` changes.
 - **Minor** (`0.1.1` → `0.2.0`): at least one `feat`.
-- **Major** (`0.x` → `1.0.0`, `1.x` → `2.0.0`): any `!` title or `BREAKING CHANGE:` footer.
+- **`!` title or `BREAKING CHANGE:` footer**: below 1.0.0 this bumps the **minor** (`0.1.0` → `0.2.0`), never to `1.0.0`. From 1.0.0 on it bumps the major (`1.x` → `2.0.0`).
+- **1.0.0** is a deliberate decision by the maintainers, not something a commit title can trigger.
 
 `git cliff --bumped-version` prints a suggestion from the commits since the last tag.
 
