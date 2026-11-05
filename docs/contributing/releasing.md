@@ -46,7 +46,9 @@ Both installer scripts verify the archive against `SHA256SUMS.txt` and stop if i
 
 > **Note on Windows builds**: the Windows setup wizard and binaries are unsigned, so SmartScreen may warn on first run ("More info" > "Run anyway").
 
-To inspect it before it goes public, run the `release` workflow by hand (**Actions → release → Run workflow**) with the tag. The `skip_ci_gate` option bypasses the `tests_pass` check; use it only in a fork or for a dry run. It defaults to a **draft**; publish it from the Releases page when the notes and binaries look right. The tag must already exist, because the workflow builds that tag's commit, not the branch you run it from.
+Pushing the tag never publishes anything by itself: the workflow only ever creates a **draft** from a tag push, and nothing is public until someone presses Publish on the Releases page. The draft is where you inspect the notes and the binaries.
+
+Run the `release` workflow by hand (**Actions → release → Run workflow**) only to build an existing tag again, for example after a runner failure, or to publish straight away with `draft` off. The tag must already exist, because the workflow builds that tag's commit, not the branch you run it from. The `skip_ci_gate` option bypasses the `tests_pass` check; use it only in a fork or for a dry run.
 
 A tag with a suffix, such as `v0.2.0-rc.1`, needs `0.2.0-rc.1` as the Cargo version. It is published as a prerelease, so the installers don't pick it up as the latest release.
 
