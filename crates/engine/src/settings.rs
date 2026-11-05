@@ -467,11 +467,13 @@ impl RenderingSettings {
         }
     }
 
+    /// Returns whether any shown value changed.
     pub(crate) fn show_resolved_grade(
         &mut self,
         grade: crate::color_pipeline::SkyrimCinematicGrade,
         pivot: f32,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         for (bit, slot, value) in [
             (0, &mut self.grade_saturation, grade.saturation),
             (1, &mut self.grade_brightness, grade.brightness),
@@ -487,8 +489,10 @@ impl RenderingSettings {
             // scene grade pipeline. Writing an equal value would wake them for nothing.
             if self.grade_override_mask & (1 << bit) == 0 && *slot != value {
                 *slot = value;
+                changed = true;
             }
         }
+        changed
     }
 
     fn restore_grade_controls(&mut self, saved: &Self) {
@@ -873,7 +877,7 @@ pub(crate) struct RenderSettingsTargets<'w, 's> {
     shadow_map: Option<ResMut<'w, DirectionalLightShadowMap>>,
     point_shadow_map: Option<ResMut<'w, PointLightShadowMap>>,
     upload: Option<ResMut<'w, RenderAssetBytesPerFrame>>,
-    windows: Query<'w, 's, &'static mut Window, With<PrimaryWindow>>,
+    windows: Query<'w, 's, (&'static mut Window, Ref<'static, PrimaryWindow>)>,
     hud: Query<'w, 's, &'static mut Node, With<crate::physics::NoclipOverlay>>,
     /// Targets that appeared since the last apply. A camera, light, window or overlay
     /// spawned after the last preference change still needs the current settings, so
@@ -960,7 +964,14 @@ pub(crate) fn apply_render_settings(
             {
                 file.note_grade_mode_selection();
             }
-            settings.show_resolved_grade(resolved.grade, resolved.post.pivot);
+            // Through `ResMut` the call itself would mark the resource changed even when every
+            // value already matches, so the tick is set only for a real difference.
+            if settings
+                .bypass_change_detection()
+                .show_resolved_grade(resolved.grade, resolved.post.pivot)
+            {
+                settings.set_changed();
+            }
             let next_palette = source.sky_palette(preset);
             let palette_changed = sky_palette.as_deref() != Some(&next_palette);
             if palette_changed && let Some(palette) = sky_palette.as_deref_mut() {
@@ -1073,15 +1084,19 @@ pub(crate) fn apply_render_settings(
             max_bytes: config.max_upload_bytes_per_frame(),
         };
     }
-    for mut window in &mut targets.windows {
+    for (mut window, primary) in &mut targets.windows {
+        // A primary window that replaced the first one starts at its own defaults, so it
+        // takes the configured mode and size whether or not the preference changed.
+        let added = primary.is_added();
         window.present_mode = if settings.vsync {
             PresentMode::AutoVsync
         } else {
             PresentMode::AutoNoVsync
         };
-        if previous
-            .as_ref()
-            .is_none_or(|previous| previous.window_mode != settings.window_mode)
+        if added
+            || previous
+                .as_ref()
+                .is_none_or(|previous| previous.window_mode != settings.window_mode)
         {
             window.mode = if settings.window_mode == 0 {
                 WindowMode::Windowed
@@ -1089,9 +1104,10 @@ pub(crate) fn apply_render_settings(
                 WindowMode::BorderlessFullscreen(MonitorSelection::Current)
             };
         }
-        if previous
-            .as_ref()
-            .is_none_or(|previous| previous.window_size != settings.window_size)
+        if added
+            || previous
+                .as_ref()
+                .is_none_or(|previous| previous.window_size != settings.window_size)
         {
             let (width, height) = WINDOW_SIZES[settings.window_size];
             window.resolution.set(width as f32, height as f32);
@@ -1330,6 +1346,53 @@ mod tests {
                 .resource::<SettingsApplyProbe>()
                 .grade_mode_changed,
             "an unchanged scene grade was replaced after an unrelated preference change"
+        );
+    }
+
+    /// A render target that appears later runs the apply again. That run must not dirty
+    /// `RenderingSettings` when the shown grade is already current, and a replacement
+    /// primary window must take the configured mode and size, which its defaults differ from.
+    #[test]
+    fn a_new_target_reapplies_without_dirtying_settings_and_sizes_a_new_window() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(RenderingSettings {
+                window_mode: 1,
+                window_size: 3,
+                ..RenderingSettings::default()
+            })
+            .insert_resource(SettingsFile::session_only())
+            .insert_resource(crate::color_pipeline::SceneGradeMode::SnapshotSrgb)
+            .insert_resource(crate::color_pipeline::SceneVisualPreset::CoolGray)
+            .insert_resource(crate::color_pipeline::SceneGradeSource::default())
+            .insert_resource(crate::tone_mapping::SceneToneMapSource::default())
+            .insert_resource(crate::sky::SkyPalette::default())
+            .init_resource::<SettingsApplyProbe>()
+            .add_systems(Update, apply_render_settings)
+            .add_systems(Last, probe_settings_apply);
+        app.update();
+        app.update();
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<SettingsApplyProbe>()
+                .settings_changed,
+            "a new target dirtied RenderingSettings although no shown value changed"
+        );
+        let window = app.world().get::<Window>(window).unwrap();
+        assert_eq!(
+            window.mode,
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        );
+        let (width, height) = WINDOW_SIZES[3];
+        assert_eq!(
+            (window.resolution.width(), window.resolution.height()),
+            (width as f32, height as f32)
         );
     }
 
