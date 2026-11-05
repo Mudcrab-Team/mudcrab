@@ -8,6 +8,7 @@ use crate::{
         cache::TerrainSnapshot,
         components::{TerrainPatch, WaterSurface},
         database::AssetCatalog,
+        water::FlatWater,
     },
 };
 use bevy::{
@@ -33,20 +34,22 @@ pub(crate) fn surface_resource_paths(
             continue;
         };
         for layer in layers {
-            // Match the material: zero bases load the pack's default pair; unresolved overlays
-            // keep their slots without requesting images.
+            // Match the material: zero bases load the pack's default pair; zero overlays
+            // and nonzero layers without a diffuse keep their slots without requesting images.
             if layer.texture_form_id == 0 && !layer.is_base {
                 continue;
             }
-            paths.extend(catalog.landscape_diffuse(layer.texture_form_id));
+            let Some(diffuse) = catalog.landscape_diffuse(layer.texture_form_id) else {
+                // A missing diffuse must not reserve an orphan normal that is never loaded.
+                continue;
+            };
+            paths.push(diffuse);
             paths.extend(catalog.landscape_normal(layer.texture_form_id));
         }
     }
     if water
-        && terrain
-            .water_height
-            .is_some_and(|height| height.is_finite() && height.abs() < 1.0e7)
-        && let Some(water_type) = terrain.water_type_form_id
+        && let Some(surface) = FlatWater::from_terrain(terrain)
+        && let Some(water_type) = surface.water_type_form_id
     {
         paths.extend(catalog.water_flow(water_type));
     }
@@ -292,6 +295,75 @@ mod tests {
                 loaded
             );
         }
+    }
+
+    /// Missing nonzero diffuse images beside a null base reserve only the configured default.
+    #[test]
+    fn missing_nonzero_diffuse_beside_null_base_reserves_only_default_images() {
+        let (directory, _) = catalog();
+        let path = directory.path().join("world.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO texture_sets VALUES(3,NULL,'textures/orphan.dds');
+                 INSERT INTO landscape_textures VALUES(2116,3);",
+            )
+            .unwrap();
+        let catalog = AssetCatalog::open(&path).unwrap();
+        assert!(catalog.landscape_diffuse(2116).is_none());
+        assert!(catalog.landscape_normal(2116).is_some());
+        let mut terrain = terrain();
+        terrain.normals = [0, 0, 127].repeat(33 * 33);
+        terrain.layers.clear();
+        terrain.layers.push(TerrainLayerSnapshot {
+            texture_form_id: 0,
+            quadrant: 0,
+            layer: 0,
+            is_base: true,
+            weights: vec![],
+        });
+        terrain.layers.push(TerrainLayerSnapshot {
+            texture_form_id: 2116,
+            quadrant: 0,
+            layer: 4,
+            is_base: false,
+            weights: vec![(18, 0.75)],
+        });
+        super::super::validate_terrain_snapshot(&terrain, &catalog)
+            .expect("a missing diffuse must not reject a valid cell");
+        assert_eq!(super::super::quadrant_layers(&terrain, 0).unwrap().len(), 2);
+        assert_eq!(
+            super::super::quadrant_overlay_weights(&terrain, 0).unwrap()[0][18],
+            0.75
+        );
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Image>();
+        let (_, images) = TerrainExtension::from_quadrant(
+            &terrain,
+            0,
+            &catalog,
+            app.world().resource::<AssetServer>(),
+        )
+        .unwrap();
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        let mut loaded: Vec<_> = images
+            .color
+            .iter()
+            .chain(&images.normal)
+            .map(|image| image.path().unwrap().path().to_string_lossy().into_owned())
+            .collect();
+        loaded.sort();
+        let expected = vec![
+            "textures/landscape/dirt02.ktx2",
+            "textures/landscape/dirt02_n.ktx2",
+        ];
+        assert_eq!(loaded, expected);
+        assert_eq!(
+            surface_resource_paths(Some(&terrain), false, &catalog),
+            expected
+        );
     }
 
     /// Default images are charged even when a quadrant has no stored texture layers.

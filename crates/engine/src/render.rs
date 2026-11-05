@@ -498,7 +498,8 @@ impl TerrainExtension {
     }
 
     /// Binds the pack's configured default for a zero base ID. Zero overlays retain
-    /// their slots and weights without images; nonzero IDs require a converted diffuse.
+    /// their slots and weights without images. Nonzero IDs with a missing diffuse retain
+    /// their slots and weights without requesting either a diffuse or an orphan normal.
     pub fn from_quadrant(
         terrain: &TerrainSnapshot,
         quadrant: u8,
@@ -519,6 +520,10 @@ impl TerrainExtension {
                 // An explicit white default (or an old pack) needs no image or normal.
                 continue;
             }
+            let Some(path) = catalog.landscape_diffuse(layer.texture_form_id) else {
+                // Keep the unresolved layer's weight without loading an orphan normal map.
+                continue;
+            };
             if let Some(path) = catalog.landscape_normal(layer.texture_form_id) {
                 // A normal map holds directions, not colours: it must not be decoded as sRGB.
                 let handle = asset_server
@@ -531,14 +536,6 @@ impl TerrainExtension {
                 *normal = Some(handle.clone());
                 normal_handles.push(handle);
             }
-            let path = catalog
-                .landscape_diffuse(layer.texture_form_id)
-                .ok_or_else(|| {
-                    format!(
-                        "LAND {:08X} quadrant {quadrant} texture {:08X} has no diffuse image",
-                        terrain.cell_id, layer.texture_form_id
-                    )
-                })?;
             let handle = asset_server
                 .load_builder()
                 .with_settings(|settings: &mut ImageLoaderSettings| {
@@ -2138,7 +2135,7 @@ mod tests {
     }
 
     /// A null base binds Dirt02 while zero overlays keep slots and weights without requests.
-    /// A missing nonzero LTEX still fails without preventing a subsequent placeholder build.
+    /// A missing nonzero diffuse retains its slot and weights without requesting an orphan normal.
     #[test]
     fn terrain_zero_texture_overlay_material_preserves_slots_without_image_requests() {
         let directory = tempfile::tempdir().unwrap();
@@ -2146,14 +2143,15 @@ mod tests {
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
                  CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
                  CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
                  INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');
-                 INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds');
-                 INSERT INTO texture_sets VALUES(2,'textures/painted.dds');
-                 INSERT INTO landscape_textures VALUES(0,1),(2116,NULL),(2117,2);",
+                 INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds',NULL);
+                 INSERT INTO texture_sets VALUES(2,'textures/painted.dds',NULL);
+                 INSERT INTO texture_sets VALUES(3,NULL,'textures/orphan-normal-must-not-load.dds');
+                 INSERT INTO landscape_textures VALUES(0,1),(2116,3),(2117,2);",
             )
             .unwrap();
         drop(connection);
@@ -2214,10 +2212,37 @@ mod tests {
         assert_eq!(sample(1, 0), 0.0);
 
         terrain.layers[2].texture_form_id = 0x844;
-        let error = TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
-            .err()
-            .expect("a nonzero LTEX without a diffuse image still fails");
-        assert!(error.contains("00000844") && error.contains("no diffuse image"));
+        assert!(catalog.landscape_normal(0x844).is_some());
+        let (fallback, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+                .expect("a missing diffuse retains the layer without requesting either image");
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        assert_eq!(fallback.layer_0, extension.layer_0);
+        assert_eq!(fallback.normal_0, extension.normal_0);
+        assert!(fallback.layer_2.is_none() && fallback.normal_2.is_none());
+        assert_eq!(fallback.settings.weights, extension.settings.weights);
+        assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
+        assert_eq!(fallback.settings.normal_layers_0, Vec4::X);
+        assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
+
+        // A white configured default preserves #500's no-image fallback for every layer.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE terrain_default_texture SET diffuse_path=NULL,normal_path=NULL",
+                [],
+            )
+            .unwrap();
+        let white = AssetCatalog::open(&path).unwrap();
+        let (fallback, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &white, asset_server).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(fallback.image_ids().next().is_none());
+        assert_eq!(fallback.settings.weights, extension.settings.weights);
+        assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
+        assert_eq!(fallback.settings.normal_layers_0, Vec4::ZERO);
+        assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
         terrain.layers[2].texture_form_id = 0x845;
         let (painted, images) =
             TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
