@@ -1759,10 +1759,33 @@ mod tests {
                         offset += 4;
                     }
                 }
+                let texture = if encoding == TextureEncoding::NormalLinear {
+                    // Packed DDS normals bypass lossy encoding. Check that route
+                    // before exercising the separate authored-RGBA GPU API below.
+                    assert!(PreparedTexture::from_dds(dds.clone(), encoding).is_err());
+                    let preserved = TextureConverter::convert(&dds, encoding).unwrap();
+                    let reader = ::ktx2::Reader::new(&preserved).unwrap();
+                    assert_eq!(reader.header().format, Some(::ktx2::Format::R8G8B8A8_UNORM));
+                    assert_eq!(reader.header().level_count, 3);
+                    assert_eq!(
+                        reader.header().supercompression_scheme,
+                        Some(::ktx2::SupercompressionScheme::Zstandard)
+                    );
+                    for (level, expected) in reader.levels().zip(&levels) {
+                        let mut decoder =
+                            ruzstd::decoding::StreamingDecoder::new(level.data).unwrap();
+                        let mut actual = Vec::new();
+                        std::io::Read::read_to_end(&mut decoder, &mut actual).unwrap();
+                        assert_eq!(&actual, expected, "packed normal mip must remain exact");
+                    }
+                    PreparedTexture::from_rgba_mips(width, height, &levels).unwrap()
+                } else {
+                    PreparedTexture::from_dds(dds, encoding).unwrap()
+                };
                 let tag = cases.len();
                 sender
                     .send(GpuJob {
-                        texture: PreparedTexture::from_dds(dds, encoding).unwrap(),
+                        texture,
                         encoding,
                         tag,
                     })
