@@ -1325,9 +1325,11 @@ mod tests {
             (1920, 1080)
         );
         // Simulate a display-scale change while the shot override is active.
-        let mut native_window = app.world_mut().get_mut::<Window>(window).unwrap();
-        native_window.resolution.set_scale_factor(3.0);
-        drop(native_window);
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_scale_factor(3.0);
         app.world_mut()
             .resource_mut::<RenderingSettings>()
             .window_size = 0;
