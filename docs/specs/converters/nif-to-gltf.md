@@ -275,6 +275,10 @@ and world data, so no cached GLB keeps the older collision extras.
   name is rejected, because either copy could be the bone it was authored against.
 - Each skinned shape becomes one `SkeletalMesh` that records its source block, so material and
   vertex-colour contracts associate by block instead of by shape-type enumeration order.
+- Mixed rigs keep unskinned shapes as rigid nodes in the same GLB. Their local transforms and
+  static ancestor hierarchy follow the ordinary static export path; successfully skinned shapes
+  keep their existing bone bindings. Both collections share the runtime-coordinate scene root.
+  Skin indices address the skin array independently of the static-first mesh array.
 
 ### 7.2 Rejected
 
@@ -283,20 +287,42 @@ and world data, so no cached GLB keeps the older collision extras.
   Skyrim SE actor meshes).
 - `BSSubIndexTriShape` skinning is not handled (same dataset: no such block).
 
-### 7.3 Failure contract
+### 7.3 Skin recovery and failure contract
 
-A NIF that declares a skin and cannot produce one fails conversion. It does not publish a static
-substitute and does not emit an empty scene. The diagnostic names the NIF path and the block
-indices, lists every skin instance that no exported shape claimed together with the block type that
-references it, and reports all unresolved joint names at once rather than the first one.
+Standalone mesh conversion keeps usable geometry when its legacy skin is unusable. A zero total
+weight, invalid influence or unresolved skin joint makes only that shape rigid, at the same node
+transform and ancestor transforms as an ordinary static export. Good sibling skins remain skinned.
+One warning per affected shape names the NIF, shape name/block and the first skin failure; it is
+not repeated for every bad vertex. Geometry can also remain static for a supported shape type
+whose skinning is unsupported, such as `BSLODTriShape`.
 
-Classes that still fail:
+Finite negative influences in **[-0.00001, 0)** are clamped to zero before summing and normalizing
+the remaining weights. The absolute `1e-5` tolerance is one thousandth of one percent of a unit
+weight and includes the observed retail half-float residue `-0.0000038146973`. It is a narrow
+rounding approximation, not permission to accept larger negative influences. Clamped zero slots
+ignore their unused joint indices; a nonpositive/nonfinite remaining total or a more negative
+influence uses the static fallback. A repaired shape emits one clamping warning.
 
-- a rig that some skeleton covers at 50% or more, while no skeleton covers it fully and no path
-  candidate covers it at 50%: the resolver does not guess between partial matches;
-- a skin that binds a name its resolved skeleton repeats (§7.1).
+A rig that some indexed skeleton covers at 50% or more, while no skeleton covers it fully and no
+path candidate covers it at 50%, remains unresolved. The resolver does not guess between partial
+matches or relabel it self-contained: its skin-bearing shapes export as rigid geometry with a
+coverage warning per shape. Explicitly supplied skeletons likewise fall back per shape when they
+cannot resolve that shape's joints. Repair uses the same recovery path as normal conversion.
 
-Not failures, but approximations with their own follow-ups: a rig no skeleton covers at 50% converts
+Parsing failures, unusable geometry/scene data, ambiguous bound skeleton names (§7.1), and declared
+skins without any usable geometry still fail; recovery does not invent vertices or an empty skin.
+Strict animated actor composition continues to require bindable skin data and uses no rigid
+substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
+and `WEIGHTS_0`.
+
+The mesh settings contract appends `skin-static-fallback` after the existing contracts in
+`MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
+rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
+until normal conversion regenerates it. Texture/script producer identities are unchanged.
+Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
+skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.
+
+Other approximations with their own follow-ups: a rig no skeleton covers at 50% converts
 self-contained from its own hierarchy (FX meshes skinned to their own controller bones are the
 retail case), and a skeleton only a RACE record identifies (for example Alduin) is chosen by joint
 coverage instead, which can pick a near-identical rig.

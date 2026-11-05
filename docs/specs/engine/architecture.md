@@ -44,7 +44,7 @@ Mudcrab/
 ├── Cargo.toml                  # Workspace Root Manifest
 ├── crates/
 │   ├── launcher/    # UI App (Setup Wizard, Mod Manager, Launcher)
-│   ├── converter/   # Converter Pipeline (.nif ➔ .glb, .dds ➔ KTX2, .esm ➔ libSQL, .pex ➔ Luau)
+│   ├── converter/   # Converter Pipeline (.nif ➔ .glb, .dds ➔ KTX2, .esm ➔ SQLite, .pex ➔ Luau)
 │   ├── shared/      # Versioned database/cache contracts shared by converter and engine
 │   └── engine/      # Bevy Game Engine Runtime (Render Pipeline, Physics, Audio, ECS Systems)
 ```
@@ -54,7 +54,7 @@ Mudcrab/
 | **`launcher`**   | GUI Executable      | First-run setup wizard, game path detection, built-in mod manager UI, triggers converter progress bar, and launches the engine. |
 | **`converter`**  | Library & CLI       | Heavy transformation logic (`mesh_tools`, `basis-universal`, `ddsfile`, `nom` parsers). Invoked directly by `launcher`.         |
 | **`shared`**     | Library             | Stable `rkyv` cache structures, schema versions, and converter/runtime data contracts. |
-| **`engine`**     | Game Executable     | Light, hyper-fast game binary (Bevy 0.19+, `wgpu`, `libsql`). Orchestrates transformed game assets and Bevy ECS systems at 60+ FPS.     |
+| **`engine`**     | Game Executable     | Light, hyper-fast game binary (Bevy 0.19+, `wgpu`, `rusqlite`). Orchestrates transformed game assets and Bevy ECS systems at 60+ FPS.     |
 
 ---
 
