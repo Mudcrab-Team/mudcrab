@@ -28,8 +28,9 @@ assignments, including quadrants without stored layers. The converter records th
 choice in the optional `terrain_default_texture` database table on every conversion, including
 non-merged and `--no-lod` runs. LOD uses that same recorded diffuse choice (#449/#240).
 `white` binds no images; `skyrim-ini` uses the configured `[Landscape]` diffuse and normal,
-falling back to Skyrim's built-in Dirt02 paths for absent INI keys. An unusable diffuse warns
-and records white without an orphan normal; an unusable normal warns and keeps the diffuse.
+falling back to Skyrim's built-in Dirt02 paths for absent INI keys. An unusable diffuse records
+white without an orphan normal; an unusable normal keeps the diffuse. These recoverable
+converter outcomes are advisory `notices` and do not affect conversion completeness.
 Generated `terrain/default-diffuse.ktx2` and `terrain/default-normal.ktx2` are rebuilt from the
 current source bytes, outside ingestion-cache reuse. Their actual image loads participate in
 streaming resource reservations. Zero overlays keep their unresolved slots and weights without
@@ -48,7 +49,8 @@ other MO2 assets retain direct, read-only source access.
 
 When no cached quadrant needs an implicit default, the converter records unused white metadata
 and does not require default images. Texture-only and fully painted packs therefore remain
-complete without otherwise unused Skyrim assets. A used but unusable default still warns.
+complete without otherwise unused Skyrim assets. A used but unusable default produces an
+advisory notice and uses the fallback above.
 
 Old packs without this metadata retain white in the quadrant path. Reconvert to record a
 configured default; regenerate LOD and, when enabled, merged arrays as one compatible pack.

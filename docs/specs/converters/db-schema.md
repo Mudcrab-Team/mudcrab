@@ -1609,5 +1609,7 @@ them.
 row has `id = 0`, nullable `diffuse_path` and `normal_path` (canonical relative KTX2 paths),
 and nullable `source_diffuse` (the canonical DDS path used by the LOD bake). A null diffuse
 means white and has no normal or source. The engine probes for the table so old databases
-keep their white default. Malformed runtime metadata warns and uses white. This additive
-metadata does not change LAND geometry, the cell-cache format, or texture producer versions.
+keep their white default. Invalid diffuse metadata warns and falls back to white without a
+normal. Invalid normal metadata warns and disables only the normal, keeping a valid diffuse.
+This additive metadata does not change LAND geometry, the cell-cache format, or texture
+producer versions.

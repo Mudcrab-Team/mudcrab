@@ -1281,7 +1281,9 @@ files. It is off by default because the engine does not read those outputs yet.
 white texture, or the game's own [Landscape] default (the default selection).
 --terrain-ini names the Skyrim.ini that default is read from; without it the built-in
 textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
-not name. A default that cannot be converted leaves the white texture, and the report says so.
+not name. An unusable default diffuse leaves white; an unusable optional normal keeps a valid
+diffuse. These recoverable fallbacks are report notices and do not make conversion incomplete
+or make it exit 1. Failures that prevent publishing usable output still fail conversion.
 --terrain-allow-downscale downscales a land texture larger than the largest array size class
 into it instead of stopping the merged-terrain build; the report lists every one downscaled.
 --language selects the string tables that localized plugins' names are read from,

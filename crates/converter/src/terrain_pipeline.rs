@@ -205,7 +205,7 @@ pub(crate) fn default_land_is_needed(staging: &Path) -> Result<bool> {
 
 /// Publishes the effective default for ordinary terrain before LOD, even with `--no-lod`.
 /// Generated default images are rebuilt from the current DDS bytes, outside ingestion reuse.
-/// A damaged optional texture warns and falls back without losing neighboring records.
+/// A damaged optional texture falls back with an advisory notice, preserving completeness.
 pub(crate) fn publish_default_land(
     staging: &Path,
     config: &PipelineConfig,
@@ -227,7 +227,7 @@ pub(crate) fn publish_default_land(
         .transpose()?;
     let (requested, warning) = TerrainDefaultDiffuse::resolve(&options)?;
     if let Some(warning) = warning {
-        report.warnings.push(warning);
+        report.notices.push(warning);
     }
     let mut diffuse = None;
     let mut normal = None;
@@ -240,7 +240,7 @@ pub(crate) fn publish_default_land(
         );
         if let Some(error) = error {
             report
-                .warnings
+                .notices
                 .push(format!("default land falls back to white: {error}"));
         } else {
             let convert = |source: &str, output: &str, encoding| -> Result<()> {
@@ -278,17 +278,17 @@ pub(crate) fn publish_default_land(
                                     report.artifacts.push(output.into());
                                 }
                                 Err(error) => report
-                                    .warnings
+                                    .notices
                                     .push(format!("default land normal omitted: {error:#}")),
                             }
                         }
                         Err(error) => report
-                            .warnings
+                            .notices
                             .push(format!("default land normal omitted: {error:#}")),
                     }
                 }
                 Err(error) => report
-                    .warnings
+                    .notices
                     .push(format!("default land falls back to white: {error:#}")),
             }
         }
@@ -1236,6 +1236,8 @@ mod tests {
             .unwrap();
             super::publish_default_land(root.path(), &config, &mut report).unwrap();
             assert!(report.warnings.is_empty());
+            assert!(report.notices.is_empty());
+            assert!(crate::pipeline::conversion_is_complete(&report));
             assert!(report.artifacts.is_empty());
         }
         cache.cells[0].layers[2].texture_form_id = 0;
@@ -1246,10 +1248,12 @@ mod tests {
         .unwrap();
         super::publish_default_land(root.path(), &config, &mut report).unwrap();
         assert_eq!(
-            report.warnings.len(),
+            report.notices.len(),
             1,
-            "a used missing default still warns"
+            "a used missing default still produces an advisory"
         );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
     }
 
     /// Generated defaults and their database row follow the effective choice on repeated runs.
@@ -1300,14 +1304,31 @@ mod tests {
         );
         assert!(
             report
-                .warnings
+                .notices
                 .iter()
-                .any(|warning| warning.contains("normal omitted"))
+                .any(|notice| notice.contains("normal omitted"))
         );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
         crate::pipeline::validate_artifacts(staging, &report.artifacts, &BTreeMap::new(), 1)
             .unwrap();
         let first = fs::read(staging.join("terrain/default-diffuse.ktx2")).unwrap();
         crate::texture::inspect_ktx2(&first, crate::texture::TextureEncoding::ColorSrgb).unwrap();
+        fs::write(
+            config.terrain_ini.as_ref().unwrap(),
+            "[Landscape]\nsDefaultLandDiffuseTexture=custom.dds\nsDefaultLandNormalTexture=../escape.dds\n",
+        )
+        .unwrap();
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read().0.as_deref(), Some("terrain/default-diffuse.ktx2"));
+        assert_eq!(read().1, None);
+        assert_eq!(
+            report.notices.len(),
+            2,
+            "invalid normal paths are advisory too"
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
         fs::write(
             staging.join("vfs/textures/custom.dds"),
             b"bad optional diffuse",
@@ -1317,10 +1338,12 @@ mod tests {
         assert_eq!(read(), (None, None, None));
         assert!(
             report
-                .warnings
+                .notices
                 .iter()
-                .any(|warning| warning.contains("falls back to white"))
+                .any(|notice| notice.contains("falls back to white"))
         );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
         fs::write(staging.join("vfs/textures/custom.dds"), bytes).unwrap();
         super::publish_default_land(staging, &config, &mut report).unwrap();
         assert_eq!(
@@ -1342,6 +1365,24 @@ mod tests {
         config.terrain_default_texture = TerrainDefaultTexture::White;
         super::publish_default_land(staging, &config, &mut report).unwrap();
         assert_eq!(read(), (None, None, None));
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
+        fs::write(
+            config.terrain_ini.as_ref().unwrap(),
+            "[Landscape]\nsDefaultLandDiffuseTexture=../escape.dds\n",
+        )
+        .unwrap();
+        config.terrain_default_texture = TerrainDefaultTexture::SkyrimIni;
+        super::publish_default_land(staging, &config, &mut report).unwrap();
+        assert_eq!(read(), (None, None, None));
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("cannot be resolved"))
+        );
+        assert!(report.warnings.is_empty());
+        assert!(crate::pipeline::conversion_is_complete(&report));
         assert_eq!(
             connection
                 .query_row("SELECT id FROM neighbors", [], |row| row.get::<_, u32>(0))

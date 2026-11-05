@@ -35,6 +35,10 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
+Recoverable configured-default land texture fallbacks are also `notices`: an unusable
+diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
+failures that prevent publishing usable output still fail conversion.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they

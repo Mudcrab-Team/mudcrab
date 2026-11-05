@@ -138,8 +138,8 @@ pub struct PipelineReport {
     #[serde(default)]
     pub terrain_warnings: Vec<String>,
     pub warnings: Vec<String>,
-    /// Advisory messages, including successful reader compatibility remaps,
-    /// that do not affect completeness.
+    /// Advisory messages, including successful reader compatibility remaps and recoverable
+    /// configured-default land texture fallbacks, that do not affect completeness.
     #[serde(default)]
     pub notices: Vec<String>,
     /// Original plugin filenames omitted by selection recovery, once each in selection order.
@@ -162,6 +162,7 @@ pub struct PipelineReport {
 /// A run is complete when no asset conversion was skipped and no conversion warnings remain.
 /// Recoverable plugin-selection exclusions are advisory notices and `skipped_plugins` entries.
 /// Creation fallback warnings describe input policy; they do not indicate failed conversions.
+/// Configured-default land texture fallbacks are advisory notices when usable output publishes.
 /// Pruned dangling
 /// texture references are deliberately absent: the game data does not contain those
 /// textures, so dropping the reference is a fact about the source, not a failure to
