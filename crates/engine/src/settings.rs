@@ -110,6 +110,9 @@ pub struct RenderingSettings {
 impl Default for RenderingSettings {
     fn default() -> Self {
         let config = EngineConfig::default();
+        let weather = crate::sky::WeatherLighting::default();
+        let sunlight = weather.sunlight.to_srgba();
+        let ambient = weather.mean_ambient().to_srgba();
         Self {
             version: 1,
             point_lights: false,
@@ -117,10 +120,10 @@ impl Default for RenderingSettings {
             point_light_shadows: false,
             point_shadow_size: 1,
             sun: true,
-            sun_illuminance: 12_000.0,
-            sun_color: [1.0; 3],
+            sun_illuminance: crate::lights::SUN_ILLUMINANCE,
+            sun_color: [sunlight.red, sunlight.green, sunlight.blue],
             ambient_brightness: crate::lights::AMBIENT_ILLUMINANCE,
-            ambient_color: [0.48, 0.55, 0.7],
+            ambient_color: [ambient.red, ambient.green, ambient.blue],
             shadows: true,
             shadow_size: 2,
             shadow_cascades: 4,
@@ -1264,6 +1267,102 @@ mod tests {
         assert_eq!(window.resolution.scale_factor_override(), None);
         assert_eq!(window.resolution.physical_width(), width * 2);
         assert_eq!(window.resolution.physical_height(), height * 2);
+    }
+
+    #[test]
+    fn defaults_preserve_world_lighting_on_first_launch_and_reset() {
+        for minimal_file in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            if minimal_file {
+                std::fs::write(&path, r#"{"version":1}"#).unwrap();
+            }
+            let mut config = EngineConfig::default();
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let weather = crate::sky::WeatherLighting::default();
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(settings)
+                .insert_resource(file)
+                .insert_resource(GlobalAmbientLight {
+                    color: Color::srgb(0.2, 0.3, 0.4),
+                    brightness: 321.0,
+                    ..default()
+                })
+                .add_systems(Update, apply_render_settings);
+            let sun = app
+                .world_mut()
+                .spawn((
+                    DirectionalLight {
+                        color: Color::srgb(0.4, 0.3, 0.2),
+                        illuminance: 123.0,
+                        ..default()
+                    },
+                    crate::app::sun_shadow_cascades(&config),
+                ))
+                .id();
+            app.insert_resource(config);
+            let assert_lighting = |app: &App,
+                                   sun_color: Color,
+                                   sun_illuminance,
+                                   ambient_color: Color,
+                                   ambient_brightness| {
+                let light = app.world().get::<DirectionalLight>(sun).unwrap();
+                let ambient = app.world().resource::<GlobalAmbientLight>();
+                for (actual, expected) in [(light.color, sun_color), (ambient.color, ambient_color)]
+                {
+                    for (actual, expected) in actual
+                        .to_linear()
+                        .to_f32_array()
+                        .into_iter()
+                        .zip(expected.to_linear().to_f32_array())
+                    {
+                        assert!((actual - expected).abs() < 1e-6);
+                    }
+                }
+                assert_eq!(light.illuminance, sun_illuminance);
+                assert_eq!(ambient.brightness, ambient_brightness);
+            };
+            let assert_defaults = |app: &App| {
+                assert_lighting(
+                    app,
+                    weather.sunlight,
+                    crate::lights::SUN_ILLUMINANCE,
+                    weather.mean_ambient(),
+                    crate::lights::AMBIENT_ILLUMINANCE,
+                )
+            };
+            app.update();
+            assert_defaults(&app);
+
+            {
+                let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+                settings.sun_color = [1.0; 3];
+                settings.ambient_color = [0.1; 3];
+                settings.sun_illuminance = 4_000.0;
+                settings.ambient_brightness = 100.0;
+            }
+            app.update();
+            assert_lighting(
+                &app,
+                Color::srgb(1.0, 1.0, 1.0),
+                4_000.0,
+                Color::srgb(0.1, 0.1, 0.1),
+                100.0,
+            );
+            app.world_mut()
+                .resource_scope(|world, mut file: Mut<SettingsFile>| {
+                    file.restore_defaults(&mut world.resource_mut::<RenderingSettings>());
+                });
+            app.update();
+            assert_defaults(&app);
+            save_app_settings(&mut app);
+            let mut config = EngineConfig::default();
+            let (reloaded, _) = prepare_settings_at(&mut config, Some(path));
+            *app.world_mut().resource_mut::<RenderingSettings>() = reloaded;
+            app.update();
+            assert_defaults(&app);
+        }
     }
 
     #[test]

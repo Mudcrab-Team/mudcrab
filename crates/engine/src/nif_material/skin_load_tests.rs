@@ -842,3 +842,75 @@ fn a_loaded_masked_hair_card_keeps_its_cutoff_and_specialises_as_hair() {
     assert_eq!(material.base.alpha_mode, AlphaMode::Mask(0.3));
     assert!(SkyrimSkinKey::from(&material.extension).hair);
 }
+
+#[test]
+fn palette_scenes_keep_labeled_image_dependencies_alive() {
+    for depth_wrapped in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        write_model_space_gltf(directory.path(), 0);
+        let path = directory.path().join("body.gltf");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        document["extensionsUsed"] = serde_json::json!(["OPEN_SKYRIM_material"]);
+        document["materials"][0] = serde_json::json!({
+            "extensions": {"OPEN_SKYRIM_material": {
+                "shaderFamily": "effect", "shaderFlags1": 16,
+                "textureSlots": [{"semantic": "greyscale", "texture": 1}]
+            }}
+        });
+        if depth_wrapped {
+            document["materials"][0]["extras"] = serde_json::json!({"openSkyrim": {
+                "shaderFlags1": 1u32 << 31, "shaderFlags2": 0
+            }});
+        }
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let mut app = loader_app(directory.path());
+        let scene: Handle<WorldAsset> = app
+            .world()
+            .resource::<AssetServer>()
+            .load(GltfAssetLabel::Scene(0).from_asset("body.gltf"));
+        wait_for_dependencies(&mut app, &scene);
+        let holder_id = app
+            .world()
+            .resource::<AssetServer>()
+            .get_path_id("body.gltf#Material0/nif_palette_image")
+            .expect("labeled palette holder remains registered")
+            .typed::<EffectPaletteImage>();
+        let mut scene_world = app
+            .world_mut()
+            .resource_mut::<Assets<WorldAsset>>()
+            .remove(&scene)
+            .unwrap()
+            .world;
+        let material = if depth_wrapped {
+            let mut query = scene_world.query::<&MeshMaterial3d<EffectPaletteDepthMaterial>>();
+            query.single(&scene_world).unwrap().0.clone().untyped()
+        } else {
+            let mut query = scene_world.query::<&MeshMaterial3d<EffectPaletteMaterial>>();
+            query.single(&scene_world).unwrap().0.clone().untyped()
+        };
+        drop(scene_world);
+        drop(scene);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<Assets<EffectPaletteImage>>()
+                .get(holder_id)
+                .is_some(),
+            "the material must keep its palette holder alive after the scene is dropped"
+        );
+        drop(material);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<Assets<EffectPaletteImage>>()
+                .get(holder_id)
+                .is_none(),
+            "the holder should be released after its material is dropped"
+        );
+    }
+}
