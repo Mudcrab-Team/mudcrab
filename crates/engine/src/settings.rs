@@ -1116,6 +1116,7 @@ pub(crate) fn apply_render_settings(
             window.mode = if settings.window_mode == 0 {
                 WindowMode::Windowed
             } else {
+                window.resolution.set_scale_factor_override(None);
                 WindowMode::BorderlessFullscreen(MonitorSelection::Current)
             };
         }
@@ -1409,6 +1410,51 @@ mod tests {
         app.update();
         app.update();
         let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        assert_eq!(
+            (resolution.physical_width(), resolution.physical_height()),
+            (width * 2, height * 2)
+        );
+    }
+
+    #[test]
+    fn fullscreen_releases_start_shot_scale_without_applying_preference_size() {
+        let mut app = App::new();
+        let settings = RenderingSettings {
+            window_size_override: Some((1920, 1080)),
+            ..default()
+        };
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(EngineConfig::default())
+            .insert_resource(settings)
+            .add_systems(Update, apply_render_settings);
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution
+            .set_scale_factor(2.0);
+        app.update();
+        app.update();
+        let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        assert_eq!(resolution.scale_factor_override(), Some(1.0));
+        let before_fullscreen = resolution.physical_size();
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .window_mode = 1;
+        app.update();
+        let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        assert_eq!(resolution.scale_factor_override(), None);
+        assert_eq!(resolution.physical_size(), before_fullscreen);
+        app.world_mut()
+            .resource_mut::<RenderingSettings>()
+            .window_mode = 0;
+        app.update();
+        app.update();
+        let resolution = &app.world().get::<Window>(window).unwrap().resolution;
+        let (width, height) = WINDOW_SIZES[RenderingSettings::default().window_size];
         assert_eq!(
             (resolution.physical_width(), resolution.physical_height()),
             (width * 2, height * 2)
