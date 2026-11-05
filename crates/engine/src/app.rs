@@ -368,6 +368,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             SkyPlugin,
             SkyrimCinematicPostPlugin,
             ConsolePlugin,
+            crate::console_selection::ConsoleSelectionPlugin,
             crate::bug_report::BugReportPlugin,
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,

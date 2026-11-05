@@ -5009,6 +5009,13 @@ mod console_tests {
         // V and the closing backtick land in the same update.
         send_key(&mut app, KeyCode::KeyV);
         send_key(&mut app, KeyCode::Backquote);
+        // A selection click delivered with the closing key must not recapture the cursor.
+        app.world_mut()
+            .write_message(bevy::input::mouse::MouseButtonInput {
+                button: MouseButton::Left,
+                state: bevy::input::ButtonState::Pressed,
+                window: Entity::PLACEHOLDER,
+            });
         app.update();
         assert!(!app.world().resource::<ConsoleState>().open);
         // The capture that movement and look read stays released for the closing frame, so they
