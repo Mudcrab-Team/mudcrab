@@ -4491,8 +4491,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry and nonzero image dependencies. Normalized zero-ID layers retain
-/// their slots and weights without requiring a converted texture.
+/// Validates terrain geometry while retaining unresolved texture layers and their weights.
+/// Missing diffuse images use the same material fallback as normalized zero-ID layers.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -4529,16 +4529,20 @@ fn validate_terrain_snapshot(
             terrain.vertex_colors.len()
         ));
     }
+    let mut missing_diffuse = HashSet::new();
     for quadrant in 0..4 {
         for layer in quadrant_layers(terrain, quadrant)? {
             if layer.texture_form_id == 0 {
                 continue;
             }
-            if catalog.landscape_diffuse(layer.texture_form_id).is_none() {
-                return Err(format!(
-                    "quadrant {quadrant} texture {:08X} has no converted diffuse image",
-                    layer.texture_form_id
-                ));
+            if catalog.landscape_diffuse(layer.texture_form_id).is_none()
+                && missing_diffuse.insert(layer.texture_form_id)
+            {
+                warn!(
+                    cell_id = terrain.cell_id,
+                    texture_form_id = layer.texture_form_id,
+                    "LAND texture has no converted diffuse image; retaining its layer and weights with a missing-image fallback"
+                );
             }
         }
     }
@@ -7139,10 +7143,10 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
     }
 
-    /// Zero overlays retain ordered weights and geometry validation while missing nonzero
-    /// diffuse images still fail locally and a subsequent placeholder snapshot remains usable.
+    /// Zero and unresolved nonzero overlays retain ordered weights while malformed geometry
+    /// still fails validation.
     #[test]
-    fn terrain_zero_texture_overlay_preserves_weights_and_nonzero_image_errors() {
+    fn terrain_unresolved_texture_overlays_preserve_weights_and_geometry_validation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("placeholder-catalogue.db");
         write_empty_catalogue(&path);
@@ -7188,8 +7192,10 @@ mod tests {
         assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
 
         terrain.layers[4].texture_form_id = 0x844;
-        let error = validate_terrain_snapshot(&terrain, &catalog).unwrap_err();
-        assert!(error.contains("00000844") && error.contains("no converted diffuse image"));
+        validate_terrain_snapshot(&terrain, &catalog)
+            .expect("a missing diffuse image must not discard the cell and its objects");
+        assert_eq!(quadrant_overlay_weights(&terrain, 0).unwrap(), grids);
+        assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
         terrain.layers[4].texture_form_id = 0;
         assert!(validate_terrain_snapshot(&terrain, &catalog).is_ok());
 
