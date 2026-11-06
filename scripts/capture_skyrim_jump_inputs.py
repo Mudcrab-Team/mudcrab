@@ -132,13 +132,17 @@ def main():
         manifest['attempts'].append(attempt_row)
         write(manifest_path, manifest)
         if exit_code:
-            failure = json.loads((output / 'failure.json').read_text())
+            try:
+                failure = json.loads((output / 'failure.json').read_text())
+            except FileNotFoundError:
+                failure = {'phase': 'recorder',
+                           'error': f'Recorder exited with code {exit_code} without failure.json; see private log'}
             retain_failure(args.corpus, output, attempt_row,
                            {key: failure[key] for key in ('phase', 'error')})
             write(manifest_path, manifest)
             raise RuntimeError(f'Capture failed; preserved {output}')
-        proof = json.loads((output / 'proof.json').read_text())
         try:
+            proof = json.loads((output / 'proof.json').read_text())
             rows, raw_digest = decode(output / 'trace.bin')
             result = analyze_rows(rows)
             if raw_digest != proof['trace_sha256'] or proof['session'] != session:
@@ -156,18 +160,18 @@ def main():
                 for key in ('npc_type', 'sex_index', 'npc_height', 'race_heights', 'npc_form_id', 'race_form_id'):
                     if original[key] != result['inputs'][key]:
                         raise ValueError('Control changed an unrequested base factor')
-        except ValueError as error:
+            public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
+                            'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+            public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
+                                dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
+                                proton_sha256=session['proton_sha256'])
+        except Exception as error:
             retain_failure(args.corpus, output, attempt_row,
-                           {'phase': 'v4-input-proof', 'error': str(error)})
+                           {'phase': 'v4-input-proof', 'error': f'{type(error).__name__}: {error}'})
             write(manifest_path, manifest)
             raise
         destination = args.corpus / 'traces' / (name + '.bin.gz')
         destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
-        public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
-                        'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
-        public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
-                            dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
-                            proton_sha256=session['proton_sha256'])
         manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
                                  'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
                                  'receipt': receipt, 'result': result})
