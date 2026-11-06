@@ -1,6 +1,6 @@
 # ADR-0014: Proposed Phase 1 desktop texture contract
 
-- **Status:** Proposed for repository adoption; route B approved by Taylor in local review
+- **Status:** Proposed for repository adoption; Route B scope approved by a maintainer
 - **Date:** 2026-10-31
 
 ## Context
@@ -9,26 +9,20 @@
 promised desktop BC7, mobile ASTC and web ETC2 runtime transcoding. The current
 converter emits a mixture of native GPU formats and UASTC, with no selectable
 portable texture profile. [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274)
-and the parent [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162) leave the
-scope decision open. The CodeRabbit plan on #274 recommends deferral; it is not
-maintainer approval.
+tracks the decision under the parent [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162).
 
-## Locally approved proposal
+## Scope decision
 
-Taylor approved route B during local review on 2026-10-31. That approval selects
-the documentation/deferral route for this change; repository scope sign-off
-remains pending.
+Taylor approved Route B during local review on 2026-10-31. A maintainer approved
+Route B in [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162#issuecomment-6694524381)
+on 2026-11-06.
 
-Accept the **desktop texture contract** below as Phase 1's texture scope, and
-defer the **portable texture profile**, including demonstrated mobile ASTC and
-web ETC2 loading, to the multiplatform work. This proposal changes no runtime
-behavior and does not establish Phase 1 completion.
-
-**Remaining repository gate:** record maintainer confirmation under #162/#274
-that portable output and its target validation leave Phase 1 acceptance, with
-the portable profile required before mobile/browser delivery. Until that
-confirmation, repository scope remains unresolved; route A remains the
-alternative if maintainers reject deferral.
+Route B selects the **desktop texture contract** below as Phase 1's texture scope
+and defers the **portable texture profile**, including demonstrated mobile ASTC
+and web ETC2 loading, to the multiplatform work. The portable profile is required
+before mobile/browser delivery. This proposal changes no runtime behavior and
+does not establish Phase 1 completion. Scope approval is separate from this ADR's
+repository adoption and merge, which remain pending.
 
 ### Current desktop texture contract
 

@@ -71,7 +71,7 @@ Use `--invalidate-cache` to force fresh archive extraction and asset conversion.
 ### 1.4 Texture Compressor (`DDS_TO_KTX2`)
 
 - Write DDS textures as KTX2 containing native payloads, CPU-encoded BC7 or UASTC fallback. Native BC requires compatible GPU support; only UASTC payloads use runtime transcoding.
-- Mobile ASTC and web ETC2 output/loading are not demonstrated. [ADR-0014](../adr/0014-phase1-desktop-texture-contract.md) proposes deferring the portable profile to multiplatform delivery; maintainer approval remains pending in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274), under [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162). Until approved, this remains unresolved Phase 1 scope.
+- Mobile ASTC and web ETC2 output/loading are not demonstrated. A maintainer approved Route B in [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162#issuecomment-6694524381), deferring the portable profile to multiplatform delivery. [ADR-0014](../adr/0014-phase1-desktop-texture-contract.md) remains proposed for repository adoption; implementation and target validation are tracked in [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), which is not a Phase 1 blocker.
 
 ### 1.5 Papyrus Bytecode Transpiler (`PEX_TO_LUA`)
 

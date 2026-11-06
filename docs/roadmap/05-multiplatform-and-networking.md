@@ -18,8 +18,10 @@
 - **WebAssembly:** In-browser WebGPU runtime client.
 
 Android and browser delivery require a portable texture profile and demonstrated target loading;
-the current native BC/BC7 output set is insufficient. [ADR-0014](../adr/0014-phase1-desktop-texture-contract.md)
-moves this texture work out of Phase 1. Implementation and BC7/ASTC/ETC2 validation are tracked in
+the current native BC/BC7 output set is insufficient. Route B, approved in
+[#162](https://github.com/Mudcrab-Team/mudcrab/issues/162#issuecomment-6694524381), defers this texture work
+from Phase 1. [ADR-0014](../adr/0014-phase1-desktop-texture-contract.md) remains proposed for repository
+adoption. Implementation and BC7/ASTC/ETC2 validation are tracked in
 [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), under decision issue
 [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274) and [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162).
 
