@@ -18,10 +18,10 @@
 - **WebAssembly:** In-browser WebGPU runtime client.
 
 Android and browser delivery require a portable texture profile and demonstrated target loading;
-the current native BC/BC7 output set is insufficient. [ADR-0013](../adr/0013-phase1-desktop-texture-contract.md)
-proposes moving this texture work out of Phase 1, pending maintainer approval. Implementation and
-BC7/ASTC/ETC2 validation remain tracked in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274)
-under [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162) until an authorized follow-up is linked.
+the current native BC/BC7 output set is insufficient. [ADR-0014](../adr/0014-phase1-desktop-texture-contract.md)
+moves this texture work out of Phase 1. Implementation and BC7/ASTC/ETC2 validation are tracked in
+[#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), under decision issue
+[#274](https://github.com/Mudcrab-Team/mudcrab/issues/274) and [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162).
 
 ### 5.3 Native Co-op Multiplayer Engine
 

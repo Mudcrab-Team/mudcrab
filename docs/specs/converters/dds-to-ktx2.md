@@ -12,7 +12,7 @@ desktop policy has three routes, not selectable desktop and portable profiles:
 Compatible BC1/BC2/BC3/BC7 and DXGI RGBA8 payloads copy byte-for-byte; BC4/BC5/BC6H and
 DXGI R8 do so only in linear slots. Native preservation adds no re-encoding loss, and the runtime
 samples that GPU format directly. UASTC fallback is not a whole-pack portable profile.
-[ADR-0013](../../adr/0013-phase1-desktop-texture-contract.md) proposes the Phase 1 desktop
+[ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md) proposes the Phase 1 desktop
 scope; deferral approval and portable-profile work remain open in
 [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
@@ -35,7 +35,7 @@ unclassified linear/data. The converter does not reject every conflicting use or
 - BC1, BC2, BC3, BC4, BC5, BC6H and BC7 2D textures are covered by conversion fixtures.
 - Six-face cubemaps and reachable 3D volume textures preserve their topology.
 - Ordinary texture arrays and cube arrays are rejected explicitly. Generated merged-terrain
-  arrays have a separate BC output contract; see [ADR-0013](../../adr/0013-phase1-desktop-texture-contract.md).
+  arrays have a separate BC output contract; see [ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md).
 - All authored DDS mip levels are preserved independently; the converter does not replace
   them with a generated chain. A representation that would lose source levels is a hard failure.
 - RGBA alpha is retained for opaque, cutout and blended material consumers.
@@ -59,7 +59,7 @@ transcoded the former UASTC output to on desktop, so GPU memory does not change.
 preserved BC sources, this output belongs to the desktop profile: GPUs without BC support (Adreno
 on Android) cannot sample it, and a portable profile would have to encode these textures and the
 preserved BC sources to a portable representation. No converter option selects that profile yet;
-the proposed scope and pending decision are recorded in [ADR-0013](../../adr/0013-phase1-desktop-texture-contract.md)
+the proposed scope and pending decision are recorded in [ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md)
 and [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 Each mip is padded to whole 4x4 blocks by replicating edge pixels, so 1x1 and odd-sized mips keep

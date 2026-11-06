@@ -1,4 +1,4 @@
-# ADR-0013: Proposed Phase 1 desktop texture contract
+# ADR-0014: Proposed Phase 1 desktop texture contract
 
 - **Status:** Proposed for repository adoption; route B approved by Taylor in local review
 - **Date:** 2026-10-31
@@ -78,10 +78,10 @@ need separate evidence. #222 does not select a portable profile.
 
 ## Consequences and tracking
 
-Implementation and validation remain tracked in open #274, already linked from
-#162. Route B is complete only after repository scope sign-off and an open
-portable-profile follow-up linked from #162 and these docs. Keep #274 open until
-both gates are met.
+Parent decision: open #274, linked from #162. Route B scope was approved by a
+maintainer on 2026-11-06. Implementation and target validation are tracked in the
+open follow-up [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548), which is
+not a v0.1.0 blocker. Keep #274 open until this ADR is accepted and merged.
 The follow-up must retain:
 
 - An output profile independent of encoder selection across DDS, CPU fallback,

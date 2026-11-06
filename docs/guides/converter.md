@@ -82,7 +82,7 @@ On the author's 20 sample textures, quality was about 0.3–0.5 dB PSNR below th
 
 Those samples do not demonstrate mobile/browser pack loading. Native BC still bypasses GPU
 encoding, and CPU fallback can emit BC7. See the [desktop texture contract and proposed
-portable-output deferral](../adr/0013-phase1-desktop-texture-contract.md), pending approval in
+portable-output deferral](../adr/0014-phase1-desktop-texture-contract.md), pending approval in
 [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 - `--gpu-quality N` — endpoint refinement passes, 0–8 (default 2).

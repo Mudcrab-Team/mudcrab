@@ -173,8 +173,9 @@ Mudcrab is built in five phases. The full plans are in [`docs/roadmap/`](docs/ro
 - [ ] **[Phase 1: Asset modernization pipeline](docs/roadmap/01-asset-pipeline.md).** Pipeline
   modules are integrated; acceptance remains tracked in [#162](https://github.com/Mudcrab-Team/mudcrab/issues/162).
   Textures use native BC preservation, CPU BC7 encoding and UASTC fallback.
-  [ADR-0013](docs/adr/0013-phase1-desktop-texture-contract.md) records Taylor's local approval
-  of desktop-only texture scope; repository confirmation of portable-output deferral remains pending in
+  [ADR-0014](docs/adr/0014-phase1-desktop-texture-contract.md) defers the portable
+  (ASTC/ETC2) texture profile; it is tracked in
+  [#548](https://github.com/Mudcrab-Team/mudcrab/issues/548) under
   [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 - [ ] **[Phase 2: Core engine runtime and Vercidium renderer](docs/roadmap/02-core-engine.md).**
   Runtime, integration, profiling and acceptance infrastructure are implemented; real-asset

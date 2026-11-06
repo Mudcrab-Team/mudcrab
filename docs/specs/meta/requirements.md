@@ -31,4 +31,4 @@ converts a small synthetic game in a couple of minutes.
 
 A desktop GPU needs Vulkan, DirectX 12 or Metal support and the BC formats used by its converted
 textures. KTX2 output includes preserved native BC, newly encoded BC7 and UASTC fallback. See the
-[desktop texture contract and proposed portable-output deferral](../../adr/0013-phase1-desktop-texture-contract.md).
+[desktop texture contract and proposed portable-output deferral](../../adr/0014-phase1-desktop-texture-contract.md).

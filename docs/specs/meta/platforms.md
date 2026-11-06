@@ -26,7 +26,7 @@ This document outlines the multi-platform target strategy for Mudcrab, ensuring 
 ### B. Asset Pipeline Uniformity (glTF 2.0 & KTX2)
 
 - Current KTX2 output mixes native BC preservation, CPU BC7 encoding and UASTC fallback. Packs containing BC need compatible GPU support; converting to KTX2/glTF does not establish platform-independent loading.
-- Bevy can select ASTC, BC7 or ETC2 for UASTC based on device capabilities. Native BC payloads do not use that transcode path. Mobile/web pack loading remains unproven and requires a portable texture profile plus target validation. [ADR-0013](../../adr/0013-phase1-desktop-texture-contract.md) proposes deferring that work; the maintainer decision and implementation/validation tracking remain open in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
+- Bevy can select ASTC, BC7 or ETC2 for UASTC based on device capabilities. Native BC payloads do not use that transcode path. Mobile/web pack loading remains unproven and requires a portable texture profile plus target validation. [ADR-0014](../../adr/0014-phase1-desktop-texture-contract.md) proposes deferring that work; the maintainer decision and implementation/validation tracking remain open in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 ### C. Touch & Gamepad Responsive Controls
 

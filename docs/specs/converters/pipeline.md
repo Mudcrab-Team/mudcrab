@@ -304,7 +304,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
-- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [proposed desktop texture contract](../../adr/0013-phase1-desktop-texture-contract.md) records the pending mobile/web scope decision and validation work in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
+- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [proposed desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the pending mobile/web scope decision and validation work in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
 
