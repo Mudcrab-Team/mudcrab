@@ -1,0 +1,1262 @@
+{
+  "denominators": {
+    "emitted_schema_columns": null,
+    "manually_traced_fields": 14,
+    "named_external_stores": 3,
+    "rusqlite_candidates": 61
+  },
+  "fields": {
+    "cells.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "emittance.day_b": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_b",
+        "ordinal": 36,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "emittance.day_g": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_g",
+        "ordinal": 35,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "emittance.day_r": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_r",
+        "ordinal": 34,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "inhouse_source_records.payload": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "lights.falloff": {
+      "evidence": [
+        {
+          "anchor": "falloff REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "const LIGHT_COLUMNS: &str = \"l.radius,l.color_r,l.color_g,l.color_b,l.flags\";",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Published LIGH falloff; no mapping in the audited ReferenceQuery light suffix. Other paths remain unknown. Active PR #488 adds a consumer; it is not part of this reviewed head.",
+      "roles": [
+        "result"
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "lights.radius": {
+      "evidence": [
+        {
+          "anchor": "radius REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let radius: Option<f32> = row.get(19)?;",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "l.radius",
+        "ordinal": 19,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Source path sets PointLight.range and intensity through radius_of; overrides and caps remain separate policy. No native parity claim.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "range: radius,",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_reference_radius_override_replaces_the_record_radius()",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ]
+    },
+    "movement_types.forward_run": {
+      "evidence": [
+        {
+          "anchor": "forward_walk REAL NOT NULL, forward_run REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "run_speed: values[5]",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "m.forward_run",
+        "ordinal": 6,
+        "query": "SELECT m.editor_id, m.left_walk"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Selected NPC_Default_MT speed feeds directional target_speed. Selection and sprint multiplier remain #264 research gaps.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "let wish = intent.wish_dir * intent.target_speed;",
+          "path": "crates/engine/src/physics.rs"
+        },
+        {
+          "anchor": "let longitudinal = speeds.directions",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn movement_tuning_preserves_spec_speed_ordering()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "race_movement_links.run_movt_id": {
+      "evidence": [
+        {
+          "anchor": "walk_movt_id INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "run_movt_id",
+        "ordinal": 1,
+        "query": "SELECT walk_movt_id, run_movt_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "roles": [
+        "validation"
+      ],
+      "sink": [
+        {
+          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn packaged_movement_profile_resolves_and_legacy_package_falls_back()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "race_movement_links.walk_movt_id": {
+      "evidence": [
+        {
+          "anchor": "walk_movt_id INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "walk_movt_id",
+        "ordinal": 0,
+        "query": "SELECT walk_movt_id, run_movt_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "roles": [
+        "validation"
+      ],
+      "sink": [
+        {
+          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn packaged_movement_profile_resolves_and_legacy_package_falls_back()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "records.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "references.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "waters.deep_color": {
+      "evidence": [
+        {
+          "anchor": "shallow_color INTEGER, deep_color INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "shallow: unpack_color(row.get::<_, u32>(1)?)",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "deep_color",
+        "ordinal": 2,
+        "query": "SELECT id,shallow_color,deep_color"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Value maps to WaterColors.deep and StandardMaterial.base_color. Opacity remains an approximation; native parity unproven.",
+      "roles": [
+        "filter",
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "let [r, g, b] = colors.deep;",
+          "path": "crates/engine/src/streaming.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn catalog_returns_water_colors_and_factors()",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ]
+    },
+    "waters.shallow_color": {
+      "evidence": [
+        {
+          "anchor": "shallow_color INTEGER, deep_color INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "shallow: unpack_color(row.get::<_, u32>(1)?)",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "shallow_color",
+        "ordinal": 1,
+        "query": "SELECT id,shallow_color,deep_color"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. No shallow-value material sink found in audited setup. Active PR #299 adds shallow color behavior; it is not part of this reviewed head.",
+      "roles": [
+        "filter",
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn catalog_returns_water_colors_and_factors()",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ]
+    }
+  },
+  "format_version": 1,
+  "legacy_shapes": [
+    {
+      "evidence": [
+        {
+          "anchor": "pub fn migrate_room_portals(",
+          "path": "crates/converter/src/esm/rooms.rs"
+        }
+      ],
+      "key": "room_portals pre-pair_index",
+      "reason": "Retained legacy migration; old primary key is not a current emitted shape."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(super) fn ensure_table(",
+          "path": "crates/converter/src/esm/doors.rs"
+        }
+      ],
+      "key": "door_links pre-destination_name",
+      "reason": "Optional legacy column migration; missing door table uses NULL query suffix."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(super) fn replace_snapshot_tables(",
+          "path": "crates/converter/src/esm/inhouse_terrain_diagnostics.rs"
+        }
+      ],
+      "key": "terrain unresolved_texture_ids JSON",
+      "reason": "Owned legacy snapshot replaced by scalar diagnostic rows, not a second runtime store."
+    }
+  ],
+  "limitations": [
+    "Committed inventory is a source-only view; requested emitted reports add actual schema/query dependencies. Column denominators sum shape-specific declarations, not unique fields or populated rows.",
+    "No inferred table population. Prepare authorizer events are dependencies, including predicates/joins/count-only empty-column table reads; executed and mapped rows stay unknown.",
+    "Lexical candidate scan covers dot-call prepare/prepare_cached/query_row/query_row_and_then/execute/execute_batch, plain strings and same-file string constants. It skips cfg(test) items and *_tests.rs. It is not receiver/type/macro/ORM analysis; other dynamic SQL remains unknown.",
+    "Source fingerprints conservatively guard projection declarations and reader evidence. A changed file requires explicit review even for an unrelated change; no all-fields-consumed gate.",
+    "Mapping annotations check selected SELECT-list ordinal/expression and prepared dependency, not every closure or runtime conversion. Source sinks and named existing tests do not mean those tests ran in this task.",
+    "Python SQLite version, R-tree support and authorizer behavior may differ from bundled rusqlite. Rust prepares composed variants independently; cross-version failures remain visible.",
+    "Schema-driven decoding and reader identities remain authoritative. No second record decoder, live engine instrumentation, conversion campaign or native semantic/parity evidence is provided."
+  ],
+  "queries": [
+    {
+      "expression": "\"CREATE TABLE schema_info(version INTEGER NOT NULL)\"",
+      "id": "crates/engine/src/app.rs::execute::0e596cae937542cb::1",
+      "line": 810,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "CREATE TABLE schema_info(version INTEGER NOT NULL)",
+      "status": "literal"
+    },
+    {
+      "expression": "\"INSERT INTO schema_info VALUES(?1)\"",
+      "id": "crates/engine/src/app.rs::execute::ad1f6897f3c2009b::1",
+      "line": 811,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "INSERT INTO schema_info VALUES(?1)",
+      "status": "literal"
+    },
+    {
+      "expression": "r#\"CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);\n            CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);\n            CREATE TABLE land(cell_id INTEGER PRIMARY KEY);\n            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);\n            CREATE TABLE \"references\"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);\n            CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);\n            CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);\n            INSERT INTO lod_build VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');\n            CREATE TABLE lod_chunks(worldspace_id INTEGER,tier INTEGER,anchor_x INTEGER,anchor_y INTEGER,payload_path TEXT,content_hash TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,source_cells TEXT,PRIMARY KEY(worldspace_id,tier,anchor_x,anchor_y));\n            CREATE VIRTUAL TABLE lod_chunks_spatial USING rtree(id,minX,maxX,minY,maxY,+worldspace_id,+tier,+anchor_x,+anchor_y);\n            CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);\n            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);\n            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);\"#",
+      "id": "crates/engine/src/app.rs::execute_batch::eb880e269251e87a::1",
+      "line": 815,
+      "method": "execute_batch",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "CREATE TABLE cells(id INTEGER PRIMARY KEY,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER,interior_name TEXT);\n            CREATE TABLE worldspaces(id INTEGER PRIMARY KEY,editor_id TEXT,parent_world INTEGER,flags INTEGER,lod_origin_x INTEGER,lod_origin_y INTEGER);\n            CREATE TABLE land(cell_id INTEGER PRIMARY KEY);\n            CREATE TABLE statics(id INTEGER PRIMARY KEY,model_path TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER NOT NULL,flags INTEGER NOT NULL DEFAULT 0);\n            CREATE TABLE \"references\"(id INTEGER PRIMARY KEY,cell_id INTEGER,base_form_id INTEGER,pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);\n            CREATE VIRTUAL TABLE exterior_spatial USING rtree(id,minX,maxX,minY,maxY,minZ,maxZ,+cell_id,+worldspace_id);\n            CREATE TABLE lod_build(id INTEGER PRIMARY KEY CHECK (id=1),build_identity TEXT NOT NULL);\n            INSERT INTO lod_build VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');\n            CREATE TABLE lod_chunks(worldspace_id INTEGER,tier INTEGER,anchor_x INTEGER,anchor_y INTEGER,payload_path TEXT,content_hash TEXT,bounds_min_x REAL,bounds_min_y REAL,bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,source_cells TEXT,PRIMARY KEY(worldspace_id,tier,anchor_x,anchor_y));\n            CREATE VIRTUAL TABLE lod_chunks_spatial USING rtree(id,minX,maxX,minY,maxY,+worldspace_id,+tier,+anchor_x,+anchor_y);\n            CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);\n            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);\n            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);",
+      "status": "unknown"
+    },
+    {
+      "expression": "\"INSERT INTO worldspaces(id,editor_id,parent_world,flags,lod_origin_x,lod_origin_y) VALUES(?1,'Fixture',NULL,0,?2,?3)\"",
+      "id": "crates/engine/src/app.rs::execute::c441cb998d3661d3::1",
+      "line": 830,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "INSERT INTO worldspaces(id,editor_id,parent_world,flags,lod_origin_x,lod_origin_y) VALUES(?1,'Fixture',NULL,0,?2,?3)",
+      "status": "literal"
+    },
+    {
+      "expression": "\"INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(?1,?2,?3,?4)\"",
+      "id": "crates/engine/src/app.rs::prepare::6a572987ac16b02a::1",
+      "line": 835,
+      "method": "prepare",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "INSERT INTO cells(id,worldspace_id,grid_x,grid_y) VALUES(?1,?2,?3,?4)",
+      "status": "literal"
+    },
+    {
+      "expression": "params![cell_id, worldspace_id, grid_x, grid_y]",
+      "id": "crates/engine/src/app.rs::execute::67b9897643d9153f::1",
+      "line": 839,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"INSERT INTO cells(id,worldspace_id,grid_x,grid_y,interior_name) VALUES(?1,NULL,NULL,NULL,'Fixture Hall')\"",
+      "id": "crates/engine/src/app.rs::execute::b9d64ae69adbc5d8::1",
+      "line": 844,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "INSERT INTO cells(id,worldspace_id,grid_x,grid_y,interior_name) VALUES(?1,NULL,NULL,NULL,'Fixture Hall')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"INSERT INTO \\\"references\\\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)\n             VALUES(?1,?2,?3,256.0,0.0,192.0,0.0,0.0,0.0,1.0)\"",
+      "id": "crates/engine/src/app.rs::execute::679515acc542451d::1",
+      "line": 848,
+      "method": "execute",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "INSERT INTO \"references\"(id,cell_id,base_form_id,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)\n             VALUES(?1,?2,?3,256.0,0.0,192.0,0.0,0.0,0.0,1.0)",
+      "status": "literal"
+    },
+    {
+      "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
+      "id": "crates/engine/src/app.rs::query_row::c275c54bf961263d::1",
+      "line": 2416,
+      "method": "query_row",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
+      "id": "crates/engine/src/app.rs::query_row::c275c54bf961263d::2",
+      "line": 2451,
+      "method": "query_row",
+      "path": "crates/engine/src/app.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT version FROM schema_info LIMIT 1\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::query_row::667ba4591645c6ae::1",
+      "line": 271,
+      "method": "query_row",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT version FROM schema_info LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT id FROM cells WHERE worldspace_id=?1 AND grid_x=?2 AND grid_y=?3\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::query_row::1c39dffdffe93e9f::1",
+      "line": 292,
+      "method": "query_row",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT id FROM cells WHERE worldspace_id=?1 AND grid_x=?2 AND grid_y=?3",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT build_identity FROM lod_build WHERE id = 1\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::query_row::d18eab1fd2f9d7b7::1",
+      "line": 418,
+      "method": "query_row",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT build_identity FROM lod_build WHERE id = 1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT count(*) FROM lod_chunks\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::query_row::2968473071c26911::1",
+      "line": 427,
+      "method": "query_row",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT count(*) FROM lod_chunks",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::query_row::7348bbafac0aa457::1",
+      "line": 445,
+      "method": "query_row",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT tier, anchor_x, anchor_y, payload_path, content_hash,\n                bounds_min_x, bounds_min_y, bounds_min_z,\n                bounds_max_x, bounds_max_y, bounds_max_z, source_cells\n         FROM lod_chunks WHERE worldspace_id = ?1 ORDER BY tier, anchor_x, anchor_y\"",
+      "id": "crates/engine/src/bin/world-inspect.rs::prepare::f373091f3fda2f68::1",
+      "line": 453,
+      "method": "prepare",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT tier, anchor_x, anchor_y, payload_path, content_hash,\n                bounds_min_x, bounds_min_y, bounds_min_z,\n                bounds_max_x, bounds_max_y, bounds_max_z, source_cells\n         FROM lod_chunks WHERE worldspace_id = ?1 ORDER BY tier, anchor_x, anchor_y",
+      "status": "literal"
+    },
+    {
+      "expression": "sql",
+      "id": "crates/engine/src/bin/world-inspect.rs::prepare::4ec7c53222c8a758::1",
+      "line": 536,
+      "method": "prepare",
+      "path": "crates/engine/src/bin/world-inspect.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT version FROM schema_info LIMIT 1\"",
+      "id": "crates/engine/src/bug_report/snapshot.rs::query_row::667ba4591645c6ae::1",
+      "line": 690,
+      "method": "query_row",
+      "path": "crates/engine/src/bug_report/snapshot.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT version FROM schema_info LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT substr(build_identity,1,129) FROM lod_build WHERE id=1 LIMIT 1\"",
+      "id": "crates/engine/src/bug_report/snapshot.rs::query_row::4409d4d50e0c4487::1",
+      "line": 699,
+      "method": "query_row",
+      "path": "crates/engine/src/bug_report/snapshot.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT substr(build_identity,1,129) FROM lod_build WHERE id=1 LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT id, worldspace_id, grid_x, grid_y FROM cells \\\n             WHERE interior_name = ?1 COLLATE NOCASE \\\n             ORDER BY (worldspace_id IS ?2 AND grid_x IS NOT NULL AND grid_y IS NOT NULL) DESC, \\\n                      worldspace_id IS ?2 DESC, id LIMIT 1\"",
+      "id": "crates/engine/src/cell_commands.rs::query_row::d380da8bd4274c2f::1",
+      "line": 104,
+      "method": "query_row",
+      "path": "crates/engine/src/cell_commands.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT id, worldspace_id, grid_x, grid_y FROM cells WHERE interior_name = ?1 COLLATE NOCASE ORDER BY (worldspace_id IS ?2 AND grid_x IS NOT NULL AND grid_y IS NOT NULL) DESC, worldspace_id IS ?2 DESC, id LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
+      "id": "crates/engine/src/cell_commands.rs::query_row::c275c54bf961263d::1",
+      "line": 132,
+      "method": "query_row",
+      "path": "crates/engine/src/cell_commands.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')\"",
+      "id": "crates/engine/src/physics.rs::query_row::2a7cf2b52de9c35b::1",
+      "line": 109,
+      "method": "query_row",
+      "path": "crates/engine/src/physics.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='movement_types')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT race_id FROM npcs WHERE id=7\"",
+      "id": "crates/engine/src/physics.rs::query_row::f34d36791d723a2f::1",
+      "line": 117,
+      "method": "query_row",
+      "path": "crates/engine/src/physics.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT race_id FROM npcs WHERE id=7",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT record_type FROM records WHERE form_id=?1\"",
+      "id": "crates/engine/src/physics.rs::query_row::831222200458694b::1",
+      "line": 120,
+      "method": "query_row",
+      "path": "crates/engine/src/physics.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT record_type FROM records WHERE form_id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=?1\"",
+      "id": "crates/engine/src/physics.rs::query_row::0c8387bdf614135e::1",
+      "line": 131,
+      "method": "query_row",
+      "path": "crates/engine/src/physics.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT walk_movt_id, run_movt_id FROM race_movement_links WHERE id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, \\\n                    m.forward_walk, m.forward_run, m.back_walk, m.back_run, \\\n                    COALESCE(p.name, '<unknown plugin>') \\\n             FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order \\\n             WHERE m.id=?1\"",
+      "id": "crates/engine/src/physics.rs::query_row::9bade66fdf0e81ef::1",
+      "line": 144,
+      "method": "query_row",
+      "path": "crates/engine/src/physics.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT m.editor_id, m.left_walk, m.left_run, m.right_walk, m.right_run, m.forward_walk, m.forward_run, m.back_walk, m.back_run, COALESCE(p.name, '<unknown plugin>') FROM movement_types m LEFT JOIN plugins p ON p.id=m.load_order WHERE m.id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "crate::world::database::EXTERIOR_CELL_ID_SQL",
+      "id": "crates/engine/src/route.rs::query_row::c275c54bf961263d::1",
+      "line": 350,
+      "method": "query_row",
+      "path": "crates/engine/src/route.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "entity",
+      "id": "crates/engine/src/streaming/lod.rs::prepare::bca3685fea8acd4e::1",
+      "line": 900,
+      "method": "prepare",
+      "path": "crates/engine/src/streaming/lod.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM pragma_table_info('actor_models') WHERE name='weight')\"",
+      "id": "crates/engine/src/world/actor_catalog.rs::query_row::82e20e9fd11f6a91::1",
+      "line": 140,
+      "method": "query_row",
+      "path": "crates/engine/src/world/actor_catalog.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM pragma_table_info('actor_models') WHERE name='weight')",
+      "status": "literal"
+    },
+    {
+      "expression": "&toned",
+      "id": "crates/engine/src/world/actor_catalog.rs::prepare::b7739f53c1246c7c::1",
+      "line": 160,
+      "method": "prepare",
+      "path": "crates/engine/src/world/actor_catalog.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "&untoned",
+      "id": "crates/engine/src/world/actor_catalog.rs::prepare::9e247fd08ccc965c::1",
+      "line": 161,
+      "method": "prepare",
+      "path": "crates/engine/src/world/actor_catalog.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT npc_id, slot, model_path FROM actor_model_parts\"",
+      "id": "crates/engine/src/world/actor_catalog.rs::prepare::211e31dd551ea0f3::1",
+      "line": 220,
+      "method": "prepare",
+      "path": "crates/engine/src/world/actor_catalog.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT npc_id, slot, model_path FROM actor_model_parts",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT l.id,t.diffuse_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id WHERE t.diffuse_path IS NOT NULL\"",
+      "id": "crates/engine/src/world/database.rs::prepare::1e19934b55b151ef::1",
+      "line": 244,
+      "method": "prepare",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT l.id,t.diffuse_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id WHERE t.diffuse_path IS NOT NULL",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT l.id,t.normal_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id WHERE t.normal_path IS NOT NULL AND t.normal_path <> ''\"",
+      "id": "crates/engine/src/world/database.rs::prepare::faee364cb5934ddf::1",
+      "line": 259,
+      "method": "prepare",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT l.id,t.normal_path FROM landscape_textures l JOIN texture_sets t ON t.id=l.texture_set_id WHERE t.normal_path IS NOT NULL AND t.normal_path <> ''",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT id,flow_normal_path FROM waters WHERE flow_normal_path IS NOT NULL AND flow_normal_path <> ''\"",
+      "id": "crates/engine/src/world/database.rs::prepare::80017797a91d6515::1",
+      "line": 273,
+      "method": "prepare",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT id,flow_normal_path FROM waters WHERE flow_normal_path IS NOT NULL AND flow_normal_path <> ''",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity FROM waters \\\n                 WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL \\\n                 AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL\"",
+      "id": "crates/engine/src/world/database.rs::prepare::cb16ff8b9470e073::1",
+      "line": 288,
+      "method": "prepare",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT id,shallow_color,deep_color,reflection_color,fresnel,reflectivity FROM waters WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL AND reflection_color IS NOT NULL AND fresnel IS NOT NULL AND reflectivity IS NOT NULL",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT version FROM schema_info\"",
+      "id": "crates/engine/src/world/database.rs::query_row::7893cc68ce99edec::1",
+      "line": 592,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT version FROM schema_info",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM lod_chunks WHERE worldspace_id=?1)\"",
+      "id": "crates/engine/src/world/database.rs::query_row::ec0674f97917939d::1",
+      "line": 599,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM lod_chunks WHERE worldspace_id=?1)",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1\"",
+      "id": "crates/engine/src/world/database.rs::query_row::ae11216bd8fce7ee::1",
+      "line": 609,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT lod_origin_x,lod_origin_y FROM worldspaces WHERE id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT build_identity FROM lod_build WHERE id=1\"",
+      "id": "crates/engine/src/world/database.rs::query_row::f6d3127f7e727b75::1",
+      "line": 636,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT build_identity FROM lod_build WHERE id=1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT DISTINCT c.worldspace_id,c.tier,c.anchor_x,c.anchor_y,c.payload_path,c.content_hash,\\\n         c.bounds_min_x,c.bounds_min_y,c.bounds_min_z,c.bounds_max_x,c.bounds_max_y,c.bounds_max_z,\\\n         c.source_cells FROM lod_chunks_spatial r \\\n         JOIN lod_chunks c ON c.worldspace_id=r.worldspace_id AND c.tier=r.tier \\\n         AND c.anchor_x=r.anchor_x AND c.anchor_y=r.anchor_y \\\n         WHERE r.worldspace_id=?1 AND r.tier=?2 \\\n         AND r.minX<=?4 AND r.maxX>=?3 AND r.minY<=?6 AND r.maxY>=?5\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::f6cb976932cb09a7::1",
+      "line": 647,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT DISTINCT c.worldspace_id,c.tier,c.anchor_x,c.anchor_y,c.payload_path,c.content_hash,c.bounds_min_x,c.bounds_min_y,c.bounds_min_z,c.bounds_max_x,c.bounds_max_y,c.bounds_max_z,c.source_cells FROM lod_chunks_spatial r JOIN lod_chunks c ON c.worldspace_id=r.worldspace_id AND c.tier=r.tier AND c.anchor_x=r.anchor_x AND c.anchor_y=r.anchor_y WHERE r.worldspace_id=?1 AND r.tier=?2 AND r.minX<=?4 AND r.maxX>=?3 AND r.minY<=?6 AND r.maxY>=?5",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')\"",
+      "id": "crates/engine/src/world/database.rs::query_row::7348bbafac0aa457::1",
+      "line": 676,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lod_chunks')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::48f76a4ac37e2d76::1",
+      "line": 870,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'",
+      "status": "literal"
+    },
+    {
+      "expression": "[]",
+      "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::1",
+      "line": 871,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lights'\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::00394cc7abe7d0d3::1",
+      "line": 879,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lights'",
+      "status": "literal"
+    },
+    {
+      "expression": "[]",
+      "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::2",
+      "line": 880,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT name FROM pragma_table_info('door_links')\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::a947ed95f29771cc::1",
+      "line": 904,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT name FROM pragma_table_info('door_links')",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='radius_override'\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::87ae2ec6251d6ff0::1",
+      "line": 930,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='radius_override'",
+      "status": "literal"
+    },
+    {
+      "expression": "[]",
+      "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::3",
+      "line": 933,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT (SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='emittance_id')\n                  * (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='emittance')\"",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::c06410587e7f08d3::1",
+      "line": 940,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT (SELECT COUNT(*) FROM pragma_table_info('references') WHERE name='emittance_id')\n                  * (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='emittance')",
+      "status": "literal"
+    },
+    {
+      "expression": "[]",
+      "id": "crates/engine/src/world/database.rs::query_row::4f53cda18c2baa0c::4",
+      "line": 944,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT COUNT(*) FROM pragma_table_info('references') \\\n             WHERE name IN ('header_flags','enable_parent_id','enable_parent_flags')\"",
+      "id": "crates/engine/src/world/database.rs::query_row::492a76dac4a59df8::1",
+      "line": 1016,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT COUNT(*) FROM pragma_table_info('references') WHERE name IN ('header_flags','enable_parent_id','enable_parent_flags')",
+      "status": "literal"
+    },
+    {
+      "expression": "EXTERIOR_CELL_ID_SQL",
+      "id": "crates/engine/src/world/database.rs::query_row::3feb92284c126719::1",
+      "line": 1063,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT c.id FROM cells c\n     LEFT JOIN land l ON l.cell_id=c.id\n     WHERE c.worldspace_id=?1 AND c.grid_x=?2 AND c.grid_y=?3\n     ORDER BY (l.cell_id IS NOT NULL) DESC, c.id DESC\n     LIMIT 1",
+      "status": "literal"
+    },
+    {
+      "expression": "&sql",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::239129b74dd812c4::1",
+      "line": 1080,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "&sql",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::239129b74dd812c4::2",
+      "line": 1090,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "&query.parent_sql",
+      "id": "crates/engine/src/world/database.rs::prepare_cached::a18fbdd617638c39::1",
+      "line": 1101,
+      "method": "prepare_cached",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "[parent]",
+      "id": "crates/engine/src/world/database.rs::query_row::6263c514a152526f::1",
+      "line": 1102,
+      "method": "query_row",
+      "path": "crates/engine/src/world/database.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "sql",
+      "id": "crates/engine/src/world/environment.rs::prepare::4ec7c53222c8a758::1",
+      "line": 486,
+      "method": "prepare",
+      "path": "crates/engine/src/world/environment.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": null,
+      "status": "unknown"
+    },
+    {
+      "expression": "\"SELECT p.priority FROM formid_map f JOIN plugins p \\\n             ON p.name=f.plugin_name COLLATE NOCASE WHERE f.form_id=?1\"",
+      "id": "crates/engine/src/world/imagespace.rs::prepare::6688130150955807::1",
+      "line": 228,
+      "method": "prepare",
+      "path": "crates/engine/src/world/imagespace.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT p.priority FROM formid_map f JOIN plugins p ON p.name=f.plugin_name COLLATE NOCASE WHERE f.form_id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT record_type,load_order,data FROM records WHERE form_id=?1\"",
+      "id": "crates/engine/src/world/imagespace.rs::query_row::70e9dce6c30a183a::1",
+      "line": 245,
+      "method": "query_row",
+      "path": "crates/engine/src/world/imagespace.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+      "status": "literal"
+    },
+    {
+      "expression": "\"SELECT name FROM plugins WHERE priority=?1\"",
+      "id": "crates/engine/src/world/imagespace.rs::prepare::e00b22ed53d96ea7::1",
+      "line": 266,
+      "method": "prepare",
+      "path": "crates/engine/src/world/imagespace.rs",
+      "reason": "Bounded lexical candidate scan; receiver types are not resolved.",
+      "sql": "SELECT name FROM plugins WHERE priority=?1",
+      "status": "literal"
+    }
+  ],
+  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
+  "reviewed_source_guard_sha256": "85f08fa38331643f02d794149682bdb7fc30df407e25d85a274c5757fdc4f331",
+  "schema_status": "not_extracted",
+  "schemas": {},
+  "stores": {
+    "cell_cache.rkyv": {
+      "evidence": [
+        {
+          "anchor": "pub fn terrain(&self, cell_id: u32)",
+          "path": "crates/engine/src/world/cache.rs"
+        },
+        {
+          "anchor": "let mut terrain = cache.terrain(payload.cell_id);",
+          "path": "crates/engine/src/streaming.rs"
+        }
+      ],
+      "owner": "terrain/cache maintainers",
+      "reason": "Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.",
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "converted glTF/KTX2 assets": {
+      "evidence": [
+        {
+          "anchor": "fn converted_texture_path(",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "asset/streaming maintainers",
+      "reason": "External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.",
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "unknown",
+        "projected": "unknown",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "merged-terrain JSON/KTX2/rkyv": {
+      "evidence": [
+        {
+          "anchor": "serde_json::from_str(&text)",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "rkyv::deserialize::<TerrainCellMesh, RkyvError>(cell)",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "pub fn check_ktx2_header(",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "pub const LAND_TEXTURE_TABLE_PATH: &str = \"terrain/land-textures.json\";",
+          "path": "crates/shared/src/terrain_mesh.rs"
+        }
+      ],
+      "owner": "terrain merge maintainers (#236 merged)",
+      "reason": "terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.",
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    }
+  },
+  "variants": []
+}

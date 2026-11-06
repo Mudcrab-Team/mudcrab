@@ -1,0 +1,278 @@
+{
+  "$defs": {
+    "field": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "type": "array"
+        },
+        "mapping": {
+          "additionalProperties": false,
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "ordinal": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query",
+            "ordinal",
+            "expression"
+          ],
+          "type": "object"
+        },
+        "owner": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "enum": [
+              "lookup",
+              "filter",
+              "validation",
+              "result",
+              "provenance"
+            ]
+          },
+          "type": "array"
+        },
+        "sink": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "type": "array"
+        },
+        "states": {
+          "$ref": "#/$defs/states"
+        },
+        "tests": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "owner",
+        "reason",
+        "states",
+        "roles",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "policy": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "enum": [
+            "deferred",
+            "provenance",
+            "opaque"
+          ]
+        },
+        "owner": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "classification",
+        "owner",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "reference": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "anchor"
+      ],
+      "type": "object"
+    },
+    "states": {
+      "additionalProperties": false,
+      "properties": {
+        "decoded": {
+          "enum": [
+            "opaque",
+            "rejected",
+            "source_decoded",
+            "unknown"
+          ]
+        },
+        "mapped": {
+          "enum": [
+            "source_mapping",
+            "unknown"
+          ]
+        },
+        "preserved": {
+          "enum": [
+            "source_preserved",
+            "unknown"
+          ]
+        },
+        "projected": {
+          "enum": [
+            "source_projected",
+            "unknown"
+          ]
+        },
+        "query_dependent": {
+          "enum": [
+            "source_reference",
+            "unknown"
+          ]
+        },
+        "semantic_use": {
+          "enum": [
+            "source_sink",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "decoded",
+        "preserved",
+        "projected",
+        "query_dependent",
+        "mapped",
+        "semantic_use"
+      ],
+      "type": "object"
+    },
+    "store": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "type": "array"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "states": {
+          "$ref": "#/$defs/states"
+        }
+      },
+      "required": [
+        "owner",
+        "reason",
+        "states",
+        "evidence"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blob_default": {
+      "$ref": "#/$defs/policy"
+    },
+    "fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/field"
+      },
+      "type": "object"
+    },
+    "format_version": {
+      "const": 1
+    },
+    "legacy_shapes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/reference"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "reason",
+          "evidence"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "reviewed_at_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "stores": {
+      "additionalProperties": {
+        "$ref": "#/$defs/store"
+      },
+      "type": "object"
+    },
+    "tables": {
+      "additionalProperties": {
+        "$ref": "#/$defs/policy"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "format_version",
+    "reviewed_at_commit",
+    "fields",
+    "tables",
+    "stores",
+    "blob_default",
+    "legacy_shapes",
+    "limitations"
+  ],
+  "title": "World-data manual dispositions v1",
+  "type": "object"
+}
