@@ -127,8 +127,10 @@ python3 scripts/capture_skyrim_jump_inputs.py \
   --session '/path/to/new-input-session' \
   --private-output '/path/to/new-input-campaign' \
   --corpus '/path/to/new-input-corpus' --ocr-prefix /
-python3 scripts/verify_skyrim_jump_inputs.py
+python3 scripts/verify_skyrim_jump_inputs.py --corpus '/path/to/new-input-corpus'
 ```
+
+The campaign archives its acquisition sources before the first attempt. Resume requires the same source bytes and plan. Failed attempts retain any trace bytes with their hash; an interruption before trace creation is explicitly marked `not-created`, not counted as an observation. Private logs and receipts remain in the private campaign directory. The committed historical source archive and traces remain unchanged when capture tooling is corrected.
 
 The header is `mudcrab-jump-inputs-256-v4` with version code 4. The shared wire record remains 256 bytes. Kind 10 has label `setter` or `launch`. `code` is a validity mask. For `setter`, `state` identifies the observed CALL RVA. This profile verifies CALLs at `0x7cf269` and `0x6752ba`, both targeting the unchanged setter at `0x10645e0`. The measured player input path uses `0x6752ba`. Its wrapper receives `controller*` in RCX and a float in XMM1, preserves both, and calls the original exactly once. The wrapper holds no record lock across native code. The native launch callback also remains unchanged.
 

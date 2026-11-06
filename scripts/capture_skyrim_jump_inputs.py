@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
 
@@ -40,6 +41,19 @@ def control_prediction(baseline, condition):
             'method': 'Baseline raw factors, requested typed control, native float32 order; no fit.'}
 
 
+def retain_failure(corpus, output, attempt, failure):
+    """Keep available failed bytes, or explicitly record that capture never created them."""
+    attempt['failure'] = failure
+    trace = output / 'trace.bin'
+    if trace.is_file():
+        raw = trace.read_bytes()
+        kept = corpus / 'traces' / f"failed-{attempt['id']}-attempt-{attempt['attempt']}.bin.gz"
+        kept.write_bytes(gzip.compress(raw, mtime=0))
+        attempt.update(path=str(kept.relative_to(corpus)), trace_sha256=hashlib.sha256(raw).hexdigest())
+    else:
+        attempt['trace_status'] = 'not-created'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session', type=Path, required=True)
@@ -69,6 +83,20 @@ def main():
                  'runtime_sha256': plan['runtime_sha256'], 'runs': [], 'attempts': []})
     if manifest['plan_sha256'] != digest(args.plan):
         parser.error('Declared plan changed; use a new corpus')
+    source_bytes = {name: (ROOT / name).read_bytes() for name in SOURCES}
+    archive_path = args.corpus / 'capture-source.zip'
+    if archive_path.exists():
+        with zipfile.ZipFile(archive_path) as archive:
+            archived = {name: archive.read(name) for name in archive.namelist()}
+        if archived != source_bytes:
+            parser.error('Capture sources changed; use a new corpus')
+    else:
+        if manifest['attempts']:
+            parser.error('Existing attempts lack a source archive; use a new corpus')
+        with zipfile.ZipFile(archive_path, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, data in source_bytes.items():
+                archive.writestr(name, data)
+    sources = {name: hashlib.sha256(data).hexdigest() for name, data in source_bytes.items()}
     for condition in plan['conditions']:
         name = condition['id']
         if args.condition and name != args.condition:
@@ -92,7 +120,6 @@ def main():
                    '--session', str(args.session.resolve()), '--output', str(output.resolve()),
                    '--fixture', str(fixture_path.resolve()), '--frame-cap', str(plan['frame_cap']),
                    '--ocr-prefix', str(args.ocr_prefix.resolve())]
-        sources = {name: digest(ROOT / name) for name in SOURCES}
         receipt = {'session_sha256': digest(args.session / 'session.json'), 'sources': sources,
                    'command': command, 'prediction_before_capture': prediction, 'adopted': bool(adopted)}
         write(args.private_output / f'{name}-attempt-{attempt}-receipt.json', receipt)
@@ -106,7 +133,8 @@ def main():
         write(manifest_path, manifest)
         if exit_code:
             failure = json.loads((output / 'failure.json').read_text())
-            attempt_row['failure'] = {key: failure[key] for key in ('phase', 'error')}
+            retain_failure(args.corpus, output, attempt_row,
+                           {key: failure[key] for key in ('phase', 'error')})
             write(manifest_path, manifest)
             raise RuntimeError(f'Capture failed; preserved {output}')
         proof = json.loads((output / 'proof.json').read_text())
@@ -129,7 +157,8 @@ def main():
                     if original[key] != result['inputs'][key]:
                         raise ValueError('Control changed an unrequested base factor')
         except ValueError as error:
-            attempt_row['failure'] = {'phase': 'v4-input-proof', 'error': str(error)}
+            retain_failure(args.corpus, output, attempt_row,
+                           {'phase': 'v4-input-proof', 'error': str(error)})
             write(manifest_path, manifest)
             raise
         destination = args.corpus / 'traces' / (name + '.bin.gz')

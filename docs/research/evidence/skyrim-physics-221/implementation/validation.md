@@ -1,6 +1,6 @@
 # Implementation validation
 
-These local results were observed on 2026-11-06, on upstream base `ee686282126e369af0b68a8282db80dc7e10dd6a`. The [receipt](validation/receipt.json) hashes the checked source files and retained compressed logs. The original before measurement remains pinned to `1dcca42fc398baaf626e588694f9e08084117f11`. Hosted CI and the PR review are separate gates; this record does not claim they have finished.
+The initial local results below describe commit `6a29ba6274cc87d6b8aac5348a14413cc16d6ae8`, observed on 2026-11-06 on upstream base `ee686282126e369af0b68a8282db80dc7e10dd6a`. The [receipt](validation/receipt.json) hashes the checked source files and retained compressed logs. The original before measurement remains pinned to `1dcca42fc398baaf626e588694f9e08084117f11`. Hosted CI and the PR review are separate gates; this record does not claim they have finished.
 
 The machine runs CachyOS Linux with Rust 1.98.1, Python 3.14.9 and Python 3.11. Rust commands used `RUSTFLAGS='-C debuginfo=0'`, `CARGO_BUILD_JOBS=4` and a task-private `CARGO_TARGET_DIR`. The local linker was lld. No Cargo dependency or linker configuration was changed.
 
@@ -45,3 +45,12 @@ python3 -B scripts/check_skyrim_jump_runtime.py \
 The [portable audit recheck](recheck.py) retains the evidence reviewer's verification logic with only the repository-root lookup and output destinations made portable. It verifies saved hashes, independent rescoring, input isolation, raw headless metrics, native input controls, chart regeneration and local report links. Its [recorded output](validation/evidence-recheck.json) is retained. It does not execute Rust; the last command does.
 
 The evidence audit's light source-linkage finding is resolved by the bounded RTTI, vtable, CALL and `.pdata` excerpt in [light-radius-construction.txt](../light-radius-construction.txt). The published extraction command was rerun against the pinned executable. Rebuilt recorder DLLs are not claimed to be byte-identical to captured DLLs; capture provenance uses the archived source bytes and original receipts.
+
+
+## Review corrections
+
+CodeRabbit identified two reproducible gaps after the initial implementation was published. Evidence-only changes now select both CI validators. Capture failures now retain and hash any trace, or explicitly report that an unsuccessful capture never created one. New campaigns archive acquisition source bytes before starting and require identical sources on resume. The README now directs verification to the new corpus.
+
+The [follow-up receipt](validation/review-fixes-receipt.json) hashes the corrected tools and the new checks. The [CI selection regression](validation/review-ci-before.log.gz) failed for all eight evidence/source cases before the fix and [passes afterward](validation/review-ci-after.log.gz), while an unrelated documentation path still skips these jobs. The [capture regression](validation/review-capture-before.log.gz) reproduced missing failure fields in three cases. The final [157-test Python run](validation/review-python-all.log.gz) passes, including failed-then-resumed complete campaigns, altered failed traces, archive drift and a falsely successful missing-trace record. It stubs native process execution and replays existing real trace bytes through the capture CLI and verifier; it is not a new native measurement.
+
+The current-build [engine script-option audit](validation/review-config-audit.log.gz) also passes. The original native corpus, captured acquisition source archives, frozen evaluator and production replay sources are unchanged. The original receipt remains the historical source snapshot for the first implementation; the follow-up receipt identifies the corrected evidence tools.
