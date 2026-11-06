@@ -3,7 +3,11 @@
 pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
+pub mod grass;
+pub mod grass_settings;
+pub mod initial_enable;
 pub mod lod;
+pub mod model_visibility;
 pub mod plugin_selection;
 pub mod records;
 pub mod streaming_costs;

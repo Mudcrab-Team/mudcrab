@@ -81,12 +81,12 @@ fn outputs(reader: RecordReader) -> Vec<&'static str> {
     let mut files = vec![
         "skyrim_world.db",
         "cell_cache.rkyv",
+        "cell_cache_preserved.rkyv",
         "record-reader.json",
         CONVERSION_NOTES_FILE,
     ];
     if reader == RecordReader::Inhouse {
         files.extend([
-            "cell_cache_preserved.rkyv",
             "inhouse-reader-diagnostics.json",
             inhouse::DATABASE_PROFILE_FILE,
         ]);
@@ -368,8 +368,8 @@ fn validate_bundle(directory: &Path, identity: &Identity) -> Result<()> {
                     .all(|name| profile["counts"][name].is_u64()),
             "incomplete database profile"
         );
-        validate_cell_cache(&directory.join("cell_cache_preserved.rkyv"))?;
     }
+    validate_cell_cache(&directory.join("cell_cache_preserved.rkyv"))?;
     validate_cell_cache(&directory.join("cell_cache.rkyv"))?;
     let reader: serde_json::Value =
         serde_json::from_slice(&fs::read(directory.join("record-reader.json"))?)?;
@@ -455,6 +455,7 @@ fn sync_directory(_: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Recognize current bundles and receipt-validated historical legacy bundles for replacement.
 fn owned_bundle(directory: &Path, key: &str) -> bool {
     if !is_key(key)
         || !fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.is_dir())
@@ -473,17 +474,22 @@ fn owned_bundle(directory: &Path, key: &str) -> bool {
     } else {
         RecordReader::Legacy
     };
-    let mut names = outputs(reader);
+    let mut expected = outputs(reader);
+    expected.sort_unstable();
+    let recorded = receipt.files.keys().map(String::as_str).collect::<Vec<_>>();
+    if recorded != expected && reader == RecordReader::Legacy {
+        // Previous legacy bundles did not preserve the unbounded terrain projection.
+        // Only a validated receipt may identify this historical layout; the exact-layout
+        // fallback intentionally still requires the current files.
+        expected.retain(|name| *name != "cell_cache_preserved.rkyv");
+    }
+    let mut names = expected.clone();
     names.push(RECEIPT);
     names.sort_unstable();
     if receipt.kind != KIND
         || receipt.key != key
         || hash_bytes(&serde_json::to_vec(&receipt.identity).unwrap_or_default()) != key
-        || receipt.files.keys().map(String::as_str).collect::<Vec<_>>() != {
-            let mut expected = outputs(reader);
-            expected.sort_unstable();
-            expected
-        }
+        || recorded != expected
     {
         return false;
     }
@@ -644,7 +650,13 @@ mod tests {
         identity: Identity,
     }
 
+    /// Build an in-house reader fixture for cache regressions.
     fn fixture() -> Fixture {
+        fixture_with_reader(RecordReader::Inhouse)
+    }
+
+    /// Produce a real database/cache bundle with the requested reader.
+    fn fixture_with_reader(reader: RecordReader) -> Fixture {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let staging = directory.path().join("producer");
@@ -669,7 +681,7 @@ mod tests {
         .unwrap();
         let plugins = vec![plugin];
         let mut config = PipelineConfig::new(&data, directory.path().join("published"));
-        config.record_reader = RecordReader::Inhouse;
+        config.record_reader = reader;
         config.no_lod = true;
         let vfs = staging.join("vfs");
         let identity = identity(
@@ -687,14 +699,24 @@ mod tests {
             &staging.join("vfs"),
         )
         .unwrap();
-        inhouse::write_database_profile(
-            &staging,
-            &staging.join("skyrim_world.db"),
-            &std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-        inhouse::write_terrain_caches(&records, &staging.join("skyrim_world.db"), &staging)
+        if reader == RecordReader::Inhouse {
+            inhouse::write_database_profile(
+                &staging,
+                &staging.join("skyrim_world.db"),
+                &std::collections::BTreeMap::new(),
+            )
             .unwrap();
+            inhouse::write_terrain_caches(&records, &staging.join("skyrim_world.db"), &staging)
+                .unwrap();
+        } else {
+            crate::esm::cell_cache::write_cell_cache(&records, &staging.join("cell_cache.rkyv"))
+                .unwrap();
+            crate::esm::cell_cache::write_preserved_cell_cache(
+                &records,
+                &staging.join("cell_cache_preserved.rkyv"),
+            )
+            .unwrap();
+        }
         inhouse::write_configured_reader_identity(&staging, &config).unwrap();
         write_conversion_notes(&staging, &ConversionNotes::default()).unwrap();
         let cache = directory.path().join("cache");
@@ -898,6 +920,100 @@ mod tests {
                     .is_some()
             );
             assert_eq!(fs::read(target.join("untouched")).unwrap(), b"staged work");
+        }
+    }
+
+    /// Reproduce the legacy file set from before preserved terrain was cached.
+    fn previous_legacy_bundle() -> Fixture {
+        let fixture = fixture_with_reader(RecordReader::Legacy);
+        let cancellation = Cancellation::new();
+        store(
+            &fixture.cache,
+            &fixture.identity,
+            &fixture.staging,
+            &cancellation,
+        )
+        .unwrap();
+        let bundle = fixture.cache.join(&fixture.identity.key);
+        fs::remove_file(bundle.join("cell_cache_preserved.rkyv")).unwrap();
+        let mut receipt: Receipt =
+            serde_json::from_slice(&fs::read(bundle.join(RECEIPT)).unwrap()).unwrap();
+        receipt.files.remove("cell_cache_preserved.rkyv");
+        fs::write(bundle.join(RECEIPT), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        fixture
+    }
+
+    /// A receipt-validated pre-preserved legacy bundle must rebuild without manual removal.
+    #[test]
+    fn database_bundle_previous_legacy_layout_is_stale_and_replaceable() {
+        let fixture = previous_legacy_bundle();
+        let cancellation = Cancellation::new();
+        let bundle = fixture.cache.join(&fixture.identity.key);
+        let target = destination(&fixture, "legacy-rebuild");
+        assert!(
+            restore(&fixture.cache, &fixture.identity, &target, &cancellation)
+                .unwrap()
+                .is_none()
+        );
+        store(
+            &fixture.cache,
+            &fixture.identity,
+            &fixture.staging,
+            &cancellation,
+        )
+        .expect("receipt-validated previous legacy layout must be replaceable");
+        assert!(bundle.join("cell_cache_preserved.rkyv").is_file());
+        assert!(
+            restore(&fixture.cache, &fixture.identity, &target, &cancellation)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// The historical file set alone cannot authorize deleting an unrelated directory.
+    #[test]
+    fn database_bundle_previous_legacy_layout_requires_receipt_and_known_files() {
+        for damage in [
+            "missing-receipt",
+            "broken-receipt",
+            "wrong-key",
+            "unknown-layout",
+            "extra-file",
+        ] {
+            let fixture = previous_legacy_bundle();
+            let bundle = fixture.cache.join(&fixture.identity.key);
+            let path = bundle.join(RECEIPT);
+            match damage {
+                "missing-receipt" => fs::remove_file(&path).unwrap(),
+                "broken-receipt" => fs::write(&path, b"{broken").unwrap(),
+                "extra-file" => fs::write(bundle.join("foreign.txt"), b"preserve me").unwrap(),
+                _ => {
+                    let mut receipt: Receipt =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    if damage == "wrong-key" {
+                        receipt.key = "f".repeat(64);
+                    } else {
+                        receipt.files.remove("cell_cache.rkyv");
+                    }
+                    fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+                }
+            }
+            let before = fs::read(bundle.join("skyrim_world.db")).unwrap();
+            assert!(
+                store(
+                    &fixture.cache,
+                    &fixture.identity,
+                    &fixture.staging,
+                    &Cancellation::new()
+                )
+                .is_err(),
+                "{damage}"
+            );
+            assert_eq!(
+                fs::read(bundle.join("skyrim_world.db")).unwrap(),
+                before,
+                "{damage}"
+            );
         }
     }
 

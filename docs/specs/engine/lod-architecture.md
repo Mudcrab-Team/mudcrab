@@ -73,6 +73,9 @@ command-line options override every file wherever they appear
 | `[TerrainManager]` | `fBlockMaximumDistance` | tier-16 reach before the multiplier |
 | `[TerrainManager]` | `fSplitDistanceMult` | terrain multiplier on the three block distances |
 
+The same reader honours the `[Grass]` keys listed with their defaults and effects
+in [Runtime grass](grass.md#skyrim-ini-settings).
+
 A tier's reach in cells is `floor(block distance * fSplitDistanceMult / 4096)`,
 compared with the Chebyshev cell distance from the camera's cell, so each
 tier covers a square of cells around the camera. The terrain multiplier follows DynDOLOD's definition: the object LOD
