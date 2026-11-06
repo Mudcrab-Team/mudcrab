@@ -1,6 +1,13 @@
 {
   "version": 1,
-  "sources": {},
+  "sources": {
+    "navm-onam-xedit-tes5": {
+      "title": "xEdit TES5 NAVM base-object link format facts",
+      "revision": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas#L5580-L5595",
+      "use": "Manual format facts only: ONAM is an unrestricted FormID array. No implementation copied."
+    }
+  },
   "definitions": {},
   "records": [
     {
@@ -23,6 +30,7 @@
           "signature": "ONAM",
           "name": "base_objects",
           "kind": "array",
+          "source": "navm-onam-xedit-tes5:5589-5590",
           "count": {
             "kind": "remaining",
             "stride": 4
@@ -32,10 +40,7 @@
               "name": "object",
               "kind": "form_id",
               "targets": [
-                "CONT",
-                "FURN",
-                "TREE",
-                "STAT"
+                "*"
               ]
             }
           ]

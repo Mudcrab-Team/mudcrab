@@ -99,11 +99,16 @@ pub struct RenderingSettings {
     pub upload_mib: usize,
     pub io_threads: usize,
     pub diagnostic_asset_fallbacks: bool,
+    /// [`crate::visual_profile::VisualProfile`] index; read only at startup.
+    pub visual_profile: usize,
 }
 
 impl Default for RenderingSettings {
     fn default() -> Self {
         let config = EngineConfig::default();
+        let weather = crate::sky::WeatherLighting::default();
+        let sunlight = weather.sunlight.to_srgba();
+        let ambient = weather.mean_ambient().to_srgba();
         Self {
             version: 1,
             point_lights: false,
@@ -111,10 +116,10 @@ impl Default for RenderingSettings {
             point_light_shadows: false,
             point_shadow_size: 1,
             sun: true,
-            sun_illuminance: 12_000.0,
-            sun_color: [1.0; 3],
+            sun_illuminance: crate::lights::SUN_ILLUMINANCE,
+            sun_color: [sunlight.red, sunlight.green, sunlight.blue],
             ambient_brightness: crate::lights::AMBIENT_ILLUMINANCE,
-            ambient_color: [0.48, 0.55, 0.7],
+            ambient_color: [ambient.red, ambient.green, ambient.blue],
             shadows: true,
             shadow_size: 2,
             shadow_cascades: 4,
@@ -166,6 +171,7 @@ impl Default for RenderingSettings {
             upload_mib: config.max_upload_mib_per_frame,
             io_threads: config.io_threads,
             diagnostic_asset_fallbacks: config.diagnostic_asset_fallbacks,
+            visual_profile: config.visual_profile.index(),
         }
     }
 }
@@ -323,6 +329,12 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
         ]
     ),
     number!(Graphics, "Image", "Vertical field of view (degrees)", fov_degrees; 30.0, 110.0, 5.0),
+    choice!(
+        "Image",
+        "Visual profile (restart)",
+        visual_profile,
+        &["Mudcrab", "Skyrim"]
+    ),
     choice!("Color grading", "Grade mode", color_grade, &["Off", "Saturation", "Full", "Approved sRGB", "Snapshot linear", "Record sRGB"]),
     choice!("Color grading", "Sky and fog preset", visual_preset, &["Vivid", "Cool Gray"]),
     grade_number!("Grade saturation", grade_saturation, 0; 0.0, 3.0, 0.05).when(|s| s.color_grade != 0),
@@ -566,6 +578,7 @@ impl RenderingSettings {
         self.upload_mib = config.max_upload_mib_per_frame;
         self.io_threads = config.io_threads;
         self.diagnostic_asset_fallbacks = config.diagnostic_asset_fallbacks;
+        self.visual_profile = config.visual_profile.index();
     }
 
     fn retain_explicit_launch_values(&mut self, config: &EngineConfig) {
@@ -607,6 +620,7 @@ impl RenderingSettings {
                 "--max-model-spawns-per-frame" => self.model_spawns = source.model_spawns,
                 "--max-upload-mib-per-frame" => self.upload_mib = source.upload_mib,
                 "--io-threads" => self.io_threads = source.io_threads,
+                "--visual-profile" => self.visual_profile = source.visual_profile,
                 "--diagnostic-asset-fallbacks" => {
                     self.diagnostic_asset_fallbacks = source.diagnostic_asset_fallbacks
                 }
@@ -801,6 +815,10 @@ fn prepare_settings_at(
     }
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
+    if let Some(profile) = crate::visual_profile::VisualProfile::from_index(settings.visual_profile)
+    {
+        config.visual_profile = profile;
+    }
     (settings, file)
 }
 
@@ -1151,6 +1169,102 @@ mod tests {
     }
 
     #[test]
+    fn defaults_preserve_world_lighting_on_first_launch_and_reset() {
+        for minimal_file in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            if minimal_file {
+                std::fs::write(&path, r#"{"version":1}"#).unwrap();
+            }
+            let mut config = EngineConfig::default();
+            let (settings, file) = prepare_settings_at(&mut config, Some(path.clone()));
+            let weather = crate::sky::WeatherLighting::default();
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(settings)
+                .insert_resource(file)
+                .insert_resource(GlobalAmbientLight {
+                    color: Color::srgb(0.2, 0.3, 0.4),
+                    brightness: 321.0,
+                    ..default()
+                })
+                .add_systems(Update, apply_render_settings);
+            let sun = app
+                .world_mut()
+                .spawn((
+                    DirectionalLight {
+                        color: Color::srgb(0.4, 0.3, 0.2),
+                        illuminance: 123.0,
+                        ..default()
+                    },
+                    crate::app::sun_shadow_cascades(&config),
+                ))
+                .id();
+            app.insert_resource(config);
+            let assert_lighting = |app: &App,
+                                   sun_color: Color,
+                                   sun_illuminance,
+                                   ambient_color: Color,
+                                   ambient_brightness| {
+                let light = app.world().get::<DirectionalLight>(sun).unwrap();
+                let ambient = app.world().resource::<GlobalAmbientLight>();
+                for (actual, expected) in [(light.color, sun_color), (ambient.color, ambient_color)]
+                {
+                    for (actual, expected) in actual
+                        .to_linear()
+                        .to_f32_array()
+                        .into_iter()
+                        .zip(expected.to_linear().to_f32_array())
+                    {
+                        assert!((actual - expected).abs() < 1e-6);
+                    }
+                }
+                assert_eq!(light.illuminance, sun_illuminance);
+                assert_eq!(ambient.brightness, ambient_brightness);
+            };
+            let assert_defaults = |app: &App| {
+                assert_lighting(
+                    app,
+                    weather.sunlight,
+                    crate::lights::SUN_ILLUMINANCE,
+                    weather.mean_ambient(),
+                    crate::lights::AMBIENT_ILLUMINANCE,
+                )
+            };
+            app.update();
+            assert_defaults(&app);
+
+            {
+                let mut settings = app.world_mut().resource_mut::<RenderingSettings>();
+                settings.sun_color = [1.0; 3];
+                settings.ambient_color = [0.1; 3];
+                settings.sun_illuminance = 4_000.0;
+                settings.ambient_brightness = 100.0;
+            }
+            app.update();
+            assert_lighting(
+                &app,
+                Color::srgb(1.0, 1.0, 1.0),
+                4_000.0,
+                Color::srgb(0.1, 0.1, 0.1),
+                100.0,
+            );
+            app.world_mut()
+                .resource_scope(|world, mut file: Mut<SettingsFile>| {
+                    file.restore_defaults(&mut world.resource_mut::<RenderingSettings>());
+                });
+            app.update();
+            assert_defaults(&app);
+            save_app_settings(&mut app);
+            let mut config = EngineConfig::default();
+            let (reloaded, _) = prepare_settings_at(&mut config, Some(path));
+            *app.world_mut().resource_mut::<RenderingSettings>() = reloaded;
+            app.update();
+            assert_defaults(&app);
+        }
+    }
+
+    #[test]
     fn menu_numeric_adjustment_reaches_scene_camera_as_explicit_override() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -1352,6 +1466,45 @@ mod tests {
         assert!(lights.is_modified(&settings));
         assert!(budget.relevant(&settings));
         assert!(!budget.is_modified(&settings));
+    }
+
+    #[test]
+    fn saved_visual_profile_selects_the_run_and_still_refuses_foreign_flags() {
+        use crate::visual_profile::VisualProfile;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = RenderingSettings {
+            visual_profile: VisualProfile::Skyrim.index(),
+            ..default()
+        };
+        save_settings(&path, &saved).unwrap();
+
+        let mut config = EngineConfig::default();
+        prepare_settings_at(&mut config, Some(path.clone()));
+        assert_eq!(config.visual_profile, VisualProfile::Skyrim);
+        config.check_visual_profile().unwrap();
+
+        // The parser accepted --tone-map under the default profile; the saved one refuses it.
+        let mut config = launch(&["--tone-map".into(), "tony".into()]);
+        prepare_settings_at(&mut config, Some(path.clone()));
+        assert!(matches!(
+            config.check_visual_profile(),
+            Err(crate::config::ConfigError::ForeignToProfile {
+                option: "--tone-map",
+                ..
+            })
+        ));
+
+        let mut config = launch(&["--visual-profile".into(), "mudcrab".into()]);
+        let (loaded, _) = prepare_settings_at(&mut config, Some(path));
+        assert_eq!(config.visual_profile, VisualProfile::Mudcrab);
+        assert_eq!(loaded.visual_profile, VisualProfile::Mudcrab.index());
+
+        let unknown = RenderingSettings {
+            visual_profile: 2,
+            ..default()
+        };
+        assert!(unknown.validate().is_err());
     }
 
     #[test]

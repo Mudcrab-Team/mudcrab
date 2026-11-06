@@ -10,6 +10,11 @@
     pbr_types,
     prepass_io,
 }
+// naga_oil substitutes an imported `pbr_prepass_functions` constant with its qualified name but
+// never emits the definition, so importing Bevy's cutoff fails when the pipeline compiles (the
+// stubs in `palette_shader_check` accept it). Mirror the value Bevy's `prepass_alpha_discard`
+// uses for BLEND, ADD and ALPHA_TO_COVERAGE instead.
+const PREMULTIPLIED_ALPHA_CUTOFF: f32 = 0.05;
 #import engine::effect_palette::{effect_color, source_texel}
 
 fn palette_alpha_discard(in: prepass_io::VertexOutput) {
@@ -39,11 +44,11 @@ fn palette_alpha_discard(in: prepass_io::VertexOutput) {
     } else if alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND ||
             alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_ADD ||
             alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_ALPHA_TO_COVERAGE {
-        if color.a < pbr_prepass_functions::PREMULTIPLIED_ALPHA_CUTOFF {
+        if color.a < PREMULTIPLIED_ALPHA_CUTOFF {
             discard;
         }
     } else if alpha_mode == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_PREMULTIPLIED {
-        if all(color < vec4<f32>(pbr_prepass_functions::PREMULTIPLIED_ALPHA_CUTOFF)) {
+        if all(color < vec4<f32>(PREMULTIPLIED_ALPHA_CUTOFF)) {
             discard;
         }
     }

@@ -518,7 +518,7 @@ fn console_dispatch_system(world: &mut World) {
 }
 
 #[derive(Component)]
-struct ConsoleRoot;
+pub(crate) struct ConsoleRoot;
 #[derive(Component)]
 struct ConsoleScrollText;
 #[derive(Component)]
@@ -545,6 +545,12 @@ fn spawn_console_ui(mut commands: Commands) {
             GlobalZIndex(1000),
         ))
         .with_children(|root| {
+            root.spawn((
+                crate::console_selection::ConsoleSelectionText,
+                Text::new(crate::console_selection::SELECTION_HINT),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::srgb(1.0, 0.9, 0.2)),
+            ));
             root.spawn((
                 ConsoleScrollText,
                 Text::new(""),

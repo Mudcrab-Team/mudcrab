@@ -333,7 +333,17 @@ mod multi_bound {
     /// The same empty payload, declaring `num_triangles` triangles without
     /// storing geometry: a zero data size means there is nothing to read.
     fn shape_bytes(num_triangles: u16) -> Vec<u8> {
-        let mut bytes = av_object_bytes(u32::MAX);
+        shape_bytes_with_transform(num_triangles, [0.0; 3])
+    }
+
+    /// A `BSTriShape` whose own `NiAVObject` transform carries `translation`.
+    fn shape_bytes_with_transform(num_triangles: u16, translation: [f32; 3]) -> Vec<u8> {
+        let mut bytes = av_object_bytes_with_transform(
+            u32::MAX,
+            translation,
+            1.0,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        );
         for value in [0.0f32, 0.0, 0.0, 0.0] {
             bytes.extend_from_slice(&value.to_le_bytes()); // bounding sphere
         }
@@ -572,20 +582,18 @@ mod multi_bound {
     fn shapes_under_ordered_billboard_and_value_nodes_keep_their_parents() {
         // root -> ordered -> billboard -> value -> shape, as in the forge's fire and glow.
         let quarter_turn = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         let nif = nif_file(
             vec![
+                // Skyrim places a model by replacing the root block's transform, and the
+                // converter publishes the root without one. Keep it identity here so the
+                // expected placement below never encodes a transform the model drops.
                 parse_block(
-                    &node_bytes_with_transform(0, 1, [10.0, 20.0, 30.0], 2.0, quarter_turn),
+                    &node_bytes_with_transform(0, 1, [0.0; 3], 1.0, identity),
                     "NiNode",
                 ),
                 parse_block(
-                    &ordered_node_bytes_with_transform(
-                        1,
-                        2,
-                        [1.0, 0.0, 0.0],
-                        1.0,
-                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                    ),
+                    &ordered_node_bytes_with_transform(1, 2, [10.0, 20.0, 30.0], 2.0, quarter_turn),
                     "BSOrderedNode",
                 ),
                 {
@@ -678,8 +686,81 @@ mod multi_bound {
             * local(billboard_index)
             * local(value_index)
             * local(shape_index);
+        // Shape at the origin through value (0, 0, 4) and billboard (0, 3, 0), then the ordered
+        // node's quarter turn, double scale and (10, 20, 30) placement: (4, 20, 38).
         let placement = inherited.transform_point3(glam::Vec3::ZERO);
-        assert!((placement - glam::Vec3::new(4.0, 22.0, 38.0)).length() < 1.0e-4);
+        assert!((placement - glam::Vec3::new(4.0, 20.0, 38.0)).length() < 1.0e-4);
+    }
+
+    /// The converter publishes an identity root, because a placed reference replaces the model
+    /// root's transform; that drop is `clear_root_transform` in `crates/converter/src/mesh.rs`,
+    /// not this crate. The model layer must keep the authored transform, so this test and the
+    /// converter's `the_root_nodes_own_transform_moves_neither_render_nodes_nor_collision` pin
+    /// the split: if either layer starts doing the other's job, one of them fails.
+    #[test]
+    fn the_model_layer_keeps_the_authored_root_transform() {
+        let quarter_turn = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let nif = nif_file(
+            vec![
+                parse_block(
+                    &node_bytes_with_transform(0, 1, [10.0, 20.0, 30.0], 2.0, quarter_turn),
+                    "NiNode",
+                ),
+                // An empty shape keeps its node without a mesh, so the placement below is the
+                // shape node's own transform composed under the root.
+                parse_block(
+                    &shape_bytes_with_transform(0, [1.0, 0.0, 0.0]),
+                    "BSTriShape",
+                ),
+            ],
+            &["root"],
+        );
+
+        let model = nif_to_static_model(&nif).unwrap();
+        let root = model
+            .static_nodes
+            .iter()
+            .find(|node| node.block_index == 0)
+            .unwrap();
+        assert_eq!(root.translation, Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(root.scale, 2.0);
+        assert_ne!(
+            root.rotation,
+            Mat3::IDENTITY,
+            "the authored root rotation is kept"
+        );
+
+        let (gltf, _) = model.to_gltf("root-kept".to_string()).unwrap();
+        let root_index = gltf
+            .nodes
+            .iter()
+            .position(|node| node.name.as_deref() == Some("root"))
+            .unwrap();
+        let root_node = &gltf.nodes[root_index];
+        assert_eq!(root_node.translation, Some([10.0, 20.0, 30.0]));
+        assert_eq!(root_node.scale, Some([2.0, 2.0, 2.0]));
+
+        let local = |index: usize| {
+            let node = &gltf.nodes[index];
+            glam::Mat4::from_scale_rotation_translation(
+                node.scale
+                    .as_ref()
+                    .map(|scale| glam::Vec3::from_array(*scale))
+                    .unwrap_or(glam::Vec3::ONE),
+                node.rotation
+                    .as_ref()
+                    .map(|rotation| glam::Quat::from_array(rotation.0))
+                    .unwrap_or(glam::Quat::IDENTITY),
+                node.translation
+                    .as_ref()
+                    .map(|translation| glam::Vec3::from_array(*translation))
+                    .unwrap_or(glam::Vec3::ZERO),
+            )
+        };
+        let shape_index = gltf.nodes[root_index].children.as_ref().unwrap()[0].value();
+        let placement = (local(root_index) * local(shape_index)).transform_point3(glam::Vec3::ZERO);
+        // (1, 0, 0) turns to (0, 1, 0), doubles to (0, 2, 0), then translates to (10, 22, 30).
+        assert!((placement - glam::Vec3::new(10.0, 22.0, 30.0)).length() < 1.0e-4);
     }
 }
 
@@ -774,7 +855,7 @@ fn retail_male_body_retains_legacy_skin() {
 
 mod legacy_skin {
     use project_wormhole_ba2::dev::Bounds;
-    use project_wormhole_shared::glam::{Mat3, Mat4, Quat, U8Vec4, Vec3, Vec4};
+    use project_wormhole_shared::glam::{Mat3, Mat4, Quat, U16Vec3, U8Vec4, Vec3, Vec4};
 
     use crate::dev::*;
 
@@ -861,6 +942,7 @@ mod legacy_skin {
             weights: Vec::new(),
             bone_indices: Vec::new(),
             vertex_map: None,
+            vertex_map_discarded: false,
             partition_flags: 0,
             palette_overflow: false,
         }
@@ -1160,13 +1242,239 @@ mod legacy_skin {
         assert!(error.contains("shape block 2"), "{error}");
     }
 
+    /// The exported glTF still skins the mesh: one skin, and the primitive carries
+    /// `JOINTS_0` and `WEIGHTS_0`. An unskinned export would pass the model checks alone.
+    fn assert_exports_one_skin(model: &crate::model::all::Model) {
+        use gltf::json::validation::Checked;
+        let (root, _) = model.to_gltf("padded".to_owned()).unwrap();
+        assert_eq!(root.skins.len(), 1);
+        let attributes = &root.meshes[0].primitives[0].attributes;
+        assert!(attributes.contains_key(&Checked::Valid(gltf::Semantic::Joints(0))));
+        assert!(attributes.contains_key(&Checked::Valid(gltf::Semantic::Weights(0))));
+    }
+
+    /// One bone, three vertices drawn by triangle (0, 1, 2), and `extra` appended
+    /// after them. `extra_drawn` adds a second triangle that uses the extra vertex.
+    fn padded_buffer_fixture(extra: BSVertexData, extra_drawn: bool) -> NifFile {
+        let weighted = |position| vertex(position, [0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+        let mut tri_shape = shape(
+            1,
+            2,
+            vec![
+                weighted(Vec3::ZERO),
+                weighted(Vec3::X),
+                weighted(Vec3::Y),
+                extra,
+            ],
+        );
+        tri_shape.triangles.push(U16Vec3::new(0, 1, 2));
+        if extra_drawn {
+            tri_shape.triangles.push(U16Vec3::new(1, 2, 3));
+        }
+        tri_shape.num_triangles = tri_shape.triangles.len() as u32;
+        nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::BSTriShape(tri_shape),
+                NifBlock::NiSkinInstance(instance(vec![0], 3, 4)),
+                NifBlock::NiSkinData(skin_data(vec![bone(Vec3::ZERO)])),
+                NifBlock::NiSkinPartition(partition(vec![0])),
+            ],
+            &["BoneA", "Shape"],
+        )
+    }
+
     #[test]
-    fn rejects_a_vertex_whose_weights_sum_to_zero() {
-        let nif = one_bone_fixture([0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0], Vec3::ZERO);
+    fn rejects_a_drawn_vertex_whose_weights_sum_to_zero() {
+        let unweighted = vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let nif = padded_buffer_fixture(unweighted, true);
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(
+            error.contains("vertex 3 has a skin weight sum of 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn keeps_an_undrawn_zero_weight_padding_vertex_skinned_in_place() {
+        // The retail pattern: all weights 0.0, indices (0, 0, 0, 0), no triangle.
+        let padding = vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let nif = padded_buffer_fixture(padding, false);
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+
+        let skinned = &model.skeletal_meshes[0];
+        let mesh = skinned.mesh.as_ref().unwrap();
+        assert_eq!(
+            mesh.positions.len(),
+            4,
+            "the padding vertex keeps its index"
+        );
+        assert_eq!(mesh.positions[3], Vec3::Z);
+        assert_eq!(skinned.weights[3], Vec4::new(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(skinned.joints[3], U8Vec4::ZERO);
+        assert_exports_one_skin(&model);
+    }
+
+    #[test]
+    fn keeps_a_padding_vertex_in_the_partition_shared_buffer_skinned() {
+        // The retail layout: the shape carries no vertices, and positions, weights and
+        // triangles all come from the NiSkinPartition's shared buffer.
+        let weighted = |position| vertex(position, [0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+        let mut shared = partition(vec![0]);
+        shared.vertex_data = vec![
+            weighted(Vec3::ZERO),
+            weighted(Vec3::X),
+            weighted(Vec3::Y),
+            vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]),
+        ];
+        shared.triangles = vec![U16Vec3::new(0, 1, 2)];
+        let nif = nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::BSTriShape(shape(1, 2, Vec::new())),
+                NifBlock::NiSkinInstance(instance(vec![0], 3, 4)),
+                NifBlock::NiSkinData(skin_data(vec![bone(Vec3::ZERO)])),
+                NifBlock::NiSkinPartition(shared),
+            ],
+            &["BoneA", "Shape"],
+        );
+
+        let model = nif_to_model(&nif, Some(&nif)).unwrap();
+
+        let skinned = &model.skeletal_meshes[0];
+        assert_eq!(skinned.mesh.as_ref().unwrap().positions[3], Vec3::Z);
+        assert_eq!(skinned.weights[3], Vec4::new(1.0, 0.0, 0.0, 0.0));
+        assert_exports_one_skin(&model);
+    }
+
+    #[test]
+    fn rejects_an_undrawn_zero_weight_vertex_that_names_other_bones() {
+        // Retail padding always names bone indices (0, 0, 0, 0); anything else is not padding.
+        let other = vertex(Vec3::Z, [1, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let nif = padded_buffer_fixture(other, false);
 
         let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
 
         assert!(error.contains("skin weight sum"), "{error}");
+    }
+
+    #[test]
+    fn rejects_an_undrawn_zero_weight_vertex_that_a_partition_maps() {
+        // A vertex a partition lists is skinned data, not padding, even when no triangle draws it.
+        let mapped = vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let mut nif = padded_buffer_fixture(mapped, false);
+        if let NifBlock::NiSkinPartition(partition) = &mut nif.blocks[4] {
+            partition.vertex_map = Some(vec![0, 1, 2, 3]);
+        } else {
+            panic!("fixture block 4 is not NiSkinPartition");
+        }
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(
+            error.contains("vertex 3 has a skin weight sum of 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn binds_no_padding_when_partitions_disagreed_on_a_vertex_map() {
+        // Mixed map presence drops the merged map, so a mapped vertex cannot be ruled out.
+        let padding = vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let mut nif = padded_buffer_fixture(padding, false);
+        if let NifBlock::NiSkinPartition(partition) = &mut nif.blocks[4] {
+            partition.vertex_map_discarded = true;
+        } else {
+            panic!("fixture block 4 is not NiSkinPartition");
+        }
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(
+            error.contains("vertex 3 has a skin weight sum of 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_undrawn_zero_weight_vertex_that_a_partition_triangle_draws() {
+        // The shape's own triangles skip vertex 3, but a partition triangle uses it.
+        let padding = vertex(Vec3::Z, [0, 0, 0, 0], [0.0, 0.0, 0.0, 0.0]);
+        let mut nif = padded_buffer_fixture(padding, false);
+        if let NifBlock::NiSkinPartition(partition) = &mut nif.blocks[4] {
+            partition.triangles = vec![U16Vec3::new(1, 2, 3)];
+        } else {
+            panic!("fixture block 4 is not NiSkinPartition");
+        }
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(
+            error.contains("vertex 3 has a skin weight sum of 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_undrawn_zero_weight_partition_row() {
+        // Weights from partition rows, not the vertex buffer, are never padding.
+        let position = |position| BSVertexData {
+            position: Some(position),
+            ..Default::default()
+        };
+        let mut tri_shape = shape(
+            1,
+            2,
+            vec![
+                position(Vec3::ZERO),
+                position(Vec3::X),
+                position(Vec3::Y),
+                position(Vec3::Z),
+            ],
+        );
+        tri_shape.triangles.push(U16Vec3::new(0, 1, 2));
+        tri_shape.num_triangles = 1;
+        let mut rows = partition(vec![0]);
+        rows.weights = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 0.0],
+        ];
+        rows.bone_indices = vec![vec![0, 0, 0, 0]; 4];
+        let nif = nif_file(
+            vec![
+                NifBlock::NiNode(node(0)),
+                NifBlock::BSTriShape(tri_shape),
+                NifBlock::NiSkinInstance(instance(vec![0], 3, 4)),
+                NifBlock::NiSkinData(skin_data(vec![bone(Vec3::ZERO)])),
+                NifBlock::NiSkinPartition(rows),
+            ],
+            &["BoneA", "Shape"],
+        );
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        assert!(
+            error.contains("vertex 3 has a skin weight sum of 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_undrawn_vertex_with_a_negative_weight_sum() {
+        // Only an exactly-zero padding vertex is bound; other bad weights still fail.
+        let broken = vertex(Vec3::Z, [0, 0, 0, 0], [-1.0, 0.0, 0.0, 0.0]);
+        let nif = padded_buffer_fixture(broken, false);
+
+        let error = nif_to_model(&nif, Some(&nif)).unwrap_err();
+
+        // The negative-weight guard runs before the sum check, so a substantive negative is
+        // rejected for the weight itself rather than for the zero total it leaves behind.
+        assert!(error.contains("has an invalid skin weight -1"), "{error}");
     }
 
     #[test]

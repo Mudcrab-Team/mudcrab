@@ -1553,3 +1553,52 @@ tables empty. `NPC_` bases are never written into `statics`.
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and consumers must check that they exist before reading them. No mandatory
 join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
+### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
+
+The light and emittance projections write no row for a record whose data cannot supply one. Each
+skip is counted under a stable category, so the conversion report can account for it instead of
+a terminal message alone (#297). The categories come from `insert_light` and
+`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+`crates/converter/src/esm/projection_omissions.rs`.
+
+```sql
+CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category with omissions
+    category TEXT PRIMARY KEY,     -- stable name, see the table below
+    severity TEXT NOT NULL,        -- 'data_loss' or 'fallback'
+    count INTEGER NOT NULL         -- exact number of records left out
+);
+CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
+    category TEXT NOT NULL,
+    form_id INTEGER NOT NULL,      -- the LIGH, or the XEMI target
+    reason TEXT NOT NULL,          -- human-readable detail, e.g. the DATA length
+    PRIMARY KEY (category, form_id)
+) WITHOUT ROWID;
+```
+
+| Category | Record left out | Severity |
+|---|---|---|
+| `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
+| `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
+| `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
+| `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
+| `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
+| `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
+
+**Severity.** A light without a `lights` row loses a light the runtime would draw, so a
+`data_loss` category adds one line to the conversion's `warnings` and makes the output
+incomplete. A reference whose emittance target does not resolve keeps the model's own emission
+(section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the
+output stays complete. A severity the reader does not know is read as `data_loss`, so a category
+added by a newer converter cannot pass as success.
+
+A full load-order export clears and rewrites both tables inside its transaction, so a re-export
+replaces the counts instead of adding to them, and a repaired load order leaves the tables empty.
+The movement-annotation subset export leaves them alone, and a diagnostic archive leaves them
+empty. `finalize_world_database` reads them into `projection_omissions` in
+`integration-report.json`, so a metadata rebuild or a reused database reports the same
+omissions. A database without the tables reports none.
+
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
+add tables, `create_tables` adds them to an older reused database, and the engine does not read
+them.

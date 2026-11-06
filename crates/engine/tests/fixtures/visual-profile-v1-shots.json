@@ -1,0 +1,74 @@
+{
+  "width": 1280,
+  "height": 720,
+  "shots": [
+    {
+      "name": "sleeping-giant",
+      "worldspace_id": 60,
+      "position": [
+        21750,
+        -44530,
+        140
+      ],
+      "yaw": 90,
+      "pitch": -3,
+      "hfov": 80,
+      "probes": [
+        {
+          "name": "sunlit-thatch",
+          "position": [
+            23089.6,
+            -44485.0,
+            301.2
+          ],
+          "patch_px": 15
+        },
+        {
+          "name": "upper-thatch",
+          "position": [
+            23329.6,
+            -44849.1,
+            494.1
+          ],
+          "patch_px": 15
+        },
+        {
+          "name": "shaded-door-wood",
+          "position": [
+            23188.0,
+            -44354.3,
+            79.0
+          ],
+          "patch_px": 15
+        },
+        {
+          "name": "distant-cliff",
+          "position": [
+            27658.1,
+            -44818.0,
+            2405.3
+          ],
+          "patch_px": 15
+        },
+        {
+          "name": "sunlit-road",
+          "position": [
+            23020.3,
+            -43800.3,
+            -120.5
+          ],
+          "patch_px": 15
+        },
+        {
+          "name": "shaded-road",
+          "position": [
+            22897.6,
+            -45417.2,
+            -153.9
+          ],
+          "patch_px": 9
+        }
+      ]
+    }
+  ]
+}

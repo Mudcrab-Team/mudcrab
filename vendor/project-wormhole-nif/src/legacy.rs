@@ -2,11 +2,12 @@
 
 use project_wormhole_shared::glam::{Mat3, U16Vec3, Vec2, Vec3, Vec4};
 
-use crate::dev::*;
+use crate::{dev::*, nif_block::NiAVObjectFlags};
 
 #[derive(Debug, Clone)]
 pub struct NiTriShape {
     pub name: u32,
+    pub flags: NiAVObjectFlags,
     pub translation: Vec3,
     pub rotation: Mat3,
     pub scale: f32,
@@ -26,7 +27,7 @@ impl Parse<&[u8]> for NiTriShape {
             (i, _) = le_u32(i)?;
         }
         let (i, _) = le_u32(i)?; // controller
-        let (i, _) = le_u32(i)?;
+        let (i, flags) = NiAVObjectFlags::parse(i)?;
         let (i, translation) = vec3(i)?;
         let (i, rotation) = matrix3(i)?;
         let (i, scale) = le_f32(i)?;
@@ -49,6 +50,7 @@ impl Parse<&[u8]> for NiTriShape {
             i,
             Self {
                 name,
+                flags,
                 translation,
                 rotation: Mat3::from_cols_array(&rotation),
                 scale,
@@ -222,6 +224,37 @@ mod tests {
 
     fn push_f32(output: &mut Vec<u8>, value: f32) {
         output.extend_from_slice(&value.to_le_bytes());
+    }
+
+    #[test]
+    fn keeps_the_legacy_shapes_flags() {
+        for flags in [0x0008_000E_u32, 0x0008_000F] {
+            let mut raw = Vec::new();
+            for word in [7, 0, u32::MAX, flags] {
+                raw.extend_from_slice(&word.to_le_bytes());
+            }
+            for value in [
+                1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+            ] {
+                push_f32(&mut raw, value);
+            }
+            // Properties, data, skin, no materials, active material, dirty flag, shader, alpha.
+            for word in [0, 4, u32::MAX, 0, u32::MAX] {
+                raw.extend_from_slice(&word.to_le_bytes());
+            }
+            raw.push(0);
+            for word in [5_u32, 6] {
+                raw.extend_from_slice(&word.to_le_bytes());
+            }
+            let (remaining, shape) = NiTriShape::parse(&raw).unwrap();
+            assert!(remaining.is_empty());
+            assert_eq!(shape.flags.hidden(), flags & 1 != 0);
+            assert_eq!(
+                (shape.translation, shape.data),
+                (Vec3::new(1.0, 2.0, 3.0), 4)
+            );
+            assert_eq!((shape.shader_property, shape.alpha_property), (5, 6));
+        }
     }
 
     #[test]

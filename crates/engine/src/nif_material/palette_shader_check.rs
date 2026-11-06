@@ -1,5 +1,6 @@
 //! Headless contract checks for the actual effect palette forward and prepass shaders.
 
+use naga_oil::compose::comment_strip_iter::CommentReplaceExt;
 use naga_oil::compose::{
     ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage,
     ShaderType,
@@ -10,6 +11,8 @@ const FUNCTIONS: &str = include_str!("../shaders/effect_palette_functions.wgsl")
 const MAIN: &str = include_str!("../shaders/effect_palette.wgsl");
 const PREPASS: &str = include_str!("../shaders/effect_palette_prepass.wgsl");
 const SHADOW_ALPHA_CUTOFF: f32 = 0.05;
+const SCALAR_CUTOFF_CHECK: &str = "if color.a < PREMULTIPLIED_ALPHA_CUTOFF {";
+const ALL_CHANNELS_CUTOFF_CHECK: &str = "if all(color < vec4<f32>(PREMULTIPLIED_ALPHA_CUTOFF)) {";
 
 const PBR_TYPES: &str = r#"
 #define_import_path bevy_pbr::pbr_types
@@ -372,4 +375,206 @@ fn palette_effect_shadow_cutoffs_match_bevy_alpha_modes() {
         source_fallback,
         0.5
     ));
+}
+
+#[test]
+fn prepass_mirrors_bevys_premultiplied_alpha_cutoff_locally() {
+    // naga_oil substitutes an imported `pbr_prepass_functions` constant with its qualified name
+    // but never emits the definition, so an imported cutoff only fails when a real pipeline
+    // compiles against Bevy's shader. The stub module above accepts it, which is why the
+    // composition tests cannot see it.
+    assert!(
+        !PREPASS.contains("pbr_prepass_functions::PREMULTIPLIED_ALPHA_CUTOFF"),
+        "importing the cutoff from pbr_prepass_functions fails at pipeline creation"
+    );
+    let declaration = PREPASS
+        .lines()
+        .find(|line| {
+            line.trim_start()
+                .starts_with("const PREMULTIPLIED_ALPHA_CUTOFF")
+        })
+        .expect("the prepass shader declares its own alpha cutoff");
+    assert_eq!(
+        declaration.trim(),
+        format!("const PREMULTIPLIED_ALPHA_CUTOFF: f32 = {SHADOW_ALPHA_CUTOFF};")
+    );
+}
+
+/// Source with WGSL comments blanked to whitespace, so a commented-out line cannot satisfy a guard.
+fn active_source(source: &str) -> String {
+    let mut lines = source.lines();
+    let mut active = String::new();
+    for line in lines.replace_comments() {
+        active.push_str(&line);
+        active.push('\n');
+    }
+    active
+}
+
+/// The `{ ... }` body that follows `marker` in comment-free source, without its braces.
+fn branch_body<'a>(active: &'a str, marker: &str) -> Result<&'a str, String> {
+    let start = active
+        .find(marker)
+        .ok_or_else(|| format!("the active shader lacks {marker}"))?;
+    let open = start + active[start..].find('{').ok_or("the branch lacks a body")?;
+    let mut depth = 0;
+    for (offset, character) in active[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&active[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(format!("the body after {marker} is not closed"))
+}
+
+/// The comment-free body of the called `palette_alpha_discard`, without its braces. Exactly one
+/// definition must exist, so an unused copy elsewhere in the file cannot stand in for it.
+fn discard_body(active: &str) -> Result<&str, String> {
+    const HEADER: &str = "fn palette_alpha_discard(";
+    if active.matches(HEADER).count() != 1 {
+        return Err(format!("the active shader must define `{HEADER}` once"));
+    }
+    branch_body(active, HEADER)
+}
+
+/// Each local-cutoff comparison must be active code inside its own alpha-mode branch of the
+/// called `palette_alpha_discard`.
+fn local_cutoff_sites(source: &str) -> Result<(), String> {
+    let active = active_source(source);
+    let function = discard_body(&active)?;
+    let scalar_body = branch_body(function, "STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND")?;
+    if !scalar_body.contains(SCALAR_CUTOFF_CHECK) {
+        return Err(format!(
+            "the BLEND/ADD/ALPHA_TO_COVERAGE body lacks `{SCALAR_CUTOFF_CHECK}`"
+        ));
+    }
+    let all_channels_body =
+        branch_body(function, "STANDARD_MATERIAL_FLAGS_ALPHA_MODE_PREMULTIPLIED")?;
+    if !all_channels_body.contains(ALL_CHANNELS_CUTOFF_CHECK) {
+        return Err(format!(
+            "the PREMULTIPLIED body lacks `{ALL_CHANNELS_CUTOFF_CHECK}`"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn prepass_applies_the_local_cutoff_at_each_comparison_site() {
+    // The test above shows the declaration exists, not where it is used. Pin the scalar guard
+    // inside the BLEND/ADD/ALPHA_TO_COVERAGE branch and the all-channel guard inside the
+    // PREMULTIPLIED branch, so a literal or a different cutoff at either site fails here.
+    let active = active_source(PREPASS);
+    let function = discard_body(&active).unwrap_or_else(|error| panic!("{error}"));
+    let blend = function
+        .find("STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND ||")
+        .expect("the prepass shader branches on BLEND");
+    let scalar = function
+        .find(SCALAR_CUTOFF_CHECK)
+        .expect("the BLEND branch compares alpha to the local cutoff");
+    let premultiplied = function
+        .find("STANDARD_MATERIAL_FLAGS_ALPHA_MODE_PREMULTIPLIED {")
+        .expect("the prepass shader branches on PREMULTIPLIED");
+    let all_channels = function
+        .find(ALL_CHANNELS_CUTOFF_CHECK)
+        .expect("the PREMULTIPLIED branch compares every channel to the local cutoff");
+    assert!(
+        blend < scalar && scalar < premultiplied && premultiplied < all_channels,
+        "each cutoff comparison must sit in its own alpha-mode branch, in order"
+    );
+    local_cutoff_sites(PREPASS).unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn prepass_cutoff_guard_rejects_literals_behind_commented_originals() {
+    // Each mutant keeps the correct comparison in a line or block comment and makes one active
+    // site a literal. compose() must accept each mutant, so a rejection cannot be a syntax error.
+    let mut mutants = Vec::new();
+    for (original, literal) in [
+        (SCALAR_CUTOFF_CHECK, "if color.a < 0.5 {"),
+        (
+            ALL_CHANNELS_CUTOFF_CHECK,
+            "if all(color < vec4<f32>(0.5)) {",
+        ),
+    ] {
+        assert_eq!(
+            PREPASS.matches(original).count(),
+            1,
+            "{original} occurs once"
+        );
+        for comment in [format!("// {original}"), format!("/* {original} */")] {
+            let replacement = format!("{comment}\n        {literal}");
+            mutants.push(PREPASS.replacen(original, &replacement, 1));
+        }
+    }
+    // The exact BLEND comparison moves into the PREMULTIPLIED body, and BLEND keeps a literal.
+    mutants.push(
+        PREPASS
+            .replacen(SCALAR_CUTOFF_CHECK, "if color.a < 0.5 {", 1)
+            .replacen(
+                "STANDARD_MATERIAL_FLAGS_ALPHA_MODE_PREMULTIPLIED {",
+                "STANDARD_MATERIAL_FLAGS_ALPHA_MODE_PREMULTIPLIED {\n        if color.a < PREMULTIPLIED_ALPHA_CUTOFF {\n            discard;\n        }",
+                1,
+            ),
+    );
+
+    assert_eq!(local_cutoff_sites(PREPASS), Ok(()));
+    for mutant in &mutants {
+        compose(
+            mutant,
+            "effect_palette_prepass.wgsl",
+            &["MAY_DISCARD", "VERTEX_UVS_A", "VERTEX_COLORS"],
+        )
+        .unwrap_or_else(|error| panic!("mutant must stay valid WGSL:\n{error}"));
+        assert!(
+            local_cutoff_sites(mutant).is_err(),
+            "the guard accepted a literal cutoff behind a commented original"
+        );
+    }
+}
+
+#[test]
+fn prepass_cutoff_guard_rejects_literals_beside_an_unused_correct_copy() {
+    // The called discard uses literal cutoffs, and an unused earlier copy keeps the correct
+    // comparisons. The copy satisfies a whole-file search, so the scoped guard must reject the
+    // mutant. compose() must still accept it, so the rejection is not a syntax error.
+    let active = active_source(PREPASS);
+    let original_body = discard_body(&active).unwrap_or_else(|error| panic!("{error}"));
+    let decoy = format!(
+        "fn old_palette_alpha_discard(in: prepass_io::VertexOutput) {{{original_body}}}\n\n"
+    );
+    let literal = PREPASS
+        .replacen(SCALAR_CUTOFF_CHECK, "if color.a < 0.5 {", 1)
+        .replacen(
+            ALL_CHANNELS_CUTOFF_CHECK,
+            "if all(color < vec4<f32>(0.5)) {",
+            1,
+        );
+    let mutant = literal.replacen(
+        "fn palette_alpha_discard(",
+        &format!("{decoy}fn palette_alpha_discard("),
+        1,
+    );
+
+    let mutant_active = active_source(&mutant);
+    assert!(
+        mutant_active.contains(SCALAR_CUTOFF_CHECK)
+            && mutant_active.contains(ALL_CHANNELS_CUTOFF_CHECK),
+        "the unused copy must satisfy a whole-file search"
+    );
+    compose(
+        &mutant,
+        "effect_palette_prepass.wgsl",
+        &["MAY_DISCARD", "VERTEX_UVS_A", "VERTEX_COLORS"],
+    )
+    .unwrap_or_else(|error| panic!("decoy mutant must stay valid WGSL:\n{error}"));
+    assert!(
+        local_cutoff_sites(&mutant).is_err(),
+        "the guard accepted literal cutoffs in the called discard beside a correct unused copy"
+    );
 }
