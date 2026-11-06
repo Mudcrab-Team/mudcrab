@@ -892,23 +892,30 @@ mod tests {
             ..default()
         })
         .insert_resource(SprintLatch(true));
-        let body = app
-            .world_mut()
-            .spawn(WalkState {
-                vertical_velocity: 200.0,
-                grounded: false,
-                jump_active: true,
+        let mut flight = WalkState::default();
+        crate::physics::integrate_walk(
+            &mut flight,
+            &crate::physics::WalkIntent {
+                jump_pressed: true,
                 ..default()
-            })
-            .id();
+            },
+            &crate::physics::MovementTuning::default(),
+            crate::physics::PHYSICS_TIMESTEP,
+            crate::physics::ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
+        let before = flight.vertical_velocity();
+        let body = app.world_mut().spawn(flight).id();
         send_state(&mut app, KeyCode::Backquote, ButtonState::Pressed);
         assert!(app.world().resource::<ConsoleState>().open);
         assert!(!app.world().resource::<WalkIntent>().jump_pressed);
         assert!(!app.world().resource::<SprintLatch>().0);
         let state = app.world().get::<WalkState>(body).unwrap();
-        assert_eq!(state.vertical_velocity, 200.0);
-        assert!(state.jump_active);
-        assert!(!state.grounded);
+        assert_eq!(state.vertical_velocity(), before);
+        assert!(state.jump_active());
+        assert!(!state.grounded());
     }
 
     #[test]

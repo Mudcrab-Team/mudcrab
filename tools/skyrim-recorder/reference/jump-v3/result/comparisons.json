@@ -1,0 +1,254 @@
+[
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.516497160379357,
+    "max_abs_error": 17.93349710463329
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.17497026518087805,
+    "max_abs_error": 0.4046270849498086
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.438995753332028,
+    "max_abs_error": 28.494710286458314
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.516304977415542,
+    "max_abs_error": 17.987856090096756
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.1997902729700476,
+    "max_abs_error": 0.5422439337417586
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.438995753332028,
+    "max_abs_error": 28.494710286458314
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.11124911170664593,
+    "max_abs_error": 0.220947265625
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.51520067376507,
+    "max_abs_error": 17.870537257477025
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.17509561201374738,
+    "max_abs_error": 0.40511600974437556
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.439829350175035,
+    "max_abs_error": 28.446614583333314
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.506031247932311,
+    "max_abs_error": 17.873477096766862
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.21023412470596833,
+    "max_abs_error": 0.5422103145005366
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.439829350175035,
+    "max_abs_error": 28.446614583333314
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.11100346389646433,
+    "max_abs_error": 0.220947265625
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.524107093321899,
+    "max_abs_error": 17.854044366072856
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.17069510874391516,
+    "max_abs_error": 0.42261644092036477
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.445877563422181,
+    "max_abs_error": 28.542805989583314
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.497149238958063,
+    "max_abs_error": 17.819509699354853
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.2169546964190171,
+    "max_abs_error": 0.6519232922982354
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.445877563422181,
+    "max_abs_error": 28.542805989583314
+  },
+  {
+    "condition": "requested 120 Hz, 1x, heldout",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.11124915724995876,
+    "max_abs_error": 0.220947265625
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 4.244132135580164,
+    "max_abs_error": 15.009940385687173
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 2.299450804957528,
+    "max_abs_error": 4.884845553455278
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 13.067064073607739,
+    "max_abs_error": 32.458821614583314
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 37.65598371814165,
+    "max_abs_error": 76.011474609375
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 39.229409201839175,
+    "max_abs_error": 76.011474609375
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 41.35823186970532,
+    "max_abs_error": 76.011474609375
+  },
+  {
+    "condition": "requested 60 Hz, 0.5x, heldout",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.02973224153519632,
+    "max_abs_error": 0.060546875
+  }
+]

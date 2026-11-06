@@ -1,0 +1,15 @@
+{
+  "profile": "jump-inputs-v4",
+  "extends": "runtime.json",
+  "wire_version": 4,
+  "setter_call": 8188521,
+  "setter_call_signature": "e872538900",
+  "setter_function": 17188320,
+  "setter_signature": "f30f590d74987900c7811c02000001000000f30f11893c020000c3",
+  "jump_height_setting": 34244960,
+  "swim_jump_setting": 34244984,
+  "game_to_havok_constant": 25157212,
+  "reference_scale_constant": 28687824,
+  "player_setter_call": 6771386,
+  "player_setter_call_signature": "e821f39e00"
+}

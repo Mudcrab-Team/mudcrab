@@ -58,7 +58,7 @@ fn traverse(app: &mut App, direction: Vec3, speed: f32, target: impl Fn(Vec3) ->
         let pose = headless::player_pose(app).0;
         assert!(pose.is_finite());
         let mut query = app.world_mut().query::<&WalkState>();
-        assert!(!query.single(app.world()).unwrap().jump_active);
+        assert!(!query.single(app.world()).unwrap().jump_active());
         if target(pose) {
             app.insert_resource(WalkIntent::default());
             // Brake before inspecting support; the controller must stand on the landing.
