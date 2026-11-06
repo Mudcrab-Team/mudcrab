@@ -2070,6 +2070,7 @@ mod tests {
         assert!(unknown.validate().is_err());
     }
 
+    /// Terrain preference ownership is independent of optional grass coverage.
     #[test]
     fn saved_preferences_round_trip_and_explicit_flags_win() {
         let directory = tempfile::tempdir().unwrap();
@@ -2087,6 +2088,7 @@ mod tests {
         let (loaded, _) = prepare_settings_at(&mut EngineConfig::default(), Some(path.clone()));
         assert_eq!(loaded, saved);
         let mut config = launch(&[
+            "--no-grass".into(),
             "--stream-radius".into(),
             "1".into(),
             "--max-upload-mib-per-frame".into(),
@@ -2484,6 +2486,7 @@ mod tests {
         assert_eq!((loaded.stream_radius, loaded.unload_radius), (4, 5));
     }
 
+    /// Invalid files retain terrain-only launch values without imposing grass coverage.
     #[test]
     fn invalid_saved_choices_fall_back_without_losing_launch_settings() {
         let directory = tempfile::tempdir().unwrap();
@@ -2494,6 +2497,7 @@ mod tests {
         };
         std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
         let mut config = EngineConfig {
+            grass: false,
             lights: true,
             stream_radius: 1,
             unload_radius: 2,
