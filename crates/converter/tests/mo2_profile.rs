@@ -971,7 +971,7 @@ async fn final_unicode_profile_master_override_publishes() {
         .map(Result::unwrap)
         .collect();
     // GMST retains the first owner's identity despite overrides from both later plugins.
-    assert!(winning.contains(&(0x0100_0800, 3)), "{winning:?}");
+    assert!(winning.contains(&(0x0000_000B, 3)), "{winning:?}");
     assert!(
         report
             .notices

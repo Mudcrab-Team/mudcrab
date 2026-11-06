@@ -1394,21 +1394,28 @@ mod tests {
     #[test]
     fn opening_menu_mid_jump_keeps_the_airborne_state_for_resume() {
         let mut app = menu_app();
-        let body = app
-            .world_mut()
-            .spawn(crate::physics::WalkState {
-                vertical_velocity: 200.0,
-                grounded: false,
-                jump_active: true,
+        let mut flight = crate::physics::WalkState::default();
+        crate::physics::integrate_walk(
+            &mut flight,
+            &crate::physics::WalkIntent {
+                jump_pressed: true,
                 ..default()
-            })
-            .id();
+            },
+            &crate::physics::MovementTuning::default(),
+            crate::physics::PHYSICS_TIMESTEP,
+            crate::physics::ResolvedWalk {
+                y: 0.0,
+                grounded: true,
+            },
+        );
+        let before = flight.vertical_velocity();
+        let body = app.world_mut().spawn(flight).id();
         key(&mut app, KeyCode::Escape, ButtonState::Pressed);
         assert!(app.world().resource::<SettingsMenuState>().open);
         let state = app.world().get::<crate::physics::WalkState>(body).unwrap();
-        assert_eq!(state.vertical_velocity, 200.0);
-        assert!(state.jump_active);
-        assert!(!state.grounded);
+        assert_eq!(state.vertical_velocity(), before);
+        assert!(state.jump_active());
+        assert!(!state.grounded());
     }
 
     #[test]

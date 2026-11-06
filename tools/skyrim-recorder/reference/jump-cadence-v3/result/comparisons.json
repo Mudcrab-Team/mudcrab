@@ -1,0 +1,128 @@
+[
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.516497160379357,
+    "max_abs_error": 17.93349710463329
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.17497026518087805,
+    "max_abs_error": 0.4046270849498086
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.438995753332028,
+    "max_abs_error": 28.494710286458314
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 5.516304977415542,
+    "max_abs_error": 17.987856090096756
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.1997902729700476,
+    "max_abs_error": 0.5422439337417586
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 11.438995753332028,
+    "max_abs_error": 28.494710286458314
+  },
+  {
+    "condition": "requested 60 Hz, 1x, train",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.11124911170664593,
+    "max_abs_error": 0.220947265625
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 9.253609720546548,
+    "max_abs_error": 25.764013306150048
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 4.508011219722455,
+    "max_abs_error": 9.463697361561877
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "camera",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 6.081868844279432,
+    "max_abs_error": 17.92041015625
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "ballistic",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 9.22503026921636,
+    "max_abs_error": 25.72452077745666
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "two_acceleration",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 4.45489866462845,
+    "max_abs_error": 9.330880513315527
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "mudcrab",
+    "clock": "qpc",
+    "passes": 0,
+    "n": 3,
+    "rmse_median": 7.2903496082295405,
+    "max_abs_error": 23.503743489583314
+  },
+  {
+    "condition": "requested 30 Hz, 1x, heldout",
+    "law": "native_discrete",
+    "clock": "controller",
+    "passes": 3,
+    "n": 3,
+    "rmse_median": 0.11228878337797836,
+    "max_abs_error": 0.22509765625
+  }
+]

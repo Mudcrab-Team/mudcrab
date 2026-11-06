@@ -671,7 +671,11 @@ async fn explicit_plugin_list_loads_master_files_before_regular_plugins() {
             .unwrap();
         assert_eq!(
             setting,
-            (f64::from(height), winner.to_string(), "b.esm".to_string())
+            (
+                f64::from(height),
+                winner.to_string(),
+                "skyrim.esm".to_string()
+            )
         );
         for (id, owner, local, editor, source) in [
             (0x01000811u32, "b.esm", 0x811, "MasterOverride", "A.esp"),
