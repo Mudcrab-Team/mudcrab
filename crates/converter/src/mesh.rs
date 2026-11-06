@@ -273,6 +273,13 @@ impl MeshConverter {
             &shape_blocks,
             output,
         )?;
+        let glb = tag_object_diffuse_shape(
+            glb,
+            &material_contract,
+            &diagnostics,
+            declares_skin,
+            used_static_fallback,
+        )?;
         ensure!(
             glb.len() >= 12 && &glb[..4] == b"glTF",
             "NIF exporter produced an invalid GLB header"
@@ -2122,6 +2129,65 @@ impl BoundsAccumulator {
     }
 }
 
+/// Certify the only unambiguous MODS shape-index case in this slice. A source with more than
+/// one geometry block is not certified even when conversion omits all but one of its shapes.
+/// The tag contains source identity only, never a record's substitution or material layer.
+fn tag_object_diffuse_shape(
+    glb: Vec<u8>,
+    contract: &[NifShapeMaterial],
+    diagnostics: &NifParseDiagnostics,
+    declares_skin: bool,
+    used_static_fallback: bool,
+) -> Result<Vec<u8>> {
+    use crate::material::{LightingShaderType, NifShaderFamily};
+    let [shape] = contract else {
+        return Ok(glb);
+    };
+    let NifMaterialDisposition::Validated { material } = &shape.disposition else {
+        return Ok(glb);
+    };
+    let Some(name) = shape.shape_name.as_deref().filter(|name| !name.is_empty()) else {
+        return Ok(glb);
+    };
+    if diagnostics.geometry_block_count != 1
+        || !diagnostics.fallback_blocks.is_empty()
+        || used_static_fallback
+        || declares_skin
+        || material.shader_family != NifShaderFamily::Lighting
+        || material.lighting_shader_type != Some(LightingShaderType::Default)
+    {
+        return Ok(glb);
+    }
+    let mut document = glb_json_from_bytes(&glb)?;
+    // Source geometry count alone does not prove the exporter emitted one primitive.
+    // Refuse an ambiguous output rather than tagging only part of a shared model.
+    let Some(primitive) = document
+        .get_mut("meshes")
+        .and_then(serde_json::Value::as_array_mut)
+        .filter(|meshes| meshes.len() == 1)
+        .and_then(|meshes| meshes.first_mut())
+        .and_then(|mesh| mesh.get_mut("primitives"))
+        .and_then(serde_json::Value::as_array_mut)
+        .filter(|primitives| primitives.len() == 1)
+        .and_then(|primitives| primitives.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(glb);
+    };
+    let Some(extras) = primitive
+        .entry("extras")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return Ok(glb);
+    };
+    extras.insert(
+        "mudcrabObjectDiffuseV1".to_owned(),
+        serde_json::json!({"shapeName": name, "shapeIndex": 0}),
+    );
+    rebuild_glb_with_document(&glb, &document)
+}
+
 pub(crate) fn rewrite_materials_and_texture_uris(
     glb: Vec<u8>,
     material_contract: &[NifShapeMaterial],
@@ -2867,6 +2933,126 @@ mod tests {
     use crate::material::NifAlphaMode;
     use crate::test_strategies::{arbitrary_bytes, config, corrupted};
     use proptest::prelude::*;
+
+    fn object_diffuse_test_contract() -> Vec<NifShapeMaterial> {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("shape.nif");
+        fs::write(&input, static_nif()).unwrap();
+        let (_, _, contract) = open_nif_resilient(&input).unwrap();
+        assert_eq!(contract.len(), 1);
+        assert!(matches!(
+            contract[0].disposition,
+            NifMaterialDisposition::Validated { .. }
+        ));
+        contract
+    }
+
+    #[test]
+    fn object_diffuse_certification_rejects_source_ambiguity_and_fallbacks() {
+        use crate::material::{LightingShaderType, NifShaderFamily};
+        let contract = object_diffuse_test_contract();
+        let document = serde_json::json!({"asset":{"version":"2.0"},
+            "meshes":[{"primitives":[{"extras":{"retained":"control"}}]}]});
+        let glb = glb_bytes(&document, b"geometry control");
+        let diagnostics = NifParseDiagnostics {
+            geometry_block_count: 1,
+            ..Default::default()
+        };
+        let tagged =
+            tag_object_diffuse_shape(glb.clone(), &contract, &diagnostics, false, false).unwrap();
+        let tagged = glb_json_from_bytes(&tagged).unwrap();
+        assert_eq!(
+            tagged["meshes"][0]["primitives"][0]["extras"]["retained"],
+            "control"
+        );
+        assert_eq!(
+            tagged["meshes"][0]["primitives"][0]["extras"]["mudcrabObjectDiffuseV1"]["shapeIndex"],
+            0
+        );
+
+        for (geometry, skin, static_fallback, parser_fallback) in [
+            (0, false, false, false),
+            (2, false, false, false),
+            (1, true, false, false),
+            (1, false, true, false),
+            (1, false, false, true),
+        ] {
+            let mut diagnostics = NifParseDiagnostics {
+                geometry_block_count: geometry,
+                ..Default::default()
+            };
+            if parser_fallback {
+                diagnostics
+                    .fallback_blocks
+                    .insert("BSMeshLODTriShape".into(), 1);
+            }
+            let rejected = tag_object_diffuse_shape(
+                glb.clone(),
+                &contract,
+                &diagnostics,
+                skin,
+                static_fallback,
+            )
+            .unwrap();
+            assert_eq!(rejected, glb, "rejected sources must remain byte-identical");
+        }
+        let mut variants = vec![Vec::new(), vec![contract[0].clone(), contract[0].clone()]];
+        let mut unnamed = contract.clone();
+        unnamed[0].shape_name = None;
+        variants.push(unnamed);
+        let mut excluded = contract.clone();
+        excluded[0].disposition = NifMaterialDisposition::Excluded {
+            reason: "fixture".into(),
+        };
+        variants.push(excluded);
+        for (family, shader) in [
+            (NifShaderFamily::Effect, Some(LightingShaderType::Default)),
+            (NifShaderFamily::Lighting, Some(LightingShaderType::Snow)),
+            (NifShaderFamily::Lighting, None),
+        ] {
+            let mut variant = contract.clone();
+            let NifMaterialDisposition::Validated { material } = &mut variant[0].disposition else {
+                unreachable!()
+            };
+            material.shader_family = family;
+            material.lighting_shader_type = shader;
+            variants.push(variant);
+        }
+        for contract in variants {
+            assert_eq!(
+                tag_object_diffuse_shape(glb.clone(), &contract, &diagnostics, false, false)
+                    .unwrap(),
+                glb
+            );
+        }
+    }
+
+    #[test]
+    fn object_diffuse_certification_rejects_ambiguous_exported_primitives() {
+        let contract = object_diffuse_test_contract();
+        let diagnostics = NifParseDiagnostics {
+            geometry_block_count: 1,
+            ..Default::default()
+        };
+        for meshes in [
+            serde_json::json!([]),
+            serde_json::json!([{"primitives":[{}]},{"primitives":[{}]}]),
+            serde_json::json!([{"primitives":[]}]),
+            serde_json::json!([{"primitives":[{},{}]}]),
+            serde_json::json!([{}]),
+            serde_json::json!([{"primitives":[{"extras":"invalid"}]}]),
+        ] {
+            let glb = glb_bytes(
+                &serde_json::json!({"asset":{"version":"2.0"},"meshes":meshes}),
+                b"geometry control",
+            );
+            assert_eq!(
+                tag_object_diffuse_shape(glb.clone(), &contract, &diagnostics, false, false)
+                    .unwrap(),
+                glb
+            );
+        }
+    }
 
     fn body_at(node: u32, target: &str) -> shared::collision::CollisionBody {
         use shared::collision::{BodyKind, CollisionBody, HavokBodyInfo};

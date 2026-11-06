@@ -141,6 +141,12 @@ expression: document
             "POSITION": 0,
             "TEXCOORD_0": 2
           },
+          "extras": {
+            "mudcrabObjectDiffuseV1": {
+              "shapeIndex": 0,
+              "shapeName": "GeneratedQuad"
+            }
+          },
           "indices": 3,
           "material": 0
         }

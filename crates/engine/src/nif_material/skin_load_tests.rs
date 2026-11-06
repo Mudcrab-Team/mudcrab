@@ -196,7 +196,11 @@ fn write_two_sampler_skin_gltf(directory: &Path, reverse_material_order: bool) {
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
 }
 
-fn loader_app(directory: &Path) -> App {
+pub(crate) fn loader_app(directory: &Path) -> App {
+    loader_app_with_formats(directory, CompressedImageFormats::NONE)
+}
+
+pub(crate) fn loader_app_with_formats(directory: &Path, formats: CompressedImageFormats) -> App {
     let mut app = App::new();
     let default_sampler = configured_default_sampler();
     app.add_plugins((
@@ -214,7 +218,8 @@ fn loader_app(directory: &Path) -> App {
     ))
     .init_asset::<Mesh>()
     .init_asset::<StandardMaterial>()
-    .register_asset_loader(ImageLoader::new(CompressedImageFormats::NONE));
+    .insert_resource(bevy::image::CompressedImageFormatSupport(formats))
+    .register_asset_loader(ImageLoader::new(formats));
     app.world_mut()
         .resource_mut::<GltfExtensionHandlers>()
         .0
@@ -254,7 +259,7 @@ fn assert_configured_sampler(image: &Image) {
     assert_eq!(sampler.anisotropy_clamp, 8);
 }
 
-fn wait_for_dependencies<A: Asset>(app: &mut App, handle: &Handle<A>) {
+pub(crate) fn wait_for_dependencies<A: Asset>(app: &mut App, handle: &Handle<A>) {
     // A healthy load takes milliseconds; the margin only keeps a slow runner from failing it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -263,12 +268,18 @@ fn wait_for_dependencies<A: Asset>(app: &mut App, handle: &Handle<A>) {
         if let LoadState::Failed(error) = server.load_state(handle.id()) {
             panic!("fixture load failed: {error}");
         }
+        if let bevy::asset::RecursiveDependencyLoadState::Failed(error) =
+            server.recursive_dependency_load_state(handle.id())
+        {
+            panic!("fixture dependency load failed: {error}");
+        }
         if server.is_loaded_with_dependencies(handle.id()) {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "fixture load timed out"
+            "fixture load timed out: {:?}",
+            server.get_load_states(handle.id())
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
