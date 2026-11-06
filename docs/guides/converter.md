@@ -22,6 +22,10 @@ cargo run --release -p converter --bin converter -- "<Skyrim Data>" "<output dir
 ```
 
 The output directory defaults to `modern_assets`, which is also where the engine looks by default.
+Conversion continues past inaccessible source subfolders and failed loose inputs, recording skipped
+inputs in the manifest and leaving the pack incomplete. `--fail-fast` stops at the first such error.
+An unusable previous manifest triggers a rebuild without reusing that pack's assets; successful
+publication preserves the original pack in a sibling backup directory named in the run's notices.
 Check an existing pack with:
 
 ```bash
