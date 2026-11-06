@@ -27,7 +27,7 @@
 //! | `[Grass]` | `fGrassMaxStartFadeDistance` | reported slider bound |
 //! | `[Grass]` | `fGrassWindMagnitudeMin` | reported wind setting |
 //! | `[Grass]` | `fGrassWindMagnitudeMax` | reported wind setting |
-//! | `[Grass]` | `bDrawShaderGrass` | gates opt-in `--grass` |
+//! | `[Grass]` | `bDrawShaderGrass` | launch grass state unless a CLI switch overrides it |
 //! | `[Grass]` | `bEnableGrassFade` | distance thinning |
 //! | `[Grass]` | `bAllowCreateGrass` | reported legacy cache setting |
 //! | `[Grass]` | `bAllowLoadGrass` | reported legacy cache setting |
