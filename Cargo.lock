@@ -2341,6 +2341,7 @@ dependencies = [
  "ddsfile",
  "dummy-content",
  "flate2",
+ "glam 0.32.1",
  "gltf",
  "image_dds 0.7.2",
  "insta",
@@ -2837,6 +2838,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_rapier3d",
+ "bytemuck",
  "color-eyre",
  "converter",
  "crossbeam-channel",
@@ -2858,6 +2860,7 @@ dependencies = [
  "shared",
  "tempfile",
  "time",
+ "tokio",
  "tracing",
  "url",
  "uuid",
@@ -6320,6 +6323,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

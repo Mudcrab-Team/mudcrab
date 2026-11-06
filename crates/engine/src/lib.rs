@@ -17,6 +17,8 @@ pub mod doors;
 pub mod emittance;
 pub mod fingerprint;
 pub mod frame_budget;
+pub mod grass;
+pub mod grass_render;
 pub mod hdr_probe;
 pub mod indirect_metrics;
 pub mod lights;

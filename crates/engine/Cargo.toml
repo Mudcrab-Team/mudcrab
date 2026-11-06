@@ -12,6 +12,7 @@ shared = { path = "../shared" }
 bevy = { workspace = true, features = ["mesh_picking"] }
 gltf = { version = "1.4", default-features = false }
 wgpu = { version = "=29.0.4", default-features = false }
+bytemuck = { version = "1", features = ["derive"] }
 bevy_rapier3d = { version = "0.36.0", default-features = false, features = ["dim3", "debug-render-3d"] }
 mlua.workspace = true
 rusqlite.workspace = true
@@ -39,6 +40,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Com", "Win32_System_
 tempfile = "3.20"
 converter = { path = "../converter" }
 dummy-content = { path = "../dummy-content" }
+tokio.workspace = true
 ddsfile = "0.5"
 # Compiles the terrain shaders in tests; the version Bevy 0.19's shader cache already builds.
 # No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,
