@@ -2341,6 +2341,7 @@ dependencies = [
  "ddsfile",
  "dummy-content",
  "flate2",
+ "glam 0.32.1",
  "gltf",
  "image_dds 0.7.2",
  "insta",

@@ -537,6 +537,344 @@ fn enable_parent_target() -> Vec<u8> {
     .concat()
 }
 
+/// Encode a synthetic plugin subrecord without depending on exporter internals.
+fn grass_subrecord(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u16).to_le_bytes(),
+        payload,
+    ]
+    .concat()
+}
+
+/// Encode a synthetic uncompressed record with its plugin-local FormID.
+fn grass_record(tag: &[u8; 4], id: u32, payload: Vec<u8>) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(payload.len() as u32).to_le_bytes(),
+        &[0; 4],
+        &id.to_le_bytes(),
+        &[0; 8],
+        &payload,
+    ]
+    .concat()
+}
+
+/// Add a mod-owned grass rule to the generated terrain's winning texture override.
+fn add_grass_plugin(data: &Path) {
+    let header = [
+        grass_subrecord(b"MAST", b"Skyrim.esm\0"),
+        grass_subrecord(b"DATA", &[0; 8]),
+    ]
+    .concat();
+    let mut rule = vec![37, 0, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for value in [12.0f32, 0.25, 0.5, 1.75] {
+        rule.extend(value.to_le_bytes());
+    }
+    rule.extend([0; 4]);
+    let model = format!("{}\0", layout::GENERATED_MODEL_PATH);
+    let grass = grass_record(
+        b"GRAS",
+        0x0100_0801,
+        [
+            grass_subrecord(b"EDID", b"RebuildGrass\0"),
+            grass_subrecord(b"MODL", model.as_bytes()),
+            grass_subrecord(b"DATA", &rule),
+        ]
+        .concat(),
+    );
+    let texture = grass_record(
+        b"LTEX",
+        4,
+        [
+            grass_subrecord(b"TNAM", &2u32.to_le_bytes()),
+            grass_subrecord(b"GNAM", &0x0100_0801u32.to_le_bytes()),
+        ]
+        .concat(),
+    );
+    fs::write(
+        data.join("Grass.esp"),
+        [grass_record(b"TES4", 0, header), grass, texture].concat(),
+    )
+    .unwrap();
+}
+
+/// Rebuilding metadata preserves a nonempty grass archive and reuses source cells.
+#[tokio::test]
+async fn metadata_rebuild_preserves_grass_cache_and_reuses_unchanged_cells() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("derived");
+    generate(&data);
+    add_grass_plugin(&data);
+    convert(&data, &source).await;
+    let source_cache = source.join("grass_cache.rkyv");
+    let original_hash = hash_file(&source_cache).unwrap();
+    let original_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let map = converter::esm::grass_cache::validate_grass_cache(&source_cache).unwrap();
+    let cache =
+        rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+    assert_eq!(cache.types.len(), 1);
+    assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+    assert_eq!(
+        cache.cells.len(),
+        1,
+        "fixture must contain grass-bearing terrain"
+    );
+    let cell_count = cache.cells.len();
+    assert!(cache.cells[0].quadrants.iter().any(|quadrant| {
+        quadrant
+            .layers
+            .iter()
+            .any(|layer| !layer.grass_ids.is_empty())
+    }));
+    drop(map);
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    let rebuilt_cache = output.join("grass_cache.rkyv");
+    assert!(
+        rebuilt_cache.is_file(),
+        "metadata rebuild must publish the grass cache"
+    );
+    converter::esm::grass_cache::validate_grass_cache(&rebuilt_cache).unwrap();
+    assert!(report.complete);
+    assert!(report.artifacts.contains(&"grass_cache.rkyv".into()));
+    assert_eq!(hash_file(&rebuilt_cache).unwrap(), original_hash);
+    assert_eq!(hash_file(&source_cache).unwrap(), original_hash);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        original_manifest
+    );
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap();
+    assert_eq!(provenance["grass_baked_cells"], 0);
+    assert_eq!(provenance["grass_reused_cells"], cell_count);
+}
+
+/// Append an explicitly excluded sibling without changing the visible primitive or binary data.
+fn add_broken_marker(glb_path: &Path, original: &[u8], alpha_mode: serde_json::Value) {
+    let glb = gltf::binary::Glb::from_slice(original).unwrap();
+    let mut document: serde_json::Value = serde_json::from_slice(&glb.json).unwrap();
+    let materials = document["materials"].as_array_mut().unwrap();
+    let marker_material = materials.len();
+    materials.push(serde_json::json!({
+        "alphaMode": alpha_mode,
+        "alphaCutoff": 1.0,
+        "pbrMetallicRoughness": {"baseColorFactor": [0.0, 0.0, 0.0, 0.0]},
+        "extras": {"openSkyrim": {"nonRenderingExclusion": true}}
+    }));
+    let primitives = document["meshes"][0]["primitives"].as_array_mut().unwrap();
+    let mut marker = primitives[0].clone();
+    marker["material"] = serde_json::json!(marker_material);
+    marker["extras"] = serde_json::json!({
+        "openSkyrim": {"materialExclusion": "BSX EditorMarker"}
+    });
+    primitives.push(marker);
+    let mut json = serde_json::to_vec(&document).unwrap();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let bin = glb.bin.unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"glTF");
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend(((28 + json.len() + bin.len()) as u32).to_le_bytes());
+    bytes.extend((json.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"JSON");
+    bytes.extend(json);
+    bytes.extend((bin.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"BIN\0");
+    bytes.extend_from_slice(&bin);
+    fs::write(glb_path, bytes).unwrap();
+}
+
+/// Publish healthy records and same-model obstruction despite a malformed excluded material.
+#[tokio::test]
+async fn metadata_rebuild_preserves_visible_obstruction_beside_broken_marker() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    generate(&data);
+    let plugin = esm::Plugin {
+        cells: &[
+            esm::PRESET_EXTERIOR_CELL,
+            esm::Cell {
+                grid_x: 1,
+                grid_y: 0,
+            },
+        ],
+        author: layout::GENERATED_AUTHOR,
+        worldspace: layout::GENERATED_WORLDSPACE,
+        model_path: layout::GENERATED_MODEL_PATH,
+        diffuse: layout::GENERATED_DIFFUSE_PATH,
+        normal_texture: layout::GENERATED_NORMAL_PATH,
+    };
+    let light = esm::Light {
+        model_path: None,
+        reference_flags: 0x800,
+        enable_parent: Some((0x1234, 1)),
+        ..esm::PRESET_LIGHT
+    };
+    let mut plugin_bytes = esm::plugin_with_lights(&plugin, &light).unwrap();
+    plugin_bytes.extend(enable_parent_target());
+    fs::write(data.join("Skyrim.esm"), plugin_bytes).unwrap();
+    add_grass_plugin(&data);
+    // Each static is at cell-local (2048, 2048). This elevated horizontal
+    // triangle covers the northeast quadrant's first sample at (2064, 2064).
+    fs::write(
+        data.join(layout::GENERATED_MODEL_PATH),
+        nif::static_shape(&nif::StaticShape {
+            name: "VisibleObstruction",
+            positions: &[
+                [0.0, 0.0, 128.0],
+                [1024.0, 0.0, 128.0],
+                [0.0, 1024.0, 128.0],
+            ],
+            normals: &[[0.0, 0.0, 1.0]; 3],
+            uvs: &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: &[[0, 1, 2]],
+            diffuse: layout::GENERATED_DIFFUSE_PATH,
+            normal_texture: layout::GENERATED_NORMAL_PATH,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    convert(&data, &source).await;
+    let source_cache = source.join("grass_cache.rkyv");
+    let source_cache_hash = hash_file(&source_cache).unwrap();
+    let map = converter::esm::grass_cache::validate_grass_cache(&source_cache).unwrap();
+    let control =
+        rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+    assert_eq!(control.cells.len(), 2);
+    assert_eq!(control.cells[0].cell_id.to_native(), 0x10);
+    assert_eq!(control.cells[1].cell_id.to_native(), 0x20);
+    let expected_masks: Vec<_> = control
+        .cells
+        .iter()
+        .map(|cell| {
+            assert_eq!(
+                cell.quadrants[3].exclusion[0] & 1,
+                1,
+                "visible control must block"
+            );
+            (
+                cell.cell_id.to_native(),
+                cell.quadrants
+                    .iter()
+                    .map(|quadrant| quadrant.exclusion.to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    drop(map);
+    let manifest_path = source.join("conversion-manifest.json");
+    let original_manifest = ConversionManifest::load(&manifest_path).unwrap();
+    let glb_path = source.join(&original_manifest.entries[layout::GENERATED_MODEL_PATH].output);
+    let original_glb = fs::read(&glb_path).unwrap();
+    for (case, alpha_mode) in [serde_json::json!("NOT_A_MODE"), serde_json::json!(17)]
+        .into_iter()
+        .enumerate()
+    {
+        add_broken_marker(&glb_path, &original_glb, alpha_mode);
+        // Keep retention proofs valid: this tests obstruction recovery, not checksum rejection.
+        let glb_hash = hash_file(&glb_path).unwrap();
+        let mut manifest = original_manifest.clone();
+        let entry = manifest
+            .entries
+            .get_mut(layout::GENERATED_MODEL_PATH)
+            .unwrap();
+        entry.output_hash = glb_hash.clone();
+        entry.output_size = fs::metadata(&glb_path).unwrap().len();
+        manifest.save(&manifest_path).unwrap();
+        let source_manifest_hash = hash_file(&manifest_path).unwrap();
+        let output = directory.path().join(format!("derived-marker-{case}"));
+        let result = rebuild(&data, &source, &output).await;
+        assert!(
+            result.is_ok(),
+            "excluded marker aborted publication: {result:?}"
+        );
+        let report = result.unwrap();
+        assert!(report.complete, "{:?}", report.warnings);
+        assert!(report.artifacts.contains(&"grass_cache.rkyv".into()));
+        let connection = Connection::open(output.join("skyrim_world.db")).unwrap();
+        converter::esm::exporter::validate_database(&connection).unwrap();
+        for id in [0x12, 0x22, 0x1234] {
+            let count: u64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM \"references\" WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "valid neighboring reference {id:#x} must publish");
+        }
+        let published_manifest =
+            ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+        assert!(published_manifest.complete);
+        assert_eq!(
+            published_manifest.entries[layout::GENERATED_MODEL_PATH].output_hash,
+            glb_hash
+        );
+        assert_eq!(
+            hash_file(&output.join(&manifest.entries[layout::GENERATED_MODEL_PATH].output))
+                .unwrap(),
+            glb_hash
+        );
+        assert_eq!(hash_file(&source_cache).unwrap(), source_cache_hash);
+        assert_eq!(hash_file(&glb_path).unwrap(), glb_hash);
+        assert_eq!(hash_file(&manifest_path).unwrap(), source_manifest_hash);
+        let provenance: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap())
+                .unwrap();
+        assert_eq!(provenance["grass_baked_cells"], 2);
+        assert_eq!(provenance["grass_reused_cells"], 0);
+        let rebuilt = output.join("grass_cache.rkyv");
+        let map = converter::esm::grass_cache::validate_grass_cache(&rebuilt).unwrap();
+        let cache =
+            rkyv::access::<shared::grass::ArchivedGrassCache, rkyv::rancor::Error>(&map).unwrap();
+        assert_eq!(cache.types.len(), 1);
+        assert_eq!(cache.types[0].form_id.to_native(), 0x0100_0801);
+        assert_eq!(
+            cache.cells.len(),
+            2,
+            "healthy neighboring terrain must publish"
+        );
+        for (id, masks) in &expected_masks {
+            let cell = cache
+                .cells
+                .iter()
+                .find(|cell| cell.cell_id.to_native() == *id)
+                .unwrap();
+            assert!(cell.quadrants.iter().any(|quadrant| {
+                quadrant.layers.iter().any(|layer| {
+                    layer
+                        .grass_ids
+                        .iter()
+                        .any(|id| id.to_native() == 0x0100_0801)
+                })
+            }));
+            assert_eq!(
+                cell.quadrants[3].exclusion[0] & 1,
+                1,
+                "excluded marker lost the visible sibling's obstruction in cell {id:#x}"
+            );
+            let actual: Vec<_> = cell
+                .quadrants
+                .iter()
+                .map(|quadrant| quadrant.exclusion.to_vec())
+                .collect();
+            assert_eq!(
+                actual, *masks,
+                "excluded marker lost the visible sibling's obstruction in cell {id:#x}"
+            );
+            assert!(
+                cell.obstruction_failures.is_empty(),
+                "excluded marker poisoned its model"
+            );
+        }
+    }
+}
+
 /// Generate complete assets and a light whose enable-parent resolves to an authored reference.
 fn generate(data: &Path) {
     layout::prepare_directory(data, false).unwrap();
