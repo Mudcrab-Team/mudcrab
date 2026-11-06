@@ -1,0 +1,9 @@
+# Production defaults; overrides can be edited while running.
+brightness = 1.15
+sun_angle_weight = 0.0
+sun_strength = 0.1
+shadow_strength = 0.3
+ambient_strength = 1.15
+saturation = 0.75
+vclr_tint_strength = 1.0
+color_range_strength = 1.0
