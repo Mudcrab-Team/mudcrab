@@ -131,7 +131,8 @@ pub struct EngineConfig {
     /// MiB of newly loaded render assets (meshes, textures) the renderer may
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
-    /// Grass is opt-in so existing worlds and benchmark baselines keep their behavior.
+    /// Requested grass defaults on; startup requires a valid pack cache before rendering.
+    /// Automated baselines should explicitly pin their grass state.
     pub grass: bool,
     /// Radius in exterior cells, clamped below the terrain stream radius.
     pub grass_radius: i32,
@@ -300,7 +301,7 @@ impl Default for EngineConfig {
             // in one 13 ms upload burst, and at 60 fps the budget still admits
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
-            grass: false,
+            grass: true,
             grass_radius: grass.cell_radius,
             grass_uploads_per_frame: 2,
             grass_density_multiplier: 1.0,
@@ -425,8 +426,9 @@ Streaming:
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
   --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
 
-Grass (opt-in):
-  --grass                              enable authored grass
+Grass (enabled by default with a valid cache):
+  --grass                              force authored grass on for this session
+  --no-grass                           force grass off for this session (last switch wins)
   --grass-tuning <path>                hot-reload appearance TOML (or MUDCRAB_GRASS_TUNING)
   --grass-tuning-info <path>           print appearance provenance JSON; no window or GPU
   --grass-radius <cells>               generated cell radius (default: 2)
@@ -731,6 +733,15 @@ impl EngineConfig {
         if let Some(error) = &self.grass_settings_error {
             return Err(error.clone());
         }
+        if self.grass
+            && self
+                .grass_settings_report
+                .as_ref()
+                .and_then(|report| report.integer("iMaxGrassTypesPerTexure"))
+                .is_some_and(|value| value < 0)
+        {
+            return Err("negative iMaxGrassTypesPerTexure cannot be applied by MudCrab".into());
+        }
         let world_grass = self.grass && self.loads_world();
         if world_grass && (self.grass_radius == i32::MAX || self.stream_radius > MAX_STREAM_RADIUS)
         {
@@ -906,6 +917,9 @@ impl EngineConfig {
                 }
             }
         }
+        // Defer generator values until CLI grass switches resolve the imported draw state.
+        // Inactive grass must not inherit unsupported INI generator values.
+        config.grass = false;
         ini.apply(&mut config);
         config.settings_overrides.extend(
             args.iter()
@@ -988,7 +1002,8 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
-                "--grass" => grass_options.requested = true,
+                "--grass" => grass_options.requested = Some(true),
+                "--no-grass" => grass_options.requested = Some(false),
                 "--grass-tuning" => {
                     config.grass_tuning = Some(PathBuf::from(take_raw(
                         "--grass-tuning",
@@ -2045,9 +2060,9 @@ mod tests {
     }
 
     #[test]
-    /// Verify grass options are opt in finite and do not consume next flags.
-    fn grass_options_are_opt_in_finite_and_do_not_consume_next_flags() {
-        assert!(!EngineConfig::default().grass);
+    /// Verify grass defaults on and numeric options are finite without consuming next flags.
+    fn grass_options_default_on_finite_and_do_not_consume_next_flags() {
+        assert!(EngineConfig::default().grass);
         let config = EngineConfig::run_from_args(
             [
                 "--grass",

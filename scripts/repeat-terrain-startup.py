@@ -432,7 +432,7 @@ def stop_owned_group(process):
 
 def engine_command(args, directory, budget, run_id):
     return shlex.split(args.launch_prefix) + [
-        str(args.engine), "--assets", str(args.assets), "--worldspace", "0x3c",
+        str(args.engine), "--no-grass", "--assets", str(args.assets), "--worldspace", "0x3c",
         "--grid-x", "5", "--grid-y", "-12", "--stream-radius", "2",
         "--max-upload-mib-per-frame", str(budget), "--auto-fly-speed", "0",
         "--benchmark-duration", str(args.duration), "--benchmark-warmup-frames", str(args.warmup),

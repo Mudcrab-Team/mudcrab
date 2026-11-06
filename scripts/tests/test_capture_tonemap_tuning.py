@@ -196,6 +196,20 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
         source["sha256"] = TUNING.canonical_hash(source)
         return config_path, engine, assets, source
 
+    def test_grass_defaults_off_and_explicit_variants_keep_last_switch(self):
+        config, engine, assets, source = self.make_campaign()
+        data = json.loads(config.read_text(encoding="utf-8"))
+        data["variants"] = [{"name": "baseline", "args": []},
+                            {"name": "grass", "args": ["--grass"]},
+                            {"name": "disabled", "args": ["--grass", "--no-grass"]}]
+        TUNING.write_json(config, data)
+        with patch.object(TUNING, "source_snapshot", return_value=source):
+            manifest = TUNING.capture(config, engine, assets, self.root / "grass-campaign")
+        switches = [[arg for arg in run["command"] if arg in ("--grass", "--no-grass")]
+                    for run in manifest["runs"]]
+        self.assertEqual(switches, [["--no-grass"], ["--no-grass", "--grass"],
+                                    ["--no-grass", "--grass", "--no-grass"]])
+
     def test_campaign_preserves_references_and_revalidates_without_engine(self):
         config, engine, assets, source = self.make_campaign()
         output = self.root / "campaign"

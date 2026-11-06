@@ -23,6 +23,7 @@ class CaptureConfigurationTests(unittest.TestCase):
 
             def fake_run(command, **kwargs):
                 commands.append(command)
+                self.assertIn("--no-grass", command)
                 self.assertEqual(command[command.index("--visual-preset") + 1], "cool-gray")
                 directory = Path(command[command.index("--shots-out") + 1])
                 mode = command[command.index("--color-grade") + 1]

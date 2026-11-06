@@ -150,7 +150,7 @@ def engine_deadline(timeout):
 
 def command(args, run, directory):
     mode = MODES[run["mode"]]
-    result = [str(args.engine), "--assets", str(args.assets), "--worldspace", "0x3c",
+    result = [str(args.engine), "--no-grass", "--assets", str(args.assets), "--worldspace", "0x3c",
               "--grid-x", "5", "--grid-y", "-12", "--stream-radius", "2",
               "--prioritize-streaming", "--max-scene-loads", str(mode["jobs"]),
               "--max-model-spawns-per-frame", str(mode["activations"]),

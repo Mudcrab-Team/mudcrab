@@ -10,6 +10,7 @@ Settings are grouped under headings (for example Point lights, Sun shadows, Wate
 
 ## Graphics
 
+- Grass and grass radius, saved with other preferences and applied on next start. Grass defaults on for packs with a valid cache. The group heading marks both controls as next-start settings; runtime plugin/cache installation is unchanged. Launch flags and explicitly imported INI values remain session-only overrides. See [runtime grass](grass.md#skyrim-ini-settings) for precedence, cache fallback and automatic `grass.toml` discovery.
 - Point lights, enabled-light budget, point-light shadows and shadow-map resolution. Enabling lights also creates them in already loaded cells; disabling them hides those lights. Authored invalid, negative, and initially off lights retain their existing exclusion rules.
 - Sun lighting, illuminance and RGB color; ambient brightness and RGB color.
 - Sun shadows, shadow-map resolution, cascade count and distance multiplier. The underlying shadow range follows the full-detail unload grid.

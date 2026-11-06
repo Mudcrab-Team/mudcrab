@@ -571,7 +571,7 @@ def capture(config_path, engine, assets, output, grass_tuning_files=None):
                 argument = inputs[input_name]["path"]
             arguments.append(argument)
         arguments, grass_tuning = freeze_grass_tuning(arguments, engine, directory)
-        command = [str(engine), "--assets", str(assets), "--shots", inputs["camera"]["path"],
+        command = [str(engine), "--no-grass", "--assets", str(assets), "--shots", inputs["camera"]["path"],
                    "--ini", inputs["ini"]["path"], "--shots-out", str(directory / "capture"),
                    "--hidden-window", "--shots-settle-timeout", str(settle_timeout),
                    *arguments]

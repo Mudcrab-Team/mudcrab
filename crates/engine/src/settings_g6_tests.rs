@@ -26,7 +26,11 @@ fn g6_default_on_and_invalid_cache_fallback() {
                 types: vec![],
                 cells: vec![],
             };
-            std::fs::write(&cache_path, rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap()).unwrap();
+            std::fs::write(
+                &cache_path,
+                rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+            )
+            .unwrap();
         } else {
             std::fs::write(&cache_path, b"invalid").unwrap();
         }
@@ -36,7 +40,10 @@ fn g6_default_on_and_invalid_cache_fallback() {
         let cache = crate::app::load_optional_grass_cache(&mut launch, true, Some(&mut settings));
         assert_eq!(cache.is_some(), valid);
         assert_eq!(launch.grass, valid);
-        assert_eq!((launch.stream_radius, launch.unload_radius), if valid { (3, 4) } else { (2, 3) });
+        assert_eq!(
+            (launch.stream_radius, launch.unload_radius),
+            if valid { (3, 4) } else { (2, 3) }
+        );
     }
 }
 
@@ -53,8 +60,17 @@ fn g6_toggle_and_radius_persist_without_terrain_radius_leak() {
     let toggle = SETTING_SPECS.iter().find(|spec| spec.label == "Grass");
     assert!(toggle.is_some(), "Grass menu toggle is required");
     (toggle.unwrap().write)(&mut settings, 0.0);
-    let radius = SETTING_SPECS.iter().find(|spec| spec.label == "Grass radius").unwrap();
+    let radius = SETTING_SPECS
+        .iter()
+        .find(|spec| spec.label == "Grass radius")
+        .unwrap();
     (radius.write)(&mut settings, 5.0);
+    settings.apply_config(&mut launch);
+    assert!(launch.grass, "the menu applies grass state on next start");
+    assert_eq!(
+        launch.grass_radius, 7,
+        "the active ring stays unchanged until next start"
+    );
     file.save(&settings);
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(stored["grass"], false);
@@ -103,9 +119,13 @@ fn g6_no_grass_and_last_switch_wins() {
         let mut launch = config(&args);
         let (settings, mut file) = prepare_settings_at(&mut launch, Some(path.clone()));
         assert_eq!(launch.grass, enabled);
-        assert_eq!((launch.stream_radius, launch.unload_radius), if enabled { (3, 4) } else { (2, 3) });
+        assert_eq!(
+            (launch.stream_radius, launch.unload_radius),
+            if enabled { (3, 4) } else { (2, 3) }
+        );
         file.save(&settings);
-        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["grass"], true);
     }
 }
@@ -120,6 +140,8 @@ fn g6_user_appearance_file_and_explicit_override() {
     let mut launch = config(&[]);
     prepare_settings_at(&mut launch, Some(path.clone()));
     assert_eq!(launch.grass_tuning, Some(tuning));
+    let state = crate::grass_tuning::GrassTuningState::new(launch.grass_tuning.clone());
+    assert_eq!(state.effective.brightness, 1.3);
     let mut explicit = config(&["--grass-tuning", "developer.toml"]);
     prepare_settings_at(&mut explicit, Some(path));
     assert_eq!(explicit.grass_tuning, Some(PathBuf::from("developer.toml")));
@@ -137,22 +159,121 @@ fn g6_invalid_cache_preserves_preference_and_terrain_save() {
         preferences(&path, true, 7);
         let cache_path = directory.path().join("grass_cache.rkyv");
         if kind == "old" {
-            let cache = shared::grass::GrassCache { version: 5, types: vec![], cells: vec![] };
-            std::fs::write(&cache_path, rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap()).unwrap();
+            let cache = shared::grass::GrassCache {
+                version: 5,
+                types: vec![],
+                cells: vec![],
+            };
+            std::fs::write(
+                &cache_path,
+                rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+            )
+            .unwrap();
         } else if kind == "corrupt" {
             std::fs::write(&cache_path, b"corrupt").unwrap();
         }
         let mut launch = config(&[]);
         launch.assets_dir = directory.path().to_owned();
         let mut settings = prepare_settings_at(&mut launch, Some(path.clone()));
-        assert!(crate::app::load_optional_grass_cache(&mut launch, true, Some(&mut settings)).is_none());
+        assert!(
+            crate::app::load_optional_grass_cache(&mut launch, true, Some(&mut settings)).is_none()
+        );
         assert!(!launch.grass);
         assert_eq!((launch.stream_radius, launch.unload_radius), (2, 3));
         settings.1.save(&settings.0);
-        let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored["grass"], true);
         assert_eq!(stored["grass_radius"], 7);
         assert_eq!(stored["stream_radius"], 2);
         assert_eq!(stored["unload_radius"], 3);
     }
+}
+
+/// A numeric CLI value overrides its own field without re-enabling saved-off grass.
+#[test]
+fn g6_numeric_override_keeps_saved_off_and_stays_session_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    preferences(&path, false, 6);
+    let mut launch = config(&["--grass-radius", "4", "--grass-density", "1.75"]);
+    let (settings, mut file) = prepare_settings_at(&mut launch, Some(path.clone()));
+    assert!(!launch.grass);
+    assert_eq!(launch.grass_radius, 4);
+    assert_eq!(launch.grass_density_multiplier, 1.75);
+    assert_eq!((launch.stream_radius, launch.unload_radius), (2, 3));
+    file.save(&settings);
+    let stored: RenderingSettings = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(!stored.grass);
+    assert_eq!(stored.grass_radius, 6);
+}
+
+/// Existing version-one files inherit grass defaults without requiring a migration.
+#[test]
+fn g6_older_preferences_inherit_grass_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{"version":1,"stream_radius":2,"unload_radius":5,"exposure_ev100":8.5}"#,
+    )
+    .unwrap();
+    let mut launch = config(&[]);
+    let (settings, _) = prepare_settings_at(&mut launch, Some(path));
+    assert!(launch.grass);
+    assert_eq!(launch.grass_radius, 2);
+    assert_eq!((launch.stream_radius, launch.unload_radius), (3, 5));
+    assert_eq!(settings.exposure_ev100, 8.5);
+}
+
+/// Saved-off grass ignores unsupported INI generator values while retaining CLI validation.
+#[test]
+fn g6_saved_off_ignores_inactive_ini_generator_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let ini = directory.path().join("grass.ini");
+    std::fs::write(
+        &ini,
+        "[Grass]\niMinGrassSize=0\nfGrassFadeRange=0\niMaxGrassTypesPerTexure=-1\n",
+    )
+    .unwrap();
+    preferences(&path, false, 6);
+    for extra in [
+        vec![],
+        vec!["--no-grass"],
+        vec!["--grass-min-spacing", "48"],
+        vec!["--grass-min-spacing", "0"],
+    ] {
+        let mut args = vec!["--ini", ini.to_str().unwrap()];
+        args.extend(extra.iter().copied());
+        let mut launch = config(&args);
+        prepare_settings_at(&mut launch, Some(path.clone()));
+        assert!(!launch.grass);
+        let invalid_cli = extra.last() == Some(&"0");
+        assert_eq!(launch.validate_grass().is_err(), invalid_cli, "{args:?}");
+        if extra.last() == Some(&"48") {
+            assert_eq!(launch.grass_min_spacing, 48.0);
+        }
+    }
+    let mut active = config(&["--grass", "--ini", ini.to_str().unwrap()]);
+    prepare_settings_at(&mut active, Some(path));
+    assert!(active.validate_grass().is_err());
+}
+
+/// An explicit INI radius remains visible while grass is off and never replaces the saved radius.
+#[test]
+fn g6_inactive_ini_radius_is_launch_owned() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    let ini = directory.path().join("grass.ini");
+    std::fs::write(&ini, "[Grass]\niGrassCellRadius=7\n").unwrap();
+    preferences(&path, false, 6);
+    let mut launch = config(&["--no-grass", "--ini", ini.to_str().unwrap()]);
+    let (settings, mut file) = prepare_settings_at(&mut launch, Some(path.clone()));
+    assert!(!launch.grass);
+    assert_eq!(launch.grass_radius, 7);
+    assert_eq!(settings.grass_radius, 7);
+    file.save(&settings);
+    let stored: RenderingSettings = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(stored.grass_radius, 6);
 }

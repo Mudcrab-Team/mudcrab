@@ -4333,7 +4333,10 @@ mod tests {
     #[test]
     /// Verify grass screenshot waits for generation uploads and actual draw readiness.
     fn grass_screenshot_waits_for_generation_uploads_and_actual_draw_readiness() {
-        let mut config = EngineConfig::default();
+        let mut config = EngineConfig {
+            grass: false,
+            ..Default::default()
+        };
         assert!(screenshot_grass_ready(&config, true, None, None));
         config.grass = true;
         assert!(screenshot_grass_ready(&config, false, None, None));

@@ -1,6 +1,6 @@
 # Runtime grass
 
-Grass is opt-in with `--grass`. Conversion exports winning GRAS/LTEX records
+Grass is enabled by default when the pack has a valid grass cache. Conversion exports winning GRAS/LTEX records
 and bakes [versioned masks](../converters/grass-cache.md). The engine reads
 `grass_cache.rkyv` only when grass is enabled in a streamed world. Requesting
 grass in a benchmark-only or non-streaming fixture run prints one warning that it
@@ -207,7 +207,8 @@ preparation applies its own admission limit when meshes become ready.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--grass` | off | Enable grass in the streamed world |
+| `--grass` | on with a valid cache | Force grass on for this session |
+| `--no-grass` | not set | Force grass off for this session |
 | `--grass-radius` | 2 | Cell radius, clamped below terrain stream radius |
 | `--grass-uploads-per-frame` | 2 | Species uploads per frame; zero is unlimited |
 | `--grass-density` | 1 | Density multiplier, finite 0..16 |
@@ -249,6 +250,20 @@ at extraction time, as the multi-shot settle gate does before requesting a frame
 
 ## Skyrim INI settings
 
+Interactive settings include **Grass** and **Grass radius** under
+**Grass (applies on next start)**. Choose Save to persist them. Grass plugins
+and the validated cache are installed at startup, so both controls apply on
+the next start. A cache failure disables rendering for that pack without
+replacing the saved requested state. Grass-imposed terrain radii are never
+saved as terrain preferences.
+
+Precedence is field-specific: CLI > explicitly imported INI > saved preferences
+> shipped defaults (grass on, radius 2). `--grass` and `--no-grass` override the
+state for one session; the last switch wins. Numeric grass flags override only
+their own values. Saving preserves the earlier preference for launch-owned
+fields. Automated runs skip user preferences and appearance discovery; capture
+and performance harnesses explicitly pin grass on or off.
+
 Grass uses the existing `--ini <path>` reader shared with
 [terrain distances](lod-architecture.md#distance-configuration-skyrim-ini-parity).
 Files apply in the order given, later files override earlier ones key by key,
@@ -282,7 +297,7 @@ that file; every other value is an explicit **MudCrab default**.
 | `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
 | `[Grass]` | `fGrassFadeRange` | `1000.0` | MudCrab default | Fade end is start plus range |
-| `[Grass]` | `bDrawShaderGrass` | `1` | MudCrab default | Enable grass draws when `--grass` is requested |
+| `[Grass]` | `bDrawShaderGrass` | `1` | MudCrab default | Set the launch grass state unless a CLI switch overrides it |
 | `[Grass]` | `bEnableGrassFade` | `1` | MudCrab default | Enable distance thinning |
 | `[Grass]` | `fGrassMinStartFadeDistance` | `0.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
 | `[Grass]` | `fGrassMaxStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Reported menu metadata |
@@ -329,6 +344,12 @@ feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
 and lighting formulas here remain native MudCrab choices.
 
 ## Live grass tuning
+
+Interactive startup also discovers `grass.toml` beside the existing per-user
+`settings.json` (`%APPDATA%/Mudcrab` on Windows, `~/Library/Application Support/Mudcrab`
+on macOS, `$XDG_CONFIG_HOME/Mudcrab` or `~/.config/Mudcrab` elsewhere). It uses
+the same G5 TOML format and hot reload. No file is created automatically.
+`--grass-tuning` overrides `MUDCRAB_GRASS_TUNING`, which overrides this automatic file.
 
 Select a flat TOML file with `--grass-tuning docs/examples/grass-tuning/flat-b.toml`
 (or `MUDCRAB_GRASS_TUNING`). Fileless startup and empty valid TOML use the same

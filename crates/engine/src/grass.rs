@@ -647,8 +647,11 @@ mod tests {
     /// Verify disabled plugin does not install grass resources or systems.
     fn disabled_plugin_does_not_install_grass_resources_or_systems() {
         let mut app = App::new();
-        app.insert_resource(EngineConfig::default())
-            .add_plugins(GrassPlugin);
+        app.insert_resource(EngineConfig {
+            grass: false,
+            ..Default::default()
+        })
+        .add_plugins(GrassPlugin);
         assert!(!app.world().contains_resource::<GrassState>());
         assert!(!app.world().contains_resource::<GrassFade>());
         app.update();

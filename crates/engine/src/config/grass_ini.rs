@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Options {
-    pub requested: bool,
+    pub requested: Option<bool>,
     pub explicit_stream_radius: bool,
     numeric: Vec<(String, String)>,
     error: Option<String>,
@@ -29,18 +29,22 @@ impl Options {
         if let Some(error) = self.error {
             config.grass_settings_error.get_or_insert(error);
         }
-        if !self.requested && self.numeric.is_empty() {
-            return;
-        }
         if config.grass_settings_report.is_none() {
             config.apply_grass_settings(GrassSettings::default().report());
         }
-        config.grass = self.requested
-            && config
+        config.grass = self.requested.unwrap_or_else(|| {
+            config
                 .grass_settings_report
                 .as_ref()
                 .and_then(|report| report.boolean("bDrawShaderGrass"))
-                .unwrap_or(true);
+                .unwrap_or(true)
+        });
+        // Radius is a next-start preference even when grass rendering is disabled.
+        if let Some(report) = &config.grass_settings_report
+            && report.settings["iGrassCellRadius"].effective.line.is_some()
+        {
+            config.grass_radius = report.integer("iGrassCellRadius").unwrap();
+        }
         if config.grass {
             let report = Arc::clone(config.grass_settings_report.as_ref().unwrap());
             config.map_grass_settings(&report);
@@ -109,9 +113,57 @@ impl Options {
 }
 
 impl EngineConfig {
+    /// Saved-off grass must ignore generator imports just as an explicit off switch does.
+    /// Numeric CLI fields retain their values and validation for this session.
+    pub(crate) fn discard_inactive_grass_imports(&mut self) {
+        if self.grass {
+            return;
+        }
+        let Some(report) = &self.grass_settings_report else {
+            return;
+        };
+        let imported = |keys: &[&str], flag: Option<&str>| {
+            flag.is_none_or(|flag| !self.settings_overrides.iter().any(|value| value == flag))
+                && keys
+                    .iter()
+                    .any(|key| report.settings[*key].effective.line.is_some())
+        };
+        let defaults = EngineConfig::default();
+        if imported(&["iMinGrassSize"], Some("--grass-min-spacing")) {
+            self.grass_min_spacing = defaults.grass_min_spacing;
+        }
+        if imported(&["fGrassStartFadeDistance"], Some("--grass-fade-start")) {
+            self.grass_fade_start = defaults.grass_fade_start;
+        }
+        if imported(
+            &["fGrassStartFadeDistance", "fGrassFadeRange"],
+            Some("--grass-fade-end"),
+        ) {
+            self.grass_fade_end = defaults.grass_fade_end;
+        }
+        if imported(&["bEnableGrassFade"], None) {
+            self.grass_enable_fade = defaults.grass_enable_fade;
+        }
+        if imported(&["fTexturePctThreshold"], None) {
+            self.grass_texture_threshold = defaults.grass_texture_threshold;
+        }
+        if imported(&["iMaxGrassTypesPerTexure"], None) {
+            self.grass_max_types_per_texture = defaults.grass_max_types_per_texture;
+        }
+    }
+
     /// Retain the shared INI report and apply its runtime values only to enabled grass.
     pub(crate) fn apply_grass_settings(&mut self, report: Report) {
         let defaults = GrassSettings::default();
+        // Explicit INI assignments are launch overrides, just like numeric CLI values.
+        for (key, ownership) in [
+            ("bDrawShaderGrass", "ini:grass"),
+            ("iGrassCellRadius", "ini:grass-radius"),
+        ] {
+            if report.settings[key].effective.line.is_some() {
+                self.settings_overrides.push(ownership.into());
+            }
+        }
         self.grass &= report
             .boolean("bDrawShaderGrass")
             .unwrap_or(defaults.draw_shader_grass);
@@ -140,15 +192,10 @@ impl EngineConfig {
         if imported("iGrassCellRadius") {
             self.grass_radius = report.integer("iGrassCellRadius").unwrap();
         }
-        if imported("iMaxGrassTypesPerTexure") {
-            match usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap()) {
-                Ok(value) => self.grass_max_types_per_texture = value,
-                Err(_) => {
-                    self.grass_settings_error.get_or_insert_with(|| {
-                        "negative iMaxGrassTypesPerTexure cannot be applied by MudCrab".into()
-                    });
-                }
-            }
+        if imported("iMaxGrassTypesPerTexure")
+            && let Ok(value) = usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap())
+        {
+            self.grass_max_types_per_texture = value;
         }
         if imported("fTexturePctThreshold") {
             self.grass_texture_threshold = report.float("fTexturePctThreshold").unwrap();

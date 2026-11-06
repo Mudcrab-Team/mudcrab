@@ -14,9 +14,10 @@ fn ini(directory: &tempfile::TempDir, name: &str, text: &str) -> String {
 }
 
 #[test]
-/// Verify no-file defaults preserve opt in and expand terrain only when requested.
-fn grass_ini_defaults_preserve_opt_in_and_pin_the_shipped_minimum_fade() {
-    let disabled = parse(&[]);
+/// Verify no-file defaults enable grass while explicit off retains the terrain baseline.
+fn grass_ini_defaults_enable_grass_and_pin_the_shipped_minimum_fade() {
+    assert!(parse(&[]).grass);
+    let disabled = parse(&["--no-grass"]);
     assert!(!disabled.grass);
     assert_eq!((disabled.stream_radius, disabled.unload_radius), (2, 3));
     let enabled = parse(&["--grass"]);
@@ -208,8 +209,8 @@ fn grass_ini_missing_files_follow_main_without_discarding_valid_files() {
 }
 
 #[test]
-/// Verify imported draw state can disable an explicit request but cannot enable grass alone.
-fn grass_ini_draw_flag_requires_the_grass_opt_in() {
+/// Explicit CLI grass switches beat the imported draw state in any argument position.
+fn grass_ini_draw_flag_yields_to_explicit_cli_switches() {
     let dir = tempfile::tempdir().unwrap();
     let off = ini(
         &dir,
@@ -217,12 +218,13 @@ fn grass_ini_draw_flag_requires_the_grass_opt_in() {
         "[Grass]\nbDrawShaderGrass=0\niGrassCellRadius=6\n",
     );
     let on = ini(&dir, "on.ini", "[Grass]\nbDrawShaderGrass=1\n");
-    let disabled = parse(&["--grass", "--ini", &off]);
+    let disabled = parse(&["--ini", &off]);
     assert!(!disabled.grass);
     assert_eq!((disabled.stream_radius, disabled.unload_radius), (2, 3));
-    assert!(!parse(&["--ini", &on]).grass);
-    assert!(!parse(&["--ini", &on, "--grass", "--ini", &off]).grass);
+    assert!(parse(&["--ini", &on]).grass);
+    assert!(parse(&["--ini", &on, "--grass", "--ini", &off]).grass);
     assert!(parse(&["--ini", &off, "--grass", "--ini", &on]).grass);
+    assert!(!parse(&["--ini", &on, "--no-grass"]).grass);
 }
 
 #[test]
@@ -431,24 +433,24 @@ fn grass_ini_preserves_streaming_and_grass_radius_boundaries() {
 /// Verify inactive grass imports cannot reject startup while terrain INI values still apply.
 fn grass_ini_inactive_imports_do_not_enforce_generator_runtime_limits() {
     let dir = tempfile::tempdir().unwrap();
-    for requested in [false, true] {
+    for explicit_off in [false, true] {
         let path = ini(
             &dir,
             "inactive.ini",
             &format!(
                 "[Grass]\niMinGrassSize=0\nfGrassFadeRange=0\nbDrawShaderGrass={}\n[General]\nuGridsToLoad=9\n",
-                u8::from(!requested)
+                u8::from(explicit_off)
             ),
         );
         let mut args = vec!["--ini", path.as_str()];
-        if requested {
-            args.push("--grass");
+        if explicit_off {
+            args.push("--no-grass");
         }
         let config = parse(&args);
-        assert!(!config.grass, "grass requested: {requested}");
+        assert!(!config.grass, "explicit off: {explicit_off}");
         assert!(
             config.validate_grass().is_ok(),
-            "inactive INI grass must not reject startup, requested: {requested}: {:?}",
+            "inactive INI grass must not reject startup, explicit off: {explicit_off}: {:?}",
             config.validate_grass()
         );
         assert_eq!((config.stream_radius, config.unload_radius), (4, 5));
