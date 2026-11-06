@@ -19,6 +19,19 @@ Before review the diff contained 137 files, 27,303 added lines and 160 removed l
 | B2 | should | Failed capture rows lacked retained trace identities | Fixed both proof and runner failure paths, explicit absent-trace state, source archival and resume; complete CLI-to-verifier regression passes |
 | B3 | nit | Aggregate docstring coverage recommendation | Declined broad docstring edits; the new failure helper has a targeted docstring and frozen evaluator/acquisition snapshots retain their original bytes |
 
-The [second Sol round](sol-review-round2.md) approved these fixes and their evidence. B1 and B2 are resolved, with no new blocker or should finding. It independently passed all 157 Python tests, the historical corpus verifier and the whitespace check. The production Rust transition and original observations remain unchanged. No usage or effort setting was exposed for the first delegate. Sol-loop is complete after two rounds with gpt-6.1-sol. No effort setting or token usage was exposed for either delegate. The second review required no further behavior change.
+The [second Sol round](sol-review-round2.md) approved these fixes and their evidence. B1 and B2 are resolved, with no new blocker or should finding. It independently passed all 157 Python tests, the historical corpus verifier and the whitespace check. The production Rust transition and original observations remain unchanged. No effort setting or token usage was exposed for either delegate. The second review required no further behavior change.
 
 The follow-up diff entering round 2 contained 15 files, 235 additions and 9 deletions. Approval adds only the reviewer report, this ledger update and the decision entry. Hosted checks and human approval remain separate from both Sol verdicts.
+
+
+## Attempt-accounting follow-up
+
+| ID | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| B4 | should | Recorder preflight can exit without `failure.json` | Reproduced and fixed with an explicit recorder-error fallback; real preflight is exercised without launching Skyrim |
+| B5 | should | Overflow or missing proof fields escape failure retention | Reproduced and fixed at the proof boundary, with original exceptions re-raised |
+| P1 | should | An unclassified attempt can disappear when a later retry succeeds | Reproduced by deleting each historical failure marker; verifier now rejects an unmatched attempt ledger |
+
+The [third Sol round](sol-review-round3.md) approved these changes with no findings. B4, B5 and P1 are resolved. It independently passed all 158 Python tests, both historical rechecks, receipt hashes and the staged whitespace check. The source delta is three Python files, 59 additions and 14 deletions before evidence documentation. The complete diff entering review was nine files, 99 additions and 14 deletions. Approval adds only the reviewer report, this ledger update and the decision entry.
+
+Sol-loop is complete after three rounds with gpt-6.1-sol. No effort setting or token usage was exposed. The final round made no behavior changes and did not rerun Cargo or native Skyrim. Hosted checks must cover the final committed head, and required human approval remains separate.

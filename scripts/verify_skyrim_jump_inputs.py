@@ -20,6 +20,10 @@ def verify(corpus, plan_path):
     conditions = plan['conditions']
     require([r['id'] for r in manifest['runs']] == [c['id'] for c in conditions],
             'Campaign is incomplete or conditions reordered')
+    accepted_attempts = [attempt for attempt in manifest['attempts'] if 'failure' not in attempt]
+    require(all(attempt['exit_code'] == 0 for attempt in accepted_attempts) and
+            [attempt['id'] for attempt in accepted_attempts] == [run['id'] for run in manifest['runs']],
+            'Attempt ledger has unclassified or duplicate attempts')
     baseline = manifest['runs'][0]['result']
     with zipfile.ZipFile(corpus / 'capture-source.zip') as archive:
         captured_sources = {name: archive.read(name) for name in archive.namelist()}

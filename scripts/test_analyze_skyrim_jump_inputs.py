@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import io
 import json
+import shutil
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -130,7 +131,12 @@ class CaptureResumeTests(unittest.TestCase):
         plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
         declaration = json.loads(plan.read_text())
         baseline = gzip.decompress((reference / observed['runs'][0]['path']).read_bytes())
-        for mode in ('proof', 'runner', 'startup'):
+        run_recorder = capture.subprocess.run
+        overflow = bytearray(baseline)
+        for offset in range(0, len(overflow), RECORD.size):
+            if RECORD.unpack_from(overflow, offset)[4] == 10:
+                overflow[offset + 64:offset + 68] = (0x7f7fffff).to_bytes(4, 'little')
+        for mode in ('proof', 'runner', 'startup', 'preflight', 'overflow', 'proof-key', 'public-proof-key'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 session_dir = root / 'session'
@@ -162,6 +168,15 @@ class CaptureResumeTests(unittest.TestCase):
                         failed = True
                         if mode == 'proof':
                             raw = raw[:-1]
+                        elif mode == 'overflow':
+                            raw = bytes(overflow)
+                        elif mode == 'proof-key':
+                            del proof['trace_sha256']
+                        elif mode == 'public-proof-key':
+                            del proof['ini']
+                        elif mode == 'preflight':
+                            output.rmdir()
+                            return run_recorder(command, **_kwargs)
                         else:
                             if mode == 'runner':
                                 (output / 'trace.bin').write_bytes(raw)
@@ -172,15 +187,20 @@ class CaptureResumeTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0)
 
                 with patch('sys.argv', argv), patch.object(capture.subprocess, 'run', record), contextlib.redirect_stdout(io.StringIO()):
-                    with self.assertRaises((ValueError, RuntimeError)):
+                    with self.assertRaises((ValueError, RuntimeError, FileNotFoundError, OverflowError, KeyError)):
                         capture.main()
                     manifest = json.loads((corpus / 'manifest.json').read_text())
                     self.assertEqual(manifest['runs'], [])
                     failure = manifest['attempts'][0]
-                    if mode == 'startup':
+                    self.assertIn('failure', failure)
+                    if mode == 'overflow':
+                        self.assertTrue(failure['failure']['error'].startswith('OverflowError:'))
+                    if mode in ('proof-key', 'public-proof-key'):
+                        self.assertTrue(failure['failure']['error'].startswith('KeyError:'))
+                    if mode in ('startup', 'preflight'):
                         self.assertEqual(failure['trace_status'], 'not-created')
                     else:
-                        raw = baseline[:-1] if mode == 'proof' else baseline
+                        raw = baseline[:-1] if mode == 'proof' else bytes(overflow) if mode == 'overflow' else baseline
                         self.assertEqual(gzip.decompress((corpus / failure['path']).read_bytes()), raw)
                         self.assertEqual(failure['trace_sha256'], hashlib.sha256(raw).hexdigest())
                     capture.main()
@@ -202,7 +222,7 @@ class CaptureResumeTests(unittest.TestCase):
                     self.assertIn('Capture sources changed', error.getvalue())
                     self.assertEqual(archive_path.read_bytes(), archived)
                     self.assertEqual((corpus / 'manifest.json').read_bytes(), manifest_bytes)
-                if mode != 'startup':
+                if mode not in ('startup', 'preflight'):
                     (corpus / failure['path']).write_bytes(gzip.compress(b'changed'))
                     with self.assertRaisesRegex(ValueError, 'Failed trace identity'):
                         verify(corpus, plan)
@@ -211,6 +231,23 @@ class CaptureResumeTests(unittest.TestCase):
                     manifest['attempts'][0]['exit_code'] = 0
                     capture.write(corpus / 'manifest.json', manifest)
                     with self.assertRaisesRegex(ValueError, 'Missing trace is only valid'):
+                        verify(corpus, plan)
+
+
+    def test_unclassified_attempt_cannot_disappear_after_a_successful_retry(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / 'corpus'
+            shutil.copytree(reference, corpus)
+            original = (corpus / 'manifest.json').read_text()
+            for missing_failure in [index for index, attempt in enumerate(json.loads(original)['attempts'])
+                                    if 'failure' in attempt]:
+                with self.subTest(attempt=missing_failure):
+                    manifest = json.loads(original)
+                    del manifest['attempts'][missing_failure]['failure']
+                    capture.write(corpus / 'manifest.json', manifest)
+                    with self.assertRaisesRegex(ValueError, 'Attempt ledger'):
                         verify(corpus, plan)
 
 
