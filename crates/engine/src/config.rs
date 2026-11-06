@@ -123,6 +123,8 @@ pub struct EngineConfig {
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
+    /// Open the window below other windows and leave focus where it was.
+    pub background_window: bool,
     /// Whole color pipeline; fixed for the run because stages never mix across profiles.
     pub visual_profile: VisualProfile,
     /// Select the cinematic A/B experiment without changing scene lighting.
@@ -261,6 +263,7 @@ impl Default for EngineConfig {
             max_upload_mib_per_frame: 16,
             headless: false,
             hidden_window: false,
+            background_window: false,
             visual_profile: VisualProfile::Mudcrab,
             color_grade: SceneGradeMode::SnapshotSrgb,
             visual_preset: SceneVisualPreset::CoolGray,
@@ -348,6 +351,7 @@ Assets and start position:
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
   --headless                            run without opening a window
   --hidden-window                       render screenshots without showing a window
+  --background-window                   open the window behind other windows without taking focus
   --lights                              place a point light for each streamed LIGH reference
 
 Streaming:
@@ -850,6 +854,7 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
+                "--background-window" => config.background_window = true,
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -2395,6 +2400,20 @@ mod tests {
                 .to_string()
                 .contains("--color-grade")
         );
+    }
+
+    /// A background capture keeps its window visible; only its stacking and focus change.
+    #[test]
+    fn parses_background_window_capture_mode() {
+        assert!(!EngineConfig::default().background_window);
+        let config = run_config(&[
+            "--background-window",
+            "--acceptance-screenshot",
+            "capture.png",
+        ]);
+        assert!(config.background_window);
+        assert!(!config.hidden_window);
+        assert!(!config.headless);
     }
 
     /// Hidden capture selects rendering without enabling interactive mouse ownership.
