@@ -600,6 +600,11 @@ fn resume_command(program: &str, cli: &Cli, staging: &Path) -> String {
     // the stage reads must not be switched silently.
     if cli.merged_terrain {
         command.push_str(" --merged-terrain");
+    }
+    if cli.merged_terrain
+        || cli.terrain_default_texture != TerrainDefaultTexture::default()
+        || cli.terrain_ini.is_some()
+    {
         command.push_str(match cli.terrain_default_texture {
             TerrainDefaultTexture::White => " --terrain-default-texture white",
             TerrainDefaultTexture::SkyrimIni => " --terrain-default-texture skyrim-ini",
@@ -793,6 +798,9 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
     }
     if args.first().and_then(|argument| argument.to_str()) == Some("repair-failed") {
         let apply = args.iter().any(|argument| argument == "--apply");
+        let terrain_selection = args
+            .iter()
+            .any(|argument| argument == "--terrain-default-texture" || argument == "--terrain-ini");
         let gpu_tuning = args
             .iter()
             .any(|argument| argument == "--gpu-quality" || argument == "--gpu-batch-mb");
@@ -812,6 +820,11 @@ fn parse_command(args: Vec<OsString>) -> Result<Command> {
         if cli.merged_terrain {
             bail!(
                 "repair-failed does not build merged terrain; drop --merged-terrain and its options"
+            );
+        }
+        if terrain_selection {
+            bail!(
+                "repair-failed does not rebuild default land; use normal conversion for terrain defaults"
             );
         }
         if cli.resume_staging.is_some()
@@ -994,7 +1007,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             Some("--no-lod") => no_lod = true,
             Some("--merged-terrain") => merged_terrain = true,
             Some("--terrain-default-texture") => {
-                terrain_option.get_or_insert("--terrain-default-texture");
                 let value = next_value(&mut args, "--terrain-default-texture")?;
                 terrain_default_texture = match value.to_str() {
                     Some("white") => TerrainDefaultTexture::White,
@@ -1003,7 +1015,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
                 };
             }
             Some("--terrain-ini") => {
-                terrain_option.get_or_insert("--terrain-ini");
                 terrain_ini = Some(next_path_value(&mut args, "--terrain-ini")?)
             }
             Some("--terrain-allow-downscale") => {
@@ -1267,10 +1278,12 @@ terrain and ordinary assets remain available. Omit it on a later run to build LO
 textures: the land texture arrays, one merged mesh per exterior cell and the terrain chunk
 files. It is off by default because the engine does not read those outputs yet.
 --terrain-default-texture picks what a cell quadrant with no BTXT blends: the generated
-white texture (default), or the game's own [Landscape] default.
+white texture, or the game's own [Landscape] default (the default selection).
 --terrain-ini names the Skyrim.ini that default is read from; without it the built-in
 textures/landscape/Dirt02.dds and Dirt02_N.dds stand in, as they do for a key the ini does
-not name. A default that cannot be converted leaves the white texture, and the report says so.
+not name. An unusable default diffuse leaves white; an unusable optional normal keeps a valid
+diffuse. These recoverable fallbacks are report notices and do not make conversion incomplete
+or make it exit 1. Failures that prevent publishing usable output still fail conversion.
 --terrain-allow-downscale downscales a land texture larger than the largest array size class
 into it instead of stopping the merged-terrain build; the report lists every one downscaled.
 --language selects the string tables that localized plugins' names are read from,
@@ -1960,7 +1973,7 @@ mod tests {
             verify_cache: true,
             no_lod: false,
             merged_terrain: false,
-            terrain_default_texture: TerrainDefaultTexture::White,
+            terrain_default_texture: TerrainDefaultTexture::SkyrimIni,
             terrain_ini: None,
             terrain_allow_downscale: false,
             verbose: false,
@@ -2000,7 +2013,7 @@ mod tests {
         assert!(terrain.merged_terrain);
         assert_eq!(
             terrain.terrain_default_texture,
-            TerrainDefaultTexture::White
+            TerrainDefaultTexture::SkyrimIni
         );
         let terrain = parse_cli(vec![
             "Data".into(),
@@ -2020,7 +2033,13 @@ mod tests {
         );
         // The default texture is named even when it is the default, and the ini and the
         // downscale allowance travel with the resume: none of them may switch silently.
-        let white = parse_cli(vec!["Data".into(), "--merged-terrain".into()]).unwrap();
+        let white = parse_cli(args(&[
+            "Data",
+            "--merged-terrain",
+            "--terrain-default-texture",
+            "white",
+        ]))
+        .unwrap();
         assert!(
             resume_command("converter", &white, staging)
                 .ends_with(" --merged-terrain --terrain-default-texture white")
@@ -2082,24 +2101,13 @@ mod tests {
         ));
     }
 
-    /// Merged-terrain options mean nothing without --merged-terrain, an ini needs the skyrim-ini
-    /// default, --terrain-ini takes a path and never another option, and repair refuses the option.
+    /// Array options need merged terrain; defaults apply to all terrain paths and INI values are paths.
     #[test]
     fn merged_terrain_options_need_the_option_and_their_own_values() {
-        for dependent in [
-            vec!["--terrain-default-texture", "skyrim-ini"],
-            vec!["--terrain-default-texture", "white"],
-            vec!["--terrain-allow-downscale"],
-            vec!["--terrain-ini", "Skyrim.ini"],
-        ] {
-            let mut values = vec!["Data"];
-            values.extend(dependent.iter().copied());
-            let error = parse_cli(args(&values)).unwrap_err().to_string();
-            assert!(
-                error.contains("requires --merged-terrain"),
-                "{values:?}: {error}"
-            );
-        }
+        let error = parse_cli(args(&["Data", "--terrain-allow-downscale"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires --merged-terrain"), "{error}");
         // Explicit white with an ini is refused: the ini is only read by skyrim-ini.
         let error = parse_cli(args(&[
             "Data",
@@ -2121,7 +2129,10 @@ mod tests {
             "--terrain-ini",
             "S.ini",
         ]));
-        assert!(ini_without_default.is_err(), "the default is white");
+        assert!(
+            ini_without_default.is_ok(),
+            "the default now reads Skyrim INI settings"
+        );
 
         // The ini value is a path: the next option is not taken as one.
         let error = parse_cli(args(&[
@@ -2164,6 +2175,29 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    /// Repair must reject explicitly supplied defaults, including the current default value.
+    #[test]
+    fn repair_rejects_default_land_options() {
+        for options in [
+            vec!["--terrain-default-texture", "white"],
+            vec!["--terrain-default-texture", "skyrim-ini"],
+            vec![
+                "--terrain-default-texture",
+                "skyrim-ini",
+                "--terrain-ini",
+                "custom.ini",
+            ],
+        ] {
+            let mut values = vec!["repair-failed", "Data", "out", "--apply"];
+            values.extend(options);
+            let error = parse_command(args(&values)).unwrap_err().to_string();
+            assert!(
+                error.contains("repair-failed does not rebuild default land"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

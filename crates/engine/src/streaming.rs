@@ -4519,6 +4519,7 @@ fn is_safe_relative_asset_path(path: &str) -> bool {
         .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+/// Orders stored layers, supplying the configured implicit base for an unpainted quadrant.
 pub(crate) fn quadrant_layers(
     terrain: &TerrainSnapshot,
     quadrant: u8,
@@ -4530,6 +4531,21 @@ pub(crate) fn quadrant_layers(
         .collect();
     layers.sort_by_key(|layer| (!layer.is_base, layer.layer, layer.texture_form_id));
     if layers.is_empty() {
+        // The cell cache omits a quadrant with no texture assignments. It still draws Skyrim's
+        // configured default land, just like an explicit null BTXT base.
+        static DEFAULT_BASES: std::sync::LazyLock<[TerrainLayerSnapshot; 4]> =
+            std::sync::LazyLock::new(|| {
+                std::array::from_fn(|quadrant| TerrainLayerSnapshot {
+                    texture_form_id: shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID,
+                    quadrant: quadrant as u8,
+                    layer: 0,
+                    is_base: true,
+                    weights: Vec::new(),
+                })
+            });
+        if let Some(base) = DEFAULT_BASES.get(usize::from(quadrant)) {
+            layers.push(base);
+        }
         return Ok(layers);
     }
     let base_count = layers.iter().filter(|layer| layer.is_base).count();
@@ -4571,8 +4587,9 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry while retaining unresolved texture layers and their weights.
-/// Missing diffuse images use the same material fallback as normalized zero-ID layers.
+/// Validates geometry and warns once per missing nonzero diffuse ID per cell. Null bases use
+/// the pack's default images; zero overlays and unresolved nonzero layers retain their slots
+/// and weights without requesting a diffuse image or an orphan normal.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -7574,11 +7591,15 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).is_err());
     }
 
+    /// A fully unpainted quadrant uses the same default as a null BTXT.
     #[test]
     fn accepts_textureless_official_land_quadrant() {
         let mut terrain = terrain_fixture(1, 0.0);
         terrain.layers.clear();
-        assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
+        let layers = quadrant_layers(&terrain, 0).unwrap();
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].is_base);
+        assert_eq!(layers[0].texture_form_id, 0);
     }
 
     /// Zero and unresolved nonzero overlays retain ordered weights while malformed geometry

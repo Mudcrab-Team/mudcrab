@@ -418,6 +418,96 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
     Ok((plugins, hashes))
 }
 
+/// Enforce retained source identity for every ordinary LTEX diffuse.
+/// Optional defaults use the same check but recover locally from its errors.
+fn verify_retained_terrain_source(
+    vfs: &Path,
+    relative: &Path,
+    manifest: &ConversionManifest,
+) -> Result<()> {
+    if let Some(entry) = manifest
+        .entries
+        .get(&relative.to_string_lossy().to_string())
+        && vfs.join(relative).is_file()
+    {
+        let raw_hash = hash_file(&vfs.join(relative))?;
+        ensure!(
+            entry
+                .source_hash
+                .split_once(":texture-encoding:")
+                .is_some_and(|(recorded, _)| recorded == raw_hash),
+            "retained terrain texture source differs from current inputs: {}",
+            relative.display()
+        );
+    }
+    Ok(())
+}
+
+/// Discard partial or stale default bytes so publication can select its existing fallback.
+/// Failure to remove a staged file is a publication failure, not damaged input recovery.
+fn discard_default_source(
+    vfs: &Path,
+    relative: &Path,
+    error: &color_eyre::Report,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    match fs::remove_file(vfs.join(relative)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    report.notices.push(format!(
+        "unusable default land source {} omitted: {error:#}",
+        relative.display()
+    ));
+    Ok(())
+}
+
+/// Stage one default-only path without letting a broken override abort metadata publication.
+/// Ordinary terrain paths are excluded by the caller and retain strict overlay/hash checks.
+fn stage_optional_default_source(
+    config: &PipelineConfig,
+    vfs: &Path,
+    relative: &Path,
+    archives: &[PathBuf],
+    files: &[PathBuf],
+    manifest: &ConversionManifest,
+    report: &mut PipelineReport,
+) -> Result<()> {
+    let paths = BTreeSet::from([relative.to_owned()]);
+    for archive in archives {
+        if let Err(error) = ArchiveExtractor::extract_paths(archive, vfs, &paths) {
+            discard_default_source(vfs, relative, &error, report)?;
+        }
+    }
+    let loose: Vec<_> = files
+        .iter()
+        .filter(|path| {
+            if !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dds"))
+            {
+                return false;
+            }
+            path.strip_prefix(&config.data_dir)
+                .ok()
+                .and_then(|path| {
+                    canonical_asset_path(&path.to_string_lossy(), AssetKind::Texture, "dds").ok()
+                })
+                .is_some_and(|canonical| Path::new(&canonical) == relative)
+        })
+        .cloned()
+        .collect();
+    if let Err(error) = overlay_loose_assets(&config.data_dir, vfs, &loose) {
+        // A failed winning loose override must not expose a lower-priority archive copy.
+        discard_default_source(vfs, relative, &error, report)?;
+    }
+    if let Err(error) = verify_retained_terrain_source(vfs, relative, manifest) {
+        discard_default_source(vfs, relative, &error, report)?;
+    }
+    Ok(())
+}
+
 /// Rebuild requested metadata while publishing the already verified original asset provenance.
 async fn rebuild_into(
     config: &PipelineConfig,
@@ -606,6 +696,19 @@ async fn rebuild_into(
         None
     };
     let diffuse_paths = terrain_diffuse_paths(&Connection::open(&database)?)?;
+    // Read the freshly rebuilt cache, not the retained source pack's coverage.
+    // A path also named by an LTEX remains required, even if it is a configured default.
+    let default_paths: BTreeSet<_> = if config.terrain_default_texture
+        == crate::config::TerrainDefaultTexture::SkyrimIni
+        && crate::terrain_pipeline::default_land_is_needed(staging)?
+    {
+        crate::terrain_pipeline::default_land_sources(config)?
+            .into_iter()
+            .filter(|path| !diffuse_paths.contains(path))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     for archive in &archives {
         ArchiveExtractor::extract_paths(archive, &vfs, &diffuse_paths)?;
     }
@@ -625,21 +728,18 @@ async fn rebuild_into(
         .collect();
     overlay_loose_assets(&config.data_dir, &vfs, &loose_diffuse)?;
     for relative in &diffuse_paths {
-        if let Some(entry) = manifest
-            .entries
-            .get(&relative.to_string_lossy().to_string())
-            && vfs.join(relative).is_file()
-        {
-            let raw_hash = hash_file(&vfs.join(relative))?;
-            ensure!(
-                entry
-                    .source_hash
-                    .split_once(":texture-encoding:")
-                    .is_some_and(|(recorded, _)| recorded == raw_hash),
-                "retained terrain texture source differs from current inputs: {}",
-                relative.display()
-            );
-        }
+        verify_retained_terrain_source(&vfs, relative, manifest)?;
+    }
+    for relative in &default_paths {
+        stage_optional_default_source(
+            config,
+            &vfs,
+            relative,
+            &archives,
+            &files,
+            manifest,
+            &mut report,
+        )?;
     }
     report.artifacts.extend([
         PathBuf::from("skyrim_world.db"),

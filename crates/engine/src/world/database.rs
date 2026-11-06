@@ -234,6 +234,7 @@ fn unpack_color(value: u32) -> [u8; 3] {
 pub struct AssetCatalog {
     landscape_diffuse: std::collections::HashMap<u32, String>,
     landscape_normal: std::collections::HashMap<u32, String>,
+    default_land: (Option<String>, Option<String>),
     water_flow: std::collections::HashMap<u32, String>,
     water_colors: std::collections::HashMap<u32, WaterColors>,
 }
@@ -309,7 +310,49 @@ impl AssetCatalog {
                     .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             })
             .unwrap_or_default();
+        let has_default_land: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='terrain_default_texture')",
+            [],
+            |row| row.get(0),
+        )?;
+        let default_land = if has_default_land {
+            match connection.query_row(
+                "SELECT diffuse_path,normal_path FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            ) {
+                Ok((diffuse, normal)) => {
+                    let valid = |path: String| {
+                        if !is_safe_relative_asset_path(&path)
+                            || path.contains([':', '\\'])
+                            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+                            || path != path.to_ascii_lowercase()
+                            || !path.ends_with(".ktx2")
+                        {
+                            bevy::log::warn!("Invalid default land path; using white: {path}");
+                            return None;
+                        }
+                        Some(path)
+                    };
+                    let diffuse = diffuse.and_then(valid);
+                    let normal = diffuse.as_ref().and(normal).and_then(valid);
+                    (diffuse, normal)
+                }
+                Err(error) => {
+                    bevy::log::warn!("Invalid default land metadata; using white: {error}");
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
         Ok(Self {
+            default_land,
             landscape_diffuse,
             landscape_normal,
             water_flow,
@@ -317,12 +360,19 @@ impl AssetCatalog {
         })
     }
 
+    /// The converted LTEX diffuse, or the pack's configured default for the zero base ID.
     pub fn landscape_diffuse(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.0.as_deref();
+        }
         self.landscape_diffuse.get(&form_id).map(String::as_str)
     }
 
-    /// The converted normal map of landscape texture `form_id`, if its texture set has one.
+    /// The converted LTEX normal, or the pack's configured default for the zero base ID.
     pub fn landscape_normal(&self, form_id: u32) -> Option<&str> {
+        if form_id == shared::terrain_mesh::DEFAULT_LAND_TEXTURE_FORM_ID {
+            return self.default_land.1.as_deref();
+        }
         self.landscape_normal.get(&form_id).map(String::as_str)
     }
 
