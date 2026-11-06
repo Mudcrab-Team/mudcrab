@@ -814,7 +814,7 @@ fn export_records(
                     &view,
                 )?;
             }
-            "REFR" | "ACHR" | "ACRE" | "PGRE" | "PMIS" => {
+            _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
                 insert_reference_with_canonical_data(
                     &tx,
@@ -868,13 +868,14 @@ fn export_records(
             // with a model too (`REFR.NAME` targets in xEdit's TES5 definitions).
             "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "TACT"
             | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
-            | "ARMO" | "APPA" | "ADDN" | "ARTO" => {
+            | "ARMO" | "APPA" | "ADDN" | "ARTO" | "PROJ" | "HAZD" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
                 // gendered world-model slots (male first, female fallback).
                 // Both frontends use MOD4 for the female world model.
                 let model = if type_str == "ARMO" {
                     view.get_string(b"MOD2")
+                        .filter(|path| !path.is_empty())
                         .or_else(|| view.get_string(b"MOD4"))
                 } else {
                     view.get_string(b"MODL")
@@ -2280,7 +2281,10 @@ mod tests {
         let mut expected = Vec::new();
         let parent = 0x1234_5678u32;
         let mut id = 0x1000;
-        for record_type in [*b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS"] {
+        for record_type in [
+            *b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS", *b"PHZD", *b"PARW", *b"PBAR",
+            *b"PBEA", *b"PCON", *b"PFLA",
+        ] {
             for flags in [0u8, 1, 2, 3, 0x80, 0xFF] {
                 for padding in [[0; 3], [0x0D, 0xBF, 0x38]] {
                     let mut record = reference(id, 0x100, 0x900, [0.0; 3], [0.0; 3]);

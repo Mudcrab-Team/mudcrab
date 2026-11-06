@@ -1721,6 +1721,10 @@ fn reusable_manifest(
                         crate::cache::inhouse_adapter11_reader_identity(
                             settings.schemas()?.as_ref(),
                         ),
+                        crate::cache::inhouse_adapter12_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -1731,6 +1735,13 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
+                    if let Some(identity) =
+                        crate::cache::legacy_projection4_reader_identity(&settings.language)
+                    {
+                        matched |= crate::cache::retained_configuration_matches_for_reader(
+                            &settings, producer, recorded, &identity,
+                        )?;
+                    }
                     matched |= recorded
                         == crate::cache::legacy_projection_v1_configuration_hash(
                             &settings, producer,
@@ -6330,6 +6341,114 @@ mod tests {
                 .entries
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
+        for reader in [
+            crate::config::RecordReader::Inhouse,
+            crate::config::RecordReader::Legacy,
+        ] {
+            for language in ["english", "french"] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut config = PipelineConfig::new(
+                    directory.path().join("Data"),
+                    directory.path().join("output"),
+                );
+                config.record_reader = reader;
+                config.language = language.into();
+                // Construct the historical writer's payload independently of the compatibility helpers.
+                let mut identity =
+                    crate::esm::inhouse::reader_identity_in_language(reader, language);
+                if reader == crate::config::RecordReader::Inhouse {
+                    identity["adapter_version"] = serde_json::json!(12);
+                } else {
+                    identity["projection_version"] = serde_json::json!(4);
+                }
+                let historical = serde_json::json!({
+                    "schema": CONVERTER_SCHEMA_VERSION,
+                    "texture_etc1s_quality": config.texture_fallback_quality,
+                    "texture_uastc_level": config.texture_uastc_level,
+                    "texture_zstd_level": config.texture_zstd_level,
+                    "texture_encoder": {"mode": "cpu"},
+                    "script_abi_version": config.script_abi_version,
+                    "record_reader": identity,
+                });
+                let recorded = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+                let entries = [
+                    ("meshes/prior.nif", "meshes/prior.glb"),
+                    ("textures/prior.dds", "textures/prior.ktx2"),
+                    ("scripts/prior.pex", "scripts/prior.luau"),
+                ]
+                .into_iter()
+                .map(|(source, output)| {
+                    (
+                        source.into(),
+                        CacheEntry {
+                            source_hash: "source-proof".into(),
+                            output: output.into(),
+                            output_hash: "byte-proof".into(),
+                            output_size: 137,
+                        },
+                    )
+                })
+                .collect();
+                let manifest = ConversionManifest {
+                    schema_version: CONVERTER_SCHEMA_VERSION,
+                    configuration_hash: recorded.clone(),
+                    entries,
+                    complete: true,
+                    ..Default::default()
+                };
+                let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+                assert_eq!(reused.entries.len(), 2, "{reader:?}/{language}");
+                assert_eq!(
+                    reused.entries["textures/prior.dds"],
+                    manifest.entries["textures/prior.dds"]
+                );
+                assert_eq!(
+                    reused.entries["scripts/prior.pex"],
+                    manifest.entries["scripts/prior.pex"]
+                );
+                assert!(!reused.entries.contains_key("meshes/prior.nif"));
+                assert_eq!(reused.configuration_hash, recorded);
+                let mut changed = config.clone();
+                changed.texture_fallback_quality += 1;
+                assert!(
+                    reusable_manifest(&changed, manifest.clone())
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+                changed = config.clone();
+                changed.language = if language == "english" {
+                    "french"
+                } else {
+                    "english"
+                }
+                .into();
+                assert!(
+                    reusable_manifest(&changed, manifest.clone())
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+                let mut unknown = historical;
+                if reader == crate::config::RecordReader::Inhouse {
+                    unknown["record_reader"]["adapter_version"] = serde_json::json!(99);
+                } else {
+                    unknown["record_reader"]["projection_version"] = serde_json::json!(99);
+                }
+                let mut unproven = manifest;
+                unproven.configuration_hash = hash_bytes(&serde_json::to_vec(&unknown).unwrap());
+                assert!(
+                    reusable_manifest(&config, unproven)
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+            }
+        }
     }
 
     /// Meshes an earlier converter of the same producer wrote, before a mesh output contract,
