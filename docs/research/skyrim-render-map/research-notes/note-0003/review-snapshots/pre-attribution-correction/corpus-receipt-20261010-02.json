@@ -1,0 +1,342 @@
+{
+  "schema": "mudcrab-research-note-corpus-receipt/v1",
+  "created_at_utc": "2026-10-10T20:21:23.168381+00:00",
+  "corpus_id": "20261010-02",
+  "workspace": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09",
+  "scope": "N003 extends the reviewed corpus with surface-lighting/authored-data, image-space, and mod-intervention audits. Provenance and claim links do not establish target shader semantics, selected retail execution, or visual acceptance.",
+  "counts": {
+    "notes": 3,
+    "claim_ledgers": 7,
+    "tracked_claims": 172,
+    "model_nodes": 19,
+    "conceptual_edges": 29,
+    "source_sections": 36
+  },
+  "assessment_counts": {
+    "supported_static": 25,
+    "partially_supported": 97,
+    "unverified": 34,
+    "contradicted": 16
+  },
+  "target_identity_from_existing_static_evidence": {
+    "target": "SkyrimSE.exe 1.7.104.0",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "fresh_native_query_performed": false
+  },
+  "corpus_check": {
+    "ok": true,
+    "mode": "check",
+    "notes": 3,
+    "ledgers": 7,
+    "claims": 172,
+    "index_consistent": true,
+    "workspace_anchor_drift_count": 0,
+    "world_model": {
+      "present": true,
+      "node_count": 19,
+      "edge_count": 29
+    },
+    "model_associations": {
+      "present": true,
+      "association_count": 172,
+      "unassociated_claim_ids": []
+    },
+    "source_sections": {
+      "present": true,
+      "section_count": 36
+    },
+    "errors": []
+  },
+  "boundaries": {
+    "renderer_source_changed_this_intake": false,
+    "renderer_coefficients_changed_this_intake": false,
+    "game_assets_changed_this_intake": false,
+    "build_or_engine_test_performed_this_intake": false,
+    "new_gpu_or_retail_session": false,
+    "frame_order_recovered": false,
+    "complete_selected_retail_route": false,
+    "visual_acceptance": false
+  },
+  "artifacts": [
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/README.md",
+      "sha256": "cdf9befef3913f598116a7d3a809835d4c08dd89279fc9ab391c8741e5842125",
+      "bytes": 5169
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/model-associations.json",
+      "sha256": "b8e56741ca54285df868fef1736b8704379c30f1b5598fcdac3885c528871699",
+      "bytes": 31148
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-imagespace.json",
+      "sha256": "03121ccff61be6db48b1c2463dff8707b157cf7dac7a0321124cd49a9494a38a",
+      "bytes": 54952
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-mod-interventions.json",
+      "sha256": "325396e1f54e6fbce835afe49e89fb6b82bb8c2bc752d4361d12c50df78ea988",
+      "bytes": 51871
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-native-lighting.json",
+      "sha256": "46c86a6c4a1a670856cbb2e5c355f7658af270e3a115da33df52014164183c70",
+      "bytes": 62223
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/imagespace-audit.md",
+      "sha256": "610485bfc83f61da39e265b248371c53c095d00245e72f8becd7f75da9a7f38c",
+      "bytes": 5353
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/input-receipt.json",
+      "sha256": "b63fc5f85882c3a5c329f6f383710041ca00903abea2b782bc8370a78c671f96",
+      "bytes": 605
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/intake-summary.md",
+      "sha256": "957014f0dc3432a42f69440d4866351e23683781f2d85b597f9bb2b4491d4c6c",
+      "bytes": 3799
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/mod-interventions-audit.md",
+      "sha256": "080450a697c8d8a3cfed570ee6167908e16ada65eb9aa098e795f1320fcd5e52",
+      "bytes": 4025
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/native-lighting-audit.md",
+      "sha256": "332c01cf2ed27880d148b32a4620299f4c0a267de0feabbb3691570cb76412cb",
+      "bytes": 3322
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/review-notes.md",
+      "sha256": "18044e50bf958ed8d85792e3aab0ed46471f71fa9809575db3ebd050b6a9e9f1",
+      "bytes": 3304
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/source-coverage-imagespace.json",
+      "sha256": "026d5e088be3a31893c1d7125083a2d7dfc37e752cbbb22eb796d90f4f49c2c4",
+      "bytes": 4658
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/source-coverage-mods.json",
+      "sha256": "84049dbc2a209765eb1ca22b8c2f93bed8215cc871a3f17c3d41b2643c4d19ea",
+      "bytes": 4551
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/source-coverage-surface.json",
+      "sha256": "963798c0e400271705d66af8e458502004064b92a697bf9b1f4f91b5754f092b",
+      "bytes": 4637
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/source-sections.json",
+      "sha256": "f32145bf20fdd210e902213e83a2d0b2e351ae59f9e84033c73a7d836f50997a",
+      "bytes": 8993
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/CommonLibSSE-NG-b93280e-ImageSpaceManager.h",
+      "sha256": "f06948347b094fe03a51497f8af17da885c22bc5767834c5037b1a30d67fd210",
+      "bytes": 17275
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/CommonLibSSE-NG-b93280e-TESImageSpaceModifier.h",
+      "sha256": "4fab870f4a3fd9faccc2e0213577687444312be2da68e157ed5d8476d28fff43",
+      "bytes": 6962
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/Nukem9-32891630-BSLightingShader.cpp",
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "bytes": 58427
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/TES5Edit-9fb01688-wbDefinitionsFO4.pas",
+      "sha256": "fd9802b434e9504321ad32d7583249ff2710771ec10f2a46af6409f8b53cca56",
+      "bytes": 465123
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/TES5Edit-9fb01688-wbDefinitionsTES5.pas",
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "bytes": 377868
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/commonlibsse-ng-b93280e-ImageSpaceData.h",
+      "sha256": "36403948765fc8a679a095cd50c4987b3b5d4d64525127039893f15197472a3a",
+      "bytes": 3227
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-Color.hlsli",
+      "sha256": "e8975865a23bad633eceda1552f2db9f38aa8282887ca403fabdc7905921aa7e",
+      "bytes": 454
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-FrameBuffer.hlsli",
+      "sha256": "56cace1b511be5530e8aaaa1036776fe3fb8a69dd3b52322e20c82a6f077cf67",
+      "bytes": 3995
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-7e717921-ISHDR.hlsl",
+      "sha256": "7782e2a30686a1cd3d105e1e8b11244784592fbf946ff1cddf641233ac8cc973",
+      "bytes": 3757
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/community-shaders-d001d4de-Color.hlsli",
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "bytes": 17942
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-imagespace/source-receipts.json",
+      "sha256": "9318dfc86f2d110ff8ce1269353e3525cb1a9f03fb78100562b0602b04f0e91f",
+      "bytes": 8313
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/Common.hlsli",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.cpp",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/current-dev/LightLimitFix.hlsli",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/manifest.json",
+      "sha256": "edc9c1da54756d1dbf50e0ebb8aa7a828d0cc497a488b1d1d64e0e788132dd5b",
+      "bytes": 10998
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl",
+      "sha256": "2d0e8cabb472998b5f0d7772519c43bf70cf0389a71c55bf60cd557ccb9f74ac",
+      "bytes": 2526
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/Common.hlsli",
+      "sha256": "9a8d26678525f8d2133b7473fcf9c0bdd69b35a47f8c32c6dc61ab5184554e24",
+      "bytes": 944
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli",
+      "sha256": "396a0dfb7ec61ead7e55df91e455230346ad2b45c8ca46b19d1278514bf87339",
+      "bytes": 1789
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/package/Shaders/Common/Color.hlsli",
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "bytes": 17942
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Deferred.cpp",
+      "sha256": "2ed2514968700a0a5b291428152ae26735c9b3b263eb2aee773528f0e308cfe9",
+      "bytes": 26626
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/Effects11.cpp",
+      "sha256": "67c994dc6b5279bb847d63d767420183f32257bdc9625317fcde9e2903108eb3",
+      "bytes": 43812
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.cpp",
+      "sha256": "3fea7a1463a3e2b33eb5fe62aacea06c295eb052850de4c261142b9dba81436a",
+      "bytes": 36557
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/community-shaders/src/Features/LightLimitFix.h",
+      "sha256": "94ab8ff9255974c733116e839018d5283831f1f64480d2ed2de45a2fea732530",
+      "bytes": 14083
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/schema.json",
+      "sha256": "3da140ce6fed78833d850486717687f5b5f22c05a105ad89875820f413ae6b9a",
+      "bytes": 14606
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/pinned/light-placer/src/LightData.cpp",
+      "sha256": "18d3258c5421600b8166ab3629954d7e2998afffbf80648e15b85b6e755fe6f7",
+      "bytes": 15948
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-mods/web-evidence.md",
+      "sha256": "c2c2e434def547f164e3a35ea2b03583ee041781cae47f6fc64dc5bd6a1527e5",
+      "bytes": 1550
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-climate.h",
+      "sha256": "593c5c229d2fd6375996e6512195b07178e12acdb4f2851002b35dc21d15ff92",
+      "bytes": 2347
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-dalc.h",
+      "sha256": "0de8b1c6af36df24bbc3ab97bc6d45a1cff90019e6a8305f096c5849714997c9",
+      "bytes": 643
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+      "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+      "bytes": 1977
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-nipointlight.h",
+      "sha256": "a158e9479c336dfb304cf3c3463b016cc84c63cb72375b57089fbc89ff8d185b",
+      "bytes": 1602
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+      "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+      "bytes": 6379
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+      "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+      "bytes": 55833
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-weather-current.cpp",
+      "sha256": "b2d17b78f6dff6d1f46c40677ee8050b8c8e2377663511c4dd74c9825ecd8c7f",
+      "bytes": 27142
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/fetch-receipts.json",
+      "sha256": "6cde605c6bd91ce6dd3d6e03355884a95912419f670b03b5a2455770b52ab4e8",
+      "bytes": 8094
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nifxml.xml",
+      "sha256": "d6b76a83ea5fbadd21da5f06348b236a1c43da6bb76d108a2e8b749c22618dd6",
+      "bytes": 565041
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9-header.h",
+      "sha256": "fee6b584673e02de748a61366546ff46b31908eeaac3f5584c6d13b471962a55",
+      "bytes": 5209
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "bytes": 58427
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+      "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+      "bytes": 338167
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-tes5.pas",
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "bytes": 377868
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+      "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+      "bytes": 65005
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/world-model.md",
+      "sha256": "9e0a40720f9fd80604d18d3fec719c07f5b39b5a7d24971d454bdc5f589ea7df",
+      "bytes": 5731
+    }
+  ]
+}

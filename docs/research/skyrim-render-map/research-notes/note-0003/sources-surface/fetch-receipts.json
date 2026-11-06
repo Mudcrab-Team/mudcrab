@@ -1,0 +1,125 @@
+{
+  "schema": "mudcrab-research-source-receipts/v1",
+  "sources": [
+    {
+      "name": "nukem9",
+      "requested_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "resolved_commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9.cpp",
+      "bytes": 58427,
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp"
+    },
+    {
+      "name": "nukem9-header",
+      "requested_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.h",
+      "resolved_commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nukem9-header.h",
+      "bytes": 5209,
+      "sha256": "fee6b584673e02de748a61366546ff46b31908eeaac3f5584c6d13b471962a55",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.h"
+    },
+    {
+      "name": "commonlib-weather",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESWeather.h",
+      "resolved_commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-weather.h",
+      "bytes": 6379,
+      "sha256": "834b277173b4f824e7b509b0525c372d9afd58a050b21f32effd896f4eccf70e",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESWeather.h"
+    },
+    {
+      "name": "commonlib-interior",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/InteriorData.h",
+      "resolved_commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-interior.h",
+      "bytes": 1977,
+      "sha256": "37cc1d081197cd51443ddaecae7253a0e2ce744e14376f935cad11e76df8fe64",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/InteriorData.h"
+    },
+    {
+      "name": "commonlib-dalc",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BGSDirectionalAmbientLightingColors.h",
+      "resolved_commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-dalc.h",
+      "bytes": 643,
+      "sha256": "0de8b1c6af36df24bbc3ab97bc6d45a1cff90019e6a8305f096c5849714997c9",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/B/BGSDirectionalAmbientLightingColors.h"
+    },
+    {
+      "name": "xedit-tes5",
+      "requested_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas",
+      "resolved_commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-tes5.pas",
+      "bytes": 377868,
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/TES5Edit/TES5Edit/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas"
+    },
+    {
+      "name": "xedit-common",
+      "requested_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsCommon.pas",
+      "resolved_commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/xedit-common.pas",
+      "bytes": 338167,
+      "sha256": "e616b6546f6df74d88ec98bb870906db380c985963d011e4931c5726682b7d26",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/TES5Edit/TES5Edit/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsCommon.pas"
+    },
+    {
+      "name": "nifxml",
+      "requested_url": "https://github.com/niftools/nifxml/blob/970a6238218a106daaeb89a61bcda0eeaf9d08c4/nif.xml",
+      "resolved_commit": "970a6238218a106daaeb89a61bcda0eeaf9d08c4",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/nifxml.xml",
+      "bytes": 565041,
+      "sha256": "d6b76a83ea5fbadd21da5f06348b236a1c43da6bb76d108a2e8b749c22618dd6",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/niftools/nifxml/970a6238218a106daaeb89a61bcda0eeaf9d08c4/nif.xml"
+    },
+    {
+      "name": "cs-lighting-early",
+      "requested_url": "https://github.com/doodlum/skyrim-community-shaders/blob/5a530ba2bd10d6dc22b476244b9e162ec93c3ca3/package/Shaders/Lighting.hlsl",
+      "resolved_commit": "5a530ba2bd10d6dc22b476244b9e162ec93c3ca3",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-lighting-early.hlsl",
+      "bytes": 55833,
+      "sha256": "8788f0bf6b1108f1d47559b8d82fbcee885f483d976ffd9a5e84514377ca1a88",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/doodlum/skyrim-community-shaders/5a530ba2bd10d6dc22b476244b9e162ec93c3ca3/package/Shaders/Lighting.hlsl"
+    },
+    {
+      "name": "cs-weather-current",
+      "requested_url": "https://github.com/doodlum/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/SkySync.cpp",
+      "resolved_commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/cs-weather-current.cpp",
+      "bytes": 27142,
+      "sha256": "b2d17b78f6dff6d1f46c40677ee8050b8c8e2377663511c4dd74c9825ecd8c7f",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/doodlum/skyrim-community-shaders/d001d4de3cde4feeec539dbaca5481cdda2b1b15/src/Features/SkySync.cpp"
+    },
+    {
+      "name": "commonlib-nipointlight",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/N/NiPointLight.h",
+      "resolved_commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-nipointlight.h",
+      "bytes": 1602,
+      "sha256": "a158e9479c336dfb304cf3c3463b016cc84c63cb72375b57089fbc89ff8d185b",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/N/NiPointLight.h"
+    },
+    {
+      "name": "commonlib-climate",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESClimate.h",
+      "resolved_commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "local_path": "docs/research/skyrim-render-map/research-notes/note-0003/sources-surface/commonlib-climate.h",
+      "bytes": 2347,
+      "sha256": "593c5c229d2fd6375996e6512195b07178e12acdb4f2851002b35dc21d15ff92",
+      "fetch_outcome": "ok",
+      "raw_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESClimate.h"
+    }
+  ]
+}

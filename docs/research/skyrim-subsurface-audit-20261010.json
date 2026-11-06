@@ -1,0 +1,378 @@
+{
+  "format_version": 1,
+  "date": "2026-10-10",
+  "scope": {
+    "kind": "source and converted-package feature audit plus shipped static shader analysis",
+    "retail_runtime_draw_proven": false,
+    "retail_visual_parity_proven": false,
+    "gpu_probe_run_by_this_audit": false,
+    "full_game_bytes_included": false
+  },
+  "active_response": {
+    "native": "ordinary shadowed Lambert, affine ambient, constant emission, injected IBL, separate half-vector specular",
+    "fallback": "ordinary Bevy PBR; authored Skyrim soft/rim/back/skin/tree response absent",
+    "diffuse_transmission": 0,
+    "specular_transmission": 0,
+    "thickness": 0,
+    "package_transmission_extensions": {}
+  },
+  "package": {
+    "conversion_manifest_sha256": "5109ab4009b427fd75a62d90620940130471b506d605f48e0ae4e2fc9f5c9ba6",
+    "GLB_files": 25388,
+    "classified_source_materials": 63981,
+    "non_rendering_placeholders": 1657,
+    "parse_errors": [],
+    "flags2_material_counts": {
+      "double_sided": 5484,
+      "soft_lighting": 2128,
+      "rim_lighting": 272,
+      "anisotropic_lighting": 122,
+      "back_lighting": 2236,
+      "tree_anim": 498
+    },
+    "soft_slot2_retained": 2098,
+    "grass_types_stored": 33,
+    "grass_ltex_links_stored": 54
+  },
+  "riverwood": {
+    "scope": "distinct static model paths in 25 cells around grid (5,-12); includes disabled/out-of-view references; excludes NPC and non-static model paths",
+    "static_model_paths": 294,
+    "foliage_model_paths": 69,
+    "foliage_materials": 162,
+    "foliage_flags2_material_counts": {
+      "soft_lighting": 53,
+      "tree_anim": 69,
+      "double_sided": 81,
+      "rim_lighting": 0,
+      "back_lighting": 0
+    },
+    "soft_slot2_retained": 53,
+    "loaded_primitive_soft_flag_rejections": 687,
+    "loaded_rejection_reasons": {
+      "unsupported permutation flags: flags1=0x00000000,flags2=0x02000000": 89,
+      "unsupported permutation flags: flags1=0x00000000,flags2=0x22000000": 407,
+      "unsupported permutation flags: flags1=0x00000002,flags2=0x22000000": 191
+    },
+    "loaded_count_is_visible_pixel_count": false
+  },
+  "retention_gaps": [
+    {
+      "feature": "soft lighting",
+      "source_flag": "SLSF2 bit 25",
+      "retained": "raw flag and slot 2, semantic unclassified",
+      "active_native": false,
+      "active_matching_fallback": false
+    },
+    {
+      "feature": "rim lighting",
+      "source_flag": "SLSF2 bit 26",
+      "retained": "raw flag and texture slots",
+      "active_native": false,
+      "active_matching_fallback": false
+    },
+    {
+      "feature": "back lighting",
+      "source_flag": "SLSF2 bit 27",
+      "retained": "raw flag and slot 7",
+      "gap": "slot 7 unconditionally classified specular and can be published as specular-color texture",
+      "active_native": false,
+      "active_matching_fallback": false,
+      "measured_visual_impact": false
+    },
+    {
+      "feature": "Lighting Effect 1/2",
+      "parser_fields": [
+        "lighting_effect_1",
+        "lighting_effect_2"
+      ],
+      "gap": "both parsed by vendor NIF reader, omitted by ValidatedNifMaterial and nativeSurface"
+    },
+    {
+      "feature": "tree",
+      "source_flag": "SLSF2 bit 29/type 12",
+      "gap": "specialized lighting, wind/deformation and native tree variant unsupported"
+    },
+    {
+      "feature": "double sided",
+      "source_flag": "SLSF2 bit 4",
+      "retained": "flag and double_sided",
+      "active": "culling control; native original-normal or fallback normal-flipped ordinary lighting",
+      "implies_transmission": false
+    },
+    {
+      "feature": "skin/face/hair/snow",
+      "gap": "specialized scattering/tint/anisotropic/snow responses unsupported; snow SSS/rim INI catalog entries have no matching shader consumer"
+    },
+    {
+      "feature": "runtime grass",
+      "gap": "stored GRAS/LTEX links do not provide a RunGrass material/population path"
+    }
+  ],
+  "pine_example": [
+    {
+      "path": "meshes/landscape/trees/treepineforest01.glb",
+      "material_index": 0,
+      "family": "lighting",
+      "type": "default",
+      "flags1": "0x8040030a",
+      "flags2": "0x22008031",
+      "enabled_flags2": [
+        "double_sided",
+        "soft_lighting",
+        "tree_anim"
+      ],
+      "double_sided": true,
+      "alpha_mode": "cutout",
+      "retained_slots": [
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp.dds",
+          "required": true,
+          "semantic": "diffuse",
+          "slot": 0
+        },
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp_n.dds",
+          "required": false,
+          "semantic": "normal",
+          "slot": 1
+        },
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp.dds",
+          "required": false,
+          "semantic": "unclassified",
+          "slot": 2
+        }
+      ],
+      "extensions": [
+        "KHR_materials_specular",
+        "OPEN_SKYRIM_material"
+      ]
+    },
+    {
+      "path": "meshes/landscape/trees/treepineforest01.glb",
+      "material_index": 3,
+      "family": "lighting",
+      "type": "default",
+      "flags1": "0x80400308",
+      "flags2": "0x22008031",
+      "enabled_flags2": [
+        "double_sided",
+        "soft_lighting",
+        "tree_anim"
+      ],
+      "double_sided": true,
+      "alpha_mode": "cutout",
+      "retained_slots": [
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp.dds",
+          "required": true,
+          "semantic": "diffuse",
+          "slot": 0
+        },
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp_n.dds",
+          "required": false,
+          "semantic": "normal",
+          "slot": 1
+        },
+        {
+          "path": "textures/landscape/trees/treepineforestbranchcomp.dds",
+          "required": false,
+          "semantic": "unclassified",
+          "slot": 2
+        }
+      ],
+      "extensions": [
+        "KHR_materials_specular",
+        "OPEN_SKYRIM_material"
+      ]
+    }
+  ],
+  "native_shader_evidence": {
+    "archive_sha256": "fd1ba630f443353ed21ed4ca0380968f9c7091c8434518ea3cc79bc6d38c18e7",
+    "fxp_sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+    "variants": [
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "00006201",
+        "sha256": "5cc8c639c5993c3f2b1e7a902043c746f4b72365bf5c8cbcad9e8e2ffc9dcbd4",
+        "assembly_sha256": "3674ee6c31905b64627b9b1fde46cdff07cd10278850850a34c9def0cb70fce7",
+        "byte_length": 5048
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "00006601",
+        "sha256": "24990d2faa86d0eed41cd9210e5718b0694986825e370adc329cd837023ff806",
+        "assembly_sha256": "b01b73daaca8b07b49a02c32586794a1777f9ff348047cfa29c0b4c233304690",
+        "byte_length": 5892
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "00006A01",
+        "sha256": "64fa5fd85c0bf5c0c74d7e2465e99086831cf42a20bb69a0bfa416577c09b574",
+        "assembly_sha256": "eac12d848fc51cd21b9da4eb9c24001501186a6105cacc4685d5433adb237caf",
+        "byte_length": 5548
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "00007201",
+        "sha256": "c205a093dde04fb8d351069cfdf96af579fdf443c994df075dbc99fc42d14eeb",
+        "assembly_sha256": "5a3da3ff6fe0ffdebfd5809e96a8a7e9abf995459d6587c68e2c1547285e4dc2",
+        "byte_length": 5352
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0C006201",
+        "sha256": "8936e48a5b177e3b3a916a42e973b2146173b3f3e441593c193e0296b5ef4795",
+        "assembly_sha256": "e546dc4d3f17aad3d2701a84236e2a4e311994d97523bb847fa0ae59585cb773",
+        "byte_length": 5020
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0C006601",
+        "sha256": "9a83fad19c171c764339cfa6a69998a8ee8881db1047a5afc489f194c3bc5aab",
+        "assembly_sha256": "06c60e3865f827e7dd72a079bcf7dd8352fd090a49c913e699bc4af8430e4fe7",
+        "byte_length": 5864
+      }
+    ],
+    "directional_soft_equation": {
+      "x": "dot(N,L)",
+      "p": "cb1[7].x, source-assisted fSubSurfaceLightRolloff",
+      "u": "saturate((x+p)/(1+p))",
+      "d": "saturate(x)",
+      "q": "q(t)=t*t*(3-2*t)",
+      "factor": "saturate(q(u)-q(d))",
+      "added_diffuse": "softTextureRGB * sunRGB * factor",
+      "visibility": "The added soft term has no directional-shadow sample multiplier in these inspected variants; the ordinary Lambert direct term does."
+    },
+    "all_6_DXBC_and_assembly_hashes_independently_rechecked": true,
+    "scope": "inspected directional branch only; static shader evidence, no selected retail draw or runtime producer/binding proof",
+    "limits": [
+      "Source parameters and texture binding formats still require native producer/runtime validation.",
+      "The global NIF Soft_Lighting flag is not the raw compiled PS bit; CPU flag translation and draw selection must remain explicit.",
+      "Local-light branch is not generalized here.",
+      "Rim/back variants are present and hash-verified, but their equations were not recovered."
+    ]
+  },
+  "evidence_artifacts": [
+    {
+      "name": "subsurface-feature-audit.md",
+      "sha256": "9f8f6eee8e433e4e8d19f5acdf9fbec66bb1236466115f0ee27c6acc185fe558"
+    },
+    {
+      "name": "material-feature-census.json",
+      "sha256": "d44de08b9bb8ac5dea1c6604963cd85d2fb06a7f55512bc9e83306f3bb6056f1"
+    },
+    {
+      "name": "riverwood-foliage-materials.json",
+      "sha256": "953b254f600b10e15a042556f1f455a84c5156ecf9b699917c3a7ca7d999c221"
+    },
+    {
+      "name": "native-soft-light-evidence.json",
+      "sha256": "e2c4d48d1d80118669a631545e0f55af585d619107c813407e5627924277db32"
+    },
+    {
+      "name": "source-feature-audit-identity.json",
+      "sha256": "75e4e390efc3c474faa260e0e97cee64286083cc140614da485d23e1427e0dca"
+    },
+    {
+      "name": "common-domain-fog-hdr/lighting-runtime.json",
+      "sha256": "28ca7e08725678caf4836010a15f072d12ffd1e881261f2609ea464ad9f458f1"
+    }
+  ],
+  "source_snapshot": [
+    {
+      "path": "crates/engine/src/nif_material.rs",
+      "sha256": "bf2f0c56ba0c2e0d04d5702b109a1e9a3c14f2f7eca3f51b4370560497ff7912"
+    },
+    {
+      "path": "crates/engine/src/nif_material/native_common.wgsl",
+      "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3"
+    },
+    {
+      "path": "crates/engine/src/nif_material/native_material.wgsl",
+      "sha256": "33249bbbf795146b08a1444bd0354678c940b843db51a6131887b5ae1ef34a9b"
+    },
+    {
+      "path": "crates/engine/src/nif_material/native.rs",
+      "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a"
+    },
+    {
+      "path": "crates/engine/src/shaders/nif_fog.wgsl",
+      "sha256": "00cb7025c2607f623556783b6859083859653e3bbe6ad7b38357bd9fcdaaf46e"
+    },
+    {
+      "path": "crates/converter/src/material.rs",
+      "sha256": "013a93f071648512572e065c4f7d4c9d9be70eed1301b023c247cd1d3fb885ae"
+    },
+    {
+      "path": "vendor/project-wormhole-nif/src/nif_block.rs",
+      "sha256": "3873a383c337a1ef1ffcdf10a1fa3c1b98f205828e138314d0bc1047828d91cf"
+    },
+    {
+      "path": "crates/engine/src/lighting_settings.rs",
+      "sha256": "354ec1f17a6ba6c388ff73d5d3a1ef695df118dbfbe9a4224679bccb62c902eb"
+    }
+  ],
+  "source_recheck": [
+    {
+      "path": "crates/engine/src/nif_material.rs",
+      "sha256": "a0a0fd8852ab6055c8b86c062337fc8d0a31334a4d8253de5402e11660d1e360",
+      "matches_audit_snapshot": false
+    },
+    {
+      "path": "crates/engine/src/nif_material/native_common.wgsl",
+      "sha256": "b3094149c5048e20ba6f0d6311451c4cdba1af827ca5c33d47112b230d5f14b3",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "crates/engine/src/nif_material/native_material.wgsl",
+      "sha256": "33249bbbf795146b08a1444bd0354678c940b843db51a6131887b5ae1ef34a9b",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "crates/engine/src/nif_material/native.rs",
+      "sha256": "41b8b7f1bf3fc76f530e0e20323e2d7adb24755c1497ca9396c9f0bdd9b4ba7a",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "crates/engine/src/shaders/nif_fog.wgsl",
+      "sha256": "00cb7025c2607f623556783b6859083859653e3bbe6ad7b38357bd9fcdaaf46e",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "crates/converter/src/material.rs",
+      "sha256": "013a93f071648512572e065c4f7d4c9d9be70eed1301b023c247cd1d3fb885ae",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "vendor/project-wormhole-nif/src/nif_block.rs",
+      "sha256": "3873a383c337a1ef1ffcdf10a1fa3c1b98f205828e138314d0bc1047828d91cf",
+      "matches_audit_snapshot": true
+    },
+    {
+      "path": "crates/engine/src/lighting_settings.rs",
+      "sha256": "354ec1f17a6ba6c388ff73d5d3a1ef695df118dbfbe9a4224679bccb62c902eb",
+      "matches_audit_snapshot": true
+    }
+  ],
+  "interpretation": {
+    "missing_foliage_fill": "plausible contributor to dark tree crowns; not causally measured",
+    "dark_wood_walls": "missing foliage response does not establish their cause or justify global brightness scaling",
+    "texture_transfer": "independently proven legacy DDS input-view discrepancy; tracked in skyrim-native-texture-transfer-20261010.md",
+    "global_diffuse_transmission": "does not reproduce the inspected material-specific soft equation",
+    "implementation_gates": [
+      "preserve source rolloff/power and correct shared texture semantics",
+      "verify texture transfer, constant producers and compiled permutation selection",
+      "define static/tree/skin/deformation support limits",
+      "probe the recovered equation independently",
+      "validate with matched retail draws/captures"
+    ]
+  }
+}

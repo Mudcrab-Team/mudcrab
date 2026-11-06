@@ -1,0 +1,325 @@
+{
+  "scope": "static native local sun trajectory and direction-upload trace; live parent world rotation and runtime setting overrides not captured",
+  "exe": {
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "version": "1.7.104.0"
+  },
+  "instruction_byte_verification": {
+    "unique_instruction_starts": 849,
+    "mismatches": [],
+    "requested_spans": [
+      {
+        "label": "directional-light-ctor",
+        "start": "0x140f04570",
+        "returned_bytes": 512,
+        "matched": true
+      },
+      {
+        "label": "directional-light-world-update",
+        "start": "0x140f045c0",
+        "returned_bytes": 512,
+        "matched": true
+      },
+      {
+        "label": "niav-world-update",
+        "start": "0x140eebf40",
+        "returned_bytes": 2048,
+        "matched": true
+      },
+      {
+        "label": "sky-object-init",
+        "start": "0x14041a210",
+        "returned_bytes": 1024,
+        "matched": true
+      },
+      {
+        "label": "directional-light-vtable",
+        "start": "0x141a4af98",
+        "returned_bytes": 544,
+        "matched": true
+      },
+      {
+        "label": "sun-vector-normalize",
+        "start": "0x1402b6540",
+        "returned_bytes": 128,
+        "matched": true
+      }
+    ]
+  },
+  "full_mode": 3,
+  "inputs": {
+    "hour": "Sky+0x1B0",
+    "climate_pointer": "Sky+0x40",
+    "climate_tnam_bytes": "TESClimate+0x78/+0x79/+0x7A/+0x7B",
+    "cache_dirty_flags": "Sky+0x1DC bits 9/10/11/12",
+    "climate_byte_scale": {
+      "address": "0x141869DD8",
+      "value": 0.1666666716337204,
+      "bits": "abaa2a3e"
+    },
+    "cache_addresses": [
+      "0x1431e0d94",
+      "0x1431e0d98",
+      "0x1431e0d9c",
+      "0x1431e0da0"
+    ]
+  },
+  "settings": [
+    {
+      "data_address": "0x14209e948",
+      "name_address": "0x14186a138",
+      "name": "fSunAlphaTransTime",
+      "default_f32": 2.0,
+      "bits": "0x40000000"
+    },
+    {
+      "data_address": "0x14209e960",
+      "name_address": "0x14186a150",
+      "name": "fSunXExtreme",
+      "default_f32": 400.0,
+      "bits": "0x43c80000"
+    },
+    {
+      "data_address": "0x14209e978",
+      "name_address": "0x14186a160",
+      "name": "fSunYExtreme",
+      "default_f32": 25.0,
+      "bits": "0x41c80000"
+    },
+    {
+      "data_address": "0x14209e990",
+      "name_address": "0x14186a170",
+      "name": "fSunZExtreme",
+      "default_f32": -100.0,
+      "bits": "0xc2c80000"
+    },
+    {
+      "data_address": "0x14209e9a8",
+      "name_address": "0x14186a180",
+      "name": "fSunDirXExtreme",
+      "default_f32": 400.0,
+      "bits": "0x43c80000"
+    }
+  ],
+  "direction_writer": {
+    "sun_update": "0x14041BD90",
+    "normalizer": "0x1402B6540",
+    "local_rotate_column_writes": [
+      "0x14041C513",
+      "0x14041C528"
+    ],
+    "directional_light_constructor": "0x140F04570",
+    "world_update": "0x140F045C0",
+    "world_update_bytes": 53,
+    "world_column_offsets": [
+      "0x7C",
+      "0x88",
+      "0x94"
+    ],
+    "direction_offsets": [
+      "0x140",
+      "0x144",
+      "0x148"
+    ],
+    "vtable_update_slots": [
+      {
+        "vtable_address": "0x141a4af98",
+        "slot": 48,
+        "byte_offset": "0x180",
+        "target": "0x140f045c0"
+      }
+    ],
+    "negative_upload_consumer": "0x14154B770",
+    "negation_addresses": [
+      "0x14154B823",
+      "0x14154B82C",
+      "0x14154B835"
+    ]
+  },
+  "parent": {
+    "sky_object_init": "0x14041A210",
+    "new_sun_root": "Sun+0x08, new NiNode via 0x140EE1940",
+    "attach_to_sky_root": "0x14041A2CA",
+    "light_attach_to_sun_root": "0x14041BABE",
+    "base_world_update": "0x140EEBF40",
+    "parent_transform_helper": "0x1403059A0",
+    "effective_parent_world_rotation": "unclosed; no live capture and no caller Sky-root initialization trace in this bounded query"
+  },
+  "oracle_contract": {
+    "float_arithmetic": "each scalar operation rounded to IEEE754 binary32; native SSE order including reciprocal-times-components normalization",
+    "input_climate_bytes": [
+      33,
+      60,
+      96,
+      123
+    ],
+    "input_climate_hours": [
+      5.5,
+      10.0,
+      16.0,
+      20.5
+    ],
+    "sunrise_midpoint": 7.75,
+    "sunset_midpoint": 18.25,
+    "A": 6.75,
+    "B": 19.25,
+    "sunlight_direction_conditions": "identity parent world rotation, ordinary transform path, default executable trajectory settings; not a retail capture"
+  },
+  "oracle": [
+    {
+      "hour": 0.0,
+      "branch": "night-before",
+      "position_x": -69.56522369384766,
+      "local_creation_direction": [
+        0.559405505657196,
+        -0.20103633403778076,
+        -0.804145336151123
+      ],
+      "identity_parent_engine_toward_light": [
+        -0.559405505657196,
+        0.804145336151123,
+        -0.20103633403778076
+      ]
+    },
+    {
+      "hour": 6.0,
+      "branch": "night-before",
+      "position_x": 347.82611083984375,
+      "local_creation_direction": [
+        -0.9587845802307129,
+        -0.06891264021396637,
+        -0.2756505608558655
+      ],
+      "identity_parent_engine_toward_light": [
+        0.9587845802307129,
+        0.2756505608558655,
+        -0.06891264021396637
+      ]
+    },
+    {
+      "hour": 6.75,
+      "branch": "night-before",
+      "position_x": 400.0,
+      "local_creation_direction": [
+        -0.9683640599250793,
+        -0.06052275374531746,
+        -0.24209101498126984
+      ],
+      "identity_parent_engine_toward_light": [
+        0.9683640599250793,
+        0.24209101498126984,
+        -0.06052275374531746
+      ]
+    },
+    {
+      "hour": 12.0,
+      "branch": "day",
+      "position_x": 64.00000762939453,
+      "local_creation_direction": [
+        -0.5274865031242371,
+        -0.20604939758777618,
+        -0.8241975903511047
+      ],
+      "identity_parent_engine_toward_light": [
+        0.5274865031242371,
+        0.8241975903511047,
+        -0.20604939758777618
+      ]
+    },
+    {
+      "hour": 19.25,
+      "branch": "night-after",
+      "position_x": -400.0,
+      "local_creation_direction": [
+        0.9683640599250793,
+        -0.06052275374531746,
+        -0.24209101498126984
+      ],
+      "identity_parent_engine_toward_light": [
+        -0.9683640599250793,
+        0.24209101498126984,
+        -0.06052275374531746
+      ]
+    },
+    {
+      "hour": 20.0,
+      "branch": "night-after",
+      "position_x": -347.82611083984375,
+      "local_creation_direction": [
+        0.9587845802307129,
+        -0.06891264021396637,
+        -0.2756505608558655
+      ],
+      "identity_parent_engine_toward_light": [
+        -0.9587845802307129,
+        0.2756505608558655,
+        -0.06891264021396637
+      ]
+    },
+    {
+      "hour": 24.0,
+      "branch": "night-after",
+      "position_x": -69.56522369384766,
+      "local_creation_direction": [
+        0.559405505657196,
+        -0.20103633403778076,
+        -0.804145336151123
+      ],
+      "identity_parent_engine_toward_light": [
+        -0.559405505657196,
+        0.804145336151123,
+        -0.20103633403778076
+      ]
+    }
+  ],
+  "scope_limits": [
+    "Full-mode exterior path only; interior/sky-dome/light override routes use different matrices.",
+    "Climate caches update when dirty flags are set; absent climate preserves existing cache values.",
+    "Original CLMT endpoints are distinct from extended color transition boundaries.",
+    "No live GMST override/cached interval/parent world transform was captured.",
+    "Sun RGB/dimmer evidence remains valid and separate; this report does not change its multiplier findings.",
+    "No native executable was run; no source, build, GPU or renderer state changed."
+  ],
+  "scalar_constants": [
+    {
+      "name": "climate_byte_to_hour",
+      "address": "0x141869dd8",
+      "value": 0.1666666716337204,
+      "bits": "0x3e2aaaab"
+    },
+    {
+      "name": "half",
+      "address": "0x141b5be14",
+      "value": 0.5,
+      "bits": "0x3f000000"
+    },
+    {
+      "name": "one",
+      "address": "0x141b5be28",
+      "value": 1.0,
+      "bits": "0x3f800000"
+    },
+    {
+      "name": "hours_per_day",
+      "address": "0x14185c194",
+      "value": 24.0,
+      "bits": "0x41c00000"
+    },
+    {
+      "name": "normalization_threshold",
+      "address": "0x141b5bdb0",
+      "value": 9.999999974752427e-07,
+      "bits": "0x358637bd"
+    }
+  ],
+  "formula": {
+    "cache_refresh": "Each flagged climate timing byte is converted to float32 then multiplied by binary32 1/6. Missing climate leaves that cached endpoint unchanged.",
+    "midpoints": "sunriseMid=f32(f32(sunriseBegin+sunriseEnd)*0.5); sunsetMid=f32(f32(sunsetBegin+sunsetEnd)*0.5)",
+    "endpoints": "halfAlpha=f32(fSunAlphaTransTime*0.5); A=f32(sunriseMid-halfAlpha); B=f32(sunsetMid+halfAlpha)",
+    "day": "A<h<B; q=f32(f32(h-A)/f32(B-A)); x=f32(f32(1-f32(q+q))*fSunXExtreme)",
+    "night": "h>=B: n=f32(h-B); otherwise h<=A: n=f32(f32(24-B)+h); q=f32(n/f32(24-f32(B-A))); x=f32(f32(f32(q+q)-1)*fSunXExtreme)",
+    "local_direction": "r=-f32(fSunDirXExtreme/fSunXExtreme); raw=[f32(r*x),f32(fSunYExtreme*r),fSunZExtreme]; normalize by sqrt(f32(f32(x*x+y*y)+z*z)), reciprocal then three component multiplies.",
+    "consumer": "Negate the first column of effective world rotation; convert Creation (x,y,z) to engine (x,z,-y). The numerical oracle assumes identity Sky parent world rotation."
+  },
+  "no_full_mode_angle_trig_or_360_clamp": true
+}

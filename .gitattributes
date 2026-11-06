@@ -1,0 +1,33 @@
+# Research receipts hash raw bytes, including line endings and byte offsets.
+# Keep the published render-map corpus and its pinned research dependencies LF.
+# Limit rules to text artifacts; game assets and historical project_source pins
+# retain their existing checkout and raw-hash behavior.
+/docs/research/skyrim-render-map/**/*.json text eol=lf
+/docs/research/skyrim-render-map/**/*.md text eol=lf
+/docs/research/skyrim-render-map/**/*.html text eol=lf
+/docs/research/skyrim-render-map/**/*.txt text eol=lf
+
+/docs/research/skyrim-distance-fog-evidence.json text eol=lf
+/docs/research/skyrim-distance-fog-reference.json text eol=lf
+/docs/research/skyrim-environment-evidence-20261009.json text eol=lf
+/docs/research/skyrim-exterior-shadow-audit.md text eol=lf
+/docs/research/skyrim-lighting-notes-comparison-20261010.md text eol=lf
+/docs/research/skyrim-native-diffuse-coverage-20261010.json text eol=lf
+/docs/research/skyrim-native-normal-convention-20261010.json text eol=lf
+/docs/research/skyrim-native-sun-trajectory-20261010.json text eol=lf
+/docs/research/skyrim-native-texture-transfer-20261010.json text eol=lf
+/docs/research/skyrim-shadow-evidence-20261008.json text eol=lf
+/docs/research/skyrim-shadow-settings-1.7.104.csv text eol=lf
+/docs/research/skyrim-subsurface-audit-20261010.json text eol=lf
+/docs/specs/engine/image-space.md text eol=lf
+/docs/specs/engine/lighting-and-shading.md text eol=lf
+/docs/specs/engine/skyrim-lighting-and-shadows.md text eol=lf
+/docs/specs/engine/skyrim-rendering-remediation-plan.md text eol=lf
+/scripts/build-skyrim-render-map.py text eol=lf
+/scripts/build-skyrim-research-notes-viewer.py text eol=lf
+/scripts/check-skyrim-render-map.py text eol=lf
+/scripts/check-skyrim-research-notes.py text eol=lf
+
+# This live source dependency is required by input-contracts.json (not a
+# historical project_source pin). Preserve its existing LF byte identity too.
+/vendor/project-wormhole-nif/src/bs/vertex.rs text eol=lf

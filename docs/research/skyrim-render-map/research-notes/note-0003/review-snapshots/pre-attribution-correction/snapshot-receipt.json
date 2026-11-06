@@ -1,0 +1,32 @@
+{
+  "schema": "mudcrab-research-note-review-snapshot/v1",
+  "created_at_utc": "2026-10-10T20:23:32.560650+00:00",
+  "accepted": false,
+  "reason": "Root review found older N002 assertions attributed to N003 in P07 and P15. Reference/hash checks did not establish semantic attribution. This snapshot precedes correction and is excluded from current claim-ledger discovery.",
+  "artifacts": [
+    {
+      "original_path": "docs/research/skyrim-render-map/research-notes/note-0003/claims-imagespace.json",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/review-snapshots/pre-attribution-correction/claims-imagespace.json",
+      "sha256": "03121ccff61be6db48b1c2463dff8707b157cf7dac7a0321124cd49a9494a38a",
+      "bytes": 54952
+    },
+    {
+      "original_path": "docs/research/skyrim-render-map/research-notes/note-0003/imagespace-audit.md",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/review-snapshots/pre-attribution-correction/imagespace-audit.md",
+      "sha256": "610485bfc83f61da39e265b248371c53c095d00245e72f8becd7f75da9a7f38c",
+      "bytes": 5353
+    },
+    {
+      "original_path": "docs/research/skyrim-render-map/research-notes/note-0003/intake-summary.md",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/review-snapshots/pre-attribution-correction/intake-summary.md",
+      "sha256": "957014f0dc3432a42f69440d4866351e23683781f2d85b597f9bb2b4491d4c6c",
+      "bytes": 3799
+    },
+    {
+      "original_path": "docs/research/skyrim-render-map/research-notes/corpus-receipt-20261010-02.json",
+      "snapshot_path": "docs/research/skyrim-render-map/research-notes/note-0003/review-snapshots/pre-attribution-correction/corpus-receipt-20261010-02.json",
+      "sha256": "9377a57458ca5e4dedbcf23f5acd775c0d05ff561ecd701ff27fc8d39568d89b",
+      "bytes": 14960
+    }
+  ]
+}

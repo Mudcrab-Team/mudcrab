@@ -1,0 +1,215 @@
+{
+  "schema": "mudcrab-shadow-research-metadata/v1",
+  "target_version": "1.7.104.0",
+  "target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "preferred_image_base": "0x140000000",
+  "binary_executed": false,
+  "frame_capture_performed": false,
+  "toolchain": {
+    "rea": "6.0.0",
+    "ghidra": "12.1.4",
+    "node": "24.21.0",
+    "jdk": "21.0.12.1+1",
+    "cpu_decoder": "LLVM 21.1.8"
+  },
+  "analysis_scope": "read-only queries on independent APFS clone of existing partially analyzed Ghidra project",
+  "settings_catalog_rows": 170,
+  "native_verified_reads": {
+    "fShadowClampValue": "0x141522d44",
+    "fShadowBiasScale": "0x14155c56a",
+    "fShadowDirectionalBiasScale": "0x1415688f4",
+    "bSAOEnable": "0x141541ea3",
+    "fSAOIntensity": "0x141541e88;0x1415424fc",
+    "fSAOBias": "0x141541eb2;0x1415424e3",
+    "fSAORadius": "0x141541e80;0x1415424ce",
+    "bSAONormalMap": "0x141541e96",
+    "bSAODownscaled": "0x141541e79;0x14154240b",
+    "fSAOExpFactor": "0x141541ed2",
+    "fSAOValueDiffFactor": "0x141541ec2",
+    "uShadowFilterType": "0x1414eaebb;0x14158ea6f",
+    "iShadowMaskQuarter": "0x14153b6be"
+  },
+  "cpu_crosscheck": {
+    "target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "loaded_instruction_bytes_match_file": true,
+    "unique_instruction_count": 1394,
+    "independently_compared_unique_instructions": 1379,
+    "all_comparisons_pass": true
+  },
+  "shader_package": {
+    "archive_sha256": "fd1ba630f443353ed21ed4ca0380968f9c7091c8434518ea3cc79bc6d38c18e7",
+    "fxp_sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+    "fxp_size": 67768128,
+    "fully_parsed_primary_families": [
+      {
+        "family": "BloodSplatter",
+        "vs": 2,
+        "ps": 2
+      },
+      {
+        "family": "DistantTree",
+        "vs": 4,
+        "ps": 4
+      },
+      {
+        "family": "RunGrass",
+        "vs": 18,
+        "ps": 18
+      },
+      {
+        "family": "Particle",
+        "vs": 6,
+        "ps": 6
+      },
+      {
+        "family": "Sky",
+        "vs": 9,
+        "ps": 9
+      },
+      {
+        "family": "Effect",
+        "vs": 606,
+        "ps": 3216
+      },
+      {
+        "family": "Lighting",
+        "vs": 127,
+        "ps": 6924
+      },
+      {
+        "family": "Utility",
+        "vs": 339,
+        "ps": 177
+      },
+      {
+        "family": "Water",
+        "vs": 2172,
+        "ps": 2172
+      }
+    ],
+    "package_parser_limit": "historical family sequence stops at changed image-space family order after Lighting, Utility and Water; no claim of complete package parse"
+  },
+  "private_raw_evidence_root": "/private/tmp/skyrim-shadow-research/evidence",
+  "private_artifact_sha256": {
+    "setting-refs3.json": "efca5d38472f5035369dc33b2dd98a71b604c316b6c9c789f8fa016662f8d227",
+    "setting-consumers.json": "170942a12b7d3a8ca6e734e9af933f26b7b37ce5361df0a90c3603e5aef4bc9a",
+    "clamp-and-normal-vector.json": "9c25dde23d0d9b6429a383d8db57d6a95db0c79740cbdb7beff2e8c45745d2f2",
+    "native-crosscheck.json": "827626f70cb4f42aa8962232a69a0fbdb9e75eefddbb9a76356c274b12ee7670",
+    "shader-inventory.json": "987a300fda525a1a5a26144651179510cc273c9eccac5392ddc0e3cb8f95974f",
+    "shader-verified-inputs.json": "b271a5d03c42eb4b9ae8849fc01340650f2d08729cd49e9782fbdd70b71cfc0a",
+    "shader-verified-findings.json": "421959714dab5d56a555dc8a0d0c57f5a3ac10a06b8839ad63bbc6f036ee7364",
+    "skyrim-authored-scan.json": "e877735080abf082126d1122287ce91244aded0bae9e62259b41efac25d4a8ed"
+  },
+  "limitations": [
+    "Static initializers are not effective user settings.",
+    "Collection ownership is not a verified active filesystem path.",
+    "Recovered whole-program references are incomplete.",
+    "No retail game execution or captured frame.",
+    "Proprietary bytecode, PE bytes, record extracts and disassembly remain private.",
+    "Grass field naming uses pinned source layout; complete 1.7.104 state-to-GPU-buffer upload is untraced."
+  ],
+  "shader_verification": {
+    "tool_revision": "a292206a15daf0723d945a475c6254413eda8551",
+    "tool_binary_sha256": "41c6e72b9a7c6035eefda848bf2193331da17050a01a9588ad945ca911bdd4ca",
+    "verified_entries": [
+      {
+        "family": "RunGrass",
+        "stage": "vs",
+        "technique": "0x0",
+        "bytecode_offset": 11408,
+        "size": 2912,
+        "bytecode_sha256": "2eb010e82f978c58163059cd9bd171421f02432c4841c7ebe11177d0be1c3dcc",
+        "disassembly_sha256": "62d4ae15cf425c5e2fe0c3d8392fec2d66bf2c55724e9dc8cac7100327ebc086",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "RunGrass",
+        "stage": "ps",
+        "technique": "0x0",
+        "bytecode_offset": 64876,
+        "size": 1828,
+        "bytecode_sha256": "5f20cfa3e7d50e25177968444fbbf0ccbc9740adb07f8d1787637f9075a3d808",
+        "disassembly_sha256": "c1a8fccc37942c5e79d1b7dd2f49fec51280955a4fa467e1654e704a9f40f880",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "RunGrass",
+        "stage": "ps",
+        "technique": "0x10000",
+        "bytecode_offset": 79776,
+        "size": 1960,
+        "bytecode_sha256": "20c5b08e7edd9e5302819b5371ae194e94bce1db768bd1fdc95edcdcda37191e",
+        "disassembly_sha256": "5965c15bfeafa4b819aae7c275a266d433ffff0ad7195256382a7828d211a11d",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0x1",
+        "bytecode_offset": 9055392,
+        "size": 3484,
+        "bytecode_sha256": "b408e36e3c9188db139e29a48ec7a31e0fdf1538b9c5168ee754c1a2eba5f504",
+        "disassembly_sha256": "8cad4255dc65a24f1c3f243f660c4f6106adb2a1ba9a43dc2ca823350c582c8f",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0x201",
+        "bytecode_offset": 9065960,
+        "size": 4428,
+        "bytecode_sha256": "21615f9b90510a9b76964054b78333492171651a34072dab3fe7ae7e93e55856",
+        "disassembly_sha256": "a8162cf4c128c82e940164191b1b673af798131312e7a6de6d30dbc46508bbaa",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0x4201",
+        "bytecode_offset": 9170484,
+        "size": 5068,
+        "bytecode_sha256": "d52dfd986dde373f6f8e04c983edb059317c805399a9dd8edf15e548355adfb9",
+        "disassembly_sha256": "3a988cbb84ffc63e62287f903b4892a5ab34d74f86db9cc2c3c1440fd71c2ae7",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0x6201",
+        "bytecode_offset": 9287216,
+        "size": 5048,
+        "bytecode_sha256": "5cc8c639c5993c3f2b1e7a902043c746f4b72365bf5c8cbcad9e8e2ffc9dcbd4",
+        "disassembly_sha256": "488ded529a1e9894bf4dca4ded7c684bf5e1689ba03d3e52b6b50e65984c4c4a",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      },
+      {
+        "family": "Lighting",
+        "stage": "ps",
+        "technique": "0x6205",
+        "bytecode_offset": 9292344,
+        "size": 4852,
+        "bytecode_sha256": "33381b090f42c06826de8cddf67d1505da50b2d737d895975d18a101f147e262",
+        "disassembly_sha256": "467879044aeef0b65c0508318c9d73131f877f47b2845465f9a41618b62e15c6",
+        "shex_decode_encode_byte_identical": true,
+        "dxbc_serialize_assemble_byte_identical": true
+      }
+    ],
+    "ordinary_lighting": "0x6201: direct shadow modulation with separate ambient, emission, IBL terms; normal alpha scales specular",
+    "model_space": "0x6205: signed XZY normal decode; separate texture red specular mask",
+    "grass": "0x0 and0x10000: S + c * (1 - S)",
+    "grass_constant_identity": "c21.w named ShadowClampValue by pinned CPU struct/source; target reads INI value into state; full target CPU buffer upload untraced",
+    "synthetic_float32_grass_cases": 9
+  },
+  "source_revisions": {
+    "source_revision_nukem": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+    "source_revision_aers": "b54d184a5c3acc25c60e6666a46c68b09a3759ed",
+    "source_revision_cs": "2f2919a71bed6132b125e41781304c8f6f73d002"
+  }
+}

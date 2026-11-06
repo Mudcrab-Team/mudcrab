@@ -1,0 +1,752 @@
+{
+  "schema_version": 1,
+  "status": "interpreted static evidence; no native game execution or live draw capture",
+  "target": {
+    "filename": "SkyrimSE.exe",
+    "version": "1.7.104.0",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f"
+  },
+  "query_tool": {
+    "script": "FogEvidence.java",
+    "sha256": "441b407357549b2e6a935a20479c493533909c5136b0f49c2583a4bb6da9cab9",
+    "existing_project": "SkyrimMovement17104",
+    "no_import": true,
+    "bounded_seconds_per_query": 60,
+    "program_read_only": true,
+    "noanalysis": true
+  },
+  "query_artifacts": [
+    {
+      "artifact": "native-target-transfer-01.json",
+      "sha256": "5a7f67404c622b00cd69a0883a4ff8aa72de852db2942c890312a4775b29ffa9",
+      "elapsed_seconds": 4.984605583,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 401,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-texture-transfer-02.json",
+      "sha256": "7a4c16132b7f981b2ff5b891dbc7abc00aaa97a4fc4b88ca8cd7df68d036cd9a",
+      "elapsed_seconds": 4.644401209,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 810,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-dds-transfer-03.json",
+      "sha256": "86246ff5e9006dec8380f84372f8365d666935b09cc0a992322d9a34ecacccd4",
+      "elapsed_seconds": 9.427001583000001,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 1082,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-dds-create-04.json",
+      "sha256": "757ee82ed72bb9e054e675edc70d492c22a4934224ea12e6e883efce6d5e59af",
+      "elapsed_seconds": 5.885037667,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 426,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-dds-formats-05.json",
+      "sha256": "77d0a695de9345de0f693ad5a0383c6602fab8c0ae246e67cf1a7793cc8f13f7",
+      "elapsed_seconds": 5.602678666,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 497,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-diffuse-bind-06.json",
+      "sha256": "2ac234067d993e3f37ec224dd9a617504d2769fbcddade198af03dc14a23d1d7",
+      "elapsed_seconds": 5.36817,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 668,
+      "byte_mismatches": 0
+    },
+    {
+      "artifact": "native-diffuse-helper-07.json",
+      "sha256": "114b913b5e7b3fa0f2bd42717f957a57145e26cd769a0bd7b4e6225e5cadc00b",
+      "elapsed_seconds": 4.478822041,
+      "exit_code": 0,
+      "read_only": true,
+      "noanalysis": true,
+      "exported_unique_instructions": 20,
+      "byte_mismatches": 0
+    }
+  ],
+  "distinct_exported_instruction_addresses": 3844,
+  "independent_decode_manifest_sha256": "105cff0b9d89203c0b14682c9e46c98185e8ea91103b364df7a4eadda815ddf6",
+  "proven_boundaries": [
+    {
+      "stage": "NiSourceTexture source load",
+      "function": "0x141582680",
+      "operations": [
+        "wrap source stream at NiSourceTexture+0x40",
+        "call renderer DDS wrapper at0x1415826C4",
+        "store GPU Texture at NiSourceTexture+0x48 at0x1415826C9"
+      ]
+    },
+    {
+      "stage": "force_srgb argument",
+      "function": "0x14100DCC0",
+      "operations": [
+        "write zero argument at0x14100DD09",
+        "call source-stream DDS parser0x14101EE90 at0x14100DD22",
+        "parser forwards argument to DDS creator0x14101F570 at0x14101F00D/0x14101F014/0x14101F025"
+      ]
+    },
+    {
+      "stage": "DDS format selection",
+      "function": "0x14101F570",
+      "operations": [
+        "DX10 format loaded intoR13D at0x14101F616",
+        "legacy format calls0x14101FED0 at0x14101F7E2",
+        "optional sRGB remap0x14101F0A0 gated by nonzero argument at0x14101F62B/0x14101F7ED",
+        "legacyDXT1\u219271 at0x14102013C/0x141020143",
+        "legacyDXT3/2\u219274 at0x141020149/0x14102022C",
+        "legacyDXT5/4\u219277 at0x141020154/0x141020226"
+      ]
+    },
+    {
+      "stage": "GPU resource and SRV typed format",
+      "function": "0x14101F230",
+      "operations": [
+        "2D texture Format receivesR13D at0x14101F35D",
+        "CreateTexture2D at0x14101F3B1",
+        "explicit SRV.Format receives sameR13D at0x14101F3DF",
+        "CreateSRV at0x14101F504"
+      ]
+    },
+    {
+      "stage": "ordinary diffuse shader slot0",
+      "function": "0x141548820",
+      "operations": [
+        "source diffuse material+0x48 at0x14154930F",
+        "slot0 call helper0x14154C9A0 at0x141549318",
+        "helper reads NiSourceTexture+0x48 then GPU Texture+0x10 at0x14154C9A0/0x14154C9AD",
+        "helper stores originalSRV into slot array at0x14154C9C5; no view conversion"
+      ]
+    },
+    {
+      "stage": "swapchain hardware transfer",
+      "function": "0x141009B00/0x141012480",
+      "operations": [
+        "DXGI_SWAP_CHAIN_DESC BufferDesc.Format=28 at0x141009BC2",
+        "CreateSwapChain at0x141009C18",
+        "GetBuffer at0x1410124B4",
+        "NULL RTV description thenCreateRTV at0x1410124DA",
+        "NULL SRV description thenCreateSRV at0x141012501"
+      ]
+    }
+  ],
+  "limits": [
+    "Static queried project analysis is partial; absence of unreported references proves nothing.",
+    "Typed DX10 sRGB stays original header format through this path; typeless and unsupported legacy formats need separate policy.",
+    "UNORM describes shader code-value sampling, not physical linear-light RGB.",
+    "Swapchain is RGBA8_UNORM; HDR-result to final-presentation pass chain remains untraced.",
+    "Native light calibration, live adaptation values, unsupported materials and PBR fallback remain separate."
+  ],
+  "source_code_mismatch": {
+    "converter/native_texture_views": "crates/converter/src/material.rs:567 semantic diffuse/glow/detail force sRGB alias",
+    "converter/dds_to_ktx2": "crates/converter/src/texture.rs:403 ignores original DDS transfer when assigning KTX2 view",
+    "engine/native_diffuse_binding": "crates/engine/src/nif_material.rs:441 copies StandardMaterial sRGB base-color handle",
+    "engine/native_fragment": "crates/engine/src/nif_material/native_material.wgsl:18 samples bound diffuse; line49 multiplies it by native response coefficients"
+  },
+  "migration": {
+    "model": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/meshes/architecture/farmhouse/farmhouse01.glb",
+    "model_sha256": "23993a5fd817aceb2c2dcb55c7ae2b6c51dc6dddf32670807b543c9869435a1e",
+    "material_selection_static": [
+      {
+        "material": "Farmhouse01:1",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "opaque",
+        "alpha_flags": null,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:4",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "cutout",
+        "alpha_flags": 4844,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:5",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "opaque",
+        "alpha_flags": null,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:6",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "opaque",
+        "alpha_flags": null,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:7",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "opaque",
+        "alpha_flags": null,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:14",
+        "shader_family": "lighting",
+        "shader_type": "glow",
+        "alpha_mode": "opaque",
+        "alpha_flags": null,
+        "static_reasons": [
+          "family/type unsupported",
+          "unsupported flags"
+        ],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:19",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "cutout",
+        "alpha_flags": 4844,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      },
+      {
+        "material": "Farmhouse01:25",
+        "shader_family": "lighting",
+        "shader_type": "default",
+        "alpha_mode": "cutout",
+        "alpha_flags": 4844,
+        "static_reasons": [],
+        "primitive_count": 1,
+        "frames": [
+          {
+            "version": 1,
+            "renderFrame": "generated_mikktspace",
+            "sampledNormalYCorrection": true,
+            "authoredFrameEvaluated": false
+          }
+        ]
+      }
+    ],
+    "records": [
+      {
+        "source_path": "textures/architecture/farmhouse/thatch02.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1272318857,
+        "stored_length": 2822590,
+        "stored_sha256": "09adfa1fda76124ddf1847d48a504e9444f362975940689ac6df44d9f0b99d76",
+        "dds_length": 5592544,
+        "dds_sha256": "aca065e72e43bfa82e065c451b9255784ac1930352426d1f202f801c8ead05cc",
+        "fourCC": "DXT5",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 77,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:4"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/thatch02.ktx2",
+            "vkFormat": 138,
+            "sha256": "92e8321e5c2855e454eb86f7d9a51f83cfcad788ad91138c8ce3ce6637e865d4",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/thatch02.opensky-srgb.ktx2",
+            "vkFormat": 138,
+            "sha256": "92e8321e5c2855e454eb86f7d9a51f83cfcad788ad91138c8ce3ce6637e865d4",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/thatch03.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1275141447,
+        "stored_length": 2677254,
+        "stored_sha256": "8357fe345db6745164b336d4af3d689680c0d39f4b283c2c756aab838bbed1e0",
+        "dds_length": 5592544,
+        "dds_sha256": "046e7a523958fb3389de1a8b7262ddf33511ae8cec565d7a2f1ffee70a79a90a",
+        "fourCC": "DXT5",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 77,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:25"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/thatch03.ktx2",
+            "vkFormat": 138,
+            "sha256": "5d81e65a9f58b255a07e54f7af1a0d15926538a4199ec422cff0c84a9d6e9dbb",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/thatch03.opensky-srgb.ktx2",
+            "vkFormat": 138,
+            "sha256": "5d81e65a9f58b255a07e54f7af1a0d15926538a4199ec422cff0c84a9d6e9dbb",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/woodpost02.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1283884549,
+        "stored_length": 2585735,
+        "stored_sha256": "4f45fe6839cc87caaa291b09079414897748bb499ab728ba6d1116e174b314c1",
+        "dds_length": 5592544,
+        "dds_sha256": "13f487f7391fef5359b10ff102f828a2f829ec872f99674094be9421772ddaf7",
+        "fourCC": "DXT5",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 77,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:5"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodpost02.ktx2",
+            "vkFormat": 138,
+            "sha256": "d8b307cac3eb3a69d9cf21180de61edad4ab52a23af6962c11d3b71ab70152cf",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodpost02.opensky-srgb.ktx2",
+            "vkFormat": 138,
+            "sha256": "d8b307cac3eb3a69d9cf21180de61edad4ab52a23af6962c11d3b71ab70152cf",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/farmhouse01.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1291581926,
+        "stored_length": 1552728,
+        "stored_sha256": "b24aba1d7218fc2c902c7947fba52a9a403f5e0ff98260762742693558afb7de",
+        "dds_length": 2796336,
+        "dds_sha256": "bfa32a241741ac986a69340b2b0eda296146322808ed6c257742e16adba1778f",
+        "fourCC": "DXT1",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 71,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:7"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmhouse01.ktx2",
+            "vkFormat": 134,
+            "sha256": "2c4199f73b1d3cecb14f49ee500a59dc26126b587fa28a896f484b4f7631806a",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 2796208,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmhouse01.opensky-srgb.ktx2",
+            "vkFormat": 134,
+            "sha256": "2c4199f73b1d3cecb14f49ee500a59dc26126b587fa28a896f484b4f7631806a",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 2796208,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/woodwall01.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1312634589,
+        "stored_length": 2545849,
+        "stored_sha256": "0e10e7b57f3c037b20174ba0238da7e82a00414f18fae3a2877ba477bd8b471a",
+        "dds_length": 5592544,
+        "dds_sha256": "8870f0b887c810dfa28ed41f58fc5b96d545ff0e822a0a5cbededb37fa467737",
+        "fourCC": "DXT5",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 77,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:6"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodwall01.ktx2",
+            "vkFormat": 138,
+            "sha256": "7bd3c26f094c6ec57ad537cc0584b7a15805804ddec08bdd82ed17f720301013",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodwall01.opensky-srgb.ktx2",
+            "vkFormat": 138,
+            "sha256": "7bd3c26f094c6ec57ad537cc0584b7a15805804ddec08bdd82ed17f720301013",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 5592416,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/stonewall01.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1315180438,
+        "stored_length": 10134819,
+        "stored_sha256": "e0086ecf5fd8f51fb0ae62fdede054f18e87bb55591eeba1cbd9bc9b8ddebb7f",
+        "dds_length": 11184944,
+        "dds_sha256": "f84588b97f622b2a619ebf444a20f253851f4a5eebc166eac6d235441ac486a1",
+        "fourCC": "DXT1",
+        "dxgi_format": null,
+        "width": 4096,
+        "height": 4096,
+        "mip_count": 12,
+        "retail_texture_and_srv_dxgi_format": 71,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:1"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/stonewall01.ktx2",
+            "vkFormat": 134,
+            "sha256": "f7f0c0665a56640b5607337446dafbc0eb7fecae93322f6bfbaad49344acaa5b",
+            "level_count": 12,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 11184816,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/stonewall01.opensky-srgb.ktx2",
+            "vkFormat": 134,
+            "sha256": "f7f0c0665a56640b5607337446dafbc0eb7fecae93322f6bfbaad49344acaa5b",
+            "level_count": 12,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 11184816,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/farmwindowinterior01.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1333234262,
+        "stored_length": 571029,
+        "stored_sha256": "2b899e76f6490f049d693b0dbdf03ab5c720afa3fa9e503f532d7bf087e04ece",
+        "dds_length": 699184,
+        "dds_sha256": "e0f4689f42a0aae22366fa16d68e749576b7c96fb54ac3f93d092ffc57fb2dab",
+        "fourCC": "DXT1",
+        "dxgi_format": null,
+        "width": 1024,
+        "height": 1024,
+        "mip_count": 10,
+        "retail_texture_and_srv_dxgi_format": 71,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [],
+        "fallback_materials": [
+          "Farmhouse01:14"
+        ],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmwindowinterior01.ktx2",
+            "vkFormat": 134,
+            "sha256": "fc1102f1cb6db5ec250cd1e8700d4cab6e98dba6f19466389b031a608938a57f",
+            "level_count": 10,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 699056,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmwindowinterior01.opensky-srgb.ktx2",
+            "vkFormat": 134,
+            "sha256": "fc1102f1cb6db5ec250cd1e8700d4cab6e98dba6f19466389b031a608938a57f",
+            "level_count": 10,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 699056,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/farmwindowinterior01_m.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1380868416,
+        "stored_length": 337671,
+        "stored_sha256": "33838ab7c53ff2f07938d9814993460bfafe13604025dc2060cd83d4debab6e9",
+        "dds_length": 699184,
+        "dds_sha256": "ea1becbc46279cf81433881ab7de367af873c716377fbea0377c581ff7fa8914",
+        "fourCC": "DXT1",
+        "dxgi_format": null,
+        "width": 1024,
+        "height": 1024,
+        "mip_count": 10,
+        "retail_texture_and_srv_dxgi_format": 71,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [],
+        "fallback_materials": [
+          "Farmhouse01:14"
+        ],
+        "semantic_roles": [
+          "glow"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmwindowinterior01_m.ktx2",
+            "vkFormat": 134,
+            "sha256": "92a0f8cf12869545f3ba28763bfb125d80cfbf8d7406599dbb7b6c9a45432b97",
+            "level_count": 10,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 699056,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/farmwindowinterior01_m.opensky-srgb.ktx2",
+            "vkFormat": 134,
+            "sha256": "92a0f8cf12869545f3ba28763bfb125d80cfbf8d7406599dbb7b6c9a45432b97",
+            "level_count": 10,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 699056,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      },
+      {
+        "source_path": "textures/architecture/farmhouse/woodwalkway01.dds",
+        "archive": "/Users/taylor/Projects/mudcrab/skyrim_game/Data/Skyrim - Textures1.bsa",
+        "archive_offset": 1398975293,
+        "stored_length": 2341507,
+        "stored_sha256": "99515cb631bc7f10bd365d0ef8e862d27f4674c2eef522325b245dfa3f7ef890",
+        "dds_length": 2796336,
+        "dds_sha256": "7a7cbc41985da1e38f81fcfdc29f459b10d39c8a2460ac5d7099be328dd017ec",
+        "fourCC": "DXT1",
+        "dxgi_format": null,
+        "width": 2048,
+        "height": 2048,
+        "mip_count": 11,
+        "retail_texture_and_srv_dxgi_format": 71,
+        "native_sampling": "unorm_code_values",
+        "native_surface_materials": [
+          "Farmhouse01:19"
+        ],
+        "fallback_materials": [],
+        "semantic_roles": [
+          "diffuse"
+        ],
+        "existing_ktx2_views": [
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodwalkway01.ktx2",
+            "vkFormat": 134,
+            "sha256": "f15460430bd69513d7cf018b56a703f49b3a989121b692e81e56fc8a538fc1bf",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 2796208,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          },
+          {
+            "path": "/Users/taylor/.local/share/mudcrab-research/lighting-consolidation-20261009/assets-source25/textures/architecture/farmhouse/woodwalkway01.opensky-srgb.ktx2",
+            "vkFormat": 134,
+            "sha256": "f15460430bd69513d7cf018b56a703f49b3a989121b692e81e56fc8a538fc1bf",
+            "level_count": 11,
+            "supercompression_scheme": 2,
+            "expanded_blocks_length": 2796208,
+            "native_blocks_match_dds": true,
+            "native_blocks_match_dds_prefix": true
+          }
+        ]
+      }
+    ]
+  },
+  "primary_api_sources": [
+    "https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format",
+    "https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11device-createshaderresourceview",
+    "https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm"
+  ],
+  "source_header_probe": {
+    "artifact": "riverwood-dds-header-probe.json",
+    "script": "probe-riverwood-dds.py",
+    "original_dds_count": 9,
+    "matching_ktx2_view_payload_count": 18,
+    "raw_header_bytes_excluded_from_this_index": true,
+    "artifact_sha256": "9b3a5124b2b77f956617e59fc991671bb7da3b83a22c4961e82088b9621ce3d3",
+    "script_sha256": "73b3b6d2a9f22fa40f9602f2c604b451b5abadb8f1d6fe8a2fb537d725a50900"
+  },
+  "implementation_inputs_proposed": {
+    "nativeSourceFormat": "original DDS kind/value, retaining legacy versus typed DX10 identity",
+    "sourceDdsSha256": "hash of original decompressed DDS",
+    "nativeSampleTransfer": [
+      "identity",
+      "srgb_decode"
+    ],
+    "nativeUri": "native sampling view independent of the PBR semantic view",
+    "completion_limits": [
+      "dependency publication",
+      "pruned source retention",
+      "cache identity",
+      "validation",
+      "old-pack provenance migration"
+    ]
+  },
+  "independent_decoder_comparisons": 504,
+  "independent_decoder_mismatches": 0
+}

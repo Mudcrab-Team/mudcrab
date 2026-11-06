@@ -1,0 +1,362 @@
+{
+  "format_version": 1,
+  "investigated_date": "2026-10-09",
+  "target": {
+    "version": "1.7.104.0",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "preferred_image_base": "0x140000000",
+    "binary_executed": false
+  },
+  "verification": {
+    "ghidra_existing_partial_project": true,
+    "read_only_noanalysis": true,
+    "ghidra_unique_instructions_verified_against_file": 8415,
+    "ghidra_instructions_independently_compared_to_llvm": 440,
+    "mismatches": [],
+    "captures": [
+      {
+        "file": "native-140416a10.asm",
+        "sha256": "ccddd5211e6e6c264c058bbb5500a92898b671848f2f50728f97ef92c89a89b8"
+      },
+      {
+        "file": "native-140419ab0.asm",
+        "sha256": "65d4f5ae3f41b476672970dbd7620b6ab8af508a5bcd6ab84d561d75515c0644"
+      },
+      {
+        "file": "native-140414cf0.asm",
+        "sha256": "4c4f07331824d6777dbefe2f9f58b38a6f00789dad44db7e3d47c1c1718ac8c7"
+      },
+      {
+        "file": "native-140416490.asm",
+        "sha256": "26170b65f12b19e2c9b6b4b97e89bd98f7b4ccc98d8a585e0c1af25c4f990af3"
+      },
+      {
+        "file": "native-140415d50.asm",
+        "sha256": "3200466e711a8e7019953faad783f06a289e22b080a98f8628103bcbc65e00a1"
+      },
+      {
+        "file": "native-140416ca0.asm",
+        "sha256": "bb37a12cc6563f2fa37b882df234c17a1e91994ad5068a63be6e17bc0b49631f"
+      },
+      {
+        "file": "native-140419bb0.asm",
+        "sha256": "a345e9b12ed82b38fe6c256525bc1f0af65fc7aab2fc4c81c1ddf7c416bda89a"
+      },
+      {
+        "file": "native-14154b880.asm",
+        "sha256": "57551cbbc91af54cf3bd9b1dd775443a88b63e37c93a7dade0ef06a955e3f0dd"
+      },
+      {
+        "file": "native-1414ec3b0.asm",
+        "sha256": "0f7feb437215819c2f8d4358978a46b3e1c8940e29ebe6a869cbc90b7c1a80fb"
+      },
+      {
+        "file": "native-1414eccd0.asm",
+        "sha256": "dc9b3af039178efc7c7c7f537ac110b560b4b7344c5a3d24dc881d7ca2634ab7"
+      },
+      {
+        "file": "native-140ef2e80.asm",
+        "sha256": "8c396fa58344618d9268e6ec959d454547ba67259a60ff253d32b539f2dd8189"
+      },
+      {
+        "file": "native-140416fc0.asm",
+        "sha256": "87a0217c2303fb5e77a1fdb1493f5924018f21fffac8610d84c87d840a67d439"
+      },
+      {
+        "file": "native-140295960.asm",
+        "sha256": "d5215810b1c272a71062347a2b08275fb131019080ca29fdf367c2436f2ea647"
+      },
+      {
+        "file": "native-140416760.asm",
+        "sha256": "0ed9666e1faec5c5313bd2c92aa57c6336a545ca85456d876fa0ee1994aff125"
+      }
+    ],
+    "queries": [
+      "ambient-transform-20261009",
+      "ambient-builder-callers-20261009",
+      "weather-color-callers-20261009",
+      "weather-transfer-callers-20261009"
+    ],
+    "limitations": [
+      "Missing xrefs from partial saved analysis are inconclusive.",
+      "Static evidence proves arithmetic and dataflow, not live climate/weather state or final display parity."
+    ]
+  },
+  "address_convention": "preferred VA; runtime address requires loaded base plus RVA",
+  "functions": [
+    {
+      "va": "0x140412DF0",
+      "role": "17 NAM0 category preparation loop",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140414CF0",
+      "role": "four-color weighted byte RGB blend, 1/255 scale, lightning/clamp branches",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140EF2E80",
+      "role": "RGB upper bound clamp to one",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140416490",
+      "role": "weighted DALC to Sky+0x200 six-face ambient, specular RGB and final float; calls ambient builder",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140416760",
+      "role": "climate half-interval time weights multiplied by weather percentage and complement",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140419AB0",
+      "role": "max(0, sunriseBeginByte/6 - fDaytimeColorExtension)",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x140419BB0",
+      "role": "min(24, sunsetEndByte/6 + fDaytimeColorExtension)",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x1414EC3B0",
+      "role": "affine ambient transform builder; separate ambient specular inputs",
+      "status": "static_native_arithmetic_and_dataflow"
+    },
+    {
+      "va": "0x14154B880",
+      "role": "three vec4 rows with translation RGB; model-space rotation branch",
+      "status": "static_native_arithmetic_and_dataflow"
+    }
+  ],
+  "globals": {
+    "ambient_transform": "0x1420D6978",
+    "ambient_additive_rgb": "0x14331D6F0",
+    "ambient_additive_initial_image_value": [
+      0,
+      0,
+      0
+    ],
+    "ambient_additive_runtime_value": "unresolved; writable zero-filled virtual .data tail"
+  },
+  "constants": [
+    {
+      "va": "0x141b5be14",
+      "section": ".rdata",
+      "section_chars": "0x40000040",
+      "f32": [
+        0.5
+      ],
+      "file_offset": 28682260
+    },
+    {
+      "va": "0x141869dd8",
+      "section": ".rdata",
+      "section_chars": "0x40000040",
+      "f32": [
+        0.1666666716337204
+      ],
+      "file_offset": 25593816
+    },
+    {
+      "va": "0x141b5bdc8",
+      "section": ".rdata",
+      "section_chars": "0x40000040",
+      "f32": [
+        0.003921568859368563
+      ],
+      "file_offset": 28682184
+    },
+    {
+      "va": "0x14331d6f0",
+      "section": ".data",
+      "section_chars": "0xc0000040",
+      "f32": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "file_offset": null
+    }
+  ],
+  "ambient_arithmetic": {
+    "stored_face_order": [
+      "X+",
+      "X-",
+      "Y+",
+      "Y-",
+      "Z+",
+      "Z-"
+    ],
+    "axis": "(second face - first face) * 0.5",
+    "constant": "(sum of all six faces + additive RGB) * f32(1/6)",
+    "coordinate_conversion": "Creation(x,y,z) -> engine(x,z,-y)",
+    "engine_rows": "[dx,dz,-dy,c] per RGB channel",
+    "preview_additive_global": [
+      0,
+      0,
+      0
+    ],
+    "preview_additive_global_status": "declared assumption, not captured runtime value",
+    "scalar_nam0_ambient_multiplier": false,
+    "endpoint_limitation": "all six associated opposite-axis endpoints match only when three opposing-pair means agree"
+  },
+  "record_plugins": [
+    {
+      "name": "Skyrim.esm",
+      "sha256": "e198c3b85e5e48e0c92a6580d8f66e644256b68d812ee32b61735cf9b753df73"
+    },
+    {
+      "name": "Update.esm",
+      "sha256": "b298b0f65fa0127fd13c1f5ef6bb30eaf9d21fd19f5e6f8f91f829c9007d3280"
+    }
+  ],
+  "reference_timing": {
+    "worldspace_form_id": "0000003C",
+    "worldspace_editor_id": "Tamriel",
+    "worldspace_winning_plugin": "Update.esm",
+    "worldspace_record_file_offset": 1391290,
+    "climate_form_id": "00000812",
+    "climate_editor_id": "SkyrimClimate",
+    "climate_plugin": "Skyrim.esm",
+    "climate_record_file_offset": 13323669,
+    "timing_bytes": [
+      33,
+      60,
+      96,
+      123
+    ],
+    "interval_hours": [
+      5.5,
+      10,
+      16,
+      20.5
+    ],
+    "extension_name": "fDaytimeColorExtension",
+    "extension_owner": "GameSettingCollection (GMST; not INI)",
+    "extension_value_va": "0x14209E5A0",
+    "extension_compiled_initializer": 0.5,
+    "color_transition_hours": [
+      5,
+      7.5,
+      10,
+      16,
+      18.5,
+      21
+    ],
+    "active_climate_resolved": false,
+    "active_extension_override_resolved": false
+  },
+  "clear_day_example": {
+    "weather_form_id": "0000081A",
+    "editor_id": "SkyrimClear",
+    "plugin": "Update.esm",
+    "record_file_offset": 1229994,
+    "raw_day_faces_rgb": [
+      [
+        108,
+        146,
+        164
+      ],
+      [
+        94,
+        134,
+        142
+      ],
+      [
+        101,
+        145,
+        154
+      ],
+      [
+        100,
+        135,
+        155
+      ],
+      [
+        77,
+        129,
+        136
+      ],
+      [
+        191,
+        214,
+        221
+      ]
+    ],
+    "engine_rows_mathematical_reference": [
+      [
+        -0.02745098039215685,
+        0.2235294117647059,
+        0.0019607843137254832,
+        0.43856209150326797
+      ],
+      [
+        -0.023529411764705854,
+        0.16666666666666669,
+        0.019607843137254888,
+        0.5901960784313726
+      ],
+      [
+        -0.0431372549019608,
+        0.16666666666666669,
+        -0.0019607843137254832,
+        0.6352941176470589
+      ]
+    ],
+    "up_normal_rgb": [
+      0.6620915032679738,
+      0.7568627450980392,
+      0.8019607843137255
+    ],
+    "down_normal_rgb": [
+      0.21503267973856208,
+      0.4235294117647059,
+      0.4686274509803922
+    ],
+    "sunlight_raw_rgb": [
+      190,
+      181,
+      171
+    ],
+    "scalar_ambient_raw_rgb": [
+      180,
+      192,
+      197
+    ],
+    "kind": "derived coefficients, not measured pixels"
+  },
+  "primary_source_assistance": [
+    {
+      "path": "skyrim64_test/src/patches/TES/BSShader/BSShaderManager.cpp",
+      "url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/BSShaderManager.cpp",
+      "sha256": "ba7cd0ab5c5433456f33e37067942ed7d4e1f86bcde4d5e968fbd8fae5d59d1b"
+    },
+    {
+      "path": "skyrim64_test/src/patches/TES/BSShader/BSShaderManager.h",
+      "url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/BSShaderManager.h",
+      "sha256": "eb95574a9b6e5a8da2e74280692fcd50ee8839bbb760cc380932ce6b040af4e3"
+    },
+    {
+      "path": "skyrim64_test/src/patches/TES/BSShader/BSShaderUtil.cpp",
+      "url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/BSShaderUtil.cpp",
+      "sha256": "cad9b3c10d922907e9aca677f87fc77599c1d5f1ab29c4abd4b719eaddfb9b7c"
+    },
+    {
+      "path": "skyrim64_test/src/patches/TES/NiMain/NiColor.h",
+      "url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/NiMain/NiColor.h",
+      "sha256": "1af2c7dc67c4cb15eb0aed6ed56c77242a3b1c8524ba4b607cd60749ab5e7058"
+    }
+  ],
+  "remaining_gates": [
+    "active CLMT/GMST selection and override resolution",
+    "ambient additive global live value/writers",
+    "final directional light dimmer/HDR coefficient",
+    "interior cube selection and angle/fade preparation",
+    "native local selection/fade/visibility",
+    "native IMGS/IMAD adaptation and display composition"
+  ],
+  "runtime_profile": "authored-native-affine-preview-v1",
+  "runtime_profile_status": "explicit approximate composite; selected preparation stages recovered statically; no retail frame parity claim"
+}

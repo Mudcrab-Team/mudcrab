@@ -1,0 +1,3100 @@
+{
+  "schema": "mudcrab-native-image-space-connections/v1",
+  "target_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "source_package_sha256": "72cfc73eb0938d5949f0b3a8683722a33b671a34b41b750ba138de8d154c5fbc",
+  "scope": "Original static construction/registration and conditional helper routes; successful recorded package/resource construction required, no selected retail state observed.",
+  "effect_table_registration": {
+    "manager_table_offset": "0x28",
+    "direct_register_function": "0x1414edaa0",
+    "subobject_register_function": "0x14150b880",
+    "subobject_manager_adjustment": "0x20",
+    "constructed_shader_to_effect_subobject": "0x90",
+    "inverse_adjustment": "-0x90"
+  },
+  "effect_group_links": [
+    {
+      "group_id": "group-009",
+      "ordinal": 9,
+      "label": "ISFXAA",
+      "constructor_or_base_call": "0x1414eefdb",
+      "index": 2,
+      "registration": "0x1414ef037",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414ef033",
+      "pointer_proof": {
+        "shader_result_plus_90": "0x1414eefe5",
+        "null_preserving_select": "0x1414eefef",
+        "final_manager_table_read": "0x1414ef033",
+        "no_call_before_store": true
+      },
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-010",
+      "ordinal": 10,
+      "label": "ISCopy",
+      "constructor_or_base_call": "0x1414ef7e7",
+      "index": 34,
+      "registration": "0x1414ef901",
+      "kind": "native-manager-table-write",
+      "table_pointer_instructions": [
+        "0x1414ef8cd",
+        "0x1414ef8d3"
+      ],
+      "pointer_proof": {
+        "shader_result_plus_90": "0x1414ef8a0",
+        "null_preserving_select": "0x1414ef8aa",
+        "two_reaching_table_reads_no_call_or_RAX_write_before_store": true
+      },
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-011",
+      "ordinal": 11,
+      "label": "ISCopyDynamicFetchDisabled",
+      "constructor_or_base_call": "0x1414ef955",
+      "index": 35,
+      "registration": "0x1414efa72",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414efa6e",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-012",
+      "ordinal": 12,
+      "label": "ISCopyScaleBias",
+      "constructor_or_base_call": "0x1414efac6",
+      "index": 36,
+      "registration": "0x1414efc31",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414efc2d",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-013",
+      "ordinal": 13,
+      "label": "ISCopyCustomViewport",
+      "constructor_or_base_call": "0x1414efc85",
+      "index": 37,
+      "registration": "0x1414efdbe",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414efdba",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-014",
+      "ordinal": 14,
+      "label": "ISRefraction",
+      "constructor_or_base_call": "0x1414efe04",
+      "index": 39,
+      "registration": "0x1414efe69",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414efe65",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-015",
+      "ordinal": 15,
+      "label": "ISDoubleVision",
+      "constructor_or_base_call": "0x1414efeaf",
+      "index": 40,
+      "registration": "0x1414eff12",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414eff0e",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-016",
+      "ordinal": 16,
+      "label": "ISCopyTextureMask",
+      "constructor_or_base_call": "0x1414eff66",
+      "index": 41,
+      "registration": "0x1414f00cf",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f00cb",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-017",
+      "ordinal": 17,
+      "label": "ISDepthOfField",
+      "constructor_or_base_call": "0x1414f0115",
+      "index": 45,
+      "registration": "0x1414f017d",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f0179",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-018",
+      "ordinal": 18,
+      "label": "ISDistantBlur",
+      "constructor_or_base_call": "0x1414f01c3",
+      "index": 49,
+      "registration": "0x1414f0228",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f0224",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-019",
+      "ordinal": 19,
+      "label": "ISMap",
+      "constructor_or_base_call": "0x1414f027f",
+      "index": 42,
+      "registration": "0x1414f042d",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f0429",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-020",
+      "ordinal": 20,
+      "label": "ISWorldMap",
+      "constructor_or_base_call": "0x1414f0473",
+      "index": 43,
+      "registration": "0x1414f04d5",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f04d1",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-021",
+      "ordinal": 21,
+      "label": "ISWorldMapNoSkyBlur",
+      "constructor_or_base_call": "0x1414f051b",
+      "index": 44,
+      "registration": "0x1414f0578",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f0574",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-022",
+      "ordinal": 22,
+      "label": "ISRadialBlur",
+      "constructor_or_base_call": "0x1414f05be",
+      "index": 52,
+      "registration": "0x1414f0623",
+      "kind": "native-manager-table-write",
+      "table_pointer_instruction": "0x1414f061f",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-023",
+      "ordinal": 23,
+      "label": "ISRadialBlurMedium",
+      "constructor_or_base_call": "0x1414f0669",
+      "index": 53,
+      "registration": "0x1414f0692",
+      "kind": "native-register-helper-call",
+      "helper": "0x14150b880",
+      "index_instruction": "0x1414f068c",
+      "index_proof": {
+        "literal_52": "0x1414f05d6",
+        "EDI_is_EAX_plus_1": "0x1414f05db",
+        "EDX_from_EDI": "0x1414f068c",
+        "nonvolatile_register_abi": "https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170"
+      },
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-024",
+      "ordinal": 24,
+      "label": "ISRadialBlurHigh",
+      "constructor_or_base_call": "0x1414f06d6",
+      "index": 54,
+      "registration": "0x1414f0702",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f06f9",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-025",
+      "ordinal": 25,
+      "label": "ISCopyGreyScale",
+      "constructor_or_base_call": "0x1414f0754",
+      "index": 38,
+      "registration": "0x1414f0885",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f087c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-026",
+      "ordinal": 26,
+      "label": "ISHDRTonemapBlendCinematic",
+      "constructor_or_base_call": "0x1414f08c9",
+      "index": 55,
+      "registration": "0x1414f08f5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f08ec",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-027",
+      "ordinal": 27,
+      "label": "ISHDRTonemapBlendCinematicFade",
+      "constructor_or_base_call": "0x1414f0939",
+      "index": 56,
+      "registration": "0x1414f0965",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f095c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-028",
+      "ordinal": 28,
+      "label": "ISHDRDownSample16",
+      "constructor_or_base_call": "0x1414f09a9",
+      "index": 57,
+      "registration": "0x1414f09d5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f09cc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-029",
+      "ordinal": 29,
+      "label": "ISHDRDownSample4",
+      "constructor_or_base_call": "0x1414f0a19",
+      "index": 58,
+      "registration": "0x1414f0a45",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0a3c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-030",
+      "ordinal": 30,
+      "label": "ISHDRDownSample16Lum",
+      "constructor_or_base_call": "0x1414f0a89",
+      "index": 59,
+      "registration": "0x1414f0ab5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0aac",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-031",
+      "ordinal": 31,
+      "label": "ISHDRDownSample4RGB2Lum",
+      "constructor_or_base_call": "0x1414f0af9",
+      "index": 60,
+      "registration": "0x1414f0b25",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0b1c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-032",
+      "ordinal": 32,
+      "label": "ISHDRDownSample4LightAdapt",
+      "constructor_or_base_call": "0x1414f0b69",
+      "index": 62,
+      "registration": "0x1414f0b95",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0b8c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-033",
+      "ordinal": 33,
+      "label": "ISHDRDownSample4LumClamp",
+      "constructor_or_base_call": "0x1414f0bd9",
+      "index": 61,
+      "registration": "0x1414f0c05",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0bfc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-034",
+      "ordinal": 34,
+      "label": "ISHDRDownSample16LightAdapt",
+      "constructor_or_base_call": "0x1414f0c49",
+      "index": 64,
+      "registration": "0x1414f0c75",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0c6c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-035",
+      "ordinal": 35,
+      "label": "ISHDRDownSample16LumClamp",
+      "constructor_or_base_call": "0x1414f0cb9",
+      "index": 63,
+      "registration": "0x1414f0ce5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0cdc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-036",
+      "ordinal": 36,
+      "label": "ISBlur3",
+      "constructor_or_base_call": "0x1414f0d29",
+      "index": 65,
+      "registration": "0x1414f0d55",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0d4c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-037",
+      "ordinal": 37,
+      "label": "ISBlur5",
+      "constructor_or_base_call": "0x1414f0d99",
+      "index": 66,
+      "registration": "0x1414f0dc5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0dbc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-038",
+      "ordinal": 38,
+      "label": "ISBlur7",
+      "constructor_or_base_call": "0x1414f0e09",
+      "index": 67,
+      "registration": "0x1414f0e35",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0e2c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-039",
+      "ordinal": 39,
+      "label": "ISBlur9",
+      "constructor_or_base_call": "0x1414f0e79",
+      "index": 68,
+      "registration": "0x1414f0ea5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0e9c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-040",
+      "ordinal": 40,
+      "label": "ISBlur11",
+      "constructor_or_base_call": "0x1414f0ee9",
+      "index": 69,
+      "registration": "0x1414f0f15",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0f0c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-041",
+      "ordinal": 41,
+      "label": "ISBlur13",
+      "constructor_or_base_call": "0x1414f0f59",
+      "index": 70,
+      "registration": "0x1414f0f85",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0f7c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-042",
+      "ordinal": 42,
+      "label": "ISBlur15",
+      "constructor_or_base_call": "0x1414f0fc9",
+      "index": 71,
+      "registration": "0x1414f0ff5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f0fec",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-043",
+      "ordinal": 43,
+      "label": "ISNonHDRBlur3",
+      "constructor_or_base_call": "0x1414f1039",
+      "index": 72,
+      "registration": "0x1414f1065",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f105c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-044",
+      "ordinal": 44,
+      "label": "ISNonHDRBlur5",
+      "constructor_or_base_call": "0x1414f10a9",
+      "index": 73,
+      "registration": "0x1414f10d5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f10cc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-045",
+      "ordinal": 45,
+      "label": "ISNonHDRBlur7",
+      "constructor_or_base_call": "0x1414f1119",
+      "index": 74,
+      "registration": "0x1414f1145",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f113c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-046",
+      "ordinal": 46,
+      "label": "ISNonHDRBlur9",
+      "constructor_or_base_call": "0x1414f1189",
+      "index": 75,
+      "registration": "0x1414f11b5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f11ac",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-047",
+      "ordinal": 47,
+      "label": "ISNonHDRBlur11",
+      "constructor_or_base_call": "0x1414f11f9",
+      "index": 76,
+      "registration": "0x1414f1225",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f121c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-048",
+      "ordinal": 48,
+      "label": "ISNonHDRBlur13",
+      "constructor_or_base_call": "0x1414f1269",
+      "index": 77,
+      "registration": "0x1414f1295",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f128c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-049",
+      "ordinal": 49,
+      "label": "ISNonHDRBlur15",
+      "constructor_or_base_call": "0x1414f12d9",
+      "index": 78,
+      "registration": "0x1414f1305",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f12fc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-050",
+      "ordinal": 50,
+      "label": "ISBrightPassBlur3",
+      "constructor_or_base_call": "0x1414f1349",
+      "index": 79,
+      "registration": "0x1414f1375",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f136c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-051",
+      "ordinal": 51,
+      "label": "ISBrightPassBlur5",
+      "constructor_or_base_call": "0x1414f13b9",
+      "index": 80,
+      "registration": "0x1414f13e5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f13dc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-052",
+      "ordinal": 52,
+      "label": "ISBrightPassBlur7",
+      "constructor_or_base_call": "0x1414f1429",
+      "index": 81,
+      "registration": "0x1414f1455",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f144c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-053",
+      "ordinal": 53,
+      "label": "ISBrightPassBlur9",
+      "constructor_or_base_call": "0x1414f1499",
+      "index": 82,
+      "registration": "0x1414f14c5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f14bc",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-054",
+      "ordinal": 54,
+      "label": "ISBrightPassBlur11",
+      "constructor_or_base_call": "0x1414f1509",
+      "index": 83,
+      "registration": "0x1414f1535",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f152c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-055",
+      "ordinal": 55,
+      "label": "ISBrightPassBlur13",
+      "constructor_or_base_call": "0x1414f1579",
+      "index": 84,
+      "registration": "0x1414f15a5",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f159c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-056",
+      "ordinal": 56,
+      "label": "ISBrightPassBlur15",
+      "constructor_or_base_call": "0x1414f15e9",
+      "index": 85,
+      "registration": "0x1414f1615",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f160c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-057",
+      "ordinal": 57,
+      "label": "ISWaterDisplacementClearSimulation",
+      "constructor_or_base_call": "0x1414f166a",
+      "index": 86,
+      "registration": "0x1414f1706",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f16fd",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-058",
+      "ordinal": 58,
+      "label": "ISWaterDisplacementTexOffset",
+      "constructor_or_base_call": "0x1414f174a",
+      "index": 87,
+      "registration": "0x1414f1776",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f176d",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-059",
+      "ordinal": 59,
+      "label": "ISWaterDisplacementWadingRipple",
+      "constructor_or_base_call": "0x1414f17c8",
+      "index": 88,
+      "registration": "0x1414f1909",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1900",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-060",
+      "ordinal": 60,
+      "label": "ISWaterDisplacementRainRipple",
+      "constructor_or_base_call": "0x1414f1957",
+      "index": 89,
+      "registration": "0x1414f19e9",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f19e0",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-061",
+      "ordinal": 61,
+      "label": "ISWaterWadingHeightmap",
+      "constructor_or_base_call": "0x1414f1a2d",
+      "index": 90,
+      "registration": "0x1414f1a59",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1a50",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-062",
+      "ordinal": 62,
+      "label": "ISWaterRainHeightmap",
+      "constructor_or_base_call": "0x1414f1a9d",
+      "index": 91,
+      "registration": "0x1414f1ac9",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1ac0",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-063",
+      "ordinal": 63,
+      "label": "ISWaterBlendHeightmaps",
+      "constructor_or_base_call": "0x1414f1b0d",
+      "index": 92,
+      "registration": "0x1414f1b39",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1b30",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-064",
+      "ordinal": 64,
+      "label": "ISWaterSmoothHeightmap",
+      "constructor_or_base_call": "0x1414f1b7d",
+      "index": 93,
+      "registration": "0x1414f1ba9",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1ba0",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-065",
+      "ordinal": 65,
+      "label": "ISWaterDisplacementNormals",
+      "constructor_or_base_call": "0x1414f1bed",
+      "index": 94,
+      "registration": "0x1414f1c19",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1c10",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-066",
+      "ordinal": 66,
+      "label": "ISNoiseScrollAndBlend",
+      "constructor_or_base_call": "0x1414f1c5d",
+      "index": 95,
+      "registration": "0x1414f1c89",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1c80",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-067",
+      "ordinal": 67,
+      "label": "ISNoiseNormalmap",
+      "constructor_or_base_call": "0x1414f1ccd",
+      "index": 96,
+      "registration": "0x1414f1cf9",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1cf0",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-068",
+      "ordinal": 68,
+      "label": "ISLocalMap",
+      "constructor_or_base_call": "0x1414f1d4e",
+      "index": 98,
+      "registration": "0x1414f1e94",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1e8b",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-069",
+      "ordinal": 69,
+      "label": "ISAlphaBlend",
+      "constructor_or_base_call": "0x1414f1eaf",
+      "index": 99,
+      "registration": "0x1414f1edb",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1ed2",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-070",
+      "ordinal": 70,
+      "label": "ISDepthOfFieldFogged",
+      "constructor_or_base_call": "0x1414f1ef6",
+      "index": 46,
+      "registration": "0x1414f1f22",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1f19",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-071",
+      "ordinal": 71,
+      "label": "ISDepthOfFieldMaskedFogged",
+      "constructor_or_base_call": "0x1414f1f3d",
+      "index": 47,
+      "registration": "0x1414f1f69",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1f60",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-072",
+      "ordinal": 72,
+      "label": "ISDistantBlurFogged",
+      "constructor_or_base_call": "0x1414f1f84",
+      "index": 50,
+      "registration": "0x1414f1fb0",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1fa7",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-073",
+      "ordinal": 73,
+      "label": "ISDistantBlurMaskedFogged",
+      "constructor_or_base_call": "0x1414f1fcb",
+      "index": 51,
+      "registration": "0x1414f1ff7",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f1fee",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-074",
+      "ordinal": 74,
+      "label": "ISVolumetricLighting",
+      "constructor_or_base_call": "0x1414f2012",
+      "index": 97,
+      "registration": "0x1414f203e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2035",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-075",
+      "ordinal": 75,
+      "label": "ApplyReflections",
+      "constructor_or_base_call": "0x1414f2059",
+      "index": 102,
+      "registration": "0x1414f2085",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f207c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-076",
+      "ordinal": 76,
+      "label": "ISApplyVolumetricLighting",
+      "constructor_or_base_call": "0x1414f20a0",
+      "index": 103,
+      "registration": "0x1414f20cc",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f20c3",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-077",
+      "ordinal": 77,
+      "label": "ISBasicCopy",
+      "constructor_or_base_call": "0x1414f20ff",
+      "index": 104,
+      "registration": "0x1414f21f7",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f21ee",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-078",
+      "ordinal": 78,
+      "label": "ISBlur",
+      "constructor_or_base_call": "0x1414f2212",
+      "index": 105,
+      "registration": "0x1414f223e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2235",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-079",
+      "ordinal": 79,
+      "label": "ISVolumetricLightingBlurHCS",
+      "constructor_or_base_call": "0x1414f2259",
+      "index": 106,
+      "registration": "0x1414f2285",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f227c",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-080",
+      "ordinal": 80,
+      "label": "ISVolumetricLightingBlurVCS",
+      "constructor_or_base_call": "0x1414f22a0",
+      "index": 107,
+      "registration": "0x1414f22cc",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f22c3",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-081",
+      "ordinal": 81,
+      "label": "ReflectionBlurHCS",
+      "constructor_or_base_call": "0x1414f22e7",
+      "index": 108,
+      "registration": "0x1414f2313",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f230a",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-082",
+      "ordinal": 82,
+      "label": "ReflectionBlurVCS",
+      "constructor_or_base_call": "0x1414f232e",
+      "index": 109,
+      "registration": "0x1414f235a",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2351",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-083",
+      "ordinal": 83,
+      "label": "ISParallaxMaskBlurHCS",
+      "constructor_or_base_call": "0x1414f2375",
+      "index": 110,
+      "registration": "0x1414f23a1",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2398",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-084",
+      "ordinal": 84,
+      "label": "ISParallaxMaskBlurVCS",
+      "constructor_or_base_call": "0x1414f23bc",
+      "index": 111,
+      "registration": "0x1414f23e8",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f23df",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-085",
+      "ordinal": 85,
+      "label": "ISDepthOfFieldBlurHCS",
+      "constructor_or_base_call": "0x1414f2403",
+      "index": 112,
+      "registration": "0x1414f242f",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2426",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-086",
+      "ordinal": 86,
+      "label": "ISDepthOfFieldBlurVCS",
+      "constructor_or_base_call": "0x1414f244a",
+      "index": 113,
+      "registration": "0x1414f2476",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f246d",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-087",
+      "ordinal": 87,
+      "label": "ISCompositeVolumetricLighting",
+      "constructor_or_base_call": "0x1414f2491",
+      "index": 114,
+      "registration": "0x1414f24bd",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f24b4",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-088",
+      "ordinal": 88,
+      "label": "ISCompositeLensFlare",
+      "constructor_or_base_call": "0x1414f24d8",
+      "index": 115,
+      "registration": "0x1414f2504",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f24fb",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-089",
+      "ordinal": 89,
+      "label": "ISCompositeLensFlareVolumetricLighting",
+      "constructor_or_base_call": "0x1414f251f",
+      "index": 116,
+      "registration": "0x1414f254b",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2542",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-090",
+      "ordinal": 90,
+      "label": "ISCopySubRegionCS",
+      "constructor_or_base_call": "0x1414f2566",
+      "index": 117,
+      "registration": "0x1414f2592",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2589",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-091",
+      "ordinal": 91,
+      "label": "ISDebugSnow",
+      "constructor_or_base_call": "0x1414f25be",
+      "index": 118,
+      "registration": "0x1414f26fd",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f26f4",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-092",
+      "ordinal": 92,
+      "label": "ISDownsample",
+      "constructor_or_base_call": "0x1414f2718",
+      "index": 119,
+      "registration": "0x1414f2744",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f273b",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-093",
+      "ordinal": 93,
+      "label": "ISDownsampleIgnoreBrightest",
+      "constructor_or_base_call": "0x1414f275f",
+      "index": 120,
+      "registration": "0x1414f278b",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2782",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-094",
+      "ordinal": 94,
+      "label": "ISDownsampleCS",
+      "constructor_or_base_call": "0x1414f27a6",
+      "index": 121,
+      "registration": "0x1414f27d2",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f27c9",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-095",
+      "ordinal": 95,
+      "label": "ISDownsampleIgnoreBrightestCS",
+      "constructor_or_base_call": "0x1414f27ed",
+      "index": 122,
+      "registration": "0x1414f2819",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2810",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-096",
+      "ordinal": 96,
+      "label": "ISExp",
+      "constructor_or_base_call": "0x1414f2845",
+      "index": 123,
+      "registration": "0x1414f2933",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f292a",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-097",
+      "ordinal": 97,
+      "label": "ISIBLensFlares",
+      "constructor_or_base_call": "0x1414f294e",
+      "index": 124,
+      "registration": "0x1414f297a",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2971",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-098",
+      "ordinal": 98,
+      "label": "ISLightingComposite",
+      "constructor_or_base_call": "0x1414f2995",
+      "index": 125,
+      "registration": "0x1414f29c1",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f29b8",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-099",
+      "ordinal": 99,
+      "label": "ISLightingCompositeNoDirectionalLight",
+      "constructor_or_base_call": "0x1414f29dc",
+      "index": 126,
+      "registration": "0x1414f2a08",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f29ff",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-100",
+      "ordinal": 100,
+      "label": "ISLightingCompositeMenu",
+      "constructor_or_base_call": "0x1414f2a23",
+      "index": 127,
+      "registration": "0x1414f2a4f",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2a46",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-101",
+      "ordinal": 101,
+      "label": "ISPerlinNoiseCS",
+      "constructor_or_base_call": "0x1414f2a7b",
+      "index": 128,
+      "registration": "0x1414f2b69",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2b60",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-102",
+      "ordinal": 102,
+      "label": "ISPerlinNoise2DCS",
+      "constructor_or_base_call": "0x1414f2b92",
+      "index": 129,
+      "registration": "0x1414f2c80",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2c77",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-103",
+      "ordinal": 103,
+      "label": "ReflectionsRayTracing",
+      "constructor_or_base_call": "0x1414f2c9b",
+      "index": 130,
+      "registration": "0x1414f2cc7",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2cbe",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-104",
+      "ordinal": 104,
+      "label": "ReflectionsDebugSpecMask",
+      "constructor_or_base_call": "0x1414f2ce2",
+      "index": 131,
+      "registration": "0x1414f2d0e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2d05",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-105",
+      "ordinal": 105,
+      "label": "ISSAOBlurH",
+      "constructor_or_base_call": "0x1414f2d45",
+      "index": 132,
+      "registration": "0x1414f2e33",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2e2a",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-106",
+      "ordinal": 106,
+      "label": "ISSAOBlurV",
+      "constructor_or_base_call": "0x1414f2e5c",
+      "index": 133,
+      "registration": "0x1414f2f4a",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2f41",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-107",
+      "ordinal": 107,
+      "label": "ISSAOBlurHCS",
+      "constructor_or_base_call": "0x1414f2f65",
+      "index": 134,
+      "registration": "0x1414f2f91",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2f88",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-108",
+      "ordinal": 108,
+      "label": "ISSAOBlurVCS",
+      "constructor_or_base_call": "0x1414f2fac",
+      "index": 135,
+      "registration": "0x1414f2fd8",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f2fcf",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-109",
+      "ordinal": 109,
+      "label": "ISSAOCameraZ",
+      "constructor_or_base_call": "0x1414f2ff3",
+      "index": 136,
+      "registration": "0x1414f301f",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3016",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-110",
+      "ordinal": 110,
+      "label": "ISSAOCameraZAndMipsCS",
+      "constructor_or_base_call": "0x1414f303a",
+      "index": 137,
+      "registration": "0x1414f3066",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f305d",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-111",
+      "ordinal": 111,
+      "label": "ISSAOCompositeSAO",
+      "constructor_or_base_call": "0x1414f3081",
+      "index": 138,
+      "registration": "0x1414f30ad",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f30a4",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-112",
+      "ordinal": 112,
+      "label": "ISSAOCompositeFog",
+      "constructor_or_base_call": "0x1414f30c8",
+      "index": 139,
+      "registration": "0x1414f30f4",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f30eb",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-113",
+      "ordinal": 113,
+      "label": "ISSAOCompositeSAOFog",
+      "constructor_or_base_call": "0x1414f310f",
+      "index": 140,
+      "registration": "0x1414f313b",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3132",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-114",
+      "ordinal": 114,
+      "label": "ISMinify",
+      "constructor_or_base_call": "0x1414f3156",
+      "index": 141,
+      "registration": "0x1414f3182",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3179",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-115",
+      "ordinal": 115,
+      "label": "ISMinifyContrast",
+      "constructor_or_base_call": "0x1414f319d",
+      "index": 142,
+      "registration": "0x1414f31c9",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f31c0",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-116",
+      "ordinal": 116,
+      "label": "ISSAORawAO",
+      "constructor_or_base_call": "0x1414f31e4",
+      "index": 143,
+      "registration": "0x1414f3210",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3207",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-117",
+      "ordinal": 117,
+      "label": "ISSAORawAONoTemporal",
+      "constructor_or_base_call": "0x1414f322b",
+      "index": 144,
+      "registration": "0x1414f3257",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f324e",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-118",
+      "ordinal": 118,
+      "label": "ISSAORawAOCS",
+      "constructor_or_base_call": "0x1414f3272",
+      "index": 145,
+      "registration": "0x1414f329e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3295",
+      "helper": "0x14150b880",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-119",
+      "ordinal": 119,
+      "label": "ISSILComposite",
+      "constructor_or_base_call": "0x1414f32ca",
+      "index": 146,
+      "registration": "0x1414f339d",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3395",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-120",
+      "ordinal": 120,
+      "label": "ISSILRawInd",
+      "constructor_or_base_call": "0x1414f33b8",
+      "index": 147,
+      "registration": "0x1414f33d8",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f33d0",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-121",
+      "ordinal": 121,
+      "label": "ISSimpleColor",
+      "constructor_or_base_call": "0x1414f33f3",
+      "index": 148,
+      "registration": "0x1414f3413",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f340b",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-122",
+      "ordinal": 122,
+      "label": "ISDisplayDepth",
+      "constructor_or_base_call": "0x1414f342e",
+      "index": 149,
+      "registration": "0x1414f344e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3446",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-123",
+      "ordinal": 123,
+      "label": "ISSnowSSS",
+      "constructor_or_base_call": "0x1414f3469",
+      "index": 150,
+      "registration": "0x1414f3489",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3481",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-124",
+      "ordinal": 124,
+      "label": "ISTemporalAA",
+      "constructor_or_base_call": "0x1414f34a4",
+      "index": 151,
+      "registration": "0x1414f34c4",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f34bc",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-125",
+      "ordinal": 125,
+      "label": "ISTemporalAA_UI",
+      "constructor_or_base_call": "0x1414f34df",
+      "index": 152,
+      "registration": "0x1414f34ff",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f34f7",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-126",
+      "ordinal": 126,
+      "label": "ISTemporalAA_Water",
+      "constructor_or_base_call": "0x1414f351a",
+      "index": 153,
+      "registration": "0x1414f353a",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3532",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-127",
+      "ordinal": 127,
+      "label": "ISUpsampleDynamicResolution",
+      "constructor_or_base_call": "0x1414f3566",
+      "index": 154,
+      "registration": "0x1414f363e",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3636",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-128",
+      "ordinal": 128,
+      "label": "ISWaterBlend",
+      "constructor_or_base_call": "0x1414f3659",
+      "index": 155,
+      "registration": "0x1414f3679",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3671",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-129",
+      "ordinal": 129,
+      "label": "ISUnderwaterMask",
+      "constructor_or_base_call": "0x1414f36a2",
+      "index": 156,
+      "registration": "0x1414f374d",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f3745",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-130",
+      "ordinal": 130,
+      "label": "LensFlare",
+      "constructor_or_base_call": "0x1414f4006",
+      "index": 100,
+      "registration": "0x1414f4026",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f401e",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-131",
+      "ordinal": 131,
+      "label": "LensFlareVisibility",
+      "constructor_or_base_call": "0x1414f4041",
+      "index": 101,
+      "registration": "0x1414f4061",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f4059",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    },
+    {
+      "group_id": "group-132",
+      "ordinal": 132,
+      "label": "ISWaterFlow",
+      "constructor_or_base_call": "0x1414f407c",
+      "index": 157,
+      "registration": "0x1414f409c",
+      "kind": "native-register-helper-call",
+      "index_instruction": "0x1414f4094",
+      "helper": "0x1414edaa0",
+      "runtime_observed": false
+    }
+  ],
+  "evidence": [
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/shaders/native/shaders-07-full-imagespace-sequence.json",
+      "sha256": "d2e9a1e66b73c427395de5135550a2120982528a10580fc2e0d9165de98a6b63",
+      "role": "complete original factory instruction export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-01-pre-hdr.json",
+      "sha256": "f9bcccebb91959b9cd738f21ac3fc3a31c67e780c3308e7737219c73f6a77144",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-02-object-contracts.json",
+      "sha256": "3df4493bda375fe57891930548a499e675c6e3d27bdddf477d40badbb28bd7f6",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-03-binding-contracts.json",
+      "sha256": "38dec8a98f2fe0f23e7032559d71c4be614118466bfd77d6bd76853bf4699a13",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-04-shader-bindings.json",
+      "sha256": "befb5fec48c5f731ca1361dea5364052e304a0186370a76eb6b31b92bd729900",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-05-hdr-dispatch.json",
+      "sha256": "70ba8c96fa0d5d811e0ffcf5fd032476fccbc9116dd47554694e1914c0af02b9",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-06-hdr-constants.json",
+      "sha256": "39676c6ec1e3ceaf34d5507e487f2380a286e2e0b91c1efbaaf8b7d2f77fe31a",
+      "role": "original bounded read-only native export"
+    },
+    {
+      "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/native/expansion-07b-hdr-cinematic-parameters.json",
+      "sha256": "63773997eebfc6b91b87c9c7804d6c6420b56d8671f27748b088c323638f3df1",
+      "role": "original bounded read-only native export"
+    }
+  ],
+  "validation": {
+    "group_count": 124,
+    "unique_effect_slots": 124,
+    "runtime_observed": false,
+    "helper_objects": 8,
+    "helper_shader_fields": 26,
+    "curated_transfers": 10
+  },
+  "helper_objects": [
+    {
+      "manager_field_offset": "0x168",
+      "constructor_va": "0x14153dd30",
+      "constructor_call": {
+        "instruction_va": "0x1414f3781",
+        "original_instruction_sha256": "253bea1db4e0aa020e87a0ff24d6de5492d879b902fc0cf688d3d5687ae961b5"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f378b",
+        "original_instruction_sha256": "68ba682db4c1ec0f7d2a0d8ba4cbf90868e7236ca97db52401a02c75a43e6fff"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f3765",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f3769",
+          "original_instruction_sha256": "60af99ad32abe405bb8ca896fd89425cef22d6d7928329a6fb528b0bcf5e0a70"
+        },
+        {
+          "instruction_va": "0x1414f3770",
+          "original_instruction_sha256": "6f32d098adf4c006dad909bdd5291e88dcb524a8dda8f7f1e3ad0818f39d5c2d"
+        },
+        {
+          "instruction_va": "0x1414f3777",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f377a",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f377e",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f3781",
+          "original_instruction_sha256": "253bea1db4e0aa020e87a0ff24d6de5492d879b902fc0cf688d3d5687ae961b5"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 102,
+          "group_id": "group-075",
+          "ordinal": 75,
+          "native_loader_label": "ApplyReflections",
+          "table_read": {
+            "instruction_va": "0x1414f3769",
+            "original_instruction_sha256": "60af99ad32abe405bb8ca896fd89425cef22d6d7928329a6fb528b0bcf5e0a70"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153dd30",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": null,
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x170",
+      "constructor_va": "0x14153df40",
+      "constructor_call": {
+        "instruction_va": "0x1414f37c1",
+        "original_instruction_sha256": "4222e126e3d3281d7f7c3c285ea2cb2efa8f2aa2742535f9c5d8246a7fcc32ce"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f37cb",
+        "original_instruction_sha256": "b06a8388a5c6f55cb286a9a9d88825fb46dfe1b87b92c8adc6f799b4b0ea8d1e"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f37a5",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f37a9",
+          "original_instruction_sha256": "e810f624cd538f93c0597f74a1ce91a1d634d361276de41d2329dc5a9daac23e"
+        },
+        {
+          "instruction_va": "0x1414f37b0",
+          "original_instruction_sha256": "6f32d098adf4c006dad909bdd5291e88dcb524a8dda8f7f1e3ad0818f39d5c2d"
+        },
+        {
+          "instruction_va": "0x1414f37b7",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f37ba",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f37be",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f37c1",
+          "original_instruction_sha256": "4222e126e3d3281d7f7c3c285ea2cb2efa8f2aa2742535f9c5d8246a7fcc32ce"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 103,
+          "group_id": "group-076",
+          "ordinal": 76,
+          "native_loader_label": "ISApplyVolumetricLighting",
+          "table_read": {
+            "instruction_va": "0x1414f37a9",
+            "original_instruction_sha256": "e810f624cd538f93c0597f74a1ce91a1d634d361276de41d2329dc5a9daac23e"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153df40",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x14153df60",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x178",
+      "constructor_va": "0x14153e420",
+      "constructor_call": {
+        "instruction_va": "0x1414f3801",
+        "original_instruction_sha256": "28030a5ef0e279b61c49db8479db5a392ebd647facc5a4180a81ce95a5191cad"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f380b",
+        "original_instruction_sha256": "462b48e0beb0f921ef5c645eb804127e50ddf9a876f6a05b4c5affeab0462083"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f37e5",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f37e9",
+          "original_instruction_sha256": "879df0a1d4c1db1b8d3a5c32d9345359708e43aa5604f2caaeeb07746607e27b"
+        },
+        {
+          "instruction_va": "0x1414f37f0",
+          "original_instruction_sha256": "6f32d098adf4c006dad909bdd5291e88dcb524a8dda8f7f1e3ad0818f39d5c2d"
+        },
+        {
+          "instruction_va": "0x1414f37f7",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f37fa",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f37fe",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f3801",
+          "original_instruction_sha256": "28030a5ef0e279b61c49db8479db5a392ebd647facc5a4180a81ce95a5191cad"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 104,
+          "group_id": "group-077",
+          "ordinal": 77,
+          "native_loader_label": "ISBasicCopy",
+          "table_read": {
+            "instruction_va": "0x1414f37e9",
+            "original_instruction_sha256": "879df0a1d4c1db1b8d3a5c32d9345359708e43aa5604f2caaeeb07746607e27b"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e420",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x14153e440",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x180",
+      "constructor_va": "0x14153e4a0",
+      "constructor_call": {
+        "instruction_va": "0x1414f38c0",
+        "original_instruction_sha256": "d86ebc46063ae8643d5c8fda91513c24ffd1e675e714ac923d4fd12d1df79858"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f38ca",
+        "original_instruction_sha256": "262bdd8757ae9419859256e74fba10bd366eb23b38463bfd9d031ddca8dcf34b"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f382c",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f3830",
+          "original_instruction_sha256": "bf33962a15cd7c110856243d55c4b6d063d42d49e0152a57e5b961de855ec6f4"
+        },
+        {
+          "instruction_va": "0x1414f3837",
+          "original_instruction_sha256": "ad61ee7c1c4e24a9a5bc498ed1e5437612c19cc107304b420ba89c5fa8adbde7"
+        },
+        {
+          "instruction_va": "0x1414f383e",
+          "original_instruction_sha256": "ff487befd66a904994812f2f0e145ea153d945c67104469edb80ff230aecbd98"
+        },
+        {
+          "instruction_va": "0x1414f3845",
+          "original_instruction_sha256": "99d53185c611819bcb4fbfbfed88670dace39c8b1e1a42a4416c9dcde7b68a60"
+        },
+        {
+          "instruction_va": "0x1414f384c",
+          "original_instruction_sha256": "8fff974fed5c841ea325d9839a943a8831caf2c7dfd74fae3288ec1b3207813b"
+        },
+        {
+          "instruction_va": "0x1414f3853",
+          "original_instruction_sha256": "62964269ee9cae3e2dee7aabff980dc54680c932d27695e6dfb36b9f6ae27bc5"
+        },
+        {
+          "instruction_va": "0x1414f385a",
+          "original_instruction_sha256": "21e7bc17df69a6d22eabc69a26632b2753754b762993343a2b164cb165b313dd"
+        },
+        {
+          "instruction_va": "0x1414f3861",
+          "original_instruction_sha256": "769a0c9612d7def1a662fcf63027a7fca4fcd7abdeeb3c7f4cd8ea5aa7e05d52"
+        },
+        {
+          "instruction_va": "0x1414f3864",
+          "original_instruction_sha256": "f6f64b6a7a0e2473ecb10d3ead64a2880e3bab2121c86bfca0dc22523b2de122"
+        },
+        {
+          "instruction_va": "0x1414f3868",
+          "original_instruction_sha256": "3f8d9e5c9ce3df455cd376435fcf8a4f0b7d8399599b10eb6a1b1eb59c644327"
+        },
+        {
+          "instruction_va": "0x1414f386f",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f3872",
+          "original_instruction_sha256": "461ae28660a726d5a78d851c38f3b67a109a1f2109528fb9a6f58e622716bbf4"
+        },
+        {
+          "instruction_va": "0x1414f3876",
+          "original_instruction_sha256": "cbaf64fb2509e8fd1e92fe3f416055011d4fbe2720ebd9330a4d2032187f6cf5"
+        },
+        {
+          "instruction_va": "0x1414f387d",
+          "original_instruction_sha256": "12bcc13b8691febe77ed183e1d37b7245e08bdab2d48d3ea28007e740a0cb872"
+        },
+        {
+          "instruction_va": "0x1414f3880",
+          "original_instruction_sha256": "605c946ae866dcaebeb3e005059d0c11ff55ac2dd15b5fcc09e88a9890104be7"
+        },
+        {
+          "instruction_va": "0x1414f3884",
+          "original_instruction_sha256": "9edfb0be4972592c734f78482af76efbe9f8a635c2c1f715df8f604638f0c5b7"
+        },
+        {
+          "instruction_va": "0x1414f388b",
+          "original_instruction_sha256": "05b3e220b37379c3022a085699aa42b99a29fa841b9c849cc4f4feac299f5fd3"
+        },
+        {
+          "instruction_va": "0x1414f388e",
+          "original_instruction_sha256": "1baa47727c906905b1cf1e4baa29cd1515e2026399893c5d6f8044c21e2af1aa"
+        },
+        {
+          "instruction_va": "0x1414f3892",
+          "original_instruction_sha256": "fa2222770ac31fb9c01ec21d9af713d204272a0bea253016dde9339222f0b147"
+        },
+        {
+          "instruction_va": "0x1414f3899",
+          "original_instruction_sha256": "3a84e85337d9cd231569ae29ddaf25be3ae451a3051d4c9f8cb8038891298db2"
+        },
+        {
+          "instruction_va": "0x1414f389c",
+          "original_instruction_sha256": "0764e2142578b35e263a8e1cd1d7f164b503110495b4a17cd2764ec5ccb53aab"
+        },
+        {
+          "instruction_va": "0x1414f38a0",
+          "original_instruction_sha256": "c7a66dddf71f85ee14a282dcffd4aee581213c4eff5f0641136ed6cacc0a3cb5"
+        },
+        {
+          "instruction_va": "0x1414f38a7",
+          "original_instruction_sha256": "777c97ac5036d0c4ee08e75c91b097e81dd4c60b57e5c22b8577e004cd086e45"
+        },
+        {
+          "instruction_va": "0x1414f38aa",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f38ae",
+          "original_instruction_sha256": "2ffaaf7ecdd21ae91b907341d8ea2292cc3479d4ebe30724dc6a0186828ce626"
+        },
+        {
+          "instruction_va": "0x1414f38b3",
+          "original_instruction_sha256": "c549bba8fa30b0caffcc55176a3f48f615d9ca22a015e6121ea519fb35e341d8"
+        },
+        {
+          "instruction_va": "0x1414f38b8",
+          "original_instruction_sha256": "7d2f0853e08d38fee58f2b877aa390f554c8a81bbd01bf6368735c83e2d1715a"
+        },
+        {
+          "instruction_va": "0x1414f38bd",
+          "original_instruction_sha256": "64f56c49e35da71dc21f5a862c7fb1ae95964ceaa9142e498aa0ff3d183d4954"
+        },
+        {
+          "instruction_va": "0x1414f38c0",
+          "original_instruction_sha256": "d86ebc46063ae8643d5c8fda91513c24ffd1e675e714ac923d4fd12d1df79858"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 105,
+          "group_id": "group-078",
+          "ordinal": 78,
+          "native_loader_label": "ISBlur",
+          "table_read": {
+            "instruction_va": "0x1414f3853",
+            "original_instruction_sha256": "62964269ee9cae3e2dee7aabff980dc54680c932d27695e6dfb36b9f6ae27bc5"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4d7",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x8",
+          "effect_slot": 119,
+          "group_id": "group-092",
+          "ordinal": 92,
+          "native_loader_label": "ISDownsample",
+          "table_read": {
+            "instruction_va": "0x1414f384c",
+            "original_instruction_sha256": "8fff974fed5c841ea325d9839a943a8831caf2c7dfd74fae3288ec1b3207813b"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4da",
+            "original_instruction_sha256": "f9f40ca98a761b5125b6df6b9b55274f325b0fa219700f51020775cb876ec1af"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x10",
+          "effect_slot": 120,
+          "group_id": "group-093",
+          "ordinal": 93,
+          "native_loader_label": "ISDownsampleIgnoreBrightest",
+          "table_read": {
+            "instruction_va": "0x1414f3845",
+            "original_instruction_sha256": "99d53185c611819bcb4fbfbfed88670dace39c8b1e1a42a4416c9dcde7b68a60"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4de",
+            "original_instruction_sha256": "afd71159cacf4bd6ba372cc4d10cd11f1ae6cbcda3c0e3d4791cc71b2cdcf92a"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x18",
+          "effect_slot": 121,
+          "group_id": "group-094",
+          "ordinal": 94,
+          "native_loader_label": "ISDownsampleCS",
+          "table_read": {
+            "instruction_va": "0x1414f383e",
+            "original_instruction_sha256": "ff487befd66a904994812f2f0e145ea153d945c67104469edb80ff230aecbd98"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4e7",
+            "original_instruction_sha256": "ee80a14e5582802fa84bcbb93b42cd013fe78070c0760c1e686a907bb9c1aa69"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x20",
+          "effect_slot": 122,
+          "group_id": "group-095",
+          "ordinal": 95,
+          "native_loader_label": "ISDownsampleIgnoreBrightestCS",
+          "table_read": {
+            "instruction_va": "0x1414f3837",
+            "original_instruction_sha256": "ad61ee7c1c4e24a9a5bc498ed1e5437612c19cc107304b420ba89c5fa8adbde7"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4f0",
+            "original_instruction_sha256": "ff77401b210971de338ddd84cf4a2d2238b7c8ac91159a8a9973044e0ad0f5cf"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x28",
+          "effect_slot": 124,
+          "group_id": "group-097",
+          "ordinal": 97,
+          "native_loader_label": "ISIBLensFlares",
+          "table_read": {
+            "instruction_va": "0x1414f3830",
+            "original_instruction_sha256": "bf33962a15cd7c110856243d55c4b6d063d42d49e0152a57e5b961de855ec6f4"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14153e4f9",
+            "original_instruction_sha256": "587c87bd6564d45fcd3ffe771fc3245a18407df220450b1c3ff12995c94590c0"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x14153e620",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x188",
+      "constructor_va": "0x141540300",
+      "constructor_call": {
+        "instruction_va": "0x1414f39bc",
+        "original_instruction_sha256": "913c1f90b8214a6b52607074875e0091a877b9c4fff4c7428e850de31af2e28a"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f39ca",
+        "original_instruction_sha256": "f73cf50366f6ffb38f41716806f9820a468ed3ca518fd8efb751dc00d6a0d72d"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f38e8",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f38ec",
+          "original_instruction_sha256": "eef549f77638dfe18b7cc8a68eff7082603f8d0f4bf4f8d136a4e8b75851bc16"
+        },
+        {
+          "instruction_va": "0x1414f38f3",
+          "original_instruction_sha256": "be6885cd67e2cb4f762b4c311cbb4901665e523adc849439680ab98ffe13534c"
+        },
+        {
+          "instruction_va": "0x1414f38fa",
+          "original_instruction_sha256": "5f3ffa684bb1884c08db9fa74c2de06cab3130f32f9942342c6798c2a9bbecd5"
+        },
+        {
+          "instruction_va": "0x1414f3901",
+          "original_instruction_sha256": "56025c65b7f4a7ce57e0628dcadcbeb33870cae190a50a6a12dc5fa2628c98c6"
+        },
+        {
+          "instruction_va": "0x1414f3908",
+          "original_instruction_sha256": "bc71bea106c8fda3a7d10969087e5005d8593bc7266812c26bf666d5afd00260"
+        },
+        {
+          "instruction_va": "0x1414f390f",
+          "original_instruction_sha256": "3b43b0f853e37944d31cd30ee54ef5b0c8c08e4c7219f6c08cce43fb8ce5b0e3"
+        },
+        {
+          "instruction_va": "0x1414f3916",
+          "original_instruction_sha256": "ebc5a46cb1863b50c4035c10d26e5eefe9c1e268fc2965efabed07bf4c0adea4"
+        },
+        {
+          "instruction_va": "0x1414f391d",
+          "original_instruction_sha256": "5977d27f0af16348b15dffa711db5587aa16e8b6fcf1914cdee4ac902e899ee3"
+        },
+        {
+          "instruction_va": "0x1414f3924",
+          "original_instruction_sha256": "4cf8221b3e35edb94a6a3aaf0a7a11c534239bf0e62d52f6bd8b38c5941962fe"
+        },
+        {
+          "instruction_va": "0x1414f392b",
+          "original_instruction_sha256": "769a0c9612d7def1a662fcf63027a7fca4fcd7abdeeb3c7f4cd8ea5aa7e05d52"
+        },
+        {
+          "instruction_va": "0x1414f392e",
+          "original_instruction_sha256": "4a2cc78ba595a9a227b4843a820c0fcc20cc0dbc6872748ba2880b520a846b1a"
+        },
+        {
+          "instruction_va": "0x1414f3933",
+          "original_instruction_sha256": "8fc1330b0eea666b65a16114bfd3c51a448b36c6d7c9467d025b3d72bb42fa09"
+        },
+        {
+          "instruction_va": "0x1414f3937",
+          "original_instruction_sha256": "f6f4b8cdd178521a47df5935383055791844d0ea5c87bb0e8cc93b650b775615"
+        },
+        {
+          "instruction_va": "0x1414f393e",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f3941",
+          "original_instruction_sha256": "82a73f014e51a4560c8594fef09bde2e9481d470c4846359cdeb6e843ce39a2f"
+        },
+        {
+          "instruction_va": "0x1414f3945",
+          "original_instruction_sha256": "911571c65c3f0f0651484bed249ba0f72fbe65ed38ab3640775ee431899e7738"
+        },
+        {
+          "instruction_va": "0x1414f394c",
+          "original_instruction_sha256": "12bcc13b8691febe77ed183e1d37b7245e08bdab2d48d3ea28007e740a0cb872"
+        },
+        {
+          "instruction_va": "0x1414f394f",
+          "original_instruction_sha256": "a2d614f96bf762f3752793946364de735672cdad35c220c062821f7bb1f28270"
+        },
+        {
+          "instruction_va": "0x1414f3953",
+          "original_instruction_sha256": "e8dc6ae7a6488edb5041e59c12215183b21a9f1da578c96cc2d59842d7b69f91"
+        },
+        {
+          "instruction_va": "0x1414f395a",
+          "original_instruction_sha256": "05b3e220b37379c3022a085699aa42b99a29fa841b9c849cc4f4feac299f5fd3"
+        },
+        {
+          "instruction_va": "0x1414f395d",
+          "original_instruction_sha256": "9fa617eda68e9a282c9342df4c87b147ea0890be378d39ad52a1f4ce3966d5b9"
+        },
+        {
+          "instruction_va": "0x1414f3961",
+          "original_instruction_sha256": "bddd009cf2d8b18ce628234309ef151d3443b8640189d3dd73a7c3508755afcc"
+        },
+        {
+          "instruction_va": "0x1414f3968",
+          "original_instruction_sha256": "3a84e85337d9cd231569ae29ddaf25be3ae451a3051d4c9f8cb8038891298db2"
+        },
+        {
+          "instruction_va": "0x1414f396b",
+          "original_instruction_sha256": "7e74164e0d34bd93892cf15304b9b819ad7cff7a53f458490a61b99958997f31"
+        },
+        {
+          "instruction_va": "0x1414f396f",
+          "original_instruction_sha256": "ac28c665f0b7b15b4b0386b4439256b22bff231ba7c9d2c9ad5334f233e59f83"
+        },
+        {
+          "instruction_va": "0x1414f3976",
+          "original_instruction_sha256": "777c97ac5036d0c4ee08e75c91b097e81dd4c60b57e5c22b8577e004cd086e45"
+        },
+        {
+          "instruction_va": "0x1414f3979",
+          "original_instruction_sha256": "e426f3187d8d47656e2d8932ce116134c706afa8bf42e89d94c9e6f39e15e396"
+        },
+        {
+          "instruction_va": "0x1414f397d",
+          "original_instruction_sha256": "27b99b0b13245a96fe03a48952e983a91af64617d03abe9351c9fcc901da861f"
+        },
+        {
+          "instruction_va": "0x1414f3984",
+          "original_instruction_sha256": "ba462945001a91cd6b63ffe6532444de02132e8678ee5c93662b0585de0f4a66"
+        },
+        {
+          "instruction_va": "0x1414f3987",
+          "original_instruction_sha256": "ddeabccfa76223f3d7290bf535b997993599b0f74d5ebaf20a1c8e726ddb74ad"
+        },
+        {
+          "instruction_va": "0x1414f398b",
+          "original_instruction_sha256": "5e1a248bc792d81873471a99f3aeed725c0909db7f2b9879c2ea178417f26907"
+        },
+        {
+          "instruction_va": "0x1414f3992",
+          "original_instruction_sha256": "e10a2bc66203e957df52f8a9aed93e12244edee28cf26cd938a5b83aaac249d5"
+        },
+        {
+          "instruction_va": "0x1414f3995",
+          "original_instruction_sha256": "58c9e1c3a9b3771a79670783e28c30f089c90b234a4a53be3bacf573fd08dab0"
+        },
+        {
+          "instruction_va": "0x1414f399b",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f399f",
+          "original_instruction_sha256": "c08282e572dfe87ce6f4cd36db14fb9fcc185d78dc5889c93b2373edf1418d40"
+        },
+        {
+          "instruction_va": "0x1414f39a4",
+          "original_instruction_sha256": "01976e66fb66c1e7abae21dda98bb3ca828dd46e490593938fbbc2b0930de25a"
+        },
+        {
+          "instruction_va": "0x1414f39a9",
+          "original_instruction_sha256": "2ffaaf7ecdd21ae91b907341d8ea2292cc3479d4ebe30724dc6a0186828ce626"
+        },
+        {
+          "instruction_va": "0x1414f39ae",
+          "original_instruction_sha256": "c549bba8fa30b0caffcc55176a3f48f615d9ca22a015e6121ea519fb35e341d8"
+        },
+        {
+          "instruction_va": "0x1414f39b3",
+          "original_instruction_sha256": "7d2f0853e08d38fee58f2b877aa390f554c8a81bbd01bf6368735c83e2d1715a"
+        },
+        {
+          "instruction_va": "0x1414f39b8",
+          "original_instruction_sha256": "87e994ff9491c75025086062dd672103ad9c467c38a2ff7a0a325dd9235864a2"
+        },
+        {
+          "instruction_va": "0x1414f39bc",
+          "original_instruction_sha256": "913c1f90b8214a6b52607074875e0091a877b9c4fff4c7428e850de31af2e28a"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 106,
+          "group_id": "group-079",
+          "ordinal": 79,
+          "native_loader_label": "ISVolumetricLightingBlurHCS",
+          "table_read": {
+            "instruction_va": "0x1414f391d",
+            "original_instruction_sha256": "5977d27f0af16348b15dffa711db5587aa16e8b6fcf1914cdee4ac902e899ee3"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540330",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x8",
+          "effect_slot": 107,
+          "group_id": "group-080",
+          "ordinal": 80,
+          "native_loader_label": "ISVolumetricLightingBlurVCS",
+          "table_read": {
+            "instruction_va": "0x1414f3916",
+            "original_instruction_sha256": "ebc5a46cb1863b50c4035c10d26e5eefe9c1e268fc2965efabed07bf4c0adea4"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540333",
+            "original_instruction_sha256": "f9f40ca98a761b5125b6df6b9b55274f325b0fa219700f51020775cb876ec1af"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x10",
+          "effect_slot": 108,
+          "group_id": "group-081",
+          "ordinal": 81,
+          "native_loader_label": "ReflectionBlurHCS",
+          "table_read": {
+            "instruction_va": "0x1414f390f",
+            "original_instruction_sha256": "3b43b0f853e37944d31cd30ee54ef5b0c8c08e4c7219f6c08cce43fb8ce5b0e3"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540337",
+            "original_instruction_sha256": "afd71159cacf4bd6ba372cc4d10cd11f1ae6cbcda3c0e3d4791cc71b2cdcf92a"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x18",
+          "effect_slot": 109,
+          "group_id": "group-082",
+          "ordinal": 82,
+          "native_loader_label": "ReflectionBlurVCS",
+          "table_read": {
+            "instruction_va": "0x1414f3908",
+            "original_instruction_sha256": "bc71bea106c8fda3a7d10969087e5005d8593bc7266812c26bf666d5afd00260"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540305",
+            "original_instruction_sha256": "ee80a14e5582802fa84bcbb93b42cd013fe78070c0760c1e686a907bb9c1aa69"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x20",
+          "effect_slot": 110,
+          "group_id": "group-083",
+          "ordinal": 83,
+          "native_loader_label": "ISParallaxMaskBlurHCS",
+          "table_read": {
+            "instruction_va": "0x1414f3901",
+            "original_instruction_sha256": "56025c65b7f4a7ce57e0628dcadcbeb33870cae190a50a6a12dc5fa2628c98c6"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x14154030e",
+            "original_instruction_sha256": "ff77401b210971de338ddd84cf4a2d2238b7c8ac91159a8a9973044e0ad0f5cf"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x28",
+          "effect_slot": 111,
+          "group_id": "group-084",
+          "ordinal": 84,
+          "native_loader_label": "ISParallaxMaskBlurVCS",
+          "table_read": {
+            "instruction_va": "0x1414f38fa",
+            "original_instruction_sha256": "5f3ffa684bb1884c08db9fa74c2de06cab3130f32f9942342c6798c2a9bbecd5"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540317",
+            "original_instruction_sha256": "587c87bd6564d45fcd3ffe771fc3245a18407df220450b1c3ff12995c94590c0"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x30",
+          "effect_slot": 112,
+          "group_id": "group-085",
+          "ordinal": 85,
+          "native_loader_label": "ISDepthOfFieldBlurHCS",
+          "table_read": {
+            "instruction_va": "0x1414f38f3",
+            "original_instruction_sha256": "be6885cd67e2cb4f762b4c311cbb4901665e523adc849439680ab98ffe13534c"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540320",
+            "original_instruction_sha256": "392dbd7eb34c51659a308201dfa368f692cfb1a4a86b89914225e692d7127400"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x38",
+          "effect_slot": 113,
+          "group_id": "group-086",
+          "ordinal": 86,
+          "native_loader_label": "ISDepthOfFieldBlurVCS",
+          "table_read": {
+            "instruction_va": "0x1414f38ec",
+            "original_instruction_sha256": "eef549f77638dfe18b7cc8a68eff7082603f8d0f4bf4f8d136a4e8b75851bc16"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540329",
+            "original_instruction_sha256": "4d0cd16f9022d3024981756d66a472a3003141c76e154752853f54110ba0fff4"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x1415403f0",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x190",
+      "constructor_va": "0x141540ac0",
+      "constructor_call": {
+        "instruction_va": "0x1414f3a2c",
+        "original_instruction_sha256": "6f143164ef82d31d9f9c18b430f3e2b0fbc425c0d6b17a73d6e37f63d055ecd2"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f3a36",
+        "original_instruction_sha256": "8aab0d957f3d5f757b4b3bbfeb36b6edee807451fcab98d05ce5eed46aac6004"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f39e6",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f39ea",
+          "original_instruction_sha256": "e282afdc035aa185455fc7f4af691b2346890a78cfd8f71907f7f02b19a224a0"
+        },
+        {
+          "instruction_va": "0x1414f39f1",
+          "original_instruction_sha256": "a33e27420df56bb61856fab954e5db32fdaf7aca0468e5ff52bc29499fae0683"
+        },
+        {
+          "instruction_va": "0x1414f39f8",
+          "original_instruction_sha256": "eceb57fd33db1491f17b49dbb98c66bdbfdd59b0eb1dc174aa7738e73ef36658"
+        },
+        {
+          "instruction_va": "0x1414f39ff",
+          "original_instruction_sha256": "42baf2a1b77c925ef3d74b1505b9159bdf6f1528113c686f954642f532a1f1cf"
+        },
+        {
+          "instruction_va": "0x1414f3a06",
+          "original_instruction_sha256": "769a0c9612d7def1a662fcf63027a7fca4fcd7abdeeb3c7f4cd8ea5aa7e05d52"
+        },
+        {
+          "instruction_va": "0x1414f3a09",
+          "original_instruction_sha256": "1baa47727c906905b1cf1e4baa29cd1515e2026399893c5d6f8044c21e2af1aa"
+        },
+        {
+          "instruction_va": "0x1414f3a0d",
+          "original_instruction_sha256": "332a4d67e25c7ae42ec842df863a7a7644c9f28638864999ee14a321f9223e0d"
+        },
+        {
+          "instruction_va": "0x1414f3a14",
+          "original_instruction_sha256": "05b3e220b37379c3022a085699aa42b99a29fa841b9c849cc4f4feac299f5fd3"
+        },
+        {
+          "instruction_va": "0x1414f3a17",
+          "original_instruction_sha256": "0764e2142578b35e263a8e1cd1d7f164b503110495b4a17cd2764ec5ccb53aab"
+        },
+        {
+          "instruction_va": "0x1414f3a1b",
+          "original_instruction_sha256": "0433c744658a745f987f7e3fc7a7ab0b1165e0c90d45139bd6d83daf23cff69b"
+        },
+        {
+          "instruction_va": "0x1414f3a22",
+          "original_instruction_sha256": "3a84e85337d9cd231569ae29ddaf25be3ae451a3051d4c9f8cb8038891298db2"
+        },
+        {
+          "instruction_va": "0x1414f3a25",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f3a29",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f3a2c",
+          "original_instruction_sha256": "6f143164ef82d31d9f9c18b430f3e2b0fbc425c0d6b17a73d6e37f63d055ecd2"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 114,
+          "group_id": "group-087",
+          "ordinal": 87,
+          "native_loader_label": "ISCompositeVolumetricLighting",
+          "table_read": {
+            "instruction_va": "0x1414f39f8",
+            "original_instruction_sha256": "eceb57fd33db1491f17b49dbb98c66bdbfdd59b0eb1dc174aa7738e73ef36658"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540ac0",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x8",
+          "effect_slot": 115,
+          "group_id": "group-088",
+          "ordinal": 88,
+          "native_loader_label": "ISCompositeLensFlare",
+          "table_read": {
+            "instruction_va": "0x1414f39f1",
+            "original_instruction_sha256": "a33e27420df56bb61856fab954e5db32fdaf7aca0468e5ff52bc29499fae0683"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540ac6",
+            "original_instruction_sha256": "f9f40ca98a761b5125b6df6b9b55274f325b0fa219700f51020775cb876ec1af"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x10",
+          "effect_slot": 116,
+          "group_id": "group-089",
+          "ordinal": 89,
+          "native_loader_label": "ISCompositeLensFlareVolumetricLighting",
+          "table_read": {
+            "instruction_va": "0x1414f39ea",
+            "original_instruction_sha256": "e282afdc035aa185455fc7f4af691b2346890a78cfd8f71907f7f02b19a224a0"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141540aca",
+            "original_instruction_sha256": "afd71159cacf4bd6ba372cc4d10cd11f1ae6cbcda3c0e3d4791cc71b2cdcf92a"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x141540ae0",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x1d0",
+      "constructor_va": "0x1415434c0",
+      "constructor_call": {
+        "instruction_va": "0x1414f3dcb",
+        "original_instruction_sha256": "057691c031e08d864e6e4969873438e0229db94f11f6aaa4e9a3a05f82cac8f5"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f3dd5",
+        "original_instruction_sha256": "a203fa81fbcd42d4059c4fef4317db12316f1f951e03d153de082ace5de47e5e"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f3d6b",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f3d6f",
+          "original_instruction_sha256": "ea2af828fdb94fc5fd84623e1ca1bdbb46dd205a18170834130733b5ecfb89ae"
+        },
+        {
+          "instruction_va": "0x1414f3d76",
+          "original_instruction_sha256": "2542ea7456626ae577f01a31f5cee1a9a515981f791713d2777ca7753747cad1"
+        },
+        {
+          "instruction_va": "0x1414f3d7d",
+          "original_instruction_sha256": "daea53bc5a1c1964a4be22b6b95bf1bc86d60e605626a2e1135a6da47dee7448"
+        },
+        {
+          "instruction_va": "0x1414f3d84",
+          "original_instruction_sha256": "996941c01408d2f4d915c4e9ec2a0d0554b4340df01ab70e523eb159a16985e0"
+        },
+        {
+          "instruction_va": "0x1414f3d8b",
+          "original_instruction_sha256": "bd29c1bbd4fd00482f507cbf6806cba585c28d838e5e9a7431f21f84be58ab8d"
+        },
+        {
+          "instruction_va": "0x1414f3d92",
+          "original_instruction_sha256": "769a0c9612d7def1a662fcf63027a7fca4fcd7abdeeb3c7f4cd8ea5aa7e05d52"
+        },
+        {
+          "instruction_va": "0x1414f3d95",
+          "original_instruction_sha256": "461ae28660a726d5a78d851c38f3b67a109a1f2109528fb9a6f58e622716bbf4"
+        },
+        {
+          "instruction_va": "0x1414f3d99",
+          "original_instruction_sha256": "244f7ae29ba4153c8310cbf4bd2a99bbb3fea44ef27f5ec49d6bbf01be3b5c95"
+        },
+        {
+          "instruction_va": "0x1414f3da0",
+          "original_instruction_sha256": "b06c7624a6546820ae1f390eee1224c0e177a15a461e70f6844e76e834033272"
+        },
+        {
+          "instruction_va": "0x1414f3da3",
+          "original_instruction_sha256": "1baa47727c906905b1cf1e4baa29cd1515e2026399893c5d6f8044c21e2af1aa"
+        },
+        {
+          "instruction_va": "0x1414f3da7",
+          "original_instruction_sha256": "332a4d67e25c7ae42ec842df863a7a7644c9f28638864999ee14a321f9223e0d"
+        },
+        {
+          "instruction_va": "0x1414f3dae",
+          "original_instruction_sha256": "05b3e220b37379c3022a085699aa42b99a29fa841b9c849cc4f4feac299f5fd3"
+        },
+        {
+          "instruction_va": "0x1414f3db1",
+          "original_instruction_sha256": "0764e2142578b35e263a8e1cd1d7f164b503110495b4a17cd2764ec5ccb53aab"
+        },
+        {
+          "instruction_va": "0x1414f3db5",
+          "original_instruction_sha256": "0433c744658a745f987f7e3fc7a7ab0b1165e0c90d45139bd6d83daf23cff69b"
+        },
+        {
+          "instruction_va": "0x1414f3dbc",
+          "original_instruction_sha256": "3a84e85337d9cd231569ae29ddaf25be3ae451a3051d4c9f8cb8038891298db2"
+        },
+        {
+          "instruction_va": "0x1414f3dbf",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f3dc3",
+          "original_instruction_sha256": "895670f9132144928ca285d6bd5885c0e990dd68ed40066a59ec39a743d07897"
+        },
+        {
+          "instruction_va": "0x1414f3dc8",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f3dcb",
+          "original_instruction_sha256": "057691c031e08d864e6e4969873438e0229db94f11f6aaa4e9a3a05f82cac8f5"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 134,
+          "group_id": "group-107",
+          "ordinal": 107,
+          "native_loader_label": "ISSAOBlurHCS",
+          "table_read": {
+            "instruction_va": "0x1414f3d84",
+            "original_instruction_sha256": "996941c01408d2f4d915c4e9ec2a0d0554b4340df01ab70e523eb159a16985e0"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x1415434c9",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x8",
+          "effect_slot": 135,
+          "group_id": "group-108",
+          "ordinal": 108,
+          "native_loader_label": "ISSAOBlurVCS",
+          "table_read": {
+            "instruction_va": "0x1414f3d7d",
+            "original_instruction_sha256": "daea53bc5a1c1964a4be22b6b95bf1bc86d60e605626a2e1135a6da47dee7448"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x1415434cc",
+            "original_instruction_sha256": "f9f40ca98a761b5125b6df6b9b55274f325b0fa219700f51020775cb876ec1af"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x10",
+          "effect_slot": 137,
+          "group_id": "group-110",
+          "ordinal": 110,
+          "native_loader_label": "ISSAOCameraZAndMipsCS",
+          "table_read": {
+            "instruction_va": "0x1414f3d76",
+            "original_instruction_sha256": "2542ea7456626ae577f01a31f5cee1a9a515981f791713d2777ca7753747cad1"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x1415434d0",
+            "original_instruction_sha256": "afd71159cacf4bd6ba372cc4d10cd11f1ae6cbcda3c0e3d4791cc71b2cdcf92a"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x18",
+          "effect_slot": 145,
+          "group_id": "group-118",
+          "ordinal": 118,
+          "native_loader_label": "ISSAORawAOCS",
+          "table_read": {
+            "instruction_va": "0x1414f3d6f",
+            "original_instruction_sha256": "ea2af828fdb94fc5fd84623e1ca1bdbb46dd205a18170834130733b5ecfb89ae"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x1415434c5",
+            "original_instruction_sha256": "ee80a14e5582802fa84bcbb93b42cd013fe78070c0760c1e686a907bb9c1aa69"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x1415436b0",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    },
+    {
+      "manager_field_offset": "0x1d8",
+      "constructor_va": "0x141543d00",
+      "constructor_call": {
+        "instruction_va": "0x1414f3e20",
+        "original_instruction_sha256": "01897d0d2c6e6615bb309ff83e3c620a7e9247b3a76fed3a58b6a69f8e994d72"
+      },
+      "manager_store": {
+        "instruction_va": "0x1414f3e2a",
+        "original_instruction_sha256": "e18cd87b34bc3be53786132e82ca4069f3c4f7194fab200f1e19ac32412a462d"
+      },
+      "constructor_argument_proof": [
+        {
+          "instruction_va": "0x1414f3def",
+          "original_instruction_sha256": "f1ef69565fb3ea9ef3f5c45ea3808290e8142f00e42e293c1936e2e2f8d4522c"
+        },
+        {
+          "instruction_va": "0x1414f3df3",
+          "original_instruction_sha256": "f670ed025aac81cf5d785932d1cb1865883f763448b62d8c86138aebd16bfbaf"
+        },
+        {
+          "instruction_va": "0x1414f3dfa",
+          "original_instruction_sha256": "2775ca1b7939edd50b741e2968f7fe7a6971d4c61f7142759da70a2025174064"
+        },
+        {
+          "instruction_va": "0x1414f3e01",
+          "original_instruction_sha256": "47452f15bb82100ee816d18d764c150bcee92c2a35670cc1f1711a5b361e0021"
+        },
+        {
+          "instruction_va": "0x1414f3e08",
+          "original_instruction_sha256": "769a0c9612d7def1a662fcf63027a7fca4fcd7abdeeb3c7f4cd8ea5aa7e05d52"
+        },
+        {
+          "instruction_va": "0x1414f3e0b",
+          "original_instruction_sha256": "0764e2142578b35e263a8e1cd1d7f164b503110495b4a17cd2764ec5ccb53aab"
+        },
+        {
+          "instruction_va": "0x1414f3e0f",
+          "original_instruction_sha256": "23f1f7ba1d4373e6e3b020fe35e3b6f33b3ce12a30b81a12a38c996ea4815cb3"
+        },
+        {
+          "instruction_va": "0x1414f3e16",
+          "original_instruction_sha256": "12bcc13b8691febe77ed183e1d37b7245e08bdab2d48d3ea28007e740a0cb872"
+        },
+        {
+          "instruction_va": "0x1414f3e19",
+          "original_instruction_sha256": "a0b174f503fa1acb2accd71e5c7b29042ae836c3d41d95e69ee77f7d029488e0"
+        },
+        {
+          "instruction_va": "0x1414f3e1d",
+          "original_instruction_sha256": "d0655de408ae84e7f27f60ef5476191835b80699e0cf13a2c4339233df3f999a"
+        },
+        {
+          "instruction_va": "0x1414f3e20",
+          "original_instruction_sha256": "01897d0d2c6e6615bb309ff83e3c620a7e9247b3a76fed3a58b6a69f8e994d72"
+        }
+      ],
+      "bindings": [
+        {
+          "field_offset": "0x0",
+          "effect_slot": 146,
+          "group_id": "group-119",
+          "ordinal": 119,
+          "native_loader_label": "ISSILComposite",
+          "table_read": {
+            "instruction_va": "0x1414f3dfa",
+            "original_instruction_sha256": "2775ca1b7939edd50b741e2968f7fe7a6971d4c61f7142759da70a2025174064"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141543d06",
+            "original_instruction_sha256": "0f6b491848e9c8ff6f6bbb9002d4e88fed25185c47a2381072a3104474e758f5"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        },
+        {
+          "field_offset": "0x8",
+          "effect_slot": 147,
+          "group_id": "group-120",
+          "ordinal": 120,
+          "native_loader_label": "ISSILRawInd",
+          "table_read": {
+            "instruction_va": "0x1414f3df3",
+            "original_instruction_sha256": "f670ed025aac81cf5d785932d1cb1865883f763448b62d8c86138aebd16bfbaf"
+          },
+          "constructor_field_store": {
+            "instruction_va": "0x141543d0c",
+            "original_instruction_sha256": "f9f40ca98a761b5125b6df6b9b55274f325b0fa219700f51020775cb876ec1af"
+          },
+          "pointer_conversion": "effect subobject minus 0x90, null preserved"
+        }
+      ],
+      "render_va": "0x141543e90",
+      "runtime_observed": false,
+      "scope": "successful allocation and table construction; null-preserving pointer conversion is retained"
+    }
+  ],
+  "guards_and_state": [
+    {
+      "owner": "0x170",
+      "kind": "early_return",
+      "test": {
+        "instruction_va": "0x14153df6f",
+        "original_instruction_sha256": "b10426525b7518589a22f4ae713dabb9d6f34e482e68d9aa1cea2d57174b5c1f"
+      },
+      "condition": "object byte +0x8 is zero: return input target",
+      "initial_write": {
+        "instruction_va": "0x14153df46",
+        "original_instruction_sha256": "1c6ec442f9907c75f2edb0d6d5f5c4028b71e62be58797b20294b3eaf0c12d37"
+      },
+      "initial_bytes": "01 01 at +0x8/+0x9",
+      "runtime_value": null
+    },
+    {
+      "owner": "0x180",
+      "kind": "early_return",
+      "test": {
+        "instruction_va": "0x14153e677",
+        "original_instruction_sha256": "65b436cb35410b12246e12130f5adf8c40b98081bb05bf023e2e1a5209025dc7"
+      },
+      "condition": "object byte +0x30 is zero: return input target",
+      "initial_source": {
+        "instruction_va": "0x14153e4fd",
+        "original_instruction_sha256": "fecd80b7c5ba1be490379e4b341ac5e3a898557dcd17d9f17814fd075bcecd97"
+      },
+      "initial_write": {
+        "instruction_va": "0x14153e504",
+        "original_instruction_sha256": "f18cd8e3f2f26d532b775d0078b6150cc7d66156e9e60c80b8a6cba42397fbb2"
+      },
+      "source_va": "0x1420d7e50",
+      "runtime_value": null
+    },
+    {
+      "owner": "0x188",
+      "kind": "constructor_flag_only",
+      "initial_write": {
+        "instruction_va": "0x14154033b",
+        "original_instruction_sha256": "17c6b6dd93f3af71e4dc0ed4f592d6ee9ef6db7584f9cb4af141b93b9b2462dd"
+      },
+      "initial_bytes": "01 at +0x40",
+      "scope": "a constructor flag, not an established enablement guard",
+      "runtime_value": null
+    },
+    {
+      "owner": "0x190",
+      "kind": "constructor_flag_only",
+      "initial_write": {
+        "instruction_va": "0x141540ace",
+        "original_instruction_sha256": "79d15c44974638d721ac676f7c70b51fcc0db3cfb4cf27b021ce7c7604192b78"
+      },
+      "initial_bytes": "01 at +0x18",
+      "scope": "a constructor flag; do not assign an early-return guard",
+      "runtime_value": null
+    },
+    {
+      "owner": "0x1d8",
+      "kind": "early_return",
+      "test": {
+        "instruction_va": "0x141543ed6",
+        "original_instruction_sha256": "e5718d02eee68cf792a3161d4dc13703a8e352e93b62d03540145747f84c56f8"
+      },
+      "condition": "object byte +0x10 is zero: return input target",
+      "initial_source": {
+        "instruction_va": "0x141543d61",
+        "original_instruction_sha256": "5fa6304fbd1924bec979dfbe8d0643abb8ed248c5d8a10197ce6e43dff88fcb1"
+      },
+      "initial_write": {
+        "instruction_va": "0x141543d68",
+        "original_instruction_sha256": "cb85cb953ca0ec7c7a3fd6e151d001cb2eb1a6338af7486e468d81c0fa0dba89"
+      },
+      "source_va": "0x1420d8ad8",
+      "runtime_value": null
+    }
+  ],
+  "curated_transfers": [
+    {
+      "source": "0x1414edfd0",
+      "target": "0x141543e90",
+      "callsite": "0x1414edff2",
+      "encoding": "E8",
+      "condition": "caller reaches this wrapper; helper +0x1d8 may return input under its guard",
+      "data": "original EDX input; R8D=2; output EAX saved in EBX",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x1414edff2",
+        "original_instruction_sha256": "dcaf54353ee5bc5ad51723b60efdcece9a029bb594d470a3822caecddb674d96"
+      }
+    },
+    {
+      "source": "0x1414edfd0",
+      "target": "0x14153e620",
+      "callsite": "0x1414ee005",
+      "encoding": "E8",
+      "condition": "preceding helper returns; helper +0x180 may return input under its guard",
+      "data": "EDX=R8D=preceding result; EBX retains that result across this call",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x1414ee005",
+        "original_instruction_sha256": "5db6b326bf468bdd22f85a967344bb1d17749d65b2812fd090697730fb590b59"
+      }
+    },
+    {
+      "source": "0x1414edfd0",
+      "target": "0x141540ae0",
+      "callsite": "0x1414ee016",
+      "encoding": "E8",
+      "condition": "preceding helper returns; downstream internal paths remain conditional",
+      "data": "EDX=R8D=saved EBX from first helper, not the second helper result",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x1414ee016",
+        "original_instruction_sha256": "927f7a4dd3a30d97ad2a6ed2ce6bad5905cc995eef47622911d30056685a2f3a"
+      }
+    },
+    {
+      "source": "0x1414edfd0",
+      "target": "0x1414ee060",
+      "callsite": "0x1414ee03a",
+      "encoding": "E8",
+      "condition": "final result EAX differs from requested output ESI",
+      "data": "effect slot 34 / group 10 Copy; source=EAX, destination=ESI",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x1414ee03a",
+        "original_instruction_sha256": "ef06c6a7d9d6fd0661fa8d4458a175295a11edd0925f8ae5b1fb7568bc3b30ef"
+      }
+    },
+    {
+      "source": "0x14153df60",
+      "target": "0x14158ac80",
+      "callsite": "0x14153e2f9",
+      "encoding": "E8",
+      "condition": "helper +0x170 passes its byte +0x8 guard and prior state paths",
+      "data": "selected ApplyVolumetricLighting shader preparation",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x14153e2f9",
+        "original_instruction_sha256": "68d22e52c78b3a653366b5b660b352fa0d0e7aa02ac031bebad2b0212e3792f1"
+      }
+    },
+    {
+      "source": "0x14153df60",
+      "target": "0x141565090",
+      "callsite": "0x14153e303",
+      "encoding": "E8",
+      "condition": "preparation returns within same guarded path",
+      "data": "selected ApplyVolumetricLighting draw wrapper",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x14153e303",
+        "original_instruction_sha256": "1cadbef827a3c003bc2bebf0f2fe3c63e93d4d739a7b4b301967be64509b5186"
+      }
+    },
+    {
+      "source": "0x1415403f0",
+      "target": "0x141540540",
+      "callsite": "0x141540418",
+      "encoding": "E8",
+      "condition": "helper +0x188 wrapper is called",
+      "data": "first helper shader field +0x0",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x141540418",
+        "original_instruction_sha256": "f1a3d3771da6c8fece093f6a775ac34e88a3808d5ef850e36607d91bf77055d6"
+      }
+    },
+    {
+      "source": "0x1415403f0",
+      "target": "0x141540780",
+      "callsite": "0x141540433",
+      "encoding": "E8",
+      "condition": "first operation returns",
+      "data": "second helper shader field +0x8",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x141540433",
+        "original_instruction_sha256": "40ec1d4907f64b1a3b25d618446d4efc3fe2555206ad1e8f5c121ba1b1d78fc2"
+      }
+    },
+    {
+      "source": "0x141589cf0",
+      "target": "0x14100f4e0",
+      "callsite": "0x141589d3c",
+      "encoding": "E9",
+      "condition": "BSComputeShader keyed lookup succeeds",
+      "data": "selected compute entry plus group counts forwarded",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x141589d3c",
+        "original_instruction_sha256": "d23503a060cc3b044e2e941a42bfd4b48a4478de96f36e9ee427123d24b13dae"
+      }
+    },
+    {
+      "source": "0x14100f4e0",
+      "target": "0x141010de0",
+      "callsite": "0x14100f4fa",
+      "encoding": "E8",
+      "condition": "successful selected compute path reaches native binding helper",
+      "data": "cached state commit, CL=1",
+      "runtime_observed": false,
+      "instruction": {
+        "instruction_va": "0x14100f4fa",
+        "original_instruction_sha256": "3c848a9e45a6dc629979e368a09f5ba7440d85cbc55afde0edd98e32b6b7f636"
+      }
+    }
+  ],
+  "compute_dispatch": {
+    "effect_virtual_offset": "0x60",
+    "effect_wrapper_va": "0x141565170",
+    "setup_virtual_offset": "0x50",
+    "setup_call": {
+      "instruction_va": "0x141565193",
+      "original_instruction_sha256": "76e65c840e73736ff53074c7156f6a65b42a73f6fecf882bbc652c62f38dbede"
+    },
+    "shader_owner_offset": "0x198",
+    "owner_read": {
+      "instruction_va": "0x141565196",
+      "original_instruction_sha256": "1b81ec86180e2f924320ddb5b07bdb31301356f877bac71b0581fcc7a7173f31"
+    },
+    "compute_owner_vtable": "0x141b4fbf8",
+    "owner_virtual_offset": "0x10",
+    "owner_call": {
+      "instruction_va": "0x1415651ac",
+      "original_instruction_sha256": "f3ffc33ece9cd2f95c93944e9948ce93ba3ebb0cc02c396713028a1cd440967e"
+    },
+    "owner_method_va": "0x141589cf0",
+    "lookup_key": 0,
+    "lookup_condition": "nonempty table and matching key; failure emits a diagnostic and returns",
+    "successful_lookup_tail": {
+      "instruction_va": "0x141589d3c",
+      "original_instruction_sha256": "d23503a060cc3b044e2e941a42bfd4b48a4478de96f36e9ee427123d24b13dae"
+    },
+    "native_binding_helper": "0x14100f4e0",
+    "context_global": "0x143331f30",
+    "shader_native_handle_offset": "0x60",
+    "constant_buffer_pointer_global": "0x143331f00",
+    "api_calls": [
+      {
+        "interface": "ID3D11DeviceContext",
+        "method": "CSSetShader",
+        "vtable_offset": "0x228",
+        "instruction": {
+          "instruction_va": "0x14100f513",
+          "original_instruction_sha256": "fb2d9b0f41ed5ad61fd7db0f2ce302a31f82535d14b4b7d0ad4a2e6f9c18bac1"
+        },
+        "arguments": "shader = selected entry +0x60; class instances=null; count=0"
+      },
+      {
+        "interface": "ID3D11DeviceContext",
+        "method": "CSSetConstantBuffers",
+        "vtable_offset": "0x238",
+        "instruction": {
+          "instruction_va": "0x14100f530",
+          "original_instruction_sha256": "ba26dc0bcadde26490c77ddbf10239c2822520704aec8416ccb3aadf8ffc61ed"
+        },
+        "arguments": "slot=0; count=1; buffers=&global 0x143331f00"
+      },
+      {
+        "interface": "ID3D11DeviceContext",
+        "method": "Dispatch",
+        "vtable_offset": "0x148",
+        "instruction": {
+          "instruction_va": "0x14100f559",
+          "original_instruction_sha256": "5413eb0a5d19db3adc6dadc834bcc10fc37e7c40cdfcffc050b495cca81d76b9"
+        },
+        "arguments": "x=original R8D, y=original R9D, z=original stack argument 5; tail virtual jump"
+      }
+    ],
+    "dimensions_example": {
+      "helper": "0x1d0",
+      "shader_field": "0x10",
+      "effect_slot": 137,
+      "call": {
+        "instruction_va": "0x141543810",
+        "original_instruction_sha256": "f5df7e310116c1e8e63fffd26234bcff1ad3a2cb0a6d92162cf2c3d5c59b1523"
+      },
+      "groups": "ceil((width >> 1)/8), ceil((height >> 1)/8), 1",
+      "scope": "specific static call; not every compute pass"
+    },
+    "runtime_observed": false,
+    "open": [
+      "effective owner identity and key at dispatch",
+      "committed SRV/UAV/sampler/constant contents and resource generations",
+      "runtime dimensions and branch enablement"
+    ]
+  },
+  "hdr_parameter_connection": {
+    "native_type": ".?AVImageSpaceEffectHDR@@",
+    "constructor_va": "0x14153c9b0",
+    "vtable": "0x141b443c8",
+    "constructor_vtable_write": {
+      "instruction_va": "0x14153c9d3",
+      "original_instruction_sha256": "89f223a0d6d3da3d37952264d496e3470ac52513b96f31dbb1a5821e39a78479"
+    },
+    "setup_va": "0x14153cab0",
+    "enable_callback_va": "0x14153dcf0",
+    "enable_callback_result": true,
+    "enable_scope": "callback returns true if called; global router enablement remains separate",
+    "selected_effect_slot": 58,
+    "group_id": "group-029",
+    "ordinal": 29,
+    "native_loader_label": "ISHDRDownSample4",
+    "effect_table_read": {
+      "instruction_va": "0x14153cb4e",
+      "original_instruction_sha256": "df034198121141880b234c643d8d54cbbfda80fc2c7b110706dae4560ec8ead0"
+    },
+    "primary_conversion": {
+      "instruction_va": "0x14153cb55",
+      "original_instruction_sha256": "bdd3c0c8e3556a9657a5443f30b731da4279f608f59ff8361fdbc1b4844cb3e2"
+    },
+    "parameter_constructor_va": "0x14152ae10",
+    "parameter_call": {
+      "instruction_va": "0x14153cb35",
+      "original_instruction_sha256": "03db34befc8fa810089c6d7dc45016ed68df5610af5dbf829ec9739ffff8c08a"
+    },
+    "parameter_channel": 2,
+    "channel_assignment_function": "0x14152b1b0",
+    "channel_assignment_call": {
+      "instruction_va": "0x14153cb93",
+      "original_instruction_sha256": "29cc1224e35f9107d09132f5a16623865da906e30b9b5e9e575c9ca6fb74dadf"
+    },
+    "source_pointer": "0x1420d7410",
+    "byte_count": 64,
+    "source_argument": {
+      "instruction_va": "0x14153cb80",
+      "original_instruction_sha256": "d35bb7c41eb985e0c1d77d204786c882eec76fc53e5637cd8fc1c9fd406b9ab2"
+    },
+    "length_argument": {
+      "instruction_va": "0x14153cb7a",
+      "original_instruction_sha256": "ef9f13e946057e89b8e3d88151de24f10d3ab29d7ed9cdab63b83a1c00ad4bc0"
+    },
+    "hdr_child_index": 4,
+    "child_link_function": "0x141554150",
+    "child_link_call": {
+      "instruction_va": "0x14153cbb9",
+      "original_instruction_sha256": "e8e36d49c3b599833ac31eeb5dcdaa9c6111c38bb0aa3ad9025cfd3d7bb9662f"
+    },
+    "child_shader_array_offset": "0x18",
+    "child_parameter_array_offset": "0x30",
+    "index_argument": {
+      "instruction_va": "0x14153cbaf",
+      "original_instruction_sha256": "36b7c6b41b361e2b228f4132faa8e3982bcc4a77c00b26043ccae77d12f06583"
+    },
+    "parameter_update_va": "0x14153d860",
+    "cinematic_primary_vtable": "0x141b36428",
+    "cinematic_primary_slot10": {
+      "va": "0x14150b510",
+      "behavior": "RET 0; no constant upload in this callback"
+    },
+    "cinematic_primary_slot11": {
+      "va": "0x14150b490",
+      "behavior": "RET 0; no constant upload in this callback"
+    },
+    "runtime_observed": false,
+    "open": [
+      "original writers and semantic components of writable block 0x1420d7410",
+      "full parameter-to-shader constant-slot transfer and all sibling HDR children",
+      "active IMGS/IMAD and per-view parameter lifetime",
+      "effective HDR render passes and intermediate numeric domains"
+    ]
+  },
+  "excluded_seed_roles": [
+    {
+      "seed": "0x14153c960",
+      "actual_function": "0x14153c960",
+      "rejected_role": "HDR constructor",
+      "reason": "target-size/reference-release helper; actual RTTI vtable writer belongs to constructor 0x14153c9b0"
+    },
+    {
+      "seed": "0x14158bb20",
+      "actual_function": "0x14158bb00",
+      "rejected_role": "cinematic setup",
+      "reason": "constant copy/binding is present, but no type-to-callback connection establishes this shader role"
+    },
+    {
+      "seed": "0x14158b4a0",
+      "actual_function": "0x14158b430",
+      "rejected_role": "cinematic setup",
+      "reason": "seed lies inside a generic-looking buffer helper; cinematic slot10 is a different RET callback"
+    },
+    {
+      "seed": "0x141564f40",
+      "actual_function": "0x141564e30",
+      "rejected_role": "independent compute setup function",
+      "reason": "seed belongs to already identified effect-render function"
+    },
+    {
+      "seed": "0x141589ed0",
+      "actual_function": "0x141589eb0",
+      "rejected_role": "compute dispatch",
+      "reason": "actual selected owner virtual +0x10 resolves to 0x141589cf0; dispatch tail is 0x14100f559"
+    }
+  ],
+  "verification": {
+    "path": "/Users/taylor/.local/share/mudcrab-research/render-map-20261010/native-expansion/verification.json",
+    "sha256": "d2cffd78340a66b6a88852600600ccb761b0332d9a0f274e9b01fc235c365ee6",
+    "all_pass": true,
+    "original_unique_instructions": 9618,
+    "independently_decoded_functions": 57,
+    "llvm_compared_instructions": 5563,
+    "original_instruction_mismatch_count": 0,
+    "llvm_mismatch_count": 0,
+    "runtime_observed": false
+  },
+  "limitations": [
+    "This is a curated extension, not a complete render graph or full HDR constant contract.",
+    "Successful construction and pinned resource selection are prerequisites; no retail draw is observed.",
+    "History buffers do not identify a helper as TAA. Helper +0x180 holds blur/downsample/lens-flare dependencies.",
+    "Presence of SIL/SAO/volumetric shader dependencies does not establish enabled runtime effects.",
+    "Excluded speculative seed labels are retained to prevent their promotion to native roles."
+  ]
+}

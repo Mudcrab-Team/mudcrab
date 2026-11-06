@@ -1,0 +1,278 @@
+{
+  "schema": "mudcrab-research-note-corpus-receipt/v1",
+  "created_at_utc": "2026-10-10T19:56:46.991412+00:00",
+  "corpus_id": "20261010-01",
+  "workspace": "/Users/taylor/.t3/worktrees/mudcrab/t3-e227ff09",
+  "git_head": "f40ca1df770eab4ace83b335b6b38168bd83af60",
+  "scope": "Reviewed initial research intake; hash coherence does not establish native semantics, selected retail execution, or visual acceptance.",
+  "counts": {
+    "notes": 2,
+    "claim_ledgers": 4,
+    "tracked_claims": 92,
+    "model_nodes": 19,
+    "conceptual_edges": 29,
+    "source_sections": 23
+  },
+  "assessment_counts": {
+    "supported_static": 5,
+    "partially_supported": 51,
+    "unverified": 22,
+    "contradicted": 14
+  },
+  "quotation_status_counts": {
+    "verbatim": 39,
+    "audit_paraphrase": 53
+  },
+  "target_identity_from_existing_static_evidence": {
+    "target": "SkyrimSE.exe 1.7.104.0",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "fresh_native_query_performed": false
+  },
+  "corpus_check": {
+    "ok": true,
+    "mode": "check",
+    "notes": 2,
+    "ledgers": 4,
+    "claims": 92,
+    "index_consistent": true,
+    "workspace_anchor_drift_count": 0,
+    "workspace_anchor_drift_examples": [],
+    "skipped_anchor_count": 84,
+    "skipped_anchor_reasons": {
+      "external_url": 54,
+      "external_repo_relative_or_label_anchor": 29,
+      "world_model_nonworkspace_path": 1
+    },
+    "skipped_anchor_examples": [
+      {
+        "note_id": "N002",
+        "claim_id": "N002-M01",
+        "anchor": "Skyrim LE support/version page",
+        "reason": "external_url"
+      },
+      {
+        "note_id": "N002",
+        "claim_id": "N002-M01",
+        "anchor": "src/Hooks.cpp; src/State.cpp",
+        "reason": "external_url"
+      },
+      {
+        "note_id": "N002",
+        "claim_id": "N002-M01",
+        "anchor": "label",
+        "reason": "external_repo_relative_or_label_anchor"
+      },
+      {
+        "note_id": "N002",
+        "claim_id": "N002-M02",
+        "anchor": "src/Deferred.cpp",
+        "reason": "external_url"
+      },
+      {
+        "note_id": "N002",
+        "claim_id": "N002-M02",
+        "anchor": "label",
+        "reason": "external_repo_relative_or_label_anchor"
+      }
+    ],
+    "world_model": {
+      "present": true,
+      "node_count": 19,
+      "edge_count": 29
+    },
+    "source_sections": {
+      "present": true,
+      "section_count": 23
+    },
+    "errors": []
+  },
+  "isolated_validator_negative_controls": {
+    "altered_source_bytes_rejected": true,
+    "invented_dependency_endpoint_rejected": true,
+    "promoted_complete_retail_route_rejected": true,
+    "production_artifacts_mutated_by_controls": false
+  },
+  "boundaries": {
+    "renderer_source_changed_this_intake": false,
+    "renderer_coefficients_changed_this_intake": false,
+    "game_assets_changed_this_intake": false,
+    "build_or_engine_test_performed_this_intake": false,
+    "new_gpu_or_retail_session": false,
+    "frame_order_recovered": false,
+    "complete_selected_retail_route": false,
+    "visual_acceptance": false
+  },
+  "artifacts": [
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/README.md",
+      "sha256": "c92a7fcebc6eb36bfe9226f884cac4b7b8eff233484dc39abb8cec169f7d15fe",
+      "bytes": 6602
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/claims-index.json",
+      "sha256": "dbd3ecbd0ffbefa0130f8cf104189e0caf296b2b70de5050412916f920cddc4e",
+      "bytes": 255503
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/input-receipt.json",
+      "sha256": "198d0c304821ee4d24fa57d852f149a97a7bf9b35d8f05fa0be75228d71f2d2a",
+      "bytes": 1359
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/model.html",
+      "sha256": "e3545482bca6a9b1c07fefc9afac6e0d6833082c1cf35390f4d22712256a5ba8",
+      "bytes": 406329
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0001/claims-ck-data.json",
+      "sha256": "4b15c250fd8047f885f2b585d1effb597682dd441b861a96ebdc2b4f7c29b90e",
+      "bytes": 24358
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0001/supplied-notes.md",
+      "sha256": "b169c56c7222f7d22c801e08c802090f1295f2109917aa9146130a8007bb6ba2",
+      "bytes": 11647
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-imagespace.json",
+      "sha256": "78f4eac2c7c3781adbcf1aa90af8fe85f408909fe6cfd89394cb09ef76a1978b",
+      "bytes": 50287
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-mod-interventions.json",
+      "sha256": "6a23f7acb41a7e74fb862e3cae433fcb4a9845c20c54f15dd788a80a635fb94e",
+      "bytes": 81483
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/claims-native-lighting.json",
+      "sha256": "cb6245827bea210521e93122548df018de6afad70e98b75022abf7106bfb0f3c",
+      "bytes": 49031
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/imagespace-audit.md",
+      "sha256": "d0cb67fdce7744bf64e9906f4072bb2bd9f46815ea1e0554194237c835087ce3",
+      "bytes": 3663
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/intake-summary.md",
+      "sha256": "4cd762be06e7642cc17aca34c7ce3345d506994c9000adea2ff9e05b65e39b81",
+      "bytes": 3042
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/mod-interventions-audit.md",
+      "sha256": "12f8ca9073affd7af9fb700e64a13f348c21174db31c95c5ffa0dce5fc39bf10",
+      "bytes": 4359
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/native-lighting-audit.md",
+      "sha256": "ad46d4149e437a64fcc4b04a9c5eb4645a0b5ab20416e64a438960b0ad95705a",
+      "bytes": 14623
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/review-notes.md",
+      "sha256": "60cfeee0c736c656a38eeb51651b1bcaba617e8466bd98254e44a31fee04e8e6",
+      "bytes": 1732
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/source-sections.json",
+      "sha256": "d7ea362e758923e39195a4cfabf15a2f75d940bfe617271316c8496193e024b0",
+      "bytes": 10897
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/supplied-message.txt",
+      "sha256": "a69a5c14263664106f049c5d4c5c147c59f3a095ecfbd03fbeff47d2e232aa04",
+      "bytes": 28541
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/note-0002/supplied-notes.txt",
+      "sha256": "20589ecb5bd3892a4671143a9159ca190b701fc62850dcd87a8e545276c870a6",
+      "bytes": 28237
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/world-model.json",
+      "sha256": "a401cbdb89a0e99b1d3e1a550114fe419a236950a759b1ba539cf1d90c7da53c",
+      "bytes": 47534
+    },
+    {
+      "path": "docs/research/skyrim-render-map/research-notes/world-model.md",
+      "sha256": "9e0a40720f9fd80604d18d3fec719c07f5b39b5a7d24971d454bdc5f589ea7df",
+      "bytes": 5731
+    },
+    {
+      "path": "scripts/build-skyrim-research-notes-viewer.py",
+      "sha256": "5171c6f4184235ddcdb2cbf3d7fb3bfa12988ca458bc99db759a02387d7b2e55",
+      "bytes": 36134
+    },
+    {
+      "path": "scripts/check-skyrim-research-notes.py",
+      "sha256": "fc07121e84f9c3502aafdd19ddd6a308b9e48610c3dc8f3031a2fcb59956509d",
+      "bytes": 28708
+    },
+    {
+      "path": "docs/specs/engine/lighting-and-shading.md",
+      "sha256": "b5208e1d8f2402495af0420ce8f4ebe9bb84981694ce0dae8d6fcb460882e60c",
+      "bytes": 29967
+    },
+    {
+      "path": "docs/specs/engine/skyrim-rendering-remediation-plan.md",
+      "sha256": "3f8141b2d05b43c091ff4289256a747af553d7ca2cff910e41aaecf0edecd34f",
+      "bytes": 37941
+    }
+  ],
+  "used_mod_source_anchor_verification": {
+    "used_mod_source_anchor_ids": [
+      "M-A001",
+      "M-A006",
+      "M-A007",
+      "M-A012",
+      "M-A016",
+      "M-A017",
+      "M-A018",
+      "M-A019",
+      "M-A020",
+      "M-A021",
+      "M-A022",
+      "M-A024",
+      "M-A025",
+      "M-A026",
+      "M-A027",
+      "M-A029",
+      "M-A030",
+      "M-A032",
+      "M-A045",
+      "M-A046",
+      "M-A049",
+      "M-A050",
+      "M-A051"
+    ],
+    "source_anchor_count": 23,
+    "file_and_selected_line_mismatches": 0,
+    "runtime_observed": false
+  },
+  "viewer_checks": [
+    {
+      "width": 728,
+      "appearance": "dark",
+      "content_height": 835,
+      "console_messages": [
+        {
+          "level": "log",
+          "text": "Viewer checks passed: 92 claims, note/ID/status filters, Show more, 19 stages, dependency navigation, stylesheet and width; default view restored."
+        }
+      ],
+      "passed": true
+    },
+    {
+      "width": 360,
+      "appearance": "light",
+      "content_height": 1043,
+      "console_messages": [
+        {
+          "level": "log",
+          "text": "Viewer checks passed: 92 claims, note/ID/status filters, Show more, 19 stages, dependency navigation, stylesheet and width; default view restored."
+        }
+      ],
+      "passed": true
+    }
+  ]
+}

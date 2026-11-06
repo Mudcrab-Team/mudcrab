@@ -1,0 +1,146 @@
+{
+  "schema": "mudcrab-research-source-coverage/v1",
+  "note_id": "N003",
+  "domain": "mod-interventions",
+  "source": {
+    "path": "docs/research/skyrim-render-map/research-notes/note-0003/supplied-notes.md",
+    "sha256": "940d7279f77c4924090c30ca46fe551e64cd28c0e355e63de960762d50c648fe",
+    "bytes": 65005
+  },
+  "sections": [
+    {
+      "heading": "Seven point lights per draw, four shadow channels per scene",
+      "line_start": 62,
+      "line_end": 77,
+      "byte_start": 23845,
+      "byte_end_exclusive": 28679,
+      "claims": [
+        "N003-M01",
+        "N003-M07",
+        "N003-M08"
+      ],
+      "covered_assertions": [
+        "7 slot / 4 selector representation and four-channel authoring statement; source scope is distinct from assignment."
+      ],
+      "unextracted_assertions": [
+        "Light class mappings; scene arbitration; sun channel routing; fade and cascade settings are left to adjacent audits."
+      ]
+    },
+    {
+      "heading": "The per-object light cap: 4, 6 or 7",
+      "line_start": 78,
+      "line_end": 90,
+      "byte_start": 28679,
+      "byte_end_exclusive": 31052,
+      "claims": [
+        "N003-M02",
+        "N003-M03",
+        "N003-M04",
+        "N003-M05",
+        "N003-M06",
+        "N003-M20"
+      ],
+      "covered_assertions": [
+        "7-slot shader representation and 4-shadow selectors; 4/6/7 lore, pass-builder signature, COTN mesh report, Lux split-mesh report, and random-selection anecdote are kept distinct."
+      ],
+      "unextracted_assertions": [
+        "Native per-object fill/ranking and controlled flicker reproduction remain unresolved."
+      ]
+    },
+    {
+      "heading": "Shadow casters per scene",
+      "line_start": 92,
+      "line_end": 96,
+      "byte_start": 31053,
+      "byte_end_exclusive": 35437,
+      "claims": [
+        "N003-M07",
+        "N003-M08"
+      ],
+      "covered_assertions": [
+        "Four selector capacity distinguished from scene allocation."
+      ],
+      "unextracted_assertions": [
+        "Intellightent selection and exterior sun channel reservation remain unverified."
+      ]
+    },
+    {
+      "heading": "Mods attach at five distinct seams",
+      "line_start": 164,
+      "line_end": 182,
+      "byte_start": 53019,
+      "byte_end_exclusive": 61000,
+      "claims": [
+        "N003-M09",
+        "N003-M10",
+        "N003-M11",
+        "N003-M12",
+        "N003-M13",
+        "N003-M14",
+        "N003-M15",
+        "N003-M16",
+        "N003-M17",
+        "N003-M18",
+        "N003-M19",
+        "N003-M21",
+        "N003-M22",
+        "N003-M23",
+        "N003-M24"
+      ],
+      "covered_assertions": [
+        "LLF filter and clustered/deferred distinction; 1024 total capacity; 128 C++ versus 256 HLSL mismatch; 64 px x 32 grid; 15 strict payload; Light Placer creates engine objects; postprocess ownership conditions."
+      ],
+      "unextracted_assertions": [
+        "Exact Lux/ELFX/Relighting assets, Intellightent source, ENB emitter behavior, ReShade implementation, and current install activation."
+      ]
+    },
+    {
+      "heading": "Address Library IDs worth knowing (SE, AE)",
+      "line_start": 184,
+      "line_end": 197,
+      "byte_start": 61001,
+      "byte_end_exclusive": 62968,
+      "claims": [],
+      "covered_assertions": [
+        "Address Library IDs are source/version labels only; no target hook execution is inferred."
+      ],
+      "unextracted_assertions": [
+        "Individual IDs were not checked against selected runtime binary in this mod audit."
+      ]
+    },
+    {
+      "heading": "Conclusion",
+      "line_start": 199,
+      "line_end": 203,
+      "byte_start": 62969,
+      "byte_end_exclusive": 65005,
+      "claims": [
+        "N003-M21",
+        "N003-M25",
+        "N003-M26"
+      ],
+      "covered_assertions": [
+        "ENB postprocess option is configurable; 1.6 is a CS fit; CS+Light Placer recommendation is not evidence for vanilla-target fidelity."
+      ],
+      "unextracted_assertions": [
+        "Other lighting/color formulas and LE scope belong to adjacent audits; ecosystem recommendation does not establish target implementation."
+      ]
+    },
+    {
+      "heading": "Community Shaders deferred conversion paragraph",
+      "line_start": 19,
+      "line_end": 19,
+      "byte_start": 7706,
+      "byte_end_exclusive": 8469,
+      "claims": [
+        "N003-M10"
+      ],
+      "covered_assertions": [
+        "CS deferred hooks/composite are separate from clustered direct-light shading."
+      ],
+      "unextracted_assertions": [
+        "Full frame order is not audited here."
+      ]
+    }
+  ]
+}

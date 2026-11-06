@@ -1,0 +1,122 @@
+{
+  "schema": "mudcrab-research-source-receipts/v1",
+  "note_id": "N003",
+  "domain": "imagespace",
+  "sources": [
+    {
+      "source": "Community Shaders historical ISHDR reconstruction",
+      "requested_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/ISHDR.hlsl",
+      "resolved_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/ISHDR.hlsl",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "file": "package/Shaders/ISHDR.hlsl",
+      "copy": "community-shaders-7e717921-ISHDR.hlsl",
+      "bytes": 3757,
+      "sha256": "7782e2a30686a1cd3d105e1e8b11244784592fbf946ff1cddf641233ac8cc973",
+      "fetch_outcome": "web page opened at exact commit; file copied from existing pinned local repository at the same commit"
+    },
+    {
+      "source": "Community Shaders historical FrameBuffer gamma helper",
+      "requested_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/FrameBuffer.hlsli",
+      "resolved_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/FrameBuffer.hlsli",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "file": "package/Shaders/Common/FrameBuffer.hlsli",
+      "copy": "community-shaders-7e717921-FrameBuffer.hlsli",
+      "bytes": 3995,
+      "sha256": "56cace1b511be5530e8aaaa1036776fe3fb8a69dd3b52322e20c82a6f077cf67",
+      "fetch_outcome": "web page opened at exact commit; file copied from existing pinned local repository at the same commit"
+    },
+    {
+      "source": "TES5Edit TES5 record definitions",
+      "requested_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas",
+      "resolved_url": "https://raw.githubusercontent.com/TES5Edit/TES5Edit/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsTES5.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "file": "Core/wbDefinitionsTES5.pas",
+      "copy": "TES5Edit-9fb01688-wbDefinitionsTES5.pas",
+      "bytes": 377868,
+      "sha256": "d79665d0812c47ea9212296ed3436c9565453f5c046d6ef98c321c426a7f683d",
+      "fetch_outcome": "GitHub code page opened; raw file fetched successfully at resolved commit"
+    },
+    {
+      "source": "TES5Edit Fallout 4 record definitions",
+      "requested_url": "https://github.com/TES5Edit/TES5Edit/blob/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsFO4.pas",
+      "resolved_url": "https://raw.githubusercontent.com/TES5Edit/TES5Edit/9fb016884bec138ea6c7b872cec831537d464c3e/Core/wbDefinitionsFO4.pas",
+      "commit": "9fb016884bec138ea6c7b872cec831537d464c3e",
+      "file": "Core/wbDefinitionsFO4.pas",
+      "copy": "TES5Edit-9fb01688-wbDefinitionsFO4.pas",
+      "bytes": 465123,
+      "sha256": "fd9802b434e9504321ad32d7583249ff2710771ec10f2a46af6409f8b53cca56",
+      "fetch_outcome": "raw file fetched successfully at resolved commit; used only for the Fallout 4 TX00 comparison"
+    },
+    {
+      "source": "CommonLibSSE-NG ImageSpaceData header",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceData.h",
+      "resolved_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceData.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "file": "include/RE/I/ImageSpaceData.h",
+      "copy": "commonlibsse-ng-b93280e-ImageSpaceData.h",
+      "bytes": 3227,
+      "sha256": "36403948765fc8a679a095cd50c4987b3b5d4d64525127039893f15197472a3a",
+      "fetch_outcome": "web code page opened on main; main resolved to the pinned commit; copied from existing local checkout at that commit"
+    },
+    {
+      "source": "Nukem9 Skyrim SE test repository lighting source cited by the input conclusion",
+      "requested_url": "https://github.com/Nukem9/skyrimse-test/blob/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "resolved_url": "https://raw.githubusercontent.com/Nukem9/skyrimse-test/328916305165a46c4e4b527735bbcfd46b09a0ca/skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "commit": "328916305165a46c4e4b527735bbcfd46b09a0ca",
+      "file": "skyrim64_test/src/patches/TES/BSShader/Shaders/BSLightingShader.cpp",
+      "copy": "Nukem9-32891630-BSLightingShader.cpp",
+      "bytes": 58427,
+      "sha256": "dd5980f70ed2413731647b25a667a0966f0cb95677044c58a17f9c82dc47dc65",
+      "fetch_outcome": "repository page opened; shallow source checkout resolved exact commit and file. This is lighting-side source and supplies no IMGS gamma/output-transfer validation"
+    },
+    {
+      "source": "CommonLibSSE-NG ImageSpaceManager header",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceManager.h",
+      "resolved_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/I/ImageSpaceManager.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "file": "include/RE/I/ImageSpaceManager.h",
+      "copy": "CommonLibSSE-NG-b93280e-ImageSpaceManager.h",
+      "bytes": 17275,
+      "sha256": "f06948347b094fe03a51497f8af17da885c22bc5767834c5037b1a30d67fd210",
+      "fetch_outcome": "raw file fetched successfully at pinned resolved commit"
+    },
+    {
+      "source": "CommonLibSSE-NG TESImageSpaceModifier header",
+      "requested_url": "https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+      "resolved_url": "https://raw.githubusercontent.com/CharmedBaryon/CommonLibSSE-NG/b93280e832f263dbef44e44cbe2936622a02f91a/include/RE/T/TESImageSpaceModifier.h",
+      "commit": "b93280e832f263dbef44e44cbe2936622a02f91a",
+      "file": "include/RE/T/TESImageSpaceModifier.h",
+      "copy": "CommonLibSSE-NG-b93280e-TESImageSpaceModifier.h",
+      "bytes": 6962,
+      "sha256": "4fab870f4a3fd9faccc2e0213577687444312be2da68e157ed5d8476d28fff43",
+      "fetch_outcome": "raw file fetched successfully at pinned resolved commit"
+    },
+    {
+      "source": "Community Shaders historical Color helper",
+      "requested_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/Color.hlsli",
+      "resolved_url": "https://github.com/doodlum/skyrim-community-shaders/blob/7e717921ee069572c2ec8b5ce93d403d2b5e5c76/package/Shaders/Common/Color.hlsli",
+      "commit": "7e717921ee069572c2ec8b5ce93d403d2b5e5c76",
+      "file": "package/Shaders/Common/Color.hlsli",
+      "copy": "community-shaders-7e717921-Color.hlsli",
+      "bytes": 454,
+      "sha256": "e8975865a23bad633eceda1552f2db9f38aa8282887ca403fabdc7905921aa7e",
+      "fetch_outcome": "web page opened at exact commit; copied from existing pinned local repository at the same commit"
+    },
+    {
+      "source": "Community Shaders current-at-research Color helpers",
+      "requested_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+      "resolved_url": "https://github.com/community-shaders/skyrim-community-shaders/blob/d001d4de3cde4feeec539dbaca5481cdda2b1b15/package/Shaders/Common/Color.hlsli",
+      "commit": "d001d4de3cde4feeec539dbaca5481cdda2b1b15",
+      "file": "package/Shaders/Common/Color.hlsli",
+      "copy": "community-shaders-d001d4de-Color.hlsli",
+      "bytes": 17942,
+      "sha256": "32ec15b96404eae0439870e90714eac267f21500921b829b0f5cba575e6206fd",
+      "fetch_outcome": "web page opened at exact commit; copied from existing pinned local repository at the same commit"
+    }
+  ],
+  "target_pin": {
+    "source": "Skyrim SE 1.7.104 executable",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "note": "Existing local native evidence. No binary import, build, GPU run, or game run was performed for this task."
+  }
+}

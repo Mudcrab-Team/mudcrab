@@ -1,0 +1,1119 @@
+{
+  "schema": "mudcrab-skyrim-render-frame-topology-v1",
+  "recorded_at_utc": "2026-10-10T09:23:21.051096+00:00",
+  "status": "initial native frame map; conditional static islands verified; full rendering closure and retail execution remain open",
+  "target": {
+    "filename": "SkyrimSE.exe",
+    "version": "1.7.104.0",
+    "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "image_base": "0x140000000",
+    "package_scope": "This exact SE executable only; no VR, LE or other SE/AE build equivalence claim."
+  },
+  "query_provenance": [
+    {
+      "artifact": "frame-01-anchor.json",
+      "sha256": "104429322a93f56bf6b94d56e67456613598be11b53482cd79775e258d468872",
+      "manifest_sha256": "bcae675af1db79ecd042d72e17043221552bf1a6850a9254c8a3b91c1a66c561",
+      "elapsed_seconds": 5.8210525,
+      "exit_code": 0,
+      "seed_count": 10,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-02-scheduling.json",
+      "sha256": "c8bbd8526d887a95f1456cb2a4539467902fa5a6653afcf859a6187fd5aa065b",
+      "manifest_sha256": "8d86ccffbc578d2a298d4631aea567e1935f6c2615b4ace4ad108e7238578a02",
+      "elapsed_seconds": 4.60654975,
+      "exit_code": 0,
+      "seed_count": 14,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-03-scene-stage.json",
+      "sha256": "643466b777897ae627637ea29f8374d4819f719c93f95a341056cd66bcc2f3f2",
+      "manifest_sha256": "a9a259dc4eea914c7003d79f12be733f0077ee2f08ab6729a8212c81be32c26e",
+      "elapsed_seconds": 4.43467175,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-04-post-compute.json",
+      "sha256": "6936f0e803e83ac08332a86482ae7c5fc54feb37779c3f4ff7a66609961760c4",
+      "manifest_sha256": "f99e7533f75c5b50b64c050cbc529c8ae738f1b3ba4bc406fb8a06c912ba69e7",
+      "elapsed_seconds": 4.31176225,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-05-effects.json",
+      "sha256": "77e31d2e28db8cce1ff415c6f18b9581325c5409e76acac59f4d3aa6b527ae75",
+      "manifest_sha256": "74307584408ffc15f9f9e75d589f695d52821d1b6a33278603e4e8e3fd3f4783",
+      "elapsed_seconds": 4.413679,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-06-pass-identities.json",
+      "sha256": "f7d13fc158244ccb7ced17f588e10f0cc2cf0f58b7286137beb3741ece1b49b7",
+      "manifest_sha256": "f69ef86c52a0b9ac240c2c41bf168ae6df20f7f57f573c6f7ad2733c55ea6742",
+      "elapsed_seconds": 4.308528249999999,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-07-draw-dispatch.json",
+      "sha256": "f5b2dc500a9846334ddb0e1800fc6dee86c145bb5575b90e10d172cf25f1657d",
+      "manifest_sha256": "e1879b447840217d1ca484ffc29ede00cf57701cd53bb76cf5f322a339cae974",
+      "elapsed_seconds": 5.78705725,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-08-layout-api.json",
+      "sha256": "232ce1cc449e5c979ee78a7ec1b450a21825db297dd7ef7782f52e9f54ce0c41",
+      "manifest_sha256": "4a90851389209024ba76d88c2de9acf77bc9940ab939f428d441e4a84a1364ca",
+      "elapsed_seconds": 4.605584083,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-09-api-closure.json",
+      "sha256": "9e1c53ba86d77821163dee2838cbee05089bbddffe18012c39e66ed014ebc8f3",
+      "manifest_sha256": "5dae9005ad87fd8b935af4d0c9942f277c757617e7abb0246cda14a506e2f5ff",
+      "elapsed_seconds": 4.301187875,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-10-renderer-apply.json",
+      "sha256": "6c0b4bef6c6e2e96eb19f9fbc2473c9be96bb935e292f8db4bb4493880e8351c",
+      "manifest_sha256": "13f2486e9f30297e86aed0086ad93fc515b89e59cb42b37df42106c07af03536",
+      "elapsed_seconds": 4.303609499999999,
+      "exit_code": 0,
+      "seed_count": 16,
+      "read_only": true,
+      "noanalysis": true
+    },
+    {
+      "artifact": "frame-11-input-layout.json",
+      "sha256": "92d6c167dd7b98dcabbd2a7d0570f1d38de16edfbd380bfedf181b3a152548bd",
+      "manifest_sha256": "35be9550127ebb48dc1854a48bdf02e66992bc349c5c0f6f9813ceca91069148",
+      "elapsed_seconds": 4.42632275,
+      "exit_code": 0,
+      "seed_count": 7,
+      "read_only": true,
+      "noanalysis": true
+    }
+  ],
+  "verification": {
+    "artifact_sha256": "9975a7a7dd398a949c31b65dd9366ea37e0375562fcb45823f4e01dbbdd974ab",
+    "requested_spans": 159,
+    "file_backed_span_mismatches": 0,
+    "not_file_backed_spans": 4,
+    "unique_instruction_starts_matched_to_pe": 36082,
+    "instruction_mismatches": 0,
+    "llvm_functions": 130,
+    "llvm_compared_instructions": 18793,
+    "llvm_mismatches": 0,
+    "functions_with_truncated_instruction_exports": 0,
+    "all_file_backed_checks_pass": true,
+    "runtime_observed": false
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "frame",
+        "va": "0x1406565b0",
+        "meaning": "Frame containing Begin/End",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "begin",
+        "va": "0x141009d30",
+        "meaning": "Renderer Begin",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "scene-entry",
+        "va": "0x140656d10",
+        "meaning": "Scene entry wrapper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "scene",
+        "va": "0x140656e60",
+        "meaning": "Scene scheduler; mapped Main::Draw label",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "cull-jobs",
+        "va": "0x140657c90",
+        "meaning": "Culling/job helper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "shadow-work",
+        "va": "0x140657930",
+        "meaning": "Shadow/culling job helper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "shadow-camera",
+        "va": "0x141537fd0",
+        "meaning": "Camera/shadow caster helper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "accumulator",
+        "va": "0x14151ef40",
+        "meaning": "Shader accumulator stage dispatcher",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "composite-stage",
+        "va": "0x14153a6b0",
+        "meaning": "Image shader composite stage",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "sao-fog",
+        "va": "0x141541f40",
+        "meaning": "SAO/depth-fog conditional driver",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "reflections",
+        "va": "0x1415419a0",
+        "meaning": "Reflections shader setup/draw driver",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "pre-image-space",
+        "va": "0x14153ac00",
+        "meaning": "Pre-image-space render driver",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "pre-stage-a",
+        "va": "0x14153df60",
+        "meaning": "Pre-image-space stage A",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "pre-stage-b",
+        "va": "0x1415403f0",
+        "meaning": "Pre-image-space stage B",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "pre-stage-c",
+        "va": "0x1414edfd0",
+        "meaning": "Pre-image-space stage C",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "manager",
+        "va": "0x1414edbf0",
+        "meaning": "ImageSpaceManager effect orchestration",
+        "proof_status": "native_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "effect-route",
+        "va": "0x1414ee060",
+        "meaning": "Effect array dispatch",
+        "proof_status": "native_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "hdr",
+        "va": "0x14153d120",
+        "meaning": "ImageSpaceEffectHDR Render",
+        "proof_status": "vtable_identity_and_native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "dof",
+        "va": "0x1415509a0",
+        "meaning": "ImageSpaceEffectDepthOfField Render",
+        "proof_status": "vtable_identity_and_native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "vl",
+        "va": "0x141553b90",
+        "meaning": "ImageSpaceEffectVolumetricLighting Render entry",
+        "proof_status": "vtable_identity_and_native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "shader-effect",
+        "va": "0x141564e30",
+        "meaning": "Image-space shader effect Render body",
+        "proof_status": "vtable_subobject_and_native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "shader-draw",
+        "va": "0x141565090",
+        "meaning": "Image-space shader batch dispatch",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "shader-prepare",
+        "va": "0x141560340",
+        "meaning": "Geometry shader preparation",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "geometry-submit",
+        "va": "0x14155f050",
+        "meaning": "Geometry submission dispatcher",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "draw",
+        "va": "0x14100bcd0",
+        "meaning": "Indexed geometry drawing helper",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "apply",
+        "va": "0x141010de0",
+        "meaning": "Renderer cached state application",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "layout",
+        "va": "0x141011750",
+        "meaning": "D3D input-layout descriptor builder",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "layout-cache",
+        "va": "0x141013a40",
+        "meaning": "Input-layout cache helper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "end",
+        "va": "0x141009f70",
+        "meaning": "Renderer End",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "swapchain",
+        "va": "0x141009b00",
+        "meaning": "Swapchain creation",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "backbuffer",
+        "va": "0x141012480",
+        "meaning": "Backbuffer views",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      },
+      {
+        "id": "target-init",
+        "va": "0x14153b680",
+        "meaning": "Render-target initialization",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "target-create",
+        "va": "0x141015420",
+        "meaning": "Render-target creation wrapper",
+        "proof_status": "native_calls",
+        "runtime_observed": false
+      },
+      {
+        "id": "target-create-body",
+        "va": "0x14100a590",
+        "meaning": "Typed render-target creation body",
+        "proof_status": "native_api_dataflow",
+        "runtime_observed": false
+      }
+    ],
+    "edges": [
+      {
+        "source": "frame",
+        "target": "begin",
+        "callsite": "0x1406565f7",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Frame path reaches this call; no retail frame observed.",
+        "runtime_observed": false
+      },
+      {
+        "source": "frame",
+        "target": "scene-entry",
+        "callsite": "0x140656834",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "One branch requires object+0x60 nonzero and virtual+0x380 result nonnull; both skip to 0x14065684a otherwise. Other callsites exist.",
+        "runtime_observed": false
+      },
+      {
+        "source": "frame",
+        "target": "scene-entry",
+        "callsite": "0x140656a78",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Alternative callsite in the same frame body; branch and live camera/target differ from 0x140656834.",
+        "runtime_observed": false
+      },
+      {
+        "source": "scene-entry",
+        "target": "scene",
+        "callsite": "0x140656e2d",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Containing wrapper path; arguments retained in private export.",
+        "runtime_observed": false
+      },
+      {
+        "source": "scene",
+        "target": "cull-jobs",
+        "callsite": "0x140656f33",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Conditional scene scheduling; worker completion order is not established by this call.",
+        "runtime_observed": false
+      },
+      {
+        "source": "scene",
+        "target": "shadow-camera",
+        "callsite": "0x140657024",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Target call verified; mapped helper identity does not establish active casters.",
+        "runtime_observed": false
+      },
+      {
+        "source": "scene",
+        "target": "shadow-work",
+        "callsite": "0x140656fd2",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Job path; selected worker state unobserved.",
+        "runtime_observed": false
+      },
+      {
+        "source": "scene",
+        "target": "pre-image-space",
+        "callsite": "0x1406578d1",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Skipped unless bytes 0x1433d3d12 and 0x1420d6b7c are both nonzero; branches 0x1406578a7/0x1406578b0 both skip to 0x1406578f5.",
+        "runtime_observed": false
+      },
+      {
+        "source": "pre-image-space",
+        "target": "pre-stage-a",
+        "callsite": "0x14153ad90",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Uses manager+0x170 object and targets 43/44 selected from a source state bit; runtime object type is not proven.",
+        "runtime_observed": false
+      },
+      {
+        "source": "pre-image-space",
+        "target": "pre-stage-b",
+        "callsite": "0x14153adb0",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Uses manager+0x188 object and source 43/44/output 45; runtime object type is not proven.",
+        "runtime_observed": false
+      },
+      {
+        "source": "pre-image-space",
+        "target": "pre-stage-c",
+        "callsite": "0x14153add0",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Arguments source 1/output 1 before manager orchestration; actual subpasses remain conditional.",
+        "runtime_observed": false
+      },
+      {
+        "source": "pre-image-space",
+        "target": "manager",
+        "callsite": "0x14153ade7",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Passes source target 1 and caller-selected output target.",
+        "runtime_observed": false
+      },
+      {
+        "source": "accumulator",
+        "target": "composite-stage",
+        "callsite": "0x14151f49b",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Dispatcher path after target/state changes; selected accumulator path requires runtime observation.",
+        "runtime_observed": false
+      },
+      {
+        "source": "composite-stage",
+        "target": "reflections",
+        "callsite": "0x14153ab75",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Conditional image shader path; live SSR enablement is unobserved.",
+        "runtime_observed": false
+      },
+      {
+        "source": "manager",
+        "target": "effect-route",
+        "callsite": "0x1414edcc7",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Looped enabled effects before finishing: slots 0..7, virtual+0x30 callback and LDR conditions select execution.",
+        "runtime_observed": false
+      },
+      {
+        "source": "manager",
+        "target": "effect-route",
+        "callsite": "0x1414edd68",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Selects index 30 HDR when byte 0x1420d75e4 is nonzero, otherwise index 34 Copy. Input/output targets may ping-pong.",
+        "runtime_observed": false
+      },
+      {
+        "source": "manager",
+        "target": "effect-route",
+        "callsite": "0x1414edf54",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Later enabled effect slots 3..7; deferred LDR conditions affect target route.",
+        "runtime_observed": false
+      },
+      {
+        "source": "shader-effect",
+        "target": "shader-prepare",
+        "callsite": "0x141564fd7",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Render body submits prepared geometry; image-space subobject identity must be retained.",
+        "runtime_observed": false
+      },
+      {
+        "source": "shader-draw",
+        "target": "shader-prepare",
+        "callsite": "0x141565108",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Supplied shader object, not a proven universally selected technique.",
+        "runtime_observed": false
+      },
+      {
+        "source": "shader-prepare",
+        "target": "geometry-submit",
+        "callsite": "0x14156056a",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Conditional geometry/shader flags choose among submission branches.",
+        "runtime_observed": false
+      },
+      {
+        "source": "geometry-submit",
+        "target": "draw",
+        "callsite": "0x14155f1ed",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "One indexed geometry branch; alternative drawing helpers exist.",
+        "runtime_observed": false
+      },
+      {
+        "source": "draw",
+        "target": "apply",
+        "callsite": "0x14100bd33",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Applies staged cached state before API draw.",
+        "runtime_observed": false
+      },
+      {
+        "source": "apply",
+        "target": "layout",
+        "callsite": "0x141011255",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Only on descriptor dirty/cache-miss path; guard at 0x1410111cc/0x1410111d6, cache-hit branch 0x141011243.",
+        "runtime_observed": false
+      },
+      {
+        "source": "apply",
+        "target": "layout-cache",
+        "callsite": "0x141011298",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Conditional cache insert/lookup handling before IASetInputLayout.",
+        "runtime_observed": false
+      },
+      {
+        "source": "frame",
+        "target": "end",
+        "callsite": "0x140656bb1",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "Containing frame path reaches End; additional Begin/End clients also exist.",
+        "runtime_observed": false
+      },
+      {
+        "source": "target-init",
+        "target": "target-create",
+        "callsite": "0x14153ba73",
+        "proof_status": "native_direct_call_bytes_verified",
+        "execution_condition": "One of many initialization calls, not a frame pass schedule.",
+        "runtime_observed": false
+      },
+      {
+        "source": "target-create",
+        "target": "target-create-body",
+        "callsite": "0x141015457",
+        "proof_status": "native_direct_tail_jump_bytes_verified",
+        "execution_condition": "Tail dispatch; target index/description preserved from caller.",
+        "runtime_observed": false
+      }
+    ],
+    "scope": "Selected direct calls, one tail jump and dataflow only. Addresses are not a universal sequence; initialization, jobs, alternate cameras, menus and presentation clients are distinct."
+  },
+  "api_boundaries": [
+    {
+      "name": "IDXGISwapChain::Present",
+      "function": "0x141009f70",
+      "callsite": "0x14100a012",
+      "receiver_proof": "global 0x143330198 \u2192 current window+0x18 \u2192 swapchain vtable+0x40",
+      "arguments": {
+        "SyncInterval": "RendererData global 0x143330188 dereferenced,+0x30 runtime DWORD",
+        "PresentFlags": 0
+      },
+      "conditional_preceding_work": "Timing-wait loop is guarded by byte 0x1420d0200; actual branch unobserved.",
+      "live_return_and_presented_image": "unknown",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "4ecb904265d79ef8abe13dcb36c4b06237e6ca5af12718483c8480b024380f98",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgi.h",
+        "source_line": 1978,
+        "vtable_slot": 8,
+        "x64_offset": "0x40",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    },
+    {
+      "name": "ID3D11Device::CreateInputLayout",
+      "function": "0x141011750",
+      "callsite": "0x141011c3c",
+      "receiver_proof": "device global 0x143330190 \u2192 COM vtable+0x58",
+      "arguments": "Native descriptor builder and selected VS bytecode/signature; exact live geometry/VS values uncaptured.",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "source_line": 14584,
+        "vtable_slot": 11,
+        "x64_offset": "0x58",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    },
+    {
+      "name": "ID3D11DeviceContext::IASetInputLayout",
+      "function": "0x141010de0",
+      "callsite": "0x1410112aa",
+      "receiver_proof": "context global 0x143331f30 \u2192 COM vtable+0x88",
+      "arguments": "Created/cached layout from intersection of shader+0x48 and global 0x1420cff40 at 0x1410111ef.",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "source_line": 8750,
+        "vtable_slot": 17,
+        "x64_offset": "0x88",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    },
+    {
+      "name": "ID3D11DeviceContext::DrawIndexed",
+      "function": "0x14100bcd0",
+      "callsite": "0x14100bdaa",
+      "receiver_proof": "context global 0x143331f30 \u2192 COM vtable+0x60",
+      "arguments": "Index count/start/base vertex from selected geometry branch; not a draw count measurement.",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "source_line": 8700,
+        "vtable_slot": 12,
+        "x64_offset": "0x60",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    },
+    {
+      "name": "ID3D11Device::CreateVertexShader",
+      "function": "0x14100fdd0",
+      "callsite": "0x14100fe5b",
+      "receiver_proof": "device global 0x143330190 \u2192 COM vtable+0x60",
+      "arguments": "Embedded source at 0x1420d3770 reaches wrapper from 0x1411b306f.",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "source_line": 14598,
+        "vtable_slot": 12,
+        "x64_offset": "0x60",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    },
+    {
+      "name": "ID3D11Device::CreatePixelShader",
+      "function": "0x14100ff30",
+      "callsite": "0x14100ffc0",
+      "receiver_proof": "device global 0x143330190 \u2192 COM vtable+0x78",
+      "arguments": "Embedded source at 0x1420d39b0 reaches wrapper from 0x1411b3099.",
+      "abi_authority": {
+        "artifact": "d3d11-abi.json",
+        "artifact_sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "source_line": 14644,
+        "vtable_slot": 15,
+        "x64_offset": "0x78",
+        "proof": "Original receiver/operand bytes plus primary Microsoft SDK C-interface vtable order. Runtime receiver identity still requires capture."
+      }
+    }
+  ],
+  "effect_dispatch": {
+    "manager_va": "0x1414edbf0",
+    "router_va": "0x1414ee060",
+    "effects_base_field": "+0x28",
+    "selection": "EDX index resolves effects pointer; virtual+0x30 tests enablement; virtual+0x8 renders",
+    "hdr_selection": {
+      "branch_global": "0x1420d75e4",
+      "when_nonzero": 30,
+      "when_zero": 34,
+      "effect_names_reference_only": {
+        "30": "HDR",
+        "34": "Copy"
+      }
+    },
+    "subobjects": [
+      {
+        "type": "ImageSpaceEffectHDR",
+        "vtable_va": "0x141b443c8",
+        "subobject_offset": 0,
+        "slot1": "0x14153d120",
+        "slot6": "0x14153dcf0"
+      },
+      {
+        "type": "BSImagespaceShaderHDRTonemapBlendCinematic",
+        "vtable_va": "0x141b364d0",
+        "subobject_offset": 144,
+        "slot1": "0x141564e30",
+        "slot6": "0x14150b480"
+      }
+    ],
+    "limits": "Vtable bytes identify possible methods and object subobjects; no captured effect pointer/enablement proves a selected frame. Main BSShader vtable and ImageSpaceEffect subobject must not be conflated.",
+    "identity_authority": {
+      "artifact": "native-types.json",
+      "sha256": "d09a67e7768579120ceb58a318e1877f5b1a4f96be54f1090557ad843b5c993c",
+      "method": "Independent original-PE RTTI/complete-object-locator/vtable parsing; method receiver selection remains unobserved."
+    }
+  },
+  "target_endpoint": {
+    "swapchain_creation": "0x141009b00",
+    "format_assignment": "0x141009bc2",
+    "dxgi_format": 28,
+    "format_name": "R8G8B8A8_UNORM",
+    "backbuffer_helper": "0x141012480",
+    "GetBuffer_callsite": "0x1410124b4",
+    "CreateRTV_callsite": "0x1410124da",
+    "CreateSRV_callsite": "0x141012501",
+    "rtv_srv_descriptions": "NULL \u2192 default typed views of this swapchain buffer",
+    "limit": "This endpoint has no hardware sRGB write conversion. It does not establish the numeric color domain of the recovered tone output or every intervening operation.",
+    "format_authority": {
+      "name": "DXGI_FORMAT_R8G8B8A8_UNORM",
+      "value": 28,
+      "source_line": 41
+    },
+    "view_method_authorities": [
+      {
+        "interface": "IDXGISwapChain",
+        "slot": 9,
+        "x64_offset": "0x48",
+        "name": "GetBuffer",
+        "source_line": 1986,
+        "header_sha256": "4ecb904265d79ef8abe13dcb36c4b06237e6ca5af12718483c8480b024380f98",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgi.h"
+      },
+      {
+        "interface": "ID3D11Device",
+        "slot": 9,
+        "x64_offset": "0x48",
+        "name": "CreateRenderTargetView",
+        "source_line": 14564,
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h"
+      },
+      {
+        "interface": "ID3D11Device",
+        "slot": 7,
+        "x64_offset": "0x38",
+        "name": "CreateShaderResourceView",
+        "source_line": 14544,
+        "header_sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135",
+        "source_url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h"
+      }
+    ]
+  },
+  "state_staging": {
+    "render_target_stage": "0x1410155b0",
+    "depth_stage": "0x141015670",
+    "cache": "0x1420cfc00",
+    "apply_before_draw": "0x141010de0",
+    "render_only_apply": "0x14100a050",
+    "conditional_immediate_commit": "0x1410155b0 final boolean argument",
+    "verified_noop": "0x141015790 is RET; callers do not imply an effective binding operation.",
+    "limit": "Staged slots, effective OM state, resource/view identities and executed draws are separate claims."
+  },
+  "embedded_shader_link": {
+    "consumer_function": "0x1411b2990",
+    "records": [
+      {
+        "dxbc_va": "0x1420d3770",
+        "address_load_site": "0x1411b3061",
+        "creator_wrapper_callsite": "0x1411b306f",
+        "stage": "vertex"
+      },
+      {
+        "dxbc_va": "0x1420d39b0",
+        "address_load_site": "0x1411b308b",
+        "creator_wrapper_callsite": "0x1411b3099",
+        "stage": "pixel"
+      }
+    ],
+    "limit": "Native shader creation linkage proven; subsystem identity, runtime execution and draw selection remain unobserved."
+  },
+  "coverage_matrix": [
+    {
+      "stage": "scene_traversal_culling",
+      "native_anchor": "0x140656e60,0x140657c90",
+      "static_status": "Verified direct calls and job scheduling helpers",
+      "needed_for_runtime_closure": "Scene graph roots, cull predicates, job callbacks and completions, submitted object identities",
+      "runtime_observed": false
+    },
+    {
+      "stage": "depth_prepass",
+      "native_anchor": "RendererData depth targets and geometry shaders",
+      "static_status": "Reference target/shader inventory only; complete pass identity/order open",
+      "needed_for_runtime_closure": "Depth-format/view identity, reverse/forward depth convention, viewport, clear values, compare/write states and every draw",
+      "runtime_observed": false
+    },
+    {
+      "stage": "directional_local_shadows",
+      "native_anchor": "0x141537fd0,0x140657930,0x141538430",
+      "static_status": "Native scheduling and caster/light helper calls; matrix/bias/selection closure incomplete",
+      "needed_for_runtime_closure": "Active light/caster sets, terrain/tree inclusion, cascades, shadow matrices, formats, samplers and receiver permutations",
+      "runtime_observed": false
+    },
+    {
+      "stage": "material_shader_selection",
+      "native_anchor": "0x141560340,0x14155f050",
+      "static_status": "Native virtual preparation and conditional geometry dispatch",
+      "needed_for_runtime_closure": "Object/material flags, resolved vtable/technique, vertex/fragment bytecode hash, buffer writes and exact texture views",
+      "runtime_observed": false
+    },
+    {
+      "stage": "vertex_input_layout",
+      "native_anchor": "0x141010de0\u21920x141011750\u2192IASetInputLayout",
+      "static_status": "Descriptor intersection/cache/API chain verified",
+      "needed_for_runtime_closure": "Selected geometry descriptor, current VS signature, packed vertex streams, binding and authored T/B/N values",
+      "runtime_observed": false
+    },
+    {
+      "stage": "d3d_resources_states",
+      "native_anchor": "0x1410155b0,0x141015670,0x141010de0",
+      "static_status": "Staged state and API apply boundaries verified; complete state-object creation inventory open",
+      "needed_for_runtime_closure": "Typed resources/views, formats, sRGB flags, mips, dimensions, sample counts, blend/depth/raster/sampler descriptions at draws",
+      "runtime_observed": false
+    },
+    {
+      "stage": "deferred_lighting_composite",
+      "native_anchor": "0x14151ef40\u21920x14153a6b0",
+      "static_status": "Native composite stage calls; selected shader/object and full lighting term identity open",
+      "needed_for_runtime_closure": "Light buffers, shadow/normal/mask dependencies, shader selection, blend/write state and pre/post composite pixels",
+      "runtime_observed": false
+    },
+    {
+      "stage": "sao_depth_fog",
+      "native_anchor": "0x141541f40",
+      "static_status": "Native conditional driver, camera-Z/AO/blur/composite setup and dispatch calls",
+      "needed_for_runtime_closure": "SAO/CS/fog enables, temporal history, depth reconstruction, constants, raw AO, composites, associated shader/resource hashes",
+      "runtime_observed": false
+    },
+    {
+      "stage": "reflections_ssr",
+      "native_anchor": "0x1415419a0",
+      "static_status": "Driver and mapped reflections setup body; selected live path open",
+      "needed_for_runtime_closure": "Screen/cubemap reflection inputs, view/history/masks, trace settings, active bytecode, composite scale and pixels",
+      "runtime_observed": false
+    },
+    {
+      "stage": "sky_atmosphere",
+      "native_anchor": "Sun/sky inputs and shader inventory",
+      "static_status": "Frame dispatch and complete sky/cloud/moon/star composition unclosed",
+      "needed_for_runtime_closure": "Selected sky draws, colors/scales, textures, clouds, sun/moon transforms and ordering/depth state",
+      "runtime_observed": false
+    },
+    {
+      "stage": "water_refraction",
+      "native_anchor": "Water target/reference inventory;0x141539b10 queried without proven water identity",
+      "static_status": "Water-system association and active target paths remain open",
+      "needed_for_runtime_closure": "Water surface/reflection/refraction/underwater paths, displacement/flow, masks, render scale, depth copies and selected permutations",
+      "runtime_observed": false
+    },
+    {
+      "stage": "transparency_particles_effects",
+      "native_anchor": "0x14155f050 conditional geometry dispatch",
+      "static_status": "Complete buckets/sort/blend order unclosed",
+      "needed_for_runtime_closure": "Alpha-test/blend flags, sort keys, depth read/write, premultiplication, shader flags, scene fog composition and particles",
+      "runtime_observed": false
+    },
+    {
+      "stage": "volumetrics",
+      "native_anchor": "ImageSpaceEffectVolumetricLighting vtable 0x141b47970",
+      "static_status": "Native render/setup/enabled entries identified; internal target/3D-grid and active-path closure incomplete",
+      "needed_for_runtime_closure": "3D accumulation/noise, history and resolution, light/shadow dependencies, constants, integration/composite shaders",
+      "runtime_observed": false
+    },
+    {
+      "stage": "hdr_adaptation_bloom",
+      "native_anchor": "ImageSpaceEffectHDR 0x14153d120",
+      "static_status": "Native HDR Render, settings/setup and shader arithmetic exist; full live resource identity open",
+      "needed_for_runtime_closure": "Pre-HDR scene target, luminance pyramid, adaptation RG/history, elapsed time, bloom chain, HDR controls and intermediate images",
+      "runtime_observed": false
+    },
+    {
+      "stage": "color_grading_tonemap",
+      "native_anchor": "HDR cinematic/fade shader vtables",
+      "static_status": "Recovered shader/CPU equations; frame-selected permutation and complete boundary unobserved",
+      "needed_for_runtime_closure": "Cinematic/fade selection, saturation/tint/contrast/gamma, framebuffer scales, final values and all intervening copies",
+      "runtime_observed": false
+    },
+    {
+      "stage": "image_modifiers_dof_blur",
+      "native_anchor": "ImageSpaceManager 0x1414edbf0;DOF 0x1415509a0",
+      "static_status": "Enabled effect dispatch and DOF render bodies verified",
+      "needed_for_runtime_closure": "Resolved IMGS/IMAD stack, per-effect enable callbacks, blur/DOF parameters, input/output routes and order",
+      "runtime_observed": false
+    },
+    {
+      "stage": "taa_fxaa",
+      "native_anchor": "TAA/TAA_UI/TAA_Water RTTI/vtables and reference effect IDs",
+      "static_status": "Class/entry identities established; actual scheduler identity/selected history open",
+      "needed_for_runtime_closure": "Enable configuration and runtime selection, jitter, motion vectors, histories, reset behavior, water/UI variants",
+      "runtime_observed": false
+    },
+    {
+      "stage": "motion_blur",
+      "native_anchor": "Motion-vector target/reference effect inventory",
+      "static_status": "A velocity target does not prove a motion-blur pass; independent pass identity open",
+      "needed_for_runtime_closure": "Proven motion-blur enable/dispatch, velocity conventions, exposure timing, shader equation and dependencies if present",
+      "runtime_observed": false
+    },
+    {
+      "stage": "ui_menus_map_screenshots",
+      "native_anchor": "Main frame multiple routes, embedded VS/PS consumer 0x1411b2990",
+      "static_status": "Additional frame clients and embedded shader creation proven; UI association not proven",
+      "needed_for_runtime_closure": "Scaleform/menu/map/book draw routes, alpha/color transfer, UI temporal variants, screenshot path and postprocess ordering",
+      "runtime_observed": false
+    },
+    {
+      "stage": "final_present",
+      "native_anchor": "Renderer::End 0x141009f70",
+      "static_status": "Present slot/receiver/arguments and UNORM swapchain endpoint verified",
+      "needed_for_runtime_closure": "Every operation from selected tone output through UI/copies to backbuffer, runtime RTV format/contents, presentation return and displayed pixels",
+      "runtime_observed": false
+    },
+    {
+      "stage": "stereo_vr",
+      "native_anchor": "Selected SkyrimSE.exe1.7.104.0 only",
+      "static_status": "No SkyrimVR binary or runtime evidence; shared reference VR constants are not target proof",
+      "needed_for_runtime_closure": "Separate VR executable/package fingerprint, eye matrices/targets, stereo viewport/dispatch, eye-specific postprocess and compositor capture",
+      "runtime_observed": false
+    }
+  ],
+  "runtime_route": {
+    "artifact_sha256": "67ced0b2e2e8b71036d24b05083f6037261a20d9434a1cd9662f0157cb29a8a1",
+    "observed_at_utc": "2026-10-10T09:07:17.823640+00:00",
+    "host": "fiji-desktop",
+    "game_executable_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+    "matches_analyzed_target": true,
+    "steam_present": true,
+    "skyrim_present": false,
+    "sunshine_present": true,
+    "capture_tools_on_path": {
+      "renderdoccmd": false,
+      "qrenderdoc": false,
+      "vulkaninfo": false,
+      "protontricks": true,
+      "vkcapture": false,
+      "obs": true,
+      "wine": false,
+      "steam": true
+    },
+    "renderdoc_layer_found_in_inspected_paths": false,
+    "ini_hashes": {
+      "Skyrim.ini": "b7c478f5cba604a59b033e7817f6645e6de998e1d72d4e80bf8f5569dc43024b",
+      "SkyrimPrefs.ini": "19d286f1cfcea7114f6217bac2746b5d8f0b44e85ca884cd4b43f45c557a5eeb"
+    },
+    "configured_prefs": {
+      "bEnableProjecteUVDiffuseNormals": "1",
+      "bUseTAA": "0",
+      "bSAO_CS_Enable": "0",
+      "bSAOEnable": "1",
+      "bUse64bitsHDRRenderTarget": "0",
+      "bVolumetricLightingEnable": "1",
+      "iVolumetricLightingQuality": "1",
+      "bEnableImprovedSnow": "1",
+      "bFXAAEnabled": "0",
+      "fGamma": "1.0000",
+      "iSize H": "1440",
+      "iSize W": "2560",
+      "iVSyncPresentInterval": "1"
+    },
+    "native_windows_capture_route_verified": false,
+    "game_startup_verified": false,
+    "gpu_capture_verified": false,
+    "limit": "A Linux Proton install and configured files are not a Windows D3D11 capture or selected live state. No game launch, installation, hook or service change was performed."
+  },
+  "next_native_queries": [
+    {
+      "seed": "0x14153e620",
+      "question": "Resolve typed shader objects, constants and branch-selected pre-HDR subpasses rather than interpreting helper names."
+    },
+    {
+      "seed": "0x1415436b0",
+      "question": "Resolve manager+0x1d0 object identity, enable branch and fullscreen resources at the scene finishing stage."
+    },
+    {
+      "seed": "0x14155f050",
+      "question": "Close every geometry draw variant through effective D3D states, material technique and vertex/index streams."
+    },
+    {
+      "seed": "0x141010de0",
+      "question": "Map cached state bit fields and every state/resource COM apply to creation descriptions and selected draw."
+    },
+    {
+      "seed": "0x14153b680",
+      "question": "Close all 2D/depth/cube/3D target descriptions and source index mappings; allocation order is not pass order."
+    },
+    {
+      "seed": "0x1414ee060",
+      "question": "Resolve every slot0..7 effect construction and dynamic enabled callback; trace manager+0x48/+0x50 geometry and image-space subobject adjustments."
+    },
+    {
+      "seed": "0x141009f70",
+      "question": "Close selected tone output, UI/menu copies and backbuffer contents immediately before Present; audit additional Begin/End clients."
+    },
+    {
+      "seed": "0x14331d6f0",
+      "question": "Establish the RGB operand object meaning, live value and complete writer/consumer closure; partial reference output cannot establish writer absence."
+    }
+  ],
+  "runtime_capture_requirements": {
+    "source_identity": [
+      "Executable/DLL hashes, version, platform/API route and driver",
+      "Resolved content load order and asset precedence",
+      "Base/default/user INIs, effective runtime values and console/overlay/modification state"
+    ],
+    "scene_identity": [
+      "Worldspace/cell, exact pose/view/projection, near/far and resolution",
+      "Weather/climate transition state, hour, active lighting/image-space/volumetric records",
+      "Animation, particles, water, wind, camera state and history reset/warm-up"
+    ],
+    "per_event": [
+      "Executed order and CPU label/callsite association",
+      "Stage bytecode hash/permutation and typed shader/effect object",
+      "Resources/views: format, transfer flag, dimension, mip, sample count and subresource",
+      "Raw constant buffers, vertex/index streams, layout and draw/dispatch arguments",
+      "Depth/stencil/blend/raster/sampler state, viewport/scissor and attachment contents"
+    ],
+    "intermediates": [
+      "Before/after local material lighting and shadow visibility",
+      "Depth, normal/masks, shadow maps and lighting composite",
+      "Raw/composited SAO, depth fog, reflection, water and volumetric targets",
+      "Pre-HDR scene, luminance pyramid, adaptation history and bloom",
+      "Tone output, subsequent blur/AA/UI/copy targets and final backbuffer"
+    ],
+    "acceptance": [
+      "A static edge becomes executed only when a captured event or runtime trace identifies it.",
+      "A shader equation becomes selected only when its bytecode hash and constants match the captured draw.",
+      "A target format becomes active only when the bound view/resource descriptions and writes match.",
+      "A matching final screenshot cannot replace intermediate or state evidence.",
+      "Proton/DXVK captures require proof of the correspondence to the original D3D11 resources/events before claiming native API equivalence."
+    ]
+  },
+  "limitations": [
+    "Saved Ghidra analysis is partial; missing functions/references are unknown.",
+    "Native bytes prove static operations and possible calls, not runtime selection or universal frame order.",
+    "Identified shader classes/targets do not establish pass activity, complete materials, output transfer or visual parity.",
+    "No retail game launch, injected hook, Windows execution, GPU frame capture or renderer tuning occurred in this investigation.",
+    "Private raw exports and proprietary bytes remain outside the repository."
+  ],
+  "abi_authority": {
+    "artifact": "d3d11-abi.json",
+    "sha256": "520d6ff7024df3610db4611cd9e651d412832df6e685865692bc3883ae988549",
+    "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+    "sources": [
+      {
+        "upstream_path": "um/d3d11.h",
+        "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+        "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/um/d3d11.h",
+        "sha256": "ff082b8df5a18dab59939df3b5d041b5abe9206a0d1c8e2e75dc1be1cbe22135"
+      },
+      {
+        "upstream_path": "shared/dxgi.h",
+        "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+        "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgi.h",
+        "sha256": "4ecb904265d79ef8abe13dcb36c4b06237e6ca5af12718483c8480b024380f98"
+      },
+      {
+        "upstream_path": "shared/dxgiformat.h",
+        "revision": "76c04c2021ef4a831a6f1e06d9566002d746139b",
+        "url": "https://raw.githubusercontent.com/microsoft/win32metadata/76c04c2021ef4a831a6f1e06d9566002d746139b/generation/WinSDK/RecompiledIdlHeaders/shared/dxgiformat.h",
+        "sha256": "48df2f31927ce6167597c6fb41046ca4d9d771de9e11dac80f44a900d66162dd"
+      }
+    ]
+  },
+  "naming_policy": "Native call and address proof does not, by itself, prove the full semantic role of a helper. Function labels without target RTTI/object dataflow are navigation labels assisted by matching source; unknown stage A/B/C identities remain open.",
+  "static_graph_totals": {
+    "recovered_functions": 130,
+    "direct_calls": 1192,
+    "computed_calls": 369,
+    "graph_artifact_sha256": "30ab949bad133303011d5bd7fa7c58bb7a44eada47e5003f2ebf63b7a5a1cafc",
+    "unresolved_computed_call_scope": "Computed-call count is an inventory of exported functions, not a complete executable or frame inventory. Dynamic receiver/target closure remains open."
+  }
+}
