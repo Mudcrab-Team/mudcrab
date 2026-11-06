@@ -15,11 +15,13 @@
 //!    back where they were, with a warning. A destination timeout also returns to the saved space.
 //!    If that return fails or times out, the screen fades in but movement stays paused until the
 //!    player presses V or uses `tcl` to recover in noclip.
-//! 4. **Fade in** (0.25 s). The player is placed on the landing point once more as it starts.
+//!    WALK also waits for safe capsule placement and grounded, motionless controller output.
+//! 4. **Fade in** (0.25 s). WALK keeps its settled pose; NOCLIP is placed on the landing point again.
 //!
 //! The player's walking and noclip systems pause for the whole crossing ([`no_door_crossing`]): nothing under
 //! the landing point has collision until its cell is ready, so a WALK body would fall (and WASD
 //! would move it) while the screen is black.
+//! Only input-free WALK physics runs once the landing assets have settled, still behind black.
 //!
 //! There is no preload: the fade simply holds until the destination is resident and uploaded.
 
@@ -27,7 +29,8 @@ use crate::{
     doors::LoadDoor,
     nif_material::{EffectPaletteDepthSource, EffectPaletteMaterial},
     physics::{
-        CursorCapture, MovementTuning, PlayerBody, TeleportPlayer, body_and_camera_for_feet,
+        CursorCapture, MoveMode, MovementTuning, PlayerBody, TeleportPlayer, WalkSpawnHold,
+        WalkState, body_and_camera_for_feet,
     },
     render::{TerrainMaterial, WaterMaterial},
     sky::CameraSpace,
@@ -46,7 +49,9 @@ use bevy::{
     prelude::*,
     render::render_asset::RenderAssetBytesPerFrame,
 };
-use bevy_rapier3d::prelude::{QueryFilter, ReadRapierContext};
+use bevy_rapier3d::prelude::{
+    KinematicCharacterControllerOutput, QueryFilter, ReadRapierContext, RigidBodyDisabled,
+};
 use std::collections::HashSet;
 
 /// How far from the camera a door can be and still be used, in Creation units.
@@ -196,6 +201,13 @@ impl DoorCrossing {
         self.active.is_some()
     }
 
+    /// Permit placement and gravity only after the destination's assets have settled behind black.
+    fn settling_walk(&self) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            matches!(active.stage, Stage::Landing { ready_frames, .. } if ready_frames >= SETTLE_FRAMES)
+        })
+    }
+
     /// Whether the failed return is visible and the player can explicitly recover in noclip.
     pub(crate) fn needs_recovery(&self) -> bool {
         self.active
@@ -214,6 +226,49 @@ impl DoorCrossing {
 /// run without the crossing plugin never has one).
 pub fn no_door_crossing(crossing: Option<Res<DoorCrossing>>) -> bool {
     crossing.is_none_or(|crossing| !crossing.is_active())
+}
+
+/// Input stays guarded for the whole crossing; placement and gravity may settle behind black.
+pub(crate) fn walk_physics_allowed(crossing: Option<Res<DoorCrossing>>) -> bool {
+    crossing.is_none_or(|crossing| !crossing.is_active() || crossing.settling_walk())
+}
+
+/// Actual controller support, rather than render residency, completes a WALK landing.
+#[derive(SystemParam)]
+struct WalkLanding<'w, 's> {
+    mode: Option<Res<'w, MoveMode>>,
+    hold: Option<Res<'w, WalkSpawnHold>>,
+    player: WalkLandingPlayerQuery<'w, 's>,
+}
+
+type WalkLandingPlayerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static WalkState,
+        &'static KinematicCharacterControllerOutput,
+    ),
+    (With<PlayerBody>, Without<RigidBodyDisabled>),
+>;
+
+impl WalkLanding<'_, '_> {
+    fn walking(&self) -> bool {
+        self.mode.as_deref() == Some(&MoveMode::Walk)
+    }
+
+    fn ready(&self) -> bool {
+        if !self.walking() {
+            return true;
+        }
+        self.hold.as_ref().is_some_and(|hold| !hold.is_active())
+            && self.player.single().is_ok_and(|(state, output)| {
+                state.grounded
+                    && state.vertical_velocity == 0.0
+                    && state.horizontal_velocity == Vec3::ZERO
+                    && output.grounded
+                    && output.effective_translation.length_squared() < 1e-6
+            })
+    }
 }
 
 #[cfg(test)]
@@ -637,10 +692,11 @@ fn drive_door_crossing(
     (physics, player): (ReadRapierContext, Query<Entity, With<PlayerBody>>),
     mut crossing: ResMut<DoorCrossing>,
     mut overlay: Query<&mut BackgroundColor, With<FadeOverlay>>,
-    (mut budget, landing_assets, pending_under): (
+    (mut budget, landing_assets, pending_under, walk_landing): (
         Option<ResMut<RenderAssetBytesPerFrame>>,
         LandingAssets,
         PendingUnder,
+        WalkLanding,
     ),
     mut commands: Commands,
 ) {
@@ -787,7 +843,7 @@ fn drive_door_crossing(
             // Once loaded, a few more frames let extraction and preparation upload with the budget
             // still lifted: the fade-in starts on the SETTLE_FRAMES-th loaded frame.
             let ready_frames = if loaded { ready_frames + 1 } else { 0 };
-            let ready = ready_frames >= SETTLE_FRAMES;
+            let ready = ready_frames >= SETTLE_FRAMES && walk_landing.ready();
             if !ready && waited >= LANDING_TIMEOUT_SECONDS && !restoring {
                 warn!(
                     door = format_args!("{:08X}", active.door.ref_id),
@@ -839,7 +895,11 @@ fn drive_door_crossing(
                     }
                 );
                 set_upload_budget(&mut budget, config.max_upload_bytes_per_frame());
-                place_again(&mut commands, &landing);
+                // Re-teleporting WALK would discard the settled capsule and rearm its hold.
+                // On a failed return the existing recovery guard still owns the unsafe pose.
+                if !ready || !walk_landing.walking() {
+                    place_again(&mut commands, &landing);
+                }
                 active.stage = Stage::FadeIn {
                     elapsed: 0.0,
                     recovery: !ready,
@@ -922,6 +982,10 @@ mod tests {
     /// A headless world with the crossing registered, the camera 100 units in front of a door
     /// whose bounds are a 100-unit cube, and one resident old-space cell.
     fn app_with(door: LoadDoor) -> (App, Entity) {
+        app_with_extra(door, |_| {})
+    }
+
+    fn app_with_extra(door: LoadDoor, extra: impl FnOnce(&mut App)) -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, AssetPlugin::default()));
         app.init_asset::<Mesh>()
@@ -968,9 +1032,313 @@ mod tests {
         app.world_mut()
             .resource_mut::<StreamingWorld>()
             .set_resident_for_test(old, old_root);
+        extra(&mut app);
         app.finish();
         app.update();
         (app, old_root)
+    }
+
+    /// Use the real player/physics schedules without a window, GPU, assets or settings writes.
+    fn walking_app(door: LoadDoor, source_interior: bool) -> App {
+        let (app, _) = app_with_extra(door, |app| {
+            app.init_resource::<ButtonInput<MouseButton>>()
+                .add_message::<bevy::input::mouse::MouseMotion>()
+                .add_plugins(crate::physics::PlayerControlsPlugin)
+                .insert_resource(MoveMode::Walk);
+            let tuning = app.world().resource::<MovementTuning>().clone();
+            app.world_mut().spawn((
+                crate::physics::player_controller_bundle(&tuning),
+                Transform::from_xyz(0.0, -tuning.eye_height, 0.0),
+            ));
+            if source_interior {
+                app.insert_resource(ActiveSpace {
+                    worldspace_id: Some(60),
+                    interior: Some(5),
+                })
+                .insert_resource(CameraSpace::Interior);
+            }
+        });
+        app
+    }
+
+    fn current_landing(app: &App) -> Landing {
+        let crossing = app
+            .world()
+            .resource::<DoorCrossing>()
+            .active
+            .as_ref()
+            .unwrap();
+        if matches!(
+            crossing.stage,
+            Stage::Landing {
+                restoring: true,
+                ..
+            }
+        ) {
+            crossing.restore.landing()
+        } else {
+            crossing.target
+        }
+    }
+
+    fn player_position(app: &mut App) -> Vec3 {
+        app.world_mut()
+            .query_filtered::<&Transform, With<PlayerBody>>()
+            .single(app.world())
+            .unwrap()
+            .translation
+    }
+
+    fn register_floor(app: &mut App, landing: Landing, disabled: bool, blocked: bool) -> Entity {
+        use bevy_rapier3d::prelude::*;
+        let root = app.world_mut().spawn(Transform::default()).id();
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .set_resident_for_test(landing.key, root);
+        // Eight units of initial overlap exercises the existing 28-unit safe-placement search.
+        let top = landing.position.y + 8.0;
+        let (half_height, center_y) = if blocked {
+            (1000.0, top)
+        } else {
+            (10.0, top - 10.0)
+        };
+        let mut floor = app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(1000.0, half_height, 1000.0),
+            crate::physics::world_collision_groups(),
+            Transform::from_xyz(landing.position.x, center_y, landing.position.z),
+            ChildOf(root),
+        ));
+        if disabled {
+            floor.insert(ColliderDisabled);
+        }
+        floor.id()
+    }
+
+    #[test]
+    fn walk_arrival_settles_before_visibility_for_destinations_and_rollbacks() {
+        use bevy_rapier3d::prelude::ColliderDisabled;
+        for exterior in [false, true] {
+            for restoring in [false, true] {
+                let door = if exterior {
+                    exterior_door()
+                } else {
+                    interior_door()
+                };
+                let mut app = walking_app(door, exterior);
+                press_e(&mut app);
+                // Interior starts differ from ActiveSpace::default(), so inspect the stage.
+                for _ in 0..20 {
+                    if matches!(
+                        app.world()
+                            .resource::<DoorCrossing>()
+                            .active
+                            .as_ref()
+                            .unwrap()
+                            .stage,
+                        Stage::Landing { .. }
+                    ) {
+                        break;
+                    }
+                    app.update();
+                }
+                if restoring {
+                    let target = current_landing(&app);
+                    app.world_mut()
+                        .resource_mut::<StreamingWorld>()
+                        .set_failed_for_test(target.key);
+                    app.update();
+                }
+                let landing = current_landing(&app);
+                let floor = register_floor(&mut app, landing, true, false);
+                for _ in 0..8 {
+                    app.update();
+                    assert_eq!(
+                        alpha(&mut app),
+                        1.0,
+                        "render residency cannot prove support"
+                    );
+                    assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+                }
+                if landing.origin.is_some() {
+                    // Model the streamer's exterior rebase while collision is still disabled.
+                    // A successful WALK fade must preserve this live pose, not replay XTEL.
+                    let shift = IVec2::new(2, -1);
+                    let displacement = absolute_feet(Vec3::ZERO, shift);
+                    app.world_mut().resource_mut::<RenderOrigin>().0 += shift;
+                    let mut participants = app.world_mut().query_filtered::<&mut Transform,
+                        Or<(With<PlayerBody>, With<StreamingCamera>)>>();
+                    for mut transform in participants.iter_mut(app.world_mut()) {
+                        transform.translation -= displacement;
+                    }
+                    app.world_mut()
+                        .get_mut::<Transform>(floor)
+                        .unwrap()
+                        .translation -= displacement;
+                    let body = app
+                        .world_mut()
+                        .query_filtered::<Entity, With<PlayerBody>>()
+                        .single(app.world())
+                        .unwrap();
+                    // The real streamer also shifts Rapier immediately; transform edits alone
+                    // can be overwritten by the backend's writeback before propagation.
+                    app.world_mut()
+                        .run_system_once(
+                            move |mut physics: bevy_rapier3d::prelude::WriteRapierContext| {
+                                let mut context = physics.single_mut().unwrap();
+                                for entity in [body, floor] {
+                                    let handle =
+                                        context.entity2body().get(&entity).copied().unwrap();
+                                    let body =
+                                        context.rigidbody_set.bodies.get_mut(handle).unwrap();
+                                    body.set_translation(body.translation() - displacement, false);
+                                }
+                                context.propagate_modified_body_positions_to_colliders();
+                            },
+                        )
+                        .unwrap();
+                    app.update();
+                }
+                let held = player_position(&mut app);
+                app.world_mut()
+                    .entity_mut(floor)
+                    .remove::<ColliderDisabled>();
+                let mut visible_pose = None;
+                let mut highest = held.y;
+                for frame in 0..60 {
+                    app.update();
+                    let pose = player_position(&mut app);
+                    let opacity = alpha(&mut app);
+                    highest = highest.max(pose.y);
+                    let hold = app.world().resource::<WalkSpawnHold>().is_active();
+                    println!(
+                        "issue468_trace {}",
+                        serde_json::json!({
+                            "exterior": exterior, "restoring": restoring, "frame": frame,
+                            "alpha": opacity, "body": pose.to_array(), "hold": hold,
+                        })
+                    );
+                    if opacity < 1.0 {
+                        assert!(!hold, "visible arrivals must not rearm placement");
+                        let first = *visible_pose.get_or_insert(pose);
+                        assert!(
+                            (pose - first).length() < 0.001,
+                            "visible correction: {first:?} -> {pose:?}"
+                        );
+                        let mut views = app
+                            .world_mut()
+                            .query_filtered::<&Transform, With<StreamingCamera>>();
+                        let eye = views.single(app.world()).unwrap().translation;
+                        assert!(
+                            (eye - pose
+                                - Vec3::Y * app.world().resource::<MovementTuning>().eye_height)
+                                .length()
+                                < 0.001
+                        );
+                    }
+                }
+                assert!(
+                    visible_pose.is_some(),
+                    "WALK must finish settling and fade in"
+                );
+                assert!(
+                    highest > held.y + 10.0,
+                    "fixture must exercise upward safe placement"
+                );
+                assert!(!app.world().resource::<DoorCrossing>().is_active());
+                assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+                let pose = player_position(&mut app);
+                let expected = match landing.origin {
+                    Some(saved) => absolute_feet(
+                        landing.position,
+                        saved - app.world().resource::<RenderOrigin>().0,
+                    ),
+                    None => landing.position,
+                };
+                assert!(
+                    (Vec2::new(pose.x, pose.z) - Vec2::new(expected.x, expected.z)).length()
+                        < 0.001
+                );
+                assert_eq!(
+                    app.world().resource::<Teleports>().0.len(),
+                    if restoring { 2 } else { 1 }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn walk_collision_failure_rolls_back_then_requires_explicit_recovery() {
+        for blocked in [false, true] {
+            let mut app = walking_app(interior_door(), false);
+            press_e(&mut app);
+            run_until_black(&mut app);
+            let landing = current_landing(&app);
+            register_floor(&mut app, landing, !blocked, blocked);
+            let held = body_and_camera_for_feet(
+                app.world().resource::<MovementTuning>(),
+                landing.position,
+            )
+            .0;
+            for _ in 0..((LANDING_TIMEOUT_SECONDS + 0.5) / DT) as usize {
+                app.update();
+                if app
+                    .world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| {
+                        matches!(
+                            active.stage,
+                            Stage::Landing {
+                                restoring: false,
+                                ..
+                            }
+                        )
+                    })
+                {
+                    assert!(
+                        (player_position(&mut app) - held).length() < 0.001,
+                        "a pending hold must not depenetrate outside the bounded placement search"
+                    );
+                }
+            }
+            assert!(
+                app.world().resource::<DoorCrossing>().is_active(),
+                "blocked={blocked}; mode={:?}; hold={:?}; status={:?}",
+                app.world().resource::<MoveMode>(),
+                app.world().resource::<WalkSpawnHold>(),
+                app.world().resource::<crate::physics::WalkEntryStatus>()
+            );
+            assert!(matches!(
+                app.world()
+                    .resource::<DoorCrossing>()
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .stage,
+                Stage::Landing {
+                    restoring: true,
+                    ..
+                }
+            ));
+            assert_eq!(alpha(&mut app), 1.0);
+            assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+            // A resident return with no enabled support must also remain guarded.
+            let restore = current_landing(&app);
+            register_floor(&mut app, restore, true, false);
+            for _ in 0..((LANDING_TIMEOUT_SECONDS + 0.5) / DT) as usize {
+                app.update();
+            }
+            assert_eq!(alpha(&mut app), 0.0);
+            assert!(app.world().resource::<DoorCrossing>().needs_recovery());
+            assert!(
+                !app.world_mut()
+                    .run_system_once(walk_physics_allowed)
+                    .unwrap()
+            );
+            assert_eq!(*app.world().resource::<MoveMode>(), MoveMode::Walk);
+        }
     }
 
     fn press_e(app: &mut App) {
