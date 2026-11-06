@@ -75,6 +75,7 @@ impl Options {
         }
         let world_grass = config.grass && config.loads_world();
         if world_grass && !self.explicit_stream_radius && config.grass_radius != i32::MAX {
+            config.grass_terrain_radii = Some((config.stream_radius, config.unload_radius));
             config.stream_radius = config
                 .stream_radius
                 .max(config.grass_radius.saturating_add(1));
