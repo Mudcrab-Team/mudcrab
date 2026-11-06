@@ -117,6 +117,11 @@ jobs:
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 
+      - name: Test actor idle CPU qualification tools
+        run: |
+          python3 -B tools/actor_idle/test_actor_idle_cpu_qualification.py
+          python3 -B tools/actor_idle/test_actor_idle_preparation.py
+
       - name: Test Riverwood asset reuse audit
         run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
 
