@@ -17,7 +17,7 @@ pub enum ZeroPolicy {
     Identity,
 }
 /// Per-reference outcomes. Callers must skip/clear bad data with a counted warning and continue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Resolution {
     Resolved(FormKey),
     Null,
@@ -32,13 +32,15 @@ pub enum Resolution {
     InvalidWidth {
         owner: PluginId,
         local: u32,
-        minimum: u32,
         maximum: u32,
     },
     /// Missing/nonfinite versions cannot authorize extended light locals.
     IncompatibleHeaderVersion {
         owner: PluginId,
         supplier: PluginId,
+        local: u32,
+        owner_version: Option<f32>,
+        supplier_version: Option<f32>,
     },
 }
 impl Resolution {
@@ -84,7 +86,6 @@ pub fn resolve(table: &PluginTable, source: SourceFormId, zero: ZeroPolicy) -> R
             return Resolution::InvalidWidth {
                 owner: owner.id,
                 local,
-                minimum: 0,
                 maximum: 0xfff,
             };
         }
@@ -94,6 +95,9 @@ pub fn resolve(table: &PluginTable, source: SourceFormId, zero: ZeroPolicy) -> R
             return Resolution::IncompatibleHeaderVersion {
                 owner: owner.id,
                 supplier: supplier.id,
+                local,
+                owner_version: owner.facts.header_version,
+                supplier_version: supplier.facts.header_version,
             };
         }
     }
@@ -107,7 +111,6 @@ pub fn resolve(table: &PluginTable, source: SourceFormId, zero: ZeroPolicy) -> R
         Err(_) => Resolution::InvalidWidth {
             owner: owner.id,
             local,
-            minimum: 0,
             maximum: 0x00ff_ffff,
         },
     }

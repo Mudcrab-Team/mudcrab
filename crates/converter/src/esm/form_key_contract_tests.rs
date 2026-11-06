@@ -59,6 +59,14 @@ fn check(
     assert_eq!(actual, Ok(record.form_id));
     assert_eq!(view.from_legacy_u32(expected), Ok(resolution.key()));
     if let Some(key) = resolution.key() {
+        // The existing reverse mapping independently checks the decoded identity.
+        let decoded = view.from_legacy_u32(expected).unwrap().unwrap();
+        let stable = order.identity(expected).unwrap();
+        let named = table.named(decoded).unwrap();
+        assert_eq!(
+            named.parts(),
+            Some((stable.plugin.as_str(), stable.local_id))
+        );
         assert_eq!(
             view.to_legacy_u32(view.from_legacy_u32(expected).unwrap().unwrap()),
             Ok(expected)
@@ -85,7 +93,7 @@ fn form_key_differential_nonidentity_masters() {
         },
         PluginMetadata {
             flags: 0,
-            masters: vec!["B.esm".into(), "A.esm".into(), "Light.esp".into()],
+            masters: vec!["B.esm".into(), "Light.esp".into(), "A.esm".into()],
         },
     ];
     let table = PluginTable::fresh(
@@ -113,10 +121,10 @@ fn form_key_differential_nonidentity_masters() {
     let order = LoadOrder::from_metadata(names, metadata).unwrap();
     for (raw, packed, runtime) in [
         (0x0000_0800, Some(0x0200_0800), 0x0100_0800),
-        (0x0100_0800, Some(0x0100_0800), 0x0000_0800),
-        (0x0200_0fff, Some(0x0300_0fff), 0xfe00_0fff),
+        (0x0200_0800, Some(0x0100_0800), 0x0000_0800),
+        (0x0100_0fff, Some(0x0300_0fff), 0xfe00_0fff),
         (0x0300_0800, Some(0x0400_0800), 0x0200_0800),
-        (0x01ff_ffff, Some(0x01ff_ffff), 0x00ff_ffff),
+        (0x02ff_ffff, Some(0x01ff_ffff), 0x00ff_ffff),
         (0x0500_0123, Some(0x0400_0123), 0x0200_0123),
         (0, None, 0),
     ] {
@@ -143,7 +151,7 @@ fn form_key_differential_nonidentity_masters() {
             &table,
             SourceFormId {
                 containing_plugin: table.id("Patch.esp").unwrap(),
-                raw: 0x0200_1000
+                raw: 0x0100_1000
             },
             ZeroPolicy::Null
         ),

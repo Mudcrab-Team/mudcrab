@@ -3,7 +3,13 @@
 //! The name and plugin + local-ID design follow Mutagen's `FormKey`:
 //! <https://github.com/Mutagen-Modding/Mutagen>. Credit to the Mutagen project
 //! for the concept; no Mutagen code is copied here.
-use std::{fmt, marker::PhantomData, num::NonZeroU64, str::FromStr};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+    num::NonZeroU64,
+    str::FromStr,
+};
 
 /// Invalid identity encoding, never a whole-conversion error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,16 +135,31 @@ pub(crate) fn validate_plugin_name(name: &str) -> Result<(), IdentityError> {
 
 /// Portable identity at cross-pack/script/tool boundaries. `Null` is the sole null token.
 /// The owner-name/local concept follows Mutagen; this is an independent implementation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NamedFormKey {
     Null,
     Key(NamedIdentity),
 }
 /// Validated portable payload; only checked NamedFormKey construction can create it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct NamedIdentity {
     plugin: String,
+    display_plugin: String,
     local: u32,
+}
+impl PartialEq for NamedIdentity {
+    /// Display spelling does not affect portable identity equality.
+    fn eq(&self, other: &Self) -> bool {
+        self.plugin == other.plugin && self.local == other.local
+    }
+}
+impl Eq for NamedIdentity {}
+impl Hash for NamedIdentity {
+    /// Hash the normalized owner and local consistently with equality.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.plugin.hash(state);
+        self.local.hash(state);
+    }
 }
 impl NamedFormKey {
     /// Validate a portable name/local pair and normalize name equality as the converter does.
@@ -149,10 +170,11 @@ impl NamedFormKey {
         }
         Ok(Self::Key(NamedIdentity {
             plugin: crate::plugin_selection::normalize_plugin_name(plugin),
+            display_plugin: plugin.to_owned(),
             local,
         }))
     }
-    /// Inspect a portable identity without permitting unchecked payload construction.
+    /// Inspect the normalized owner/local without permitting unchecked payload construction.
     pub fn parts(&self) -> Option<(&str, u32)> {
         match self {
             Self::Null => None,
@@ -178,21 +200,39 @@ impl FromStr for NamedFormKey {
     }
 }
 impl fmt::Display for NamedFormKey {
-    /// Emit canonical six-digit uppercase hexadecimal and normalized filename.
+    /// Emit six-digit uppercase hexadecimal and the stored display spelling.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Null => f.write_str("Null"),
-            Self::Key(value) => write!(f, "{:06X}:{}", value.local, value.plugin),
+            Self::Key(value) => write!(f, "{:06X}:{}", value.local, value.display_plugin),
         }
     }
 }
 
 /// Zero-cost typed identity for later projection steps; it does not prove target existence/type.
-#[derive(Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Link<T> {
     key: FormKey,
     marker: PhantomData<fn() -> T>,
+}
+impl<T> fmt::Debug for Link<T> {
+    /// Describe the key without imposing Debug on the record marker.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Link").field("key", &self.key).finish()
+    }
+}
+impl<T> PartialEq for Link<T> {
+    /// Compare keys without imposing equality on the record marker.
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl<T> Eq for Link<T> {}
+impl<T> Hash for Link<T> {
+    /// Hash the key without imposing Hash on the record marker.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
 }
 impl<T> Copy for Link<T> {}
 impl<T> Clone for Link<T> {
@@ -215,8 +255,6 @@ impl<T> Link<T> {
     }
 }
 /// Static record marker for later projection steps.
-#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum StaticRecord {}
 /// Placed-reference marker for later projection steps.
-#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum ReferenceRecord {}

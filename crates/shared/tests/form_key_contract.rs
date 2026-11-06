@@ -14,13 +14,13 @@ fn id(n: u32) -> PluginId {
 fn key(owner: u32, local: u32) -> FormKey {
     FormKey::new(id(owner), local).unwrap()
 }
-/// An intentionally nonidentity MAST order: B, A, Light, then self Patch.
+/// MAST order B, Light, A, then self Patch: no selector equals its table id.
 fn table() -> PluginTable {
     PluginTable::fresh(vec![
         (
             "Patch.esp".into(),
             PluginFacts {
-                masters: vec!["B.esm".into(), "A.esm".into(), "Light.esl".into()],
+                masters: vec!["B.esm".into(), "Light.esl".into(), "A.esm".into()],
                 header_version: Some(1.71),
                 ..Default::default()
             },
@@ -91,26 +91,32 @@ fn packed_boundaries_and_null() {
 }
 
 #[test]
-/// Typed links carry no runtime tag and need no Clone/Copy bound on the marker.
+/// Typed links carry no runtime tag and require no traits on their marker.
 fn typed_links_are_zero_cost() {
-    let link = Link::<StaticRecord>::new(key(7, 0x800));
+    enum BareMarker {}
+    let link = Link::<BareMarker>::new(key(7, 0x800));
     assert_eq!(link.key().to_packed(), 0x0700_0800);
     let copied = link;
     assert_eq!(link.key(), copied.key());
     assert_eq!(std::mem::size_of_val(&link), 8);
     assert_eq!(std::mem::size_of::<Option<Link<StaticRecord>>>(), 8);
+    assert_eq!(link, copied);
+    assert!(format!("{link:?}").contains("Link"));
+    let mut links = std::collections::HashSet::new();
+    assert!(links.insert(link));
+    assert!(!links.insert(copied));
 }
 
 #[test]
 /// Short/case-insensitive hex and spaced filenames round trip canonically.
 fn portable_text_round_trips() {
     for (input, expected) in [
-        ("012EB7:Skyrim.esm", "012EB7:skyrim.esm"),
-        ("800:My Mod.ESP", "000800:my mod.esp"),
-        ("aBc:Café.esm", "000ABC:café.esm"),
-        ("000000:A.esm", "000000:a.esm"),
-        ("0d800:A.esm", "00D800:a.esm"),
-        ("0D8000:A.esm", "0D8000:a.esm"),
+        ("012EB7:Skyrim.esm", "012EB7:Skyrim.esm"),
+        ("800:My Mod.ESP", "000800:My Mod.ESP"),
+        ("aBc:Café.esm", "000ABC:Café.esm"),
+        ("000000:A.esm", "000000:A.esm"),
+        ("0d800:A.esm", "00D800:A.esm"),
+        ("0D8000:A.esm", "0D8000:A.esm"),
         ("null", "Null"),
     ] {
         let parsed = input.parse::<NamedFormKey>();
@@ -123,6 +129,80 @@ fn portable_text_round_trips() {
         "012eb7:SKYRIM.ESM".parse::<NamedFormKey>(),
         "012EB7:Skyrim.esm".parse()
     );
+}
+
+#[test]
+/// Case-insensitive parsing resolves to the table's authored display spelling.
+fn portable_text_uses_table_display_spelling() {
+    let t = PluginTable::fresh(vec![("Skyrim.esm".into(), PluginFacts::default())]).unwrap();
+    let named = "012eb7:skyrim.esm".parse().unwrap();
+    let resolved = t.intern(&named).unwrap().unwrap();
+    assert_eq!(resolved.to_packed(), 0x0101_2eb7);
+    let emitted = t.named(resolved).unwrap();
+    assert_eq!(emitted.to_string(), "012EB7:Skyrim.esm");
+    assert_eq!(emitted, named);
+    let mut identities = std::collections::HashSet::new();
+    assert!(identities.insert(named));
+    assert!(!identities.insert(emitted.clone()));
+    assert_eq!(
+        t.intern(&emitted.to_string().parse().unwrap()),
+        Ok(Some(resolved))
+    );
+}
+
+#[test]
+/// A malformed master is local to its reference; fresh and retained tables keep usable entries.
+fn bad_master_keeps_neighboring_plugins_resolvable() {
+    let plugins = vec![
+        ("A.esm".into(), PluginFacts::default()),
+        (
+            "Broken.esp".into(),
+            PluginFacts {
+                masters: vec!["Foo.esp ".into(), "A.esm".into()],
+                ..Default::default()
+            },
+        ),
+        (
+            "Good.esp".into(),
+            PluginFacts {
+                masters: vec!["A.esm".into()],
+                ..Default::default()
+            },
+        ),
+    ];
+    let prior = PluginTable::fresh(vec![("A.esm".into(), PluginFacts::default())]).unwrap();
+    for result in [PluginTable::fresh(plugins.clone()), prior.retained(plugins)] {
+        assert!(
+            result.is_ok(),
+            "one bad master must not reject the table: {result:?}"
+        );
+        let t = result.unwrap();
+        assert_eq!(t.entries().len(), 3);
+        let word = |supplier, raw| SourceFormId {
+            containing_plugin: id(supplier),
+            raw,
+        };
+        assert_eq!(
+            resolve(&t, word(2, 0x800), ZeroPolicy::Null),
+            Resolution::UnknownOwner("Foo.esp ".into())
+        );
+        assert_eq!(
+            resolve(&t, word(2, 0x0100_0800), ZeroPolicy::Null),
+            Resolution::Resolved(key(1, 0x800))
+        );
+        assert_eq!(
+            resolve(&t, word(3, 0x800), ZeroPolicy::Null),
+            Resolution::Resolved(key(1, 0x800))
+        );
+        assert_eq!(
+            resolve(&t, word(3, 0x0100_0800), ZeroPolicy::Null),
+            Resolution::Resolved(key(3, 0x800))
+        );
+        assert_eq!(
+            resolve(&t, word(1, 0x800), ZeroPolicy::Null),
+            Resolution::Resolved(key(1, 0x800))
+        );
+    }
 }
 
 #[test]
@@ -170,7 +250,7 @@ fn fresh_table_is_deterministic_and_refuses_duplicates() {
     assert_eq!(t.entry(id(4)).unwrap().facts.header_version, Some(1.71));
     assert_eq!(
         t.entry(id(4)).unwrap().facts.masters,
-        ["B.esm", "A.esm", "Light.esl"]
+        ["B.esm", "Light.esl", "A.esm"]
     );
     assert_eq!(t.entry(id(3)).unwrap().display_name, "Light.esl");
     assert!(
@@ -218,6 +298,10 @@ fn retained_allocation_is_an_api_only_capability() {
     assert_eq!(readded.id("a.ESP"), Some(id(1)));
     assert!(readded.entry(id(1)).unwrap().loaded);
     assert_eq!(readded.entry(id(1)).unwrap().display_name, "A.esp");
+    assert_eq!(
+        readded.named(key(1, 0x800)).unwrap().to_string(),
+        "000800:A.esp"
+    );
     assert!(t.entry(id(1)).unwrap().loaded);
     let fresh = PluginTable::fresh(vec![("B.esp".into(), PluginFacts::default())]).unwrap();
     assert_eq!(fresh.id("B.esp"), Some(id(1))); // Numeric equality across tables means nothing.
@@ -243,13 +327,13 @@ fn resolve_nonidentity_masters_and_overrides() {
         Some(0x0200_0800)
     );
     assert_eq!(
-        source(&t, 0x0100_0800, ZeroPolicy::Null)
+        source(&t, 0x0200_0800, ZeroPolicy::Null)
             .key()
             .map(FormKey::to_packed),
         Some(0x0100_0800)
     );
     assert_eq!(
-        source(&t, 0x0200_0fff, ZeroPolicy::Null),
+        source(&t, 0x0100_0fff, ZeroPolicy::Null),
         Resolution::Resolved(key(3, 0xfff))
     );
     assert_eq!(
@@ -259,7 +343,7 @@ fn resolve_nonidentity_masters_and_overrides() {
         Some(0x0400_0800)
     );
     assert_eq!(
-        source(&t, 0x01ff_ffff, ZeroPolicy::Null)
+        source(&t, 0x02ff_ffff, ZeroPolicy::Null)
             .key()
             .map(FormKey::to_packed),
         Some(0x01ff_ffff)
@@ -334,11 +418,10 @@ fn resolve_unknown_owners_without_panicking() {
 fn light_boundaries_and_retained_header_versions() {
     let t = table();
     assert_eq!(
-        source(&t, 0x0200_1000, ZeroPolicy::Null),
+        source(&t, 0x0100_1000, ZeroPolicy::Null),
         Resolution::InvalidWidth {
             owner: id(3),
             local: 0x1000,
-            minimum: 0,
             maximum: 0xfff
         }
     );
@@ -364,18 +447,39 @@ fn light_boundaries_and_retained_header_versions() {
                 Resolution::InvalidWidth {
                     owner: id(1),
                     local,
-                    minimum: 0,
                     maximum: 0xfff,
                 }
             } else if local < 0x800 && version != Some(1.71) {
                 Resolution::IncompatibleHeaderVersion {
                     owner: id(1),
                     supplier: id(1),
+                    local,
+                    owner_version: version,
+                    supplier_version: version,
                 }
             } else {
                 Resolution::Resolved(key(1, local))
             };
-            assert_eq!(actual, expected, "version={version:?}, local={local:X}");
+            if local < 0x800 && version.is_some_and(f32::is_nan) {
+                let Resolution::IncompatibleHeaderVersion {
+                    owner,
+                    supplier,
+                    local: rejected,
+                    owner_version,
+                    supplier_version,
+                } = actual
+                else {
+                    panic!("expected version diagnostic, got {actual:?}")
+                };
+                assert_eq!((owner, supplier, rejected), (id(1), id(1), local));
+                assert_eq!(owner_version.map(f32::to_bits), version.map(f32::to_bits));
+                assert_eq!(
+                    supplier_version.map(f32::to_bits),
+                    version.map(f32::to_bits)
+                );
+            } else {
+                assert_eq!(actual, expected, "version={version:?}, local={local:X}");
+            }
         }
     }
     let t = PluginTable::fresh(vec![
@@ -407,7 +511,10 @@ fn light_boundaries_and_retained_header_versions() {
         ),
         Resolution::IncompatibleHeaderVersion {
             owner: id(1),
-            supplier: id(2)
+            supplier: id(2),
+            local: 0x7ff,
+            owner_version: Some(1.71),
+            supplier_version: Some(1.70),
         }
     );
     // A light supplier overriding a full master keeps all 24 local bits.
@@ -439,12 +546,12 @@ fn light_boundaries_and_retained_header_versions() {
 /// Both legacy directions are exact, while absent order entries never acquire guessed slots.
 fn legacy_two_way_and_missing_slots() {
     let t = table();
-    let view = LegacyIdView::from_load_order(&t, &[id(2), id(1), id(3), id(4)]).unwrap();
+    let view = LegacyIdView::from_load_order(&t, &[id(2), id(4), id(3), id(1)]).unwrap();
     for (packed, runtime) in [
         (0x0202_f4e3, 0x0002_f4e3),
-        (0x0100_0800, 0x0100_0800),
+        (0x0100_0800, 0x0200_0800),
         (0x0300_0800, 0xfe00_0800),
-        (0x0400_0800, 0x0200_0800),
+        (0x0400_0800, 0x0100_0800),
         (0x02ff_ffff, 0x00ff_ffff),
     ] {
         let k = FormKey::from_packed(packed).unwrap();

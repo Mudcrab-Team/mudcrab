@@ -40,6 +40,10 @@ content hash. Hashes serve caches only. ESL extension or light flag classifies
 a light owner, matching current selection. Medium flags are retained metadata;
 Skyrim medium-slot packing is not introduced.
 
+Malformed MAST strings are retained verbatim rather than refusing the table.
+References selecting them report `UnknownOwner` with the original name; other
+master positions and usable plugins remain resolvable.
+
 The pure retained-allocation API clones a table, marks missing names not loaded,
 preserves old indices/display spelling, updates supplied facts, and appends new
 names in sorted order. Case-only re-additions recover the prior index. Read-only
@@ -49,16 +53,19 @@ lineage implementation. Fresh allocation starts a new scope; numeric retention
 is a possible cache optimization, never a cross-pack guarantee.
 
 `Link<T>` is a zero-cost typed wrapper for later projection steps. Static and
-placed-reference markers demonstrate the intended use. A marker does not prove
+placed-reference markers demonstrate the intended use. Its copy, equality,
+hashing and debug implementations impose no traits on the marker. A marker does not prove
 that a target exists or has the expected runtime record type.
 
 ## Text form
 
 `NamedFormKey` parses `012EB7:Skyrim.esm`, `800:My Mod.esp`, and `Null`.
 Locals contain 1–6 ASCII hex digits, case-insensitive, with no prefix. Emission
-always uses six uppercase hex digits; names emit normalized lowercase spelling.
-The table separately preserves display spelling. Interior filename spaces and
-Unicode are accepted, paths/control characters and non-plugin extensions are
+always uses six uppercase hex digits and the stored display spelling of the name.
+Parsing preserves the input spelling; equality, hashing and table lookup use the
+normalized name. Resolving `012eb7:skyrim.esm` through a table containing
+`Skyrim.esm`, then converting back to text, emits `012EB7:Skyrim.esm`.
+Interior filename spaces and Unicode are accepted, paths/control characters and non-plugin extensions are
 rejected. Surrounding text whitespace is trimmed. The explicit null token is
 `Null`, case-insensitive on input; `000000:Owner.esm` is not null.
 
@@ -83,7 +90,7 @@ equal selects self. It never uses global slots for this interpretation.
 | `UnknownSupplier` | Containing plugin absent/not loaded |
 | `UnknownOwner` | Selected MAST name absent/not loaded; original indices retained |
 | `InvalidWidth` | Light local exceeds FFF; full source locals inherently fit 24 bits |
-| `IncompatibleHeaderVersion` | Extended light local requires compatible retained owner/supplier HEDR |
+| `IncompatibleHeaderVersion` | Includes owner, supplier, local and both optional HEDR versions for a rejected extended light reference |
 
 There is exactly one out-of-range-index policy: `SelfProjected`, matching the
 existing permissive runtime header remapper. It is **not proof of original
@@ -151,12 +158,12 @@ commands change here. Future saves
 must carry names plus local IDs (or a table remapped by name), never bare
 pack-scoped numeric identities; no save format is implemented here.
 
-**Open decision for later beyond-limit interoperability:** one option is a clear
-error for 32-bit interfaces; another is an explicit opt-in compatibility mode
-with stand-in IDs. Stand-ins cannot promise Skyrim's top-byte owner semantics
-and would need collision/lifetime rules. Neither product/interface policy is
-implemented in step 1. The pure legacy view only reports representability; it
-does not choose a beyond-limit script behavior or allocate stand-ins.
+**Beyond-limit interoperability defaults to a clear error from the checked
+legacy adapter**, as adopted in #542's refinements. Step 1 implements those
+representability errors; script interfaces are deferred. An opt-in compatibility
+mode with stand-in IDs may be considered later, but is not decided and is not
+implemented. Stand-ins cannot promise Skyrim's top-byte owner semantics and
+would need collision/lifetime rules. The default does not invent synthetic IDs.
 
 ## Non-goals
 

@@ -39,6 +39,7 @@ pub struct PluginEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableError {
     InvalidName(IdentityError),
+    InvalidIdentity(IdentityError),
     DuplicateName(String),
     Exhausted,
     UnknownPlugin(String),
@@ -64,13 +65,11 @@ impl PluginTable {
     }
     /// API-only retained mode: preserve old numbers/tombstones, append new sorted names.
     /// No persistence/lineage policy is provided. Duplicate input fails before any mutation.
+    /// Preserve malformed MAST names for per-reference UnknownOwner diagnostics.
     pub fn retained(&self, plugins: Vec<(String, PluginFacts)>) -> Result<Self, TableError> {
         let mut sorted = BTreeMap::new();
         for (display, facts) in plugins {
             validate_plugin_name(&display).map_err(TableError::InvalidName)?;
-            for master in &facts.masters {
-                validate_plugin_name(master).map_err(TableError::InvalidName)?;
-            }
             let name = normalize_plugin_name(&display);
             if sorted.insert(name.clone(), (display, facts)).is_some() {
                 return Err(TableError::DuplicateName(name));
@@ -135,16 +134,16 @@ impl PluginTable {
                     .ok_or_else(|| TableError::UnknownPlugin(plugin.to_owned()))?;
                 FormKey::new(id, local)
                     .map(Some)
-                    .map_err(TableError::InvalidName)
+                    .map_err(TableError::InvalidIdentity)
             }
         }
     }
-    /// Convert numeric identity to portable normalized name/local, validating table membership.
+    /// Convert numeric identity to portable display name/local, validating table membership.
     pub fn named(&self, key: FormKey) -> Result<NamedFormKey, TableError> {
         let entry = self
             .entry(key.plugin())
             .ok_or(TableError::UnknownId(key.plugin()))?;
-        NamedFormKey::new(&entry.normalized_name, key.local()).map_err(TableError::InvalidName)
+        NamedFormKey::new(&entry.display_name, key.local()).map_err(TableError::InvalidIdentity)
     }
     /// Detect light owners using the same extension-or-flag convention as today's converter.
     pub fn is_light(&self, id: PluginId) -> bool {
