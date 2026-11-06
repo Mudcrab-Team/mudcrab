@@ -113,27 +113,44 @@ struct AssetDirectoryReadLock {
 }
 
 /// Disable optional grass without a world or readable cache, keeping camera settings and
-/// screenshot readiness consistent with the resources startup actually installs.
-fn load_optional_grass_cache(
+/// screenshot readiness consistent with the resources startup actually installs. Cache failure
+/// also restores the non-grass terrain radii in both the config and live preferences.
+pub(crate) fn load_optional_grass_cache(
     config: &mut EngineConfig,
     world_active: bool,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
 ) -> Option<crate::world::grass_cache::GrassCache> {
     if !config.grass {
         return None;
     }
-    if !world_active {
+    let cache = if !world_active {
         eprintln!("warning: --grass has no effect without a converted world");
+        None
+    } else {
+        match crate::world::grass_cache::GrassCache::open(
+            &config.assets_dir.join("grass_cache.rkyv"),
+        ) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                eprintln!("warning: grass disabled for this pack: {error}");
+                None
+            }
+        }
+    };
+    if cache.is_none() {
         config.grass = false;
-        return None;
-    }
-    match crate::world::grass_cache::GrassCache::open(&config.assets_dir.join("grass_cache.rkyv")) {
-        Ok(cache) => Some(cache),
-        Err(error) => {
-            eprintln!("warning: grass disabled for this pack: {error}");
-            config.grass = false;
-            None
+        if let Some((stream_radius, unload_radius)) = config.grass_terrain_radii.take() {
+            config.stream_radius = stream_radius;
+            config.unload_radius = unload_radius;
+        }
+        if let Some((settings, file)) = preferences {
+            file.clear_grass_coverage(settings, config);
         }
     }
+    cache
 }
 
 /// Prepare the selected world or fixture and run the engine with its available optional resources.
@@ -328,7 +345,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
-    let grass_cache = load_optional_grass_cache(&mut config, runtime_data.is_some());
+    let grass_cache =
+        load_optional_grass_cache(&mut config, runtime_data.is_some(), preferences.as_mut());
     let benchmark_active = config.benchmark_frames.is_some()
         || config.benchmark_duration_secs.is_some()
         || config.streaming_benchmark_route_speed.is_some();
@@ -3341,7 +3359,7 @@ mod tests {
                 grass: mode == "on",
                 ..Default::default()
             };
-            assert!(load_optional_grass_cache(&mut config, false).is_none());
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
             return;
         }
         for (mode, expected) in [("on", 1), ("off", 0)] {
@@ -3370,7 +3388,7 @@ mod tests {
                 args.push("--grass");
             }
             let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
-            assert!(load_optional_grass_cache(&mut config, false).is_none());
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
             assert!(!config.grass, "grass must be inactive without a world");
             let mut app = App::new();
             app.insert_resource(config)
@@ -3401,11 +3419,11 @@ mod tests {
             grass: true,
             ..Default::default()
         };
-        assert!(load_optional_grass_cache(&mut config, true).is_none());
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
         assert!(!config.grass);
         std::fs::write(&path, b"broken").unwrap();
         config.grass = true;
-        assert!(load_optional_grass_cache(&mut config, true).is_none());
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
         assert!(!config.grass);
         let mut cache = shared::grass::GrassCache {
             version: 5,
@@ -3418,7 +3436,7 @@ mod tests {
         )
         .unwrap();
         config.grass = true;
-        assert!(load_optional_grass_cache(&mut config, true).is_none());
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
         assert!(!config.grass);
         cache.version = shared::grass::GRASS_CACHE_VERSION;
         std::fs::write(
@@ -3427,7 +3445,7 @@ mod tests {
         )
         .unwrap();
         config.grass = true;
-        assert!(load_optional_grass_cache(&mut config, true).is_some());
+        assert!(load_optional_grass_cache(&mut config, true, None).is_some());
         assert!(config.grass);
         cache.cells.push(shared::grass::GrassCell {
             cell_id: 7,
@@ -3446,7 +3464,7 @@ mod tests {
             rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
         )
         .unwrap();
-        assert!(load_optional_grass_cache(&mut config, true).is_none());
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
         assert!(!config.grass);
         assert!(screenshot_grass_ready(&config, true, None, None));
     }

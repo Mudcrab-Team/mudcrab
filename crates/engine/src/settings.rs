@@ -575,6 +575,7 @@ impl RenderingSettings {
         Ok(())
     }
 
+    /// Copy launch values before optional grass coverage is imposed on the resolved preferences.
     fn take_launch_values(&mut self, config: &EngineConfig) {
         self.color_grade = config.color_grade.index();
         self.visual_preset =
@@ -583,8 +584,9 @@ impl RenderingSettings {
             self.grade_override_mask = 0;
         }
         self.point_lights = config.lights;
-        self.stream_radius = config.stream_radius;
-        self.unload_radius = config.unload_radius;
+        (self.stream_radius, self.unload_radius) = config
+            .grass_terrain_radii
+            .unwrap_or((config.stream_radius, config.unload_radius));
         self.lod_level0_distance = config.terrain_lod.block_level0_distance;
         self.lod_level1_distance = config.terrain_lod.block_level1_distance;
         self.lod_maximum_distance = config.terrain_lod.block_maximum_distance;
@@ -720,6 +722,17 @@ pub struct SettingsFile {
 }
 
 impl SettingsFile {
+    /// Reflect startup's grass rollback in the live preferences and their save ownership.
+    pub(crate) fn clear_grass_coverage(
+        &mut self,
+        settings: &mut RenderingSettings,
+        config: &EngineConfig,
+    ) {
+        self.grass_coverage = None;
+        settings.stream_radius = config.stream_radius;
+        settings.unload_radius = config.unload_radius;
+    }
+
     pub fn session_only() -> Self {
         Self {
             path: None,
@@ -848,7 +861,7 @@ fn prepare_settings_at(
     let before_coverage = (settings.stream_radius, settings.unload_radius);
     settings.retain_grass_coverage(config);
     let after_coverage = (settings.stream_radius, settings.unload_radius);
-    // Launch parsing already widens the radii when no preference file is present.
+    // Track automatic coverage even when wider saved radii already cover grass.
     let automatic_grass = config.grass
         && config.loads_world()
         && config
@@ -857,6 +870,9 @@ fn prepare_settings_at(
             .any(|flag| flag == "grass:stream-radius");
     file.grass_coverage =
         (before_coverage != after_coverage || automatic_grass).then_some(after_coverage);
+    if file.grass_coverage.is_some() {
+        config.grass_terrain_radii = Some(before_coverage);
+    }
     settings.apply_config(config);
     config.io_threads = settings.io_threads;
     if let Some(profile) = crate::visual_profile::VisualProfile::from_index(settings.visual_profile)
@@ -1224,6 +1240,163 @@ mod tests {
         assert_eq!(config.effective_grass_radius(), 7);
         assert_eq!(loaded.exposure_ev100, saved.exposure_ev100);
         assert!(config.validate_grass().is_ok());
+    }
+
+    /// Exercise the production preference/cache startup sequence with isolated synthetic files.
+    fn check_cache_startup_radii(cache_kind: &str, saved: bool, terrain_args: &[&str]) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        if saved {
+            save_settings(
+                &path,
+                &RenderingSettings {
+                    stream_radius: 2,
+                    unload_radius: 5,
+                    ..default()
+                },
+            )
+            .unwrap();
+        }
+        let cache_path = directory.path().join("grass_cache.rkyv");
+        match cache_kind {
+            "missing" => {}
+            "corrupt" => std::fs::write(&cache_path, b"broken").unwrap(),
+            "old" | "valid" => {
+                let cache = shared::grass::GrassCache {
+                    version: if cache_kind == "old" {
+                        5
+                    } else {
+                        shared::grass::GRASS_CACHE_VERSION
+                    },
+                    types: vec![],
+                    cells: vec![],
+                };
+                std::fs::write(
+                    &cache_path,
+                    rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+                )
+                .unwrap();
+            }
+            _ => panic!("unknown fixture cache"),
+        }
+        let ini = directory.path().join("Skyrim.ini");
+        std::fs::write(&ini, "[General]\nuGridsToLoad=9\n").unwrap();
+        let terrain_args: Vec<String> = terrain_args
+            .iter()
+            .map(|arg| {
+                if *arg == "INI" {
+                    ini.to_str().unwrap()
+                } else {
+                    arg
+                }
+                .to_string()
+            })
+            .collect();
+        let mut config = launch(
+            &["--grass", "--grass-radius", "32"]
+                .map(String::from)
+                .into_iter()
+                .chain(terrain_args.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+        config.assets_dir = directory.path().to_path_buf();
+        let mut preferences = prepare_settings_at(&mut config, Some(path.clone()));
+        let cache =
+            crate::app::load_optional_grass_cache(&mut config, true, Some(&mut preferences));
+        let valid = cache_kind == "valid";
+        assert_eq!(cache.is_some(), valid);
+        assert_eq!(config.grass, valid);
+        let mut without_grass = launch(&terrain_args);
+        let (baseline, _) = prepare_settings_at(&mut without_grass, Some(path.clone()));
+        let expected = if valid && terrain_args.is_empty() {
+            (33, 34)
+        } else {
+            (baseline.stream_radius, baseline.unload_radius)
+        };
+        assert_eq!((config.stream_radius, config.unload_radius), expected);
+        assert_eq!(
+            (preferences.0.stream_radius, preferences.0.unload_radius),
+            expected
+        );
+        preferences.0.exposure_ev100 = 8.5;
+        preferences.1.save(&preferences.0);
+        assert!(
+            preferences.1.status.starts_with("Settings saved"),
+            "{}",
+            preferences.1.status
+        );
+        let (reloaded, _) = prepare_settings_at(&mut launch(&[]), Some(path));
+        assert_eq!(
+            (reloaded.stream_radius, reloaded.unload_radius),
+            if saved { (2, 5) } else { (2, 3) }
+        );
+        assert_eq!(reloaded.exposure_ev100, 8.5);
+    }
+
+    /// A missing cache disables grass, warns once and restores both saved terrain radii.
+    #[test]
+    fn g3_cache_startup_missing_restores_saved_radii_and_warns_once() {
+        const PROBE: &str = "MUDCRAB_TEST_GRASS_CACHE_RADII";
+        if std::env::var_os(PROBE).is_some() {
+            check_cache_startup_radii("missing", true, &[]);
+            return;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "settings::tests::g3_cache_startup_missing_restores_saved_radii_and_warns_once",
+                "--nocapture",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        assert_eq!(
+            stderr
+                .matches("warning: grass disabled for this pack:")
+                .count(),
+            1,
+            "{stderr}"
+        );
+        assert!(result.status.success(), "{stderr}");
+    }
+
+    /// Corrupt archives restore the saved radii as well as disabling grass.
+    #[test]
+    fn g3_cache_startup_corrupt_restores_saved_radii() {
+        check_cache_startup_radii("corrupt", true, &[]);
+    }
+
+    /// Archives from an unsupported version also restore the non-grass terrain rings.
+    #[test]
+    fn g3_cache_startup_old_restores_saved_radii() {
+        check_cache_startup_radii("old", true, &[]);
+    }
+
+    /// A valid archive keeps the widened ring while saves retain the user's preferences.
+    #[test]
+    fn g3_cache_startup_valid_keeps_coverage() {
+        check_cache_startup_radii("valid", true, &[]);
+    }
+
+    /// Explicit CLI terrain limits win with either a missing or a valid grass archive.
+    #[test]
+    fn g3_cache_startup_explicit_stream_radius_wins() {
+        for cache in ["missing", "valid"] {
+            check_cache_startup_radii(cache, true, &["--stream-radius", "6"]);
+        }
+    }
+
+    /// Without saved settings, failed grass startup recovers the default terrain radii.
+    #[test]
+    fn g3_cache_startup_missing_restores_unsaved_radii() {
+        check_cache_startup_radii("missing", false, &[]);
+    }
+
+    /// Imported uGridsToLoad survives rollback rather than inheriting grass's larger ring.
+    #[test]
+    fn g3_cache_startup_missing_restores_ini_radii() {
+        check_cache_startup_radii("missing", true, &["--ini", "INI"]);
     }
 
     /// Menu radius changes keep the existing grass fade inside the newly generated ring.

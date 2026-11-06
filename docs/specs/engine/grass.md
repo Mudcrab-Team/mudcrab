@@ -7,7 +7,10 @@ grass in a benchmark-only or non-streaming fixture run prints one warning that i
 has no effect, without changing camera anti-aliasing or terrain streaming radii.
 A missing,
 old or invalid archive disables grass for that pack with one warning; the world
-still loads and capture readiness no longer waits for grass. Existing
+still loads and capture readiness no longer waits for grass. Terrain streaming
+radii return to the values resolved without grass, including saved preferences
+and explicit `--stream-radius` limits. Automatic grass coverage never becomes a
+saved terrain preference. Existing
 terrain, models, camera anti-aliasing and cell commit behavior remain unchanged
 when grass is disabled.
 
