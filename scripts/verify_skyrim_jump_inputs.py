@@ -61,7 +61,13 @@ def verify(corpus, plan_path):
     for attempt in manifest['attempts']:
         if 'failure' not in attempt:
             continue
-        raw = gzip.decompress((corpus / attempt['path']).read_bytes())
+        if attempt.get('trace_status') == 'not-created':
+            require(attempt['exit_code'] != 0 and 'path' not in attempt and 'trace_sha256' not in attempt,
+                    'Missing trace is only valid for an unsuccessful capture before trace creation')
+            continue
+        path = Path(attempt['path'])
+        require(not path.is_absolute() and '..' not in path.parts, 'Failed trace escapes corpus')
+        raw = gzip.decompress((corpus / path).read_bytes())
         require(hashlib.sha256(raw).hexdigest() == attempt['trace_sha256'], 'Failed trace identity differs')
     return {'status': 'passed', 'fit_performed': False, 'runs': results,
             'attempts': len(manifest['attempts']),

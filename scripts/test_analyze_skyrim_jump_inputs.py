@@ -1,12 +1,20 @@
+import contextlib
 import gzip
+import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
+import zipfile
 
 from analyze_skyrim_jump_inputs import (HEADER, LAUNCH_REQUIRED, SETTER_REQUIRED,
                                         analyze_rows, decode, f32)
+import capture_skyrim_jump_inputs as capture
 from capture_skyrim_jump_inputs import control_prediction
+from verify_skyrim_jump_inputs import verify
 from record_skyrim_motion import RECORD, read_fixture
 from test_record_skyrim_motion import recording
 
@@ -113,6 +121,97 @@ class JumpInputsProofTests(unittest.TestCase):
             path.write_text(json.dumps(fixture))
             with self.assertRaisesRegex(ValueError, 'Unsupported jump-input intervention'):
                 read_fixture(path)
+
+
+class CaptureResumeTests(unittest.TestCase):
+    def test_failed_attempt_then_resume_produces_a_verifiable_campaign(self):
+        reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
+        observed = json.loads((reference / 'manifest.json').read_text())
+        plan = capture.ROOT / 'tools/skyrim-recorder/fixtures/jump-inputs-v4.json'
+        declaration = json.loads(plan.read_text())
+        baseline = gzip.decompress((reference / observed['runs'][0]['path']).read_bytes())
+        for mode in ('proof', 'runner', 'startup'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_dir = root / 'session'
+                session_dir.mkdir()
+                session = dict(profile_name='inputs-v4',
+                               exe_sha256=declaration['runtime_sha256'],
+                               source_save_sha256=declaration['source_save_sha256'],
+                               input_sha256='test-input', proton_sha256='test-proton',
+                               build=dict(source_sha256=capture.digest(capture.ROOT / 'tools/skyrim-recorder/probe.cpp'),
+                                          extension_sha256=capture.digest(capture.ROOT / 'tools/skyrim-recorder/jump_inputs.h'),
+                                          dll_sha256='test-dll'))
+                capture.write(session_dir / 'session.json', session)
+                corpus = root / 'corpus'
+                argv = ['capture', '--session', str(session_dir), '--corpus', str(corpus),
+                        '--private-output', str(root / 'private'), '--ocr-prefix', '/', '--plan', str(plan)]
+                failed = False
+
+                def record(command, **_kwargs):
+                    nonlocal failed
+                    output = Path(command[command.index('--output') + 1])
+                    output.mkdir()
+                    name = Path(command[command.index('--fixture') + 1]).stem
+                    run = next(row for row in observed['runs'] if row['id'] == name)
+                    raw = gzip.decompress((reference / run['path']).read_bytes())
+                    proof = dict(run['proof'], session=session,
+                                 runner_sha256=capture.digest(capture.ROOT / 'scripts/record_skyrim_motion.py'),
+                                 trace_sha256=hashlib.sha256(raw).hexdigest())
+                    if not failed:
+                        failed = True
+                        if mode == 'proof':
+                            raw = raw[:-1]
+                        else:
+                            if mode == 'runner':
+                                (output / 'trace.bin').write_bytes(raw)
+                            capture.write(output / 'failure.json', dict(phase='fixture-readiness', error='test interruption'))
+                            return SimpleNamespace(returncode=1)
+                    (output / 'trace.bin').write_bytes(raw)
+                    capture.write(output / 'proof.json', proof)
+                    return SimpleNamespace(returncode=0)
+
+                with patch('sys.argv', argv), patch.object(capture.subprocess, 'run', record), contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        capture.main()
+                    manifest = json.loads((corpus / 'manifest.json').read_text())
+                    self.assertEqual(manifest['runs'], [])
+                    failure = manifest['attempts'][0]
+                    if mode == 'startup':
+                        self.assertEqual(failure['trace_status'], 'not-created')
+                    else:
+                        raw = baseline[:-1] if mode == 'proof' else baseline
+                        self.assertEqual(gzip.decompress((corpus / failure['path']).read_bytes()), raw)
+                        self.assertEqual(failure['trace_sha256'], hashlib.sha256(raw).hexdigest())
+                    capture.main()
+                result = verify(corpus, plan)
+                self.assertEqual(result['status'], 'passed')
+                self.assertEqual(len(result['runs']), 4)
+                self.assertEqual(result['attempts'], 5)
+                self.assertEqual(result['failed_attempts'], [failure])
+                if mode == 'proof':
+                    archive_path = corpus / 'capture-source.zip'
+                    with zipfile.ZipFile(archive_path, 'a') as archive:
+                        archive.writestr('unexpected-source.py', 'changed source set')
+                    archived = archive_path.read_bytes()
+                    manifest_bytes = (corpus / 'manifest.json').read_bytes()
+                    error = io.StringIO()
+                    with patch('sys.argv', argv), contextlib.redirect_stderr(error):
+                        with self.assertRaises(SystemExit):
+                            capture.main()
+                    self.assertIn('Capture sources changed', error.getvalue())
+                    self.assertEqual(archive_path.read_bytes(), archived)
+                    self.assertEqual((corpus / 'manifest.json').read_bytes(), manifest_bytes)
+                if mode != 'startup':
+                    (corpus / failure['path']).write_bytes(gzip.compress(b'changed'))
+                    with self.assertRaisesRegex(ValueError, 'Failed trace identity'):
+                        verify(corpus, plan)
+                else:
+                    manifest = json.loads((corpus / 'manifest.json').read_text())
+                    manifest['attempts'][0]['exit_code'] = 0
+                    capture.write(corpus / 'manifest.json', manifest)
+                    with self.assertRaisesRegex(ValueError, 'Missing trace is only valid'):
+                        verify(corpus, plan)
 
 
 if __name__ == '__main__':
