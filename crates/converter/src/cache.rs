@@ -191,6 +191,9 @@ pub(crate) fn body_compose_inputs(sex: &str) -> [String; 4] {
 /// Versioned default-gait recipe and its canonical raw input contract.
 pub(crate) const DEFAULT_GAIT_RECIPE: &str = "default-gait-v1";
 
+/// Verified cow/chicken idle over the exact standalone body hierarchy.
+pub(crate) const CREATURE_IDLE_RECIPE: &str = "creature-idle-v1";
+
 /// The complete input set shared by gait proof production and reuse validation.
 pub(crate) fn default_gait_inputs(sex: &str, stem: &str) -> [String; 4] {
     let assets = "meshes/actors/character/character assets";
