@@ -18,6 +18,10 @@ use bevy::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "settings_g6_tests.rs"]
+mod g6_tests;
+
 pub const TONE_MAPS: [Tonemapping; 9] = [
     Tonemapping::None,
     Tonemapping::Reinhard,
