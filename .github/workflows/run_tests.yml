@@ -117,6 +117,9 @@ jobs:
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
 
+      - name: Verify native jump input evidence and retained failed attempts
+        run: python3 -B scripts/verify_skyrim_jump_inputs.py > "$RUNNER_TEMP/skyrim-jump-inputs.json"
+
       - name: Test Riverwood asset reuse audit
         run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
 
@@ -328,6 +331,9 @@ jobs:
         run: cargo nextest run --workspace --lib --bins --tests --examples --no-fail-fast --no-tests=warn
         env:
           NEXTEST_NO_TESTS: warn
+
+      - name: Replay production jump physics against held-out native observations
+        run: python3 -B scripts/check_skyrim_jump_runtime.py --output "$RUNNER_TEMP/skyrim-jump-replay" --require-heldout-pass
 
       - name: Test GPU texture encoder on software Vulkan
         run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots)'

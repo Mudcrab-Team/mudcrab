@@ -1,0 +1,685 @@
+{
+  "schema": 1,
+  "profile": "jump-inputs-v4",
+  "plan_sha256": "3d45955303805c09a2cd254be91b46483277c1e45ffc7e9eefd47008e16627ab",
+  "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+  "runs": [
+    {
+      "id": "baseline",
+      "path": "traces/baseline.bin.gz",
+      "sha256": "625ba23190910c559b0861f2a4ddd290eaff627ed47f5675d4cd03dec0e92d2b",
+      "fixture": {
+        "schema": 1,
+        "name": "courtyard-jump-inputs",
+        "kind": "jump",
+        "position": [
+          24828,
+          -3000,
+          -2900
+        ],
+        "yaw_degrees": 90,
+        "hold_ms": 500,
+        "modifier": "jump",
+        "time_multiplier": 1.0
+      },
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "dxvk_config": "dxvk.maxFrameRate = 60",
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "33b4e4b3ffadf4f9dce14e192fe2440736e48d96e35255abdbe4405c58ebe811",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=2926918799\nuPersistentUuidData2=2581876298\nuPersistentUuidData1=2904444873\nuPersistentUuidData0=4163059711\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "8ab2bc9aff269c5d65fbc129949362fa3126f956cb1d858a34d78826b60a8d2e",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "dll_sha256": "3c895ab48bf294148643c485da70d146bc9d778ad6196c8d0b22b9b830d6c0fa",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "receipt": {
+        "session_sha256": "c06da63d9c58c1ec74817ea6ee3d0e87bfc4af70e25f3d50d618a405522b38ab",
+        "sources": {
+          "scripts/record_skyrim_motion.py": "a7507cab1867a64f29a687fa47311701d383d51968604e68367a35b3241db9a5",
+          "scripts/capture_skyrim_jump_inputs.py": "6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad",
+          "scripts/analyze_skyrim_jump_inputs.py": "be776a57dcf39a6d367277e94bb083e40086a98faae13ed38805c12c772ec183",
+          "scripts/inspect_skyrim_jump_inputs.py": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+          "tools/skyrim-recorder/probe.cpp": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+          "tools/skyrim-recorder/jump_inputs.h": "6256b7fb8f4c4e452c80b1ff9b477cf8b6606440273e98025b721507e30216d8",
+          "tools/skyrim-recorder/build.py": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+          "tools/skyrim-recorder/runtime.json": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+          "tools/skyrim-recorder/runtime-inputs-v4.json": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+          "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13"
+        },
+        "command": [
+          "/usr/bin/python",
+          "/home/aivv/.t3/worktrees/mudcrab/t3-46e31392/scripts/record_skyrim_motion.py",
+          "run",
+          "--session",
+          "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+          "--output",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline-attempt-3",
+          "--fixture",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline.json",
+          "--frame-cap",
+          "60",
+          "--ocr-prefix",
+          "/home/aivv/.cache/mudcrab-520/ocr"
+        ],
+        "prediction_before_capture": null,
+        "adopted": false
+      },
+      "result": {
+        "status": "passed",
+        "validity": {
+          "setter": 131071,
+          "launch": 130431
+        },
+        "inputs": {
+          "jump_height_min": 76.0,
+          "reference_u16": 100,
+          "reference_factor": 1.0,
+          "npc_type": 43,
+          "sex_index": 0,
+          "npc_height": 1.0,
+          "race_heights": [
+            1.0299999713897705,
+            1.0299999713897705
+          ],
+          "npc_race_factor": 1.0299999713897705,
+          "combined_scale": 1.0299999713897705,
+          "game_to_havok": 0.014287499710917473,
+          "reference_unit": 0.009999999776482582,
+          "swim_setting": 2.0,
+          "actor_flag_bit_1": 0,
+          "reference_form_id": "00000014",
+          "npc_form_id": "00000007",
+          "race_form_id": "00013746"
+        },
+        "setter_call_rva": "0x6752ba",
+        "setter_argument": 78.27999877929688,
+        "predicted_setter_argument": 78.27999877929688,
+        "controller_height": 1.1184254884719849,
+        "predicted_controller_height": 1.1184254884719849,
+        "launch_havok_velocity": 4.684390068054199,
+        "predicted_launch_havok_velocity": 4.684390068054199,
+        "launch_creation_velocity": 327.8663120620113,
+        "havok_to_creation": 69.99124908447266,
+        "effective_gravity_havok": 9.8100004196167,
+        "controller_dt": 0.01666666567325592,
+        "first_step_havok_velocity": 4.463665008544922,
+        "claim_scope": "Exact ordinary-ground field product and setter store. Launch tolerance 1e-6 Havok velocity. No fitted coefficients or trajectory refit."
+      }
+    },
+    {
+      "id": "setting-64",
+      "path": "traces/setting-64.bin.gz",
+      "sha256": "9272488ede54ef3797a3e9f2fb17798530a8bc77e12057941c0d204fb72a5de6",
+      "fixture": {
+        "schema": 1,
+        "name": "courtyard-jump-inputs",
+        "kind": "jump",
+        "position": [
+          24828,
+          -3000,
+          -2900
+        ],
+        "yaw_degrees": 90,
+        "hold_ms": 500,
+        "modifier": "jump",
+        "time_multiplier": 1.0,
+        "jump_height_min": 64.0
+      },
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "dxvk_config": "dxvk.maxFrameRate = 60",
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "3b7dab2ed271f24746ad8a21e2b0b362ac95c5179823e93aee5f34222ba237ca",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=4130311591\nuPersistentUuidData2=2365508859\nuPersistentUuidData1=2252817581\nuPersistentUuidData0=3453922111\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "d668e279c5d92dee6acf469f2a77886d34b9cc98d68f7cc4d7ef4360a654f50c",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "dll_sha256": "3c895ab48bf294148643c485da70d146bc9d778ad6196c8d0b22b9b830d6c0fa",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "receipt": {
+        "session_sha256": "c06da63d9c58c1ec74817ea6ee3d0e87bfc4af70e25f3d50d618a405522b38ab",
+        "sources": {
+          "scripts/record_skyrim_motion.py": "a7507cab1867a64f29a687fa47311701d383d51968604e68367a35b3241db9a5",
+          "scripts/capture_skyrim_jump_inputs.py": "6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad",
+          "scripts/analyze_skyrim_jump_inputs.py": "be776a57dcf39a6d367277e94bb083e40086a98faae13ed38805c12c772ec183",
+          "scripts/inspect_skyrim_jump_inputs.py": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+          "tools/skyrim-recorder/probe.cpp": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+          "tools/skyrim-recorder/jump_inputs.h": "6256b7fb8f4c4e452c80b1ff9b477cf8b6606440273e98025b721507e30216d8",
+          "tools/skyrim-recorder/build.py": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+          "tools/skyrim-recorder/runtime.json": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+          "tools/skyrim-recorder/runtime-inputs-v4.json": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+          "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13"
+        },
+        "command": [
+          "/usr/bin/python",
+          "/home/aivv/.t3/worktrees/mudcrab/t3-46e31392/scripts/record_skyrim_motion.py",
+          "run",
+          "--session",
+          "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+          "--output",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/setting-64-attempt-1",
+          "--fixture",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/setting-64.json",
+          "--frame-cap",
+          "60",
+          "--ocr-prefix",
+          "/home/aivv/.cache/mudcrab-520/ocr"
+        ],
+        "prediction_before_capture": {
+          "jump_height_min": 64.0,
+          "reference_u16": 100,
+          "setter_argument": 65.91999816894531,
+          "controller_height": 0.9418319463729858,
+          "method": "Baseline raw factors, requested typed control, native float32 order; no fit."
+        },
+        "adopted": false
+      },
+      "result": {
+        "status": "passed",
+        "validity": {
+          "setter": 131071,
+          "launch": 130431
+        },
+        "inputs": {
+          "jump_height_min": 64.0,
+          "reference_u16": 100,
+          "reference_factor": 1.0,
+          "npc_type": 43,
+          "sex_index": 0,
+          "npc_height": 1.0,
+          "race_heights": [
+            1.0299999713897705,
+            1.0299999713897705
+          ],
+          "npc_race_factor": 1.0299999713897705,
+          "combined_scale": 1.0299999713897705,
+          "game_to_havok": 0.014287499710917473,
+          "reference_unit": 0.009999999776482582,
+          "swim_setting": 2.0,
+          "actor_flag_bit_1": 0,
+          "reference_form_id": "00000014",
+          "npc_form_id": "00000007",
+          "race_form_id": "00013746"
+        },
+        "setter_call_rva": "0x6752ba",
+        "setter_argument": 65.91999816894531,
+        "predicted_setter_argument": 65.91999816894531,
+        "controller_height": 0.9418319463729858,
+        "predicted_controller_height": 0.9418319463729858,
+        "launch_havok_velocity": 4.2986907958984375,
+        "predicted_launch_havok_velocity": 4.2986907958984375,
+        "launch_creation_velocity": 300.87073823285755,
+        "havok_to_creation": 69.99124908447266,
+        "effective_gravity_havok": 9.8100004196167,
+        "controller_dt": 0.01666666567325592,
+        "first_step_havok_velocity": 4.07796573638916,
+        "claim_scope": "Exact ordinary-ground field product and setter store. Launch tolerance 1e-6 Havok velocity. No fitted coefficients or trajectory refit."
+      }
+    },
+    {
+      "id": "reference-125",
+      "path": "traces/reference-125.bin.gz",
+      "sha256": "6c7488fd95bcf892f291cac02bf277fa7b3cd123df4fb01d491f4cefdc8223a6",
+      "fixture": {
+        "schema": 1,
+        "name": "courtyard-jump-inputs",
+        "kind": "jump",
+        "position": [
+          24828,
+          -3000,
+          -2900
+        ],
+        "yaw_degrees": 90,
+        "hold_ms": 500,
+        "modifier": "jump",
+        "time_multiplier": 1.0,
+        "reference_scale": 1.25
+      },
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "dxvk_config": "dxvk.maxFrameRate = 60",
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "5fde856994eb22809df541fa5263749e31d2908f729148c3c841d655af0523fa",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=592617488\nuPersistentUuidData2=3087813380\nuPersistentUuidData1=4081404428\nuPersistentUuidData0=2886164396\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "b10ee77294d10fcea629a7b2dacf58fcf5b68b4b6b6c576fe97702f37651669b",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "dll_sha256": "3c895ab48bf294148643c485da70d146bc9d778ad6196c8d0b22b9b830d6c0fa",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "receipt": {
+        "session_sha256": "c06da63d9c58c1ec74817ea6ee3d0e87bfc4af70e25f3d50d618a405522b38ab",
+        "sources": {
+          "scripts/record_skyrim_motion.py": "a7507cab1867a64f29a687fa47311701d383d51968604e68367a35b3241db9a5",
+          "scripts/capture_skyrim_jump_inputs.py": "6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad",
+          "scripts/analyze_skyrim_jump_inputs.py": "be776a57dcf39a6d367277e94bb083e40086a98faae13ed38805c12c772ec183",
+          "scripts/inspect_skyrim_jump_inputs.py": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+          "tools/skyrim-recorder/probe.cpp": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+          "tools/skyrim-recorder/jump_inputs.h": "6256b7fb8f4c4e452c80b1ff9b477cf8b6606440273e98025b721507e30216d8",
+          "tools/skyrim-recorder/build.py": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+          "tools/skyrim-recorder/runtime.json": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+          "tools/skyrim-recorder/runtime-inputs-v4.json": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+          "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13"
+        },
+        "command": [
+          "/usr/bin/python",
+          "/home/aivv/.t3/worktrees/mudcrab/t3-46e31392/scripts/record_skyrim_motion.py",
+          "run",
+          "--session",
+          "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+          "--output",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/reference-125-attempt-1",
+          "--fixture",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/reference-125.json",
+          "--frame-cap",
+          "60",
+          "--ocr-prefix",
+          "/home/aivv/.cache/mudcrab-520/ocr"
+        ],
+        "prediction_before_capture": {
+          "jump_height_min": 76.0,
+          "reference_u16": 125,
+          "setter_argument": 97.84999084472656,
+          "controller_height": 1.3980317115783691,
+          "method": "Baseline raw factors, requested typed control, native float32 order; no fit."
+        },
+        "adopted": false
+      },
+      "result": {
+        "status": "passed",
+        "validity": {
+          "setter": 131071,
+          "launch": 130431
+        },
+        "inputs": {
+          "jump_height_min": 76.0,
+          "reference_u16": 125,
+          "reference_factor": 1.25,
+          "npc_type": 43,
+          "sex_index": 0,
+          "npc_height": 1.0,
+          "race_heights": [
+            1.0299999713897705,
+            1.0299999713897705
+          ],
+          "npc_race_factor": 1.0299999713897705,
+          "combined_scale": 1.2874999046325684,
+          "game_to_havok": 0.014287499710917473,
+          "reference_unit": 0.009999999776482582,
+          "swim_setting": 2.0,
+          "actor_flag_bit_1": 0,
+          "reference_form_id": "00000014",
+          "npc_form_id": "00000007",
+          "race_form_id": "00013746"
+        },
+        "setter_call_rva": "0x6752ba",
+        "setter_argument": 97.84999084472656,
+        "predicted_setter_argument": 97.84999084472656,
+        "controller_height": 1.3980317115783691,
+        "predicted_controller_height": 1.3980317115783691,
+        "launch_havok_velocity": 5.237307071685791,
+        "predicted_launch_havok_velocity": 5.237307071685791,
+        "launch_creation_velocity": 366.5656637862303,
+        "havok_to_creation": 69.99124908447266,
+        "effective_gravity_havok": 9.8100004196167,
+        "controller_dt": 0.01666666567325592,
+        "first_step_havok_velocity": 5.016582012176514,
+        "claim_scope": "Exact ordinary-ground field product and setter store. Launch tolerance 1e-6 Havok velocity. No fitted coefficients or trajectory refit."
+      }
+    },
+    {
+      "id": "repeat-baseline",
+      "path": "traces/repeat-baseline.bin.gz",
+      "sha256": "5d484dc4f571048bf9d12df134aa26a240e3190b9df67296b060e52a180339a1",
+      "fixture": {
+        "schema": 1,
+        "name": "courtyard-jump-inputs",
+        "kind": "jump",
+        "position": [
+          24828,
+          -3000,
+          -2900
+        ],
+        "yaw_degrees": 90,
+        "hold_ms": 500,
+        "modifier": "jump",
+        "time_multiplier": 1.0
+      },
+      "proof": {
+        "status": "passed",
+        "received_down_up": true,
+        "forward_input_accepted": true,
+        "source_save_unchanged": true,
+        "frame_cap_request": 60,
+        "dxvk_config": "dxvk.maxFrameRate = 60",
+        "ini": {
+          "Skyrim.ini": {
+            "sha256": "9b34c57f23e41066cd87f15e6c9bd19b55cad30ae160933c43b2c2a38c0eaf54",
+            "text": "[General]\nsLanguage=ENGLISH\nsIntroSequence=\n[Archive]\nsResourceArchiveList=Skyrim - Misc.bsa, Skyrim - Shaders.bsa, Skyrim - Interface.bsa, Skyrim - Animations.bsa, Skyrim - Meshes0.bsa, Skyrim - Meshes1.bsa, Skyrim - Sounds.bsa\nsResourceArchiveList2=Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa\n[SaveGame]\nbAllowScriptedAutosave=0\n"
+          },
+          "SkyrimPrefs.ini": {
+            "sha256": "503fc4bcf0e8b4a683ec6077b874fde812c0872fc63fb2239f2dbe339b7f5dce",
+            "text": "[Display]\nbFull Screen=0\nbBorderless=1\niSize W=1280\niSize H=720\niVSyncPresentInterval=0\niMultiSample=0\niShadowMapResolution=1024\nbUseTAA=0\nfShadowDistance=8000.0000\niNumFocusShadow=4\niNumSplits=2\nfInteriorShadowDistance=3000.0000\nffocusShadowMapDoubleEveryXUnit=450.0000\nfDynamicDOFBlurMultiplier=0.8000\nfProjectedUVNormalDetailTilingScale=1.2000\nfProjectedUVDiffuseNormalTilingScale=0.5000\nbEnableProjecteUVDiffuseNormals=1\nbIndEnable=0\nbSAO_CS_Enable=0\nbToggleSparkles=1\nbSAOEnable=1\nbScreenSpaceReflectionEnabled=1\nbIBLFEnable=1\nuBookRatio=2\nbForceCreateTarget=0\niReflectionResolutionDivider=2\nbUse64bitsHDRRenderTarget=0\niSaveGameScreenShotHeighWSt=192\niSaveGameScreenShotWidthWS=320\niSaveGameScreenShotHeight=192\niSaveGameScreenShotWidth=256\niShadowMaskQuarter=4\nbVolumetricLightingEnable=1\niVolumetricLightingQuality=1\nbEnableImprovedSnow=1\nfLightLODStartFade=1000.0000\nbFXAAEnabled=0\nfLeafAnimDampenDistEnd=4600.0000\nfLeafAnimDampenDistStart=3600.0000\nfTreesMidLODSwitchDist=3600.0000\nfMeshLODFadePercentDefault=1.2000\nfMeshLODFadeBoundDefault=256.0000\nfMeshLODLevel2FadeTreeDistance=2048.0000\nfMeshLODLevel1FadeTreeDistance=2844.0000\nfMeshLODLevel2FadeDist=9999999.0000\nfMeshLODLevel1FadeDist=9999999.0000\nfGamma=1.0000\niScreenShotIndex=0\nbTreesReceiveShadows=1\nbUsePrecipitationOcclusion=1\nbDrawLandShadows=0\niMaxSkinDecalsPerFrame=25\niMaxDecalsPerFrame=100\n[MAIN]\nbSaveOnPause=0\nbSaveOnTravel=0\nbSaveOnWait=0\nbSaveOnRest=0\nfSkyCellRefFadeDistance=150000.0000\nbGamepadEnable=1\nbCrosshairEnabled=1\nfHUDOpacity=1.0000\n[Launcher]\nbEnableFileSelection=1\n[Controls]\nbGamePadEnable=0\nfMouseHeadingSensitivity=0.0125\nfGamepadHeadingSensitivity=0.6667\nbAlwaysRunByDefault=1\nbInvertYValues=0\nbGamePadRumble=1\nbUseKinect=0\n[Imagespace]\nbDoDepthOfField=1\nbLensFlare=1\n[General]\nfLightingOutputColourClampPostSpec=1.0000\nfLightingOutputColourClampPostEnv=1.0000\nfLightingOutputColourClampPostLit=1.0000\nbFreebiesSeen=0\nbUpsellOwned=0\nuiMarketplaceUpdatedHash=4294967295\niStoryManagerLoggingEvent=-1\nbEnableStoryManagerLogging=0\nuLargeRefLODGridSize=9\n[Bethesda.net]\nuPersistentUuidData3=786470622\nuPersistentUuidData2=2523902286\nuPersistentUuidData1=2884980226\nuPersistentUuidData0=362288042\nuCreationsResolvedEnvironment=0\n[Interface]\nfMouseCursorSpeed=1.0000\nbDialogueSubtitles=0\nbGeneralSubtitles=0\nbShowCompass=1\n[GamePlay]\nbShowFloatingQuestMarkers=1\nbShowQuestMarkers=1\niDifficulty=2\nbCheckForMissingContentOnStartup=1\n[Particles]\niMaxDesired=750\n[SaveGame]\nfAutosaveEveryXMins=15.0000\n[AudioMenu]\nfAudioMasterVolume=1.0000\nfVal7=1.0000\nuID7=0\nfVal6=1.0000\nuID6=0\nfVal5=1.0000\nuID5=0\nfVal4=1.0000\nuID4=0\nfVal3=0.5000\nuID3=466532\nfVal2=0.8000\nuID2=554685\nfVal1=0.8000\nuID1=1007612\nfVal0=1.0000\nuID0=94881\n[CreationsMenu]\nbMusicOn=1\n[Clouds]\nfCloudLevel2Distance=262144.0000\nfCloudLevel1Distance=32768.0000\nfCloudLevel0Distance=16384.0000\nfCloudNearFadeDistance=9000.0000\n[Water]\nbUseWaterDisplacements=1\nbUseWaterRefractions=1\nbUseWaterReflections=1\nbUseWaterDepth=1\n[TerrainManager]\nfTreeLoadDistance=75000.0000\nfBlockMaximumDistance=250000.0000\nfBlockLevel1Distance=70000.0000\nfBlockLevel0Distance=35000.0000\nfSplitDistanceMult=1.5000\nbShowLODInEditor=1\n[NavMesh]\nfObstacleAlpha=0.5000\nfCoverSideHighAlpha=0.8000\nfCoverSideLowAlpha=0.6500\nfEdgeFullAlpha=1.0000\nfEdgeHighAlpha=0.7500\nfEdgeLowAlpha=0.5000\nfTriangleFullAlpha=0.7000\nfTriangleHighAlpha=0.3500\nfTriangleLowAlpha=0.2000\nfLedgeBoxHalfHeight=25.0000\nfEdgeDistFromVert=10.0000\nfEdgeThickness=10.0000\nfPointSize=2.5000\n[Trees]\nbRenderSkinnedTrees=1\nuiMaxSkinnedTreesToRender=40\n[Grass]\nfGrassStartFadeDistance=7000.0000\nfGrassMaxStartFadeDistance=7000.0000\nfGrassMinStartFadeDistance=400.0000\n[Decals]\nbSkinnedDecals=1\nbDecals=1\nuMaxSkinDecals=100\nuMaxDecals=1000\n[LOD]\nfLODFadeOutMultSkyCell=1.0000\nfLODFadeOutMultObjects=5.0000\nfLODFadeOutMultItems=3.0000\nfLODFadeOutMultActors=6.0000\n"
+          }
+        },
+        "fixture_sha256": "8ab2bc9aff269c5d65fbc129949362fa3126f956cb1d858a34d78826b60a8d2e",
+        "exe_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+        "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+        "dll_sha256": "3c895ab48bf294148643c485da70d146bc9d778ad6196c8d0b22b9b830d6c0fa",
+        "input_sha256": "ff605522742fcb4a2e2b910231a18787e7c94090ac73270d36a2c536df9c415f",
+        "proton_sha256": "3e937ebc6eceef83792de862266a26e034a4b326c973d1e9e23a1c5f1e82ef91"
+      },
+      "receipt": {
+        "session_sha256": "c06da63d9c58c1ec74817ea6ee3d0e87bfc4af70e25f3d50d618a405522b38ab",
+        "sources": {
+          "scripts/record_skyrim_motion.py": "a7507cab1867a64f29a687fa47311701d383d51968604e68367a35b3241db9a5",
+          "scripts/capture_skyrim_jump_inputs.py": "6e85fa44b471005a5179a88fb220d4a1c12e8ab6341cadc640250d93ebc8d9ad",
+          "scripts/analyze_skyrim_jump_inputs.py": "be776a57dcf39a6d367277e94bb083e40086a98faae13ed38805c12c772ec183",
+          "scripts/inspect_skyrim_jump_inputs.py": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+          "tools/skyrim-recorder/probe.cpp": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+          "tools/skyrim-recorder/jump_inputs.h": "6256b7fb8f4c4e452c80b1ff9b477cf8b6606440273e98025b721507e30216d8",
+          "tools/skyrim-recorder/build.py": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+          "tools/skyrim-recorder/runtime.json": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+          "tools/skyrim-recorder/runtime-inputs-v4.json": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+          "tools/skyrim-recorder/input.c": "115631931125dca681f185bb56790ed426102670ccc4c911b3b0ebe30bd5ac13"
+        },
+        "command": [
+          "/usr/bin/python",
+          "/home/aivv/.t3/worktrees/mudcrab/t3-46e31392/scripts/record_skyrim_motion.py",
+          "run",
+          "--session",
+          "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+          "--output",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/repeat-baseline-attempt-1",
+          "--fixture",
+          "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/repeat-baseline.json",
+          "--frame-cap",
+          "60",
+          "--ocr-prefix",
+          "/home/aivv/.cache/mudcrab-520/ocr"
+        ],
+        "prediction_before_capture": {
+          "jump_height_min": 76.0,
+          "reference_u16": 100,
+          "setter_argument": 78.27999877929688,
+          "controller_height": 1.1184254884719849,
+          "method": "Baseline raw factors, requested typed control, native float32 order; no fit."
+        },
+        "adopted": false
+      },
+      "result": {
+        "status": "passed",
+        "validity": {
+          "setter": 131071,
+          "launch": 130431
+        },
+        "inputs": {
+          "jump_height_min": 76.0,
+          "reference_u16": 100,
+          "reference_factor": 1.0,
+          "npc_type": 43,
+          "sex_index": 0,
+          "npc_height": 1.0,
+          "race_heights": [
+            1.0299999713897705,
+            1.0299999713897705
+          ],
+          "npc_race_factor": 1.0299999713897705,
+          "combined_scale": 1.0299999713897705,
+          "game_to_havok": 0.014287499710917473,
+          "reference_unit": 0.009999999776482582,
+          "swim_setting": 2.0,
+          "actor_flag_bit_1": 0,
+          "reference_form_id": "00000014",
+          "npc_form_id": "00000007",
+          "race_form_id": "00013746"
+        },
+        "setter_call_rva": "0x6752ba",
+        "setter_argument": 78.27999877929688,
+        "predicted_setter_argument": 78.27999877929688,
+        "controller_height": 1.1184254884719849,
+        "predicted_controller_height": 1.1184254884719849,
+        "launch_havok_velocity": 4.684390068054199,
+        "predicted_launch_havok_velocity": 4.684390068054199,
+        "launch_creation_velocity": 327.8663120620113,
+        "havok_to_creation": 69.99124908447266,
+        "effective_gravity_havok": 9.8100004196167,
+        "controller_dt": 0.01666666567325592,
+        "first_step_havok_velocity": 4.463665008544922,
+        "claim_scope": "Exact ordinary-ground field product and setter store. Launch tolerance 1e-6 Havok velocity. No fitted coefficients or trajectory refit."
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "id": "baseline",
+      "attempt": 1,
+      "exit_code": 130,
+      "failure": {
+        "phase": "gameplay-ready",
+        "error": "Manual interrupt after first-person readiness toggle was lost around survival modal. The incomplete numeric trace and native build receipt are retained."
+      },
+      "path": "traces/failed-baseline-attempt-1.bin.gz",
+      "trace_sha256": "02b613f9442e0cdd1812636ebbdb52b916d86bd03ced08896da8fbe265976bea",
+      "build": {
+        "profile": {
+          "version": "1.7.104.0",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "preferred_base": 5368709120,
+          "player_global": 52627320,
+          "camera_global": 52057208,
+          "movement_vtable_slot": 26431992,
+          "movement_function": 8075200,
+          "movement_signature": "4889742410574883ec200f57c0498bf80f2e4228488bf20f",
+          "camera_call": 7629156,
+          "camera_function": 9406080,
+          "camera_signature": "488bc455565741544155415641574883ec5048c74098feff",
+          "camera_call_signature": "e8171d1b00",
+          "nicamera_vtable": 27559352,
+          "camera_boundary": "post_PlayerCamera_Update_before_position_submission",
+          "firstperson_vtable": 26663152,
+          "player_controller_offset": 336,
+          "controller_gate_offset": 453,
+          "camera_dt_global": 52909576,
+          "vertical_spring_setting": 34316440,
+          "vertical_damping_setting": 34316464,
+          "controller_getter_function": 6967728,
+          "controller_getter_signature": "488d8150010000c3",
+          "controller_gate_function": 7957184,
+          "controller_gate_signature": "0fb681c5010000c3",
+          "jump_vtable_slot": 26432728,
+          "jump_function": 8073552,
+          "jump_signature": "40534883ec20488b0d1bd6a702488bdae8ab89effff30f10",
+          "air_function": 17595584,
+          "air_vtable_slot": 27862536,
+          "air_signature": "48895c24084889742418574881ecb0000000488bfa0f29b4",
+          "launch_function": 17596464,
+          "launch_vtable_slot": 27862656,
+          "launch_signature": "40574881ec800000008b821c020000488bfa83f80b741a85",
+          "actor_process_offset": 248,
+          "character_controller_vtable": 27825528,
+          "havok_scale_constant": 25117244,
+          "fall_multiplier_setting": 34415960,
+          "profile": "jump-inputs-v4",
+          "extends": "runtime.json",
+          "wire_version": 4,
+          "setter_call": 8188521,
+          "setter_call_signature": "e872538900",
+          "setter_function": 17188320,
+          "setter_signature": "f30f590d74987900c7811c02000001000000f30f11893c020000c3",
+          "jump_height_setting": 34244960,
+          "swim_jump_setting": 34244984,
+          "game_to_havok_constant": 25157212,
+          "reference_scale_constant": 28687824
+        },
+        "dll_sha256": "042412c7b36ce4417825aa7c759db0a409240a6ae5b4fb15e464524b5433cea9",
+        "source_sha256": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+        "extension_sha256": "b883010483194625281e0fa388b43eecbe796f655b641f028663642db73351a0",
+        "profile_name": "inputs-v4"
+      },
+      "command": [
+        "python",
+        "scripts/record_skyrim_motion.py",
+        "run",
+        "--session",
+        "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+        "--output",
+        "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline-attempt-1",
+        "--ocr-prefix",
+        "/home/aivv/.cache/mudcrab-520/ocr",
+        "--fixture",
+        "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline.json",
+        "--frame-cap",
+        "60"
+      ],
+      "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+      "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+      "capture_source_receipt": "Native build source and extension hashes retained; no complete pre-capture runner receipt for these exploratory failed attempts."
+    },
+    {
+      "id": "baseline",
+      "attempt": 2,
+      "exit_code": 0,
+      "failure": {
+        "phase": "v4-input-proof",
+        "error": "Launch fields recorded but CALL0x7cf269 had no player setter record. Native Jump handler reaches separately verified CALL0x6752ba; add that relay and rerun."
+      },
+      "trace_sha256": "866befbb8d9e9e8aa86b3d9d9006774b22649895767a6013a3da2669c2908eb9",
+      "dll_sha256": "8a95b75b40217e74df83e7dcf615bf17e9ba6bbaef8587af11b9cc93a500aba7",
+      "path": "traces/failed-baseline-attempt-2.bin.gz",
+      "build": {
+        "profile": {
+          "version": "1.7.104.0",
+          "sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+          "preferred_base": 5368709120,
+          "player_global": 52627320,
+          "camera_global": 52057208,
+          "movement_vtable_slot": 26431992,
+          "movement_function": 8075200,
+          "movement_signature": "4889742410574883ec200f57c0498bf80f2e4228488bf20f",
+          "camera_call": 7629156,
+          "camera_function": 9406080,
+          "camera_signature": "488bc455565741544155415641574883ec5048c74098feff",
+          "camera_call_signature": "e8171d1b00",
+          "nicamera_vtable": 27559352,
+          "camera_boundary": "post_PlayerCamera_Update_before_position_submission",
+          "firstperson_vtable": 26663152,
+          "player_controller_offset": 336,
+          "controller_gate_offset": 453,
+          "camera_dt_global": 52909576,
+          "vertical_spring_setting": 34316440,
+          "vertical_damping_setting": 34316464,
+          "controller_getter_function": 6967728,
+          "controller_getter_signature": "488d8150010000c3",
+          "controller_gate_function": 7957184,
+          "controller_gate_signature": "0fb681c5010000c3",
+          "jump_vtable_slot": 26432728,
+          "jump_function": 8073552,
+          "jump_signature": "40534883ec20488b0d1bd6a702488bdae8ab89effff30f10",
+          "air_function": 17595584,
+          "air_vtable_slot": 27862536,
+          "air_signature": "48895c24084889742418574881ecb0000000488bfa0f29b4",
+          "launch_function": 17596464,
+          "launch_vtable_slot": 27862656,
+          "launch_signature": "40574881ec800000008b821c020000488bfa83f80b741a85",
+          "actor_process_offset": 248,
+          "character_controller_vtable": 27825528,
+          "havok_scale_constant": 25117244,
+          "fall_multiplier_setting": 34415960,
+          "profile": "jump-inputs-v4",
+          "extends": "runtime.json",
+          "wire_version": 4,
+          "setter_call": 8188521,
+          "setter_call_signature": "e872538900",
+          "setter_function": 17188320,
+          "setter_signature": "f30f590d74987900c7811c02000001000000f30f11893c020000c3",
+          "jump_height_setting": 34244960,
+          "swim_jump_setting": 34244984,
+          "game_to_havok_constant": 25157212,
+          "reference_scale_constant": 28687824
+        },
+        "dll_sha256": "8a95b75b40217e74df83e7dcf615bf17e9ba6bbaef8587af11b9cc93a500aba7",
+        "source_sha256": "eb88789313b04946958efba6d50a89773fc0ff5694d10f4d7da5652e2603f304",
+        "extension_sha256": "3882fc5193dbe801378e68ac5e34b3d5d05f044d46d232c40f149f1fd3269030",
+        "profile_name": "inputs-v4"
+      },
+      "command": [
+        "python",
+        "scripts/record_skyrim_motion.py",
+        "run",
+        "--session",
+        "/home/aivv/.cache/mudcrab-221/session-inputs-v4",
+        "--output",
+        "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline-attempt-2",
+        "--ocr-prefix",
+        "/home/aivv/.cache/mudcrab-520/ocr",
+        "--fixture",
+        "/home/aivv/.cache/mudcrab-221/campaign-inputs-v4/baseline.json",
+        "--frame-cap",
+        "60"
+      ],
+      "runtime_sha256": "846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f",
+      "source_save_sha256": "68ee54f10c6a12571cf40a42659ee8af6b6bc7a04506505481f855952e75babd",
+      "capture_source_receipt": "Native build source and extension hashes retained; no complete pre-capture runner receipt for these exploratory failed attempts."
+    },
+    {
+      "id": "baseline",
+      "attempt": 3,
+      "exit_code": 0
+    },
+    {
+      "id": "setting-64",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "reference-125",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "id": "repeat-baseline",
+      "attempt": 1,
+      "exit_code": 0
+    }
+  ]
+}

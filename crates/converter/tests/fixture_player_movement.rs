@@ -27,6 +27,18 @@ fn exported_fixture() -> Connection {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("Skyrim.esm");
     fs::write(&path, esm::plugin(&spec).unwrap()).unwrap();
+    let paths = [path.clone()];
+    let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
+    let decoded = converter::records::read_plugins(&paths, &order).unwrap();
+    for diagnostic in decoded.diagnostics.values() {
+        assert_eq!(diagnostic.skipped_records, 0);
+        assert_eq!(diagnostic.skipped_fields, 0);
+        assert_eq!(diagnostic.unexpected_subrecords, 0, "{diagnostic:?}");
+    }
+    let player = &decoded.records[&7];
+    for tag in [*b"ACBS", *b"RNAM", *b"NAM6"] {
+        assert!(player.fields.iter().any(|field| field.signature == tag));
+    }
     let records = parse_plugin_file(&path).unwrap();
     let connection = Connection::open_in_memory().unwrap();
     create_tables(&connection).unwrap();
@@ -71,4 +83,52 @@ fn fixture_has_the_player_race_and_default_movement_type_the_engine_needs() {
         )
         .expect("MOVT 0003580D");
     assert_eq!(editor_id, "NPC_Default_MT");
+}
+
+#[test]
+fn fixture_has_complete_canonical_jump_inputs() {
+    use shared::records::ArchivedRecordData;
+    let connection = exported_fixture();
+    let read = |id: u32| {
+        let bytes: Vec<u8> = connection
+            .query_row("SELECT data FROM records WHERE form_id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes);
+        rkyv::from_bytes::<ArchivedRecordData, rkyv::rancor::Error>(&aligned).unwrap()
+    };
+    let player = read(7);
+    let field = |record: &ArchivedRecordData, tag: [u8; 4]| {
+        let fields: Vec<_> = record
+            .subrecords
+            .iter()
+            .filter(|field| field.tag == tag)
+            .collect();
+        assert_eq!(fields.len(), 1);
+        fields[0].data.clone()
+    };
+    let acbs = field(&player, *b"ACBS");
+    assert_eq!(acbs.len(), 24);
+    assert_eq!(u32::from_le_bytes(acbs[..4].try_into().unwrap()) & 1, 0);
+    assert_eq!(
+        f32::from_le_bytes(field(&player, *b"NAM6").try_into().unwrap()),
+        1.0
+    );
+    let race_id: u32 = connection
+        .query_row("SELECT race_id FROM npcs WHERE id=7", [], |row| row.get(0))
+        .unwrap();
+    let data = field(&read(race_id), *b"DATA");
+    assert!(data.len() >= 24);
+    assert_eq!(f32::from_le_bytes(data[16..20].try_into().unwrap()), 1.0);
+    assert_eq!(f32::from_le_bytes(data[20..24].try_into().unwrap()), 1.0);
+    let setting: f32 = connection
+        .query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(setting, 76.0);
 }
