@@ -6,6 +6,9 @@ Comprehensive technical architecture specifications, asset converter pipelines, 
 
 ## 📁 Specifications Directory Structure
 
+The shared [FormKey identity contract](shared/form-key.md) defines pack-scoped
+identities and the additive, output-preserving step 1 of #542.
+
 ```
 docs/specs/
 ├── README.md                          # Specifications Directory Index
