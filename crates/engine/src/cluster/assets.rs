@@ -26,6 +26,8 @@ struct MeshPayload {
 struct UploadState {
     payload: Option<MeshPayload>,
     rebuilding: bool,
+    /// When the in-flight rebuild started, and whether it has already been reported as slow.
+    rebuild_started: Option<(std::time::Instant, bool)>,
     failure: Option<String>,
     /// The first worker chooses; later block workers cannot change terrain-only proof.
     terrain_only: Option<bool>,
@@ -35,6 +37,25 @@ struct UploadState {
     /// loader still held them. Only this flag is kept, never the words, so a released mesh can be
     /// proved without another read.
     proof_hint: Option<bool>,
+}
+
+/// A mesh re-read normally takes milliseconds; this long without a result means a stuck read.
+/// It is only reported, because the rebuild cannot be cancelled without losing the mesh.
+const SLOW_REBUILD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// True once per rebuild, the first time it is found running past `limit`.
+fn note_slow_rebuild(
+    state: &mut UploadState,
+    now: std::time::Instant,
+    limit: std::time::Duration,
+) -> bool {
+    match &mut state.rebuild_started {
+        Some((started, reported)) if !*reported && now.duration_since(*started) >= limit => {
+            *reported = true;
+            true
+        }
+        _ => false,
+    }
 }
 
 struct MeshUpload {
@@ -182,6 +203,7 @@ impl ClusterMeshAsset {
                         tangents: None,
                     }),
                     rebuilding: false,
+                    rebuild_started: None,
                     failure: None,
                     terrain_only: None,
                     waiters: Vec::new(),
@@ -479,6 +501,13 @@ impl ClusterMeshAsset {
             return Ok(payload.tangents.is_some());
         }
         if state.rebuilding {
+            if note_slow_rebuild(&mut state, std::time::Instant::now(), SLOW_REBUILD) {
+                warn!(
+                    path = self.source.as_ref().map_or("", |source| source.relative()),
+                    seconds = SLOW_REBUILD.as_secs(),
+                    "cluster mesh rebuild has not finished; its blocks keep waiting"
+                );
+            }
             if !state
                 .waiters
                 .iter()
@@ -496,6 +525,7 @@ impl ClusterMeshAsset {
             .terrain_only
             .ok_or("released mesh has no preparation mode")?;
         state.rebuilding = true;
+        state.rebuild_started = Some((std::time::Instant::now(), false));
         state.waiters.push(wake);
         drop(state);
         #[cfg(test)]
@@ -529,6 +559,7 @@ impl ClusterMeshAsset {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.rebuilding = false;
+                state.rebuild_started = None;
                 let waiters = std::mem::take(&mut state.waiters);
                 match rebuilt {
                     Ok(payload) => state.payload = Some(payload),
@@ -697,6 +728,26 @@ impl ClusterBlockAsset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebuild_past_the_limit_is_reported_once() {
+        let limit = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        let mut state = UploadState {
+            payload: None,
+            rebuilding: true,
+            rebuild_started: Some((started, false)),
+            failure: None,
+            terrain_only: None,
+            waiters: Vec::new(),
+            proof_hint: None,
+        };
+        assert!(!note_slow_rebuild(&mut state, started + limit / 2, limit));
+        assert!(note_slow_rebuild(&mut state, started + limit, limit));
+        assert!(!note_slow_rebuild(&mut state, started + limit * 2, limit));
+        state.rebuild_started = None;
+        assert!(!note_slow_rebuild(&mut state, started + limit * 3, limit));
+    }
 
     const MCL: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mcl");
     const MCI: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mci");
