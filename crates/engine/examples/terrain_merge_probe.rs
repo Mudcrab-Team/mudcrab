@@ -10,6 +10,9 @@
 //! exercised. Three more merged cells test lighting under the sun: a lit grey cell, seen
 //! from the front and turned over, and an `unlit` twin that must read its albedo exactly. No
 //! converted data is read.
+//!
+//! `--profile skyrim` builds the colour arrays as UNORM and predicts every colour from the raw
+//! bytes; the default `mudcrab` builds sRGB arrays and sRGB-decoded predictions.
 use bevy::{
     asset::RenderAssetUsages,
     camera::{RenderTarget, ScalingMode},
@@ -74,6 +77,8 @@ struct Probe {
     /// A pixel of empty sky, which must show the green clear colour. This is what lets
     /// [`PixelCheck::Black`] tell a drawn black pixel from an empty one.
     empty: (u32, u32),
+    /// Whether the selected profile decodes colour textures through sRGB.
+    colour_srgb: bool,
 }
 
 /// A single-pixel case: where to read the frame and what the pixel must show.
@@ -166,6 +171,7 @@ fn main() {
             expected: Vec::new(),
             special: Vec::new(),
             empty: (0, 0),
+            colour_srgb: profile.decodes_colour_srgb(),
         })
         .add_systems(Startup, setup)
         .add_systems(Update, capture)
@@ -278,8 +284,25 @@ fn colour(ltex: u32) -> [u8; 3] {
     }
 }
 
-fn linear(value: u8) -> f32 {
-    Color::srgb_u8(value, value, value).to_linear().red
+/// The value the shader works with for a stored byte: the sRGB-decoded colour under `mudcrab`,
+/// the authored byte itself under `skyrim`, which loads colour arrays as UNORM.
+fn linear(value: u8, colour_srgb: bool) -> f32 {
+    if colour_srgb {
+        Color::srgb_u8(value, value, value).to_linear().red
+    } else {
+        f32::from(value) / 255.0
+    }
+}
+
+/// The screen byte an unlit grey of `value` reads as in the sRGB render target.
+fn screen_grey(value: u8, colour_srgb: bool) -> u8 {
+    let encoded = Color::linear_rgb(
+        linear(value, colour_srgb),
+        linear(value, colour_srgb),
+        linear(value, colour_srgb),
+    )
+    .to_srgba();
+    (encoded.red * 255.0).round() as u8
 }
 
 /// One quadrant to put in a cell: its slot textures and the weight of each slot above 0.
@@ -319,7 +342,7 @@ fn cell(stride: u8, quads: [Quad; 4]) -> TerrainCellMesh {
 }
 
 /// The linear colour the blend maths gives: `sum(colour_i * w_i) / sum(w_i)`, slot 0 implied.
-fn blend(quad: &Quad) -> [f32; 3] {
+fn blend(quad: &Quad, colour_srgb: bool) -> [f32; 3] {
     let overlay: f32 = quad.weights.iter().map(|&w| f32::from(w) / 255.0).sum();
     let base = (1.0 - overlay).max(0.0);
     let total = (base + overlay).max(0.0001);
@@ -331,7 +354,7 @@ fn blend(quad: &Quad) -> [f32; 3] {
             f32::from(quad.weights[slot - 1]) / 255.0
         };
         for (channel, value) in colour(ltex).into_iter().enumerate() {
-            out[channel] += linear(value) * weight / total;
+            out[channel] += linear(value, colour_srgb) * weight / total;
         }
     }
     out
@@ -346,16 +369,23 @@ fn setup(
     mut terrain_materials: ResMut<Assets<MergedTerrainMaterial>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
 ) {
+    let colour_srgb = probe.colour_srgb;
+    // Skyrim evaluates the authored bytes raw, so its colour arrays load as UNORM.
+    let diffuse_format = if colour_srgb {
+        TextureFormat::Rgba8UnormSrgb
+    } else {
+        TextureFormat::Rgba8Unorm
+    };
     let classes = TerrainClasses::from_table(table()).unwrap();
     let diffuse = [
         images.add(solid_array(
             4,
-            TextureFormat::Rgba8UnormSrgb,
+            diffuse_format,
             &[[128, 128, 128, 255], [255, 0, 0, 255], [0, 255, 0, 255]],
         )),
         images.add(solid_array(
             8,
-            TextureFormat::Rgba8UnormSrgb,
+            diffuse_format,
             &[[0, 0, 255, 255], [255, 255, 0, 255]],
         )),
     ];
@@ -471,7 +501,7 @@ fn setup(
     let quadrant_side = 2048.0;
     for (offset, quads, name) in expectations {
         for (quadrant, quad) in quads.iter().enumerate() {
-            let rgb = blend(quad);
+            let rgb = blend(quad, colour_srgb);
             let centre_x = offset + (quadrant % 2) as f32 * quadrant_side + quadrant_side / 2.0;
             let centre_north = (quadrant / 2) as f32 * quadrant_side + quadrant_side / 2.0;
             commands.spawn((
@@ -550,7 +580,7 @@ fn setup(
     ));
     // Plain quads of the same grey albedo, one lit and one unlit, beside the unlit twin: the
     // references the merged cells are read against, so no lighting model has to be built.
-    let grey_linear = linear(128);
+    let grey_linear = linear(128, colour_srgb);
     let grey_colour = Color::linear_rgb(grey_linear, grey_linear, grey_linear);
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(quadrant_side, quadrant_side))),
@@ -582,7 +612,7 @@ fn setup(
         check: PixelCheck::Lit {
             reference: (px(7168.0), py(14336.0)),
             // With the sun off the cell would read its albedo exactly, as the unlit twin does.
-            unlit: colour(0),
+            unlit: [screen_grey(colour(0)[0], colour_srgb); 3],
         },
     });
     probe.special.push(PixelCase {
