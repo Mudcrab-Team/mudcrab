@@ -643,4 +643,41 @@ mod tests {
         rendering.height_fog = true;
         assert_eq!(wanted_layer(&rendering).unwrap().height_falloff, 0.4);
     }
+
+    fn fog_app() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(crate::settings::RenderingSettings {
+                height_fog: true,
+                ..default()
+            })
+            .add_systems(Update, apply_height_fog);
+        let camera = app
+            .world_mut()
+            .spawn((
+                FogCamera,
+                Camera3d::default(),
+                Projection::default(),
+                DistanceFog::default(),
+            ))
+            .id();
+        (app, camera)
+    }
+
+    fn depth_usages(app: &App, camera: Entity) -> TextureUsages {
+        let camera = app.world().get::<Camera3d>(camera).unwrap();
+        TextureUsages::from(camera.depth_texture_usages)
+    }
+
+    #[test]
+    fn apply_adds_the_uniform_and_depth_binding_and_removes_the_uniform_with_the_weather_fog() {
+        let (mut app, camera) = fog_app();
+        app.update();
+        assert!(app.world().get::<HeightFog>(camera).is_some());
+        assert!(depth_usages(&app, camera).contains(TextureUsages::TEXTURE_BINDING));
+
+        app.world_mut().entity_mut(camera).remove::<DistanceFog>();
+        app.update();
+        assert!(app.world().get::<HeightFog>(camera).is_none());
+    }
 }
