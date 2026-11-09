@@ -1,7 +1,8 @@
 //! Validated in-memory cluster payloads (ADR-0013 sections 2 and 3).
 //!
-//! The package reader checks the owned bytes against the launch digests and the shared format
-//! before publishing these values. Production meshes are released as soon as they are validated:
+//! The package reader checks the payload files (`.mcl`, `.mci`, atlases) against the launch
+//! digests and the shared format before publishing these values. Database rows and the base
+//! `cell_cache.rkyv` are not payload files: they are read live, with no launch digest. Production meshes are released as soon as they are validated:
 //! only small metadata and, once prepared, the tangent proof stay. Tangent preparation and upload
 //! each re-read the payload through the certified source and drop it again. Explicit in-memory
 //! fixtures retain their payloads.

@@ -91,8 +91,9 @@ fn open_certification_connection(binding: &OverlayBindingReceipt) -> Result<Conn
 use shared::cluster_mapping::HashedPayload as CertifiedPayload;
 
 /// Launch digests of the typed payload files the hash walk read, keyed by owned relative path.
-/// Only digests are kept: the bytes themselves are re-read, and checked against these, when a
-/// consumer needs them.
+/// Only digests and sizes are kept: the bytes themselves are re-read, and checked against these,
+/// when a consumer needs them. They cover the typed payload files only. Database rows read
+/// through `connection` and the base `cell_cache.rkyv` carry no launch digest here.
 type DigestCapture = std::sync::Mutex<HashMap<String, ([u8; 32], u64)>>;
 
 pub struct ClusterEnvelope {
