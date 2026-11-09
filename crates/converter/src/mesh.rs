@@ -11,7 +11,7 @@ use log::warn;
 use project_wormhole_esm::structs::strings::{SizedString8, SizedString32, StringN};
 use project_wormhole_nif::{
     nif_block::{NiObjectNETTraits, NifBlock},
-    nif_file::{NifFile, nif_to_model, nif_to_static_model},
+    nif_file::{NifFile, nif_to_model, nif_to_model_with_skin_fallback, nif_to_static_model},
     nif_header::{Endianess, NifFileVersion, NifHeader},
 };
 use serde::{Deserialize, Serialize};
@@ -28,13 +28,20 @@ use walkdir::WalkDir;
 
 pub struct MeshConverter;
 
-/// Hashes a NIF and its dependencies using the pre-repair cache contract.
+/// Distinguishes rigid unresolved-skin output from a self-contained rig's skins.
+pub(crate) const UNRESOLVED_SKIN_HASH_SUFFIX: &str = ":skin-resolution:unresolved";
+
+/// Hashes a NIF and its skeleton resolution before any scoped material repair.
 /// Legacy pruned packages retain this checksum and require exact source replay.
 pub(crate) fn nif_unrepaired_source_hash(path: &Path) -> Result<String> {
     let mut hash = crate::cache::hash_file(path)?;
-    for dependency in MeshConverter::dependency_paths(path) {
-        hash.push(':');
-        hash.push_str(&crate::cache::hash_file(&dependency)?);
+    match find_skeleton(path) {
+        SkeletonResolution::Skeleton(dependency) => {
+            hash.push(':');
+            hash.push_str(&crate::cache::hash_file(&dependency)?);
+        }
+        SkeletonResolution::Unresolved { .. } => hash.push_str(UNRESOLVED_SKIN_HASH_SUFFIX),
+        SkeletonResolution::SelfContained => {}
     }
     Ok(hash)
 }
@@ -85,13 +92,15 @@ impl MeshConverter {
             SkeletonResolution::Skeleton(path) => Some(path),
             SkeletonResolution::SelfContained => None,
             SkeletonResolution::Unresolved { best_coverage } => {
-                return Err(color_eyre::eyre::eyre!(
-                    "{}",
-                    unresolved_skeleton_diagnostic(
+                return Self::convert_nif_to_glb_with_skin_resolution(
+                    nif_path,
+                    glb_output_path.as_ref(),
+                    None,
+                    Some(&unresolved_skeleton_diagnostic(
                         format_args!("skinned NIF {}", nif_path.display()),
-                        best_coverage
-                    )
-                ));
+                        best_coverage,
+                    )),
+                );
             }
         };
         Self::convert_nif_to_glb_with_skeleton(
@@ -104,12 +113,27 @@ impl MeshConverter {
     /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
     ///
     /// `None` means the mesh is a self-contained rig: the vendor builds its bone
-    /// tree from the mesh's own joints. A skinned mesh that no skeleton can
-    /// cover is rejected before it reaches this function.
+    /// tree from the mesh's own joints. Unusable skins retain their geometry
+    /// as rigid nodes; valid shapes in the same NIF stay skinned.
     pub fn convert_nif_to_glb_with_skeleton(
         nif_path: &Path,
         glb_output_path: &Path,
         skeleton_path: Option<&Path>,
+    ) -> Result<()> {
+        Self::convert_nif_to_glb_with_skin_resolution(
+            nif_path,
+            glb_output_path,
+            skeleton_path,
+            None,
+        )
+    }
+
+    /// Carries an unresolved resolver result to each affected shape without guessing a rig.
+    pub(crate) fn convert_nif_to_glb_with_skin_resolution(
+        nif_path: &Path,
+        glb_output_path: &Path,
+        skeleton_path: Option<&Path>,
+        unresolved_skin: Option<&str>,
     ) -> Result<()> {
         let (nif, diagnostics, material_contract) = open_nif_resilient(nif_path)?;
         let mut collision = collision::from_nif(nif_path, &nif)?;
@@ -122,21 +146,38 @@ impl MeshConverter {
         } else {
             None
         };
-        let primary = catch_unwind(AssertUnwindSafe(|| nif_to_model(&nif, skeleton.as_ref())));
+        let primary = catch_unwind(AssertUnwindSafe(|| {
+            nif_to_model_with_skin_fallback(&nif, skeleton.as_ref(), unresolved_skin)
+        }));
         let (mut model, used_static_fallback) = match primary {
-            Ok(Ok(model)) => (
-                finish_skinned_model(&nif, nif_path, model, &material_contract)?,
-                false,
-            ),
+            Ok(Ok((model, skin_diagnostics))) => {
+                for (block, cause) in skin_diagnostics {
+                    let name = material_contract
+                        .iter()
+                        .find(|shape| shape.shape_block == block)
+                        .and_then(|shape| shape.shape_name.as_deref())
+                        .unwrap_or("<unnamed>");
+                    let bounded_cause: String = cause.chars().take(512).collect();
+                    // The standalone CLI has no log subscriber. Keep recovery
+                    // diagnostics visible in normal runs as well as library hosts.
+                    eprintln!(
+                        "warning: NIF {} shape block {block} ({name:?}): {bounded_cause}",
+                        nif_path.display()
+                    );
+                }
+                (
+                    finish_skinned_model(&nif, nif_path, model, &material_contract)?,
+                    false,
+                )
+            }
             primary => {
                 let primary_error = match primary {
                     Ok(Err(error)) => format!("NIF model conversion failed: {error}"),
                     Err(_) => format!("NIF model conversion panicked for {}", nif_path.display()),
                     Ok(Ok(_)) => unreachable!(),
                 };
-                // A declared skin is a contract with the renderer: publishing the
-                // static fallback instead would hand it a mesh that can never
-                // follow a bone. Surface the real conversion failure.
+                // Skin recovery is per shape above. A failure here is outside
+                // that boundary; do not hide a broken geometry/scene export.
                 ensure!(
                     !declares_skin,
                     "NIF {} declares a skin, so the static fallback is not allowed: {primary_error}",
@@ -252,7 +293,7 @@ impl MeshConverter {
             .collect();
         retain_bodies_for_written_glb(&mut collision, &glb, Some(&source_order))?;
         let glb = embed_collision(glb, &collision)?;
-        if declares_skin {
+        if !model.skeletal_meshes.is_empty() {
             validate_declared_skin_glb(&glb, nif_path)?;
         }
         write_glb_atomic(output, &glb)
@@ -955,7 +996,7 @@ fn empty_scene_glb(name: &str) -> Vec<u8> {
     glb
 }
 
-/// Fails when a NIF that declares a skin exports a GLB the renderer cannot bind:
+/// Fails when an actual skinned export produces a GLB the renderer cannot bind:
 /// no `skins`, a skinned node with no mesh-bound skin, or a primitive missing the
 /// joint or weight attribute. This inspects the bytes actually written, not the
 /// in-memory model.
@@ -987,6 +1028,13 @@ fn validate_declared_skin_glb(glb: &[u8], path: &Path) -> Result<()> {
         if node.get("skin").is_none() {
             continue;
         }
+        ensure!(
+            node.get("skin")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|index| (index as usize) < skins.len()),
+            "NIF {} exported a mesh with an invalid skin index",
+            path.display()
+        );
         let Some(mesh_index) = node.get("mesh").and_then(serde_json::Value::as_u64) else {
             continue;
         };
@@ -1181,6 +1229,7 @@ fn unclaimed_skin_instances(
     unclaimed
 }
 
+/// Associates rigid and skinned meshes with their original material/colour contracts.
 fn exported_shape_blocks(
     nif: &NifFile,
     model: &project_wormhole_nif::model::all::Model,
@@ -1530,16 +1579,17 @@ pub(crate) fn build_skinned_model_with_materials(
     })
 }
 
-/// Applies the contract every skinned export shares: a declared skin may never
-/// silently produce nothing, and the model must validate and carry the runtime
-/// coordinate rotation and vertex-colour policy.
+/// Applies the shared export contract: a declared skin must yield usable skinned
+/// or rigid geometry, and the model must validate and carry the runtime
+/// coordinate rotation and vertex-colour policy. Strict composition builds its
+/// skins before reaching this shared finishing step.
 fn finish_skinned_model(
     nif: &NifFile,
     nif_path: &Path,
     mut model: project_wormhole_nif::model::all::Model,
     material_contract: &[NifShapeMaterial],
 ) -> Result<project_wormhole_nif::model::all::Model> {
-    if nif.declares_skin() && model.skeletal_meshes.is_empty() {
+    if nif.declares_skin() && model.skeletal_meshes.is_empty() && model.static_meshes.is_empty() {
         let unclaimed = unclaimed_skin_instances(nif, &model);
         let detail = if unclaimed.is_empty() {
             "no skin instance blocks are present".to_owned()
@@ -1547,7 +1597,7 @@ fn finish_skinned_model(
             unclaimed.join("; ")
         };
         return Err(color_eyre::eyre::eyre!(
-            "NIF {} declares a skin but produced no skeletal mesh: {detail}; refusing to publish a static mesh",
+            "NIF {} declares a skin but produced no skeletal mesh or usable static geometry: {detail}",
             nif_path.display()
         ));
     }
@@ -2274,7 +2324,7 @@ pub enum SkeletonResolution {
     Skeleton(PathBuf),
     /// No skeleton covers the rig; the mesh's own hierarchy is its bone tree.
     SelfContained,
-    /// Skeletons cover too few joints for any of them to be trusted.
+    /// Only partial indexed matches exist; export the skin-bearing geometry as rigid nodes.
     Unresolved { best_coverage: f32 },
 }
 
@@ -2596,7 +2646,7 @@ fn resolve_without_joints(
 
 /// Applies the ranking of the reference implementation. Path candidates win
 /// first, then a full-cover skeleton from the index, then a partly-covering
-/// path candidate, and only then is the rig either self-contained or rejected.
+/// path candidate, and only then is the rig either self-contained or unresolved.
 fn resolve_against(
     mesh_key: &str,
     mesh_source: Option<&Path>,

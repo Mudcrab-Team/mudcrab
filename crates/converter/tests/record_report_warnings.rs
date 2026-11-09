@@ -604,21 +604,22 @@ async fn readable_localized_gaps_are_notices_but_malformed_entries_remain_warnin
             .path()
             .join(if malformed { "malformed" } else { "absent" });
         let data = case.join("Data");
-        let mut body = keyword(0x801, b"BeforeSubtitle\0");
+        let mut body = keyword(0x801, b"BeforeMessage\0");
+        // Message names are localized text; SNDR.FNAM contains numeric legacy flags.
         for (id, key) in [(0x806, 17u32), (0x807, 33), (0x808, 0), (0x809, 34)] {
             body.extend(record(
-                b"SNDR",
+                b"MESG",
                 id,
                 0,
                 &[
-                    field(b"EDID", format!("Sound{id:X}\0").as_bytes()),
-                    field(b"FNAM", &key.to_le_bytes()),
+                    field(b"EDID", format!("Message{id:X}\0").as_bytes()),
+                    field(b"FULL", &key.to_le_bytes()),
                 ]
                 .concat(),
             ));
         }
-        body.extend(keyword(0x80A, b"AfterSubtitle\0"));
-        plugin(&data, "Subtitles.esm", 0x81, &[], &body);
+        body.extend(keyword(0x80A, b"AfterMessage\0"));
+        plugin(&data, "Messages.esm", 0x81, &[], &body);
         let mut entries = vec![(33u32, 0u32), (34, 9)];
         if malformed {
             entries.push((17, u32::MAX));
@@ -631,7 +632,7 @@ async fn readable_localized_gaps_are_notices_but_malformed_entries_remain_warnin
         }
         bank.extend(b"Resolved\0\0");
         fs::create_dir(data.join("Strings")).unwrap();
-        fs::write(data.join("Strings/Subtitles_english.strings"), bank).unwrap();
+        fs::write(data.join("Strings/Messages_english.strings"), bank).unwrap();
         let mut reader_rows = Vec::new();
         for (name, reader) in [
             ("legacy", RecordReader::Legacy),
@@ -643,10 +644,10 @@ async fn readable_localized_gaps_are_notices_but_malformed_entries_remain_warnin
                 record_ids(&output),
                 [0x801, 0x806, 0x807, 0x808, 0x809, 0x80A]
             );
-            assert_eq!(fields(&output, 0x806, b"FNAM"), [b"\0".to_vec()]);
-            assert_eq!(fields(&output, 0x807, b"FNAM"), [b"Resolved\0".to_vec()]);
-            assert_eq!(fields(&output, 0x808, b"FNAM"), [b"\0".to_vec()]);
-            assert_eq!(fields(&output, 0x809, b"FNAM"), [b"\0".to_vec()]);
+            assert_eq!(fields(&output, 0x806, b"FULL"), [b"\0".to_vec()]);
+            assert_eq!(fields(&output, 0x807, b"FULL"), [b"Resolved\0".to_vec()]);
+            assert_eq!(fields(&output, 0x808, b"FULL"), [b"\0".to_vec()]);
+            assert_eq!(fields(&output, 0x809, b"FULL"), [b"\0".to_vec()]);
             let manifest: serde_json::Value =
                 serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap())
                     .unwrap();
