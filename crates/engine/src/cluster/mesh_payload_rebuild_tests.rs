@@ -167,6 +167,34 @@ fn new_allocation_requests_one_verified_reread_and_releases_it_after_upload() {
 }
 
 #[test]
+fn rebuilt_tangent_words_equal_the_words_prepared_at_load() {
+    bevy::tasks::IoTaskPool::get_or_init(Default::default);
+    let loaded = fixture();
+    let load_words = loaded.mesh.tangent_words().unwrap();
+    assert_eq!(load_words.len(), loaded.expected.vertex_count as usize);
+    let released = released_fixture();
+    assert_eq!(
+        released.expected.mesh_hash, loaded.expected.mesh_hash,
+        "both fixtures must load the same mesh"
+    );
+    released.mesh.prepare_tangents().unwrap();
+    let wake = Arc::new(AtomicU64::new(0));
+    assert!(
+        !released
+            .mesh
+            .request_upload(wake.clone(), |reason| panic!("{reason}"))
+            .unwrap()
+    );
+    wait_for_wake(&wake);
+    let rebuilt_words = released
+        .mesh
+        .with_upload(|_, words| words.to_vec())
+        .unwrap()
+        .expect("rebuilt payload is resident");
+    assert_eq!(rebuilt_words.as_slice(), load_words.as_ref());
+}
+
+#[test]
 fn corrupt_or_missing_reread_is_terminal_and_never_reuses_old_bytes() {
     bevy::tasks::IoTaskPool::get_or_init(Default::default);
     for missing in [false, true] {
