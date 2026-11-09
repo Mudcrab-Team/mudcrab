@@ -707,8 +707,10 @@ struct WaterSettings {
     /// x = opacity 0..1 (WATR ANAM / 100), used where the depth is unknown; y, z = above-water fog
     /// near and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
     body: Vec4,
-    /// x = 1 when `bed_depth` holds the opaque bed's depth snapshot, 0 when the depth is unknown and
-    /// the body falls back to its ANAM opacity. yzw unused.
+    /// x = 1 when a snapshot texture is bound to `bed_depth`, 0 when none is and the body falls
+    /// back to its ANAM opacity. It says nothing about whether this frame's depth is valid: a
+    /// frame whose resolve was skipped leaves the texture bound but cleared to a negative sentinel,
+    /// which the shader reads as unknown too. yzw unused.
     depth_params: Vec4,
 }
 
@@ -801,6 +803,7 @@ impl WaterExtension {
     }
 
     /// Points the material at a new bed-depth snapshot, or at the constant fallback when `None`.
+    /// Binding a texture only enables the lookup; per-frame validity is carried by the texels.
     pub(crate) fn set_bed_depth(&mut self, handle: Option<Handle<Image>>) {
         self.settings.depth_params.x = if handle.is_some() { 1.0 } else { 0.0 };
         self.bed_depth = handle;

@@ -21,8 +21,9 @@ struct WaterSettings {
     // x = opacity 0..1 (WATR ANAM), used where the depth is unknown; y, z = above-water fog near
     // and far distance in world units; w = fog amount, the curve exponent (WATR DNAM).
     body: vec4<f32>,
-    // x = 1 when bed_depth holds the bed's depth snapshot, 0 when the depth is unknown and the
-    // body falls back to its ANAM opacity.
+    // x = 1 when a snapshot texture is bound to bed_depth, 0 when none is and the body falls back
+    // to its ANAM opacity. Whether a given frame's texels are valid is carried by the texels
+    // themselves (a negative value means unknown), not by this flag.
     depth_params: vec4<f32>,
 }
 
