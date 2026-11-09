@@ -947,8 +947,14 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
     names = set()
     for p in usable:
         names |= set(p["base"]["metrics"]) & set(p["cand"]["metrics"])
-    cpu = sorted((n for n in names if n.startswith("cpu/")),
-                 key=lambda n: -median([p["base"]["metrics"][n] for p in usable]))
+
+    def base_median(name):
+        # A span below the sample floor is dropped from the runs it was rare in, so rank it by
+        # the runs that have it.
+        values = [p["base"]["metrics"][name] for p in usable if name in p["base"]["metrics"]]
+        return median(values) if values else 0.0
+
+    cpu = sorted((n for n in names if n.startswith("cpu/")), key=lambda n: -base_median(n))
     chosen = [n for n in sorted(names) if not n.startswith("cpu/")] + cpu[:top_spans]
     metrics = {}
     for metric in chosen:
@@ -958,21 +964,21 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
             seed=f"{seed}:{name}:{metric}", min_effect=min_effect, samples=samples)
     result["metrics"] = metrics
     verdicts = {metrics[m]["verdict"] for m in PRIMARY_METRICS if m in metrics}
-    if len(usable) < MIN_PAIRS_FOR_VERDICT:
-        result["summary_verdict"] = "insufficient_pairs"
-    elif {"improved", "regressed"} <= verdicts:
-        result["summary_verdict"] = "mixed"
-    elif "regressed" in verdicts:
-        result["summary_verdict"] = "regressed"
     # Each primary metric needs enough usable pairs of its own; a metric the reports lack, or have
     # too few values for, says nothing and must not read as a quiet "noise".
     incomplete = [m for m in PRIMARY_METRICS
                   if m not in metrics or metrics[m]["verdict"] in ("no_data", "insufficient_pairs")]
-    elif "improved" in verdicts:
-        result["summary_verdict"] = "improved"
+    if len(usable) < MIN_PAIRS_FOR_VERDICT:
+        result["summary_verdict"] = "insufficient_pairs"
     elif incomplete:
         result["summary_verdict"] = "inconclusive"
         result["details"] = [f"{m}: missing or too few usable pairs" for m in incomplete]
+    elif {"improved", "regressed"} <= verdicts:
+        result["summary_verdict"] = "mixed"
+    elif "regressed" in verdicts:
+        result["summary_verdict"] = "regressed"
+    elif "improved" in verdicts:
+        result["summary_verdict"] = "improved"
     else:
         result["summary_verdict"] = "noise"
     warnings = []
@@ -1027,13 +1033,13 @@ def summary_markdown(verdict):
             continue
         lines.append(f"{scenario['pairs_used']} of {scenario['pairs_requested']} pairs used; "
                      f"summary verdict **{scenario['summary_verdict']}**")
+        lines += [f"- {d}" for d in scenario.get("details", [])]
         for warning in scenario.get("run_warnings", []):
             lines.append(f"- warning: {warning}")
         lines += ["", "| metric | base median | cand median | ratio (95% CI) | p | verdict |", "|---|---:|---:|---:|---:|---|"]
         hidden = 0
         for metric, row in scenario["metrics"].items():
             if metric not in PRIMARY_METRICS and metric != "average_fps" and row["verdict"] == "noise":
-        lines += [f"- {d}" for d in scenario.get("details", [])]
                 hidden += 1
                 continue
             ratio = "n/a" if row.get("ratio_median") is None else f"{row['ratio_median']:.3f}"

@@ -310,6 +310,17 @@ class GuardTest(unittest.TestCase):
         none = [{"mesh_entities": None, "terrain_patches": None, "water_surfaces": None}] * 2
         self.assertTrue(perf.check_inventory(none, none))
 
+    def test_a_span_absent_from_some_pairs_is_ranked_by_the_pairs_that_have_it(self):
+        base = [run_entry(metrics=dict(frame_metrics(1.0, 0.01 * i), **{"cpu/rare": 3.0, "cpu/common": 1.0}))
+                for i in range(6)]
+        cand = [run_entry(metrics=dict(frame_metrics(1.0, 0.01 * i), **{"cpu/rare": 3.0, "cpu/common": 1.0}))
+                for i in range(6)]
+        for entry in base[:3] + cand[:3]:
+            del entry["metrics"]["cpu/rare"]
+        result = self.analyze(base, cand)
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("cpu/rare", result["metrics"])
+        self.assertEqual(list(result["metrics"])[-2:], ["cpu/rare", "cpu/common"])
 
     def test_overall_verdict(self):
         ok = {"status": "ok", "summary_verdict": "noise"}
