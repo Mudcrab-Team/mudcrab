@@ -271,6 +271,24 @@ class GuardTest(unittest.TestCase):
                          ["thresholds.no_streaming_failures is missing"])
         self.assertEqual(len(perf.report_health({})), 1)
 
+    def test_a_scene_count_missing_from_one_side_is_reported(self):
+        base = [{"mesh_entities": 1000, "terrain_patches": 10, "water_surfaces": 2}] * 3
+        cand = [{"mesh_entities": None, "terrain_patches": 10, "water_surfaces": 2}] * 3
+        problems = perf.check_inventory(base, cand)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("mesh_entities", problems[0])
+
+    def test_a_scene_count_missing_from_some_runs_is_reported(self):
+        base = [{"mesh_entities": 1000}, {"mesh_entities": None}]
+        cand = [{"mesh_entities": 1000}, {"mesh_entities": 1000}]
+        self.assertTrue(perf.check_inventory(base, cand))
+
+    def test_a_count_missing_everywhere_is_skipped_but_one_must_compare(self):
+        both = [{"mesh_entities": 10, "terrain_patches": None, "water_surfaces": None}] * 2
+        self.assertEqual(perf.check_inventory(both, both), [])
+        none = [{"mesh_entities": None, "terrain_patches": None, "water_surfaces": None}] * 2
+        self.assertTrue(perf.check_inventory(none, none))
+
 
     def test_overall_verdict(self):
         ok = {"status": "ok", "summary_verdict": "noise"}

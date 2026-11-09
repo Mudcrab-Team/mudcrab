@@ -873,18 +873,33 @@ def check_window_modes(base_runs, cand_runs):
 
 
 def check_inventory(base_scenes, cand_scenes, *, tolerance=DEFAULT_INVENTORY_TOLERANCE):
-    """The two sides must have drawn the same scene; a smaller scene is not an optimisation."""
+    """The two sides must have drawn the same scene; a smaller scene is not an optimisation.
+
+    A count the engine did not sample is not the same as a count that matches. A count missing from
+    some runs, or from one side only, cannot be compared and is reported; a count missing from every
+    run on both sides is skipped, but at least one count has to be comparable.
+    """
     problems = []
+    comparable = 0
     for key in SCENE_COUNTS:
-        base = [s[key] for s in base_scenes if s.get(key) is not None]
-        cand = [s[key] for s in cand_scenes if s.get(key) is not None]
-        if not base or not cand:
+        base = [s.get(key) for s in base_scenes]
+        cand = [s.get(key) for s in cand_scenes]
+        if all(v is None for v in base + cand):
             continue
+        missing = [(side, sum(v is None for v in values), len(values))
+                   for side, values in (("base", base), ("candidate", cand)) if any(v is None for v in values)]
+        if missing:
+            detail = ", ".join(f"{side} has no value in {count} of {total} runs" for side, count, total in missing)
+            problems.append(f"{key}: the scene count is not available on both sides ({detail})")
+            continue
+        comparable += 1
         b, c = median(base), median(cand)
         allowed = max(tolerance * max(b, c), INVENTORY_ABSOLUTE_SLACK)
         if abs(b - c) > allowed:
             problems.append(f"{key}: base median {b:g} vs candidate median {c:g} "
                             f"(allowed difference {allowed:g})")
+    if not comparable and not problems and (base_scenes or cand_scenes):
+        problems.append("no scene count was sampled in any run, so the two scenes could not be compared")
     return problems
 
 
@@ -910,6 +925,11 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
         result.update(status="refused", error="too_few_valid_pairs",
                       details=[f"{len(usable)} of {len(pairs)} pairs had a valid run on both sides"])
         return result
+    problems = [f"{side}[{i}] {text}" for i, p in enumerate(usable) for side in ("base", "cand")
+                for text in p[side].get("health_problems", [])]
+    if problems:
+        result.update(status="refused", error="unhealthy_run", details=problems)
+        return result
     problems = check_window_modes([p["base"]["run"] for p in usable], [p["cand"]["run"] for p in usable])
     if problems:
         result.update(status="refused", error="window_mode_mismatch", details=problems)
@@ -925,11 +945,6 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
         result.update(status="refused", error="inventory_mismatch", details=problems)
         return result
     names = set()
-    problems = [f"{side}[{i}] {text}" for i, p in enumerate(usable) for side in ("base", "cand")
-                for text in p[side].get("health_problems", [])]
-    if problems:
-        result.update(status="refused", error="unhealthy_run", details=problems)
-        return result
     for p in usable:
         names |= set(p["base"]["metrics"]) & set(p["cand"]["metrics"])
     cpu = sorted((n for n in names if n.startswith("cpu/")),
