@@ -1617,6 +1617,9 @@ struct ClusterGpu {
     /// When it cannot (Metal), each draw group is one instanced `draw_indirect` over its
     /// `group_args` record and the vertex stage pulls its indices (see [`group_draw_call`]).
     use_count: bool,
+    /// The bytes of `cluster_vertices` the vertex stages bind as storage (see
+    /// [`vertex_storage_bytes`]).
+    vertex_storage_bytes: u64,
     /// The source orders the views hold, shared between views with the same draw groups.
     order_cache: stable_order::OrderCache,
     views: HashMap<RetainedViewEntity, ViewGpu>,
@@ -1725,6 +1728,20 @@ impl ClusterPipelines {
     }
 }
 
+/// A storage binding of the first `bytes` of `buffer`.
+fn prefix_entry(binding: u32, buffer: &Buffer, bytes: u64) -> BindGroupEntry<'_> {
+    BindGroupEntry {
+        binding,
+        resource: bevy::render::render_resource::BindingResource::Buffer(
+            bevy::render::render_resource::BufferBinding {
+                buffer,
+                offset: 0,
+                size: std::num::NonZeroU64::new(bytes.max(4)),
+            },
+        ),
+    }
+}
+
 fn entry(binding: u32, buffer: &Buffer) -> BindGroupEntry<'_> {
     BindGroupEntry {
         binding,
@@ -1806,6 +1823,18 @@ fn index_pool_start(totals: &PoolCursors) -> u64 {
 /// The size of the merged vertex-reference and index buffer.
 fn merged_vertex_pool_bytes(totals: &PoolCursors) -> u64 {
     index_pool_start(totals) + totals.cluster_indices
+}
+
+/// How much of the merged buffer the vertex stages bind as storage. The pulled draw reads its
+/// indices from storage, so it binds everything; the count path fetches indices through the index
+/// buffer and only ever reads the vertex references, so it binds just their prefix and keeps the
+/// scene capacity an adapter with a small storage-binding limit had before pulling existed.
+fn vertex_storage_bytes(totals: &PoolCursors, use_count: bool) -> u64 {
+    if use_count {
+        index_pool_start(totals)
+    } else {
+        merged_vertex_pool_bytes(totals)
+    }
 }
 
 /// The bytes one mesh takes in each pooled buffer (every section padded to words), without
@@ -1988,13 +2017,15 @@ fn pool_meshes(meshes: &[ClusterMeshAsset]) -> PooledMeshes {
 
 /// Whether the scene fits what the adapter binds and allocates: every pooled section, the instance
 /// tables and per-view lists (20-byte arguments, 16-byte visible records) in one storage binding
-/// each (the merged vertex-reference and index buffer is also an index buffer), and the slot and
+/// each (the merged vertex-reference and index buffer is also an index buffer, and only the
+/// vertex-pulled draw binds all of it as storage, see [`vertex_storage_bytes`]), and the slot and
 /// instance totals in the 32-bit indices the shaders use. The sizes are summed in 64 bits, so
 /// nothing wraps before it is compared.
 fn check_scene_limits(
     limits: &bevy::render::settings::WgpuLimits,
     totals: &PoolCursors,
     scene: &ClusterScene,
+    use_count: bool,
 ) -> Result<(), String> {
     let allowed = limits
         .max_storage_buffer_binding_size
@@ -2034,7 +2065,7 @@ fn check_scene_limits(
         ("cluster records", totals.clusters),
         (
             "cluster vertex references and local indices",
-            merged_vertex_pool_bytes(totals),
+            vertex_storage_bytes(totals, use_count),
         ),
         (
             "per-view indexed draw arguments",
@@ -2148,8 +2179,12 @@ fn prepare_cluster_gpu(
     for mesh in &scene.meshes {
         totals.advance(&mesh_pool_sizes(mesh));
     }
+    let use_count = !settings.fixed_count_draw
+        && device
+            .features()
+            .contains(bevy::render::settings::WgpuFeatures::MULTI_DRAW_INDIRECT_COUNT);
     if preparation_result(
-        check_scene_limits(&device.limits(), &totals, &scene),
+        check_scene_limits(&device.limits(), &totals, &scene, use_count),
         &scene,
         source_tick,
         &failures,
@@ -2406,10 +2441,8 @@ fn prepare_cluster_gpu(
         next_slot: 0,
         large_instances: Vec::new(),
         terrain_blocks: scene.terrain_blocks.clone(),
-        use_count: !settings.fixed_count_draw
-            && device
-                .features()
-                .contains(bevy::render::settings::WgpuFeatures::MULTI_DRAW_INDIRECT_COUNT),
+        use_count,
+        vertex_storage_bytes: vertex_storage_bytes(&totals, use_count),
         order_cache: stable_order::OrderCache::default(),
         views: HashMap::new(),
     });
@@ -3721,7 +3754,7 @@ fn new_view_gpu(
         &[
             entry(0, &gpu.positions),
             entry(1, &gpu.attributes),
-            entry(3, &gpu.cluster_vertices),
+            prefix_entry(3, &gpu.cluster_vertices, gpu.vertex_storage_bytes),
             entry(6, &visible),
         ],
     );
@@ -3730,7 +3763,7 @@ fn new_view_gpu(
         &pipeline_cache.get_bind_group_layout(&gpu.shadow_layout),
         &[
             entry(0, &gpu.positions),
-            entry(2, &gpu.cluster_vertices),
+            prefix_entry(2, &gpu.cluster_vertices, gpu.vertex_storage_bytes),
             entry(4, &gpu.instances),
             entry(6, &visible),
         ],

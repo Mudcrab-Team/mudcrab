@@ -274,8 +274,35 @@ fn oversized_gpu_preparation_surfaces_one_terminal_failure() {
         &bevy::render::settings::WgpuLimits::default(),
         &totals,
         &scene,
+        true,
     );
     assert_preparation_failure_is_terminal(scene, result, "positions");
+}
+
+#[test]
+fn only_the_vertex_pulled_draw_needs_the_index_pool_inside_one_storage_binding() {
+    let scene = scene();
+    let totals = PoolCursors {
+        cluster_vertices: 100_000,
+        cluster_indices: 60_000,
+        ..Default::default()
+    };
+    let references = index_pool_start(&totals);
+    let merged = merged_vertex_pool_bytes(&totals);
+    assert_eq!((references, merged), (100_000, 160_000));
+    let limits = |storage: u64| bevy::render::settings::WgpuLimits {
+        max_storage_buffer_binding_size: storage,
+        max_buffer_size: u64::MAX,
+        ..Default::default()
+    };
+    // The count path binds the references only: it fits exactly at their size and no less.
+    assert!(check_scene_limits(&limits(references), &totals, &scene, true).is_ok());
+    assert!(check_scene_limits(&limits(references - 4), &totals, &scene, true).is_err());
+    // The pulled path binds the references and the indices together.
+    assert!(check_scene_limits(&limits(merged), &totals, &scene, false).is_ok());
+    let error = check_scene_limits(&limits(merged - 4), &totals, &scene, false).unwrap_err();
+    assert!(error.contains("cluster vertex references and local indices"));
+    assert!(check_scene_limits(&limits(references), &totals, &scene, false).is_err());
 }
 
 #[test]
