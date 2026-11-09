@@ -248,6 +248,27 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(result["summary_verdict"], "regressed")
         self.assertEqual(result["metrics"]["average_fps"]["verdict"], "regressed")
 
+    def test_a_report_without_primary_metrics_is_inconclusive_not_noise(self):
+        base = [run_entry(metrics={"frame_ms_mean": 10.0 + 0.01 * i}) for i in range(6)]
+        cand = [run_entry(metrics={"frame_ms_mean": 10.0 + 0.01 * i}) for i in range(6)]
+        result = self.analyze(base, cand)
+        self.assertEqual(result["summary_verdict"], "inconclusive")
+        self.assertTrue(any("frame_ms_p95" in line for line in result["details"]))
+
+    def test_a_primary_metric_with_too_few_usable_values_is_inconclusive(self):
+        base = self.runs(6)
+        cand = self.runs(6)
+        for entry in cand[:3]:
+            del entry["metrics"]["frame_ms_p99"]
+        result = self.analyze(base, cand)
+        self.assertEqual(result["summary_verdict"], "inconclusive")
+
+    def test_inconclusive_never_reads_as_improved_or_noise_overall(self):
+        inconclusive = {"status": "ok", "summary_verdict": "inconclusive"}
+        noise = {"status": "ok", "summary_verdict": "noise"}
+        improved = {"status": "ok", "summary_verdict": "improved"}
+        self.assertEqual(perf.overall_verdict({"a": inconclusive, "b": noise}), "inconclusive")
+        self.assertEqual(perf.overall_verdict({"a": inconclusive, "b": improved}), "inconclusive")
 
     def test_a_run_that_fell_back_to_another_render_path_is_refused_not_improved(self):
         base = self.runs(6)
