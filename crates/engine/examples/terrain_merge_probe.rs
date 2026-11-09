@@ -541,6 +541,27 @@ fn setup(
     // tangents), so the sun reaches the first and leaves the second black; a flipped normal would
     // light it. A third copy keeps `unlit: true` and must read its albedo exactly even next to
     // the sun.
+    // The sun's contribution is a fixed multiple of the albedo, and raw UNORM bytes decode to a
+    // brighter albedo than the same bytes through sRGB, so under `skyrim` the grey of mid
+    // brightness would saturate. The lit cell stores the byte whose decoded value is the same
+    // linear albedo under either profile, keeping the lit reading short of white in both.
+    let lit_byte = if colour_srgb {
+        128
+    } else {
+        (linear(128, true) * 255.0).round() as u8
+    };
+    let lit_diffuse = [
+        images.add(solid_array(
+            4,
+            diffuse_format,
+            &[
+                [lit_byte, lit_byte, lit_byte, 255],
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+            ],
+        )),
+        diffuse[1].clone(),
+    ];
     let lit = terrain_materials.add(MergedTerrainMaterial {
         base: StandardMaterial {
             base_color: Color::WHITE,
@@ -550,7 +571,7 @@ fn setup(
             double_sided: true,
             ..default()
         },
-        extension: MergedTerrainExtension::new(&diffuse, &normal, entries.clone()).unwrap(),
+        extension: MergedTerrainExtension::new(&lit_diffuse, &normal, entries.clone()).unwrap(),
     });
     let grey = || Quad {
         slots: vec![0],
@@ -578,10 +599,12 @@ fn setup(
         // The unlit twin, one row below the lit row.
         Transform::from_xyz(0.0, 0.0, -12288.0),
     ));
-    // Plain quads of the same grey albedo, one lit and one unlit, beside the unlit twin: the
+    // Plain quads, one lit with the lit cell's albedo and one unlit with the twin's, beside the twin: the
     // references the merged cells are read against, so no lighting model has to be built.
     let grey_linear = linear(128, colour_srgb);
     let grey_colour = Color::linear_rgb(grey_linear, grey_linear, grey_linear);
+    let lit_linear = linear(lit_byte, colour_srgb);
+    let lit_colour = Color::linear_rgb(lit_linear, lit_linear, lit_linear);
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(quadrant_side, quadrant_side))),
         MeshMaterial3d(standard.add(StandardMaterial {
@@ -595,7 +618,7 @@ fn setup(
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(quadrant_side, quadrant_side))),
         MeshMaterial3d(standard.add(StandardMaterial {
-            base_color: grey_colour,
+            base_color: lit_colour,
             perceptual_roughness: 1.0,
             reflectance: 0.0,
             ..default()
@@ -612,7 +635,7 @@ fn setup(
         check: PixelCheck::Lit {
             reference: (px(7168.0), py(14336.0)),
             // With the sun off the cell would read its albedo exactly, as the unlit twin does.
-            unlit: [screen_grey(colour(0)[0], colour_srgb); 3],
+            unlit: [screen_grey(lit_byte, colour_srgb); 3],
         },
     });
     probe.special.push(PixelCase {
