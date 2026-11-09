@@ -361,7 +361,9 @@ fn rotated_rigid_body_t_rotates_the_tensor_and_moves_the_center_into_the_shape_f
 #[test]
 fn the_root_nodes_own_transform_moves_neither_render_nodes_nor_collision() {
     // As countercornerin01.nif: the root BSFadeNode is rotated 90 degrees about Z (rows
-    // (0, -1, 0), (1, 0, 0), (0, 0, 1)); here it is also translated and scaled.
+    // (0, -1, 0), (1, 0, 0), (0, 0, 1)); here it is also translated and scaled. The vendor's
+    // `the_model_layer_keeps_the_authored_root_transform` pins the other half of this split:
+    // the model still carries the authored transform, and only this converter drops it.
     let root = RootTransform {
         translation: [10.0, 20.0, 30.0],
         rotation: [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
