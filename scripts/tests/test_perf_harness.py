@@ -797,6 +797,18 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(self.status(self.checks(busy=("engine",)), "no_other_engine"), "fail")
         self.assertEqual(self.status(self.checks(free=1024**3), "disk"), "fail")
 
+    def test_suffixed_engine_binaries_count_as_other_engines(self):
+        seen = []
+
+        def fake_output(command):
+            seen.append(command)
+            return "123\n" if command == ["pgrep", "^engine\\-"] else ""
+
+        with mock.patch.object(perf, "_command_output", fake_output):
+            self.assertEqual(perf.running_processes(["engine"]), [])
+            self.assertEqual(perf.running_processes(["engine", "engine-*"]), ["engine-*"])
+        self.assertIn(["pgrep", "-x", "engine"], seen)
+        self.assertEqual(self.status(self.checks(busy=("engine-*",)), "no_other_engine"), "fail")
 
     def test_non_macos_skips_the_machine_checks(self):
         checks = self.checks(system="Linux")

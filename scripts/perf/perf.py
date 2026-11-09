@@ -1143,10 +1143,15 @@ def _command_output(command):
 
 
 def running_processes(names):
-    """Names from `names` with at least one running process, by exact executable name."""
+    """Names from `names` with at least one running process, by exact executable name.
+
+    A name ending in `*` matches any executable that starts with the rest, which is how the
+    `engine-<sha>` binaries the harness builds are recognised.
+    """
     found = []
     for name in names:
-        output = _command_output(["pgrep", "-x", name])
+        pattern = ["pgrep", f"^{re.escape(name[:-1])}"] if name.endswith("*") else ["pgrep", "-x", name]
+        output = _command_output(pattern)
         if output and output.strip():
             found.append(name)
     return found
@@ -1194,7 +1199,7 @@ def preflight_checks(out_dir=None, *, system=None, command_output=_command_outpu
         add("low_power_mode", "pass", "Low Power Mode is off")
     busy = processes(["cargo", "rustc"])
     add("no_builds", "fail" if busy else "pass", f"running: {', '.join(busy)}" if busy else "no cargo or rustc")
-    engines = [name for name in processes(["engine"]) if name]
+    engines = [name for name in processes(["engine", "engine-*"]) if name]
     add("no_other_engine", "fail" if engines else "pass",
         "another engine process is running" if engines else "no engine process running")
     return checks
