@@ -686,6 +686,27 @@ def extract_metrics(report, bundle_dir=None):
     return metrics
 
 
+# Threshold fields that say the run measured the renderer it was meant to. `passed` also folds in
+# the FPS and p95 limits, so a real slowdown must not be hidden by refusing on it.
+HEALTH_FIELDS = ("renderer_path_active", "no_streaming_failures", "commit_budget_respected",
+                 "streaming_lifecycle_validated")
+
+
+def report_health(report):
+    """What is wrong with a report as a measurement: the health fields that are false or missing."""
+    thresholds = report.get("thresholds")
+    if not isinstance(thresholds, dict):
+        return ["the report has no thresholds block, so the render path and streaming health are unknown"]
+    problems = []
+    for field in HEALTH_FIELDS:
+        value = thresholds.get(field)
+        if value is None:
+            problems.append(f"thresholds.{field} is missing")
+        elif value is not True:
+            problems.append(f"thresholds.{field} is {json.dumps(value)}")
+    return problems
+
+
 def extract_scene(report):
     scene = report.get("scene") or {}
     return {key: scene.get(key) for key in SCENE_COUNTS}
@@ -694,12 +715,14 @@ def extract_scene(report):
 def load_run(run_dir):
     """The run.json, report-derived metrics, fingerprint and scene counts of one run directory."""
     run = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
-    entry = {"dir": str(run_dir), "run": run, "metrics": {}, "fingerprint": None, "scene": {}}
+    entry = {"dir": str(run_dir), "run": run, "metrics": {}, "fingerprint": None, "scene": {},
+             "health_problems": []}
     if run.get("valid") and run.get("report"):
         report = json.loads(Path(run["report"]).read_text(encoding="utf-8"))
         entry["metrics"] = extract_metrics(report, Path(run_dir) / "bundle")
         entry["fingerprint"] = report.get("fingerprint")
         entry["scene"] = extract_scene(report)
+        entry["health_problems"] = report_health(report)
         entry["warmup_frames"] = report.get("warmup_frames")
     return entry
 
@@ -902,6 +925,11 @@ def analyze_scenario(name, pairs, *, seed, min_effect, inventory_tolerance=DEFAU
         result.update(status="refused", error="inventory_mismatch", details=problems)
         return result
     names = set()
+    problems = [f"{side}[{i}] {text}" for i, p in enumerate(usable) for side in ("base", "cand")
+                for text in p[side].get("health_problems", [])]
+    if problems:
+        result.update(status="refused", error="unhealthy_run", details=problems)
+        return result
     for p in usable:
         names |= set(p["base"]["metrics"]) & set(p["cand"]["metrics"])
     cpu = sorted((n for n in names if n.startswith("cpu/")),

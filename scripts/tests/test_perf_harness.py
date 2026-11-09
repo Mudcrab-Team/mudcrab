@@ -34,6 +34,8 @@ report = {{
     "average_fps": 100.0, "passed": True, "warmup_frames": 60,
     "fingerprint": {{"commit": "x", "resolution": [100, 100]}},
     "scene": {{"mesh_entities": 10, "terrain_patches": 1, "water_surfaces": 0}},
+    "thresholds": {{"renderer_path_active": True, "no_streaming_failures": True,
+                    "commit_budget_respected": True, "streaming_lifecycle_validated": True}},
 }}
 def write():
     with open(out, "w") as handle:
@@ -247,6 +249,29 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(result["metrics"]["average_fps"]["verdict"], "regressed")
 
 
+    def test_a_run_that_fell_back_to_another_render_path_is_refused_not_improved(self):
+        base = self.runs(6)
+        cand = [run_entry(metrics=frame_metrics(0.5, 0.01 * i)) for i in range(6)]
+        cand[2]["health_problems"] = ["thresholds.renderer_path_active is false"]
+        result = self.analyze(base, cand)
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["error"], "unhealthy_run")
+        self.assertTrue(any("renderer_path_active" in line for line in result["details"]))
+
+    def test_report_health_reads_the_specific_fields_not_passed(self):
+        healthy = {"renderer_path_active": True, "no_streaming_failures": True,
+                   "commit_budget_respected": True, "streaming_lifecycle_validated": True}
+        # `passed` false because of an FPS limit is a slowdown to report, not a broken run.
+        self.assertEqual(perf.report_health({"passed": False, "thresholds": healthy}), [])
+        broken = dict(healthy, renderer_path_active=False)
+        self.assertEqual(perf.report_health({"passed": True, "thresholds": broken}),
+                         ["thresholds.renderer_path_active is false"])
+        missing = {k: v for k, v in healthy.items() if k != "no_streaming_failures"}
+        self.assertEqual(perf.report_health({"thresholds": missing}),
+                         ["thresholds.no_streaming_failures is missing"])
+        self.assertEqual(len(perf.report_health({})), 1)
+
+
     def test_overall_verdict(self):
         ok = {"status": "ok", "summary_verdict": "noise"}
         self.assertEqual(perf.overall_verdict({"a": ok}), "noise")
@@ -347,6 +372,15 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(loaded["metrics"]["frame_ms_mean"], 10.0)
         self.assertEqual(loaded["scene"]["mesh_entities"], 10)
 
+    def test_load_run_records_health_problems(self):
+        run = self.run_mode("ok")
+        report_path = Path(run["report"])
+        self.assertEqual(perf.load_run(report_path.parent)["health_problems"], [])
+        report = json.loads(report_path.read_text())
+        report["thresholds"]["renderer_path_active"] = False
+        report_path.write_text(json.dumps(report))
+        self.assertEqual(perf.load_run(report_path.parent)["health_problems"],
+                         ["thresholds.renderer_path_active is false"])
 
     def test_an_interrupted_watch_stops_the_engine_it_started(self):
         pid_file = Path(self.tmp.name) / "pid"
