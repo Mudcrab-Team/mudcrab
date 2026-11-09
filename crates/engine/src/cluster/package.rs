@@ -518,12 +518,26 @@ type PreloadedMeshes = HashMap<(String, u32), Result<ClusterMeshAsset, String>>;
 /// Meshes not in `terrain_keys` also get their tangent proof recorded from the bytes in hand, so
 /// preparing them later needs no read. Terrain meshes are prepared without tangents when only
 /// terrain uses them, which this step cannot know yet; they keep the read in preparation.
+///
+/// A refused thread start is an error, not a panic: the loading system refuses the package.
 fn preload_certified_meshes(
     package: &Arc<super::reader::CertifiedPackage>,
     rows: &HashMap<(String, u32), MeshRow>,
     identity: &str,
     terrain_keys: &std::collections::HashSet<(String, u32)>,
-) -> PreloadedMeshes {
+) -> Result<PreloadedMeshes, String> {
+    preload_with_spawn_failure(package, rows, identity, terrain_keys, None)
+}
+
+/// `fail_worker` makes that worker's thread start fail, to exercise the refusal without
+/// exhausting the OS.
+fn preload_with_spawn_failure(
+    package: &Arc<super::reader::CertifiedPackage>,
+    rows: &HashMap<(String, u32), MeshRow>,
+    identity: &str,
+    terrain_keys: &std::collections::HashSet<(String, u32)>,
+    fail_worker: Option<usize>,
+) -> Result<PreloadedMeshes, String> {
     let entries: Vec<_> = rows.iter().collect();
     let builder = shared::cluster::parse_hash(identity);
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -552,21 +566,38 @@ fn preload_certified_meshes(
         Ok(mesh)
     };
     std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((key, row)) = entries.get(index) else {
-                            break;
-                        };
-                        done.push(((*key).clone(), load(key, row)));
-                    }
-                    done
-                })
-            })
-            .collect();
+        let mut handles = Vec::with_capacity(workers);
+        let mut start_error = None;
+        for worker in 0..workers {
+            let spawned = if fail_worker == Some(worker) {
+                Err(std::io::Error::other("injected thread start failure"))
+            } else {
+                std::thread::Builder::new()
+                    .name("cluster-mesh-preload".into())
+                    .spawn_scoped(scope, || {
+                        let mut done = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((key, row)) = entries.get(index) else {
+                                break;
+                            };
+                            done.push(((*key).clone(), load(key, row)));
+                        }
+                        done
+                    })
+            };
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    start_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if start_error.is_some() {
+            // The package is refused, so the workers already running need not read the rest.
+            next.store(entries.len(), std::sync::atomic::Ordering::Relaxed);
+        }
         let mut loaded = PreloadedMeshes::with_capacity(entries.len());
         for handle in handles {
             match handle.join() {
@@ -577,7 +608,10 @@ fn preload_certified_meshes(
                 }
             }
         }
-        loaded
+        match start_error {
+            Some(error) => Err(format!("cannot start cluster mesh preload worker: {error}")),
+            None => Ok(loaded),
+        }
     })
 }
 
@@ -872,7 +906,14 @@ fn load_cluster_package(
         })
         .cloned()
         .collect();
-    let mut preloaded = preload_certified_meshes(&validated.0, &rows, &identity, &terrain_keys);
+    let mut preloaded =
+        match preload_certified_meshes(&validated.0, &rows, &identity, &terrain_keys) {
+            Ok(preloaded) => preloaded,
+            Err(error) => {
+                stop_unusable_overlay(&mut commands, &validated.0, format_args!("{error}"));
+                return;
+            }
+        };
     let mut mesh_index: HashMap<(String, u32), u32> = HashMap::new();
     let mut scene_meshes: Vec<ClusterMeshAsset> = Vec::new();
     let mut batch_index: HashMap<(BatchKey, u32), u32> = HashMap::new();
@@ -2669,6 +2710,27 @@ mod tests {
                 if preload_all { MAX_LOADING * 3 } else { 0 }
             );
         }
+    }
+
+    #[test]
+    fn mesh_preload_refuses_when_a_worker_thread_cannot_start() {
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let rows = read_rows(&crate::cluster::overlay_fixture::read_db(directory.path())).unwrap();
+        let identity = package.envelope().builder_identity.clone();
+        let terrain_keys = std::collections::HashSet::new();
+        let started = preload_with_spawn_failure(&package, &rows, &identity, &terrain_keys, None)
+            .expect("an ordinary preload succeeds");
+        assert_eq!(started.len(), rows.len());
+        let error = preload_with_spawn_failure(&package, &rows, &identity, &terrain_keys, Some(0))
+            .err()
+            .expect("a refused thread start must refuse the package");
+        assert!(
+            error.contains("cannot start cluster mesh preload worker"),
+            "{error}"
+        );
     }
 
     #[test]
