@@ -458,6 +458,51 @@ class WatchdogTest(unittest.TestCase):
         else:
             self.fail("the engine was still running after the interruption")
 
+    def test_a_system_exit_mid_watch_stops_the_engine(self):
+        pid_file = Path(self.tmp.name) / "pid"
+        script = Path(self.tmp.name) / "sleeper.py"
+        script.write_text(f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(600)\n")
+
+        def exiting():
+            if not pid_file.exists():
+                return False
+            raise SystemExit(143)
+
+        with self.assertRaises(SystemExit):
+            perf.watch_process([sys.executable, str(script)], stdout_path=Path(self.tmp.name) / "o",
+                               stderr_path=Path(self.tmp.name) / "e", is_done=exiting, timeout=30,
+                               grace=1, poll=0.05)
+        pid = int(pid_file.read_text())
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the engine was still running after SystemExit")
+
+    def test_termination_handlers_turn_signals_into_system_exit(self):
+        registered = {}
+        previous = perf.install_termination_handlers(register=lambda n, h: registered.setdefault(n, h) and "old")
+        wanted = {n for n in (getattr(perf.signal, "SIGTERM", None), getattr(perf.signal, "SIGHUP", None)) if n}
+        self.assertEqual(set(registered), wanted)
+        self.assertEqual(set(previous), wanted)
+        for number, handler in registered.items():
+            with self.assertRaises(SystemExit) as caught:
+                handler(number, None)
+            self.assertEqual(caught.exception.code, 128 + number)
+
+    def test_main_installs_the_handlers_and_restores_the_previous_ones(self):
+        before = perf.signal.getsignal(perf.signal.SIGTERM)
+        seen = []
+        args = mock.Mock(func=lambda a: seen.append(perf.signal.getsignal(perf.signal.SIGTERM)) or 0)
+        with mock.patch.object(perf, "build_parser") as parser:
+            parser.return_value.parse_args.return_value = args
+            self.assertEqual(perf.main([]), 0)
+        self.assertEqual(seen, [perf._exit_on_signal])
+        self.assertEqual(perf.signal.getsignal(perf.signal.SIGTERM), before)
+
     def test_an_interrupted_watch_uses_the_custom_terminator(self):
         stopped = []
 

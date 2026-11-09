@@ -2591,13 +2591,36 @@ def build_parser():
     return parser
 
 
+def _exit_on_signal(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def install_termination_handlers(register=signal.signal):
+    """Turn SIGTERM and SIGHUP into SystemExit and return the handlers they replaced.
+
+    The engine runs in its own session, so a plain `kill` or a closed terminal reaches only this
+    process; the default action would end it without unwinding and leave the engine running.
+    SystemExit unwinds through the watchdog's cleanup, which stops and reaps the child.
+    """
+    previous = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)  # SIGHUP does not exist on Windows
+        if number is not None:
+            previous[number] = register(number, _exit_on_signal)
+    return previous
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    previous = install_termination_handlers()
     try:
         return args.func(args)
     except HarnessError as error:
         print(f"error: {error}", file=sys.stderr)
         return 3 if error.name in ("preflight_failed", "insufficient_disk") else 2
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 if __name__ == "__main__":
