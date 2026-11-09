@@ -22,16 +22,12 @@
 @group(4) @binding(6) var<storage, read> visible: array<vec4<u32>>;
 
 #ifdef CLUSTER_VERTEX_PULL
-// Naga rejects a literal division by zero; routing it through a function keeps the NaN.
-fn divide(a: f32, b: f32) -> f32 {
-    return a / b;
-}
-
-// A padding vertex of a pulled draw: a NaN position makes the whole triangle degenerate, so the
-// rasterizer discards it (the same device Bevy's meshlet hardware raster uses).
+// A padding vertex of a pulled draw: all three vertices of a padding triangle share one finite
+// clip position, so the triangle has zero area and the rasterizer discards it. A NaN position would
+// do the same under strict IEEE rules, but fast-math compilation may assume it never occurs.
 fn dummy_vertex() -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4<f32>(divide(0.0, 0.0));
+    out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return out;
 }
 #endif
