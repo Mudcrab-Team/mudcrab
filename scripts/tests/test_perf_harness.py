@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import zlib
 from pathlib import Path
@@ -245,6 +246,7 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(result["summary_verdict"], "regressed")
         self.assertEqual(result["metrics"]["average_fps"]["verdict"], "regressed")
 
+
     def test_overall_verdict(self):
         ok = {"status": "ok", "summary_verdict": "noise"}
         self.assertEqual(perf.overall_verdict({"a": ok}), "noise")
@@ -344,6 +346,49 @@ class WatchdogTest(unittest.TestCase):
         loaded = perf.load_run(Path(run["report"]).parent)
         self.assertEqual(loaded["metrics"]["frame_ms_mean"], 10.0)
         self.assertEqual(loaded["scene"]["mesh_entities"], 10)
+
+
+    def test_an_interrupted_watch_stops_the_engine_it_started(self):
+        pid_file = Path(self.tmp.name) / "pid"
+        script = Path(self.tmp.name) / "sleeper.py"
+        script.write_text(f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(600)\n")
+        calls = []
+
+        def interrupted():
+            calls.append(1)
+            if not pid_file.exists():
+                return False
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            perf.watch_process([sys.executable, str(script)], stdout_path=Path(self.tmp.name) / "o",
+                               stderr_path=Path(self.tmp.name) / "e", is_done=interrupted, timeout=30,
+                               grace=1, poll=0.05)
+        pid = int(pid_file.read_text())
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the engine was still running after the interruption")
+
+    def test_an_interrupted_watch_uses_the_custom_terminator(self):
+        stopped = []
+
+        def terminate(proc):
+            stopped.append(proc.pid)
+            proc.kill()
+            proc.wait()
+            return True
+
+        with self.assertRaises(RuntimeError):
+            perf.watch_process([sys.executable, "-c", "import time; time.sleep(600)"],
+                               stdout_path=Path(self.tmp.name) / "o", stderr_path=Path(self.tmp.name) / "e",
+                               is_done=mock.Mock(side_effect=RuntimeError("boom")), timeout=30, grace=1,
+                               poll=0.05, terminate=terminate)
+        self.assertEqual(len(stopped), 1)
 
     def test_missing_binary_does_not_hang(self):
         out = Path(self.tmp.name) / "nobin"
@@ -667,6 +712,7 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(self.status(self.checks(busy=("cargo",)), "no_builds"), "fail")
         self.assertEqual(self.status(self.checks(busy=("engine",)), "no_other_engine"), "fail")
         self.assertEqual(self.status(self.checks(free=1024**3), "disk"), "fail")
+
 
     def test_non_macos_skips_the_machine_checks(self):
         checks = self.checks(system="Linux")

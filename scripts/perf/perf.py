@@ -311,6 +311,19 @@ def _terminate_group(proc, grace=5.0):
         return True
 
 
+def _reap_after_interruption(proc, terminate):
+    """Stop and reap a child the watchdog is abandoning. Never raises: the caller is already unwinding."""
+    if proc.poll() is not None:
+        return
+    for stop in (terminate, _terminate_group):
+        try:
+            stop(proc)
+        except Exception:
+            continue
+        if proc.poll() is not None:
+            return
+
+
 def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace, poll=0.2, env=None,
                   terminate=None):
     """Run a command and return what happened.
@@ -337,24 +350,30 @@ def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace,
             return {"spawned": False, "error": str(error), "exit_code": None, "killed": False,
                     "output_complete": False, "wall_seconds": 0.0, "complete_after_seconds": None,
                     "kill_reason": None}
-        while True:
-            code = proc.poll()
-            now = time.monotonic() - started
-            if done_at is None and is_done():
-                done_at = now
-            if code is not None:
-                break
-            wanted = None
-            if done_at is not None and now - done_at >= grace:
-                wanted = "hung_after_output"
-            elif now >= timeout:
-                wanted = "timeout"
-            if wanted:
-                if terminate(proc):
-                    killed, reason = True, wanted
-                code = proc.returncode
-                break
-            time.sleep(poll)
+        try:
+            while True:
+                code = proc.poll()
+                now = time.monotonic() - started
+                if done_at is None and is_done():
+                    done_at = now
+                if code is not None:
+                    break
+                wanted = None
+                if done_at is not None and now - done_at >= grace:
+                    wanted = "hung_after_output"
+                elif now >= timeout:
+                    wanted = "timeout"
+                if wanted:
+                    if terminate(proc):
+                        killed, reason = True, wanted
+                    code = proc.returncode
+                    break
+                time.sleep(poll)
+        except BaseException:
+            # The engine runs in its own session, so Ctrl-C reaches only this process. Without
+            # this the engine outlives the harness and skews the next measurement.
+            _reap_after_interruption(proc, terminate)
+            raise
         if done_at is None and is_done():
             done_at = time.monotonic() - started
     return {"spawned": True, "exit_code": code, "killed": killed, "kill_reason": reason,
