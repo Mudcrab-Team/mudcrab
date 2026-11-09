@@ -1045,6 +1045,11 @@ def format_value(name, value):
     return f"{value:.3f}"
 
 
+def noise_caveat(pairs):
+    return (f"`noise` means not distinguishable from run-to-run variation at {pairs} pairs, not "
+            "\"no change\": a real slowdown of around 10% often reads as `noise` at this pair count.")
+
+
 def summary_markdown(verdict):
     lines = ["# Perf comparison", "",
              f"- base: `{verdict['base']['path']}` (sha256 {verdict['base']['sha256'][:12]}, "
@@ -1073,6 +1078,8 @@ def summary_markdown(verdict):
         lines.append(f"{scenario['pairs_used']} of {scenario['pairs_requested']} pairs used; "
                      f"summary verdict **{scenario['summary_verdict']}**")
         lines += [f"- {d}" for d in scenario.get("details", [])]
+        if scenario["summary_verdict"] == "noise":
+            lines.append(f"- {noise_caveat(scenario['pairs_used'])}")
         for warning in scenario.get("run_warnings", []):
             lines.append(f"- warning: {warning}")
         lines += ["", "| metric | base median | cand median | ratio (95% CI) | p | verdict |", "|---|---:|---:|---:|---:|---|"]

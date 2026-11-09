@@ -1007,6 +1007,17 @@ class SummaryTest(unittest.TestCase):
         self.assertNotIn("| cpu/x |", text)
         self.assertIn("noise-floor run", text)
         self.assertIn("preflight fail", text)
+        self.assertIn("`noise` means not distinguishable from run-to-run variation at 3 pairs, not \"no change\"",
+                      text)
+
+    def test_the_noise_caveat_appears_only_next_to_a_noise_verdict(self):
+        def verdict(summary):
+            return {"base": {"path": "b", "sha256": "a" * 64}, "cand": {"path": "c", "sha256": "b" * 64},
+                    "pairs": 6, "min_effect": 0.02, "seed": 1, "same_binary": False, "overall": summary,
+                    "scenarios": {"s": {"status": "ok", "pairs_used": 6, "pairs_requested": 6,
+                                        "summary_verdict": summary, "metrics": {}}}}
+        self.assertIn("at 6 pairs, not \"no change\"", perf.summary_markdown(verdict("noise")))
+        self.assertNotIn("not \"no change\"", perf.summary_markdown(verdict("regressed")))
 
 
 class BuildIdentityTest(unittest.TestCase):
