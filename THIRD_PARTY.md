@@ -2,7 +2,8 @@
 
 Mudcrab is licensed under the GNU General Public License v3 or later ([LICENSE](LICENSE)), except
 for the files below, which are derived from other projects and keep those projects' terms. Each
-file names its source in an SPDX header and a comment at the top.
+derived file names its source in an SPDX header and a comment at the top. A bundled crate keeps
+its own terms and license files; the ones that differ from Mudcrab's are noted below.
 
 ## Community Shaders
 
@@ -34,6 +35,17 @@ shader.
 | Mudcrab file | Derived from (Bevy 0.19.0 path) | License |
 |---|---|---|
 | `crates/engine/src/shaders/skyrim_skin.wgsl` | `bevy_pbr/render/mesh.wgsl` and `bevy_pbr/render/pbr.wgsl` | MIT OR Apache-2.0 |
+
+`vendor/bevy_image` is the published `bevy_image` 0.19.0 crate with one manifest change: its
+optional `zstd` requirement moves from `0.13.3` to `0.14.3` for four RustSec advisories. The Rust
+source is unchanged and keeps `MIT OR Apache-2.0`; both upstream license files are included. See
+the [patch notes](vendor/bevy_image/README.mudcrab.md) for the source hash, the exact change and
+the removal criteria.
+
+`vendor/project-wormhole-nif` is a Mudcrab fork of the published `project-wormhole-nif` 0.1.0
+crate (`GPL-3.0-or-later`, the same licence as Mudcrab). Unlike `vendor/bevy_image` it carries
+Mudcrab's own parser changes. See its [fork notes](vendor/project-wormhole-nif/README.mudcrab.md)
+for the source hash, what changed and how to compare it with the published crate.
 
 The MIT notice for the original shader code (Community Shaders,
 `package/SKSE/Plugins/CommunityShaders/Licenses/LICENSE-Perapechka-MIT.txt`):

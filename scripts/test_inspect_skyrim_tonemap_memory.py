@@ -15,30 +15,41 @@ SPEC = importlib.util.spec_from_file_location('inspect_skyrim_tonemap_memory', S
 MEMORY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MEMORY)
 
+CODE_RVA = 0x153D000
+# The fixture mirrors Linux /proc and needs os.major, os.minor, os.pread and
+# os.pwrite; Windows provides none of them.
+POSIX_PROC_FIXTURE = os.name == 'posix' and all(
+    hasattr(os, name) for name in ('major', 'minor', 'pread', 'pwrite'))
+
+
+def synthetic_pe():
+    """A bounded AMD64 image; no retail executable bytes are embedded."""
+    disk = bytearray(0x2000)
+    disk[:2] = b'MZ'
+    struct.pack_into('<I', disk, 0x3C, 0x80)
+    disk[0x80:0x84] = b'PE\0\0'
+    struct.pack_into('<HHI', disk, 0x84, 0x8664, 1, 0x12345678)
+    struct.pack_into('<H', disk, 0x94, 0xF0)
+    optional = 0x98
+    struct.pack_into('<H', disk, optional, 0x20B)
+    struct.pack_into('<Q', disk, optional + 24, MEMORY.PREFERRED_BASE)
+    struct.pack_into('<II', disk, optional + 56, 0x3700000, 0x400)
+    section = optional + 0xF0
+    disk[section:section + 8] = b'.text\0\0\0'
+    struct.pack_into('<IIII', disk, section + 8, 0x1000, CODE_RVA, 0x1000, 0x1000)
+    struct.pack_into('<I', disk, section + 36, 0x60000020)
+    # All code bytes differ from zero; one flipped byte must be detected.
+    disk[0x1000:] = bytes((index * 17 + 3) % 256 for index in range(0x1000))
+    return bytes(disk)
+
 
 class Fixture:
     def __init__(self, root, base=0x5F00000000):
         self.root, self.base, self.pid = root, base, 12345
         self.executable = root / 'game directory/SkyrimSE.exe'
         self.executable.parent.mkdir()
-        disk = bytearray(0x2000)
-        disk[:2] = b'MZ'
-        struct.pack_into('<I', disk, 0x3C, 0x80)
-        disk[0x80:0x84] = b'PE\0\0'
-        struct.pack_into('<HHI', disk, 0x84, 0x8664, 1, 0x12345678)
-        struct.pack_into('<H', disk, 0x94, 0xF0)
-        optional = 0x98
-        struct.pack_into('<H', disk, optional, 0x20B)
-        struct.pack_into('<Q', disk, optional + 24, MEMORY.PREFERRED_BASE)
-        struct.pack_into('<II', disk, optional + 56, 0x3700000, 0x400)
-        section = optional + 0xF0
-        disk[section:section + 8] = b'.text\0\0\0'
-        self.code_rva = 0x153D000
-        struct.pack_into('<IIII', disk, section + 8, 0x1000, self.code_rva, 0x1000, 0x1000)
-        struct.pack_into('<I', disk, section + 36, 0x60000020)
-        # All code bytes differ from zero; one flipped byte must be detected.
-        disk[0x1000:] = bytes((index * 17 + 3) % 256 for index in range(0x1000))
-        self.disk = bytes(disk)
+        self.code_rva = CODE_RVA
+        self.disk = synthetic_pe()
         self.executable.write_bytes(self.disk)
         self.executable = self.executable.resolve()
         self.proc = root / 'proc'
@@ -113,6 +124,8 @@ class Fixture:
             return MEMORY.collect(self.pid, self.executable, output, proc_root=self.proc)
 
 
+@unittest.skipUnless(POSIX_PROC_FIXTURE,
+                     'collector fixture needs POSIX /proc with os.pread, os.pwrite and os.major')
 class ReadOnlyCollectorTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -389,6 +402,87 @@ class ReadOnlyCollectorTests(unittest.TestCase):
         result = self.fixture.collect(self.output)
         self.assertEqual(result['samples'][0]['manager']['resolved_base']['fields']['white'], 'NaN')
         self.assertNotIn(': NaN', (self.output / 'receipt.json').read_text())
+
+class ParserTests(unittest.TestCase):
+    """PE, maps and range parsers; these run on every platform."""
+
+    def setUp(self):
+        self.disk = synthetic_pe()
+        self.pe = MEMORY.parse_pe(self.disk)
+
+    def test_parse_pe_bounds_the_amd64_image(self):
+        self.assertEqual(self.pe['preferred_base'], MEMORY.PREFERRED_BASE)
+        self.assertEqual(self.pe['size_image'], 0x3700000)
+        self.assertEqual(self.pe['size_headers'], 0x400)
+        self.assertEqual([section['name'] for section in self.pe['sections']], ['.text'])
+        with self.assertRaisesRegex(ValueError, 'DOS header'):
+            MEMORY.parse_pe(b'')
+        broken = bytearray(self.disk)
+        struct.pack_into('<H', broken, 0x84, 0x14C)
+        with self.assertRaisesRegex(ValueError, 'AMD64'):
+            MEMORY.parse_pe(bytes(broken))
+
+    def test_pe_file_range_maps_headers_and_section_bytes_once(self):
+        self.assertEqual(MEMORY.pe_file_range(self.pe, MEMORY.PREFERRED_BASE, 0x10), 0)
+        self.assertEqual(MEMORY.pe_file_range(
+            self.pe, MEMORY.PREFERRED_BASE + CODE_RVA, 0x1000), 0x1000)
+        with self.assertRaisesRegex(ValueError, 'map uniquely'):
+            MEMORY.pe_file_range(self.pe, MEMORY.PREFERRED_BASE + 0x2000000, 0x10)
+        with self.assertRaisesRegex(ValueError, 'Invalid PE requested range'):
+            MEMORY.pe_file_range(self.pe, MEMORY.PREFERRED_BASE, 0)
+
+    def test_parse_maps_decodes_escaped_paths_and_rejects_bad_bounds(self):
+        mapping = MEMORY.parse_maps(
+            '0000000000001000-0000000000002000 r-xp 00000000 00:01 7 /tmp/a\\040b\n')[0]
+        self.assertEqual(mapping['path'], '/tmp/a b')
+        self.assertEqual((mapping['start'], mapping['end']), (0x1000, 0x2000))
+        self.assertEqual((mapping['device_major'], mapping['device_minor']), (0, 1))
+        with self.assertRaisesRegex(ValueError, 'Malformed'):
+            MEMORY.parse_maps('not a maps line\n')
+        with self.assertRaisesRegex(ValueError, 'Overlapping'):
+            MEMORY.parse_maps(
+                '0000000000001000-0000000000002000 r-xp 00000000 00:01 7 /a\n'
+                '0000000000001f00-0000000000003000 r-xp 00000000 00:01 7 /b\n')
+        with self.assertRaisesRegex(ValueError, 'Empty'):
+            MEMORY.parse_maps('')
+
+    def test_identify_memory_headers_accepts_only_the_wine_imagebase_rewrite(self):
+        field_offset = self.pe['pe_offset'] + 24 + 24
+        expected = self.disk[:self.pe['size_headers']]
+        identity = MEMORY.identify_memory_headers(expected, expected, self.pe, MEMORY.PREFERRED_BASE)
+        self.assertEqual(identity['mode'], 'byte-exact')
+        allowed = 0x6FFFF54F0000
+        observed = bytearray(expected)
+        struct.pack_into('<Q', observed, field_offset, allowed)
+        identity = MEMORY.identify_memory_headers(expected, bytes(observed), self.pe, allowed)
+        self.assertEqual(identity['mode'], 'wine-relocated-image-base')
+        self.assertEqual(identity['allowed_loader_rewrite']['memory_value'], hex(allowed))
+        self.assertEqual(identity['observed_byte_differences'][0]['file_offset'],
+                         hex(field_offset + 2))
+        observed[0] ^= 0x80
+        with self.assertRaisesRegex(ValueError, 'PE headers'):
+            MEMORY.identify_memory_headers(expected, bytes(observed), self.pe, allowed)
+        with self.assertRaisesRegex(ValueError, 'Truncated in-memory PE headers'):
+            MEMORY.identify_memory_headers(expected, expected[:-1], self.pe, allowed)
+
+    def test_decode_base_reads_all_sixteen_fields_and_names_nonfinites(self):
+        fields = MEMORY.decode_base(struct.pack('<16f', *range(1, 17)))
+        self.assertEqual(fields['eye_adapt_speed'], 1)
+        self.assertEqual(fields['white'], 6)
+        self.assertEqual(fields['tint_amount'], 13)
+        self.assertEqual(fields['tint_blue'], 16)
+        with self.assertRaisesRegex(ValueError, 'exactly 0x40'):
+            MEMORY.decode_base(bytes(0x3C))
+        self.assertEqual(MEMORY.float32(bytes.fromhex('0100c07f')), 'NaN')
+
+    def test_process_identity_reads_starttime_after_the_comm_parentheses(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stat_path = Path(temporary) / 'stat'
+            fields = [b'S'] + [b'0'] * 18 + [b'987654321'] + [b'0'] * 10
+            stat_path.write_bytes(b'123 (Skyrim (Main)) ' + b' '.join(fields) + b'\n')
+            identity = MEMORY.process_identity(stat_path, 123)
+        self.assertEqual(identity['starttime_ticks'], 987654321)
+        self.assertEqual(identity['comm'], 'Skyrim (Main)')
 
     def test_memory_read_may_cross_only_adjacent_readable_mappings(self):
         reader = MEMORY.MemoryReader(-1, [

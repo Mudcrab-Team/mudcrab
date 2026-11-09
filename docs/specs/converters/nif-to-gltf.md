@@ -17,7 +17,7 @@ This document details the technical specification for converting Bethesda NetImm
 | Skyrim NIF Block Type                            | glTF 2.0 Equivalent     | Conversion Logic                                                                  |
 | :----------------------------------------------- | :---------------------- | :-------------------------------------------------------------------------------- |
 | **`NiHeader`**                                   | `asset` metadata        | Copy generator & version tags                                                     |
-| **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`)    |
+| **`NiNode` / `BSFadeNode`**                      | `nodes`                 | Convert local transform matrix (`translation`, `rotation` quaternion, `scale`); the root block's is dropped (below) |
 | **`BSTriShape` / `BSDynamicTriShape` / `NiTriShape`** | `meshes` + `primitives` | Extract vertex positions, normals, UVs, tangents, and index buffers; `NiTriShape` is static geometry only (§7.2) |
 | **`BSLightingShaderProperty`**                   | `materials`             | Map Bethesda shader flags to glTF PBR Metallic Roughness properties               |
 | **`BSShaderTextureSet`**                         | `textures` + `images`   | Map Skyrim texture slots (`_d.dds`, `_n.dds`, `_s.dds`) to glTF URIs/KTX2 handles |
@@ -31,6 +31,17 @@ parent transform and sat at the scene root (#288): a forge's glow, flames and qu
 floated about 170 units away from the forge.
 There is no converter schema bump: conversions made before this change keep their cached GLBs
 until they are reconverted.
+
+**Root transform.** A placed reference replaces its model root's local transform with its own, so
+the root block's authored translation, rotation and scale never apply in game. The static scene
+writes the root node (block 0) with an identity transform, and collision shapes start from an
+identity root as well. Evidence: `clutter/counterset/countercornerin01.nif` has a 90 degree root
+rotation. In the Riverwood Trader (`RiverwoodRiverwoodTrader`) it meets `CounterStraight01` and
+`CounterLeft01` edge to edge only without that rotation. `dlc01/lod/soulcairn/sc_spire04_lod.nif`
+(90 degree root) matches the footprint of `sc_spire04.nif` (identity root) to within 18 units only
+without it, against 106 units with it. About 740 of the 18,862 meshes in `Skyrim - Meshes0.bsa`
+author a root rotation, 391 of them under `architecture/`. Bone nodes read from a separate
+skeleton NIF are unchanged.
 
 ---
 
@@ -264,6 +275,10 @@ and world data, so no cached GLB keeps the older collision extras.
   name is rejected, because either copy could be the bone it was authored against.
 - Each skinned shape becomes one `SkeletalMesh` that records its source block, so material and
   vertex-colour contracts associate by block instead of by shape-type enumeration order.
+- Mixed rigs keep unskinned shapes as rigid nodes in the same GLB. Their local transforms and
+  static ancestor hierarchy follow the ordinary static export path; successfully skinned shapes
+  keep their existing bone bindings. Both collections share the runtime-coordinate scene root.
+  Skin indices address the skin array independently of the static-first mesh array.
 
 ### 7.2 Rejected
 
@@ -272,20 +287,42 @@ and world data, so no cached GLB keeps the older collision extras.
   Skyrim SE actor meshes).
 - `BSSubIndexTriShape` skinning is not handled (same dataset: no such block).
 
-### 7.3 Failure contract
+### 7.3 Skin recovery and failure contract
 
-A NIF that declares a skin and cannot produce one fails conversion. It does not publish a static
-substitute and does not emit an empty scene. The diagnostic names the NIF path and the block
-indices, lists every skin instance that no exported shape claimed together with the block type that
-references it, and reports all unresolved joint names at once rather than the first one.
+Standalone mesh conversion keeps usable geometry when its legacy skin is unusable. A zero total
+weight, invalid influence or unresolved skin joint makes only that shape rigid, at the same node
+transform and ancestor transforms as an ordinary static export. Good sibling skins remain skinned.
+One warning per affected shape names the NIF, shape name/block and the first skin failure; it is
+not repeated for every bad vertex. Geometry can also remain static for a supported shape type
+whose skinning is unsupported, such as `BSLODTriShape`.
 
-Classes that still fail:
+Finite negative influences in **[-0.00001, 0)** are clamped to zero before summing and normalizing
+the remaining weights. The absolute `1e-5` tolerance is one thousandth of one percent of a unit
+weight and includes the observed retail half-float residue `-0.0000038146973`. It is a narrow
+rounding approximation, not permission to accept larger negative influences. Clamped zero slots
+ignore their unused joint indices; a nonpositive/nonfinite remaining total or a more negative
+influence uses the static fallback. A repaired shape emits one clamping warning.
 
-- a rig that some skeleton covers at 50% or more, while no skeleton covers it fully and no path
-  candidate covers it at 50%: the resolver does not guess between partial matches;
-- a skin that binds a name its resolved skeleton repeats (§7.1).
+A rig that some indexed skeleton covers at 50% or more, while no skeleton covers it fully and no
+path candidate covers it at 50%, remains unresolved. The resolver does not guess between partial
+matches or relabel it self-contained: its skin-bearing shapes export as rigid geometry with a
+coverage warning per shape. Explicitly supplied skeletons likewise fall back per shape when they
+cannot resolve that shape's joints. Repair uses the same recovery path as normal conversion.
 
-Not failures, but approximations with their own follow-ups: a rig no skeleton covers at 50% converts
+Parsing failures, unusable geometry/scene data, ambiguous bound skeleton names (§7.1), and declared
+skins without any usable geometry still fail; recovery does not invent vertices or an empty skin.
+Strict animated actor composition continues to require bindable skin data and uses no rigid
+substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
+and `WEIGHTS_0`.
+
+The mesh settings contract appends `skin-static-fallback` after the existing contracts in
+`MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
+rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
+until normal conversion regenerates it. Texture/script producer identities are unchanged.
+Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
+skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.
+
+Other approximations with their own follow-ups: a rig no skeleton covers at 50% converts
 self-contained from its own hierarchy (FX meshes skinned to their own controller bones are the
 retail case), and a skeleton only a RACE record identifies (for example Alduin) is chosen by joint
 coverage instead, which can pick a near-identical rig.

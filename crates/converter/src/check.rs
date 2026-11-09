@@ -214,6 +214,15 @@ pub fn check_output_with_cancel(
         return Err(CheckCancelled.into());
     }
     let started = Instant::now();
+    // The resolved output folder, so an entry reached through a symbolic link that points outside
+    // it is refused like a `..` path. Containment cannot be judged against an unresolved root, so a
+    // root that does not resolve is an error rather than a reason to refuse every entry.
+    let root = fs::canonicalize(output).wrap_err_with(|| {
+        format!(
+            "cannot resolve the output folder {}; check that it exists and is accessible",
+            output.display()
+        )
+    })?;
     let manifest = read_manifest(output)?;
 
     let mut problems = Vec::new();
@@ -237,9 +246,6 @@ pub fn check_output_with_cancel(
 
     let entries: Vec<&CacheEntry> = manifest.entries.values().collect();
     let total = entries.len();
-    // The resolved output folder, so an entry reached through a symbolic link that points outside
-    // it is refused like a `..` path.
-    let root = fs::canonicalize(output).unwrap_or_else(|_| output.to_path_buf());
     let done = AtomicUsize::new(0);
     progress(0, total);
     // `None` for an entry skipped after a cancel; collecting into `Option`
@@ -344,7 +350,21 @@ fn check_entry(
         }
     };
     // The path text stays inside the output, but a symbolic link on the way can still lead out.
-    if fs::canonicalize(&path).is_ok_and(|resolved| !resolved.starts_with(root)) {
+    // An entry that cannot be resolved cannot be proven contained, so it is refused rather than
+    // read and hashed on trust.
+    let resolved = match fs::canonicalize(&path) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return (
+                0,
+                Some(CheckProblem::Unreadable {
+                    output: entry.output.clone(),
+                    error: format!("could not resolve the file path: {error}"),
+                }),
+            );
+        }
+    };
+    if !resolved.starts_with(root) {
         return (
             0,
             Some(CheckProblem::UnsafePath {
@@ -425,6 +445,56 @@ fn artifact_path(problem: &CheckProblem) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    /// A minimal complete output folder holding one artifact of `bytes` bytes.
+    fn output_with_one_artifact(bytes: usize) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("meshes")).unwrap();
+        fs::write(directory.path().join("meshes/wall.glb"), vec![0; bytes]).unwrap();
+        fs::write(directory.path().join(WORLD_DATABASE_FILE_NAME), []).unwrap();
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            entries: BTreeMap::from([(
+                "meshes/wall.glb".to_owned(),
+                CacheEntry {
+                    source_hash: "0".repeat(64),
+                    output: "meshes/wall.glb".to_owned(),
+                    output_size: bytes as u64,
+                    output_hash: "0".repeat(64),
+                },
+            )]),
+            ..Default::default()
+        };
+        fs::write(
+            directory.path().join(MANIFEST_FILE_NAME),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn checks_an_output_folder_it_can_resolve() {
+        let directory = output_with_one_artifact(3);
+        let report = check_output(directory.path(), CheckMode::Quick, |_, _| {}).unwrap();
+        assert!(report.is_ok(), "{:?}", report.problems);
+        assert_eq!(report.files_checked, 1);
+    }
+
+    #[test]
+    fn refuses_an_output_folder_it_cannot_resolve() {
+        // Every entry would look like it left the folder if the unresolved root were kept, so the
+        // check must name the real problem instead of reporting bogus unsafe paths.
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        let error = check_output(&output, CheckMode::Quick, |_, _| {}).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("cannot resolve the output folder"),
+            "{error:#}"
+        );
+    }
 
     #[test]
     fn accepts_only_paths_inside_the_output() {

@@ -4,13 +4,14 @@ use crate::{
         ArchiveExtractor, ExtractOptions, ExtractionProgress, ExtractionTimings,
         RawIngestionSession, prune_stale_reader_packs,
     },
-    asset_path::{AssetKind, canonical_asset_path, resolve_asset_uri},
+    asset_path::{AssetKind, canonical_asset_path, normalize_separators, resolve_asset_uri},
     cache::{
-        CONVERTER_SCHEMA_VERSION, CacheEntry, ConversionManifest, IngestionJournal,
+        BODY_COMPOSE_CONTEXT, BODY_COMPOSE_RECIPE, CONVERTER_SCHEMA_VERSION, CacheEntry,
+        ConversionManifest, DEFAULT_GAIT_RECIPE, DerivedOutput, IngestionJournal,
         IngestionSelection, StagedOutput, StagingJournal, asset_configuration_hash_for_schema,
-        can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
-        configuration_hash_for_schema, current_configuration_hash_for_schema, hash_bytes,
-        hash_file, link_or_copy, load_staged_outputs,
+        body_compose_inputs, can_reuse_meshes, can_reuse_scripts_and_archives, configuration_hash,
+        configuration_hash_for_schema, current_configuration_hash_for_schema, default_gait_inputs,
+        hash_bytes, hash_file, link_or_copy, load_staged_outputs,
     },
     compose::{self, BodyPart, BodyPartKind},
     config::{PipelineConfig, TextureEncoder},
@@ -23,7 +24,7 @@ use crate::{
     },
     integration::{IntegrationReport, finalize_world_database_with_sources},
     lod::{
-        albedo::{TerrainAtlas, TerrainTextureCache, TerrainTextures},
+        albedo::{LoadedDefault, TerrainAtlas, TerrainTextureCache, TerrainTextures},
         reuse::{LodManifest, LodReuse},
         terrain::{
             PreparedTerrainChunk, TerrainCellCache, TerrainChunk, exterior_terrain_cells,
@@ -169,6 +170,25 @@ pub struct PipelineReport {
 /// while usable records still publish; successful compatibility remaps are notices.
 pub(crate) fn conversion_is_complete(report: &PipelineReport) -> bool {
     report.skipped == 0 && report.warnings.is_empty()
+}
+
+/// One line per projection omission category (#297): a lost light row warns, so the run is
+/// incomplete; an unresolved emittance target keeps the model's emission and is only noted.
+pub(crate) fn report_projection_omissions(
+    report: &mut PipelineReport,
+    omissions: &crate::esm::projection_omissions::ProjectionOmissions,
+) {
+    use crate::esm::projection_omissions::{Severity, summary_line};
+    for (category, outcome) in &omissions.categories {
+        let message = format!(
+            "world database projection left rows out: {}",
+            summary_line(category, outcome)
+        );
+        match outcome.severity {
+            Severity::DataLoss => report.warnings.push(message),
+            Severity::Fallback => report.notices.push(message),
+        }
+    }
 }
 
 /// A run's stop button. The command line sets it when the user interrupts (Ctrl+C); the pipeline
@@ -432,7 +452,7 @@ impl AssetPipeline {
         }
         let publication_started = Instant::now();
         report.publication_phase_elapsed_ms =
-            publish_runtime_pack(&staging, &config.output_dir, &report, &output_lock)
+            publish_runtime_pack(&staging, &config.output_dir, &mut report, &output_lock)
                 .map_err(|error| failure(error, &staging, &cancellation))?;
         report.artifacts.push(PathBuf::from(
             shared::streaming_costs::STREAMING_COST_FILE_NAME,
@@ -441,27 +461,53 @@ impl AssetPipeline {
         report
             .phase_elapsed_ms
             .insert("runtime_publication".into(), report.publication_elapsed_ms);
+        // The runtime pack is published and sealed; everything below only maintains the
+        // ingestion cache. A failure here is a notice, never a failed conversion: the pack on
+        // disk is good and complete, so the run must not hand back a resume command for it.
         let cache_persistence_started = Instant::now();
         let cache_root = config.ingestion_cache_dir().join(".ingestion-cache");
-        if staging.join(".ingestion-cache").is_dir() {
-            persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
-                .map_err(|error| failure(error, &staging, &cancellation))?;
+        if staging.join(".ingestion-cache").is_dir()
+            && let Err(error) =
+                persist_ingestion_cache(&staging.join(".ingestion-cache"), &cache_root)
+        {
+            push_post_publication_notice(
+                &mut report.notices,
+                format!(
+                    "published the asset pack, but could not save the ingestion cache to {}: {error:#}",
+                    cache_root.display()
+                ),
+            );
         }
         report.phase_elapsed_ms.insert(
             "ingestion_cache_persistence".into(),
             cache_persistence_started.elapsed().as_millis(),
         );
         let manifest_reload_started = Instant::now();
-        let manifest =
-            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"))
-                .map_err(|error| failure(error, &staging, &cancellation))?;
+        let published_manifest =
+            ConversionManifest::load(&config.output_dir.join("conversion-manifest.json"));
         report.phase_elapsed_ms.insert(
             "published_manifest_reload".into(),
             manifest_reload_started.elapsed().as_millis(),
         );
         let cache_pruning_started = Instant::now();
-        prune_stale_ingestion_blobs(&cache_root, &manifest)
-            .map_err(|error| failure(error, &staging, &cancellation))?;
+        match published_manifest {
+            Ok(manifest) => {
+                if let Err(error) = prune_stale_ingestion_blobs(&cache_root, &manifest) {
+                    push_post_publication_notice(
+                        &mut report.notices,
+                        format!(
+                            "published the asset pack, but stale ingestion-cache pruning failed: {error:#}"
+                        ),
+                    );
+                }
+            }
+            Err(error) => push_post_publication_notice(
+                &mut report.notices,
+                format!(
+                    "published the asset pack, but its conversion manifest could not be reloaded, so stale ingestion-cache pruning was skipped: {error:#}"
+                ),
+            ),
+        }
         report.phase_elapsed_ms.insert(
             "ingestion_cache_pruning".into(),
             cache_pruning_started.elapsed().as_millis(),
@@ -557,6 +603,7 @@ impl AssetPipeline {
             pruned_texture_references: Default::default(),
             archives: Default::default(),
             entries: Default::default(),
+            derived_outputs: Default::default(),
         };
         report.phase_elapsed_ms.insert(
             "conversion_initialization".into(),
@@ -1273,7 +1320,9 @@ impl AssetPipeline {
         for sex in ["male", "female"] {
             let relative = compose::composed_body_path("default", sex);
             if staging.join(&relative).is_file() {
-                report.artifacts.push(relative);
+                report
+                    .artifacts
+                    .push(normalize_separators(&relative).into());
             }
         }
         if config.mo2.is_some() {
@@ -1290,7 +1339,7 @@ impl AssetPipeline {
             for (_, stem) in DEFAULT_ANIMATION_CLIPS {
                 let relative = default_animation_output(sex, stem);
                 if staging.join(&relative).is_file() {
-                    report.artifacts.push(relative);
+                    report.artifacts.push(relative.into());
                 }
             }
         }
@@ -1453,6 +1502,7 @@ impl AssetPipeline {
                     .len();
                 entry.output_hash = hash_file(&path)?;
             }
+            finalize_derived_outputs(staging, batch.report, batch.manifest)?;
             // The run summary reports what the manifest records, whether this run
             // pruned it or carried the record forward for a reused mesh.
             let recorded: u64 = batch
@@ -1544,6 +1594,7 @@ impl AssetPipeline {
                     integration.cache_cells,
                 ));
             }
+            report_projection_omissions(&mut report, &integration.projection_omissions);
             report.integration = Some(integration);
             report
                 .artifacts
@@ -1696,7 +1747,8 @@ fn reusable_manifest(
                     }
                 }
             }
-            matched
+            // Combined metadata proofs cannot name fixed-producer mesh contracts.
+            matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
             kind,
@@ -2051,6 +2103,7 @@ impl ConversionBatch<'_> {
                             }
                         }
 
+                        let mut unresolved_skin = None;
                         let skeleton = if source_kind == "nif" {
                             let resolution = crate::mesh::resolve_skeleton_with_index(
                                 &relative,
@@ -2067,28 +2120,13 @@ impl ConversionBatch<'_> {
                                     .or(Some(key)),
                                 crate::mesh::SkeletonResolution::SelfContained => None,
                                 crate::mesh::SkeletonResolution::Unresolved { best_coverage } => {
-                                    let err = eyre!(
-                                        "{}",
-                                        crate::mesh::unresolved_skeleton_diagnostic(
+                                    hash.push_str(crate::mesh::UNRESOLVED_SKIN_HASH_SUFFIX);
+                                    unresolved_skin =
+                                        Some(crate::mesh::unresolved_skeleton_diagnostic(
                                             format_args!("NIF {}", relative.display()),
-                                            best_coverage
-                                        )
-                                    );
-                                    let (err, fatal) = match remove_invalid_staged_output(&target) {
-                                        Ok(()) => (err, false),
-                                        Err(remove_error) => (remove_error, true),
-                                    };
-                                    let _ = outcome_tx.send((
-                                        index,
-                                        key,
-                                        hash,
-                                        target_rel,
-                                        relative.clone(),
-                                        Err(err),
-                                        target,
-                                        fatal,
-                                    ));
-                                    return;
+                                            best_coverage,
+                                        ));
+                                    None
                                 }
                             }
                         } else {
@@ -2264,11 +2302,14 @@ impl ConversionBatch<'_> {
                                             )
                                             .map(|_| ())
                                         }
-                                        "nif" => MeshConverter::convert_nif_to_glb_with_skeleton(
-                                            &source,
-                                            &target,
-                                            skeleton.as_deref(),
-                                        ),
+                                        "nif" => {
+                                            MeshConverter::convert_nif_to_glb_with_skin_resolution(
+                                                &source,
+                                                &target,
+                                                skeleton.as_deref(),
+                                                unresolved_skin.as_deref(),
+                                            )
+                                        }
                                         "pex" => {
                                             ScriptConverter::convert_pex_to_luau(&source, &target)
                                         }
@@ -2509,6 +2550,105 @@ impl ConversionBatch<'_> {
     }
 }
 
+/// Hashes winning raw inputs under their canonical logical VFS source paths.
+/// Called inside optional producer attempts so unreadable inputs become notices.
+fn derived_input_hashes<const N: usize>(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    logical_inputs: [PathBuf; N],
+) -> Result<BTreeMap<String, String>> {
+    logical_inputs
+        .into_iter()
+        .map(|logical| {
+            let key = logical
+                .strip_prefix(staging.join("vfs"))?
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            let winner = sources.get(&logical).unwrap_or(&logical);
+            Ok((key, hash_file(winner)?))
+        })
+        .collect()
+}
+
+/// Captures a successful recipe's bytes; finalization refreshes postprocessed outputs.
+fn derived_output_proof(
+    recipe: &str,
+    inputs: BTreeMap<String, String>,
+    output: &Path,
+) -> Result<DerivedOutput> {
+    Ok(DerivedOutput {
+        recipe: recipe.to_owned(),
+        inputs,
+        output_size: fs::metadata(output)?.len(),
+        output_hash: hash_file(output)?,
+    })
+}
+
+/// Hashes effective skin choices and the optional thin preparation's winning bytes.
+/// A missing thin part skips all thin preparation, matching the composition path.
+fn body_compose_context_hash(
+    parts: &[BodyPart<'_>],
+    thin_paths: &[(PathBuf, BodyPartKind)],
+    skins: &[compose::DefaultSkinTextureSet],
+) -> Result<String> {
+    let heavy: Vec<_> = parts
+        .iter()
+        .map(|part| {
+            (
+                part.kind.slot(),
+                part.skin_textures.map(|set| (set.form_id, &set.slots)),
+            )
+        })
+        .collect();
+    let mut thin = Vec::new();
+    if thin_paths.iter().all(|(path, _)| path.is_file()) {
+        for (path, kind) in thin_paths {
+            let skin = compose::skin_texture_set_for(skins, *kind, path);
+            thin.push((
+                kind.slot(),
+                hash_file(path)?,
+                skin.map(|set| (set.form_id, &set.slots)),
+            ));
+        }
+    }
+    Ok(hash_bytes(&serde_json::to_vec(&(heavy, thin))?))
+}
+
+/// Binds derived proofs to final bytes after material repair and texture pruning.
+/// An unreadable optional output loses its proof and artifact instead of aborting neighbors.
+fn finalize_derived_outputs(
+    staging: &Path,
+    report: &mut PipelineReport,
+    manifest: &mut ConversionManifest,
+) -> Result<()> {
+    let pending = std::mem::take(&mut manifest.derived_outputs);
+    for (key, proof) in pending {
+        let output = staging.join(&key);
+        match derived_output_proof(&proof.recipe, proof.inputs, &output) {
+            Ok(proof) => {
+                manifest.derived_outputs.insert(key, proof);
+            }
+            Err(error) => {
+                match fs::remove_file(&output) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error)
+                            .wrap_err_with(|| format!("failed to remove {}", output.display()));
+                    }
+                    _ => {}
+                }
+                report.artifacts.retain(|path| path != Path::new(&key));
+                manifest.pruned_texture_references.remove(&key);
+                let message =
+                    format!("{key}: failed to finalize optional derived output: {error:#}");
+                report.notices.push(message.clone());
+                warn!("{message}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Composes the default actor bodies from the character part NIFs.
 ///
 /// Runs after the mesh stage and before texture dependency collection so the
@@ -2537,9 +2677,10 @@ fn compose_default_bodies(
         let relative = compose::composed_body_path("default", sex);
         let output = staging.join(&relative);
         let key = relative.to_string_lossy().replace('\\', "/");
-        // Derived bodies are optional outputs, not source conversion failures. Clear any
-        // marker from an older manifest before deciding whether this run can publish one.
+        // Derived bodies are optional outputs, not source conversion failures. Clear old
+        // failure markers and proofs before deciding whether this run can publish one.
         manifest.failures.remove(&key);
+        manifest.derived_outputs.remove(&key);
         // A body skipped or failed on this run must not survive from an earlier one: orphan
         // sweeps keep composed outputs, and the caller reports whatever is on disk.
         // Successful attempts retain unchanged output so the writer can avoid republishing it.
@@ -2559,8 +2700,7 @@ fn compose_default_bodies(
             }
             _ => {}
         }
-
-        let mut attempt = || -> Result<Option<usize>> {
+        let mut attempt = || -> Result<Option<(usize, DerivedOutput)>> {
             let part_paths =
                 PARTS.map(|(suffix, kind)| (winning(assets.join(format!("{sex}{suffix}"))), kind));
             if !part_paths.iter().any(|(path, _)| path.is_file()) {
@@ -2597,6 +2737,12 @@ fn compose_default_bodies(
                     skin_textures: compose::skin_texture_set_for(&skins, *kind, path),
                 })
                 .collect();
+            let mut inputs = derived_input_hashes(
+                staging,
+                sources,
+                body_compose_inputs(sex).map(|path| staging.join("vfs").join(path)),
+            )?;
+
             let thin_paths: Vec<(PathBuf, BodyPartKind)> = PARTS
                 .iter()
                 .map(|(suffix, kind)| {
@@ -2606,14 +2752,22 @@ fn compose_default_bodies(
                 .collect();
             let mut model = compose::compose_body(&parts, &skeleton)?;
             attach_default_body_weight(&mut model, &thin_paths, &skeleton, &skins, sex, report)?;
+            inputs.insert(
+                BODY_COMPOSE_CONTEXT.into(),
+                body_compose_context_hash(&parts, &thin_paths, &skins)?,
+            );
             compose::write_composed_body(&model, &output)?;
-            Ok(Some(parts.len()))
+            let proof = derived_output_proof(BODY_COMPOSE_RECIPE, inputs, &output)?;
+            Ok(Some((parts.len(), proof)))
         };
         match attempt() {
-            Ok(Some(part_count)) => info!(
-                "composed default {sex} actor body from {part_count} parts to {}",
-                output.display()
-            ),
+            Ok(Some((part_count, proof))) => {
+                manifest.derived_outputs.insert(key, proof);
+                info!(
+                    "composed default {sex} actor body from {part_count} parts to {}",
+                    output.display()
+                );
+            }
             Ok(None) => remove_output()?,
             Err(error) if fail_fast => {
                 remove_output()?;
@@ -2622,10 +2776,8 @@ fn compose_default_bodies(
             }
             Err(error) => {
                 remove_output()?;
-                let message = format!(
-                    "{}: failed to compose default {sex} actor body: {error:#}",
-                    relative.display()
-                );
+                let message =
+                    format!("{key}: failed to compose default {sex} actor body: {error:#}");
                 // Notices describe optional derived-output problems without making source
                 // repair incomplete; manifest failures are reserved for repairable inputs.
                 report.notices.push(message.clone());
@@ -2691,11 +2843,61 @@ const DEFAULT_ANIMATION_CLIPS: [(&str, &str); 3] = [
     ("runforward", "mt_runforward"),
 ];
 
-/// The staging path of one sex's converted clip.
-fn default_animation_output(sex: &str, stem: &str) -> PathBuf {
-    PathBuf::from("meshes/actors/character/animations")
-        .join(sex)
-        .join(format!("{stem}.glb"))
+/// The canonical asset key of one sex's converted clip, also used for report text.
+/// Native filesystem paths are formed only when this key is joined to staging.
+fn default_animation_output(sex: &str, stem: &str) -> String {
+    canonical_asset_path(
+        &format!("meshes/actors/character/animations/{sex}/{stem}.glb"),
+        AssetKind::Mesh,
+        "glb",
+    )
+    .expect("built-in default gait names form valid mesh asset keys")
+}
+
+/// Rejects non-directory ancestors, including those Windows masks as a missing child.
+fn validate_animation_output_parent(output: &Path) -> Result<()> {
+    for parent in output.ancestors().skip(1) {
+        match fs::metadata(parent) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                bail!(
+                    "failed to inspect {}: parent {} is not a directory",
+                    output.display(),
+                    parent.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .wrap_err_with(|| format!("failed to inspect {}", output.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Captures exactly the four raw dependencies used to bind and decode one gait.
+fn default_animation_input_hashes(
+    staging: &Path,
+    sources: &BTreeMap<PathBuf, PathBuf>,
+    sex: &str,
+    stem: &str,
+) -> Result<BTreeMap<String, String>> {
+    derived_input_hashes(
+        staging,
+        sources,
+        default_gait_inputs(sex, stem).map(|path| staging.join("vfs").join(path)),
+    )
+}
+
+/// Checks every built-in gait ancestor before a pass changes manifest markers or staged files.
+fn validate_animation_output_parents(staging: &Path) -> Result<()> {
+    for sex in ["male", "female"] {
+        for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+            validate_animation_output_parent(&staging.join(default_animation_output(sex, stem)))?;
+        }
+    }
+    Ok(())
 }
 
 /// Removes blocking non-regular paths at every derived gait output before the pass can skip or write.
@@ -2703,6 +2905,7 @@ fn clear_nonregular_animation_outputs(staging: &Path) -> Result<()> {
     for sex in ["male", "female"] {
         for (_, stem) in DEFAULT_ANIMATION_CLIPS {
             let output = staging.join(default_animation_output(sex, stem));
+            validate_animation_output_parent(&output)?;
             match fs::symlink_metadata(&output) {
                 Ok(metadata) if metadata.file_type().is_file() => {}
                 Ok(metadata) => {
@@ -2728,8 +2931,9 @@ fn clear_nonregular_animation_outputs(staging: &Path) -> Result<()> {
 
 /// Decodes staged default gait clips and writes animation-only GLBs.
 ///
-/// Runs after `compose_default_bodies`, so each clip binds to the composed
-/// body's bone tree. Missing inputs and conversion errors are optional notices.
+/// Builds the binding bone tree from the raw body NIF and skeleton NIF; clips
+/// also consume skeleton HKX and clip HKX bytes, independently of composed GLBs.
+/// Missing inputs and conversion errors are optional notices.
 /// Each input resolves through the winning-source map, including MO2 overrides.
 fn convert_default_animations(
     staging: &Path,
@@ -2750,36 +2954,34 @@ fn convert_default_animations(
         }
     };
 
-    clear_nonregular_animation_outputs(staging)?;
-
+    // Ancestors and exact outputs are rejected before any marker is removed, so a rejected pass
+    // keeps its incoming failure and proof maps for both sexes.
+    validate_animation_output_parents(staging)?;
     let prior_derived_relevance: BTreeMap<_, _> = ["male", "female"]
         .into_iter()
         .map(|sex| {
             let relevant = DEFAULT_ANIMATION_CLIPS.iter().any(|(_, stem)| {
-                let relative = default_animation_output(sex, stem);
-                let key = relative.to_string_lossy().replace('\\', "/");
-                staging.join(relative).is_file() || manifest.failures.contains_key(&key)
+                let key = default_animation_output(sex, stem);
+                staging.join(&key).is_file()
+                    || manifest.failures.contains_key(&key)
+                    || manifest.derived_outputs.contains_key(&key)
             });
             (sex, relevant)
         })
         .collect();
+    clear_nonregular_animation_outputs(staging)?;
     for sex in ["male", "female"] {
         for (_, stem) in DEFAULT_ANIMATION_CLIPS {
-            let key = default_animation_output(sex, stem)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let key = default_animation_output(sex, stem);
             manifest.failures.remove(&key);
+            manifest.derived_outputs.remove(&key);
         }
     }
 
     for sex in ["male", "female"] {
         let outputs: Vec<_> = DEFAULT_ANIMATION_CLIPS
             .iter()
-            .map(|(clip_name, stem)| {
-                let relative = default_animation_output(sex, stem);
-                let key = relative.to_string_lossy().replace('\\', "/");
-                (*clip_name, *stem, relative, key)
-            })
+            .map(|(clip_name, stem)| (*clip_name, *stem, default_animation_output(sex, stem)))
             .collect();
         let skeleton_hkx = winning(assets.join("skeleton.hkx"));
         let skeleton_nif = winning(assets.join("skeleton.nif"));
@@ -2787,7 +2989,7 @@ fn convert_default_animations(
         let actor_work_exists = skeleton_hkx.is_file()
             || skeleton_nif.is_file()
             || body_path.is_file()
-            || outputs.iter().any(|(_, stem, _, _)| {
+            || outputs.iter().any(|(_, stem, _)| {
                 winning(animations.join(sex).join(format!("{stem}.hkx"))).is_file()
             });
         let notices_are_relevant =
@@ -2800,12 +3002,11 @@ fn convert_default_animations(
         .into_iter()
         .find(|(_, path)| !path.is_file());
         if let Some((label, path)) = missing {
-            for (clip_name, _, relative, _) in &outputs {
+            for (clip_name, _, relative) in &outputs {
                 remove_stale(&staging.join(relative))?;
                 if notices_are_relevant {
                     report.notices.push(format!(
-                        "{}: skipping default {sex} {clip_name} animation: missing {label} {}",
-                        relative.display(),
+                        "{relative}: skipping default {sex} {clip_name} animation: missing {label} {}",
                         path.display()
                     ));
                 }
@@ -2829,15 +3030,17 @@ fn convert_default_animations(
         let (bones, skeleton_bytes) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                for (clip_name, _, relative, _) in &outputs {
+                for (clip_name, _, relative) in &outputs {
                     remove_stale(&staging.join(relative))?;
                     let message = format!(
-                        "{}: failed to prepare the default {sex} {clip_name} animation: {error:#}",
-                        relative.display()
+                        "{relative}: failed to prepare the default {sex} {clip_name} animation: {error:#}"
                     );
                     if fail_fast {
                         for cleanup_sex in ["male", "female"] {
                             for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                                manifest
+                                    .derived_outputs
+                                    .remove(&default_animation_output(cleanup_sex, stem));
                                 remove_stale(
                                     &staging.join(default_animation_output(cleanup_sex, stem)),
                                 )?;
@@ -2852,14 +3055,13 @@ fn convert_default_animations(
             }
         };
 
-        for (clip_name, stem, relative, _) in outputs {
+        for (clip_name, stem, relative) in outputs {
             let output = staging.join(&relative);
             let clip_path = winning(animations.join(sex).join(format!("{stem}.hkx")));
             if !clip_path.is_file() {
                 remove_stale(&output)?;
                 let message = format!(
-                    "{}: skipping default {sex} {clip_name} animation: missing clip {}",
-                    relative.display(),
+                    "{relative}: skipping default {sex} {clip_name} animation: missing clip {}",
                     clip_path.display()
                 );
                 report.notices.push(message.clone());
@@ -2867,7 +3069,8 @@ fn convert_default_animations(
                 continue;
             }
 
-            let converted = (|| -> Result<()> {
+            let converted = (|| -> Result<DerivedOutput> {
+                let inputs = default_animation_input_hashes(staging, sources, sex, stem)?;
                 let clip_bytes = fs::read(&clip_path)
                     .wrap_err_with(|| format!("failed to read {}", clip_path.display()))?;
                 let mut clip =
@@ -2891,17 +3094,21 @@ fn convert_default_animations(
                     binding.bound(),
                     binding.skipped.len()
                 );
-                Ok(())
+                derived_output_proof(DEFAULT_GAIT_RECIPE, inputs, &output)
             })();
-            if let Err(error) = converted {
+            if let Ok(proof) = converted {
+                manifest.derived_outputs.insert(relative, proof);
+            } else if let Err(error) = converted {
                 remove_stale(&output)?;
                 let message = format!(
-                    "{}: failed to convert the default {sex} {clip_name} animation: {error:#}",
-                    relative.display()
+                    "{relative}: failed to convert the default {sex} {clip_name} animation: {error:#}"
                 );
                 if fail_fast {
                     for cleanup_sex in ["male", "female"] {
                         for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                            manifest
+                                .derived_outputs
+                                .remove(&default_animation_output(cleanup_sex, stem));
                             remove_stale(
                                 &staging.join(default_animation_output(cleanup_sex, stem)),
                             )?;
@@ -3931,12 +4138,31 @@ impl PublicationTimings {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes the previous pack's removal fail after the swap, as a held or read-only backup
+    /// does on Windows, so tests can prove a failed cleanup never fails a published pack.
+    static FAIL_PREVIOUS_PACK_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Makes the post-publication ingestion-cache persistence fail, as a full disk does.
+    static FAIL_INGESTION_CACHE_PERSISTENCE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Names a failure that happened after the runtime pack was published. The pack on disk is
+/// complete, so the message is a notice: it is printed with the run's summary, kept in the JSON
+/// report, and logged, but it never makes a good pack look like a failed conversion or asks the
+/// user to resume a run that is already published.
+fn push_post_publication_notice(notices: &mut Vec<String>, message: String) {
+    warn!("{message}");
+    notices.push(message);
+}
+
 /// Publishes only runtime artifacts. Staging keeps `vfs/` and
 /// `.ingestion-cache/` as build workspace; those never land in `output`.
 fn publish_runtime_pack(
     staging: &Path,
     output: &Path,
-    report: &PipelineReport,
+    report: &mut PipelineReport,
     lock: &AssetLock,
 ) -> Result<BTreeMap<String, u128>> {
     let mut timings = PublicationTimings {
@@ -3996,7 +4222,14 @@ fn publish_runtime_pack(
         timings.measure("runtime_pack_costs", || {
             write_streaming_cost_catalog(&pack_staging)
         })?;
-        publish_directory_locked_with_timings(&pack_staging, output, true, lock, &mut timings)
+        publish_directory_locked_with_timings(
+            &pack_staging,
+            output,
+            true,
+            lock,
+            &mut timings,
+            &mut report.notices,
+        )
     })();
     if published.is_err() {
         let _ = fs::remove_dir_all(&pack_staging);
@@ -4022,6 +4255,10 @@ pub(crate) fn write_streaming_cost_catalog(pack: &Path) -> Result<()> {
 
 /// Publishes ingestion blobs into the persistent cache, repairing corrupt copies.
 fn persist_ingestion_cache(staging_cache: &Path, cache_root: &Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_INGESTION_CACHE_PERSISTENCE.with(std::cell::Cell::get) {
+        bail!("injected ingestion cache persistence failure");
+    }
     let absolute = if cache_root.is_absolute() {
         cache_root.to_owned()
     } else {
@@ -4282,6 +4519,21 @@ async fn compile_lod_chunks_inline(
     };
     let cell_cache = TerrainCellCache::read(&staging.join("cell_cache.rkyv"))?;
     let mut texture_cache = TerrainTextureCache::default();
+    // Entry 0 of the land texture table, resolved exactly as the merged-terrain stage resolves it
+    // (#215), so a quadrant with no BTXT is painted the same texture at every distance. A
+    // configured default that cannot be used falls back to the generated white one, as entry 0
+    // does there, and the report names it instead of skipping the world.
+    let (default_diffuse, default_fallback) =
+        crate::terrain_pipeline::TerrainDefaultDiffuse::resolve(
+            &crate::terrain_pipeline::TerrainOptions::from_config(config),
+        )?;
+    let (default_textures, default_error) =
+        LoadedDefault::load(&default_diffuse, &staging.join("vfs"), &mut texture_cache);
+    if let Some(reason) = default_fallback.or(default_error) {
+        report.lod_warnings.push(format!(
+            "terrain LOD default land texture falls back to the generated white one: {reason}"
+        ));
+    }
     let mut chunk_inputs = BTreeMap::new();
     let mut worlds: Vec<(u32, String)> = connection
         .prepare("SELECT id, editor_id FROM worldspaces ORDER BY id")?
@@ -4396,6 +4648,7 @@ async fn compile_lod_chunks_inline(
             &connection,
             &staging.join("vfs"),
             &inputs,
+            &default_textures,
             &mut texture_cache,
         ) {
             Ok(textures) => textures,
@@ -4908,12 +5161,16 @@ fn publish_directory_locked(
     replace: bool,
     lock: &AssetLock,
 ) -> Result<()> {
+    // A metadata rebuild publishes into a new directory and never replaces an output, so it has
+    // no previous pack to clean up; a post-publish notice from here has no report to reach and
+    // only goes to the log.
     publish_directory_locked_with_timings(
         staging,
         output,
         replace,
         lock,
         &mut PublicationTimings::default(),
+        &mut Vec::new(),
     )
 }
 
@@ -4923,6 +5180,7 @@ fn publish_directory_locked_with_timings(
     replace: bool,
     lock: &AssetLock,
     timings: &mut PublicationTimings,
+    notices: &mut Vec<String>,
 ) -> Result<()> {
     timings.measure("destination_lock_validation", || {
         reject_symlink_output(output)?;
@@ -4955,14 +5213,32 @@ fn publish_directory_locked_with_timings(
         recover_interrupted_publication(output)
     })?;
     let (backup, _backup_lock, record_path) = timings.measure("backup_setup", || {
-        let backup = output.with_file_name(format!(
-            "{}{}",
-            publication_backup_prefix(output)?,
-            std::process::id()
-        ));
-        if backup.exists() {
-            bail!("refusing to overwrite stale backup {}", backup.display());
+        // A previous pack this process could not delete may still hold the first name: an
+        // owned leftover is stepped past, anything else is still refused.
+        let prefix = publication_backup_prefix(output)?;
+        let pid = std::process::id();
+        let leftovers = read_publication_leftovers(output)?;
+        let mut chosen = None;
+        for attempt in 0..MAX_PUBLICATION_LEFTOVERS {
+            let name = match attempt {
+                0 => format!("{prefix}{pid}"),
+                _ => format!("{prefix}{pid}-{attempt}"),
+            };
+            let candidate = output.with_file_name(&name);
+            if !candidate.exists() {
+                chosen = Some(candidate);
+                break;
+            }
+            if !leftovers.contains(&name) {
+                bail!("refusing to overwrite stale backup {}", candidate.display());
+            }
         }
+        let backup = chosen.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "{MAX_PUBLICATION_LEFTOVERS} undeletable previous packs of {} remain; delete them to publish",
+                output.display()
+            )
+        })?;
         let backup_lock = AssetLock::acquire_exclusive(&backup)?;
         let record_path = publication_record_path(output)?;
         Ok((backup, backup_lock, record_path))
@@ -5006,15 +5282,57 @@ fn publish_directory_locked_with_timings(
         }
         return Err(error).wrap_err("failed to publish converted assets");
     }
+    // The new pack is in place, so the only work left is deleting the previous pack. A failure
+    // here must not fail a conversion that published successfully: it is reported as a notice,
+    // and the backup moves to the leftover list, which every run retries. The record's job is
+    // done, so it is removed: kept, a later change to the pack (a repair) would make recovery
+    // refuse the remaining backup as an ambiguous publication. Only a failed list write keeps
+    // the record, so recovery still deletes the backup.
     if backup.exists() {
-        timings.measure("previous_pack_cleanup", || {
-            fs::remove_dir_all(backup).map_err(Into::into)
-        })?;
+        let cleanup: Result<()> = timings.measure("previous_pack_cleanup", || {
+            #[cfg(test)]
+            if FAIL_PREVIOUS_PACK_CLEANUP.with(std::cell::Cell::get) {
+                bail!("injected previous pack cleanup failure");
+            }
+            fs::remove_dir_all(&backup).map_err(Into::into)
+        });
+        if let Err(error) = cleanup {
+            push_post_publication_notice(
+                notices,
+                format!(
+                    "published the new pack, but could not remove the previous pack {}: {error:#}; the next run deletes it, or delete it yourself to free the space",
+                    backup.display()
+                ),
+            );
+            let name = backup
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .ok_or_else(|| color_eyre::eyre::eyre!("previous pack backup has no name"));
+            if let Err(list_error) = name.and_then(|name| add_publication_leftover(output, &name)) {
+                push_post_publication_notice(
+                    notices,
+                    format!(
+                        "could not list the previous pack {} for later removal: {list_error:#}; its ownership record is kept so the next run deletes it",
+                        backup.display()
+                    ),
+                );
+                return Ok(());
+            }
+        }
     }
     if record_path.is_file() {
-        timings.measure("ownership_record_cleanup", || {
-            fs::remove_file(record_path).map_err(Into::into)
-        })?;
+        let cleanup: Result<()> = timings.measure("ownership_record_cleanup", || {
+            fs::remove_file(&record_path).map_err(Into::into)
+        });
+        if let Err(error) = cleanup {
+            push_post_publication_notice(
+                notices,
+                format!(
+                    "published the new pack, but could not remove its ownership record {}: {error:#}; the next run retries removing it",
+                    record_path.display()
+                ),
+            );
+        }
     }
     Ok(())
 }
@@ -5174,6 +5492,8 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // The record is settled before the leftover list is retried: an interrupted recovery can
+    // list the record's own backup, which must stay until the record says it is garbage.
     let record_path = publication_record_path(output)?;
     let record = match record_path.symlink_metadata() {
         Ok(metadata) => {
@@ -5184,14 +5504,17 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
             serde_json::from_slice::<PublicationRecord>(&fs::read(&record_path)?)?
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let leftovers = retry_publication_leftovers(output, parent)?;
             if !output.exists() {
                 let prefix = publication_backup_prefix(output)?;
                 for entry in fs::read_dir(parent)? {
                     let entry = entry?;
                     let kind = entry.file_type()?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
                     ensure!(
                         !(kind.is_dir() || kind.is_symlink())
-                            || !entry.file_name().to_string_lossy().starts_with(&prefix),
+                            || !name.starts_with(&prefix)
+                            || (kind.is_dir() && leftovers.contains(&name)),
                         "unowned publication backup {}; manual recovery required",
                         entry.path().display()
                     );
@@ -5206,28 +5529,30 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         "publication record belongs to another destination"
     );
     ensure!(
-        Path::new(&record.backup_name).components().count() == 1
-            && !record.backup_name.contains(['/', '\\', ':'])
-            && record
-                .backup_name
-                .starts_with(&publication_backup_prefix(output)?),
+        is_owned_backup_name(output, &record.backup_name)?,
         "invalid owned backup name"
     );
     let backup = parent.join(&record.backup_name);
-    let _backup_lock = AssetLock::acquire_exclusive(&backup)?;
+    let backup_lock = AssetLock::acquire_exclusive(&backup)?;
     if output.exists() {
         let current = manifest_hash(output)?;
         if current == record.next_manifest_hash {
-            if backup.exists() {
-                verify_package_seal(
-                    output,
-                    &record.next_manifest_hash,
-                    &record.next_generated_artifacts,
-                )?;
-                validate_publication_package(output)?;
-                verify_publication_seal(&backup, &record)?;
-                crate::config::check_output_dir(&backup)?;
-                fs::remove_dir_all(&backup)?;
+            // The output is the sealed new pack, so the record's backup is the previous pack
+            // and holds nothing worth keeping. It is not re-verified: a delete that stopped
+            // halfway leaves a backup that can never satisfy its seal, and demanding it would
+            // fail every later run on a good pack. The strict seal stays only in the branch
+            // below, where the backup becomes the output again.
+            verify_package_seal(
+                output,
+                &record.next_manifest_hash,
+                &record.next_generated_artifacts,
+            )?;
+            validate_publication_package(output)?;
+            if !remove_publication_backup(&backup) {
+                // The record's job is done: the output is the new pack. The backup moves to
+                // the leftover list, which every run retries, so the next publication can
+                // write its own record.
+                add_publication_leftover(output, &record.backup_name)?;
             }
         } else {
             ensure!(
@@ -5241,7 +5566,37 @@ fn recover_interrupted_publication(output: &Path) -> Result<()> {
         fs::rename(&backup, output).wrap_err("failed to restore owned last-good assets")?;
     }
     fs::remove_file(record_path)?;
+    // A listed backup may be the record's own, so its lock is released before the retry.
+    drop(backup_lock);
+    retry_publication_leftovers(output, parent)?;
     Ok(())
+}
+
+/// Deletes a backup left by an interrupted cleanup and returns whether it is gone. The output is
+/// already the sealed new pack, so nothing in the backup is worth keeping: a delete that still
+/// fails names the leftover and never fails a run that has a good pack.
+fn remove_publication_backup(backup: &Path) -> bool {
+    #[cfg(test)]
+    let removed = if FAIL_PREVIOUS_PACK_CLEANUP.with(std::cell::Cell::get) {
+        Err(std::io::Error::other(
+            "injected previous pack cleanup failure",
+        ))
+    } else {
+        fs::remove_dir_all(backup)
+    };
+    #[cfg(not(test))]
+    let removed = fs::remove_dir_all(backup);
+    match removed {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "could not remove the previous pack {}: {error}; the next run retries, or delete it yourself to free the space",
+                backup.display()
+            );
+            false
+        }
+    }
 }
 
 fn verify_publication_seal(backup: &Path, record: &PublicationRecord) -> Result<()> {
@@ -5275,6 +5630,107 @@ fn verify_package_seal(
         );
     }
     Ok(())
+}
+
+/// Most stale backups one destination keeps a name for; past this, publication stops and asks
+/// for them to be deleted instead of growing the list without bound.
+const MAX_PUBLICATION_LEFTOVERS: usize = 64;
+
+/// Previous packs a run published over and then could not delete. They are owned (this
+/// destination made them and sealed their replacement), so every recovery retries deleting
+/// them, but they no longer block a new publication the way an in-flight record does.
+fn publication_leftovers_path(output: &Path) -> Result<PathBuf> {
+    let name = output
+        .file_name()
+        .ok_or_else(|| color_eyre::eyre::eyre!("output has no name"))?;
+    Ok(output.with_file_name(format!(
+        ".{}.publication-leftovers.json",
+        name.to_string_lossy()
+    )))
+}
+
+/// A single path component under this destination's backup prefix.
+fn is_owned_backup_name(output: &Path, name: &str) -> Result<bool> {
+    Ok(Path::new(name).components().count() == 1
+        && !name.contains(['/', '\\', ':'])
+        && name.starts_with(&publication_backup_prefix(output)?))
+}
+
+fn read_publication_leftovers(output: &Path) -> Result<Vec<String>> {
+    let path = publication_leftovers_path(output)?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let names: Vec<String> = serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("invalid publication leftover list {}", path.display()))?;
+    for name in &names {
+        ensure!(
+            is_owned_backup_name(output, name)?,
+            "invalid leftover backup name {name:?} in {}",
+            path.display()
+        );
+    }
+    Ok(names)
+}
+
+fn write_publication_leftovers(output: &Path, names: &[String]) -> Result<()> {
+    use std::io::Write;
+    let path = publication_leftovers_path(output)?;
+    if names.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| color_eyre::eyre::eyre!("leftover list has no parent"))?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&serde_json::to_vec_pretty(names)?)?;
+    file.as_file().sync_all()?;
+    file.persist(&path)?;
+    Ok(())
+}
+
+fn add_publication_leftover(output: &Path, name: &str) -> Result<()> {
+    let mut names = read_publication_leftovers(output)?;
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_owned());
+    }
+    write_publication_leftovers(output, &names)
+}
+
+/// Retries deleting every leftover backup and returns the ones still present. The caller holds
+/// the destination's exclusive lock.
+fn retry_publication_leftovers(output: &Path, parent: &Path) -> Result<Vec<String>> {
+    let names = read_publication_leftovers(output)?;
+    if names.is_empty() {
+        return Ok(names);
+    }
+    let mut remaining = Vec::new();
+    for name in names {
+        let backup = parent.join(&name);
+        // A reader still holding a leftover only delays its deletion; it never stops a run.
+        let _backup_lock = match AssetLock::acquire_exclusive(&backup) {
+            Ok(lock) => lock,
+            Err(error) if error.is_held() => {
+                warn!(
+                    "could not remove the previous pack {}: {error}; the next run retries",
+                    backup.display()
+                );
+                remaining.push(name);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !remove_publication_backup(&backup) {
+            remaining.push(name);
+        }
+    }
+    write_publication_leftovers(output, &remaining)?;
+    Ok(remaining)
 }
 
 fn publication_backup_prefix(output: &Path) -> Result<String> {
@@ -5769,9 +6225,9 @@ mod tests {
         );
     }
 
-    /// A known adapter-10 combined settings proof preserves eligible producer-26 candidates.
+    /// An adapter-10 combined proof preserves DDS/PEX candidates but cannot prove NIF contracts.
     #[test]
-    fn adapter10_combined_asset_proof_reuses_eligible_candidates_without_relabeling() {
+    fn adapter10_combined_asset_proof_reuses_dds_and_pex_but_excludes_nif_without_relabeling() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = PipelineConfig::new(
             directory.path().join("Data"),
@@ -5828,8 +6284,29 @@ mod tests {
         };
         let reused = reusable_manifest(&config, manifest.clone()).unwrap();
         assert_eq!(
-            reused.entries, manifest.entries,
-            "metadata-only adapter identity must preserve eligible asset candidates"
+            reused.entries,
+            [
+                (
+                    "textures/prior.dds".into(),
+                    CacheEntry {
+                        source_hash: "native-texture-proof".into(),
+                        output: "textures/prior.ktx2".into(),
+                        output_hash: "texture-byte-proof".into(),
+                        output_size: 251,
+                    },
+                ),
+                (
+                    "scripts/prior.pex".into(),
+                    CacheEntry {
+                        source_hash: "native-script-proof".into(),
+                        output: "scripts/prior.luau".into(),
+                        output_hash: "script-byte-proof".into(),
+                        output_size: 389,
+                    },
+                ),
+            ]
+            .into(),
+            "combined metadata proof must retain DDS/PEX provenance and exclude unproven NIF"
         );
         assert_eq!(reused.schema_version, CONVERTER_SCHEMA_VERSION);
         assert_eq!(reused.configuration_hash, recorded);
@@ -5853,6 +6330,66 @@ mod tests {
                 .entries
                 .is_empty()
         );
+    }
+
+    /// Meshes an earlier converter of the same producer wrote, before a mesh output contract,
+    /// rebuild from the published pack and from staging alike; textures and scripts stay reusable.
+    #[test]
+    fn meshes_from_before_a_mesh_output_contract_are_not_reused() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = PipelineConfig::new(
+            directory.path().join("Data"),
+            directory.path().join("output"),
+        );
+        assert!(!crate::cache::MESH_OUTPUT_CONTRACTS.is_empty());
+        let before = hash_bytes(
+            &serde_json::to_vec(&serde_json::json!({"mesh_producer": CONVERTER_SCHEMA_VERSION}))
+                .unwrap(),
+        );
+        let current = |kind| {
+            asset_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION, kind).unwrap()
+        };
+        assert_ne!(before, current("nif"));
+        let entry = |output: &str| CacheEntry {
+            source_hash: "source-proof".into(),
+            output: output.into(),
+            output_hash: "output-proof".into(),
+            output_size: 1,
+        };
+        let manifest = ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            entries: [
+                ("meshes/prior.nif".into(), entry("meshes/prior.glb")),
+                ("textures/prior.dds".into(), entry("textures/prior.ktx2")),
+                ("scripts/prior.pex".into(), entry("scripts/prior.luau")),
+            ]
+            .into(),
+            asset_configuration_hashes: [
+                ("nif".to_owned(), before.clone()),
+                ("dds".to_owned(), current("dds")),
+                ("pex".to_owned(), current("pex")),
+            ]
+            .into(),
+            complete: true,
+            ..Default::default()
+        };
+        let reused = reusable_manifest(&config, manifest).unwrap();
+        assert_eq!(
+            reused.entries.keys().collect::<Vec<_>>(),
+            ["scripts/prior.pex", "textures/prior.dds"]
+        );
+
+        let staged = directory.path().join("prior.glb");
+        fs::write(&staged, b"glb").unwrap();
+        let record = |configuration_hash: String| StagedOutput {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            configuration_hash,
+            source_hash: "source-proof".into(),
+            output_size: 3,
+            output_hash: hash_file(&staged).unwrap(),
+        };
+        assert!(!record(before).is_current(&staged, "source-proof", &current("nif")));
+        assert!(record(current("nif")).is_current(&staged, "source-proof", &current("nif")));
     }
 
     #[test]
@@ -5914,7 +6451,7 @@ mod tests {
     #[test]
     fn changed_default_bytes_change_persisted_lod_identity_and_only_defaulted_chunks() {
         use crate::lod::{
-            albedo::TerrainTextures,
+            albedo::{LoadedDefault, TerrainTextures},
             terrain::{TerrainCellInput, terrain_jobs},
         };
         use std::collections::HashMap;
@@ -5932,7 +6469,8 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let vfs = directory.path();
-        let default_path = vfs.join("textures/landscape/dirt02.dds");
+        let default_source = crate::terrain_pipeline::builtin_default_diffuse().unwrap();
+        let default_path = vfs.join(&default_source);
         let grass_path = vfs.join("textures/landscape/grass.dds");
         fs::create_dir_all(default_path.parent().unwrap()).unwrap();
         let grass_bytes = dummy_content::dds::generate(
@@ -5993,7 +6531,13 @@ mod tests {
             )
             .unwrap();
             fs::write(&default_path, default_bytes).unwrap();
-            let textures = TerrainTextures::load(&connection, vfs, &cells).unwrap();
+            let (default, reason) = LoadedDefault::load(
+                &crate::terrain_pipeline::TerrainDefaultDiffuse::Image(default_source.clone()),
+                vfs,
+                &mut crate::lod::albedo::TerrainTextureCache::default(),
+            );
+            assert_eq!(reason, None);
+            let textures = TerrainTextures::load(&connection, vfs, &cells, &default).unwrap();
             let mut chunk_inputs = BTreeMap::new();
             let mut chunk_hashes = Vec::new();
             let mut default_inputs = BTreeMap::new();
@@ -6169,7 +6713,7 @@ mod tests {
         fs::write(staging.join("published.glb"), b"invalid GLB").unwrap();
         fs::write(staging.join("stale.glb"), b"stale GLB").unwrap();
         fs::write(staging.join(STREAMING_COST_FILE_NAME), b"old sidecar").unwrap();
-        let report = PipelineReport {
+        let mut report = PipelineReport {
             artifacts: vec![
                 "conversion-manifest.json".into(),
                 "scripts/papyrus_runtime.luau".into(),
@@ -6179,7 +6723,7 @@ mod tests {
             ..Default::default()
         };
         let lock = AssetLock::acquire_exclusive(&output).unwrap();
-        publish_runtime_pack(&staging, &output, &report, &lock).unwrap();
+        publish_runtime_pack(&staging, &output, &mut report, &lock).unwrap();
         let fingerprint = hash_file(&output.join("conversion-manifest.json")).unwrap();
         let catalog =
             StreamingCostCatalog::load(&output.join(STREAMING_COST_FILE_NAME), &fingerprint)
@@ -6210,12 +6754,12 @@ mod tests {
         write_test_runtime_pack(&output, "previous");
         write_test_runtime_pack(&staging, "next");
         fs::write(staging.join("conversion-manifest.json"), b"invalid JSON").unwrap();
-        let report = PipelineReport {
+        let mut report = PipelineReport {
             artifacts: vec!["conversion-manifest.json".into()],
             ..Default::default()
         };
         let lock = AssetLock::acquire_exclusive(&output).unwrap();
-        assert!(publish_runtime_pack(&staging, &output, &report, &lock).is_err());
+        assert!(publish_runtime_pack(&staging, &output, &mut report, &lock).is_err());
         assert_eq!(published_manifest(&output).configuration_hash, "previous");
         assert_eq!(
             fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
@@ -6250,6 +6794,107 @@ mod tests {
                 if boundary < 2 { "previous" } else { "next" }
             );
         }
+    }
+
+    /// A cleanup that died halfway leaves a backup that can never match its seal: files are
+    /// already gone. The output is the sealed new pack, so recovery must delete the remains
+    /// instead of refusing it, which would fail every later run on a good pack.
+    #[test]
+    fn recovery_discards_a_partially_deleted_backup_of_a_published_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        let staging = directory.path().join("staging");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        write_publication_record(&output, &backup, &staging).unwrap();
+        fs::rename(&output, &backup).unwrap();
+        fs::rename(&staging, &output).unwrap();
+        // The delete stopped after removing the previous pack's manifest and sealed script.
+        fs::remove_file(backup.join("conversion-manifest.json")).unwrap();
+        fs::remove_file(backup.join("scripts/papyrus_runtime.luau")).unwrap();
+
+        recover_interrupted_publication(&output).unwrap();
+
+        assert_eq!(published_manifest(&output).configuration_hash, "next");
+        assert!(!backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+    }
+
+    /// A previous pack that cannot be deleted after the swap must not fail the run or wedge the
+    /// next one: the new pack stays published, the run reports a notice, and recovery completes.
+    #[test]
+    fn failed_previous_pack_cleanup_never_blocks_this_or_the_next_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join("staging");
+        let output = directory.path().join("assets");
+        write_test_runtime_pack(&output, "previous");
+        write_test_runtime_pack(&staging, "next");
+        let backup = output.with_extension(format!("backup-{}", std::process::id()));
+        let mut report = PipelineReport {
+            artifacts: vec![
+                "conversion-manifest.json".into(),
+                "scripts/papyrus_runtime.luau".into(),
+            ],
+            ..Default::default()
+        };
+        let lock = AssetLock::acquire_exclusive(&output).unwrap();
+
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+        let published = publish_runtime_pack(&staging, &output, &mut report, &lock);
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+
+        published.unwrap();
+        assert_eq!(published_manifest(&output).configuration_hash, "next");
+        assert!(backup.is_dir(), "the leftover backup is kept, not lost");
+        let backup_name = backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            std::slice::from_ref(&backup_name),
+            "the backup moves to the leftover list"
+        );
+        assert!(
+            !publication_record_path(&output).unwrap().exists(),
+            "a done record never meets a later change to the pack"
+        );
+        assert!(
+            report.notices.iter().any(|notice| notice
+                .contains("could not remove the previous pack")
+                && notice.contains(&backup.display().to_string())),
+            "notices: {:?}",
+            report.notices
+        );
+
+        // The next publication in the same process, with deletes still failing, publishes
+        // anyway: the first leftover's name stays taken and the second joins the list.
+        let staging = directory.path().join("staging-2");
+        write_test_runtime_pack(&staging, "third");
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(true));
+        let republished = publish_runtime_pack(&staging, &output, &mut report, &lock);
+        FAIL_PREVIOUS_PACK_CLEANUP.with(|fail| fail.set(false));
+        republished.unwrap();
+        assert_eq!(published_manifest(&output).configuration_hash, "third");
+        let second_backup = output.with_extension(format!("backup-{}-1", std::process::id()));
+        assert!(backup.is_dir() && second_backup.is_dir());
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            [
+                backup_name,
+                second_backup
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        assert!(!publication_record_path(&output).unwrap().exists());
+
+        // Once deletes work again, one recovery clears both leftovers and the list.
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!backup.exists() && !second_backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
+        assert_eq!(published_manifest(&output).configuration_hash, "third");
     }
 
     #[tokio::test]
@@ -6456,6 +7101,53 @@ mod tests {
         drop(reader);
         recover_interrupted_publication(&output).unwrap();
         assert!(output.is_dir());
+    }
+
+    /// A recovery interrupted after listing its record's backup leaves both behind; the next
+    /// recovery settles the record first, so the listed backup is restored, not deleted.
+    #[test]
+    fn recovery_settles_the_record_before_retrying_a_listed_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let backup = directory.path().join("assets.backup-123");
+        fs::create_dir_all(backup.join("scripts")).unwrap();
+        fs::write(backup.join("scripts/papyrus_runtime.luau"), b"return {}").unwrap();
+        ConversionManifest {
+            schema_version: CONVERTER_SCHEMA_VERSION,
+            complete: true,
+            ..Default::default()
+        }
+        .save(&backup.join("conversion-manifest.json"))
+        .unwrap();
+        seal_test_backup(&output, &backup);
+        add_publication_leftover(&output, "assets.backup-123").unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(output.join("scripts/papyrus_runtime.luau").is_file());
+        assert!(!backup.exists());
+        assert!(!publication_record_path(&output).unwrap().exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
+    }
+
+    /// A reader holding a leftover delays its deletion without failing recovery.
+    #[test]
+    fn recovery_keeps_a_leftover_held_by_a_reader_and_continues() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("assets");
+        let leftover = directory.path().join("assets.backup-9");
+        write_test_runtime_pack(&output, "current");
+        fs::create_dir_all(&leftover).unwrap();
+        add_publication_leftover(&output, "assets.backup-9").unwrap();
+        let reader = AssetLock::acquire_shared(&leftover).unwrap();
+        recover_interrupted_publication(&output).unwrap();
+        assert!(leftover.is_dir());
+        assert_eq!(
+            read_publication_leftovers(&output).unwrap(),
+            ["assets.backup-9"]
+        );
+        drop(reader);
+        recover_interrupted_publication(&output).unwrap();
+        assert!(!leftover.exists());
+        assert!(!publication_leftovers_path(&output).unwrap().exists());
     }
 
     #[tokio::test]
@@ -7388,6 +8080,190 @@ mod tests {
         ));
     }
 
+    /// Both bodies record raw winning inputs with logical paths and final output bytes.
+    #[test]
+    fn composed_body_proofs_follow_winners_and_clear_stale_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        let mods = staging.join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_skeleton(&mods, "WinningRoot", &["Bone0", "Bone1"]);
+        write_actor_part(&mods, "WinningHands.nif");
+        let sources = BTreeMap::from([
+            (assets.join("skeleton.nif"), mods.join("skeleton.nif")),
+            (
+                assets.join("malehands_1.nif"),
+                mods.join("WinningHands.nif"),
+            ),
+        ]);
+        let mut report = PipelineReport::default();
+        let mut manifest = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 2);
+        assert!(
+            manifest.entries.is_empty(),
+            "derived outputs are not synthetic sources"
+        );
+        for sex in ["male", "female"] {
+            let key = format!("meshes/actors/character/composed/default/{sex}/body.glb");
+            let proof = &manifest.derived_outputs[&key];
+            assert_eq!(proof.recipe, "body-compose-v2");
+            let mut expected = BTreeMap::new();
+            for suffix in ["body_1.nif", "hands_1.nif", "feet_1.nif"] {
+                let filename = format!("{sex}{suffix}");
+                let logical = assets.join(&filename);
+                let path = sources.get(&logical).unwrap_or(&logical);
+                expected.insert(
+                    format!("meshes/actors/character/character assets/{filename}"),
+                    hash_bytes(&fs::read(path).unwrap()),
+                );
+            }
+            expected.insert(
+                "meshes/actors/character/character assets/skeleton.nif".into(),
+                hash_bytes(&fs::read(mods.join("skeleton.nif")).unwrap()),
+            );
+            let thin: Vec<_> = ["body", "hands", "feet"]
+                .into_iter()
+                .map(|slot| {
+                    serde_json::json!([
+                        slot,
+                        hash_bytes(&fs::read(assets.join(format!("{sex}{slot}_0.nif"))).unwrap()),
+                        null
+                    ])
+                })
+                .collect();
+            let context =
+                serde_json::json!([[["body", null], ["hands", null], ["feet", null]], thin]);
+            expected.insert(
+                "recipes/body-compose-v2/context.json".into(),
+                hash_bytes(&serde_json::to_vec(&context).unwrap()),
+            );
+            assert_eq!(proof.inputs, expected);
+            assert!(crate::metadata::supported_derived_proof(&key, proof));
+            assert_ne!(
+                proof.inputs["meshes/actors/character/character assets/skeleton.nif"],
+                hash_file(&assets.join("skeleton.nif")).unwrap()
+            );
+            assert_eq!(
+                proof.output_hash,
+                hash_bytes(&fs::read(staging.join(&key)).unwrap())
+            );
+            assert_eq!(
+                proof.output_size,
+                fs::metadata(staging.join(&key)).unwrap().len()
+            );
+        }
+        let first = manifest.derived_outputs.clone();
+        write_actor_skeleton(&mods, "ChangedWinningRoot", &["Bone0", "Bone1"]);
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        for (key, old) in first {
+            assert_ne!(manifest.derived_outputs[&key].inputs, old.inputs);
+        }
+        fs::remove_file(assets.join("femalehands_1.nif")).unwrap();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        assert!(
+            !staging
+                .join("meshes/actors/character/composed/default/female/body.glb")
+                .exists()
+        );
+        fs::write(mods.join("WinningHands.nif"), b"broken winning NIF").unwrap();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert!(manifest.derived_outputs.is_empty());
+        assert!(
+            !staging
+                .join("meshes/actors/character/composed/default/male/body.glb")
+                .exists()
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to compose default male"))
+        );
+        assert!(report.warnings.is_empty());
+    }
+
+    /// The real prune pass changes bodies before their published hashes are finalized.
+    #[test]
+    fn derived_body_hashes_describe_post_prune_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let before = manifest.derived_outputs.clone();
+        let pruned =
+            MeshConverter::prune_dangling_texture_uris_with_sources(staging, &BTreeSet::new())
+                .unwrap();
+        assert!(pruned.iter().any(|file| !file.removed_uris.is_empty()));
+        finalize_derived_outputs(staging, &mut report, &mut manifest).unwrap();
+        for (key, proof) in &manifest.derived_outputs {
+            assert_ne!(
+                before[key].output_hash, proof.output_hash,
+                "body must actually be pruned"
+            );
+            assert_eq!(before[key].inputs, proof.inputs);
+            let bytes = fs::read(staging.join(key)).unwrap();
+            assert_eq!(proof.output_hash, hash_bytes(&bytes));
+            assert_eq!(proof.output_size, bytes.len() as u64);
+        }
+        assert_eq!(manifest.derived_outputs.len(), 2);
+    }
+
+    /// Publication preserves the valid sibling when a procedural actor part is corrupt.
+    #[tokio::test]
+    async fn derived_body_proofs_publish_after_pruning_and_optional_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("fixture");
+        stage_default_actor_parts(&fixture);
+        let data = fixture.join("vfs");
+        let output = directory.path().join("output");
+        let mut config = cpu_lod_config(&data, &output);
+        config.no_lod = true;
+        let report = run_without_progress(config.clone()).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        let manifest = published_manifest(&output);
+        assert_eq!(manifest.derived_outputs.len(), 2);
+        for (key, proof) in &manifest.derived_outputs {
+            assert_eq!(proof.output_hash, hash_file(&output.join(key)).unwrap());
+            assert_eq!(
+                proof.output_size,
+                fs::metadata(output.join(key)).unwrap().len()
+            );
+            assert!(manifest.pruned_texture_references.contains_key(key));
+        }
+        fs::write(
+            actor_assets(&fixture).join("femalehands_1.nif"),
+            b"broken neighbor",
+        )
+        .unwrap();
+        let report = run_without_progress(config).await;
+        let manifest = published_manifest(&output);
+        assert!(
+            !report.complete,
+            "the ordinary source conversion must report the broken NIF"
+        );
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        let male = "meshes/actors/character/composed/default/male/body.glb";
+        assert_eq!(
+            manifest.derived_outputs[male].output_hash,
+            hash_file(&output.join(male)).unwrap()
+        );
+        assert!(
+            !output
+                .join("meshes/actors/character/composed/default/female/body.glb")
+                .exists()
+        );
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to compose default female"))
+        );
+    }
+
     #[test]
     fn compose_default_bodies_writes_both_sexes_sharing_one_skeleton() {
         let directory = tempfile::tempdir().unwrap();
@@ -7405,6 +8281,213 @@ mod tests {
                 "{sex} composed skins must share one skeleton"
             );
         }
+    }
+
+    /// Both recipes' producer proofs satisfy reuse's exact input-set contract for each sex.
+    #[test]
+    fn producer_recipe_inputs_match_reuse_consumer_for_both_sexes() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (_, mut manifest) = compose_staged_bodies(staging, false);
+        fs::write(actor_assets(staging).join("skeleton.hkx"), b"skeleton").unwrap();
+        for sex in ["male", "female"] {
+            for stem in ["mt_idle", "mt_walkforward", "mt_runforward"] {
+                let key = format!("meshes/actors/character/animations/{sex}/{stem}.glb");
+                let source = staging
+                    .join("vfs/meshes/actors/character/animations")
+                    .join(sex)
+                    .join(format!("{stem}.hkx"));
+                fs::create_dir_all(source.parent().unwrap()).unwrap();
+                fs::write(source, format!("{sex} {stem}")).unwrap();
+                let inputs =
+                    default_animation_input_hashes(staging, &BTreeMap::new(), sex, stem).unwrap();
+                // Output encoding is exercised by the gait-writer test below; this
+                // fixture isolates the raw dependency contract from HKX decoding.
+                let output = staging.join(&key);
+                fs::create_dir_all(output.parent().unwrap()).unwrap();
+                fs::write(&output, b"proof contract fixture").unwrap();
+                let proof = derived_output_proof(DEFAULT_GAIT_RECIPE, inputs, &output).unwrap();
+                manifest.derived_outputs.insert(key, proof);
+            }
+        }
+        assert_eq!(manifest.derived_outputs.len(), 8);
+        for (key, proof) in &manifest.derived_outputs {
+            assert!(
+                crate::metadata::supported_derived_proof(key, proof),
+                "{key}"
+            );
+            for input in proof.inputs.keys() {
+                let mut missing = proof.clone();
+                missing.inputs.remove(input);
+                assert!(!crate::metadata::supported_derived_proof(key, &missing));
+            }
+            let mut extra = proof.clone();
+            extra
+                .inputs
+                .insert("meshes/unrelated.nif".into(), "0".repeat(64));
+            assert!(!crate::metadata::supported_derived_proof(key, &extra));
+        }
+    }
+
+    /// Synthetic gait proof capture uses raw logical winners and a real GLB writer.
+    /// HKX decoding success is covered separately by the ignored retail test.
+    #[test]
+    fn derived_gait_proof_capture_tracks_actual_dependencies_and_winners() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let assets = actor_assets(staging);
+        fs::write(assets.join("skeleton.hkx"), b"raw synthetic skeleton HKX").unwrap();
+        let mods = staging.join("mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("clip.hkx"), b"winning clip bytes").unwrap();
+        let logical_clip = staging.join("vfs/meshes/actors/character/animations/male/mt_idle.hkx");
+        let sources = BTreeMap::from([(logical_clip, mods.join("clip.hkx"))]);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let body_proofs = manifest.derived_outputs.clone();
+        for sex in ["male", "female"] {
+            let animations = staging
+                .join("vfs/meshes/actors/character/animations")
+                .join(sex);
+            fs::create_dir_all(&animations).unwrap();
+            let body = crate::mesh::build_skinned_model(
+                &assets.join(format!("{sex}body_1.nif")),
+                &assets.join("skeleton.nif"),
+            )
+            .unwrap();
+            let bones = &body.skeletal_meshes.first().unwrap().bones;
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                fs::write(
+                    animations.join(format!("{stem}.hkx")),
+                    format!("raw {sex} {stem}"),
+                )
+                .unwrap();
+                let inputs = default_animation_input_hashes(staging, &sources, sex, stem).unwrap();
+                let mut expected = BTreeMap::new();
+                for filename in [
+                    format!("{sex}body_1.nif"),
+                    "skeleton.nif".into(),
+                    "skeleton.hkx".into(),
+                ] {
+                    expected.insert(
+                        format!("meshes/actors/character/character assets/{filename}"),
+                        hash_bytes(&fs::read(assets.join(filename)).unwrap()),
+                    );
+                }
+                let expected_clip = if sex == "male" && stem == "mt_idle" {
+                    b"winning clip bytes".to_vec()
+                } else {
+                    format!("raw {sex} {stem}").into_bytes()
+                };
+                expected.insert(
+                    format!("meshes/actors/character/animations/{sex}/{stem}.hkx"),
+                    hash_bytes(&expected_clip),
+                );
+                assert_eq!(inputs, expected);
+                let mut clip = animation::AnimationClip {
+                    name: String::new(),
+                    original_skeleton_name: "synthetic".into(),
+                    duration_seconds: 1.0 / 30.0,
+                    frame_count: 2,
+                    frames_per_second: 30.0,
+                    tracks: vec![animation::TransformTrack {
+                        bone_index: 0,
+                        bone_name: Some("Bone0".into()),
+                        samples: vec![
+                            animation::TransformSample {
+                                translation: [0.0; 3],
+                                rotation: [0.0, 0.0, 0.0, 1.0],
+                                scale: [1.0; 3],
+                            };
+                            2
+                        ],
+                    }],
+                };
+                let relative = default_animation_output(sex, stem);
+                let output = staging.join(&relative);
+                animation::write_clip_glb(&mut clip, bones, stem, &output).unwrap();
+                let proof = derived_output_proof("default-gait-v1", inputs, &output).unwrap();
+                let key = relative;
+                assert!(crate::metadata::supported_derived_proof(&key, &proof));
+                assert_eq!(proof.output_hash, hash_bytes(&fs::read(&output).unwrap()));
+                assert_eq!(proof.output_size, fs::metadata(&output).unwrap().len());
+                manifest.derived_outputs.insert(key, proof);
+            }
+        }
+        let before = default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap();
+        for filename in ["malehands_1.nif", "malefeet_1.nif"] {
+            fs::write(assets.join(filename), b"not a gait dependency").unwrap();
+        }
+        assert_eq!(
+            before,
+            default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap()
+        );
+        for path in [
+            assets.join("malebody_1.nif"),
+            assets.join("skeleton.nif"),
+            assets.join("skeleton.hkx"),
+            mods.join("clip.hkx"),
+        ] {
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, b"changed actual dependency").unwrap();
+            let after =
+                default_animation_input_hashes(staging, &sources, "male", "mt_idle").unwrap();
+            assert_eq!(
+                before
+                    .iter()
+                    .filter(|(key, value)| after.get(*key) != Some(*value))
+                    .count(),
+                1
+            );
+            fs::write(path, original).unwrap();
+        }
+        let stale_gait_proofs: BTreeMap<_, _> = manifest
+            .derived_outputs
+            .iter()
+            .filter(|(key, _)| key.starts_with("meshes/actors/character/animations/"))
+            .map(|(key, proof)| (key.clone(), proof.clone()))
+            .collect();
+        // Invalid HKX bytes fail locally through the real producer and remove all
+        // stale gait proofs/files while leaving the composed-body neighbor intact.
+        convert_default_animations(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs, body_proofs);
+        assert!(report.warnings.is_empty());
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("failed to convert"))
+        );
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                assert!(!staging.join(default_animation_output(sex, stem)).exists());
+            }
+        }
+        // A later missing dependency also clears proofs, including proof-only remnants.
+        manifest.derived_outputs.extend(stale_gait_proofs);
+        fs::remove_file(assets.join("skeleton.hkx")).unwrap();
+        convert_default_animations(staging, &sources, false, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs, body_proofs);
+    }
+
+    /// Missing final outputs lose proofs locally while a readable sibling survives.
+    #[test]
+    fn derived_finalization_drops_missing_output_proof_and_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_default_actor_parts(staging);
+        let (mut report, mut manifest) = compose_staged_bodies(staging, false);
+        let missing = "meshes/actors/character/composed/default/female/body.glb";
+        report.artifacts = manifest.derived_outputs.keys().map(PathBuf::from).collect();
+        fs::remove_file(staging.join(missing)).unwrap();
+        finalize_derived_outputs(staging, &mut report, &mut manifest).unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 1);
+        assert!(!manifest.derived_outputs.contains_key(missing));
+        assert!(!report.artifacts.contains(&PathBuf::from(missing)));
+        assert_eq!(report.notices.len(), 1);
+        assert!(report.notices[0].contains(missing));
+        assert!(report.warnings.is_empty());
     }
 
     fn glb_node_names(path: &Path) -> BTreeSet<String> {
@@ -7538,6 +8621,50 @@ mod tests {
             assert!((body.1[1][0] + 0.2).abs() < 1e-5, "{:?}", body.1);
             assert!(body.1[1][1].abs() < 1e-5, "{:?}", body.1);
         }
+    }
+
+    /// Thin winners and catalog skin choices must change the recorded body provenance.
+    #[test]
+    fn composed_body_proof_tracks_thin_winners_and_skin_catalog() {
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path();
+        stage_skin_tint_hands(staging);
+        let key = "meshes/actors/character/composed/default/female/body.glb";
+        let (_, baseline) = compose_staged_bodies(staging, false);
+
+        let mods = staging.join("thin-mod");
+        fs::create_dir_all(&mods).unwrap();
+        write_actor_body_part_scaled(&mods, "female-thin.nif", 0.4);
+        let sources = BTreeMap::from([(
+            actor_assets(staging).join("femalebody_0.nif"),
+            mods.join("female-thin.nif"),
+        )]);
+        let mut report = PipelineReport::default();
+        let mut thin = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut thin).unwrap();
+        assert_ne!(
+            baseline.derived_outputs[key].output_hash,
+            thin.derived_outputs[key].output_hash
+        );
+        let thin_changed = baseline.derived_outputs[key].inputs != thin.derived_outputs[key].inputs;
+
+        write_skin_catalog(staging, true);
+        let mut skin = ConversionManifest::default();
+        compose_default_bodies(staging, &sources, false, &mut report, &mut skin).unwrap();
+        assert_ne!(
+            thin.derived_outputs[key].output_hash,
+            skin.derived_outputs[key].output_hash
+        );
+        let skin_changed = thin.derived_outputs[key].inputs != skin.derived_outputs[key].inputs;
+        assert_eq!(
+            (thin_changed, skin_changed),
+            (true, true),
+            "thin winners and catalog skin choices must each change provenance"
+        );
+        assert!(crate::metadata::supported_derived_proof(
+            key,
+            &skin.derived_outputs[key]
+        ));
     }
 
     #[test]
@@ -7849,6 +8976,7 @@ mod tests {
         fs::write(actor_assets(staging).join("malebody_0.nif"), []).unwrap();
     }
 
+    /// Keeps optional composition failures under the canonical derived asset key.
     #[test]
     fn compose_default_bodies_reports_optional_failure_as_a_notice() {
         let directory = tempfile::tempdir().unwrap();
@@ -7873,7 +9001,7 @@ mod tests {
             report
                 .notices
                 .iter()
-                .any(|notice| notice.contains("failed to compose default male")),
+                .any(|notice| notice.starts_with(&format!("{key}: failed to compose default male"))),
             "notices: {:?}",
             report.notices
         );
@@ -8243,6 +9371,7 @@ mod tests {
         }
     }
 
+    /// Keeps the six gait keys ordered and portable through report serialization.
     #[test]
     fn default_animation_clip_table_is_ordered() {
         assert_eq!(
@@ -8256,11 +9385,7 @@ mod tests {
         for sex in ["male", "female"] {
             let paths: Vec<String> = DEFAULT_ANIMATION_CLIPS
                 .iter()
-                .map(|(_, stem)| {
-                    default_animation_output(sex, stem)
-                        .to_string_lossy()
-                        .into_owned()
-                })
+                .map(|(_, stem)| default_animation_output(sex, stem))
                 .collect();
             assert_eq!(
                 paths,
@@ -8270,7 +9395,32 @@ mod tests {
                     format!("meshes/actors/character/animations/{sex}/mt_runforward.glb"),
                 ]
             );
+            let report = PipelineReport {
+                artifacts: paths.iter().map(PathBuf::from).collect(),
+                ..PipelineReport::default()
+            };
+            let serialized = serde_json::to_value(report).unwrap();
+            for (artifact, expected) in serialized["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(paths)
+            {
+                let key = artifact.as_str().unwrap();
+                assert!(!key.contains('\\'), "noncanonical gait artifact: {key}");
+                assert_eq!(key, expected);
+            }
         }
+    }
+
+    /// Exercises Windows-style key text even when CI runs on a Unix host.
+    #[test]
+    fn default_animation_output_canonicalizes_windows_asset_keys() {
+        let relative = default_animation_output("FEMALE", r"Nested\MT_IDLE");
+        assert_eq!(
+            Path::new(&relative).to_str(),
+            Some("meshes/actors/character/animations/female/nested/mt_idle.glb")
+        );
     }
 
     #[test]
@@ -8313,6 +9463,7 @@ mod tests {
         assert_eq!(report.notices.len(), outputs.len());
     }
 
+    /// Keeps missing-input notices for both sexes when only old gait markers remain.
     #[test]
     fn marker_only_gait_work_keeps_missing_actor_notices_for_both_sexes() {
         let directory = tempfile::tempdir().unwrap();
@@ -8321,9 +9472,7 @@ mod tests {
         let mut manifest = ConversionManifest::default();
         for sex in ["male", "female"] {
             for (_, stem) in DEFAULT_ANIMATION_CLIPS {
-                let key = default_animation_output(sex, stem)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let key = default_animation_output(sex, stem);
                 manifest.failures.insert(key, "stale gait failure".into());
             }
         }
@@ -8374,29 +9523,135 @@ mod tests {
         }
     }
 
+    /// Rejects immediate and higher file ancestors before changing manifests or notices.
     #[test]
     fn gait_output_metadata_errors_are_fatal_without_notices() {
-        let directory = tempfile::tempdir().unwrap();
-        let staging = directory.path();
-        stage_invalid_default_animation(staging);
-        let output = staging.join(default_animation_output("male", "mt_runforward"));
-        fs::create_dir_all(output.parent().unwrap()).unwrap();
-        fs::remove_dir(output.parent().unwrap()).unwrap();
-        fs::write(output.parent().unwrap(), b"not a directory").unwrap();
+        for relative in [
+            "meshes",
+            "meshes/actors/character/animations",
+            "meshes/actors/character/animations/male",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let staging = directory.path();
+            stage_invalid_default_animation(staging);
+            let blocker = staging.join(relative);
+            fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+            fs::write(&blocker, b"not a directory").unwrap();
 
-        let mut report = PipelineReport::default();
-        let mut manifest = ConversionManifest::default();
-        let error = convert_default_animations(
-            staging,
-            &BTreeMap::new(),
-            false,
-            &mut report,
-            &mut manifest,
-        )
-        .expect_err("metadata error must abort preflight without fail-fast");
+            for fail_fast in [false, true] {
+                let mut report = PipelineReport::default();
+                let mut manifest = ConversionManifest::default();
+                manifest
+                    .failures
+                    .insert(MALE_IDLE_GLB.into(), "old failure".into());
+                let error = convert_default_animations(
+                    staging,
+                    &BTreeMap::new(),
+                    fail_fast,
+                    &mut report,
+                    &mut manifest,
+                )
+                .expect_err("metadata error must abort preflight with either fail-fast setting");
 
-        assert!(format!("{error:#}").contains("failed to inspect"));
-        assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+                assert!(format!("{error:#}").contains("failed to inspect"));
+                assert!(report.notices.is_empty(), "notices: {:?}", report.notices);
+                assert_eq!(manifest.failures.get(MALE_IDLE_GLB).unwrap(), "old failure");
+                assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+            }
+        }
+    }
+
+    /// A rejected gait preflight leaves the complete failure and proof maps for both sexes intact.
+    #[test]
+    fn gait_preflight_rejection_preserves_complete_manifest_maps() {
+        // File ancestors are rejected by the early parent check; directories at exact outputs are
+        // rejected by the output cleanup that runs before any map entry is removed.
+        let mut blockers: Vec<(String, bool)> = [
+            "meshes",
+            "meshes/actors/character/animations",
+            "meshes/actors/character/animations/male",
+            "meshes/actors/character/animations/female",
+        ]
+        .into_iter()
+        .map(|blocked| (blocked.to_owned(), false))
+        .collect();
+        for sex in ["male", "female"] {
+            for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                blockers.push((default_animation_output(sex, stem), true));
+            }
+        }
+        for (blocked, is_directory) in blockers {
+            for fail_fast in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let staging = directory.path();
+                stage_invalid_default_animation(staging);
+                let blocker = staging.join(&blocked);
+                let contents = blocker.join("blocker");
+                fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+                if is_directory {
+                    fs::create_dir_all(&blocker).unwrap();
+                    fs::write(&contents, b"staged generated assets").unwrap();
+                } else {
+                    fs::write(&blocker, b"not a directory").unwrap();
+                }
+
+                let mut manifest = ConversionManifest::default();
+                for sex in ["male", "female"] {
+                    for (_, stem) in DEFAULT_ANIMATION_CLIPS {
+                        let key = default_animation_output(sex, stem);
+                        manifest
+                            .failures
+                            .insert(key.clone(), format!("old {sex} failure"));
+                        manifest.derived_outputs.insert(
+                            key,
+                            DerivedOutput {
+                                recipe: DEFAULT_GAIT_RECIPE.into(),
+                                inputs: BTreeMap::new(),
+                                output_size: 1,
+                                output_hash: hash_bytes(b"old gait"),
+                            },
+                        );
+                    }
+                }
+                let incoming = manifest.clone();
+                let mut report = PipelineReport::default();
+                let error = convert_default_animations(
+                    staging,
+                    &BTreeMap::new(),
+                    fail_fast,
+                    &mut report,
+                    &mut manifest,
+                )
+                .expect_err("blocked gait path must abort before any map mutation");
+
+                let expected = if is_directory {
+                    "refusing to remove directory"
+                } else {
+                    "failed to inspect"
+                };
+                assert!(
+                    format!("{error:#}").contains(expected),
+                    "{blocked}: {error:#}"
+                );
+                assert!(report.notices.is_empty(), "{blocked}: {:?}", report.notices);
+                assert_eq!(manifest, incoming, "{blocked} fail_fast={fail_fast}");
+                if is_directory {
+                    assert!(blocker.is_dir(), "{blocked} fail_fast={fail_fast}");
+                    assert_eq!(
+                        fs::read(&contents).unwrap(),
+                        b"staged generated assets",
+                        "{blocked} fail_fast={fail_fast}"
+                    );
+                    assert_eq!(
+                        fs::read_dir(&blocker).unwrap().count(),
+                        1,
+                        "{blocked} fail_fast={fail_fast}"
+                    );
+                } else {
+                    assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+                }
+            }
+        }
     }
 
     #[test]
@@ -8427,6 +9682,7 @@ mod tests {
         }
     }
 
+    /// Reports a canonical asset prefix while preserving unrelated source repairs.
     #[test]
     fn animation_preparation_failure_is_a_notice_and_keeps_source_repairs() {
         let directory = tempfile::tempdir().unwrap();
@@ -8464,6 +9720,11 @@ mod tests {
         assert!(report.notices.iter().any(|notice| {
             notice.contains(MALE_IDLE_GLB) && notice.contains("failed to prepare")
         }));
+        for notice in &report.notices {
+            let (key, _) = notice.split_once(": ").unwrap();
+            assert!(!key.contains('\\'), "noncanonical gait notice: {key}");
+            assert_eq!(key, key.to_ascii_lowercase());
+        }
     }
 
     #[test]
@@ -8695,6 +9956,7 @@ mod tests {
         }
     }
 
+    /// Real HKX decoding records every successful gait's four raw inputs and bytes.
     #[test]
     #[ignore = "requires MUDCRAB_ANIMATION_DIR and MUDCRAB_ACTOR_NIF_DIR"]
     fn retail_default_animations_emit_all_gait_clips() {
@@ -8715,10 +9977,30 @@ mod tests {
         .unwrap();
 
         let mut written = Vec::new();
+        assert_eq!(manifest.derived_outputs.len(), 6);
         for sex in ["male", "female"] {
             for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
                 let output = full.path().join(default_animation_output(sex, stem));
                 assert!(output.is_file(), "{sex} {clip} clip must exist");
+                let key = format!("meshes/actors/character/animations/{sex}/{stem}.glb");
+                let proof = &manifest.derived_outputs[&key];
+                assert_eq!(proof.recipe, "default-gait-v1");
+                let expected_paths = [
+                    format!("meshes/actors/character/character assets/{sex}body_1.nif"),
+                    "meshes/actors/character/character assets/skeleton.nif".into(),
+                    "meshes/actors/character/character assets/skeleton.hkx".into(),
+                    format!("meshes/actors/character/animations/{sex}/{stem}.hkx"),
+                ];
+                let expected: BTreeMap<_, _> = expected_paths
+                    .into_iter()
+                    .map(|path| {
+                        let bytes = fs::read(full.path().join("vfs").join(&path)).unwrap();
+                        (path, hash_bytes(&bytes))
+                    })
+                    .collect();
+                assert_eq!(proof.inputs, expected);
+                assert_eq!(proof.output_hash, hash_bytes(&fs::read(&output).unwrap()));
+                assert_eq!(proof.output_size, fs::metadata(&output).unwrap().len());
                 let expected = match clip {
                     "idle" => Some(9.133_333),
                     "walkforward" => Some(1.133_333),
@@ -8730,6 +10012,7 @@ mod tests {
             }
         }
 
+        let first_proofs = manifest.derived_outputs.clone();
         let mut report = PipelineReport::default();
         let mut manifest = ConversionManifest::default();
         convert_default_animations(
@@ -8740,6 +10023,7 @@ mod tests {
             &mut manifest,
         )
         .unwrap();
+        assert_eq!(manifest.derived_outputs, first_proofs);
         for (output, first) in &written {
             assert_eq!(
                 fs::read(output).unwrap(),
@@ -8766,6 +10050,12 @@ mod tests {
             &mut manifest,
         )
         .unwrap();
+        assert_eq!(manifest.derived_outputs.len(), 5);
+        assert!(
+            !manifest
+                .derived_outputs
+                .contains_key("meshes/actors/character/animations/male/mt_runforward.glb")
+        );
         for sex in ["male", "female"] {
             for (clip, stem) in DEFAULT_ANIMATION_CLIPS {
                 let output = partial.path().join(default_animation_output(sex, stem));
@@ -9696,6 +10986,54 @@ mod tests {
         assert_eq!(staging_entries(temp.path()), Vec::<PathBuf>::new());
     }
 
+    /// The pack is already published when the ingestion cache is written, so a cache write that
+    /// fails must leave a complete run, not a failure that sends the user back to resume it.
+    #[tokio::test]
+    async fn a_post_publication_cache_failure_keeps_the_published_pack_complete() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("Data");
+        let output = temp.path().join("modern");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join("assets.ba2"),
+            dummy_content::ba2::general(
+                &[dummy_content::Entry::new(
+                    "strings/readme.strings",
+                    b"cached asset",
+                )],
+                dummy_content::ba2::Compression::None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut config = cpu_lod_config(&data, &output);
+        config.extract_all_archive_files = true;
+
+        FAIL_INGESTION_CACHE_PERSISTENCE.with(|fail| fail.set(true));
+        let report = run_without_progress(config.clone()).await;
+        FAIL_INGESTION_CACHE_PERSISTENCE.with(|fail| fail.set(false));
+
+        assert!(report.complete, "warnings: {:?}", report.warnings);
+        assert_eq!(published_manifest(&output).complete, report.complete);
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("could not save the ingestion cache")),
+            "notices: {:?}",
+            report.notices
+        );
+        let cache = config.ingestion_cache_dir().join(".ingestion-cache/sha256");
+        assert!(
+            !cache.exists(),
+            "the injected failure skipped cache persistence"
+        );
+
+        // The next run publishes normally from the same inputs.
+        let rerun = run_without_progress(config).await;
+        assert!(rerun.complete);
+    }
+
     #[tokio::test]
     async fn an_interrupted_run_keeps_staging_and_resumes_from_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -9800,6 +11138,38 @@ mod tests {
             ..PipelineReport::default()
         };
         assert!(!conversion_is_complete(&warned));
+    }
+
+    /// A lost light row makes the run incomplete; an unresolved emittance target is a notice.
+    #[test]
+    fn projection_omissions_warn_on_data_loss_and_note_fallbacks() {
+        use crate::esm::projection_omissions::{OmissionCategory, ProjectionOmissions};
+        let mut fallback_only = ProjectionOmissions::default();
+        fallback_only.record(OmissionCategory::EmittanceTargetAbsent, 0xDEAD, "absent");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &fallback_only);
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.notices.len(), 1);
+        assert!(
+            report.notices[0].contains("emittance_target_absent: 1 record (fallback)"),
+            "{:?}",
+            report.notices
+        );
+        assert!(conversion_is_complete(&report));
+
+        let mut with_loss = fallback_only;
+        with_loss.record(OmissionCategory::LightShortData, 0x802, "short");
+        with_loss.record(OmissionCategory::LightShortData, 0x803, "short");
+        let mut report = PipelineReport::default();
+        report_projection_omissions(&mut report, &with_loss);
+        assert_eq!(report.notices.len(), 1);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(
+            report.warnings[0].contains("light_short_data: 2 records (data_loss), e.g. 00000802"),
+            "{:?}",
+            report.warnings
+        );
+        assert!(!conversion_is_complete(&report));
     }
 
     /// Notices never hide failures or affect completeness, regardless of insertion order.
@@ -11373,8 +12743,33 @@ mod tests {
         assert_eq!(fs::read(root.join(relative)).unwrap(), b"sealed batch");
     }
 
+    /// Persist a relative cache destination from a private cwd independent of checkout depth.
     #[test]
     fn durable_cache_persistence_accepts_relative_destinations() {
+        const CHILD: &str = "MUDCRAB_TEST_RELATIVE_CACHE_CHILD";
+        const TEST: &str =
+            "pipeline::tests::durable_cache_persistence_accepts_relative_destinations";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            // Keep process-global cwd unchanged for other tests running in parallel.
+            let directory = tempfile::tempdir().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .current_dir(directory.path())
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                result.status.success(),
+                "relative-cache subprocess failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+            assert!(
+                stdout.contains(TEST) && stdout.contains("1 passed"),
+                "subprocess did not run the relative-cache test\nstdout:\n{stdout}"
+            );
+            return;
+        }
         let directory = tempfile::tempdir_in(".").unwrap();
         let staging = directory.path().join("staging-cache");
         let current_directory = std::env::current_dir().unwrap();

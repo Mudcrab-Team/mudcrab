@@ -24,10 +24,11 @@ Both readers retain their terminal diagnostics and return bounded per-plugin
 summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
 malformed records/frames, unusable candidates, cleared optional links, truncated
 light IDs, and in-house decoder/adapter issues such as omitted fields or missing
-localized text. `PipelineReport.notices` contains successful compatibility
-remaps: master indices past a plugin's list treated as the plugin's own, and the
-in-house reader's supplier-self compatibility lines. Counts and first examples
-remain bounded per plugin and kind.
+localized banks or referenced malformed entries. `PipelineReport.notices` contains
+successful compatibility remaps: master indices past a plugin's list treated as
+the plugin's own, and the in-house reader's supplier-self compatibility lines.
+Absent localized keys in readable banks also produce notices. Counts and first
+examples remain bounded per plugin and kind.
 
 The existing completeness rule requires zero skipped asset inputs and no
 warnings. Usable neighboring records still publish, but data-loss warnings mark
@@ -70,7 +71,9 @@ missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
 columns remain NULL. Missing nonzero keys in readable tables produce counted
 notices; missing or unreadable tables and referenced malformed entries produce
-warnings. A null ID does not require its declared bank. Explicitly resolved
+warnings. Both readers apply this severity policy; the legacy reader resolves
+subrecords whose schema occurrences unambiguously agree on localized type and bank.
+A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.
@@ -107,6 +110,18 @@ proofs. Retained models/textures keep their verified bytes and may carry older
 TXST role encodings. Explicit retention does not upgrade their producer or grant
 normal cache eligibility: a later normal conversion checks the original producer
 and current settings, source dependencies and resolved texture encoding.
+Composed default bodies and generated default gait clips carry separate
+`derived_outputs` proofs. Metadata reuse copies only derived files whose supported
+recipe, logical input hashes, output size and final SHA-256 are recorded. It
+preserves those original proofs across repeated rebuilds, including runtime packs
+without raw VFS inputs. It does not regenerate them from unauthenticated current
+Data. Historical derived files without proof, unavailable individual derived
+outputs (including read, copy or hash failures) and unknown stray runtime files
+are omitted with one counted, bounded notice; verified neighboring assets remain
+unchanged. Partial derived copies are removed when possible; cleanup failures
+are counted in that same notice without aborting the rebuild. These optional omissions
+do not make the metadata rebuild incomplete. Use normal conversion to regenerate
+derived outputs. Recorded ordinary assets retain their checksum requirements.
 Unknown source producer identities are rejected by the retained-asset route.
 Plugin filename keys use Unicode lowercase after native Windows-1252 decoding,
 including accented case pairs. The same shared function supplies player and MO2 selection, the merged MO2 Data index, master and identity lookup, and archive attachment keys. Record signatures and GMST EditorIDs retain their
@@ -252,7 +267,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 | :---------------------------- | :------------------------------------------- | :----------------------------------------------------------------- | :------------------------------------- |
 | **`.bsa` / `.ba2`**           | Directory Hierarchy / VFS                    | Extracted compressed virtual filesystem                            | Rust (`flate2`, `lz4_flex`)            |
 | **`.nif`**                    | **`glTF 2.0` (`.glb`)**                      | Standard 3D geometry, mesh hierarchies, PBR materials, skinning    | `nif-parser` ➔ `gltf` crate            |
-| **`.dds` (BC1-BC7)**          | **`KTX2` / Supercompressed Basis Universal** | Fast GPU texture streaming & compressed VRAM footprints            | `image` crate / `basis-universal`      |
+| **`.dds` (BC1-BC7)**          | **`KTX2` / native formats or UASTC**         | Native preservation, BC7 encoding or UASTC fallback                  | `ddsfile` / `intel_tex_2` / `basis-universal` |
 | **`.hkx` (Havok)**            | **glTF Animations & Rapier 3D Colliders**    | Skeletal animation clips & physics collision meshes                | Havok XML exporter / custom parser     |
 | **`.esm` / `.esp`**           | **`SQLite3` / Binary (Bincode / rkyv)**      | High-performance spatial indexing, memory-mapped zero-copy queries | `rusqlite` / `rkyv` / `zerocopy`       |
 | **`.pex` / `.psc` (Papyrus)** | **`Luau` Scripts**                           | High-performance, sandboxed scripting engine                       | `mlua` / Papyrus-to-Luau AST Transpiler |
@@ -276,7 +291,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 
 ### B. Texture Transcoder (`.dds` ➔ `.ktx2`)
 
-- Converts DirectDraw Surface files into supercompressed **Basis Universal KTX2** textures.
+- Converts DirectDraw Surface files into KTX2 with native payloads, CPU-encoded BC7 or UASTC fallback.
 - Derives sRGB, linear-normal, or linear-data encoding from the texture slot recorded by the
   published GLB/world database; filenames and extensions do not determine color space.
 - Preserves source alpha and authored mip levels, validates the published KTX2 metadata/hash, and
@@ -289,7 +304,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
-- Supports runtime transcoding into WebGPU/Vulkan native compressed formats (BC1/BC7 for Desktop, ASTC/ETC2 for Mobile/Web).
+- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [proposed desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the pending mobile/web scope decision and validation work in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
 
@@ -331,9 +346,36 @@ that affect that kind's bytes:
 
 | Kind | Settings proof | Source proof |
 | :--- | :--- | :--- |
-| NIF -> GLB | Mesh producer contract | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
+| NIF -> GLB | Mesh producer contract and current mesh output contracts | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
 | DDS -> KTX2 | Texture producer, fallback quality, UASTC level, Zstd level and CPU/GPU encoder quality | DDS bytes, resolved `TextureEncoding` from the freshly rebuilt database and accepted GLBs, plus the applicable GPU encoding label |
 | PEX -> Luau | Script ABI | PEX bytes; known producer eligibility is checked separately |
+
+`derived_outputs` is an optional map keyed by canonical output path, separate
+from single-source `entries`. Each proof records a versioned recipe, a map of
+canonical logical input paths to winning raw SHA-256 hashes, any recipe-owned
+context digest, and the final output's size and SHA-256. `body-compose-v1`
+records that sex's heavy body, hands and feet NIFs plus the shared skeleton NIF.
+Current producers emit `body-compose-v2`, adding
+`recipes/body-compose-v2/context.json`: the SHA-256 of compact JSON containing
+the ordered heavy skin choices and thin preparation inputs. Each heavy entry
+is `[slot, skin]`; each thin entry is `[slot, winning_raw_sha256, skin]`, in
+body/hands/feet order. A skin is null or `[TXST_FormID, eight_NIF_texture_slots]`.
+The outer JSON is `[heavy_entries, thin_entries]`. Thin entries are empty when
+any thin part is missing, matching the existing preparation gate. These choices
+describe main's existing catalog skin selection and thin morph generation;
+physical source paths and unrelated database rows are excluded. Historical v1
+proofs remain eligible for package-snapshot retention.
+`default-gait-v1` consumes the body NIF,
+skeleton NIF, skeleton HKX and the sex-specific gait HKX; it builds its bone tree
+from the NIF inputs. Original asset producer/settings provenance remains on the
+manifest. Material repair and texture pruning refresh the derived output hash
+to describe the published bytes.
+
+Normal conversion continues to regenerate these optional derived outputs and
+records a proof only on success; these records do not introduce derived warm
+cache hits. Absent or malformed individual proofs establish no eligibility.
+Adding this provenance does not change asset bytes or the existing global cache
+identities; future recipe byte changes require their own identity change.
 
 Worker counts, GPU batch size and `--no-lod` do not affect these settings proofs.
 A reader/schema edit that leaves the actual asset dependencies and encoding
@@ -343,6 +385,17 @@ the published output to exist with its recorded size and SHA-256.
 Staging journal entries carry the same per-kind settings proof and also require
 the current producer contract and matching source/output bytes; older journal
 entries carrying a full configuration hash do not acquire a new proof implicitly.
+
+A converter change to mesh bytes that does not advance the producer appends a
+name to `MESH_OUTPUT_CONTRACTS` (`crates/converter/src/cache.rs`). The current
+producer's mesh settings proof includes the list, so a normal conversion and a
+resumed staging run rebuild meshes an earlier converter of the same producer
+wrote, while textures and scripts stay reusable. Every producer-27 manifest
+records per-kind proofs, which arrived with producer 26, so the combined fallback
+below never decides current-producer meshes. The list is cleared when the
+producer advances. `--reuse-assets` still retains the source
+package's mesh bytes and its recorded mesh proof, so a later normal conversion
+of that package rebuilds them.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

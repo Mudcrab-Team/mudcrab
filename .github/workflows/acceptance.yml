@@ -22,12 +22,22 @@ on:
         required: true
         default: true
 
+permissions:
+  contents: read
+
+# One campaign at a time: runs share the self-hosted runner's GPU and workspace.
+concurrency:
+  group: self-hosted-gpu
+  cancel-in-progress: false
+
 jobs:
   acceptance:
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
