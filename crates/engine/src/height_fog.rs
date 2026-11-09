@@ -196,20 +196,14 @@ impl Plugin for HeightFogPlugin {
     }
 }
 
-/// The layer this run asks for: the Graphics settings when the player turned the fog on there,
-/// otherwise the command line's `--height-fog`, otherwise none.
-fn wanted_layer(
-    config: Option<&crate::config::EngineConfig>,
-    rendering: Option<&crate::settings::RenderingSettings>,
-) -> Option<HeightFogLayer> {
-    match rendering {
-        Some(rendering) if rendering.height_fog => Some(HeightFogLayer {
-            density: DEFAULT_DENSITY * rendering.height_fog_density_scale,
-            height: rendering.height_fog_height,
-            ..default()
-        }),
-        _ => config.and_then(|config| config.height_fog),
-    }
+/// The layer the settings ask for. `--height-fog` reaches it by seeding the settings at launch,
+/// so the menu and the pass cannot disagree about what is on.
+fn wanted_layer(rendering: &crate::settings::RenderingSettings) -> Option<HeightFogLayer> {
+    rendering.height_fog.then_some(HeightFogLayer {
+        density: DEFAULT_DENSITY * rendering.height_fog_density_scale,
+        height_falloff: rendering.height_fog_falloff,
+        height: rendering.height_fog_height,
+    })
 }
 
 /// Gives every fogged camera the uniform for this frame, and removes it where the weather fog is
@@ -230,8 +224,18 @@ fn apply_height_fog(
         With<FogCamera>,
     >,
     suns: Query<(&DirectionalLight, &GlobalTransform)>,
+    mut launch_settings: Local<Option<crate::settings::RenderingSettings>>,
 ) {
-    let layer = wanted_layer(config.as_deref(), rendering.as_deref());
+    // Runs without a settings menu (captures, benchmarks) never insert the settings resource;
+    // the command line seeds an equivalent one here.
+    let launch = launch_settings.get_or_insert_with(|| {
+        let mut settings = crate::settings::RenderingSettings::default();
+        if let Some(layer) = config.as_deref().and_then(|config| config.height_fog) {
+            settings.seed_height_fog(&layer);
+        }
+        settings
+    });
+    let layer = wanted_layer(rendering.as_deref().unwrap_or(launch));
     let sun = suns.iter().next();
     for (camera, fog, projection, current, camera_3d) in &mut cameras {
         let wanted = match (fog, &layer) {
@@ -574,31 +578,69 @@ mod tests {
         }
     }
 
+    fn launch(args: &[&str]) -> crate::config::EngineConfig {
+        let args = args.iter().map(|arg| (*arg).to_owned());
+        match crate::config::EngineConfig::from_args(args).unwrap() {
+            crate::config::ConfigAction::Run(config) => *config,
+            crate::config::ConfigAction::Help => panic!("expected a run"),
+        }
+    }
+
+    fn seeded(args: &[&str]) -> crate::settings::RenderingSettings {
+        let mut settings = crate::settings::RenderingSettings::default();
+        settings.seed_height_fog(&launch(args).height_fog.expect("--height-fog was given"));
+        settings
+    }
+
     #[test]
-    fn graphics_settings_override_the_command_line_only_when_turned_on() {
-        let config = crate::config::EngineConfig {
-            height_fog: Some(HeightFogLayer {
-                height: 500.0,
-                ..default()
-            }),
-            ..default()
-        };
+    fn settings_alone_decide_the_layer() {
         let mut rendering = crate::settings::RenderingSettings::default();
-        assert_eq!(
-            wanted_layer(Some(&config), Some(&rendering)),
-            config.height_fog
-        );
-        assert_eq!(wanted_layer(None, Some(&rendering)), None);
+        assert_eq!(wanted_layer(&rendering), None);
         rendering.height_fog = true;
         rendering.height_fog_density_scale = 2.0;
+        rendering.height_fog_falloff = 0.25;
         rendering.height_fog_height = -300.0;
         assert_eq!(
-            wanted_layer(Some(&config), Some(&rendering)),
+            wanted_layer(&rendering),
             Some(HeightFogLayer {
                 density: DEFAULT_DENSITY * 2.0,
-                height_falloff: DEFAULT_HEIGHT_FALLOFF,
+                height_falloff: 0.25,
                 height: -300.0,
             })
         );
+    }
+
+    #[test]
+    fn the_flag_seeds_the_settings() {
+        let flag = HeightFogLayer {
+            density: 0.06,
+            height_falloff: 0.4,
+            height: 500.0,
+        };
+        let rendering = seeded(&["--height-fog", "0.06,0.4,500"]);
+        assert!(rendering.height_fog, "the menu shows the fog as on");
+        assert_eq!(rendering.height_fog_density_scale, 0.06 / DEFAULT_DENSITY);
+        assert_eq!(rendering.height_fog_falloff, 0.4);
+        assert_eq!(rendering.height_fog_height, 500.0);
+        let layer = wanted_layer(&rendering).unwrap();
+        assert!((layer.density - flag.density).abs() < 1e-6);
+        assert_eq!(layer.height_falloff, flag.height_falloff);
+        assert_eq!(layer.height, flag.height);
+    }
+
+    #[test]
+    fn switching_the_menu_entry_off_removes_the_layer() {
+        let mut rendering = seeded(&["--height-fog", "0.06,0.4,500"]);
+        assert!(wanted_layer(&rendering).is_some());
+        rendering.height_fog = false;
+        assert_eq!(wanted_layer(&rendering), None);
+    }
+
+    #[test]
+    fn the_flags_falloff_survives_toggling() {
+        let mut rendering = seeded(&["--height-fog", "0.06,0.4,500"]);
+        rendering.height_fog = false;
+        rendering.height_fog = true;
+        assert_eq!(wanted_layer(&rendering).unwrap().height_falloff, 0.4);
     }
 }
