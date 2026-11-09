@@ -976,6 +976,71 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("preflight fail", text)
 
 
+class BuildIdentityTest(unittest.TestCase):
+    def test_a_built_binary_name_gives_a_clean_commit(self):
+        self.assertEqual(perf.build_identity("/bins/engine-0123abcd"),
+                         {"commit": "0123abcd", "dirty": False, "commit_source": "binary name"})
+
+    def test_an_unnamed_binary_has_no_known_commit_or_dirty_state(self):
+        info = perf.build_identity("/tmp/engine")
+        self.assertIsNone(info["commit"])
+        self.assertIsNone(info["dirty"])
+
+    def test_flags_override_the_name_and_record_dirty(self):
+        info = perf.build_identity("/bins/engine-0123abcd", "feedface", True)
+        self.assertEqual((info["commit"], info["dirty"]), ("feedface", True))
+
+    def verdict(self, base, cand):
+        return {"base": {"path": "b", "sha256": "a" * 64, **base}, "cand": {"path": "c", "sha256": "b" * 64, **cand},
+                "pairs": 6, "min_effect": 0.02, "seed": 1, "same_binary": False, "overall": "noise",
+                "scenarios": {}}
+
+    def test_summary_shows_commits_and_warns_about_a_dirty_side(self):
+        clean = {"commit": "aaaa1111", "dirty": False}
+        text = perf.summary_markdown(self.verdict(clean, {"commit": "bbbb2222", "dirty": True}))
+        self.assertIn("commit aaaa1111, clean", text)
+        self.assertIn("commit bbbb2222, dirty", text)
+        self.assertIn("WARNING: the candidate binary was built from a dirty working tree", text)
+        self.assertNotIn("the base binary", text)
+
+    def test_summary_warns_about_an_unknown_commit(self):
+        text = perf.summary_markdown(self.verdict({"commit": None, "dirty": None},
+                                                  {"commit": "bbbb2222", "dirty": False}))
+        self.assertIn("WARNING: the base binary's commit is unknown", text)
+
+    def test_two_clean_known_sides_have_no_warning(self):
+        clean = {"commit": "aaaa1111", "dirty": False}
+        self.assertNotIn("WARNING", perf.summary_markdown(self.verdict(clean, clean)))
+
+    def test_compare_records_the_identity_in_the_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = make_fake_engine(tmp)
+            named = Path(tmp, "engine-0123abcd")
+            shutil.copy2(engine, named)
+            out = Path(tmp, "out")
+            args = perf.build_parser().parse_args(
+                ["compare", "--base", str(named), "--cand", str(engine), "--scenarios", "synthetic",
+                 "--out", str(out), "--pairs", "1", "--cooldown", "0", "--cand-dirty", "--cand-commit", "cafe1234",
+                 "--force"])
+            with mock.patch.object(perf, "load_scenarios",
+                                   return_value={"synthetic": {"needs_assets": False, "args": ["--benchmark-only"]}}), \
+                 mock.patch.object(perf, "preflight_checks", return_value=[]), \
+                 mock.patch.object(perf, "resolve_window", return_value="visible"), \
+                 mock.patch.object(perf, "run_scenario", side_effect=self.fake_run), \
+                 mock.patch.object(perf, "load_run", return_value=run_entry()), \
+                 mock.patch.object(perf.sys, "stdout", io.StringIO()):
+                perf.compare(args)
+            verdict = json.loads((out / "verdict.json").read_text())
+            summary = (out / "summary.md").read_text()
+        self.assertEqual((verdict["base"]["commit"], verdict["base"]["dirty"]), ("0123abcd", False))
+        self.assertEqual((verdict["cand"]["commit"], verdict["cand"]["dirty"]), ("cafe1234", True))
+        self.assertIn("WARNING: the candidate binary was built from a dirty working tree", summary)
+
+    @staticmethod
+    def fake_run(*args, **kwargs):
+        return {"classification": "ok", "wall_seconds": 0.0}
+
+
 class WindowModeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

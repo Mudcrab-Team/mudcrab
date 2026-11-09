@@ -1001,6 +1001,42 @@ def overall_verdict(scenarios):
     return "noise"
 
 
+def build_identity(binary, commit=None, dirty=False):
+    """The commit and dirty state of a binary, for the verdict.
+
+    The engine's own fingerprint carries only the label the harness passes it, so the source of a
+    binary has to come from outside. `build` names its output `engine-<sha>` and compiles it from a
+    clean detached worktree, so that name is trusted; any other binary has no known commit unless
+    the caller says which one it is, and an unknown commit also leaves the dirty state unknown.
+    """
+    if commit:
+        return {"commit": commit, "dirty": bool(dirty), "commit_source": "flag"}
+    match = re.fullmatch(r"engine-([0-9a-f]{7,40})", Path(binary).name)
+    if match:
+        return {"commit": match.group(1), "dirty": False, "commit_source": "binary name"}
+    return {"commit": None, "dirty": None, "commit_source": None}
+
+
+def build_warnings(verdict):
+    """One line per side whose binary may not match a clean commit."""
+    warnings = []
+    for side, label in (("base", "base"), ("cand", "candidate")):
+        info = verdict.get(side, {})
+        if info.get("dirty"):
+            warnings.append(f"the {label} binary was built from a dirty working tree; its commit "
+                            f"({info.get('commit') or 'unknown'}) does not describe what was measured")
+        elif not info.get("commit"):
+            warnings.append(f"the {label} binary's commit is unknown (name it `engine-<sha>` or pass "
+                            f"--{'cand' if side == 'cand' else 'base'}-commit); the comparison cannot be tied to source")
+    return warnings
+
+
+def _describe_side(info):
+    commit = info.get("commit") or "unknown"
+    state = {True: "dirty", False: "clean", None: "dirty state unknown"}[info.get("dirty")]
+    return f"commit {commit}, {state}"
+
+
 def format_value(name, value):
     if value is None:
         return "n/a"
@@ -1011,11 +1047,14 @@ def format_value(name, value):
 
 def summary_markdown(verdict):
     lines = ["# Perf comparison", "",
-             f"- base: `{verdict['base']['path']}` (sha256 {verdict['base']['sha256'][:12]})",
-             f"- candidate: `{verdict['cand']['path']}` (sha256 {verdict['cand']['sha256'][:12]})",
+             f"- base: `{verdict['base']['path']}` (sha256 {verdict['base']['sha256'][:12]}, "
+             f"{_describe_side(verdict['base'])})",
+             f"- candidate: `{verdict['cand']['path']}` (sha256 {verdict['cand']['sha256'][:12]}, "
+             f"{_describe_side(verdict['cand'])})",
              f"- pairs requested: {verdict['pairs']}, min effect {verdict['min_effect'] * 100:.1f}%, "
              f"seed {verdict['seed']}",
              f"- overall: **{verdict['overall']}**"]
+    lines += [f"- WARNING: {w}" for w in build_warnings(verdict)]
     if verdict.get("window_mode"):
         lines.append(f"- window mode: {verdict['window_mode']}")
     if verdict.get("window_mode") == "hidden" and verdict.get("platform") == "Darwin":
@@ -1096,8 +1135,10 @@ def compare(args):
             rows[name].append(loaded)
     verdict = {
         "tool": "perf.py compare",
-        "base": {"path": str(args.base), "sha256": sha256_file(args.base)},
-        "cand": {"path": str(args.cand), "sha256": sha256_file(args.cand)},
+        "base": {"path": str(args.base), "sha256": sha256_file(args.base),
+                 **build_identity(args.base, args.base_commit, args.base_dirty)},
+        "cand": {"path": str(args.cand), "sha256": sha256_file(args.cand),
+                 **build_identity(args.cand, args.cand_commit, args.cand_dirty)},
         "pairs": args.pairs, "min_effect": args.min_effect, "seed": args.seed,
         "window_mode": window, "hidden_window": window == "hidden", "platform": platform.system(),
         "preflight": checks,
@@ -2520,6 +2561,11 @@ def build_parser():
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--inventory-tolerance", type=float, default=DEFAULT_INVENTORY_TOLERANCE)
     p.add_argument("--cooldown", type=float, default=3.0, help="seconds between runs")
+    for side in ("base", "cand"):
+        p.add_argument(f"--{side}-commit", help=f"commit the {side} binary was built from "
+                       "(default: taken from an engine-<sha> file name)")
+        p.add_argument(f"--{side}-dirty", action="store_true",
+                       help=f"the {side} binary was built from a working tree with uncommitted changes")
     p.add_argument("--force", action="store_true",
                    help="measure despite failed preflight checks or a non-empty --out")
     timing_options(p)
