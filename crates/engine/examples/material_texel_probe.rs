@@ -3,6 +3,9 @@
 //! The `skyrim` profile samples authored colour bytes raw, while `mudcrab` samples them through
 //! an sRGB view. This builds synthetic DDS fixtures, publishes them as KTX2 through the same
 //! converter the pipeline uses, and reads the sampled texel back from a float render target.
+//! Two more fixtures cover what a DDS with an authored chain cannot: a PNG alias, which has no
+//! mip chain and decodes through Bevy's PNG path, and an atlas whose smaller levels the converter
+//! derives itself.
 //! `--output <directory> [--profile mudcrab|skyrim]`
 
 use bevy::{
@@ -33,13 +36,18 @@ use std::{
 };
 
 const TARGET_WIDTH: u32 = 192;
-const TARGET_HEIGHT: u32 = 128;
+// Three rows of three 64 px cells.
+const TARGET_HEIGHT: u32 = 192;
 const PIXELS_PER_WORLD: f32 = 32.0;
 // 40 px across an 8-texel fixture: 5 px per texel puts every texel centre on a pixel centre.
 const HIGH_QUAD: f32 = 1.25;
 // 4 px across the same fixture: half its texel count, so the quad minifies by two and selects mip 1.
 const LOW_QUAD: f32 = 0.125;
 const TOLERANCE: f32 = 1.0 / 255.0;
+// The derived-mip atlas is UASTC, which is lossy even for flat and two-colour blocks, and nothing
+// here decodes it on the CPU. Its texels are allowed to land this many byte steps either side of
+// the value that went into the encoder, on top of `TOLERANCE`.
+const UASTC_BYTE_SLACK: u8 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Group {
@@ -47,6 +55,8 @@ enum Group {
     Rgba8,
     MipChain,
     WrapAlias,
+    PngAlias,
+    GeneratedMips,
 }
 
 impl Group {
@@ -56,6 +66,8 @@ impl Group {
             Self::Rgba8 => "rgba8",
             Self::MipChain => "mip_chain",
             Self::WrapAlias => "wrap_alias",
+            Self::PngAlias => "png_alias",
+            Self::GeneratedMips => "generated_mips",
         }
     }
 
@@ -80,6 +92,8 @@ struct Fixture {
     path0: String,
     path1: String,
     red: Vec<u8>,
+    /// How far, in byte steps, a lossy encoding may move a texel from `red`.
+    byte_slack: u8,
 }
 
 struct LoadedCase {
@@ -88,6 +102,7 @@ struct LoadedCase {
     mip0: Handle<Image>,
     mip1: Handle<Image>,
     red: Vec<u8>,
+    byte_slack: u8,
 }
 
 #[derive(Resource)]
@@ -214,6 +229,7 @@ fn prepare(
                 mip0: load(&fixture.path0, false),
                 mip1: load(&fixture.path1, true),
                 red: fixture.red.clone(),
+                byte_slack: fixture.byte_slack,
             }
         })
         .collect();
@@ -304,7 +320,7 @@ fn build_fixtures(directory: &Path) -> Vec<Fixture> {
             alias: true,
         },
     ];
-    specs
+    let mut fixtures: Vec<Fixture> = specs
         .into_iter()
         .map(|spec| {
             let dds = dds_bytes(&spec);
@@ -330,9 +346,79 @@ fn build_fixtures(directory: &Path) -> Vec<Fixture> {
                 red: (0..spec.mip_colours.len() as u32)
                     .map(|mip| decode_red(&dds, mip))
                     .collect(),
+                byte_slack: 0,
             }
         })
-        .collect()
+        .collect();
+    fixtures.push(png_alias_fixture(directory));
+    fixtures.push(generated_mips_fixture(directory));
+    fixtures
+}
+
+/// A colour alias published as PNG. A PNG carries one level, so the sampler pinned to level 1
+/// is clamped back to it and both poses must read the same texel.
+fn png_alias_fixture(directory: &Path) -> Fixture {
+    const COLOUR: [u8; 4] = [176, 56, 120, 255];
+    let name = "png_alias";
+    let path0 = format!("{name}.opensky-srgb.png");
+    let path1 = format!("{name}.mip1.opensky-srgb.png");
+    let png = image::RgbaImage::from_pixel(8, 8, image::Rgba(COLOUR));
+    for path in [&path0, &path1] {
+        png.save(directory.join(path)).unwrap();
+    }
+    Fixture {
+        name,
+        group: Group::PngAlias,
+        path0,
+        path1,
+        red: vec![COLOUR[0], COLOUR[0]],
+        byte_slack: 0,
+    }
+}
+
+/// An atlas given to the converter as a base level only, so levels 1 and 2 are the ones it
+/// derives. Columns run A B B A across each block: every 2x2 footprint holds two texels of each
+/// colour, so level 1 is one flat colour that differs from both, and the column under the probed
+/// texel is A whichever way the quad's U axis runs.
+fn generated_mips_fixture(directory: &Path) -> Fixture {
+    const SIDE: usize = 8;
+    const A: [u8; 4] = [32, 200, 96, 255];
+    const B: [u8; 4] = [224, 40, 160, 255];
+    let rgba: Vec<u8> = (0..SIDE * SIDE)
+        .flat_map(|texel| match (texel % SIDE) % 4 {
+            0 | 3 => A,
+            _ => B,
+        })
+        .collect();
+    let ktx2 = converter::lod::albedo::encode_srgb_atlas(SIDE, rgba).unwrap();
+    let name = "generated_mips";
+    let path0 = format!("{name}.opensky-srgb.ktx2");
+    let path1 = format!("{name}.mip1.opensky-srgb.ktx2");
+    for path in [&path0, &path1] {
+        std::fs::write(directory.join(path), &ktx2).unwrap();
+    }
+    Fixture {
+        name,
+        group: Group::GeneratedMips,
+        path0,
+        path1,
+        red: vec![A[0], linear_light_mean(A[0], B[0])],
+        byte_slack: UASTC_BYTE_SLACK,
+    }
+}
+
+/// The converter's derived-mip filter for a footprint holding two texels of each value: the
+/// mean taken in linear light and stored back as sRGB. A plain byte average would land well
+/// outside the tolerance for values this far apart.
+fn linear_light_mean(a: u8, b: u8) -> u8 {
+    let linear = |byte: u8| srgb_to_linear(f32::from(byte) / 255.0);
+    let mean = (linear(a) + linear(b) + linear(a) + linear(b)) * 0.25;
+    let encoded = if mean <= 0.003_130_8 {
+        mean * 12.92
+    } else {
+        1.055 * mean.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn dds_bytes(spec: &FixtureSpec) -> Vec<u8> {
@@ -491,7 +577,7 @@ fn render_and_capture(
         for (index, case) in probe.cases.iter().enumerate() {
             let column = index % 3;
             let row = index / 3;
-            let y = 1.0 - 2.0 * row as f32;
+            let y = 2.0 - 2.0 * row as f32;
             for (handle, mesh, x) in [
                 (&case.mip0, high.clone(), 2.0 * column as f32 - 2.375),
                 (&case.mip1, low.clone(), 2.0 * column as f32 - 1.3125),
@@ -588,12 +674,14 @@ fn evaluate(
         measured_spread = measured_spread.max(spread0).max(spread1);
         let mip0 = measurement(
             case.red.first().copied().unwrap_or(0),
+            case.byte_slack,
             probe.profile,
             sampled0,
             spread0,
         );
         let mip1 = measurement(
             case.red.get(1).copied().unwrap_or(0),
+            case.byte_slack,
             probe.profile,
             sampled1,
             spread1,
@@ -672,17 +760,28 @@ fn evaluate(
     });
 }
 
-fn measurement(byte: u8, profile: VisualProfile, sampled: f32, spread: f32) -> serde_json::Value {
+fn measurement(
+    byte: u8,
+    byte_slack: u8,
+    profile: VisualProfile,
+    sampled: f32,
+    spread: f32,
+) -> serde_json::Value {
     let expected = expected_value(byte, profile);
     let error = (sampled - expected).abs();
+    // The slack is in stored bytes, so it goes through the profile's transfer function rather
+    // than widening the tolerance on the sampled value by a fixed amount.
+    let lowest = expected_value(byte.saturating_sub(byte_slack), profile) - TOLERANCE;
+    let highest = expected_value(byte.saturating_add(byte_slack), profile) + TOLERANCE;
     serde_json::json!({
         "texel_red_u8": byte,
+        "byte_slack": byte_slack,
         "expected": expected,
         "sampled": sampled,
         "error": error,
         "spread": spread,
         "tolerance": TOLERANCE,
-        "pass": error <= TOLERANCE,
+        "pass": (lowest..=highest).contains(&sampled),
     })
 }
 
