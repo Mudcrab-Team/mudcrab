@@ -96,8 +96,14 @@ impl HeightFogLayer {
             height_falloff,
             height,
         };
-        (layer.density >= 0.0 && layer.height_falloff > 0.0 && layer.height.is_finite())
-            .then_some(layer)
+        // Infinity passes the sign checks, and an infinite falloff times a zero height
+        // difference is NaN in the shader.
+        (layer.density.is_finite()
+            && layer.density >= 0.0
+            && layer.height_falloff.is_finite()
+            && layer.height_falloff > 0.0
+            && layer.height.is_finite())
+        .then_some(layer)
     }
 }
 
@@ -544,6 +550,19 @@ mod tests {
             "a,b,c",
         ] {
             assert_eq!(HeightFogLayer::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn layer_rejects_non_finite_values_in_every_position() {
+        for bad in ["inf", "-inf", "NaN"] {
+            for text in [
+                format!("{bad},0.4,0"),
+                format!("0.05,{bad},0"),
+                format!("0.05,0.4,{bad}"),
+            ] {
+                assert_eq!(HeightFogLayer::parse(&text), None, "{text:?}");
+            }
         }
     }
 
