@@ -5907,6 +5907,112 @@ mod tests {
         assert!(triangle_count > 0, "fixture must exercise actual triangles");
     }
 
+    /// The vertex-pulled stage of `cluster_draw.wgsl`, transcribed: the corner and triangle of a
+    /// vertex index, the padding test against the draw record's top byte, and the u16 read out of
+    /// the merged buffer's words. Returns `None` for a padding vertex.
+    fn pulled_local_index(
+        merged: &[u8],
+        draw_z: u32,
+        draw_w: u32,
+        vertex_index: u32,
+    ) -> Option<u32> {
+        let tri = vertex_index / 3;
+        let corner = vertex_index % 3;
+        let tri_count = draw_z >> 24;
+        if tri >= tri_count {
+            return None;
+        }
+        let index_pos = draw_w + tri * 3 + corner;
+        let word = word(merged, (index_pos >> 1) as usize);
+        Some((word >> ((index_pos & 1) * 16)) & 0xffff)
+    }
+
+    #[test]
+    fn the_pulled_unpack_in_the_shader_is_the_one_the_tests_transcribe() {
+        let shader = include_str!("shaders/cluster_draw.wgsl");
+        for line in [
+            "let tri = vertex_index / 3u;",
+            "let corner = vertex_index % 3u;",
+            "let tri_count = draw.z >> 24u;",
+            "if tri >= tri_count {",
+            "let index_pos = draw.w + tri * 3u + corner;",
+            "let word = cluster_vertices[index_pos >> 1u];",
+            "let local = (word >> ((index_pos & 1u) * 16u)) & 0xffffu;",
+        ] {
+            assert!(
+                shader.contains(line),
+                "the pulled stage no longer reads `{line}`"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pulled_unpack_returns_each_clusters_local_indices_at_odd_and_even_offsets() {
+        // Clusters of 1, 255, 2 and 1 triangles back to back: their first indices sit at u16
+        // offsets 0, 3, 768 and 774, so odd and even starts, both halves of a word, and the
+        // largest count a record holds are all read.
+        let layout = [(0usize, 1usize), (1, 255), (256, 2), (258, 1)];
+        let raw: Vec<u8> = (0..259 * 3).map(|i| (i * 7 + i / 5) as u8).collect();
+        // A mesh-info-sized prefix, as in the merged buffer, then the index sections.
+        let prefix_words = 16usize;
+        let mut merged = vec![0u8; prefix_words * 4];
+        merged.extend_from_slice(&cluster_index_bytes(&raw));
+        let index_base = prefix_words as u32 * 2;
+        for (offset, count) in layout {
+            let first = index_base + offset as u32 * 3;
+            let draw_z = 5 | ((count as u32) << 24);
+            let pulled: Vec<u32> = (0..count as u32 * 3)
+                .map(|vertex| pulled_local_index(&merged, draw_z, first, vertex).unwrap())
+                .collect();
+            let expected: Vec<u32> = (0..count * 3)
+                .map(|vertex| u32::from(raw[offset * 3 + vertex]))
+                .collect();
+            assert_eq!(
+                pulled, expected,
+                "cluster at triangle {offset}, {count} triangles"
+            );
+            // The draw covers the scene's largest cluster; every vertex past this one's own
+            // triangles is padding, and none of them reads an index.
+            for vertex in count as u32 * 3..255 * 3 {
+                assert_eq!(pulled_local_index(&merged, draw_z, first, vertex), None);
+            }
+        }
+    }
+
+    #[test]
+    fn the_pulled_unpack_reads_every_pooled_fixture_cluster_like_the_payload_says() {
+        let mesh = ClusterMeshAsset::from_bytes(MCL.to_vec()).expect("fixture is valid");
+        let pool = pool_meshes(&[mesh.clone(), mesh.clone()]);
+        let snapshot = mesh.snapshot().unwrap();
+        let view = shared::cluster::read_mcl_validated(&snapshot).unwrap();
+        let triangles = mesh.section(MclSection::ClusterTriangles).unwrap();
+        let mut read = 0;
+        for row in [0, 16] {
+            let index_base = word(&pool.infos, row + 3);
+            for id in 0..mesh.cluster_count as usize {
+                let cluster = view.cluster(id);
+                let count = u32::from(cluster.triangle_count);
+                let first = index_base + cluster.triangle_offset * 3;
+                for vertex in 0..count * 3 {
+                    let local = pulled_local_index(
+                        &pool.cluster_vertices,
+                        id as u32 | (count << 24),
+                        first,
+                        vertex,
+                    );
+                    let byte = cluster.triangle_offset as usize * 3 + vertex as usize;
+                    assert_eq!(
+                        local,
+                        Some(u32::from(triangles[byte])),
+                        "row {row}, cluster {id}"
+                    );
+                    read += 1;
+                }
+            }
+        }
+        assert!(read > 0);
+    }
+
     #[test]
     fn streamed_meshes_land_where_the_whole_scene_pool_puts_them() {
         let mesh = ClusterMeshAsset::from_bytes(MCL.to_vec()).expect("fixture is valid");
