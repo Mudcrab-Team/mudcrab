@@ -93,7 +93,7 @@ use shared::cluster_mapping::HashedPayload as CertifiedPayload;
 /// Launch digests of the typed payload files the hash walk read, keyed by owned relative path.
 /// Only digests are kept: the bytes themselves are re-read, and checked against these, when a
 /// consumer needs them.
-type DigestCapture = std::sync::Mutex<HashMap<String, [u8; 32]>>;
+type DigestCapture = std::sync::Mutex<HashMap<String, ([u8; 32], u64)>>;
 
 pub struct ClusterEnvelope {
     /// The base dataset: `skyrim_world.db`, `cell_cache.rkyv`, published models and textures.
@@ -106,6 +106,9 @@ pub struct ClusterEnvelope {
     pub terrain: Option<ExtensionEntry>,
     pub builder_identity: String,
     payload_digests: HashMap<String, [u8; 32]>,
+    /// Sizes of the same files as the hash walk read them, so a re-read can refuse a replacement
+    /// of a different size before allocating it.
+    payload_sizes: HashMap<String, u64>,
     /// How many payloads were re-read after certification, for tests of the load paths.
     #[cfg(test)]
     rereads: std::sync::atomic::AtomicUsize,
@@ -162,13 +165,26 @@ impl ClusterEnvelope {
         regular(&path).map_err(|error| {
             eyre!("payload {relative} unreadable after certification: {error:#}")
         })?;
-        let payload = CertifiedPayload::new(
-            fs::read(&path)
-                .map_err(|error| {
-                    eyre!("payload {relative} unreadable after certification: {error}")
-                })?
-                .into(),
+        let expected_size = *self
+            .payload_sizes
+            .get(relative)
+            .ok_or_else(|| eyre!("payload was not certified: {relative}"))?;
+        let unreadable = |error: std::io::Error| {
+            eyre!("payload {relative} unreadable after certification: {error}")
+        };
+        // One byte past the recorded size is enough to tell a larger replacement apart without
+        // allocating all of it.
+        let mut bytes = Vec::with_capacity(expected_size.min(64 << 20) as usize);
+        File::open(&path)
+            .map_err(unreadable)?
+            .take(expected_size.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(unreadable)?;
+        ensure!(
+            bytes.len() as u64 == expected_size,
+            "reread payload size differs from launch certification: {relative}"
         );
+        let payload = CertifiedPayload::new(bytes.into());
         ensure!(
             payload.digest() == launch_digest,
             "reread payload content hash differs from launch certification: {relative}"
@@ -364,9 +380,17 @@ pub fn open(base: &Path, overlay: &Path, terrain: bool) -> Result<ClusterEnvelop
     } else {
         (None, None, HashMap::new())
     };
-    let payload_digests = digests
+    let captured = digests
         .into_inner()
         .map_err(|_| eyre!("certified digest capture poisoned"))?;
+    let payload_sizes = captured
+        .iter()
+        .map(|(relative, (_, size))| (relative.clone(), *size))
+        .collect();
+    let payload_digests = captured
+        .into_iter()
+        .map(|(relative, (digest, _))| (relative, digest))
+        .collect();
     Ok(ClusterEnvelope {
         root,
         overlay,
@@ -376,6 +400,7 @@ pub fn open(base: &Path, overlay: &Path, terrain: bool) -> Result<ClusterEnvelop
         terrain,
         builder_identity,
         payload_digests,
+        payload_sizes,
         #[cfg(test)]
         rereads: std::sync::atomic::AtomicUsize::new(0),
         terrain_cell_cache_digest,
@@ -456,7 +481,7 @@ fn check_terrain_dependency(
             .as_str()
             .and_then(parse_hash)
             .ok_or_else(|| eyre!("invalid terrain atlas digest: {relative}"))?;
-        let digest = captured
+        let (digest, _) = captured
             .get(relative)
             .ok_or_else(|| eyre!("terrain atlas was not certified: {relative}"))?;
         ensure!(
@@ -774,7 +799,7 @@ fn hash_owned_files_recording(
                             digests
                                 .lock()
                                 .map_err(|_| eyre!("certified digest capture poisoned"))?
-                                .insert(relative.clone(), digest);
+                                .insert(relative.clone(), (digest, size));
                         }
                         Ok((hex(&digest), size))
                     })();
@@ -1548,8 +1573,9 @@ mod tests {
             let (hashed, size) = result.unwrap();
             assert_eq!(hashed, hex(&expected), "{name}");
             assert_eq!(size, bytes.len() as u64, "{name}");
-            if let Some(digest) = captured.get(name) {
+            if let Some((digest, recorded)) = captured.get(name) {
                 assert_eq!(*digest, expected, "{name}");
+                assert_eq!(*recorded, size, "{name}");
             }
         }
     }
@@ -1587,6 +1613,18 @@ mod tests {
         );
         fs::remove_file(&path).unwrap();
         assert!(envelope.reread_payload(TERRAIN_FIXTURE_ATLAS).is_err());
+        // Larger and smaller replacements are refused on size, before any hashing.
+        for length in [original.len() + 1, original.len() * 8, original.len() - 1] {
+            fs::write(&path, vec![7u8; length]).unwrap();
+            let error = format!(
+                "{:#}",
+                envelope
+                    .reread_payload(TERRAIN_FIXTURE_ATLAS)
+                    .err()
+                    .expect("a differently sized file must be refused")
+            );
+            assert!(error.contains("size differs"), "{length}: {error}");
+        }
         // Nothing but the digest survived certification, and it is unchanged.
         assert_eq!(
             envelope.payload_digest(TERRAIN_FIXTURE_ATLAS),
