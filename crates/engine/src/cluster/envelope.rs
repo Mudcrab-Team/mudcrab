@@ -90,7 +90,11 @@ fn open_certification_connection(binding: &OverlayBindingReceipt) -> Result<Conn
 
 use shared::cluster_mapping::HashedPayload as CertifiedPayload;
 
-type PayloadCapture = std::sync::Mutex<HashMap<String, CertifiedPayload>>;
+/// Launch digests of the typed payload files the hash walk read, keyed by owned relative path.
+/// Only digests and sizes are kept: the bytes themselves are re-read, and checked against these,
+/// when a consumer needs them. They cover the typed payload files only. Database rows read
+/// through `connection` and the base `cell_cache.rkyv` carry no launch digest here.
+type DigestCapture = std::sync::Mutex<HashMap<String, ([u8; 32], u64)>>;
 
 pub struct ClusterEnvelope {
     /// The base dataset: `skyrim_world.db`, `cell_cache.rkyv`, published models and textures.
@@ -102,8 +106,13 @@ pub struct ClusterEnvelope {
     pub base: ExtensionEntry,
     pub terrain: Option<ExtensionEntry>,
     pub builder_identity: String,
-    payloads: PayloadCapture,
     payload_digests: HashMap<String, [u8; 32]>,
+    /// Sizes of the same files as the hash walk read them, so a re-read can refuse a replacement
+    /// of a different size before allocating it.
+    payload_sizes: HashMap<String, u64>,
+    /// How many payloads were re-read after certification, for tests of the load paths.
+    #[cfg(test)]
+    rereads: std::sync::atomic::AtomicUsize,
     // Computed from the base cache bytes in this launch's certification I/O task.
     terrain_cell_cache_digest: Option<[u8; 32]>,
     terrain_atlas_digests: HashMap<String, [u8; 32]>,
@@ -120,41 +129,18 @@ impl ClusterEnvelope {
             .ok_or_else(|| eyre!("terrain cell cache was not certified for this launch"))
     }
 
-    /// Exact certified bytes for a terrain atlas explicitly named by the checked recipe.
+    /// The bytes of a terrain atlas explicitly named by the checked recipe, re-read under this
+    /// launch's locks and accepted only if they still hash to the recipe's digest.
     pub(crate) fn terrain_atlas_payload(&self, relative: &str) -> Result<CertifiedPayload> {
         self.terrain_cell_cache_digest()?;
         let expected = self
             .terrain_atlas_digests
             .get(relative)
             .ok_or_else(|| eyre!("atlas has no terrain recipe receipt: {relative}"))?;
-        let payload = self.payload(relative)?;
+        let payload = self.reread_payload(relative)?;
         ensure!(
             payload.digest() == *expected,
             "atlas bytes differ from terrain recipe receipt: {relative}"
-        );
-        Ok(payload)
-    }
-
-    pub(crate) fn payloads(&self) -> Result<HashMap<String, CertifiedPayload>> {
-        Ok(self
-            .payloads
-            .lock()
-            .map_err(|_| eyre!("certified payload capture poisoned"))?
-            .clone())
-    }
-
-    /// A package-owned payload from this launch's certified byte snapshot.
-    pub(crate) fn payload(&self, relative: &str) -> Result<CertifiedPayload> {
-        let payload = self
-            .payloads
-            .lock()
-            .map_err(|_| eyre!("certified payload capture poisoned"))?
-            .get(relative)
-            .cloned()
-            .ok_or_else(|| eyre!("payload was not certified: {relative}"))?;
-        ensure!(
-            self.payload_digest(relative) == Some(payload.digest()),
-            "certified payload receipt differs from retained digest: {relative}"
         );
         Ok(payload)
     }
@@ -163,18 +149,43 @@ impl ClusterEnvelope {
         self.payload_digests.get(relative).copied()
     }
 
-    /// Rebuild only: hash newly read bytes against this launch's immutable receipt.
-    /// The caller retains CertifiedPackage/Envelope (and both shared source locks)
-    /// across this operation. Never use this instead of the initial captured snapshot.
+    /// The only way to get a certified payload's bytes: read them now and hash them against this
+    /// launch's immutable receipt. The envelope keeps no payload bytes of its own, so a file that
+    /// changed since certification is refused here rather than served from an earlier copy.
+    /// The caller retains CertifiedPackage/Envelope (and both shared source locks) across
+    /// this operation, and drops the bytes as soon as it has used them.
     pub(crate) fn reread_payload(&self, relative: &str) -> Result<CertifiedPayload> {
+        #[cfg(test)]
+        self.rereads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let launch_digest = self
             .payload_digest(relative)
             .ok_or_else(|| eyre!("payload was not certified: {relative}"))?;
         safe_relative(relative)?;
         let path = self.overlay.join(relative);
-        check_path(&path)?;
-        regular(&path)?;
-        let payload = CertifiedPayload::new(fs::read(&path)?.into());
+        regular(&path).map_err(|error| {
+            eyre!("payload {relative} unreadable after certification: {error:#}")
+        })?;
+        let expected_size = *self
+            .payload_sizes
+            .get(relative)
+            .ok_or_else(|| eyre!("payload was not certified: {relative}"))?;
+        let unreadable = |error: std::io::Error| {
+            eyre!("payload {relative} unreadable after certification: {error}")
+        };
+        // One byte past the recorded size is enough to tell a larger replacement apart without
+        // allocating all of it.
+        let mut bytes = Vec::with_capacity(expected_size.min(64 << 20) as usize);
+        File::open(&path)
+            .map_err(unreadable)?
+            .take(expected_size.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(unreadable)?;
+        ensure!(
+            bytes.len() as u64 == expected_size,
+            "reread payload size differs from launch certification: {relative}"
+        );
+        let payload = CertifiedPayload::new(bytes.into());
         ensure!(
             payload.digest() == launch_digest,
             "reread payload content hash differs from launch certification: {relative}"
@@ -182,14 +193,9 @@ impl ClusterEnvelope {
         Ok(payload)
     }
 
-    /// The scene now owns needed MCL Arcs. Drop the envelope's payload owners,
-    /// including consumed MCI buffers, while retaining every certified digest.
-    pub(crate) fn release_consumed_payload_bytes(&self) -> Result<()> {
-        self.payloads
-            .lock()
-            .map_err(|_| eyre!("certified payload capture poisoned"))?
-            .clear();
-        Ok(())
+    #[cfg(test)]
+    pub(crate) fn reread_count(&self) -> usize {
+        self.rereads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// A fresh certification connection on this envelope's base and overlay.
@@ -283,14 +289,14 @@ pub fn open(base: &Path, overlay: &Path, terrain: bool) -> Result<ClusterEnvelop
         .find(|entry| entry.id == CLUSTERS)
         .ok_or_else(|| eyre!("cluster base extension missing"))?
         .clone();
-    let payloads = PayloadCapture::default();
+    let digests = DigestCapture::default();
     check_entry(
         &connection,
         &overlay,
         &base,
         CLUSTERS,
         &core_identity,
-        Some(&payloads),
+        Some(&digests),
     )?;
     exact(&base.owns.tables, &BASE_TABLES, "base tables")?;
     exact(
@@ -369,18 +375,22 @@ pub fn open(base: &Path, overlay: &Path, terrain: bool) -> Result<ClusterEnvelop
             &base,
             &builder_identity,
             &core_identity,
-            &payloads,
+            &digests,
         )?;
         (Some(entry), Some(cache_digest), atlas_digests)
     } else {
         (None, None, HashMap::new())
     };
-    let payloads = payloads
+    let captured = digests
         .into_inner()
-        .map_err(|_| eyre!("certified payload capture poisoned"))?;
-    let payload_digests = payloads
+        .map_err(|_| eyre!("certified digest capture poisoned"))?;
+    let payload_sizes = captured
         .iter()
-        .map(|(name, payload)| (name.clone(), payload.digest()))
+        .map(|(relative, (_, size))| (relative.clone(), *size))
+        .collect();
+    let payload_digests = captured
+        .into_iter()
+        .map(|(relative, (digest, _))| (relative, digest))
         .collect();
     Ok(ClusterEnvelope {
         root,
@@ -390,8 +400,10 @@ pub fn open(base: &Path, overlay: &Path, terrain: bool) -> Result<ClusterEnvelop
         base,
         terrain,
         builder_identity,
-        payloads: std::sync::Mutex::new(payloads),
         payload_digests,
+        payload_sizes,
+        #[cfg(test)]
+        rereads: std::sync::atomic::AtomicUsize::new(0),
         terrain_cell_cache_digest,
         terrain_atlas_digests,
         binding,
@@ -409,7 +421,7 @@ fn check_terrain_dependency(
     base: &ExtensionEntry,
     builder: &str,
     core: &str,
-    payloads: &PayloadCapture,
+    digests: &DigestCapture,
 ) -> Result<TerrainDependencyDigests> {
     let manifest = json_file(&overlay.join("cluster-terrain-manifest.json"))?;
     for (key, expected) in [
@@ -453,10 +465,10 @@ fn check_terrain_dependency(
         "terrain input identity differs from recipe"
     );
     // Base extension ownership hashed the atlas bytes, not just recipe metadata.
-    // Compare the terrain recipe to those same retained typed byte snapshots.
-    let captured = payloads
+    // Compare the terrain recipe to the digests that walk recorded.
+    let captured = digests
         .lock()
-        .map_err(|_| eyre!("certified payload capture poisoned"))?;
+        .map_err(|_| eyre!("certified digest capture poisoned"))?;
     let mut atlas_digests = HashMap::new();
     for block in manifest["blocks"]
         .as_array()
@@ -470,11 +482,11 @@ fn check_terrain_dependency(
             .as_str()
             .and_then(parse_hash)
             .ok_or_else(|| eyre!("invalid terrain atlas digest: {relative}"))?;
-        let payload = captured
+        let (digest, _) = captured
             .get(relative)
             .ok_or_else(|| eyre!("terrain atlas was not certified: {relative}"))?;
         ensure!(
-            payload.digest() == expected,
+            *digest == expected,
             "terrain atlas digest differs from certified bytes: {relative}"
         );
         atlas_digests.insert(relative.to_owned(), expected);
@@ -492,7 +504,7 @@ fn check_entry(
     entry: &ExtensionEntry,
     id: &str,
     core: &str,
-    payloads: Option<&PayloadCapture>,
+    digests: Option<&DigestCapture>,
 ) -> Result<()> {
     ensure!(
         entry.id == id && entry.version == 1 && entry.built_from == core,
@@ -520,13 +532,13 @@ fn check_entry(
         }
     }
     ensure!(
-        recompute_retaining(
+        recompute_recording(
             connection,
             root,
             entry,
             &HashMap::new(),
             std::thread::available_parallelism().map(|count| count.get()),
-            payloads
+            digests
         )? == entry.sha256,
         "{id} content hash differs"
     );
@@ -602,16 +614,16 @@ fn recompute_recorded_with_parallelism(
     recorded: &HashMap<String, String>,
     parallelism: std::io::Result<usize>,
 ) -> Result<String> {
-    recompute_retaining(connection, root, entry, recorded, parallelism, None)
+    recompute_recording(connection, root, entry, recorded, parallelism, None)
 }
 
-fn recompute_retaining(
+fn recompute_recording(
     connection: &Connection,
     root: &Path,
     entry: &ExtensionEntry,
     recorded: &HashMap<String, String>,
     parallelism: std::io::Result<usize>,
-    payloads: Option<&PayloadCapture>,
+    digests: Option<&DigestCapture>,
 ) -> Result<String> {
     let overlap = parallelism
         .as_ref()
@@ -623,7 +635,7 @@ fn recompute_retaining(
             let worker = std::thread::Builder::new()
                 .name("cluster-envelope-files".into())
                 .spawn_scoped(scope, || {
-                    owned_file_digests(root, entry, recorded, Ok(available - 3), payloads)
+                    owned_file_digests(root, entry, recorded, Ok(available - 3), digests)
                 });
             // Capture rather than propagate: even a table error must join every file worker.
             let tables = table_and_index_hasher(connection, entry);
@@ -635,7 +647,7 @@ fn recompute_retaining(
                 Err(error) => {
                     bevy::log::warn!(%error, "envelope file overlap unavailable; retaining original serial file checks");
                     if tables.is_ok() {
-                        owned_file_digests(root, entry, recorded, Ok(available - 2), payloads)
+                        owned_file_digests(root, entry, recorded, Ok(available - 2), digests)
                     } else {
                         Ok(Vec::new())
                     }
@@ -647,7 +659,7 @@ fn recompute_retaining(
     } else {
         let hasher = table_and_index_hasher(connection, entry)?;
         let workers = parallelism.map(|count| count.saturating_sub(2).max(1));
-        let files = owned_file_digests(root, entry, recorded, workers, payloads)?;
+        let files = owned_file_digests(root, entry, recorded, workers, digests)?;
         (hasher, files)
     };
     for (relative, digest) in files {
@@ -683,7 +695,7 @@ fn owned_file_digests(
     entry: &ExtensionEntry,
     recorded: &HashMap<String, String>,
     workers: std::io::Result<usize>,
-    payloads: Option<&PayloadCapture>,
+    capture: Option<&DigestCapture>,
 ) -> Result<Vec<(String, String)>> {
     let mut files = BTreeSet::new();
     for owned in &entry.owns.files {
@@ -734,7 +746,7 @@ fn owned_file_digests(
     let mut bytes = 0u64;
     for (relative, result) in read
         .iter()
-        .zip(hash_owned_files_retaining(root, &read, workers, payloads)?)
+        .zip(hash_owned_files_recording(root, &read, workers, capture)?)
     {
         let (digest, size) = result?;
         digests.push((relative.clone(), digest));
@@ -755,14 +767,14 @@ fn hash_owned_files(
     files: &[String],
     workers: usize,
 ) -> Result<Vec<Result<(String, u64)>>> {
-    hash_owned_files_retaining(root, files, workers, None)
+    hash_owned_files_recording(root, files, workers, None)
 }
 
-fn hash_owned_files_retaining(
+fn hash_owned_files_recording(
     root: &Path,
     files: &[String],
     workers: usize,
-    payloads: Option<&PayloadCapture>,
+    digests: Option<&DigestCapture>,
 ) -> Result<Vec<Result<(String, u64)>>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     if files.is_empty() {
@@ -783,33 +795,14 @@ fn hash_owned_files_retaining(
                     };
                     let result = (|| {
                         let path = root.join(relative);
-                        if let Some(payloads) = payloads.filter(|_| {
-                            relative.ends_with(".mcl")
-                                || relative.ends_with(".mci")
-                                || Path::new(relative)
-                                    .extension()
-                                    .and_then(|value| value.to_str())
-                                    .is_some_and(|extension| {
-                                        extension.eq_ignore_ascii_case("dds")
-                                            || extension.eq_ignore_ascii_case("ktx2")
-                                    })
-                        }) {
-                            // Retain the exact bytes this digest authorizes, not a digest to
-                            // be attached to a later reread. Locks live with the envelope.
-                            regular(&path)?;
-                            let payload = CertifiedPayload::new(fs::read(&path)?.into());
-                            let digest = payload.digest();
-                            let size = payload.bytes().len() as u64;
-                            payloads
+                        let (digest, size) = digest_file_counted(&path, &mut buffer)?;
+                        if let Some(digests) = digests.filter(|_| is_typed_payload(relative)) {
+                            digests
                                 .lock()
-                                .map_err(|_| eyre!("certified payload capture poisoned"))?
-                                .insert(relative.clone(), payload);
-                            Ok((hex(&digest), size))
-                        } else {
-                            let digest = digest_file_buffered(&path, &mut buffer)?;
-                            let bytes = fs::metadata(path).map_or(0, |metadata| metadata.len());
-                            Ok((digest, bytes))
+                                .map_err(|_| eyre!("certified digest capture poisoned"))?
+                                .insert(relative.clone(), (digest, size));
                         }
+                        Ok((hex(&digest), size))
                     })();
                     results.push((index, result));
                 }
@@ -921,21 +914,38 @@ fn collect(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Resul
 }
 
 fn digest_file(path: &Path) -> Result<String> {
-    digest_file_buffered(path, &mut vec![0u8; 1024 * 1024])
+    let (digest, _) = digest_file_counted(path, &mut vec![0u8; 1024 * 1024])?;
+    Ok(hex(&digest))
 }
 
-fn digest_file_buffered(path: &Path, buffer: &mut [u8]) -> Result<String> {
+/// Stream a regular file through SHA-256 with a caller-owned buffer, so hashing never holds
+/// more than that buffer of the file's bytes. Also reports how many bytes were hashed.
+fn digest_file_counted(path: &Path, buffer: &mut [u8]) -> Result<([u8; 32], u64)> {
     regular(path)?;
     let mut reader = File::open(path)?;
     let mut hasher = Sha256::new();
+    let mut size = 0u64;
     loop {
         let count = reader.read(buffer)?;
         if count == 0 {
             break;
         }
         hasher.update(&buffer[..count]);
+        size += count as u64;
     }
-    Ok(hex(&hasher.finalize()))
+    Ok((hasher.finalize().into(), size))
+}
+
+/// The package payload kinds a consumer later re-reads against a launch digest.
+fn is_typed_payload(relative: &str) -> bool {
+    relative.ends_with(".mcl")
+        || relative.ends_with(".mci")
+        || Path::new(relative)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("dds") || extension.eq_ignore_ascii_case("ktx2")
+            })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1434,74 +1444,100 @@ mod tests {
     }
 
     #[test]
-    fn terrain_snapshot_certified_atlas_bytes_and_cache_identity_survive_disk_replacement_or_removal()
-     {
+    fn terrain_atlas_is_re_read_from_the_certified_file_and_decoded() {
+        let (temp, _, original) = terrain_snapshot_terrain_fixture();
+        let envelope = open_fixture_overlay(temp.path(), true).unwrap();
+        assert_eq!(envelope.reread_count(), 0, "certification must not re-read");
+        let (terrain, images) = terrain_snapshot_load_terrain(&envelope).unwrap();
+        assert_eq!(envelope.reread_count(), 1);
+        assert_eq!(terrain.blocks.len(), 1);
+        let (_, actual) = images.iter().next().unwrap();
+        let expected = bevy::prelude::Image::from_buffer(
+            &original,
+            bevy::image::ImageType::Extension("ktx2"),
+            bevy::image::CompressedImageFormats::BC,
+            true,
+            bevy::image::ImageSampler::Default,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        )
+        .unwrap();
+        assert_eq!(actual.data, expected.data, "exact certified image bytes");
+        assert_eq!(
+            actual.texture_descriptor.size,
+            expected.texture_descriptor.size
+        );
+        assert_eq!(
+            actual.texture_descriptor.format,
+            expected.texture_descriptor.format
+        );
+        assert_eq!(
+            actual.texture_descriptor.mip_level_count,
+            expected.texture_descriptor.mip_level_count
+        );
+        assert_eq!(
+            terrain
+                .canonical_heights(7, bevy::math::IVec2::ZERO)
+                .unwrap(),
+            &[0.0; 33 * 33]
+        );
+    }
+
+    #[test]
+    fn terrain_atlas_changed_or_removed_after_certification_is_refused() {
         for mutation in ["replace", "remove"] {
-            let (temp, _, original) = terrain_snapshot_terrain_fixture();
-            let root = temp.path();
-            let envelope = open_fixture_overlay(root, true).unwrap();
-            // Model a writer ignoring the retained source locks. The receipt must
-            // continue to authorize only the original launch snapshot.
-            for path in [
-                root.join("cell_cache.rkyv"),
-                envelope.overlay.join(TERRAIN_FIXTURE_ATLAS),
-            ] {
-                if mutation == "replace" {
-                    fs::write(path, b"changed after certification").unwrap();
-                } else {
-                    fs::remove_file(path).unwrap();
-                }
+            let (temp, _, _) = terrain_snapshot_terrain_fixture();
+            let envelope = open_fixture_overlay(temp.path(), true).unwrap();
+            // Model a writer ignoring the retained source locks: nothing was kept from
+            // certification, so the changed file cannot be served from an earlier copy.
+            let path = envelope.overlay.join(TERRAIN_FIXTURE_ATLAS);
+            if mutation == "replace" {
+                fs::write(path, b"changed after certification").unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
             }
-            let (terrain, images) = terrain_snapshot_load_terrain(&envelope).unwrap();
-            assert_eq!(terrain.blocks.len(), 1, "{mutation}");
-            let (_, actual) = images.iter().next().unwrap();
-            let expected = bevy::prelude::Image::from_buffer(
-                &original,
-                bevy::image::ImageType::Extension("ktx2"),
-                bevy::image::CompressedImageFormats::BC,
-                true,
-                bevy::image::ImageSampler::Default,
-                bevy::asset::RenderAssetUsages::RENDER_WORLD,
-            )
-            .unwrap();
-            assert_eq!(
-                actual.data, expected.data,
-                "{mutation}: exact certified image bytes"
-            );
-            assert_eq!(
-                actual.texture_descriptor.size,
-                expected.texture_descriptor.size
-            );
-            assert_eq!(
-                actual.texture_descriptor.format,
-                expected.texture_descriptor.format
-            );
-            assert_eq!(
-                actual.texture_descriptor.mip_level_count,
-                expected.texture_descriptor.mip_level_count
-            );
-            assert_eq!(
-                terrain
-                    .canonical_heights(7, bevy::math::IVec2::ZERO)
-                    .unwrap(),
-                &[0.0; 33 * 33]
-            );
+            let error = terrain_snapshot_load_terrain(&envelope)
+                .err()
+                .unwrap_or_else(|| panic!("{mutation}: changed atlas must refuse terrain"));
+            if mutation == "replace" {
+                assert!(
+                    error.contains("differs from launch certification"),
+                    "{error}"
+                );
+            }
+            assert!(error.contains(TERRAIN_FIXTURE_ATLAS), "{mutation}: {error}");
         }
     }
 
     #[test]
-    fn terrain_snapshot_missing_atlas_snapshot_never_falls_back_to_good_disk_bytes() {
+    fn terrain_cache_identity_is_the_launch_receipt_not_a_later_disk_read() {
+        for mutation in ["replace", "remove"] {
+            let (temp, _, _) = terrain_snapshot_terrain_fixture();
+            let root = temp.path();
+            let envelope = open_fixture_overlay(root, true).unwrap();
+            let path = root.join("cell_cache.rkyv");
+            if mutation == "replace" {
+                fs::write(path, b"changed after certification").unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
+            let (terrain, _) = terrain_snapshot_load_terrain(&envelope).unwrap();
+            assert_eq!(terrain.blocks.len(), 1, "{mutation}");
+        }
+    }
+
+    #[test]
+    fn terrain_snapshot_missing_atlas_receipt_never_falls_back_to_good_disk_bytes() {
         let (temp, _, _) = terrain_snapshot_terrain_fixture();
-        let envelope = open_fixture_overlay(temp.path(), true).unwrap();
-        envelope.payloads.lock().unwrap().clear();
+        let mut envelope = open_fixture_overlay(temp.path(), true).unwrap();
+        envelope.payload_digests.remove(TERRAIN_FIXTURE_ATLAS);
         let error = terrain_snapshot_load_terrain(&envelope)
             .err()
-            .expect("missing snapshot must refuse terrain");
+            .expect("missing receipt must refuse terrain");
         assert!(error.contains("not certified"), "{error}");
     }
 
     #[test]
-    fn terrain_snapshot_atlas_snapshot_digest_must_match_the_launch_receipt() {
+    fn terrain_atlas_digest_must_match_the_launch_receipt() {
         let (temp, _, _) = terrain_snapshot_terrain_fixture();
         let mut envelope = open_fixture_overlay(temp.path(), true).unwrap();
         envelope
@@ -1510,7 +1546,94 @@ mod tests {
         let error = terrain_snapshot_load_terrain(&envelope)
             .err()
             .expect("changed digest must refuse terrain");
-        assert!(error.contains("receipt differs"), "{error}");
+        assert!(
+            error.contains("differs from launch certification"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn hash_walk_records_digests_of_typed_payloads_and_keeps_no_bytes() {
+        let directory = crate::cluster::overlay_fixture::tempdir();
+        let root = directory.path();
+        let files: Vec<String> = ["a.mcl", "b.mci", "c.ktx2", "d.DDS", "plain.bin", "mcl.json"]
+            .map(str::to_owned)
+            .to_vec();
+        for (index, name) in files.iter().enumerate() {
+            fs::write(root.join(name), vec![index as u8; 3000 + index]).unwrap();
+        }
+        let capture = DigestCapture::default();
+        let results = hash_owned_files_recording(root, &files, 3, Some(&capture)).unwrap();
+        let captured = capture.into_inner().unwrap();
+        let mut typed: Vec<_> = captured.keys().map(String::as_str).collect();
+        typed.sort_unstable();
+        assert_eq!(typed, ["a.mcl", "b.mci", "c.ktx2", "d.DDS"]);
+        for (name, result) in files.iter().zip(results) {
+            let bytes = fs::read(root.join(name)).unwrap();
+            let expected: [u8; 32] = Sha256::digest(&bytes).into();
+            let (hashed, size) = result.unwrap();
+            assert_eq!(hashed, hex(&expected), "{name}");
+            assert_eq!(size, bytes.len() as u64, "{name}");
+            if let Some((digest, recorded)) = captured.get(name) {
+                assert_eq!(*digest, expected, "{name}");
+                assert_eq!(*recorded, size, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn certified_payloads_are_only_available_by_a_checked_reread() {
+        let (temp, _, original) = terrain_snapshot_terrain_fixture();
+        let envelope = open_fixture_overlay(temp.path(), true).unwrap();
+        let expected: [u8; 32] = Sha256::digest(&original).into();
+        assert_eq!(
+            envelope.payload_digest(TERRAIN_FIXTURE_ATLAS),
+            Some(expected),
+            "certification keeps the digest"
+        );
+        assert_eq!(envelope.reread_count(), 0);
+        let payload = envelope.reread_payload(TERRAIN_FIXTURE_ATLAS).unwrap();
+        assert_eq!(payload.bytes().as_ref(), original.as_slice());
+        assert_eq!(envelope.reread_count(), 1);
+        let path = envelope.overlay.join(TERRAIN_FIXTURE_ATLAS);
+        // Same size, different content: only the launch digest can tell.
+        let mut changed = original.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        fs::write(&path, &changed).unwrap();
+        let error = format!(
+            "{:#}",
+            envelope
+                .reread_payload(TERRAIN_FIXTURE_ATLAS)
+                .err()
+                .expect("changed bytes must be refused")
+        );
+        assert!(
+            error.contains("differs from launch certification"),
+            "{error}"
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(envelope.reread_payload(TERRAIN_FIXTURE_ATLAS).is_err());
+        // Larger and smaller replacements are refused on size, before any hashing.
+        for length in [original.len() + 1, original.len() * 8, original.len() - 1] {
+            fs::write(&path, vec![7u8; length]).unwrap();
+            let error = format!(
+                "{:#}",
+                envelope
+                    .reread_payload(TERRAIN_FIXTURE_ATLAS)
+                    .err()
+                    .expect("a differently sized file must be refused")
+            );
+            assert!(error.contains("size differs"), "{length}: {error}");
+        }
+        // Nothing but the digest survived certification, and it is unchanged.
+        assert_eq!(
+            envelope.payload_digest(TERRAIN_FIXTURE_ATLAS),
+            Some(expected)
+        );
+        for refused in ["clusters/not-owned.mcl", "../clusters/fixture.bin"] {
+            assert!(envelope.reread_payload(refused).is_err(), "{refused}");
+        }
     }
 
     #[test]

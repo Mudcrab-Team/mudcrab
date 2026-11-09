@@ -11,7 +11,7 @@ use shared::{
     cluster::parse_hash,
     cluster_mapping::{
         AuthoritativeInputs, CoverageState, DIGEST_VERSION, ReferenceSnapshot,
-        prepare_mapping_with_payloads, validate_prepared_mapping_parallel,
+        prepare_mapping_with_loader, validate_prepared_mapping_parallel,
     },
     cluster_recipe::{
         authority::CoreAuthority,
@@ -228,8 +228,11 @@ impl CertifiedPackage {
             envelope.builder_identity.clone(),
         )?;
         bevy::log::debug!("checking cluster mapping against authoritative source inputs");
-        // The main thread performs serial structure checks while the source worker reserves
-        // one additional CPU for it. Both results join under envelope's retained source lock.
+        // The structure check runs on the calling thread and fans its chunk re-reads out to up to
+        // N-2 workers, while the source worker reserves one additional CPU. That reservation was
+        // sized for a single serial structure thread and stays at one: the chunk workers finish
+        // in a fraction of the source preload, so a larger reservation would only idle a core.
+        // Both results join under envelope's retained source lock.
         let overlap = std::thread::available_parallelism().is_ok_and(|cpus| cpus.get() > 3);
         let prepared = prepare_after_snapshots(
             |busy| {
@@ -237,11 +240,18 @@ impl CertifiedPackage {
                 Ok(())
             },
             || {
-                Ok(prepare_mapping_with_payloads(
+                // Each chunk is re-read and checked against its launch digest under the envelope's
+                // source locks, in CPU-sized parallel batches; a chunk's bytes live until its own
+                // check against its row finishes.
+                Ok(prepare_mapping_with_loader(
                     &connection,
                     &envelope.overlay,
                     Some(&envelope.core_identity),
-                    &envelope.payloads()?,
+                    &|relative| {
+                        envelope
+                            .reread_payload(relative)
+                            .map_err(|error| format!("{error:#}"))
+                    },
                 )?)
             },
             overlap,

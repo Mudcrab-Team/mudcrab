@@ -28,6 +28,10 @@ pub(crate) struct MeshRehydrateSource {
 }
 
 impl MeshRehydrateSource {
+    pub(crate) fn relative(&self) -> &str {
+        &self.relative
+    }
+
     pub(crate) fn new(
         package: Arc<super::reader::CertifiedPackage>,
         relative: String,

@@ -1,8 +1,11 @@
 //! Validated in-memory cluster payloads (ADR-0013 sections 2 and 3).
 //!
-//! The package reader checks the exact owned bytes and the shared format before publishing
-//! these values. Production meshes share transient bytes until upload handoff; small metadata
-//! and tangent proof survive release. Explicit in-memory fixtures retain their payloads.
+//! The package reader checks the payload files (`.mcl`, `.mci`, atlases) against the launch
+//! digests and the shared format before publishing these values. Database rows and the base
+//! `cell_cache.rkyv` are not payload files: they are read live, with no launch digest. Production meshes are released as soon as they are validated:
+//! only small metadata and, once prepared, the tangent proof stay. Tangent preparation and upload
+//! each re-read the payload through the certified source and drop it again. Explicit in-memory
+//! fixtures retain their payloads.
 
 use bevy::{asset::Asset, prelude::*, reflect::TypePath};
 use shared::cluster::{
@@ -23,11 +26,36 @@ struct MeshPayload {
 struct UploadState {
     payload: Option<MeshPayload>,
     rebuilding: bool,
+    /// When the in-flight rebuild started, and whether it has already been reported as slow.
+    rebuild_started: Option<(std::time::Instant, bool)>,
     failure: Option<String>,
     /// The first worker chooses; later block workers cannot change terrain-only proof.
     terrain_only: Option<bool>,
     /// A replacement scene may request the same mesh while an old request is in flight.
     waiters: Vec<Arc<AtomicU64>>,
+    /// The tangent proof a non-terrain preparation reaches, computed from the bytes while the
+    /// loader still held them. Only this flag is kept, never the words, so a released mesh can be
+    /// proved without another read.
+    proof_hint: Option<bool>,
+}
+
+/// A mesh re-read normally takes milliseconds; this long without a result means a stuck read.
+/// It is only reported, because the rebuild cannot be cancelled without losing the mesh.
+const SLOW_REBUILD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// True once per rebuild, the first time it is found running past `limit`.
+fn note_slow_rebuild(
+    state: &mut UploadState,
+    now: std::time::Instant,
+    limit: std::time::Duration,
+) -> bool {
+    match &mut state.rebuild_started {
+        Some((started, reported)) if !*reported && now.duration_since(*started) >= limit => {
+            *reported = true;
+            true
+        }
+        _ => false,
+    }
 }
 
 struct MeshUpload {
@@ -175,9 +203,11 @@ impl ClusterMeshAsset {
                         tangents: None,
                     }),
                     rebuilding: false,
+                    rebuild_started: None,
                     failure: None,
                     terrain_only: None,
                     waiters: Vec::new(),
+                    proof_hint: None,
                 }),
                 proof: AtomicU8::new(0),
                 #[cfg(test)]
@@ -220,6 +250,39 @@ impl ClusterMeshAsset {
         source: super::mesh_payload::MeshRehydrateSource,
     ) {
         self.source = Some(Arc::new(source));
+    }
+
+    /// Drop this certified mesh's bytes before any tangent proof exists. The validated header
+    /// stays; tangent preparation and upload re-read the payload through the retained source.
+    /// A mesh without a certified source (an explicit fixture) keeps its bytes.
+    pub(crate) fn release_certified_payload(&self) {
+        if self.retain_in_memory || self.source.is_none() {
+            return;
+        }
+        self.upload
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .payload = None;
+    }
+
+    /// Record what non-terrain tangent preparation will conclude, from the bytes this mesh still
+    /// holds, so a later `prepare` of the released mesh needs no re-read. The tangent words are
+    /// dropped; upload regenerates them from its own read and checks the proof against this one.
+    pub(crate) fn record_tangent_proof(&self) -> Result<(), String> {
+        let mut state = self
+            .upload
+            .state
+            .lock()
+            .map_err(|_| "mesh payload lock poisoned")?;
+        let payload = state
+            .payload
+            .as_ref()
+            .ok_or("mesh payload released before its tangent proof was recorded")?;
+        let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+        let usable = self.generate_tangent_words(&view).usable;
+        state.proof_hint = Some(usable);
+        Ok(())
     }
 
     /// The mesh as the stock path sees it: one ordinary indexed triangle list of the source
@@ -321,18 +384,39 @@ impl ClusterMeshAsset {
         if self.prepared_tangents_usable().is_some() {
             return Ok(());
         }
-        let payload = state
-            .payload
-            .as_mut()
-            .ok_or("mesh payload released before preparation")?;
-        let prepared = if terrain_only {
-            prepare_generated_tangents(self.vertex_count as usize, false, None)
-        } else {
-            let view = read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
-            self.generate_tangent_words(&view)
+        let usable = match state.payload.as_mut() {
+            Some(payload) => {
+                let prepared = if terrain_only {
+                    prepare_generated_tangents(self.vertex_count as usize, false, None)
+                } else {
+                    let view =
+                        read_mcl_validated(&payload.bytes).map_err(|error| error.to_string())?;
+                    self.generate_tangent_words(&view)
+                };
+                let usable = prepared.usable;
+                payload.tangents = Some(prepared);
+                usable
+            }
+            // Released before any proof: use the proof recorded at load, or else prove it from a
+            // re-read that is dropped right after, so preparing every mesh of the scene never
+            // holds more than the workers' own files. Upload re-reads again and checks the proof;
+            // only the proof persists, as after an upload.
+            None => {
+                let source = self
+                    .source
+                    .clone()
+                    .ok_or("mesh payload released before preparation")?;
+                if terrain_only {
+                    false
+                } else if let Some(usable) = state.proof_hint {
+                    usable
+                } else {
+                    let rebuilt = source.read_mesh()?;
+                    rebuilt.prepare(false)?;
+                    rebuilt.prepared_tangents_usable() == Some(true)
+                }
+            }
         };
-        let usable = prepared.usable;
-        payload.tangents = Some(prepared);
         state.terrain_only = Some(terrain_only);
         self.upload
             .proof
@@ -417,6 +501,13 @@ impl ClusterMeshAsset {
             return Ok(payload.tangents.is_some());
         }
         if state.rebuilding {
+            if note_slow_rebuild(&mut state, std::time::Instant::now(), SLOW_REBUILD) {
+                warn!(
+                    path = self.source.as_ref().map_or("", |source| source.relative()),
+                    seconds = SLOW_REBUILD.as_secs(),
+                    "cluster mesh rebuild has not finished; its blocks keep waiting"
+                );
+            }
             if !state
                 .waiters
                 .iter()
@@ -434,6 +525,7 @@ impl ClusterMeshAsset {
             .terrain_only
             .ok_or("released mesh has no preparation mode")?;
         state.rebuilding = true;
+        state.rebuild_started = Some((std::time::Instant::now(), false));
         state.waiters.push(wake);
         drop(state);
         #[cfg(test)]
@@ -467,6 +559,7 @@ impl ClusterMeshAsset {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.rebuilding = false;
+                state.rebuild_started = None;
                 let waiters = std::mem::take(&mut state.waiters);
                 match rebuilt {
                     Ok(payload) => state.payload = Some(payload),
@@ -635,6 +728,26 @@ impl ClusterBlockAsset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebuild_past_the_limit_is_reported_once() {
+        let limit = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        let mut state = UploadState {
+            payload: None,
+            rebuilding: true,
+            rebuild_started: Some((started, false)),
+            failure: None,
+            terrain_only: None,
+            waiters: Vec::new(),
+            proof_hint: None,
+        };
+        assert!(!note_slow_rebuild(&mut state, started + limit / 2, limit));
+        assert!(note_slow_rebuild(&mut state, started + limit, limit));
+        assert!(!note_slow_rebuild(&mut state, started + limit * 2, limit));
+        state.rebuild_started = None;
+        assert!(!note_slow_rebuild(&mut state, started + limit * 3, limit));
+    }
 
     const MCL: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mcl");
     const MCI: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mci");

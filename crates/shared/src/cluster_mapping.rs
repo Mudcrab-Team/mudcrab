@@ -594,22 +594,23 @@ pub fn prepare_mapping<'a>(
     })
 }
 
-/// Prepare using the exact launch-local payload snapshot already hashed by
-/// the caller's envelope. Missing entries refuse; this path never rereads disk.
-/// Every digest, header, record, coverage and source-authority check still runs.
-pub fn prepare_mapping_with_payloads<'a>(
+/// Supplies the bytes of one chunk payload by its package-relative path, for a caller that keeps
+/// its own launch receipt and re-reads under its own source lock. Chunks are asked for in
+/// CPU-sized batches, each batch read in parallel, so the loader must be `Sync`.
+/// `check_structure_with_payloads` still hashes whatever comes back against the chunk's row and
+/// keeps only one batch's bytes at a time.
+pub type PayloadLoader<'a> = dyn Fn(&str) -> Result<HashedPayload, String> + Sync + 'a;
+
+/// Prepare with chunk bytes supplied by `load` instead of read from `package`. A loader error
+/// refuses the chunk. Every digest, header, record, coverage and source-authority check still runs.
+pub fn prepare_mapping_with_loader<'a>(
     connection: &'a Connection,
     package: &Path,
     expected_built_from: Option<&str>,
-    payloads: &HashMap<String, HashedPayload>,
+    load: &PayloadLoader<'_>,
 ) -> Result<PreparedMapping<'a>, MappingError> {
-    let (instances, groups) = check_structure_with_payloads(
-        connection,
-        package,
-        expected_built_from,
-        false,
-        Some(payloads),
-    )?;
+    let (instances, groups) =
+        check_structure_with_payloads(connection, package, expected_built_from, true, Some(load))?;
     Ok(PreparedMapping {
         connection,
         instances,
@@ -1235,7 +1236,7 @@ fn check_structure_with_payloads(
     package: &Path,
     expected_built_from: Option<&str>,
     parallel: bool,
-    payloads: Option<&HashMap<String, HashedPayload>>,
+    loader: Option<&PayloadLoader<'_>>,
 ) -> Result<(Vec<MappedInstance>, BTreeMap<u32, CoverageGroup>), MappingError> {
     let (map_version, coverage_version, built_from, builder_identity): (u32, u32, String, String) =
         connection
@@ -1335,13 +1336,9 @@ fn check_structure_with_payloads(
         {
             return Err(MappingError::TerrainInObjectChunks(chunk.path.clone()));
         }
-        let payload = match payloads {
-            Some(payloads) => payloads.get(&chunk.path).cloned().ok_or_else(|| {
-                MappingError::ChunkFile(format!(
-                    "{}: payload missing from certified snapshot",
-                    chunk.path
-                ))
-            })?,
+        let payload = match loader {
+            Some(load) => load(&chunk.path)
+                .map_err(|error| MappingError::ChunkFile(format!("{}: {error}", chunk.path)))?,
             None => HashedPayload::new(
                 fs::read(package.join(&chunk.path))
                     .map_err(|error| MappingError::ChunkFile(format!("{}: {error}", chunk.path)))?
@@ -1378,7 +1375,7 @@ fn check_structure_with_payloads(
          ORDER BY ordinal",
     )?;
     for chunk_batch in chunks.chunks(chunk_batch_size) {
-        // Parse the exact bytes whose digest was checked, from disk or the supplied snapshot.
+        // Parse the exact bytes whose digest was checked, from disk or the supplied loader.
         let mut verified_bytes = if parallel {
             Some(parallel_ordered(chunk_batch, read_chunk)?.into_iter())
         } else {
@@ -1791,9 +1788,9 @@ mod parallel_tests {
         validate_prepared_mapping_parallel(prepared, &fixture.authority)
     }
 
-    // Snapshot regression tests: use the real writer, SQL rows and source authority.
-    // The public snapshot API is deliberately used here; no digest can be injected.
-    mod retained_payload_tests {
+    // Loader regression tests: use the real writer, SQL rows and source authority.
+    // The public loader API is deliberately used here; no digest can be injected.
+    mod loader_payload_tests {
         use super::*;
         use std::sync::Arc;
 
@@ -1813,6 +1810,41 @@ mod parallel_tests {
                 .collect()
         }
 
+        /// Serves the captured payloads through the public loader API, refusing any other path.
+        fn prepare_from<'a>(
+            fixture: &'a Fixture,
+            payloads: &HashMap<String, HashedPayload>,
+        ) -> Result<PreparedMapping<'a>, MappingError> {
+            prepare_mapping_with_loader(&fixture.connection, &fixture.root, None, &|path| {
+                payloads
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| "payload missing from the supplied set".to_string())
+            })
+        }
+
+        #[test]
+        fn loader_is_asked_once_for_every_chunk() {
+            let fixture = mapped_fixture();
+            let payloads = capture(&fixture);
+            let asked = std::sync::Mutex::new(Vec::new());
+            let prepared =
+                prepare_mapping_with_loader(&fixture.connection, &fixture.root, None, &|path| {
+                    asked.lock().unwrap().push(path.to_owned());
+                    payloads
+                        .get(path)
+                        .cloned()
+                        .ok_or_else(|| "payload missing from the supplied set".to_string())
+                })
+                .unwrap();
+            validate_prepared_mapping_parallel(prepared, &fixture.authority).unwrap();
+            let mut asked = asked.into_inner().unwrap();
+            asked.sort();
+            let mut expected: Vec<_> = payloads.keys().cloned().collect();
+            expected.sort();
+            assert_eq!(asked, expected);
+        }
+
         #[test]
         fn hashed_payload_binds_sha256_to_the_retained_allocation() {
             let bytes: Arc<[u8]> = Arc::from(&b"abc"[..]);
@@ -1827,7 +1859,7 @@ mod parallel_tests {
         }
 
         #[test]
-        fn retained_good_mci_survives_disk_replacement_and_deletion() {
+        fn supplied_good_mci_is_used_despite_disk_replacement_and_deletion() {
             for mutation in ["replace", "delete"] {
                 let fixture = mapped_fixture();
                 let payloads = capture(&fixture);
@@ -1841,13 +1873,7 @@ mod parallel_tests {
                 }
                 // This control proves the disk mutation is observable to the old API.
                 assert!(prepare_mapping(&fixture.connection, &fixture.root, None).is_err());
-                let prepared = prepare_mapping_with_payloads(
-                    &fixture.connection,
-                    &fixture.root,
-                    None,
-                    &payloads,
-                )
-                .unwrap();
+                let prepared = prepare_from(&fixture, &payloads).unwrap();
                 let validated =
                     validate_prepared_mapping_parallel(prepared, &fixture.authority).unwrap();
                 assert_eq!(
@@ -1867,7 +1893,7 @@ mod parallel_tests {
                             .instance(instance.ordinal as usize)
                             .transform
                             .map(f32::to_bits),
-                        "{mutation}: transform must come from retained B"
+                        "{mutation}: transform must come from the supplied B"
                     );
                 }
                 let coverage = validated.coverage.unwrap();
@@ -1880,7 +1906,7 @@ mod parallel_tests {
         }
 
         #[test]
-        fn retained_altered_legal_mci_is_refused_after_good_disk_bytes_are_restored() {
+        fn supplied_altered_legal_mci_is_refused_after_good_disk_bytes_are_restored() {
             use crate::cluster::{MCI_HEADER_BYTES, MCI_MESH_ENTRY_BYTES, SECTION_ALIGNMENT};
             let fixture = mapped_fixture();
             let good = fs::read(fixture.root.join("chunk-0.mci")).unwrap();
@@ -1920,8 +1946,7 @@ mod parallel_tests {
             fs::write(fixture.root.join("chunk-0.mci"), &good).unwrap();
             // Both old disk validation and the source authority accept B. They cannot vouch for A.
             assert_eq!(sequential(&fixture), Ok(()));
-            let result =
-                prepare_mapping_with_payloads(&fixture.connection, &fixture.root, None, &payloads);
+            let result = prepare_from(&fixture, &payloads);
             assert_eq!(
                 result.map(|_| ()),
                 Err(MappingError::ChunkHashMismatch(expected_hash))
@@ -1929,21 +1954,20 @@ mod parallel_tests {
         }
 
         #[test]
-        fn missing_retained_key_refuses_even_when_good_payload_is_on_disk() {
+        fn loader_refusal_never_falls_back_to_good_disk_bytes() {
             let fixture = mapped_fixture();
             let mut payloads = capture(&fixture);
             assert!(payloads.remove("chunk-0.mci").is_some());
             assert_eq!(sequential(&fixture), Ok(()));
-            let result =
-                prepare_mapping_with_payloads(&fixture.connection, &fixture.root, None, &payloads);
+            let result = prepare_from(&fixture, &payloads);
             assert!(
                 result.is_err(),
-                "a missing retained key must never fall back to disk"
+                "a loader refusal must never fall back to disk"
             );
         }
 
         #[test]
-        fn retained_mapping_preserves_structural_and_authority_refusals() {
+        fn loader_mapping_preserves_structural_and_authority_refusals() {
             for attack in [
                 "ordinal",
                 "coverage",
@@ -1995,18 +2019,13 @@ mod parallel_tests {
                 }
                 let original = prepared(&fixture).map(|_| ());
                 assert!(original.is_err(), "negative control: {attack}");
-                let retained = prepare_mapping_with_payloads(
-                    &fixture.connection,
-                    &fixture.root,
-                    None,
-                    &payloads,
-                )
-                .and_then(|prepared| {
-                    validate_prepared_mapping_parallel(prepared, &fixture.authority)
-                })
-                .map(|_| ());
+                let supplied = prepare_from(&fixture, &payloads)
+                    .and_then(|prepared| {
+                        validate_prepared_mapping_parallel(prepared, &fixture.authority)
+                    })
+                    .map(|_| ());
                 assert_eq!(
-                    retained, original,
+                    supplied, original,
                     "preserve the original refusal: {attack}"
                 );
             }

@@ -509,6 +509,112 @@ fn read_rows(connection: &Connection) -> Result<HashMap<(String, u32), MeshRow>,
     Ok(rows)
 }
 
+type PreloadedMeshes = HashMap<(String, u32), Result<ClusterMeshAsset, String>>;
+
+/// Re-read every mesh payload under the package's locks, check it against its launch digest and
+/// row, and keep only the validated header and the way back to the bytes. At most one file per
+/// worker is in memory at a time.
+///
+/// Meshes not in `terrain_keys` also get their tangent proof recorded from the bytes in hand, so
+/// preparing them later needs no read. Terrain meshes are prepared without tangents when only
+/// terrain uses them, which this step cannot know yet; they keep the read in preparation.
+///
+/// A refused thread start is an error, not a panic: the loading system refuses the package.
+fn preload_certified_meshes(
+    package: &Arc<super::reader::CertifiedPackage>,
+    rows: &HashMap<(String, u32), MeshRow>,
+    identity: &str,
+    terrain_keys: &std::collections::HashSet<(String, u32)>,
+) -> Result<PreloadedMeshes, String> {
+    preload_with_spawn_failure(package, rows, identity, terrain_keys, None)
+}
+
+/// `fail_worker` makes that worker's thread start fail, to exercise the refusal without
+/// exhausting the OS.
+fn preload_with_spawn_failure(
+    package: &Arc<super::reader::CertifiedPackage>,
+    rows: &HashMap<(String, u32), MeshRow>,
+    identity: &str,
+    terrain_keys: &std::collections::HashSet<(String, u32)>,
+    fail_worker: Option<usize>,
+) -> Result<PreloadedMeshes, String> {
+    let entries: Vec<_> = rows.iter().collect();
+    let builder = shared::cluster::parse_hash(identity);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(entries.len().max(1));
+    let load = |key: &(String, u32), row: &MeshRow| -> Result<ClusterMeshAsset, String> {
+        let builder = builder.ok_or("invalid package builder identity")?;
+        let payload = package
+            .envelope()
+            .reread_payload(&row.payload_path)
+            .map_err(|error| error.to_string())?;
+        let mut mesh = checked_certified_mesh(&payload, builder, &row.expected)?;
+        mesh.set_rehydrate_source(MeshRehydrateSource::new(
+            package.clone(),
+            row.payload_path.clone(),
+            builder,
+            row.expected,
+        )?);
+        if !terrain_keys.contains(key) {
+            mesh.record_tangent_proof()?;
+        }
+        // The scene keeps only the validated header, the proof and the way back to the bytes;
+        // upload re-reads them when needed.
+        mesh.release_certified_payload();
+        Ok(mesh)
+    };
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        let mut start_error = None;
+        for worker in 0..workers {
+            let spawned = if fail_worker == Some(worker) {
+                Err(std::io::Error::other("injected thread start failure"))
+            } else {
+                std::thread::Builder::new()
+                    .name("cluster-mesh-preload".into())
+                    .spawn_scoped(scope, || {
+                        let mut done = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((key, row)) = entries.get(index) else {
+                                break;
+                            };
+                            done.push(((*key).clone(), load(key, row)));
+                        }
+                        done
+                    })
+            };
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    start_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if start_error.is_some() {
+            // The package is refused, so the workers already running need not read the rest.
+            next.store(entries.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+        let mut loaded = PreloadedMeshes::with_capacity(entries.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(done) => loaded.extend(done),
+                Err(_) => {
+                    // A worker panic leaves its meshes absent, which refuses the overlay below.
+                    error!("cluster mesh preload worker panicked");
+                }
+            }
+        }
+        match start_error {
+            Some(error) => Err(format!("cannot start cluster mesh preload worker: {error}")),
+            None => Ok(loaded),
+        }
+    })
+}
+
 /// Domain comes from the owning SQL table, never a missing reference mapping.
 #[derive(Clone, Copy)]
 enum ChunkDomain {
@@ -789,6 +895,25 @@ fn load_cluster_package(
     }
     let identity = validated.0.envelope().builder_identity.clone();
 
+    // Every mesh file is read and checked up front, in parallel, so the scene build does not wait
+    // on one file at a time; each result is consumed, or refused, where a block first names it.
+    let terrain_keys: std::collections::HashSet<(String, u32)> = rows
+        .keys()
+        .filter(|(hash, primitive)| {
+            terrain
+                .as_ref()
+                .is_some_and(|terrain| terrain.block_for_mesh(hash, *primitive).is_some())
+        })
+        .cloned()
+        .collect();
+    let mut preloaded =
+        match preload_certified_meshes(&validated.0, &rows, &identity, &terrain_keys) {
+            Ok(preloaded) => preloaded,
+            Err(error) => {
+                stop_unusable_overlay(&mut commands, &validated.0, format_args!("{error}"));
+                return;
+            }
+        };
     let mut mesh_index: HashMap<(String, u32), u32> = HashMap::new();
     let mut scene_meshes: Vec<ClusterMeshAsset> = Vec::new();
     let mut batch_index: HashMap<(BatchKey, u32), u32> = HashMap::new();
@@ -801,7 +926,7 @@ fn load_cluster_package(
     let mut block_bounds: Vec<([f32; 3], [f32; 3])> = Vec::new();
     for chunk_source in &chunk_paths {
         let chunk = &chunk_source.path;
-        let payload = match validated.0.envelope().payload(chunk) {
+        let payload = match validated.0.envelope().reread_payload(chunk) {
             Ok(payload) => payload,
             Err(error) => {
                 stop_unusable_overlay(
@@ -823,6 +948,8 @@ fn load_cluster_package(
                 return;
             }
         };
+        // The block copied its tables out; nothing else needs the file's bytes.
+        drop(payload);
         if hex(&block.builder_identity) != identity {
             stop_unusable_overlay(
                 &mut commands,
@@ -853,24 +980,9 @@ fn load_cluster_package(
             let index = match mesh_index.get(&key) {
                 Some(index) => *index,
                 None => {
-                    let loaded = validated
-                        .0
-                        .envelope()
-                        .payload(&row.payload_path)
-                        .map_err(|error| error.to_string())
-                        .and_then(|payload| {
-                            let builder = shared::cluster::parse_hash(&identity)
-                                .ok_or("invalid package builder identity")?;
-                            let mut mesh =
-                                checked_certified_mesh(&payload, builder, &row.expected)?;
-                            mesh.set_rehydrate_source(MeshRehydrateSource::new(
-                                validated.0.clone(),
-                                row.payload_path.clone(),
-                                builder,
-                                row.expected,
-                            )?);
-                            Ok(mesh)
-                        });
+                    let loaded = preloaded
+                        .remove(&key)
+                        .unwrap_or_else(|| Err("mesh was not preloaded".into()));
                     match loaded {
                         Ok(mesh) => {
                             let index = scene_meshes.len() as u32;
@@ -1221,10 +1333,6 @@ fn load_cluster_package(
                 return;
             }
         }
-    }
-    if let Err(error) = validated.0.envelope().release_consumed_payload_bytes() {
-        stop_unusable_overlay(&mut commands, &validated.0, error);
-        return;
     }
     commands.insert_resource(workers);
     commands.insert_resource(ClusterScene {
@@ -2605,6 +2713,27 @@ mod tests {
     }
 
     #[test]
+    fn mesh_preload_refuses_when_a_worker_thread_cannot_start() {
+        let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
+        let package = Arc::new(
+            crate::cluster::overlay_fixture::open_fixture(directory.path(), false).unwrap(),
+        );
+        let rows = read_rows(&crate::cluster::overlay_fixture::read_db(directory.path())).unwrap();
+        let identity = package.envelope().builder_identity.clone();
+        let terrain_keys = std::collections::HashSet::new();
+        let started = preload_with_spawn_failure(&package, &rows, &identity, &terrain_keys, None)
+            .expect("an ordinary preload succeeds");
+        assert_eq!(started.len(), rows.len());
+        let error = preload_with_spawn_failure(&package, &rows, &identity, &terrain_keys, Some(0))
+            .err()
+            .expect("a refused thread start must refuse the package");
+        assert!(
+            error.contains("cannot start cluster mesh preload worker"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn failed_speculative_scene_is_dropped_and_a_fresh_load_recovers() {
         use bevy::ecs::system::RunSystemOnce;
         let directory = crate::cluster::reader::producer_fixture_tests::published_for_loader();
@@ -3187,10 +3316,12 @@ mod empty_certified_loader_tests {
     }
 
     #[test]
-    fn certified_payloads_stay_pinned_but_missing_mesh_metadata_stops_requested_clusters() {
+    fn payloads_changed_after_certification_are_refused_and_unchanged_ones_load_released() {
         use bevy::ecs::system::RunSystemOnce;
         use shared::cluster::{MclSection, read_mci, read_mcl};
+        bevy::tasks::IoTaskPool::get_or_init(Default::default);
         for corruption in [
+            "unchanged",
             "missing_block",
             "invalid_block",
             "invalid_mesh",
@@ -3270,7 +3401,9 @@ mod empty_certified_loader_tests {
                 .collect();
             assert_eq!(expected_meshes.len(), expected_mesh_keys.len());
             drop(db);
-            mutate_payload_for_pinning_test(root, corruption);
+            if corruption != "unchanged" {
+                mutate_payload_for_pinning_test(root, corruption);
+            }
             let mut app = App::new();
             app.insert_resource(PackageSource {
                 base: root.to_owned(),
@@ -3287,18 +3420,20 @@ mod empty_certified_loader_tests {
                 .run_system_once(load_cluster_package)
                 .unwrap();
             let exits = app.world().resource::<Messages<AppExit>>();
-            if corruption == "missing_mesh_row" {
-                // Metadata was not pinned by this repair. Keep the original fail-closed contract.
+            if corruption != "unchanged" {
+                // No payload bytes outlive certification, so a file that changed since then is
+                // re-read, fails its launch digest, and stops the overlay; so does missing
+                // mesh metadata.
                 assert!(
                     exits.iter_current_update_messages().any(AppExit::is_error),
-                    "{corruption}: missing live mesh metadata must stop the requested overlay"
+                    "{corruption}: a changed payload or missing mesh metadata must stop the requested overlay"
                 );
                 assert!(!app.world().contains_resource::<ClusterScene>());
                 assert!(!app.world().contains_resource::<LazyBatches>());
             } else {
                 assert!(
                     exits.iter_current_update_messages().next().is_none(),
-                    "{corruption}: an intact retained snapshot must keep the run alive"
+                    "{corruption}: untouched certified payloads must keep the run alive"
                 );
                 let scene = app.world().resource::<ClusterScene>();
                 assert!(Arc::ptr_eq(
@@ -3378,24 +3513,47 @@ mod empty_certified_loader_tests {
                         ),
                         "{corruption}: original mesh header"
                     );
-                    for section in [
-                        MclSection::Positions,
-                        MclSection::Normals,
-                        MclSection::Uvs,
-                        MclSection::Tangents,
-                        MclSection::Colours,
-                        MclSection::Clusters,
-                        MclSection::ClusterVertices,
-                        MclSection::ClusterTriangles,
-                        MclSection::Groups,
-                        MclSection::Bvh,
-                    ] {
-                        assert_eq!(
-                            mesh.section(section).unwrap(),
-                            original.section(section),
-                            "{corruption}: exact certified {section:?} bytes"
+                    // The scene keeps no bytes; the upload path re-reads the exact certified ones.
+                    assert_eq!(
+                        mesh.resident_estimate().unwrap().raw_payload_bytes,
+                        0,
+                        "{corruption}: scene meshes start released"
+                    );
+                    mesh.prepare_tangents().unwrap();
+                    let wake = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                    let ready = mesh
+                        .request_upload(wake.clone(), |reason| panic!("{reason}"))
+                        .unwrap();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    while !ready && wake.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "rehydration timed out"
                         );
+                        std::thread::yield_now();
                     }
+                    mesh.with_upload(|view, _| {
+                        for section in [
+                            MclSection::Positions,
+                            MclSection::Normals,
+                            MclSection::Uvs,
+                            MclSection::Tangents,
+                            MclSection::Colours,
+                            MclSection::Clusters,
+                            MclSection::ClusterVertices,
+                            MclSection::ClusterTriangles,
+                            MclSection::Groups,
+                            MclSection::Bvh,
+                        ] {
+                            assert_eq!(
+                                view.section(section),
+                                original.section(section),
+                                "{corruption}: exact certified {section:?} bytes"
+                            );
+                        }
+                    })
+                    .unwrap()
+                    .unwrap();
                 }
                 assert!(
                     expected_meshes.is_empty(),
