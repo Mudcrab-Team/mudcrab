@@ -2837,3 +2837,111 @@ mod tests {
         );
     }
 }
+
+/// A CPU mirror of the body maths in `shaders/water.wgsl` (`water_path_length`, `water_body` and
+/// the colour mix in `fragment`), fed from a real `WaterExtension`'s uniform. It is not a GPU
+/// test: the WGSL is not executed, so a change to the shader equations must be repeated here.
+#[cfg(test)]
+mod water_body_tests {
+    use super::*;
+
+    const NEAR_PLANE: f32 = 0.1;
+    const MAX_WATER_PATH: f32 = 16384.0;
+    /// What `water_depth.rs` clears the snapshot to when it cannot resolve the bed.
+    const UNRESOLVED: f32 = -1.0;
+
+    /// Camera at the origin looking down -Z, water surface 50 units below it and 100 ahead.
+    const SURFACE_VIEW: Vec3 = Vec3::new(0.0, -50.0, -100.0);
+
+    /// Returns (colour mix toward deep, body alpha) for one snapshot texel.
+    fn shade(extension: &WaterExtension, texel: f32) -> (f32, f32) {
+        let settings = &extension.settings;
+        let path = if settings.depth_params.x < 0.5 || texel < 0.0 {
+            -1.0
+        } else if texel <= 0.0 {
+            MAX_WATER_PATH
+        } else {
+            let bed_view_z = -NEAR_PLANE / texel;
+            let past_surface = (bed_view_z / SURFACE_VIEW.z.min(-1e-4) - 1.0).max(0.0);
+            (SURFACE_VIEW.length() * past_surface).min(MAX_WATER_PATH)
+        };
+        let vertical = path * SURFACE_VIEW.y.abs() / SURFACE_VIEW.length().max(1e-4);
+        let body = settings.body;
+        if path < 0.0 {
+            return (1.0, body.x);
+        }
+        let far = body.z.max(body.y + 1.0);
+        let colour = (vertical / far).clamp(0.0, 1.0);
+        if body.w <= 0.0 {
+            return (colour, 0.0);
+        }
+        let clear = ((far - path) / (far - body.y)).clamp(0.0, 1.0);
+        (colour, 1.0 - clear.powf(body.w))
+    }
+
+    /// The snapshot texel a bed at `bed_view_z` would leave behind.
+    fn texel_for_bed(bed_view_z: f32) -> f32 {
+        -NEAR_PLANE / bed_view_z
+    }
+
+    fn extension() -> WaterExtension {
+        let mut extension = WaterExtension::default().with_body(
+            [0x80, 0xA0, 0x60],
+            50,
+            WaterFog {
+                near: 0.0,
+                far: 150.0,
+                amount: 0.7,
+            },
+        );
+        extension.set_bed_depth(Some(Handle::default()));
+        extension
+    }
+
+    #[test]
+    fn deeper_beds_give_a_deeper_colour_and_a_more_opaque_body() {
+        let extension = extension();
+        let shallow = shade(&extension, texel_for_bed(-110.0));
+        let middle = shade(&extension, texel_for_bed(-150.0));
+        let deep = shade(&extension, texel_for_bed(-300.0));
+
+        assert!(
+            shallow.0 < middle.0 && middle.0 < deep.0,
+            "colour: {shallow:?} {middle:?} {deep:?}"
+        );
+        assert!(
+            shallow.1 < middle.1 && middle.1 < deep.1,
+            "alpha: {shallow:?} {middle:?} {deep:?}"
+        );
+        assert!(
+            shallow.0 < 0.1 && shallow.1 < 0.2,
+            "a thin film stays shallow and clear"
+        );
+        assert!(
+            deep.1 > 0.99,
+            "past the far fog distance the body is opaque"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_or_unbound_snapshot_draws_deep_at_the_anam_opacity() {
+        let extension = extension();
+        let anam = extension.body().x;
+        assert_eq!(shade(&extension, UNRESOLVED), (1.0, anam));
+
+        // A bound texture with a valid texel must not take the same branch.
+        assert_ne!(shade(&extension, texel_for_bed(-110.0)), (1.0, anam));
+
+        let mut unbound = extension.clone();
+        unbound.set_bed_depth(None);
+        assert_eq!(shade(&unbound, texel_for_bed(-300.0)), (1.0, anam));
+    }
+
+    #[test]
+    fn nothing_behind_the_water_reads_as_bottomless() {
+        let extension = extension();
+        let open = shade(&extension, 0.0);
+        assert_eq!(open, shade(&extension, texel_for_bed(-1.0e6)));
+        assert!(open.1 > 0.99);
+    }
+}
