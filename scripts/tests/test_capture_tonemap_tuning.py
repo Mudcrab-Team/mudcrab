@@ -5,8 +5,10 @@ import copy
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -131,7 +133,8 @@ class CaptureEvidenceTests(unittest.TestCase):
         fixture = self.root / "fixture.json"
         TUNING.write_json(fixture, {"png": base64.b64encode(png()).decode(), "receipt": self.receipt})
         engine = self.root / "fake-engine"
-        engine.write_text("""#!/usr/bin/env python3
+        fake = engine.with_suffix(".py") if os.name == "nt" else engine
+        fake.write_text("""#!/usr/bin/env python3
 import base64,json,sys
 from pathlib import Path
 arguments=sys.argv[1:]
@@ -141,7 +144,12 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
 (directory/'riverwood.png').write_bytes(base64.b64decode(fixture['png']))
 (directory/'shots.log').write_text(json.dumps(fixture['receipt'])+'\\n')
 """)
-        engine.chmod(0o755)
+        if os.name == "nt":
+            # Windows cannot execute a shebang script: a batch launcher runs it with this Python.
+            engine = engine.with_suffix(".cmd")
+            engine.write_text(f'@"{sys.executable}" "%~dp0{fake.name}" %*\n')
+        else:
+            engine.chmod(0o755)
         assets = self.root / "assets"
         assets.mkdir()
         config = {"schema_version": 1, "common_args": ["--fixture", "{input:fixture}"],
@@ -180,8 +188,9 @@ fixture=json.loads(Path(arguments[arguments.index('--fixture')+1]).read_text())
             for field in ("original_path", "path"):
                 self.assertFalse(Path(preview_data["references"][name][field]).is_absolute())
                 self.assertTrue(Path(manifest["inputs"][name][field]).is_absolute())
-        self.assertEqual(preview.count(str(output / "references/approved.png")), 1)
-        self.assertEqual(preview.count(str(output / "references/skyrim.png")), 1)
+        # The preview embeds paths as JSON, which doubles a Windows backslash.
+        self.assertEqual(preview.count(json.dumps(str(output / "references/approved.png"))[1:-1]), 1)
+        self.assertEqual(preview.count(json.dumps(str(output / "references/skyrim.png"))[1:-1]), 1)
         self.assertEqual(len(preview_data["runs"]), 2)
         for run in manifest["runs"]:
             stage_page = (output / f"comparison-{run['name']}-preview.html").read_text()

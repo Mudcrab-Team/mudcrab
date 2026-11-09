@@ -563,7 +563,7 @@ fn group_note(group: &str) -> Option<&'static str> {
         ),
         "Image" => Some(
             "HDR composition stays on. Material colors, texture tiling, and per-water factors \
-             come from converted assets.",
+             come from converted assets. Visual profile requires Save and a restart.",
         ),
         "Threads" => Some(
             "Distance changes update streaming around the current camera. IO threads require \
@@ -843,7 +843,7 @@ pub const CONTROL_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ),
             (
                 "Left click",
-                "Capture cursor while playing; activate menu buttons",
+                "Capture cursor while playing; select a world reference in the console; activate menu buttons",
             ),
             ("Backtick", "Open / close developer console"),
             (
