@@ -285,8 +285,30 @@ def read_complete_report(path):
     return None
 
 
-def _terminate_group(proc, grace=5.0):
-    """Stop the engine and anything it spawned. Returns True when SIGKILL was needed."""
+# Process groups, killpg and SIGKILL are POSIX-only. Windows gets the child's own terminate/kill,
+# which does not reach grandchildren; the harness targets macOS and this keeps it importable.
+POSIX = os.name == "posix"
+KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def spawn_options(posix=None):
+    """Popen options that put the engine outside this process's signal group."""
+    if POSIX if posix is None else posix:
+        return {"start_new_session": True}
+    return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+
+
+def _terminate_group(proc, grace=5.0, posix=None):
+    """Stop the engine and anything it spawned. Returns True when it had to be killed."""
+    if not (POSIX if posix is None else posix):
+        proc.terminate()
+        try:
+            proc.wait(timeout=grace)
+            return False
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return True
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
@@ -306,7 +328,7 @@ def _terminate_group(proc, grace=5.0):
         proc.wait(timeout=grace)
         return False
     except subprocess.TimeoutExpired:
-        signal_group(signal.SIGKILL)
+        signal_group(KILL_SIGNAL)
         proc.wait()
         return True
 
@@ -345,7 +367,7 @@ def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace,
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         try:
             proc = subprocess.Popen(command, stdout=out, stderr=err, stdin=subprocess.DEVNULL,
-                                    start_new_session=True, env=env)
+                                    env=env, **spawn_options())
         except OSError as error:
             return {"spawned": False, "error": str(error), "exit_code": None, "killed": False,
                     "output_complete": False, "wall_seconds": 0.0, "complete_after_seconds": None,
@@ -530,6 +552,9 @@ def find_engine_pid(root_pid, engine, processes):
 
 
 def pid_alive(pid):
+    if not POSIX:
+        # os.kill(pid, 0) terminates the process on Windows instead of probing it.
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -560,7 +585,7 @@ def terminate_engine_under_samply(proc, engine, *, grace=5.0, finalize_timeout=S
         while alive(pid) and clock() < deadline:
             sleep(0.1)
         if alive(pid):
-            send_signal(pid, signal.SIGKILL)
+            send_signal(pid, KILL_SIGNAL)
     elif pid is None and proc.poll() is None:
         # No engine below samply: nothing else can be ended without losing the profile.
         stopped = True

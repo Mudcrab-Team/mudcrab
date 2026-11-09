@@ -356,6 +356,7 @@ class MetricExtractionTest(unittest.TestCase):
         self.assertEqual(metrics["memory_peak_gib"], 2.5)
 
 
+@unittest.skipIf(sys.platform == "win32", "the fixtures are shebang scripts, which Windows cannot execute")
 class WatchdogTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -579,6 +580,36 @@ def solid_png(path, width, height, value, channels=3, noise=0):
         rows.append(bytes(min(255, max(0, value + ((x * 31 + y * 17) % (noise + 1) if noise else 0)))
                           for x in range(width) for _ in range(channels)))
     perf.write_png(path, width, height, channels, b"".join(rows))
+
+
+class NonPosixFallbackTest(unittest.TestCase):
+    """The platform flag is injected; this was not run on Windows."""
+
+    def test_non_posix_spawn_options_use_a_new_process_group(self):
+        self.assertEqual(perf.spawn_options(posix=True), {"start_new_session": True})
+        with mock.patch.object(perf.subprocess, "CREATE_NEW_PROCESS_GROUP", 512, create=True):
+            self.assertEqual(perf.spawn_options(posix=False), {"creationflags": 512})
+
+    def test_non_posix_termination_uses_terminate_then_kill(self):
+        proc = mock.Mock(pid=1)
+        proc.wait.return_value = 0
+        with mock.patch.object(perf.os, "killpg", create=True) as killpg:
+            self.assertFalse(perf._terminate_group(proc, grace=1, posix=False))
+        proc.terminate.assert_called_once_with()
+        proc.kill.assert_not_called()
+        killpg.assert_not_called()
+
+    def test_non_posix_termination_kills_when_terminate_is_ignored(self):
+        proc = mock.Mock(pid=1)
+        proc.wait.side_effect = [subprocess.TimeoutExpired("x", 1), 0]
+        self.assertTrue(perf._terminate_group(proc, grace=1, posix=False))
+        proc.terminate.assert_called_once_with()
+        proc.kill.assert_called_once_with()
+
+    def test_pid_probe_never_signals_off_posix(self):
+        with mock.patch.object(perf, "POSIX", False), mock.patch.object(perf.os, "kill") as kill:
+            self.assertFalse(perf.pid_alive(1234))
+        kill.assert_not_called()
 
 
 class PngTest(unittest.TestCase):
@@ -1369,6 +1400,7 @@ class ProfilerTest(unittest.TestCase):
             proc2, "/bin/engine", processes=lambda: [], send_signal=lambda *a: self.fail("signalled"),
             alive=lambda pid: False, sleep=lambda s: None))
 
+    @unittest.skipIf(sys.platform == "win32", "the fixtures are shebang scripts, which Windows cannot execute")
     def test_watchdog_does_not_call_a_still_saving_profiler_a_hang(self):
         script = self.root / "slow"
         script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(1.5)\n", encoding="utf-8")
@@ -1381,6 +1413,7 @@ class ProfilerTest(unittest.TestCase):
         self.assertEqual(perf.classify(watch), "ok")
 
     @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    @unittest.skipIf(sys.platform == "win32", "the fixtures are shebang scripts, which Windows cannot execute")
     def test_hung_engine_under_a_fake_samply_is_killed_and_the_profile_is_still_written(self):
         engine = make_fake_engine(self.root)
         fake_samply = self.root / "samply"
