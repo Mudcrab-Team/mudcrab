@@ -26,6 +26,7 @@ use bevy::{
     prelude::*,
     render::{
         Render, RenderApp, RenderStartup, RenderSystems,
+        diagnostic::RecordDiagnostics,
         extract_component::{
             ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin,
             UniformComponentPlugin,
@@ -418,24 +419,31 @@ fn height_fog_pass(
             depth.view(),
         )),
     );
-    let mut render_pass = ctx
-        .command_encoder()
-        .begin_render_pass(&RenderPassDescriptor {
-            label: Some("height_fog_pass"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: post_process.destination,
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations::default(),
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-    render_pass.set_pipeline(render_pipeline);
-    render_pass.set_bind_group(0, &bind_group, &[fog_index.index(), view_offset.offset]);
-    render_pass.draw(0..3, 0..1);
+    // The span name becomes `render/height_fog/elapsed_gpu` in the diagnostics store.
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let time_span = diagnostics.time_span(ctx.command_encoder(), "height_fog");
+    {
+        let mut render_pass = ctx
+            .command_encoder()
+            .begin_render_pass(&RenderPassDescriptor {
+                label: Some("height_fog_pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: post_process.destination,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations::default(),
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        render_pass.set_pipeline(render_pipeline);
+        render_pass.set_bind_group(0, &bind_group, &[fog_index.index(), view_offset.offset]);
+        render_pass.draw(0..3, 0..1);
+    }
+    time_span.end(ctx.command_encoder());
 }
 
 #[cfg(test)]
