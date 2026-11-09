@@ -404,6 +404,9 @@ fn run_water_depth_snapshot(
         (pipeline, bind_group)
     });
 
+    // The clear-only pass runs every frame in a degraded state on purpose: the texture is always
+    // bound once it exists, so skipping the pass would leave stale or uninitialised depth for the
+    // shader to read; the sentinel is what tells it the bed is unknown.
     let clear = if resolve.is_some() {
         0.0
     } else {
