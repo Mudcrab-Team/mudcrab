@@ -206,6 +206,11 @@ fn wanted_layer(rendering: &crate::settings::RenderingSettings) -> Option<Height
     })
 }
 
+/// Marks a camera whose depth texture gained `TEXTURE_BINDING` because of the fog, so switching
+/// the fog off clears exactly that bit and leaves any usage something else asked for.
+#[derive(Component)]
+struct HeightFogDepthBinding;
+
 /// Gives every fogged camera the uniform for this frame, and removes it where the weather fog is
 /// gone (interiors, fog switched off) or the height fog is off.
 #[allow(clippy::type_complexity)]
@@ -220,6 +225,7 @@ fn apply_height_fog(
             &Projection,
             Option<&HeightFog>,
             Option<&mut Camera3d>,
+            Has<HeightFogDepthBinding>,
         ),
         With<FogCamera>,
     >,
@@ -237,7 +243,7 @@ fn apply_height_fog(
     });
     let layer = wanted_layer(rendering.as_deref().unwrap_or(launch));
     let sun = suns.iter().next();
-    for (camera, fog, projection, current, camera_3d) in &mut cameras {
+    for (camera, fog, projection, current, camera_3d, added_binding) in &mut cameras {
         let wanted = match (fog, &layer) {
             (Some(fog), Some(layer)) => {
                 let sky_distance = match projection {
@@ -258,12 +264,21 @@ fn apply_height_fog(
                     if !usages.contains(TextureUsages::TEXTURE_BINDING) {
                         camera_3d.depth_texture_usages =
                             (usages | TextureUsages::TEXTURE_BINDING).into();
+                        commands.entity(camera).insert(HeightFogDepthBinding);
                     }
                 }
                 commands.entity(camera).insert(wanted);
             }
             (None, Some(_)) => {
                 commands.entity(camera).remove::<HeightFog>();
+                if added_binding {
+                    if let Some(mut camera_3d) = camera_3d {
+                        let usages = TextureUsages::from(camera_3d.depth_texture_usages);
+                        camera_3d.depth_texture_usages =
+                            (usages - TextureUsages::TEXTURE_BINDING).into();
+                    }
+                    commands.entity(camera).remove::<HeightFogDepthBinding>();
+                }
             }
             (None, None) => {}
         }
@@ -679,5 +694,37 @@ mod tests {
         app.world_mut().entity_mut(camera).remove::<DistanceFog>();
         app.update();
         assert!(app.world().get::<HeightFog>(camera).is_none());
+        assert_eq!(
+            depth_usages(&app, camera),
+            TextureUsages::RENDER_ATTACHMENT,
+            "off leaves the depth texture as it was before the fog"
+        );
+    }
+
+    #[test]
+    fn switching_the_setting_off_restores_the_depth_usages() {
+        let (mut app, camera) = fog_app();
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::settings::RenderingSettings>()
+            .height_fog = false;
+        app.update();
+        assert!(app.world().get::<HeightFog>(camera).is_none());
+        assert_eq!(depth_usages(&app, camera), TextureUsages::RENDER_ATTACHMENT);
+    }
+
+    #[test]
+    fn a_binding_requested_elsewhere_stays_when_the_fog_goes() {
+        let (mut app, camera) = fog_app();
+        let wanted = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING;
+        app.world_mut()
+            .get_mut::<Camera3d>(camera)
+            .unwrap()
+            .depth_texture_usages = wanted.into();
+        app.update();
+        app.world_mut().entity_mut(camera).remove::<DistanceFog>();
+        app.update();
+        assert!(app.world().get::<HeightFog>(camera).is_none());
+        assert_eq!(depth_usages(&app, camera), wanted);
     }
 }
