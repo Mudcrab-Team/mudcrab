@@ -399,8 +399,10 @@ struct BenchmarkReport {
     elapsed_seconds: f64,
     average_fps: f64,
     frame_ms_mean: f64,
-    /// The most draw commands the cluster path encoded for any one view in one frame, over the run;
-    /// absent without the cluster renderer. Vertex pulling holds it near the number of draw groups.
+    /// The most group draw commands (one `draw_indirect` or one multi-draw-count call each, never
+    /// one per cluster) the cluster path encoded for any one view in one frame, over the run; absent
+    /// without the cluster renderer. Every pass that draws a group counts it, so a view with both
+    /// the early prepass and the main opaque pass reads about twice its number of draw groups.
     #[serde(skip_serializing_if = "Option::is_none")]
     encoded_draws_per_view: Option<u32>,
     frame_ms_p50: f64,

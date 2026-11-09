@@ -549,15 +549,17 @@ pub struct ClusterScene {
     pub blocks: Vec<SceneBlock>,
 }
 
-/// How many draw commands the cluster path encodes, shared between the render world that counts
-/// them and the main world's benchmark report. Each view counts the commands it encodes in a frame;
+/// How many group draw commands the cluster path encodes, shared between the render world that
+/// counts them and the main world's benchmark report. A command is one `draw_indirect` or one
+/// multi-draw-count call for a draw group, counted once per pass that issues it (the early prepass
+/// and the main opaque pass each count a group). Each view counts the commands it encodes in a frame;
 /// the cull of the next frame publishes the largest per-view count, and the report carries the
 /// largest of those over the run.
 #[derive(Resource, Clone, Default)]
 pub struct ClusterDrawStats(Arc<std::sync::atomic::AtomicU32>);
 
 impl ClusterDrawStats {
-    /// The most draw commands any one view encoded in one frame so far.
+    /// The most group draw commands any one view encoded in one frame so far, summed over its passes.
     pub fn encoded_draws_per_view(&self) -> u32 {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -976,7 +978,8 @@ struct ViewGpu {
     /// cull's draw-group prefix: the vertex-pulled draw reads it as its arguments and the count path
     /// reads its draw count from word 1 of the same record.
     group_args: Buffer,
-    /// Draw commands this view encoded since the cull last published them (see [`ClusterDrawStats`]).
+    /// Group draw commands this view encoded, across all its passes, since the cull last published
+    /// them (see [`ClusterDrawStats`]).
     encoded_draws: std::sync::atomic::AtomicU32,
     params: Buffer,
     /// Exact contents last written to this allocation, including the first upload.
