@@ -336,6 +336,7 @@ mod tests {
     /// The default list names DX12, and the off-Windows settings must not.
     #[test]
     fn default_settings_lose_the_dx12_bit() {
+        let _env = env_guard();
         let defaults = WgpuSettings::default();
         let settings = settings_without_dx12(defaults.clone());
         let backends = settings.backends.expect("a backend list is always set");
@@ -349,6 +350,7 @@ mod tests {
     /// A disabled renderer stays disabled, and a user list keeps all its other bits.
     #[test]
     fn user_lists_lose_only_the_dx12_bit() {
+        let _env = env_guard();
         let disabled = settings_without_dx12(WgpuSettings {
             backends: None,
             ..Default::default()
@@ -380,20 +382,28 @@ mod tests {
         assert_eq!(empty.backends, Some(Backends::empty()));
     }
 
-    /// Serializes the tests that change the process environment.
-    #[cfg(not(debug_assertions))]
+    /// Serializes every test that reads or changes the process environment.
+    /// Release builds read `WGPU_VALIDATION_INDIRECT_CALL` inside
+    /// `settings_without_dx12`, so all callers of it take this lock, not only
+    /// the override tests.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     /// Runs `body` with `WGPU_VALIDATION_INDIRECT_CALL` set to `value` (or unset), then restores it.
     #[cfg(not(debug_assertions))]
     fn with_indirect_validation_env(value: Option<&str>, body: impl FnOnce()) {
         const KEY: &str = "WGPU_VALIDATION_INDIRECT_CALL";
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = env_guard();
         let previous = std::env::var_os(KEY);
-        // SAFETY: every test that touches this variable holds `ENV_LOCK`, and
-        // the other tests in this module never read it.
+        // SAFETY: every test that reads or writes this variable, directly or
+        // through `WgpuSettings::default()` and `settings_without_dx12`, holds
+        // `ENV_LOCK`, so no other thread in this module touches the environment
+        // while it is changed.
         unsafe {
             match value {
                 Some(value) => std::env::set_var(KEY, value),
