@@ -952,6 +952,39 @@ class BuildTest(unittest.TestCase):
         self.assertFalse((self.bins / f"engine-{self.sha[:8]}").exists())
 
 
+    def failing_cargo(self, code=101):
+        def failing(command, **kwargs):
+            if command[0] == "cargo":
+                kwargs_dir = Path(kwargs["cwd"], "target")
+                kwargs_dir.mkdir()
+                (kwargs_dir / "junk").write_text("x")
+                return subprocess.CompletedProcess(command, code, "", "error: boom")
+            return perf._run(command, **kwargs)
+        return failing
+
+    def test_a_failed_build_removes_its_worktree_and_target(self):
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.build(runner=self.failing_cargo())
+        self.assertEqual(caught.exception.name, "build_failed")
+        self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
+
+    def test_keep_worktree_also_keeps_a_failed_build(self):
+        with self.assertRaises(perf.HarnessError):
+            self.build(runner=self.failing_cargo(), keep_worktree=True)
+        self.assertTrue((self.worktrees / f"perf-{self.sha[:8]}" / "target" / "junk").exists())
+
+    def test_a_missing_binary_after_a_successful_build_still_cleans_up(self):
+        def quiet(command, **kwargs):
+            if command[0] == "cargo":
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return perf._run(command, **kwargs)
+
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.build(runner=quiet)
+        self.assertEqual(caught.exception.name, "binary_missing")
+        self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
+
+
 class SummaryTest(unittest.TestCase):
     def test_summary_lists_primary_metrics_and_refusals(self):
         verdict = {

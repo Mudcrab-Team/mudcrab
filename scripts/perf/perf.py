@@ -1603,22 +1603,26 @@ def build(ref, *, repo, worktree_root, bin_dir, runner=_run, free_bytes=None, ke
         added = runner(["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), plan["sha"]])
         if added.returncode != 0:
             raise HarnessError("worktree_failed", added.stderr.strip())
-    env = dict(os.environ if environ is None else environ)
-    # A shared target directory lets cargo reuse another tree's test and build outputs, and it
-    # defeats sccache keys; each build gets the target directory inside its own worktree.
-    env.pop("CARGO_TARGET_DIR", None)
-    env["CARGO_INCREMENTAL"] = "0"
-    built = runner(["cargo", "build", "--locked", "--release", "-p", "engine", "--bin", "engine"],
-                   cwd=str(worktree), env=env)
-    if built.returncode != 0:
-        raise HarnessError("build_failed", (built.stderr or "").strip()[-2000:])
-    produced = worktree / "target" / "release" / "engine"
-    if not produced.is_file():
-        raise HarnessError("binary_missing", f"{produced} was not produced")
-    shutil.copy2(produced, plan["binary"])
-    plan["binary"].chmod(0o755)
-    if not keep_worktree:
-        runner(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)])
+    try:
+        env = dict(os.environ if environ is None else environ)
+        # A shared target directory lets cargo reuse another tree's test and build outputs, and it
+        # defeats sccache keys; each build gets the target directory inside its own worktree.
+        env.pop("CARGO_TARGET_DIR", None)
+        env["CARGO_INCREMENTAL"] = "0"
+        built = runner(["cargo", "build", "--locked", "--release", "-p", "engine", "--bin", "engine"],
+                       cwd=str(worktree), env=env)
+        if built.returncode != 0:
+            raise HarnessError("build_failed", (built.stderr or "").strip()[-2000:])
+        produced = worktree / "target" / "release" / "engine"
+        if not produced.is_file():
+            raise HarnessError("binary_missing", f"{produced} was not produced")
+        shutil.copy2(produced, plan["binary"])
+        plan["binary"].chmod(0o755)
+    finally:
+        # A failed build leaves a target directory of 9-20 GiB; only --keep-worktree, which exists
+        # for debugging the build, may keep it.
+        if not keep_worktree:
+            runner(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)])
     plan["built"] = True
     return plan
 
