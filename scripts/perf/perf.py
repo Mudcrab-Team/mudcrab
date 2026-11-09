@@ -1050,6 +1050,12 @@ def noise_caveat(pairs):
             "\"no change\": a real slowdown of around 10% often reads as `noise` at this pair count.")
 
 
+MULTIPLE_COMPARISON_NOTE = (
+    "Only the four frame-time rows decide a verdict. Every other row is uncorrected for multiple "
+    "comparisons (a run lists about twenty metrics, so one of them is often flagged by chance): "
+    "treat it as a lead to investigate, not a verdict.")
+
+
 def summary_markdown(verdict):
     lines = ["# Perf comparison", "",
              f"- base: `{verdict['base']['path']}` (sha256 {verdict['base']['sha256'][:12]}, "
@@ -1060,6 +1066,7 @@ def summary_markdown(verdict):
              f"seed {verdict['seed']}",
              f"- overall: **{verdict['overall']}**"]
     lines += [f"- WARNING: {w}" for w in build_warnings(verdict)]
+    lines.append(f"- note: {MULTIPLE_COMPARISON_NOTE}")
     if verdict.get("window_mode"):
         lines.append(f"- window mode: {verdict['window_mode']}")
     if verdict.get("window_mode") == "hidden" and verdict.get("platform") == "Darwin":

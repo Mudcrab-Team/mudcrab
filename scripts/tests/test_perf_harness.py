@@ -1009,6 +1009,7 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("preflight fail", text)
         self.assertIn("`noise` means not distinguishable from run-to-run variation at 3 pairs, not \"no change\"",
                       text)
+        self.assertIn("uncorrected for multiple comparisons", text)
 
     def test_the_noise_caveat_appears_only_next_to_a_noise_verdict(self):
         def verdict(summary):
@@ -1018,6 +1019,14 @@ class SummaryTest(unittest.TestCase):
                                         "summary_verdict": summary, "metrics": {}}}}
         self.assertIn("at 6 pairs, not \"no change\"", perf.summary_markdown(verdict("noise")))
         self.assertNotIn("not \"no change\"", perf.summary_markdown(verdict("regressed")))
+
+    def test_the_overall_verdict_depends_on_the_primary_metrics_only(self):
+        pairs = [{"base": run_entry(metrics={**frame_metrics(1.0, 0.01 * i), "gpu/x": 1.0}),
+                  "cand": run_entry(metrics={**frame_metrics(1.0, 0.01 * i), "gpu/x": 5.0 + i})}
+                 for i in range(8)]
+        result = perf.analyze_scenario("s", pairs, seed=1, min_effect=0.02, samples=200)
+        self.assertEqual(result["metrics"]["gpu/x"]["verdict"], "regressed")
+        self.assertEqual(result["summary_verdict"], "noise")
 
 
 class BuildIdentityTest(unittest.TestCase):

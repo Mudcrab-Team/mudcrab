@@ -132,7 +132,9 @@ excludes 1.0 about a quarter of the time when nothing changed. Times are lower-i
 every GPU pass that reports a non-zero time (Metal's timestamp queries often read all zero, and
 those passes are skipped); the means of the eight most expensive CPU spans and schedules; process
 memory peak when the report has one. The scenario's summary verdict is drawn from the four frame
-time metrics only; the others are listed when they are not noise. A pair is dropped when either
+time metrics only (checked: `analyze_scenario` reads `PRIMARY_METRICS` and nothing else); the others are
+listed when they are not noise, are uncorrected for multiple comparisons (about twenty rows, so one is often
+flagged by chance) and are leads to investigate, not verdicts. A pair is dropped when either
 run is not usable, and a verdict needs at least six usable pairs (the default `--pairs`): with
 five or fewer the test cannot reach 0.05 even when every pair moves the same way.
 
