@@ -70,10 +70,12 @@ loads that same alias as the UNORM twin of the format `mudcrab` gets, chosen onc
   sampling, and with raw texels they are skipped. Without it, a raw palette index is encoded again
   and every effect picks an entry that is too bright, and skin, FaceGen and hair tints blend in the
   wrong space.
-- Terrain LOD chunks embed their albedo in the GLB, so no asset loader reaches it. The engine
-  retags that one image per chunk to its UNORM twin before the chunk's first draw; its bytes are
-  colour-space-agnostic and there is no second upload to pay for. Without it, distant terrain is a
-  brightness step away from near terrain.
+- Terrain LOD chunks embed their albedo in the GLB, so no asset loader reaches it. A glTF
+  extension handler replaces that one image with its UNORM twin while the chunk's GLB is still
+  loading (paths under `lod/` only), so it enters `Assets<Image>` already raw and is uploaded once;
+  its bytes are colour-space-agnostic. Without it, distant terrain is a brightness step away from
+  near terrain. A chunk whose albedo is still sRGB when it becomes ready is retagged then, with a
+  warning, at the cost of a second upload.
 - Effect palettes are the exception for their own colour, not their index. A palette is published
   at a plain linear path, not under an `.opensky-srgb` alias, and Bevy keys images by path, so both
   profiles sample the palette texture through an sRGB view. `skyrim` still picks the right entry:

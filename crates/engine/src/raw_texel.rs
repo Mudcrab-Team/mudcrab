@@ -5,9 +5,17 @@
 //! loader. `skyrim` evaluates the authored bytes, so those aliases have to decode as their UNORM
 //! twin. [`RawTexelImageLoader`] claims only the alias extensions and forces `is_srgb = false`;
 //! every other image keeps Bevy's own loader.
+//!
+//! A terrain LOD chunk embeds its albedo in the GLB, where `bevy_gltf` decodes it without any
+//! asset loader. [`LodAlbedoRawTexelHandler`] gives that one image its UNORM twin inside the glTF
+//! load, so it enters `Assets<Image>` already raw.
 
 use bevy::{
     asset::{AssetApp, AssetLoader, LoadContext, io::Reader},
+    gltf::{
+        GltfAssetLabel, GltfMaterial,
+        extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers},
+    },
     image::{
         CompressedImageFormatSupport, CompressedImageFormats, Image, ImageLoader, ImageLoaderError,
         ImageLoaderSettings,
@@ -139,10 +147,11 @@ pub(crate) fn unorm_twin(format: TextureFormat) -> Option<TextureFormat> {
 
 /// Retags an already-loaded colour image to its raw-texel twin, returning whether it changed.
 ///
-/// This is for images no [`AssetLoader`] can reach, such as the albedo embedded in a terrain LOD
-/// chunk's GLB. Their bytes are colour-space-agnostic, the image is loaded once per chunk, and the
-/// retag happens before the chunk's first draw, so the double upload that rules out a retag for
-/// streamed textures does not apply.
+/// The bytes are colour-space-agnostic, so the retag is always correct, but it is not free: the
+/// render world extracts an image as soon as it is added, so changing the format afterwards
+/// raises `AssetEvent::Modified` and the image is uploaded a second time. Images the engine can
+/// reach while they load take their format there instead ([`RawTexelImageLoader`],
+/// [`LodAlbedoRawTexelHandler`]); this is the fallback for one that slipped past both.
 pub(crate) fn retag_to_raw_texels(images: &mut Assets<Image>, handle: &Handle<Image>) -> bool {
     let Some(mut image) = images.get_mut(handle) else {
         return false;
@@ -152,6 +161,63 @@ pub(crate) fn retag_to_raw_texels(images: &mut Assets<Image>, handle: &Handle<Im
     };
     image.texture_descriptor.format = twin;
     true
+}
+
+/// Whether an asset path is a terrain LOD chunk payload, which
+/// [`shared::lod::chunk_payload_path`] publishes under the top-level `lod` directory.
+fn is_lod_chunk_payload(path: &std::path::Path) -> bool {
+    path.starts_with("lod")
+}
+
+/// Gives a terrain LOD chunk's embedded albedo its UNORM twin while the GLB is still loading.
+///
+/// `bevy_gltf` decodes a bufferView image itself and tags it sRGB, and offers no setting to
+/// change that. Its extension hooks run inside the load, though, and a sub-asset added again
+/// under its own label replaces the first one and keeps its handle. So the image is replaced
+/// by a raw-tagged copy before the load finishes: it reaches `Assets<Image>` once, already
+/// UNORM, and is extracted and uploaded once. The price is one copy of the image bytes on the
+/// loading task.
+///
+/// Only chunk payloads are touched. An image embedded in any other glTF still arrives as sRGB
+/// and fails colour-space validation under `skyrim`.
+#[derive(Clone, Default)]
+struct LodAlbedoRawTexelHandler;
+
+impl GltfExtensionHandler for LodAlbedoRawTexelHandler {
+    fn dyn_clone(&self) -> Box<dyn ErasedGltfExtensionHandler> {
+        Box::new(self.clone())
+    }
+
+    fn on_material(
+        &mut self,
+        context: &mut LoadContext<'_>,
+        source: &gltf::Material<'_>,
+        _handle: Handle<GltfMaterial>,
+        _loaded: &GltfMaterial,
+        _label: &str,
+    ) {
+        if !is_lod_chunk_payload(context.path().path()) {
+            return;
+        }
+        let Some(base_color) = source.pbr_metallic_roughness().base_color_texture() else {
+            return;
+        };
+        let label = GltfAssetLabel::Texture(base_color.texture().index()).to_string();
+        // An image behind an external URI is not a sub-asset of this load, so it is absent here
+        // and keeps whatever its own loader decided.
+        let Some(image) = context
+            .get_labeled(&label)
+            .and_then(|asset| asset.get::<Image>())
+        else {
+            return;
+        };
+        let Some(twin) = unorm_twin(image.texture_descriptor.format) else {
+            return;
+        };
+        let mut raw = image.clone();
+        raw.texture_descriptor.format = twin;
+        context.add_labeled_asset(label, raw);
+    }
 }
 
 /// The fragment-shader define that tells a material its colour texture holds authored bytes.
@@ -164,8 +230,8 @@ pub(crate) fn specialize_raw_colour_texels(descriptor: &mut RenderPipelineDescri
     }
 }
 
-/// Registers [`RawTexelImageLoader`] under `skyrim` and nothing under `mudcrab`, so the default
-/// profile keeps exactly the loader graph it had.
+/// Registers [`RawTexelImageLoader`] and the LOD albedo glTF handler under `skyrim` and nothing
+/// under `mudcrab`, so the default profile keeps exactly the loader graph it had.
 pub struct RawTexelPlugin {
     pub profile: VisualProfile,
 }
@@ -193,6 +259,17 @@ impl Plugin for RawTexelPlugin {
             }
         };
         app.register_asset_loader(RawTexelImageLoader::new(supported));
+        // The glTF loader shares this list, so a handler pushed here reaches every later load.
+        match app.world().get_resource::<GltfExtensionHandlers>() {
+            Some(handlers) => handlers
+                .0
+                .write_blocking()
+                .push(Box::new(LodAlbedoRawTexelHandler)),
+            None => warn!(
+                "GltfExtensionHandlers is absent; terrain LOD albedo is retagged after loading \
+                 and uploads twice"
+            ),
+        }
     }
 }
 
@@ -512,6 +589,164 @@ mod tests {
             normal.texture_descriptor.format,
             TextureFormat::Bc1RgbaUnorm
         );
+    }
+
+    /// A binary glTF whose single material samples an albedo embedded as a bufferView KTX2, the
+    /// way the terrain LOD compiler writes a chunk.
+    fn embedded_albedo_glb() -> Vec<u8> {
+        let mut albedo = crate::test_support::colour_ktx2(DxgiFormat::BC1_UNorm, 2);
+        let albedo_len = albedo.len();
+        albedo.resize(albedo_len.next_multiple_of(4), 0);
+        let mut json = serde_json::to_vec(&serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_texture_basisu"],
+            "buffers": [{"byteLength": albedo.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": albedo_len}],
+            "images": [{"bufferView": 0, "mimeType": "image/ktx2"}],
+            "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}],
+            "textures": [{
+                "source": 0,
+                "sampler": 0,
+                "extensions": {"KHR_texture_basisu": {"source": 0}}
+            }],
+            "materials": [{
+                "name": "lod_terrain",
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}
+            }]
+        }))
+        .unwrap();
+        json.resize(json.len().next_multiple_of(4), b' ');
+        let total = 12 + 8 + json.len() + 8 + albedo.len();
+        let mut glb = Vec::with_capacity(total);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"JSON");
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(albedo.len() as u32).to_le_bytes());
+        glb.extend_from_slice(b"BIN\0");
+        glb.extend_from_slice(&albedo);
+        glb
+    }
+
+    /// What the asset events flushed in one frame said about an image, with the format the
+    /// asset had when that frame's main schedule ended, which is what extraction then reads.
+    #[derive(Debug, PartialEq)]
+    enum ImageChange {
+        Added(Option<TextureFormat>),
+        Modified,
+    }
+
+    #[derive(Resource, Default)]
+    struct ImageChanges(Vec<(AssetId<Image>, ImageChange)>);
+
+    fn record_image_changes(
+        mut events: MessageReader<AssetEvent<Image>>,
+        images: Res<Assets<Image>>,
+        mut changes: ResMut<ImageChanges>,
+    ) {
+        for event in events.read() {
+            match event {
+                AssetEvent::Added { id } => changes.0.push((
+                    *id,
+                    ImageChange::Added(
+                        images.get(*id).map(|image| image.texture_descriptor.format),
+                    ),
+                )),
+                AssetEvent::Modified { id } => changes.0.push((*id, ImageChange::Modified)),
+                _ => {}
+            }
+        }
+    }
+
+    /// Loads `path` and returns its albedo with every change recorded for it, including over
+    /// the frames after the load settled.
+    fn load_embedded_albedo(app: &mut App, path: &str) -> (Handle<Image>, Vec<ImageChange>) {
+        app.init_resource::<ImageChanges>()
+            .add_systems(Last, record_image_changes);
+        let gltf_handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<Gltf>(path.to_owned());
+        wait_for_asset(app, &gltf_handle);
+        for _ in 0..4 {
+            app.update();
+        }
+        let world = app.world();
+        let gltf = world.resource::<Assets<Gltf>>().get(&gltf_handle).unwrap();
+        let albedo = world
+            .resource::<Assets<GltfMaterial>>()
+            .get(&gltf.materials[0])
+            .unwrap()
+            .base_color_texture
+            .clone()
+            .unwrap();
+        let changes = app
+            .world_mut()
+            .resource_mut::<ImageChanges>()
+            .0
+            .drain(..)
+            .filter(|(id, _)| *id == albedo.id())
+            .map(|(_, change)| change)
+            .collect();
+        (albedo, changes)
+    }
+
+    fn write_asset(directory: &Path, relative: &str, bytes: &[u8]) {
+        let path = directory.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_lod_chunks_embedded_albedo_is_added_raw_and_never_modified() {
+        let directory = tempfile::tempdir().unwrap();
+        let chunk = shared::lod::chunk_payload_path(shared::lod::ChunkKey::new(
+            0x3c,
+            shared::lod::LodTier::Tier4,
+            shared::lod::ChunkAnchor::new(2, -1),
+        ));
+        assert!(is_lod_chunk_payload(Path::new(&chunk)));
+        write_asset(directory.path(), &chunk, &embedded_albedo_glb());
+
+        let mut app = app(directory.path(), VisualProfile::Skyrim);
+        let (albedo, changes) = load_embedded_albedo(&mut app, &chunk);
+        assert_eq!(loaded_format(&app, &albedo), TextureFormat::Bc1RgbaUnorm);
+        // One `Added`, already raw when it is flushed, and no `Modified` after it: nothing asks
+        // the render world to extract the image a second time.
+        assert_eq!(
+            changes,
+            [ImageChange::Added(Some(TextureFormat::Bc1RgbaUnorm))]
+        );
+    }
+
+    #[test]
+    fn only_skyrim_lod_chunks_have_their_embedded_albedo_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let chunk = "lod/0000003c/4/cell_2_-1.glb";
+        let prop = "meshes/prop.glb";
+        assert!(!is_lod_chunk_payload(Path::new(prop)));
+        for path in [chunk, prop] {
+            write_asset(directory.path(), path, &embedded_albedo_glb());
+        }
+        for (profile, path) in [
+            (VisualProfile::Skyrim, prop),
+            (VisualProfile::Mudcrab, chunk),
+        ] {
+            let mut app = app(directory.path(), profile);
+            let (albedo, changes) = load_embedded_albedo(&mut app, path);
+            assert_eq!(
+                loaded_format(&app, &albedo),
+                TextureFormat::Bc1RgbaUnormSrgb,
+                "{path}"
+            );
+            assert_eq!(
+                changes,
+                [ImageChange::Added(Some(TextureFormat::Bc1RgbaUnormSrgb))],
+                "{path}"
+            );
+        }
     }
 
     fn base64(bytes: &[u8]) -> String {

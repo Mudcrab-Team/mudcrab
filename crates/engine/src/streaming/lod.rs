@@ -790,13 +790,19 @@ pub(super) fn track_lod_readiness(
                 continue;
             }
         };
-        if !profile.decodes_colour_srgb() {
-            adopt_raw_lod_colour_textures(
+        if !profile.decodes_colour_srgb()
+            && adopt_raw_lod_colour_textures(
                 entity,
                 &children,
                 &materials,
                 &material_assets,
                 &mut images,
+            ) > 0
+        {
+            warn!(
+                "LOD chunk {} reached readiness with an sRGB albedo; it was retagged here and \
+                 uploads a second time",
+                pending.metadata.payload_path
             );
         }
         for (patch, coverage) in &patches {
@@ -1460,31 +1466,35 @@ fn fail_chunk(
     commands.entity(entity).try_despawn();
 }
 
-/// Retags a chunk's embedded albedo to the profile's raw texels.
+/// Retags any albedo of a spawned chunk that is still sRGB, returning how many it changed.
 ///
-/// A chunk GLB carries its albedo as a bufferView image, which `bevy_gltf` decodes itself, so the
-/// raw-texel asset loader never sees it. The bytes do not depend on the colour space, the image is
-/// loaded once per chunk, and this runs before the chunk is first drawn, so retagging here is what
-/// keeps distant terrain matching near terrain under `skyrim`.
+/// A chunk GLB carries its albedo as a bufferView image, which the raw-texel glTF handler tags
+/// UNORM while the GLB loads, so this normally finds nothing to do. It stays as the guard that
+/// keeps distant terrain matching near terrain under `skyrim` if a chunk's image ever misses
+/// that handler. A retag made here comes after the image was added and extracted, so it costs a
+/// second upload; the caller reports it.
 fn adopt_raw_lod_colour_textures(
     root: Entity,
     children: &Query<&Children>,
     materials: &Query<&MeshMaterial3d<StandardMaterial>>,
     material_assets: &Assets<StandardMaterial>,
     images: &mut Assets<Image>,
-) {
+) -> usize {
+    let mut retagged = 0;
     let mut stack = vec![root];
     while let Some(entity) = stack.pop() {
         if let Ok(material_handle) = materials.get(entity)
             && let Some(material) = material_assets.get(&material_handle.0)
             && let Some(base_color) = material.base_color_texture.as_ref()
+            && crate::raw_texel::retag_to_raw_texels(images, base_color)
         {
-            crate::raw_texel::retag_to_raw_texels(images, base_color);
+            retagged += 1;
         }
         if let Ok(direct) = children.get(entity) {
             stack.extend(direct.iter());
         }
     }
+    retagged
 }
 
 fn validate_lod_scene(
@@ -1910,7 +1920,7 @@ mod tests {
     use crate::world::database::LodChunkBounds;
 
     #[test]
-    fn a_lod_chunks_embedded_albedo_is_retagged_before_its_first_draw() {
+    fn a_spawned_lod_chunks_srgb_albedo_is_retagged_once_and_counted() {
         use bevy::ecs::system::RunSystemOnce;
 
         #[derive(Resource)]
@@ -1922,14 +1932,14 @@ mod tests {
             materials: Query<&MeshMaterial3d<StandardMaterial>>,
             material_assets: Res<Assets<StandardMaterial>>,
             mut images: ResMut<Assets<Image>>,
-        ) {
+        ) -> usize {
             adopt_raw_lod_colour_textures(
                 root.0,
                 &children,
                 &materials,
                 &material_assets,
                 &mut images,
-            );
+            )
         }
 
         let mut app = App::new();
@@ -1960,7 +1970,9 @@ mod tests {
         app.world_mut()
             .spawn((MeshMaterial3d(material), ChildOf(root)));
         app.insert_resource(Root(root));
-        app.world_mut().run_system_once(adopt).unwrap();
+        assert_eq!(app.world_mut().run_system_once(adopt).unwrap(), 1);
+        // An albedo that is already raw is left alone, so it raises no further change.
+        assert_eq!(app.world_mut().run_system_once(adopt).unwrap(), 0);
 
         assert_eq!(
             app.world()
