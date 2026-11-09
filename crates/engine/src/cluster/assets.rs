@@ -108,10 +108,12 @@ fn source_colours(bytes: &[u8], count: usize) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// The most triangles the converter's cluster builder puts in one cluster. The vertex-pulled draw
-/// gives every cluster of a draw group the vertex count of the largest one in the scene, so a mesh
-/// above this bound is refused instead of widening every draw.
-pub(crate) const MAX_CLUSTER_TRIANGLES: u32 = 128;
+/// The most triangles a cluster record can hold: its count is one byte, the shared validator accepts
+/// the whole range, and the draw record's top byte, the cull pass's selection word and the index
+/// packing all carry it. The converter currently builds at most 128, but the renderer must not
+/// assume that: a valid cluster of any size draws, and a pulled draw covers the largest one.
+#[cfg(test)]
+pub(crate) const MAX_CLUSTER_TRIANGLES: u32 = u8::MAX as u32;
 
 /// Cluster ids and the triangle count share one word of a draw record: the triangle count takes the
 /// top byte, which leaves this many cluster ids per mesh.
@@ -162,11 +164,6 @@ impl ClusterMeshAsset {
             .map(|index| u32::from(view.cluster(index).triangle_count))
             .max()
             .unwrap_or(0);
-        if max_cluster_triangles > MAX_CLUSTER_TRIANGLES {
-            return Err(ClusterFormatError::BadRecord(format!(
-                "a cluster holds {max_cluster_triangles} triangles, over the {MAX_CLUSTER_TRIANGLES} a draw covers"
-            )));
-        }
         let asset = Self {
             builder_identity: view.builder_identity,
             mesh_hash: view.mesh_hash,
@@ -745,18 +742,18 @@ mod tests {
     }
 
     #[test]
-    fn a_cluster_wider_than_one_draw_covers_is_refused_at_load() {
-        let error = fixture_with_first_cluster_of(MAX_CLUSTER_TRIANGLES as usize + 1)
-            .err()
-            .expect("129 triangles exceed the draw");
-        assert_eq!(error.reason(), "bad_record");
+    fn clusters_above_the_converters_current_cap_load_up_to_the_record_limit() {
+        // 129 is past what the converter builds today; 255 is the most a record can say.
+        for triangles in [129, 200, 255] {
+            let mesh = fixture_with_first_cluster_of(triangles).expect("a valid cluster loads");
+            assert_eq!(mesh.max_cluster_triangles, triangles as u32);
+        }
     }
 
     #[test]
-    fn the_converter_and_the_renderer_agree_on_the_cluster_triangle_cap() {
-        assert_eq!(
-            MAX_CLUSTER_TRIANGLES as usize,
-            converter::cluster::builder::MAX_CLUSTER_TRIANGLES
+    fn the_renderer_accepts_every_cluster_the_converter_can_build() {
+        assert!(
+            converter::cluster::builder::MAX_CLUSTER_TRIANGLES <= MAX_CLUSTER_TRIANGLES as usize
         );
     }
 
