@@ -1,0 +1,15 @@
+{
+  "profile": "jump-inputs-v4",
+  "extends": "runtime.json",
+  "wire_version": 4,
+  "setter_call": 8188521,
+  "setter_call_signature": {"length": 5, "sha256": "0935b812621c725fa490d634f50ee4b8654fd2d2f4962d2fac9c401962aad45d"},
+  "setter_function": 17188320,
+  "setter_signature": {"length": 27, "sha256": "2a645d3496101be8ecf73b69a12625bedb045db671eaabf466db5c4a87308381"},
+  "jump_height_setting": 34244960,
+  "swim_jump_setting": 34244984,
+  "game_to_havok_constant": 25157212,
+  "reference_scale_constant": 28687824,
+  "player_setter_call": 6771386,
+  "player_setter_call_signature": {"length": 5, "sha256": "1ded3bc87802bcddb4ac1b0729d9a60bbc81965bbdb7136c1d112387292b958a"}
+}

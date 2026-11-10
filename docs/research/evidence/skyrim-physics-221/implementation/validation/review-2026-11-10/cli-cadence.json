@@ -1,0 +1,30 @@
+[
+  {
+    "campaign": "jump-v3",
+    "exit": 1,
+    "camera_cadence": {
+      "status": "failed",
+      "requested_fps": 30,
+      "achieved_fps": 60.86427267194157,
+      "relative_tolerance": 0.1,
+      "clock": "qpc",
+      "window": "first_person_camera_during_W",
+      "sample_count": 30,
+      "median_interval_seconds": 0.01643
+    }
+  },
+  {
+    "campaign": "jump-cadence-v3",
+    "exit": 0,
+    "camera_cadence": {
+      "status": "passed",
+      "requested_fps": 30,
+      "achieved_fps": 29.97983855856936,
+      "relative_tolerance": 0.1,
+      "clock": "qpc",
+      "window": "first_person_camera_during_W",
+      "sample_count": 15,
+      "median_interval_seconds": 0.03335575
+    }
+  }
+]

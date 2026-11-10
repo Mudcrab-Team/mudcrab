@@ -1684,6 +1684,10 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        ("publish_skyrim_evidence.py", "--sanitize"),
+        ("publish_skyrim_evidence.py", "--root"),
+        ("publish_skyrim_evidence.py", "--start-address"),
+        ("publish_skyrim_evidence.py", "--stop-address"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -3596,7 +3600,85 @@ mod tests {
                     .iter()
                     .any(|&(script, scoped)| name == script && flag == scoped)
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || release_option {
+            let native_jump_option =
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(
+                            name,
+                            "record_skyrim_motion.py"
+                                | "test_record_skyrim_motion.py"
+                                | "capture_skyrim_jump.py"
+                                | "test_capture_skyrim_jump.py"
+                                | "capture_skyrim_jump_inputs.py"
+                                | "evaluate_skyrim_jump.py"
+                                | "test_evaluate_skyrim_jump.py"
+                                | "analyze_skyrim_jump_inputs.py"
+                                | "test_analyze_skyrim_jump_inputs.py"
+                                | "check_skyrim_jump_runtime.py"
+                                | "verify_skyrim_jump_inputs.py"
+                                | "report_skyrim_jump.py"
+                        ) && matches!(
+                            flag,
+                            "--session"
+                                | "--game"
+                                | "--save"
+                                | "--proton"
+                                | "--profile"
+                                | "--exe"
+                                | "--fixture"
+                                | "--frame-cap"
+                                | "--ocr-prefix"
+                                | "--keep-alive"
+                                | "--plan"
+                                | "--corpus"
+                                | "--private-output"
+                                | "--split"
+                                | "--frozen"
+                                | "--adopt-baseline"
+                                | "--condition"
+                                | "--results"
+                                | "--prepare-only"
+                                | "--require-heldout-pass"
+                                | "--test-binary"
+                                | "--lib"
+                                | "--ignored"
+                                | "--exact"
+                                | "--nocapture"
+                                | "--cflags"
+                                | "--libs"
+                                | "--backend"
+                                | "--collect"
+                                | "--no-pager"
+                                | "--setenv"
+                                | "--signal"
+                                | "--unit"
+                                | "--working-directory"
+                        )
+                    });
+            // The standalone HTML report embeds CSS custom properties.
+            let chart_style = path.file_name().is_some_and(|name| {
+                name == "report_skyrim_jump.py"
+                    && matches!(
+                        flag,
+                        "--foreground"
+                            | "--muted-foreground"
+                            | "--background"
+                            | "--border"
+                            | "--font-sans"
+                            | "--font-mono"
+                            | "--chart-"
+                            | "--chart-1"
+                            | "--chart-2"
+                            | "--chart-3"
+                    )
+            });
+            if NON_ENGINE_FLAGS.contains(&flag)
+                || observation_option
+                || release_option
+                || native_jump_option
+                || chart_style
+            {
                 continue;
             }
             assert!(
@@ -3652,6 +3734,24 @@ mod tests {
                 .is_err(),
                 "{flag} must still be rejected in other scripts"
             );
+        }
+    }
+
+    #[test]
+    fn native_jump_tool_options_do_not_become_engine_options() {
+        let native = std::path::Path::new("record_skyrim_motion.py");
+        assert_eq!(
+            checked_script_engine_flags("--session fixture --profile inputs-v4", native),
+            0
+        );
+        for (text, path) in [
+            ("engine --unknown-engine-option", native),
+            (
+                "engine --session fixture",
+                std::path::Path::new("launch.sh"),
+            ),
+        ] {
+            assert!(std::panic::catch_unwind(|| checked_script_engine_flags(text, path)).is_err());
         }
     }
 
