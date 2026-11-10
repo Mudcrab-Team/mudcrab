@@ -1,6 +1,5 @@
 ---
 source: crates/converter/tests/snapshots.rs
-assertion_line: 176
 expression: document
 ---
 {
@@ -38,6 +37,13 @@ expression: document
     },
     {
       "bufferView": 3,
+      "componentType": 5126,
+      "count": 4,
+      "name": "TANGENTS | MESH:0",
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 4,
       "componentType": 5123,
       "count": 6,
       "name": "TRIANGLES | MESH:0",
@@ -65,13 +71,18 @@ expression: document
     },
     {
       "buffer": 0,
-      "byteLength": 12,
+      "byteLength": 64,
       "byteOffset": 128
+    },
+    {
+      "buffer": 0,
+      "byteLength": 12,
+      "byteOffset": 192
     }
   ],
   "buffers": [
     {
-      "byteLength": 140
+      "byteLength": 204
     }
   ],
   "extensionsUsed": [
@@ -139,9 +150,10 @@ expression: document
           "attributes": {
             "NORMAL": 1,
             "POSITION": 0,
+            "TANGENT": 3,
             "TEXCOORD_0": 2
           },
-          "indices": 3,
+          "indices": 4,
           "material": 0
         }
       ]
