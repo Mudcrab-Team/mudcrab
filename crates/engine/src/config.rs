@@ -8,7 +8,7 @@ use crate::{
 };
 use bevy::prelude::{Msaa, Resource};
 use shared::lod::LodTier;
-use std::{fmt, path::PathBuf};
+use std::{fmt, path::PathBuf, sync::Arc};
 
 /// Most IO threads `--io-threads` accepts; `0` still asks for the automatic size. Each thread
 /// reserves 128 MiB of address space (`app::IO_TASK_STACK_BYTES`), so an unbounded count could
@@ -71,9 +71,14 @@ impl TerrainLodDistances {
     }
 }
 
+mod grass_ini;
+
+#[cfg(test)]
+mod skyrim_ini_grass_tests;
+
 #[derive(Debug, Clone, Resource)]
 pub struct EngineConfig {
-    /// Explicit launch options. Saved interactive settings defer to these and to `--ini`.
+    /// Launch setting ownership, including accepted INI values and automatic grass coverage.
     pub settings_overrides: Vec<String>,
     pub assets_dir: PathBuf,
     /// Explicit local report destination. `None` uses the per-user application-data directory.
@@ -82,6 +87,8 @@ pub struct EngineConfig {
     pub start_grid: (i32, i32),
     pub stream_radius: i32,
     pub unload_radius: i32,
+    /// Terrain radii before optional grass coverage, restored if its startup cache is unavailable.
+    pub grass_terrain_radii: Option<(i32, i32)>,
     /// Optional upper bound for sun-shadow cascades from `[Display] fShadowDistance`.
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
@@ -120,6 +127,32 @@ pub struct EngineConfig {
     /// MiB of newly loaded render assets (meshes, textures) the renderer may
     /// prepare per frame. `0` prepares every asset the frame extracted.
     pub max_upload_mib_per_frame: usize,
+    /// Grass is opt-in so existing worlds and benchmark baselines keep their behavior.
+    pub grass: bool,
+    /// Radius in exterior cells, clamped below the terrain stream radius.
+    pub grass_radius: i32,
+    /// Species batches admitted to the renderer each frame. Zero is unlimited.
+    pub grass_uploads_per_frame: usize,
+    pub grass_density_multiplier: f32,
+    /// Creation units between candidate slots (Skyrim's iMinGrassSize analogue).
+    pub grass_min_spacing: f32,
+    /// Creation units at which prefix density thinning starts and reaches zero.
+    pub grass_fade_start: f32,
+    pub grass_fade_end: f32,
+    /// Generated CPU instance pool budget, including resident and recently used cells.
+    pub grass_cache_mib: usize,
+    /// Maximum resolved species admitted per texture in authored GNAM order.
+    pub grass_max_types_per_texture: usize,
+    /// Minimum painted texture contribution, in 0..=1.
+    pub grass_texture_threshold: f32,
+    pub grass_enable_fade: bool,
+    /// Imported INI values and provenance, before explicit numeric CLI overrides.
+    pub grass_settings_report: Option<Arc<shared::grass_settings::Report>>,
+    /// Runtime support and streaming clamp diagnostics for imported grass settings.
+    pub grass_settings_diagnostics: Vec<String>,
+    /// Deferred argument/import error; public to preserve library struct update syntax.
+    #[doc(hidden)]
+    pub grass_settings_error: Option<String>,
     pub headless: bool,
     /// Keep a renderable window hidden for automated screenshot capture.
     pub hidden_window: bool,
@@ -221,6 +254,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     /// Start with the standard engine settings and optional profiling diagnostics disabled.
     fn default() -> Self {
+        let grass = shared::grass_settings::GrassSettings::default();
         Self {
             settings_overrides: Vec::new(),
             assets_dir: PathBuf::from("modern_assets"),
@@ -230,6 +264,7 @@ impl Default for EngineConfig {
             // Skyrim's default `uGridsToLoad=5`.
             stream_radius: 2,
             unload_radius: 3,
+            grass_terrain_radii: None,
             sun_shadow_distance_limit: None,
             sun_position: None,
             terrain_lod: TerrainLodDistances::default(),
@@ -259,6 +294,20 @@ impl Default for EngineConfig {
             // in one 13 ms upload burst, and at 60 fps the budget still admits
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
+            grass: false,
+            grass_radius: grass.cell_radius,
+            grass_uploads_per_frame: 2,
+            grass_density_multiplier: 1.0,
+            grass_min_spacing: grass.min_grass_size as f32,
+            grass_fade_start: grass.start_fade_distance as f32,
+            grass_fade_end: (grass.start_fade_distance + grass.fade_range) as f32,
+            grass_cache_mib: 64,
+            grass_max_types_per_texture: grass.max_grass_types_per_texture as usize,
+            grass_texture_threshold: grass.texture_pct_threshold as f32,
+            grass_enable_fade: grass.enable_grass_fade,
+            grass_settings_report: None,
+            grass_settings_diagnostics: Vec::new(),
+            grass_settings_error: None,
             headless: false,
             hidden_window: false,
             visual_profile: VisualProfile::Mudcrab,
@@ -369,6 +418,16 @@ Streaming:
   --io-threads <count>                  asset IO threads, 0 to 64; 0 sizes the pool automatically (default: 0)
   --auto-fly-speed <units/s>            fly the camera forward at this speed; 0 holds it still
   --route <file>                        follow a route file's waypoints at its speed (a JSON file; see scripts/routes)
+
+Grass (opt-in):
+  --grass                              enable authored grass
+  --grass-radius <cells>               generated cell radius (default: 2)
+  --grass-uploads-per-frame <count>     species upload budget; 0 is unlimited (default: 2)
+  --grass-density <scale>              density multiplier (default: 1)
+  --grass-min-spacing <units>          candidate spacing (default: 20)
+  --grass-fade-start <units>           fade start distance (default: 7000)
+  --grass-fade-end <units>             fade end distance (default: 8000)
+  --grass-cache-mib <MiB>              generated CPU cache; 0 is unlimited (default: 64)
 
 Benchmark and profiling:
   --benchmark-only                      run the synthetic benchmark; opens no world database
@@ -574,6 +633,11 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
+    /// Admit exactly the configured GNAM prefix length; zero disables species.
+    pub(crate) fn effective_grass_species_cap(&self) -> usize {
+        self.grass_max_types_per_texture
+    }
+
     pub fn streaming_controls_enabled(&self) -> bool {
         self.adaptive_streaming || self.max_streaming_backlog != 0 || self.streaming_memory_mib != 0
     }
@@ -654,6 +718,61 @@ impl EngineConfig {
         }
     }
 
+    /// Reject malformed grass options, including programmatic configuration.
+    pub fn validate_grass(&self) -> Result<(), String> {
+        if let Some(error) = &self.grass_settings_error {
+            return Err(error.clone());
+        }
+        let world_grass = self.grass && self.loads_world();
+        if world_grass && (self.grass_radius == i32::MAX || self.stream_radius > MAX_STREAM_RADIUS)
+        {
+            return Err("grass radius exceeds the terrain streaming coordinate range".into());
+        }
+        if self.grass_min_spacing.is_finite() && self.grass_min_spacing < 8.0 {
+            return Err(format!(
+                "grass spacing/iMinGrassSize {} is below MudCrab's generator safety minimum 8; this Skyrim setting cannot be applied exactly",
+                self.grass_min_spacing
+            ));
+        }
+        if self.grass_radius < 0
+            || (world_grass && (self.grass_radius == 0 || self.stream_radius < 2))
+            || self.grass_uploads_per_frame == usize::MAX
+            || !self.grass_density_multiplier.is_finite()
+            || !(0.0..=16.0).contains(&self.grass_density_multiplier)
+            || !self.grass_min_spacing.is_finite()
+            || self.grass_min_spacing < 8.0
+            || !self.grass_fade_start.is_finite()
+            || !self.grass_fade_end.is_finite()
+            || self.grass_fade_start < 0.0
+            || self.grass_fade_end < self.grass_fade_start
+            || (self.grass_enable_fade && self.grass_fade_end == self.grass_fade_start)
+            || self.grass_cache_mib == usize::MAX
+            || !self.grass_texture_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.grass_texture_threshold)
+        {
+            return Err("invalid grass configuration: enabled grass requires radius >= 1 and terrain radius >= 2; density 0..16, spacing >= 8, texture threshold 0..1, finite fade end >= start >= 0 (strictly greater when fading is enabled), and valid upload/cache budgets are required".into());
+        }
+        Ok(())
+    }
+
+    /// Grass stays inside terrain's committed streaming window.
+    pub fn effective_grass_radius(&self) -> i32 {
+        self.grass_radius
+            .min(self.stream_radius.saturating_sub(1).max(0))
+    }
+
+    /// Keep fade support inside the generated ring, scaling the ramp proportionally.
+    /// A cell leaving that ring is at least `radius * cell_size` from the camera.
+    pub fn effective_grass_fade(&self) -> (f32, f32) {
+        if !self.grass_enable_fade {
+            return (self.grass_fade_start, self.grass_fade_end);
+        }
+        let end = self
+            .grass_fade_end
+            .min(self.effective_grass_radius() as f32 * shared::grass::GRASS_CELL_SIZE);
+        (self.grass_fade_start * (end / self.grass_fade_end), end)
+    }
+
     /// The per-frame render-asset upload budget in bytes, or `None` when
     /// uploads are unlimited (`--max-upload-mib-per-frame 0`).
     pub fn max_upload_bytes_per_frame(&self) -> Option<usize> {
@@ -692,6 +811,11 @@ impl EngineConfig {
 
     pub fn from_env() -> Result<ConfigAction, ConfigError> {
         Self::from_args(std::env::args().skip(1))
+    }
+
+    /// Whether startup loads converted world data, including the streaming fixture's world.
+    pub(crate) fn loads_world(&self) -> bool {
+        self.streaming_fixture || (!self.benchmark_only && self.non_streaming_fixture().is_none())
     }
 
     /// Whether this is a benchmark run: `--benchmark-frames` or `--benchmark-duration` was given.
@@ -776,6 +900,7 @@ impl EngineConfig {
                 .filter(|argument| argument.starts_with("--"))
                 .cloned(),
         );
+        let mut grass_options = grass_ini::Options::default();
         let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -833,6 +958,7 @@ impl EngineConfig {
                     config.start_grid.1 = take_value("--grid-y", "a cell coordinate", args.next())?;
                 }
                 "--stream-radius" => {
+                    grass_options.explicit_stream_radius = true;
                     let raw = take_raw("--stream-radius", STREAM_RADIUS_EXPECTED, args.next())?;
                     let value = raw
                         .parse::<i32>()
@@ -850,6 +976,19 @@ impl EngineConfig {
                 }
                 "--headless" => config.headless = true,
                 "--hidden-window" => config.hidden_window = true,
+                "--grass" => grass_options.requested = true,
+                "--grass-radius"
+                | "--grass-uploads-per-frame"
+                | "--grass-density"
+                | "--grass-min-spacing"
+                | "--grass-fade-start"
+                | "--grass-fade-end"
+                | "--grass-cache-mib" => {
+                    // Missing values must not consume another option. Validation also runs
+                    // for configurations constructed directly by library callers.
+                    let value = args.next_if(|value| !value.starts_with("--"));
+                    grass_options.add_numeric(argument, value);
+                }
                 "--max-unloads-per-frame" => {
                     config.max_cell_unloads_per_frame = take_value(
                         "--max-unloads-per-frame",
@@ -1362,6 +1501,7 @@ impl EngineConfig {
             });
         }
         config.check_visual_profile()?;
+        grass_options.apply(&mut config);
         config.drop_jump_the_run_would_overwrite();
         Ok(ConfigAction::Run(Box::new(config)))
     }
@@ -1841,14 +1981,19 @@ mod tests {
         }
     }
 
-    /// The option literals the parser's `match` arms name, in source order.
+    /// The option literals in single and grouped parser `match` arms, in source order.
     fn parser_options() -> Vec<&'static str> {
         CONFIG_SOURCE
             .lines()
             .filter_map(|line| {
-                let (option, rest) = leading_quoted(line)?;
+                let line = line.trim_start();
+                let (option, rest) = leading_quoted(line.strip_prefix('|').unwrap_or(line))?;
                 // The bare `--` arm is a no-op marker, not an option to document.
-                (rest.trim_start().starts_with("=>") && option != "--").then_some(option)
+                ((option == "-h" || option.starts_with("--"))
+                    && !option.contains(char::is_whitespace)
+                    && (rest.trim().is_empty() || rest.trim_start().starts_with("=>"))
+                    && option != "--")
+                    .then_some(option)
             })
             .collect()
     }
@@ -1857,6 +2002,173 @@ mod tests {
     fn leading_quoted(line: &str) -> Option<(&str, &str)> {
         let (option, rest) = line.trim().strip_prefix('"')?.split_once('"')?;
         Some((option, rest))
+    }
+
+    #[test]
+    /// Verify grass options are opt in finite and do not consume next flags.
+    fn grass_options_are_opt_in_finite_and_do_not_consume_next_flags() {
+        assert!(!EngineConfig::default().grass);
+        let config = EngineConfig::run_from_args(
+            [
+                "--grass",
+                "--grass-density",
+                "1.75",
+                "--grass-min-spacing",
+                "48",
+                "--grass-radius",
+                "4",
+                "--grass-uploads-per-frame",
+                "0",
+            ]
+            .map(str::to_owned),
+        );
+        assert!(config.grass);
+        assert_eq!(config.grass_density_multiplier, 1.75);
+        assert_eq!(config.grass_min_spacing, 48.0);
+        assert_eq!(config.grass_uploads_per_frame, 0);
+        assert_eq!(config.effective_grass_radius(), 4);
+        assert_eq!(config.stream_radius, 5);
+        assert!(config.validate_grass().is_ok());
+        let invalid =
+            EngineConfig::run_from_args(["--grass-density", "--headless"].map(str::to_owned));
+        assert!(invalid.headless);
+        assert!(invalid.validate_grass().is_err());
+        for value in ["NaN", "inf", "oops"] {
+            let invalid =
+                EngineConfig::run_from_args(["--grass-density", value].map(str::to_owned));
+            assert!(invalid.validate_grass().is_err());
+        }
+        assert!(
+            EngineConfig {
+                grass_min_spacing: f32::INFINITY,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+    }
+
+    /// No-world modes retain their requested terrain radii when grass cannot render.
+    #[test]
+    fn g3_inactive_grass_preserves_no_world_streaming_settings() {
+        for mode in [
+            "--benchmark-only",
+            "--material-fixture",
+            "--terrain-water-fixture",
+            "--transform-bounds-fixture",
+            "--renderer-fixture",
+            "--physics-fixture",
+        ] {
+            for grass_first in [false, true] {
+                let mut args = vec![mode, "--grass-radius", "7"];
+                args.insert(if grass_first { 0 } else { args.len() }, "--grass");
+                let config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+                assert_eq!(
+                    (config.stream_radius, config.unload_radius),
+                    (2, 3),
+                    "{mode}, grass first: {grass_first}"
+                );
+                let explicit = EngineConfig::run_from_args(
+                    [
+                        mode,
+                        "--grass",
+                        "--grass-radius",
+                        "7",
+                        "--stream-radius",
+                        "1",
+                    ]
+                    .map(str::to_owned),
+                );
+                assert_eq!((explicit.stream_radius, explicit.unload_radius), (1, 2));
+                assert!(explicit.validate_grass().is_ok(), "{mode}");
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("radius.ini");
+        std::fs::write(&path, "[General]\nuGridsToLoad=9\n").unwrap();
+        let imported = EngineConfig::run_from_args([
+            "--benchmark-only".to_owned(),
+            "--grass".to_owned(),
+            "--grass-radius".to_owned(),
+            "7".to_owned(),
+            "--ini".to_owned(),
+            path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!((imported.stream_radius, imported.unload_radius), (4, 5));
+    }
+
+    /// Converted-world and streaming-fixture grass still expand the terrain ring.
+    #[test]
+    fn g3_active_world_grass_still_expands_streaming_settings() {
+        for mode in [None, Some("--streaming-fixture")] {
+            let mut args = vec!["--grass", "--grass-radius", "7"];
+            args.extend(mode);
+            let config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+            assert!(config.grass);
+            assert!(config.validate_grass().is_ok());
+            assert_eq!((config.stream_radius, config.unload_radius), (8, 9));
+            assert_eq!(config.effective_grass_radius(), 7);
+        }
+    }
+
+    #[test]
+    /// Verify grass fade reaches zero before a cell can leave its generated ring.
+    fn grass_fade_reaches_zero_before_a_cell_can_leave_its_generated_ring() {
+        for radius in 1..5 {
+            let config = EngineConfig {
+                grass: true,
+                grass_radius: radius,
+                stream_radius: radius + 1,
+                grass_fade_start: 4000.0,
+                grass_fade_end: 16000.0,
+                ..EngineConfig::default()
+            };
+            assert!(config.validate_grass().is_ok());
+            let (start, end) = config.effective_grass_fade();
+            // After crossing into cell0, cell at -(radius+1) is retired. Its closest
+            // edge is -radius*4096, reached as camera approaches the shared boundary.
+            let retirement_distance = radius as f32 * shared::grass::GRASS_CELL_SIZE;
+            assert!(end <= retirement_distance);
+            assert!(start < end);
+            assert!(((end - retirement_distance) / (end - start)).clamp(0.0, 1.0) == 0.0);
+        }
+        assert!(
+            EngineConfig {
+                grass: true,
+                grass_radius: 0,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+        assert!(
+            EngineConfig {
+                grass: true,
+                stream_radius: 1,
+                ..EngineConfig::default()
+            }
+            .validate_grass()
+            .is_err()
+        );
+        let (start, end) = EngineConfig::default().effective_grass_fade();
+        assert!((start - 3584.0).abs() < 0.001);
+        assert_eq!(end, 4096.0);
+    }
+
+    #[test]
+    /// Verify grass fade clamp keeps large finite distances finite.
+    fn grass_fade_clamp_keeps_large_finite_distances_finite() {
+        let config = EngineConfig {
+            grass: true,
+            grass_fade_start: f32::MAX / 2.0,
+            grass_fade_end: f32::MAX,
+            ..EngineConfig::default()
+        };
+        assert!(config.validate_grass().is_ok());
+        let (start, end) = config.effective_grass_fade();
+        assert!(start.is_finite());
+        assert!(end.is_finite());
+        assert!((start - end / 2.0).abs() < 0.01);
     }
 
     #[test]

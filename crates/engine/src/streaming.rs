@@ -1364,7 +1364,20 @@ fn collect_cells(
                         &mut metrics,
                         &mut profiler,
                     );
-                    let validation = validation.map(|settled| merged = settled);
+                    let validation = validation.and_then(|settled| {
+                        if config.grass
+                            && let Some(spawn) = &settled
+                        {
+                            // Merged welding updates its mesh rather than this snapshot. Grass
+                            // borrows the selected settled surface; water/material metadata stays.
+                            let (heights, normals) =
+                                crate::terrain_merge::mesh::cell_to_grid(&spawn.cell)?;
+                            terrain.heights = heights;
+                            terrain.normals = normals;
+                        }
+                        merged = settled;
+                        Ok(())
+                    });
                     if let Err(reason) = validation {
                         error!(cell = format_args!("{:08X}", payload.cell_id), %reason, "LAND failed strict validation");
                         metrics.failed_cells = metrics.failed_cells.saturating_add(1);
@@ -1384,6 +1397,16 @@ fn collect_cells(
                 }
                 let cell_id = payload.cell_id;
                 let drawn_merged = merged.is_some();
+                // Publish the exact surface used below by terrain meshes/colliders. The
+                // immutable field is copied once per commit only when grass is enabled.
+                let grass_terrain =
+                    if config.grass && matches!(payload.key, CellKey::Exterior { .. }) {
+                        terrain
+                            .as_ref()
+                            .map(crate::grass::GrassTerrain::from_snapshot)
+                    } else {
+                        None
+                    };
                 let root = spawn_cell(
                     &mut commands,
                     &asset_server,
@@ -1412,6 +1435,9 @@ fn collect_cells(
                         }
                         if let Some(runtime) = runtime.as_mut() {
                             runtime.bind_cell(response.key, root);
+                        }
+                        if let Some(terrain) = grass_terrain {
+                            commands.entity(root).insert(terrain);
                         }
                         streaming
                             .cells
@@ -4313,13 +4339,7 @@ fn validate_spawned_asset(
 fn has_explicit_material_exclusion(extras: &GltfExtras) -> bool {
     serde_json::from_str::<serde_json::Value>(&extras.value)
         .ok()
-        .and_then(|value| {
-            value
-                .pointer("/openSkyrim/materialExclusion")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some()
+        .is_some_and(|value| shared::model_visibility::explicit_material_exclusion(&value))
 }
 
 pub(crate) fn validate_standard_material(
@@ -7380,6 +7400,431 @@ mod tests {
             worldspace_id: 60,
             grid_x,
             grid_y,
+        }
+    }
+
+    /// Replenish the real cell collector's allowance without installing the camera planner.
+    fn reset_grass_commit_test_budget(mut budget: ResMut<StreamingCommitBudget>) {
+        budget.remaining = 1;
+    }
+
+    /// Request and commit a fixture cell through the real database worker and cell collector.
+    fn commit_grass_test_cell(app: &mut App, id: u32, grid_x: i32) {
+        let key = CellKey::Exterior {
+            worldspace_id: 3,
+            grid_x,
+            grid_y: 0,
+        };
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                key,
+                CellStatus::Loading {
+                    generation: u64::from(id),
+                },
+            );
+        app.world()
+            .resource::<WorldDatabase>()
+            .request(DatabaseRequest::Load {
+                generation: u64::from(id),
+                key,
+                queued_at: Instant::now(),
+            })
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.update();
+            if matches!(
+                app.world().resource::<StreamingWorld>().cells.get(&key),
+                Some(CellStatus::Resident { .. })
+            ) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture cell {id} did not commit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Run the quadrant-path control through commit, welding and asynchronous grass streaming.
+    fn welded_grass_test_app(max_slope: u8, water_height: Option<f32>) -> (App, tempfile::TempDir) {
+        welded_grass_test_app_on_path(max_slope, water_height, None)
+    }
+
+    /// Bake differing shared edges through quadrant, merged, or invalid-merged fallback terrain.
+    fn welded_grass_test_app_on_path(
+        max_slope: u8,
+        water_height: Option<f32>,
+        merged: Option<bool>,
+    ) -> (App, tempfile::TempDir) {
+        use shared::grass::{GrassCell, GrassLayer, GrassQuadrant, GrassType};
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("world.db");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection.execute_batch(&format!(
+            "CREATE TABLE schema_info(version INTEGER); INSERT INTO schema_info VALUES({});
+             CREATE TABLE cells(id INTEGER,worldspace_id INTEGER,grid_x INTEGER,grid_y INTEGER);
+             INSERT INTO cells VALUES(41,3,0,0),(42,3,1,0);
+             CREATE TABLE land(cell_id INTEGER); INSERT INTO land VALUES(41),(42);
+             CREATE TABLE \"references\"(id INTEGER,cell_id INTEGER,base_form_id INTEGER,
+               pos_x REAL,pos_y REAL,pos_z REAL,rot_x REAL,rot_y REAL,rot_z REAL,scale REAL);
+             CREATE TABLE statics(id INTEGER,model_path TEXT,flags INTEGER,bounds_min_x REAL,bounds_min_y REAL,
+               bounds_min_z REAL,bounds_max_x REAL,bounds_max_y REAL,bounds_max_z REAL,bounds_valid INTEGER);
+             CREATE TABLE exterior_spatial(id INTEGER,worldspace_id INTEGER,minX REAL,minY REAL);",
+            shared::WORLD_DATABASE_SCHEMA_VERSION
+        )).unwrap();
+        drop(connection);
+        let mut resident = terrain_fixture(41, 10.0);
+        resident.layers.clear();
+        let mut arriving = terrain_fixture(42, 34.0);
+        arriving.layers.clear();
+        arriving.water_height = water_height;
+        for row in 0..33 {
+            arriving.heights[row * 33 + 1] = 100.0;
+        }
+        let cells = [&resident, &arriving].map(|terrain| shared::CachedLand {
+            cell_id: terrain.cell_id,
+            width: terrain.width,
+            height: terrain.height,
+            heights: terrain.heights.clone(),
+            normals: terrain.normals.clone(),
+            vertex_colors: terrain.vertex_colors.clone(),
+            layers: vec![],
+            water_height: terrain.water_height,
+            water_type_form_id: None,
+        });
+        let terrain_path = directory.path().join("cell_cache.rkyv");
+        std::fs::write(
+            &terrain_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::CellCache {
+                version: shared::CELL_CACHE_VERSION,
+                cells: cells.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let grass_path = directory.path().join("grass_cache.rkyv");
+        std::fs::write(
+            &grass_path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&shared::grass::GrassCache {
+                version: shared::grass::GRASS_CACHE_VERSION,
+                types: vec![GrassType {
+                    form_id: 7,
+                    model_path: "meshes/grass.glb".into(),
+                    density: 100,
+                    min_slope: 0,
+                    max_slope,
+                    units_from_water: 0,
+                    water_comparison: 0,
+                    position_range: 0.0,
+                    height_range: 0.0,
+                    color_range: 0.0,
+                    wave_period: 0.0,
+                    flags: 4,
+                }],
+                cells: vec![GrassCell {
+                    cell_id: 42,
+                    worldspace_id: 3,
+                    grid_x: 1,
+                    grid_y: 0,
+                    input_hash: [0; 32],
+                    obstruction_failures: vec![],
+                    expanded_sampling: 0,
+                    heights: arriving.heights.clone(),
+                    water_height,
+                    quadrants: (0..4)
+                        .map(|quadrant| GrassQuadrant {
+                            quadrant,
+                            layers: vec![GrassLayer {
+                                texture_form_id: 9,
+                                grass_ids: vec![7],
+                                weights: vec![1.0; 17 * 17],
+                            }],
+                            exclusion: vec![0; 512],
+                        })
+                        .collect(),
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<Image>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(EngineConfig {
+                grass: true,
+                grass_min_spacing: 32.0,
+                grass_uploads_per_frame: 0,
+                ..default()
+            })
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(CellCache::open(&terrain_path).unwrap())
+            .insert_resource(crate::world::grass_cache::GrassCache::open(&grass_path).unwrap())
+            .insert_resource(WorldDatabase::open(&database_path).unwrap())
+            .init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .init_resource::<StreamingWorld>()
+            .init_resource::<StreamingCommitBudget>()
+            .init_resource::<StreamingMetrics>()
+            .init_resource::<TerrainContinuity>()
+            .init_resource::<ProfilingState>()
+            .add_systems(
+                Update,
+                (reset_grass_commit_test_budget, collect_cells).chain(),
+            );
+        crate::grass::add_cpu_streaming_test_system(&mut app);
+        if let Some(valid) = merged {
+            install_grass_test_merged_terrain(
+                &mut app,
+                directory.path(),
+                &resident,
+                &arriving,
+                valid,
+            );
+        }
+        app.world_mut()
+            .spawn((StreamingCamera, Transform::from_xyz(4096.0, 200.0, 0.0)));
+        commit_grass_test_cell(&mut app, 41, 0);
+        commit_grass_test_cell(&mut app, 42, 1);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !app.world().resource::<crate::grass::GrassMetrics>().ready {
+            app.update();
+            assert!(Instant::now() < deadline, "fixture grass did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            app.world()
+                .resource::<StreamingMetrics>()
+                .terrain_seam_points_welded,
+            33
+        );
+        if let Some(valid) = merged {
+            let metrics = app.world().resource::<StreamingMetrics>();
+            assert_eq!(metrics.terrain_cells_merged, if valid { 2 } else { 1 });
+            assert_eq!(
+                metrics.terrain_cells_merged_invalid,
+                if valid { 0 } else { 1 }
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<MergedTerrainCell>>()
+                    .iter(app.world())
+                    .count(),
+                if valid { 2 } else { 1 },
+                "the regression must exercise actual merged terrain entities"
+            );
+        }
+        (app, directory)
+    }
+
+    /// Supply both neighboring meshes in one real chunk; an invalid arriving texture forces fallback.
+    fn install_grass_test_merged_terrain(
+        app: &mut App,
+        root: &std::path::Path,
+        resident: &TerrainSnapshot,
+        arriving: &TerrainSnapshot,
+        valid: bool,
+    ) {
+        use shared::terrain_mesh::{
+            CELL_MESH_VERTICES, TERRAIN_MESH_FORMAT_VERSION, TerrainChunkFile, terrain_chunk_path,
+        };
+        let cells = [resident, arriving]
+            .into_iter()
+            .map(|terrain| {
+                let mut cell = TerrainCellMesh {
+                    cell_id: terrain.cell_id,
+                    key: [0; 32],
+                    heights: vec![0.0; CELL_MESH_VERTICES],
+                    normals: vec![0; CELL_MESH_VERTICES * 3],
+                    vertex_colors: Vec::new(),
+                    slot_stride: 8,
+                    quadrant_slots: vec![0; 32],
+                    quadrant_slot_counts: [1; 4],
+                    weights: vec![0; CELL_MESH_VERTICES * 8],
+                };
+                crate::terrain_merge::mesh::write_grid(
+                    &mut cell,
+                    &terrain.heights,
+                    &terrain.normals,
+                );
+                if !valid && terrain.cell_id == arriving.cell_id {
+                    cell.quadrant_slots[0] = 0xBAD;
+                }
+                cell
+            })
+            .collect();
+        let path = root.join(terrain_chunk_path(3, 0, 0));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&TerrainChunkFile {
+                format_version: TERRAIN_MESH_FORMAT_VERSION,
+                worldspace_id: 3,
+                cells,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let table = crate::terrain_merge::classes::tests::vanilla_table(9);
+        app.insert_resource(TerrainMerge::with_state(
+            crate::terrain_merge::MergeState::Ready {
+                classes: Arc::new(TerrainClasses::from_table(table).unwrap()),
+                material: Handle::default(),
+                images: Arc::from([]),
+            },
+            root.to_path_buf(),
+        ));
+    }
+
+    /// Read the actual mesh's west-edge and adjacent heights independently of grass sampling.
+    fn welded_grass_mesh_edge(app: &mut App) -> (f32, f32) {
+        let root = app
+            .world_mut()
+            .query::<(Entity, &CellRef)>()
+            .iter(app.world())
+            .find(|(_, id)| id.0 == 42)
+            .unwrap()
+            .0;
+        let handles: Vec<_> = app
+            .world_mut()
+            .query_filtered::<(&Mesh3d, &ChildOf), With<TerrainPatch>>()
+            .iter(app.world())
+            .filter(|(_, parent)| parent.parent() == root)
+            .map(|(handle, _)| handle.0.clone())
+            .collect();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let mesh = handles
+            .iter()
+            .find_map(|handle| {
+                let mesh = meshes.get(handle).unwrap();
+                let VertexAttributeValues::Float32x3(positions) =
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+                else {
+                    panic!("terrain positions");
+                };
+                (positions[0][0] == 0.0 && positions[0][2] == 0.0)
+                    .then_some((positions[0][1], positions[1][1]))
+            })
+            .unwrap();
+        assert_eq!(
+            mesh,
+            (10.0, 100.0),
+            "the arriving west edge must really weld"
+        );
+        mesh
+    }
+
+    /// Grass Z and packed geometric normals follow the welded mesh, including edge triangles.
+    #[test]
+    fn grass_roots_and_normals_follow_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(90, None);
+        assert_welded_grass_roots_and_normals(&mut app);
+    }
+
+    /// Compare packed grass roots and normals against the actual committed render mesh.
+    fn assert_welded_grass_roots_and_normals(app: &mut App) {
+        let (west, east) = welded_grass_mesh_edge(app);
+        let expected_normal = Vec3::new(-(east - west) / 128.0, 0.0, 1.0).normalize();
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        let mut checked = 0;
+        for instance in batch.instances.iter() {
+            let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+            if x > 120.0 {
+                continue;
+            }
+            let z =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            let expected = west + x / 128.0 * (east - west);
+            assert!(
+                (z - expected).abs() < 0.06,
+                "grass floats/buries at x={x}: {z} vs mesh {expected}"
+            );
+            let actual = Vec3::from_array(instance.normal.map(|v| f32::from(v) / 127.0));
+            assert!(
+                actual.distance(expected_normal) < 0.01,
+                "grass normal must follow welded triangle"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 100,
+            "fixture must generate many roots beside the shared edge"
+        );
+    }
+
+    /// Slope rejection uses the surface the player sees, rather than the old cache edge.
+    #[test]
+    fn grass_slope_rules_use_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(30, None);
+        assert_welded_grass_slope(&mut app);
+    }
+
+    /// The welded west strip must fail a thirty-degree species slope limit.
+    fn assert_welded_grass_slope(app: &mut App) {
+        welded_grass_mesh_edge(app);
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            batch
+                .instances
+                .iter()
+                .all(|instance| { f32::from(instance.position[0]) * 4096.0 / 65535.0 >= 127.95 }),
+            "the welded west triangle exceeds the species' 30-degree slope limit"
+        );
+    }
+
+    /// Above-water rules reject roots that only the pre-weld cached surface put above water.
+    #[test]
+    fn grass_water_rules_use_committed_welded_terrain() {
+        let (mut app, _directory) = welded_grass_test_app(90, Some(30.0));
+        assert_welded_grass_water(&mut app);
+    }
+
+    /// Above-water acceptance must use the welded height rather than the source archive.
+    fn assert_welded_grass_water(app: &mut App) {
+        let (west, east) = welded_grass_mesh_edge(app);
+        let batch = app
+            .world_mut()
+            .query::<&crate::grass::GrassBatch>()
+            .single(app.world())
+            .unwrap();
+        assert!(
+            batch
+                .instances
+                .iter()
+                .filter(|instance| { f32::from(instance.position[0]) * 4096.0 / 65535.0 < 120.0 })
+                .all(|instance| {
+                    let x = f32::from(instance.position[0]) * 4096.0 / 65535.0;
+                    west + x / 128.0 * (east - west) >= 29.95
+                }),
+            "an above-water species must not survive below the committed water surface"
+        );
+    }
+
+    /// Merged terrain and invalid-merged fallback retain the same root, slope and water contracts.
+    #[test]
+    fn g3_merged_and_fallback_grass_follow_welded_surface() {
+        for valid in [true, false] {
+            let (mut app, _directory) = welded_grass_test_app_on_path(90, None, Some(valid));
+            assert_welded_grass_roots_and_normals(&mut app);
+            let (mut app, _directory) = welded_grass_test_app_on_path(30, None, Some(valid));
+            assert_welded_grass_slope(&mut app);
+            let (mut app, _directory) = welded_grass_test_app_on_path(90, Some(30.0), Some(valid));
+            assert_welded_grass_water(&mut app);
         }
     }
 
