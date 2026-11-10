@@ -2473,6 +2473,20 @@ mod tests {
         let primitive = &document["meshes"][0]["primitives"][0];
         assert_eq!(primitive["material"], 0);
         assert_eq!(primitive["extras"]["openSkyrim"]["shapeBlock"], 42);
+        assert_eq!(
+            primitive["extras"]["openSkyrim"]["materialExclusion"],
+            "shape has no shader property"
+        );
+        assert!(shared::model_visibility::explicit_material_exclusion(
+            &primitive["extras"]
+        ));
+        assert!(shared::model_visibility::declared_non_rendering(
+            &document["materials"][0]
+        ));
+        assert!(shared::model_visibility::mask_cannot_render(
+            &document["materials"][0],
+            false
+        ));
         assert_eq!(document["materials"][0]["alphaMode"], "MASK");
         assert_eq!(document["materials"][0]["alphaCutoff"], 1.0);
         assert_eq!(

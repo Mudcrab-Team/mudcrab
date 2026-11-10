@@ -996,7 +996,7 @@ fn legacy_skinned_mesh(
             return Err(format!(
                 "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinData",
                 instance.data
-            ))
+            ));
         }
     };
 
@@ -1031,7 +1031,7 @@ fn legacy_skinned_mesh(
             return Err(format!(
                 "shape block {shape_index} ({block_type}): skin instance block {instance_block} references block {} which is not NiSkinPartition",
                 instance.skin_partition
-            ))
+            ));
         }
     };
 
@@ -1371,7 +1371,9 @@ fn normalize_vertex_influences(
     let mut raw_weights = raw_weights;
     for weight in &mut raw_weights {
         if !weight.is_finite() || *weight < -SKIN_WEIGHT_ROUNDING_TOLERANCE {
-            return Err(format!("shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"));
+            return Err(format!(
+                "shape block {shape_index} vertex {vertex_index} has an invalid skin weight {weight}"
+            ));
         }
         *weight = weight.max(0.0);
     }
@@ -1444,18 +1446,22 @@ pub fn tri_shape_to_mesh(tri_shape: &BSTriShape, name: Option<String>) -> Static
             })
         }));
 
+    mesh.rebuild_uv_tangents();
     mesh
 }
 
 pub fn legacy_tri_shape_to_mesh(data: &NiTriShapeData, name: Option<String>) -> StaticMesh {
-    StaticMesh {
+    let mut mesh = StaticMesh {
         name,
         positions: data.positions.clone(),
         normals: data.normals.clone(),
+        tangents: Vec::new(),
         uvs: data.uvs.clone(),
         triangles: data.triangles.clone(),
         colors: data.colors.iter().copied().map(BSVec4).collect(),
-    }
+    };
+    mesh.rebuild_uv_tangents();
+    mesh
 }
 
 /// SLSF1 `Model_Space_Normals`: the shape's normal map holds model-space normals, so the
@@ -2662,7 +2668,16 @@ impl Parse<&[u8]> for NifFileV3 {
 
 impl std::fmt::Debug for NifFileV3 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NifFileV3\nHeader: {:#?}\nNodes: {}\nSkins: {}\nMaterials: {}\nShapes: {}\nSegShapes: {}", self.header, self.nodes.len(), self.skins.len(), self.materials.len(), self.shapes.len(), self.seg_shapes.len())
+        write!(
+            f,
+            "NifFileV3\nHeader: {:#?}\nNodes: {}\nSkins: {}\nMaterials: {}\nShapes: {}\nSegShapes: {}",
+            self.header,
+            self.nodes.len(),
+            self.skins.len(),
+            self.materials.len(),
+            self.shapes.len(),
+            self.seg_shapes.len()
+        )
     }
 }
 
