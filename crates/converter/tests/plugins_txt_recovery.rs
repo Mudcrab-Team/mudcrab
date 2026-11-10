@@ -102,8 +102,8 @@ async fn unicode_case_player_plugin_name_publishes() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    // The source owns local slot 1; Good.esp makes the published slot independently equal 2.
-    assert_eq!((form_id, priority), (0x0200_0800, 2));
+    // GMST identity stays with the fixture's first owner; the winning source is slot 2.
+    assert_eq!((form_id, priority), (0x0000_000B, 2));
     let value: f64 = conn
         .query_row(
             "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
@@ -616,5 +616,5 @@ async fn final_unicode_player_names_and_master_override_publish() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert!(ids.contains(&(0x0100_0800, 2)), "{ids:?}");
+    assert!(ids.contains(&(0x0000_000B, 2)), "{ids:?}");
 }

@@ -95,6 +95,12 @@ expression: snapshot
       "record_type": "RACE"
     },
     {
+      "form_id": 11,
+      "internal_id": 11,
+      "plugin_name": "skyrim.esm",
+      "record_type": "GMST"
+    },
+    {
       "form_id": 16,
       "internal_id": 16,
       "plugin_name": "skyrim.esm",
