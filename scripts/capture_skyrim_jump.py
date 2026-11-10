@@ -31,9 +31,10 @@ def main():
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
     session = json.loads((args.session / 'session.json').read_text())
-    if (session['exe_sha256'] != plan['runtime_sha256'] or
+    if (session.get('profile_name') is not None or
+            session['exe_sha256'] != plan['runtime_sha256'] or
             session['source_save_sha256'] != plan['source_save_sha256']):
-        parser.error('session does not match the preregistered executable/save')
+        parser.error('session does not match the preregistered v3 executable/save/profile')
     if args.split == 'heldout' and (args.frozen is None or not args.frozen.is_file()):
         parser.error('held-out collection requires an existing frozen fit')
     args.private_output.mkdir(parents=True, exist_ok=True)

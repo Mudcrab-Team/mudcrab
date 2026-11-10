@@ -70,3 +70,8 @@ The final [158-test Python run](validation/attempt-accounting-after.log.gz) pass
 The [review response](../review-2026-11-10.md) records the new findings, corrections and focused verification. Earlier receipts and counts above remain historical. The [publication mapping](../publication.json) binds their original hashes to sanitized public files, including nested archives and logs. It does not turn a sanitized derivative into the original acquisition bytes. The numerical traces, frozen model and evaluator are unchanged.
 
 Both production source snapshots are now archived. The portable recheck validates historical evidence against those archives; CI separately executes the current production transition against pinned recordings. Fresh capture proofs qualify achieved camera cadence and retain failed controls. The ordinary Rust suite also reads one committed native trace.
+
+
+## New-head CI corrections, 2026-11-10
+
+The [post-CI record](validation/post-ci-2026-11-10/README.md) covers the newly published SQLite advisory, the v3 campaign profile check, and the script-option audit registration. Final local verification passes 3,305 workspace tests, 178 Python tests, both software-Vulkan checks, workspace Clippy, formatting, and all 12 production replays. The prior review receipt remains the historical snapshot before these corrections. No native Skyrim recording was added.

@@ -43,3 +43,16 @@ The [new review](https://github.com/Mudcrab-Team/mudcrab/pull/544#issuecomment-6
 The review budget extends to a fourth round because this follow-up changes shared-resource ownership and evidence integrity. The [fourth Sol round](sol-review-round4.md) approved the follow-up with no findings. It independently passed the publication audit, portable historical recheck, 174 Python tests selected by `test*skyrim*.py`, and staged whitespace. The parent ran the full 176-test Python discovery, 106 Rust physics tests, Clippy, formatting, native recorder builds, and fresh production replay. No new native capture is claimed.
 
 The follow-up entered review with 72 files, 1,358 additions and 5,329 deletions. Approval adds only this ledger update, the review report and a decision entry. No effort setting or token usage was exposed. Sol-loop is complete after four rounds with gpt-6.1-sol. Hosted CI and required human approval remain separate gates.
+
+
+## Final CI follow-up, 2026-11-10
+
+The new-head security job found RUSTSEC-2026-0459 in libsqlite3-sys 0.30.1. The same audit fails on upstream main 8e9a875. Updating rusqlite to 0.41.1 and libsqlite3-sys to 0.39.1 clears that advisory without adding a suppression. The update requires explicit checked unsigned conversions and two small converter API adaptations.
+
+CodeRabbit also identified a v4 session passing the v3 campaign preflight. The regression reached the recorder before correction. The guard now rejects the mismatched profile before writing output, while the historical v3 session still reaches the recorder.
+
+The full workspace run also exposed an unregistered publication-helper option in the engine's script-option audit. The fix scopes four publication options to that helper and adds the new capture test to the existing native-tool path list. The existing scope tests and the complete 3,305-test workspace run pass afterward.
+
+The review budget extends to its fifth and final round for the security correction. The [fifth Sol round](sol-review-round5.md) approved C1, C2 and C3 as resolved, with no new findings. It independently passed all 178 Python tests, the seven source hashes, five JSON artifact hashes, eight published log hashes and staged whitespace checks. Cargo and hosted CI were not rerun by the reviewer. The parent validation is recorded in the [post-CI receipt](validation/post-ci-2026-11-10/receipt.json).
+
+The follow-up entered review with 25 files, 376 additions and 68 deletions. Approval adds only this ledger update, the reviewer report and a decision entry. Sol-loop is complete after five rounds with gpt-6.1-sol. No effort setting or token usage was exposed. Hosted CI must cover the final committed head; required human approval remains separate.

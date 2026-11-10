@@ -1684,6 +1684,10 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        ("publish_skyrim_evidence.py", "--sanitize"),
+        ("publish_skyrim_evidence.py", "--root"),
+        ("publish_skyrim_evidence.py", "--start-address"),
+        ("publish_skyrim_evidence.py", "--stop-address"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -3605,6 +3609,7 @@ mod tests {
                             "record_skyrim_motion.py"
                                 | "test_record_skyrim_motion.py"
                                 | "capture_skyrim_jump.py"
+                                | "test_capture_skyrim_jump.py"
                                 | "capture_skyrim_jump_inputs.py"
                                 | "evaluate_skyrim_jump.py"
                                 | "test_evaluate_skyrim_jump.py"
