@@ -57,6 +57,9 @@ pub(crate) struct CaptureFrame {
     /// Absent only in harnesses that build a world without the engine's startup resources.
     pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
+    /// Tuning values sampled in the same extraction as the photographed frame.
+    pub grass_tuning: Option<serde_json::Value>,
+    pub grass_snow_gate: bool,
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -235,6 +238,7 @@ struct ExtractedCaptures {
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// Freeze the rendered frame's pose, appearance and current work, including enabled grass.
 fn extract_capture_frames(
     mut extracted: ResMut<ExtractedCaptures>,
     frame_inputs: Extract<(
@@ -257,6 +261,9 @@ fn extract_capture_frames(
         Res<crate::render::RendererMetrics>,
         Res<crate::profiling::ProfilingState>,
         Res<crate::terrain_upload::TerrainMeshUploadReadiness>,
+        Option<Res<crate::config::EngineConfig>>,
+        Option<Res<crate::grass::GrassMetrics>>,
+        Option<Res<crate::grass_render::GrassRenderMetrics>>,
     )>,
     scene_inputs: Extract<(
         Query<Entity, With<bevy::window::PrimaryWindow>>,
@@ -268,9 +275,22 @@ fn extract_capture_frames(
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
         Option<Res<crate::visual_profile::VisualProfile>>,
+        Option<Res<crate::grass_tuning::GrassTuningState>>,
     )>,
 ) {
-    let (frame, origin, camera, tickets, streaming, renderer, profiler, uploads) = &*frame_inputs;
+    let (
+        frame,
+        origin,
+        camera,
+        tickets,
+        streaming,
+        renderer,
+        profiler,
+        uploads,
+        config,
+        grass,
+        grass_renderer,
+    ) = &*frame_inputs;
     let (
         windows,
         surfaces,
@@ -281,6 +301,7 @@ fn extract_capture_frames(
         tone_source,
         grade_overrides,
         visual_profile,
+        grass_tuning,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
     extracted.captures.clear();
@@ -300,13 +321,18 @@ fn extract_capture_frames(
         if ticket.receipt().is_some() {
             continue;
         }
-        let work = captured_work(
+        let mut work = captured_work(
             ticket,
             streaming,
             renderer,
             profiler,
             uploads,
             renderer.final_path_active(),
+        );
+        work.read_grass(
+            config.as_ref().is_some_and(|config| config.grass),
+            grass.as_deref(),
+            grass_renderer.as_deref(),
         );
         let record = CaptureFrame {
             main_frame: frame.0,
@@ -321,6 +347,8 @@ fn extract_capture_frames(
             pending_specializations: None,
             work,
             visual_profile: visual_profile.as_deref().copied(),
+            grass_tuning: grass_tuning.as_ref().map(|state| state.receipt()),
+            grass_snow_gate: crate::grass::generation::MAJORITY_GRASS_SUPPORT,
             grading: capture_grade_with_overrides(
                 grade_source.as_deref(),
                 tone_source.as_deref(),
@@ -345,11 +373,12 @@ fn extract_capture_frames(
     }
 }
 
-/// The work one captured receipt carries, read against the baseline frozen when its capture was
+/// Base work for a captured receipt, read against the baseline frozen when its capture was
 /// requested: a failure from an earlier shot is history and cannot reject this receipt, while a
 /// failure after the request - including one between the request and this extraction - still can.
 /// Everything pending is read as it stands, so work that is unavailable rather than absent leaves
 /// the receipt without a claim of readiness.
+/// Extraction adds grass from the same frame with `SettleCounts::read_grass`; its failures stay current.
 fn captured_work(
     ticket: &CaptureTicket,
     streaming: &crate::streaming::StreamingMetrics,
@@ -405,6 +434,217 @@ pub(crate) fn validate_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build the real extraction inputs with all non-grass work ready, without a GPU.
+    fn grass_capture_world(
+        enabled: bool,
+        cpu: Option<(bool, u64)>,
+        renderer: Option<(bool, u64)>,
+    ) -> (World, CaptureTicket) {
+        let ticket = CaptureTicket::default();
+        let mut main = bevy::render::MainWorld::default();
+        main.insert_resource(FrameCount(7));
+        main.insert_resource(RenderOrigin(IVec2::ZERO));
+        main.insert_resource(crate::config::EngineConfig {
+            grass: enabled,
+            ..default()
+        });
+        main.insert_resource(crate::streaming::StreamingMetrics::default());
+        main.insert_resource(crate::profiling::ProfilingState::default());
+        main.insert_resource(crate::terrain_upload::TerrainMeshUploadReadiness::default());
+        main.insert_resource(crate::render::RendererMetrics {
+            gpu_preprocessing_active: true,
+            gpu_culling_active: true,
+            indirect_drawing_active: true,
+            occlusion_culling_views: 1,
+            hzb_views: 1,
+            indirect_phase_buffers: 1,
+            indirect_batch_sets: 1,
+            proof_frames: 1,
+            ..default()
+        });
+        if let Some((ready, failures)) = cpu {
+            main.insert_resource(crate::grass::GrassMetrics {
+                ready,
+                failures,
+                ..default()
+            });
+        }
+        if let Some((ready, failures)) = renderer {
+            main.insert_resource(crate::grass_render::GrassRenderMetrics { ready, failures });
+        }
+        main.spawn(bevy::window::PrimaryWindow);
+        main.spawn((
+            StreamingCamera,
+            Transform::default(),
+            Projection::Perspective(PerspectiveProjection::default()),
+        ));
+        main.spawn((Screenshot::primary_window(), ticket.clone()));
+
+        let mut render = World::new();
+        render.insert_resource(main);
+        render.init_resource::<ExtractedCaptures>();
+        render.insert_resource(RetryReadiness(Arc::new(Mutex::new(Some(0)))));
+        render.insert_resource(TransferReadiness(Arc::new(Mutex::new(Some(0)))));
+        let mut extraction = Schedule::new(ExtractSchedule);
+        extraction.add_systems(extract_capture_frames);
+        render.add_schedule(extraction);
+        (render, ticket)
+    }
+
+    /// Finalize the extracted request through the production system and read its ticket.
+    fn finish_grass_capture(render: &mut World, ticket: &CaptureTicket) -> CaptureFrame {
+        use bevy::ecs::system::RunSystemOnce;
+        render.run_system_once(finalize_capture_frames).unwrap();
+        let receipt = validate_receipt(ticket, [0.0; 3]).unwrap();
+        assert_eq!(receipt.main_frame, 7);
+        assert_eq!(receipt.render_frame, 1);
+        assert!(receipt.work.renderer_ready);
+        assert_eq!(receipt.pending_specializations, Some(0));
+        assert_eq!(receipt.work.pending_specializations, Some(0));
+        assert_eq!(receipt.work.pending_render_transfers, Some(0));
+        receipt
+    }
+
+    /// Either missing grass observer leaves the extracted frame pending, including both absent.
+    #[test]
+    fn g3_capture_receipt_missing_grass_metrics_is_pending() {
+        for (cpu, renderer) in [
+            (None, None),
+            (Some((true, 0)), None),
+            (None, Some((true, 0))),
+        ] {
+            let (mut render, ticket) = grass_capture_world(true, cpu, renderer);
+            render.run_schedule(ExtractSchedule);
+            let receipt = finish_grass_capture(&mut render, &ticket);
+            assert!(
+                receipt.work.grass_pending,
+                "missing metrics cpu={cpu:?} renderer={renderer:?}: {}",
+                receipt.work.describe()
+            );
+            assert_eq!(receipt.work.grass_failures, 0);
+            assert!(!receipt.work.is_quiet(), "{}", receipt.work.describe());
+        }
+    }
+
+    /// CPU generation and admitted-but-undrawn grass each prevent a quiet receipt.
+    #[test]
+    fn g3_capture_receipt_waits_for_cpu_and_render_grass() {
+        for (cpu_ready, render_ready) in [(false, true), (true, false), (false, false)] {
+            let (mut render, ticket) =
+                grass_capture_world(true, Some((cpu_ready, 0)), Some((render_ready, 0)));
+            render.run_schedule(ExtractSchedule);
+            let receipt = finish_grass_capture(&mut render, &ticket);
+            assert!(
+                receipt.work.grass_pending,
+                "CPU ready={cpu_ready}, render ready={render_ready}: {}",
+                receipt.work.describe()
+            );
+            assert_eq!(receipt.work.grass_failures, 0);
+            assert!(!receipt.work.is_quiet(), "{}", receipt.work.describe());
+        }
+    }
+
+    /// Both grass observers ready and failure-free allow an otherwise settled frame.
+    #[test]
+    fn g3_capture_receipt_ready_grass_is_quiet() {
+        let (mut render, ticket) = grass_capture_world(true, Some((true, 0)), Some((true, 0)));
+        render.run_schedule(ExtractSchedule);
+        let receipt = finish_grass_capture(&mut render, &ticket);
+        assert!(!receipt.work.grass_pending);
+        assert_eq!(receipt.work.grass_failures, 0);
+        assert!(receipt.work.is_quiet(), "{}", receipt.work.describe());
+    }
+
+    /// Screenshot extraction samples the resource once; later live edits cannot relabel it.
+    #[test]
+    fn capture_receipt_freezes_tuning_resource_at_extraction() {
+        let (mut render, ticket) = grass_capture_world(true, Some((true, 0)), Some((true, 0)));
+        let mut tuning = crate::grass_tuning::GrassTuningState::new(None);
+        tuning.effective.brightness = 0.625;
+        let expected = tuning.receipt();
+        render
+            .resource_mut::<bevy::render::MainWorld>()
+            .insert_resource(tuning);
+        render.run_schedule(ExtractSchedule);
+        render
+            .resource_mut::<bevy::render::MainWorld>()
+            .resource_mut::<crate::grass_tuning::GrassTuningState>()
+            .effective
+            .brightness = 1.75;
+        let receipt = finish_grass_capture(&mut render, &ticket);
+        assert_eq!(receipt.grass_tuning, Some(expected));
+    }
+
+    /// Independent CPU and render failures accumulate even when both report readiness.
+    #[test]
+    fn g3_capture_receipt_sums_grass_failures() {
+        let (mut render, ticket) = grass_capture_world(true, Some((true, 2)), Some((true, 3)));
+        render.run_schedule(ExtractSchedule);
+        let receipt = finish_grass_capture(&mut render, &ticket);
+        assert_eq!(
+            receipt.work.grass_failures,
+            5,
+            "{}",
+            receipt.work.describe()
+        );
+        assert!(!receipt.work.grass_pending);
+        assert!(!receipt.work.is_quiet(), "{}", receipt.work.describe());
+    }
+
+    /// Disabled grass ignores missing observers and stale pending/failure metrics alike.
+    #[test]
+    fn g3_capture_receipt_disabled_grass_ignores_metrics() {
+        for (cpu, renderer) in [(None, None), (Some((false, 2)), Some((false, 3)))] {
+            let (mut render, ticket) = grass_capture_world(false, cpu, renderer);
+            render.run_schedule(ExtractSchedule);
+            let receipt = finish_grass_capture(&mut render, &ticket);
+            assert!(!receipt.work.grass_pending);
+            assert_eq!(receipt.work.grass_failures, 0);
+            assert!(receipt.work.is_quiet(), "{}", receipt.work.describe());
+        }
+    }
+
+    /// Finalization preserves extraction-time grass state despite subsequent main-world updates.
+    #[test]
+    fn g3_capture_receipt_freezes_grass_at_extraction() {
+        for initially_ready in [false, true] {
+            let (cpu_failures, render_failures, expected_failures) = if initially_ready {
+                (0, 0, 0)
+            } else {
+                (2, 3, 5)
+            };
+            let (mut render, ticket) = grass_capture_world(
+                true,
+                Some((initially_ready, cpu_failures)),
+                Some((initially_ready, render_failures)),
+            );
+            render.run_schedule(ExtractSchedule);
+            {
+                let mut main = render.resource_mut::<bevy::render::MainWorld>();
+                main.resource_mut::<FrameCount>().0 = 99;
+                main.insert_resource(crate::grass::GrassMetrics {
+                    ready: !initially_ready,
+                    failures: if initially_ready { 11 } else { 0 },
+                    ..default()
+                });
+                main.insert_resource(crate::grass_render::GrassRenderMetrics {
+                    ready: !initially_ready,
+                    failures: if initially_ready { 13 } else { 0 },
+                });
+            }
+            let receipt = finish_grass_capture(&mut render, &ticket);
+            assert_eq!(receipt.work.grass_pending, !initially_ready);
+            assert_eq!(receipt.work.grass_failures, expected_failures);
+            assert_eq!(
+                receipt.work.is_quiet(),
+                initially_ready,
+                "{}",
+                receipt.work.describe()
+            );
+        }
+    }
+
     #[test]
     fn incomplete_capture_has_no_receipt() {
         assert!(validate_receipt(&CaptureTicket::default(), [0.0; 3]).is_err());
@@ -489,6 +729,10 @@ mod tests {
             terrain_gauges: default(),
             terrain_coverage: default(),
             visual_profile: None,
+            grass_snow_gate: false,
+            grass_tuning: Some(
+                serde_json::json!({"path": "first.toml", "sha256": "first", "effective": {"brightness": 0.6}}),
+            ),
             grading: capture_grade(
                 Some(&source),
                 None,
@@ -513,6 +757,9 @@ mod tests {
         let mut later = record;
         later.main_frame = 99;
         later.render_frame = 98;
+        later.grass_tuning = Some(
+            serde_json::json!({"path": "later.toml", "sha256": "later", "effective": {"brightness": 1.0}}),
+        );
         later.grading = Some(CaptureGrade {
             color_grade: "record-srgb".into(),
             visual_preset: "vivid".into(),
@@ -527,6 +774,10 @@ mod tests {
         world.run_system_once(finalize_capture_frames).unwrap();
         let captured = validate_receipt(&ticket, [1.0; 3]).unwrap();
         assert_eq!(captured.render_frame, 2);
+        assert_eq!(
+            captured.grass_tuning.unwrap()["effective"]["brightness"],
+            0.6
+        );
         let captured_grade = captured.grading.unwrap();
         assert_eq!(captured_grade.color_grade, "snapshot-srgb");
         assert_eq!(captured_grade.visual_preset, "cool-gray");

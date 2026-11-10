@@ -7,6 +7,8 @@ pub struct StaticMesh {
     pub name: Option<String>,
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
+    /// Native UV-derived tangent direction and handedness; empty when unavailable.
+    pub tangents: Vec<glam::Vec4>,
     pub uvs: Vec<glam::Vec2>,
     pub triangles: Vec<glam::u16::U16Vec3>,
     pub colors: Vec<BSVec4>,
@@ -77,7 +79,12 @@ impl StaticMesh {
             ));
         }
         if self.positions.len() != self.normals.len() && self.normals.len() != 0 {
-            let msg = format!("StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]", self.name, self.positions.len(), self.normals.len());
+            let msg = format!(
+                "StaticMesh [{:?}]: Number of positions [{}] does not match numbers of normals [{}]",
+                self.name,
+                self.positions.len(),
+                self.normals.len()
+            );
             debug!("{}", msg);
             return Err(msg);
         }
@@ -148,6 +155,73 @@ impl StaticMesh {
         bytes
     }
 
+    /// Build an area-weighted UV frame from retained geometry and authored normals.
+    /// Packed NIF axis labels do not establish their relationship to texture U/V.
+    /// Match the native Bevy convention: B is opposite increasing texture V;
+    /// the existing DirectX material tag applies the corresponding Y decode.
+    pub fn rebuild_uv_tangents(&mut self) {
+        self.tangents.clear();
+        let count = self.positions.len();
+        if count == 0 || self.normals.len() != count || self.uvs.len() != count {
+            return;
+        }
+        let mut along_u = vec![Vec3::ZERO; count];
+        let mut along_v = vec![Vec3::ZERO; count];
+        for triangle in &self.triangles {
+            let ids = [
+                triangle.x as usize,
+                triangle.y as usize,
+                triangle.z as usize,
+            ];
+            if ids.iter().any(|&index| index >= count) {
+                continue;
+            }
+            let [a, b, c] = ids;
+            let p = self.positions[b] - self.positions[a];
+            let q = self.positions[c] - self.positions[a];
+            let u = self.uvs[b] - self.uvs[a];
+            let v = self.uvs[c] - self.uvs[a];
+            let det = u.x * v.y - u.y * v.x;
+            let area = p.cross(q).length();
+            if !det.is_finite() || det.abs() < 1e-8 || !area.is_finite() || area <= 0.0 {
+                continue;
+            }
+            let tangent = (p * v.y - q * u.y) * (area / det);
+            let bitangent = (q * u.x - p * v.x) * (area / det);
+            for index in ids {
+                along_u[index] += tangent;
+                along_v[index] += bitangent;
+            }
+        }
+        let frames: Option<Vec<_>> = (0..count)
+            .map(|index| {
+                let normal = self.normals[index].try_normalize()?;
+                let tangent = along_u[index];
+                let tangent = (tangent - normal * normal.dot(tangent)).try_normalize()?;
+                let orientation = normal.cross(tangent).dot(along_v[index]);
+                if !orientation.is_finite() || orientation.abs() < 1e-8 {
+                    return None;
+                }
+                Some(tangent.extend(if orientation < 0.0 { 1.0 } else { -1.0 }))
+            })
+            .collect();
+        if let Some(frames) = frames {
+            self.tangents = frames;
+        } else {
+            log::warn!(
+                "NIF shape {:?}: omitted degenerate optional UV tangent frame",
+                self.name
+            );
+        }
+    }
+
+    pub fn tangents_as_bytes(&self) -> Vec<u8> {
+        self.tangents
+            .iter()
+            .flat_map(|t| t.to_array().into_iter().flat_map(f32::to_le_bytes))
+            .collect()
+    }
+
     pub fn uvs_as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         for uv in &self.uvs {
@@ -185,6 +259,7 @@ impl Default for StaticMesh {
             name: None,
             positions: Vec::new(),
             normals: Vec::new(),
+            tangents: Vec::new(),
             uvs: Vec::new(),
             triangles: Vec::new(),
             colors: Vec::new(),

@@ -112,6 +112,48 @@ struct AssetDirectoryReadLock {
     _guard: shared::asset_lock::AssetLock,
 }
 
+/// Disable optional grass without a world or readable cache, keeping camera settings and
+/// screenshot readiness consistent with the resources startup actually installs. Cache failure
+/// also restores the non-grass terrain radii in both the config and live preferences.
+pub(crate) fn load_optional_grass_cache(
+    config: &mut EngineConfig,
+    world_active: bool,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
+) -> Option<crate::world::grass_cache::GrassCache> {
+    if !config.grass {
+        return None;
+    }
+    let cache = if !world_active {
+        eprintln!("warning: --grass has no effect without a converted world");
+        None
+    } else {
+        match crate::world::grass_cache::GrassCache::open(
+            &config.assets_dir.join("grass_cache.rkyv"),
+        ) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                eprintln!("warning: grass disabled for this pack: {error}");
+                None
+            }
+        }
+    };
+    if cache.is_none() {
+        config.grass = false;
+        if let Some((stream_radius, unload_radius)) = config.grass_terrain_radii.take() {
+            config.stream_radius = stream_radius;
+            config.unload_radius = unload_radius;
+        }
+        if let Some((settings, file)) = preferences {
+            file.clear_grass_coverage(settings, config);
+        }
+    }
+    cache
+}
+
+/// Prepare the selected world or fixture and run the engine with its available optional resources.
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
     let mut preferences = config
@@ -125,6 +167,48 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
+    config
+        .validate_grass()
+        .map_err(|reason| color_eyre::eyre::eyre!(reason))?;
+    for diagnostic in &config.grass_settings_diagnostics {
+        eprintln!("grass settings: {diagnostic}");
+    }
+    if let Some(report) = &config.grass_settings_report {
+        for source in &report.sources {
+            eprintln!(
+                "grass INI: {} (SHA-256 {})",
+                source.path.display(),
+                source.sha256
+            );
+        }
+        for (key, setting) in &report.settings {
+            eprintln!(
+                "grass INI: {key}={} ({})",
+                setting.effective.value, setting.effective.source
+            );
+        }
+        for diagnostic in &report.diagnostics {
+            eprintln!(
+                "grass INI: {}:{} {}: {}",
+                diagnostic.source, diagnostic.line, diagnostic.key, diagnostic.reason
+            );
+        }
+    }
+    if config.grass {
+        let (start, end) = config.effective_grass_fade();
+        eprintln!(
+            "grass settings: spacing={}, radius={}, terrain radius={}, fade={} ({}..{}), INI types/texture={}, effective species/texture={}, texture threshold={}",
+            config.grass_min_spacing,
+            config.effective_grass_radius(),
+            config.stream_radius,
+            config.grass_enable_fade,
+            start,
+            end,
+            config.grass_max_types_per_texture,
+            config.effective_grass_species_cap(),
+            config.grass_texture_threshold
+        );
+    }
     let shots = prepare_shots(&mut config)?;
     let shots_active = shots.is_some();
     let route = prepare_route(&mut config)?;
@@ -179,13 +263,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             InitialCameraGroundHeight(0.0),
             None,
         ))
-    } else if config.benchmark_only
-        || config.material_fixture
-        || config.terrain_water_fixture
-        || config.transform_bounds_fixture
-        || config.renderer_fixture
-        || config.physics_fixture
-    {
+    } else if !config.loads_world() {
         None
     } else {
         validate_runtime_assets(&config)?;
@@ -267,6 +345,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         && !config.streaming_fixture)
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
+    let grass_cache =
+        load_optional_grass_cache(&mut config, runtime_data.is_some(), preferences.as_mut());
     let benchmark_active = config.benchmark_frames.is_some()
         || config.benchmark_duration_secs.is_some()
         || config.streaming_benchmark_route_speed.is_some();
@@ -443,6 +523,10 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                 // Before `Update`, so the streaming planner of the same frame sees the camera
                 // where the route put it.
                 .add_systems(PreUpdate, drive_route);
+        }
+        if let Some(cache) = grass_cache {
+            app.insert_resource(cache)
+                .add_plugins(crate::grass::GrassPlugin);
         }
         app.add_systems(Startup, setup_world);
         if interactive_world_physics {
@@ -2331,7 +2415,11 @@ fn setup_world(
         FogCamera,
         // The sky draws a dome around this camera and clears it to the weather's fog colour.
         SkyCamera,
-        Msaa::Off,
+        if config.grass {
+            Msaa::Sample4
+        } else {
+            Msaa::Off
+        },
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(MAIN_VIEW_LAYERS),
@@ -2820,11 +2908,27 @@ fn capture_acceptance_screenshot(
     streaming: Option<Res<StreamingMetrics>>,
     world_database: Option<Res<WorldDatabase>>,
     renderer: Res<RendererMetrics>,
+    grass: Option<Res<crate::grass::GrassMetrics>>,
+    grass_renderer: Option<Res<crate::grass_render::GrassRenderMetrics>>,
+    mut exit: MessageWriter<AppExit>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Some(path) = &config.acceptance_screenshot else {
         return;
     };
+    if config.grass
+        && world_database.is_some()
+        && (grass.as_ref().is_some_and(|metrics| metrics.failures > 0)
+            || grass_renderer
+                .as_ref()
+                .is_some_and(|metrics| metrics.failures > 0))
+    {
+        error!(
+            "grass failed to prepare the requested acceptance screenshot; inspect grass diagnostics and upload/cache budgets"
+        );
+        exit.write(AppExit::error());
+        return;
+    }
     state.frames = state.frames.saturating_add(1);
     let settled_frames = config
         .benchmark_warmup_frames
@@ -2841,7 +2945,13 @@ fn capture_acceptance_screenshot(
         .is_none_or(|metrics| screenshot_assets_ready(metrics, world_database.is_some(), &config));
     let renderer_ready = renderer.final_path_active()
         && (!config.renderer_fixture || renderer.renderer_fixture_validated);
-    if !assets_ready || !renderer_ready {
+    let grass_ready = screenshot_grass_ready(
+        &config,
+        world_database.is_some(),
+        grass.as_deref(),
+        grass_renderer.as_deref(),
+    );
+    if !assets_ready || !renderer_ready || !grass_ready {
         return;
     }
     if let Some(parent) = path.parent()
@@ -2854,6 +2964,19 @@ fn capture_acceptance_screenshot(
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(path.clone()));
     state.captured = true;
+}
+
+/// Require successful grass generation and rendering when world grass is enabled.
+fn screenshot_grass_ready(
+    config: &EngineConfig,
+    world_streaming_active: bool,
+    grass: Option<&crate::grass::GrassMetrics>,
+    renderer: Option<&crate::grass_render::GrassRenderMetrics>,
+) -> bool {
+    !config.grass
+        || !world_streaming_active
+        || (grass.is_some_and(|metrics| metrics.ready && metrics.failures == 0)
+            && renderer.is_some_and(|metrics| metrics.ready && metrics.failures == 0))
 }
 
 fn screenshot_assets_ready(
@@ -3233,6 +3356,126 @@ mod tests {
         app.world_mut().get_mut::<Window>(entity).unwrap().visible = true;
         app.update();
         assert!(app.world().get::<Window>(entity).unwrap().visible);
+    }
+
+    /// Requested grass reports its lack of effect in non-world modes exactly once.
+    #[test]
+    fn requested_grass_without_a_world_warns_once() {
+        const PROBE: &str = "MUDCRAB_TEST_GRASS_NO_WORLD";
+        const WARNING: &str = "warning: --grass has no effect without a converted world";
+        if let Ok(mode) = std::env::var(PROBE) {
+            let mut config = EngineConfig {
+                grass: mode == "on",
+                ..Default::default()
+            };
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
+            return;
+        }
+        for (mode, expected) in [("on", 1), ("off", 0)] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::tests::requested_grass_without_a_world_warns_once",
+                    "--nocapture",
+                ])
+                .env(PROBE, mode)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert_eq!(stderr.matches(WARNING).count(), expected, "{stderr}");
+        }
+    }
+
+    /// Inactive grass leaves the actual synthetic camera and sun equivalent to grass off.
+    #[test]
+    fn g3_inactive_grass_preserves_synthetic_camera_and_sun() {
+        /// Build the production camera setup without opening a window or renderer.
+        fn camera_settings(grass: bool) -> (Msaa, f32, Vec<f32>) {
+            let mut args = vec!["--benchmark-only"];
+            if grass {
+                args.push("--grass");
+            }
+            let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
+            assert!(load_optional_grass_cache(&mut config, false, None).is_none());
+            assert!(!config.grass, "grass must be inactive without a world");
+            let mut app = App::new();
+            app.insert_resource(config)
+                .add_systems(Startup, setup_world);
+            app.update();
+            let world = app.world_mut();
+            let (msaa, projection) = world.query::<(&Msaa, &Projection)>().single(world).unwrap();
+            let Projection::Perspective(projection) = projection else {
+                panic!("world camera must use perspective projection");
+            };
+            let camera = (*msaa, projection.far);
+            let cascades = world.query::<&CascadeShadowConfig>().single(world).unwrap();
+            (camera.0, camera.1, cascades.bounds.clone())
+        }
+        let disabled = camera_settings(false);
+        let requested = camera_settings(true);
+        assert_eq!(disabled.0, Msaa::Off);
+        assert_eq!(requested, disabled);
+    }
+
+    /// Unavailable grass never prevents world startup or leaves capture waiting for grass resources.
+    #[test]
+    fn optional_grass_cache_disables_grass_for_missing_corrupt_old_or_bad_cells() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("grass_cache.rkyv");
+        let mut config = EngineConfig {
+            assets_dir: directory.path().to_path_buf(),
+            grass: true,
+            ..Default::default()
+        };
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        std::fs::write(&path, b"broken").unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        let mut cache = shared::grass::GrassCache {
+            version: 5,
+            types: vec![],
+            cells: vec![],
+        };
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        cache.version = shared::grass::GRASS_CACHE_VERSION;
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        config.grass = true;
+        assert!(load_optional_grass_cache(&mut config, true, None).is_some());
+        assert!(config.grass);
+        cache.cells.push(shared::grass::GrassCell {
+            cell_id: 7,
+            worldspace_id: 3,
+            grid_x: 1,
+            grid_y: -2,
+            input_hash: [0; 32],
+            obstruction_failures: vec![],
+            expanded_sampling: 0,
+            heights: vec![],
+            water_height: None,
+            quadrants: vec![],
+        });
+        std::fs::write(
+            &path,
+            rkyv::to_bytes::<rkyv::rancor::Error>(&cache).unwrap(),
+        )
+        .unwrap();
+        assert!(load_optional_grass_cache(&mut config, true, None).is_none());
+        assert!(!config.grass);
+        assert!(screenshot_grass_ready(&config, true, None, None));
     }
 
     /// The origin cell's centre is (2048, y, -2048), the start position's convention, and +grid_y
@@ -4094,6 +4337,45 @@ mod tests {
             1,
             "later updates do not queue a second capture"
         );
+    }
+
+    #[test]
+    /// Verify grass screenshot waits for generation uploads and actual draw readiness.
+    fn grass_screenshot_waits_for_generation_uploads_and_actual_draw_readiness() {
+        let mut config = EngineConfig::default();
+        assert!(screenshot_grass_ready(&config, true, None, None));
+        config.grass = true;
+        assert!(screenshot_grass_ready(&config, false, None, None));
+        assert!(!screenshot_grass_ready(&config, true, None, None));
+        let mut grass = crate::grass::GrassMetrics::default();
+        let mut render = crate::grass_render::GrassRenderMetrics::default();
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        grass.ready = true;
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        render.ready = true;
+        assert!(screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
+        render.failures = 1;
+        assert!(!screenshot_grass_ready(
+            &config,
+            true,
+            Some(&grass),
+            Some(&render)
+        ));
     }
     /// The sun's shadows reach the grid the streamer draws, whichever way the camera faces, and the
     /// shader's view of them is usable: far bounds that increase (the shader takes the first bound a

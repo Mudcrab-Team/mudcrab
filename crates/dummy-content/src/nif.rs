@@ -2,6 +2,7 @@
 //!
 //! The writer emits the minimal block set the converter renders:
 //! `BSFadeNode` → `BSTriShape` → `BSLightingShaderProperty` → `BSShaderTextureSet`.
+//! Alpha-tested shapes also include a `NiAlphaProperty` with an explicit threshold.
 //! Geometry is validated before serialization and the output is byte-stable
 //! for identical input.
 
@@ -158,7 +159,12 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
 
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
-    build_static_shape(shape, colors, &[], None)
+    build_static_shape(shape, colors, &[], None, None)
+}
+
+/// Generates a static NIF with alpha testing enabled at the supplied byte threshold.
+pub fn static_shape_with_alpha_test(shape: &StaticShape<'_>, threshold: u8) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], &[], None, Some(threshold))
 }
 
 /// Like [`static_shape`], plus one collision body per entry. Each body hangs off its own
@@ -168,7 +174,7 @@ pub fn static_shape_with_bodies(
     shape: &StaticShape<'_>,
     bodies: &[BoxBody<'_>],
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies, None)
+    build_static_shape(shape, &[], bodies, None, None)
 }
 
 /// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
@@ -177,7 +183,7 @@ pub fn static_shape_with_root_transform(
     bodies: &[BoxBody<'_>],
     root: RootTransform,
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies, Some(root))
+    build_static_shape(shape, &[], bodies, Some(root), None)
 }
 
 /// How a legacy skin fixture supplies its shading normals.
@@ -988,11 +994,13 @@ fn skin_partition(
     Ok(block)
 }
 
+/// Serialize a static shape with optional vertex colors, collision bodies and alpha testing.
 fn build_static_shape(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
     bodies: &[BoxBody<'_>],
     root: Option<RootTransform>,
+    alpha_test: Option<u8>,
 ) -> Result<Vec<u8>> {
     validate(shape)?;
     ensure!(
@@ -1004,7 +1012,7 @@ fn build_static_shape(
     }
     let mut strings = vec![shape.name];
     strings.extend(bodies.iter().map(|body| body.node_name));
-    let first_body_block = 4_u32;
+    let first_body_block = 4_u32 + u32::from(alpha_test.is_some());
     let mut children = vec![1_u32];
     children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
     let mut root_node = fade_node(&children);
@@ -1013,7 +1021,11 @@ fn build_static_shape(
     }
     let mut blocks = vec![
         root_node,
-        triangle_shape(shape, colors)?,
+        triangle_shape(
+            shape,
+            colors,
+            if alpha_test.is_some() { 4 } else { NULL_REF },
+        )?,
         lighting_shader_property(!colors.is_empty(), 3),
         texture_set(shape)?,
     ];
@@ -1023,6 +1035,10 @@ fn build_static_shape(
         "BSLightingShaderProperty",
         "BSShaderTextureSet",
     ];
+    if let Some(threshold) = alpha_test {
+        blocks.push(alpha_property(threshold));
+        block_types.push("NiAlphaProperty");
+    }
     for (index, body) in bodies.iter().enumerate() {
         let node_block = first_body_block + 4 * index as u32;
         let mut node = Vec::new();
@@ -1267,7 +1283,8 @@ fn body_shape(body: &BoxBody<'_>) -> (Vec<u8>, &'static str) {
     }
 }
 
-fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
+/// Serialize geometry and its references to shader and optional alpha properties.
+fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]], alpha: u32) -> Result<Vec<u8>> {
     let stride = VERTEX_STRIDE + u8::from(!colors.is_empty());
     let vertex_stride = usize::from(stride) * 4;
     let vertex_bytes = shape
@@ -1293,7 +1310,7 @@ fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>
     block.extend_from_slice(&radius.to_le_bytes());
     push_u32(&mut block, NULL_REF);
     push_u32(&mut block, 2);
-    push_u32(&mut block, NULL_REF);
+    push_u32(&mut block, alpha);
     let descriptor = u64::from(stride)
         | (4 << 8)
         | (5 << 16)
@@ -1338,6 +1355,17 @@ fn triangle_shape(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>
         }
     }
     Ok(block)
+}
+
+/// Serialize an inherited `NiProperty` followed by alpha-test flags and threshold.
+fn alpha_property(threshold: u8) -> Vec<u8> {
+    let mut block = Vec::with_capacity(15);
+    push_u32(&mut block, NULL_REF); // name
+    push_u32(&mut block, 0); // extra data count
+    push_u32(&mut block, NULL_REF); // controller
+    push_u16(&mut block, 0x0200 | (4 << 10)); // alpha test, TEST_GREATER; blending off
+    block.push(threshold);
+    block
 }
 
 fn lighting_shader_property(colors: bool, texture_set: u32) -> Vec<u8> {
