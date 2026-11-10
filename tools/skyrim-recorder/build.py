@@ -29,23 +29,24 @@ def build(exe, output, profile_name='v3'):
                 return data[offset + rva - address:offset + rva - address + size]
         raise ValueError(f'Unmapped RVA {rva:x}')
 
+    def checked_signature(name):
+        identity = profile[name]
+        stem = name.removesuffix('_signature')
+        rva = profile[stem if stem.endswith('_call') else stem + '_function']
+        local = at(rva, identity['length'])
+        if hashlib.sha256(local).hexdigest() != identity['sha256']:
+            raise ValueError(f'{stem} local executable range differs')
+        return local
+
     for stem in ('movement', 'jump', 'camera', 'controller_getter', 'controller_gate', 'air', 'launch'):
-        signature = bytes.fromhex(profile[stem + '_signature'])
-        if at(profile[stem + '_function'], len(signature)) != signature:
-            raise ValueError(f'{stem} signature mismatch')
-    if at(profile['camera_call'], 5) != bytes.fromhex(profile['camera_call_signature']):
-        raise ValueError('Camera call signature mismatch')
+        checked_signature(stem + '_signature')
+    checked_signature('camera_call_signature')
     if profile_name == 'inputs-v4':
-        signature = bytes.fromhex(profile['setter_signature'])
-        call = at(profile['setter_call'], 5)
-        if at(profile['setter_function'], len(signature)) != signature:
-            raise ValueError('Jump setter signature mismatch')
-        player_call = at(profile['player_setter_call'], 5)
-        if (player_call != bytes.fromhex(profile['player_setter_call_signature']) or
-                profile['player_setter_call'] + 5 + struct.unpack_from('<i', player_call, 1)[0] != profile['setter_function']):
+        checked_signature('setter_signature')
+        call = checked_signature('setter_call_signature')
+        player_call = checked_signature('player_setter_call_signature')
+        if profile['player_setter_call'] + 5 + struct.unpack_from('<i', player_call, 1)[0] != profile['setter_function']:
             raise ValueError('Player jump setter call mismatch')
-        if call != bytes.fromhex(profile['setter_call_signature']):
-            raise ValueError('Jump setter call signature mismatch')
         if profile['setter_call'] + 5 + struct.unpack_from('<i', call, 1)[0] != profile['setter_function']:
             raise ValueError('Jump setter call target mismatch')
     for stem in ('movement', 'jump', 'air', 'launch'):
@@ -58,7 +59,7 @@ def build(exe, output, profile_name='v3'):
         if isinstance(value, int):
             header.append(f'constexpr unsigned long long {name} = {value}ULL;')
         elif name.endswith('_signature'):
-            values = ','.join(str(v) for v in bytes.fromhex(value))
+            values = ','.join(str(v) for v in checked_signature(name))
             header.append(f'constexpr unsigned char {name}[] = {{{values}}};')
     if profile_name == 'inputs-v4':
         header.append('#define MUDCRAB_INPUTS_V4 1')

@@ -120,6 +120,9 @@ jobs:
       - name: Verify native jump input evidence and retained failed attempts
         run: python3 -B scripts/verify_skyrim_jump_inputs.py > "$RUNNER_TEMP/skyrim-jump-inputs.json"
 
+      - name: Audit published Skyrim evidence and nested archives
+        run: python3 -B scripts/publish_skyrim_evidence.py
+
       - name: Test Riverwood asset reuse audit
         run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
 

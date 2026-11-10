@@ -1,0 +1,99 @@
+{
+  "logs": {
+    "build-v3": {
+      "gzip_sha256": "ed59a4d0b40b35c854d18fcc2e46cc7a358b7a7aa3122073991b1b2a32e6b216",
+      "private_raw_sha256": "d3f5356229d7ba9a8785be8540d1462ed1fbefd115e4fb91d2eaa022811bbdac",
+      "published_raw_sha256": "d3f5356229d7ba9a8785be8540d1462ed1fbefd115e4fb91d2eaa022811bbdac"
+    },
+    "build-v4": {
+      "gzip_sha256": "c0e19338ca3cfa90eb7f0c7ddb153b299802293b5712daa4e2c736d69ec8fdb3",
+      "private_raw_sha256": "50b151d8faabd09dfcfbfd283a3b3cced66c81cd205e0c18c6922c0d32fd289b",
+      "published_raw_sha256": "50b151d8faabd09dfcfbfd283a3b3cced66c81cd205e0c18c6922c0d32fd289b"
+    },
+    "clippy": {
+      "gzip_sha256": "0fa81618b07b1f3fe5e4761e3966dc3b5a1d40f5be2190e07a83f58faf547927",
+      "private_raw_sha256": "ee201e6de87e17a06df89a6809f6d4644a022731fc321a993a761a43253d0746",
+      "published_raw_sha256": "b848482aa16d9f54a5dc0b8afe74f175656e55344a1f723d5c5f998cc2092bd5"
+    },
+    "manifest-pin": {
+      "gzip_sha256": "c9d723af4299c8ea148181788627360f116f2af1329e56d0ff10650ac7bf9dd0",
+      "private_raw_sha256": "ddd4ab0428a9bc71ae32599d00c29b34142c1eba7aece763b88131290be5b40e",
+      "published_raw_sha256": "ddd4ab0428a9bc71ae32599d00c29b34142c1eba7aece763b88131290be5b40e"
+    },
+    "physics": {
+      "gzip_sha256": "13222dda315d6d25252fd16f8d61a5908eb75799dc21cad2e86d85bf18492fcb",
+      "private_raw_sha256": "3826bd1d957af53f0dc975e1d0365767009cdd01516bf6ed162ce361b0cc3def",
+      "published_raw_sha256": "3015c7674ebc35a543e99d418e7c99fb0d207c4ea3ef985f0c02b829bdfcb0b0"
+    },
+    "production": {
+      "gzip_sha256": "219056f166daaf4dcf48e639882761aa15d54293af23952e38d37d49528eaf95",
+      "private_raw_sha256": "5d927f7c2b2b2f7b12e213386bc713a491761b906a80723f8767c1e97df703b5",
+      "published_raw_sha256": "b1a3c56a1feecc797f14a28024e5564c85a3e85f6ec448b84bab0890192e33e7"
+    },
+    "python": {
+      "gzip_sha256": "c72158a090a6481096341fa6f5d37b52a26b8dee75feb4b2e0784c56b5603bb2",
+      "private_raw_sha256": "6c4ff5d5f73e1146afbb9e9965899852dbc32003ad08add6590d89977634fcdc",
+      "published_raw_sha256": "6c4ff5d5f73e1146afbb9e9965899852dbc32003ad08add6590d89977634fcdc"
+    }
+  },
+  "native_builds": {
+    "v3": {
+      "dll_matches_historical_except_coff_timestamp": true,
+      "generated_header_matches_historical": true,
+      "header_sha256": "aacb69958fd202b0730d3c2f1e90741b91b3271700e4a0864554fdf6a68f3f02"
+    },
+    "v4": {
+      "dll_matches_historical_except_coff_timestamp": true,
+      "generated_header_matches_historical": true,
+      "header_sha256": "40b51c2ca3b38541913612647ff59bad4e80877e396d026ff0241305c6640124"
+    }
+  },
+  "publication_mapping_sha256": "9e136d6de79095772715ca1bd4175dabe42d46a8d1a97ae7545652c8b25fe2ac",
+  "rebased_parent": "3be6c598a084ff3ce713e60c56df4a935fbb355c",
+  "reviewed_parent": "03778800026d5ed746d227c08aa5858c1a71c2e1",
+  "schema": 1,
+  "sources": {
+    ".github/workflows/run_tests.yml": "65eb9ee29640f206ae3664d9161160a67c2502a347b12a68ab9314bc548a68fd",
+    "Cargo.lock": "8af6cb4c3872ec1e6d7ad91dcdb372743129cc017bd45968b8603eaa48831545",
+    "crates/engine/Cargo.toml": "83f69201c84875e947bed3e098f3ff753167fe71f069fe29fcb208fdfa0bc6df",
+    "crates/engine/src/physics.rs": "a8e6be3e3666da7896b80e0ef3231636f27d25a00e7ea16b5ef02f2571e64fc5",
+    "crates/engine/src/physics/jump_replay_tests.rs": "e4a6a33d626a4c207e79a6fe8a9e0907294fb8eb79614278730338cb2eceae19",
+    "scripts/capture_skyrim_jump.py": "563a8f26838861232fc2abac95e452984ee1c0dddfc164c2ec17cf8940175b86",
+    "scripts/capture_skyrim_jump_inputs.py": "d5abca72069aa2eca23f29bb0e3c0b52bd1e7d3fccbb7902c7d1d5817bd8f7fd",
+    "scripts/check_skyrim_jump_runtime.py": "74963e3cf6d1996da09efd4ab4ac8c9af0e9fcb985a719f1aa297732df4dc7aa",
+    "scripts/inspect_skyrim_jump_inputs.py": "ae5dbe45cb32769e29a3256a54872b87bf92f3a9b63c201d1ff831c609a56f59",
+    "scripts/inspect_skyrim_physics.py": "86173cd56e3dc5eb567f231970b031e877d755eae2c2e8b507ec3152b20893ae",
+    "scripts/publish_skyrim_evidence.py": "7071a79dd58644bb5cd55bc643cb8a95f1a3b9e3d01e606d24bad06d2abe644d",
+    "scripts/record_skyrim_motion.py": "acc6e03b633dd6e461b5aa3e740ab6f35ab7e9066ae70b5ef9fd099aa47b97d2",
+    "scripts/report_skyrim_jump_runtime.py": "2d183946cf63c0746ba1aad5e784c09b45705161526180ef2806360330b3f6f6",
+    "scripts/test_analyze_skyrim_jump_inputs.py": "d29252dd544b5f3e93c92d54fb2501adc599d5d6eaed24e2f57d98b9d34c10b2",
+    "scripts/test_check_skyrim_jump_runtime.py": "c352046b66a1c423255558bd8305c34058a41444fc2f5d228ddebd85847f837f",
+    "scripts/test_publish_skyrim_evidence.py": "7bd830a5dd3acd3a96a9d077dd70269254309b072c64916fff9f2b4b4dde7acc",
+    "scripts/test_record_skyrim_motion.py": "cf8fc531206ef59544da1bb1b01bb432c9113fc07b52ff69c6d2b9b9805b5456",
+    "scripts/verify_skyrim_jump_inputs.py": "0a67754e2f81caafd9b188f2f696c5ddbe1355b0191a9fd24ea1c90f4e36cd09",
+    "tools/skyrim-recorder/build.py": "e730ab793a8e8cf5562eb45ea7efc3d7860fad00298ae4722a5cf36a48301711",
+    "tools/skyrim-recorder/runtime-inputs-v4.json": "aaca81025d05e18aaefe8fd0b0487392a60285ff61a17ed5d75d15953a75ba2c",
+    "tools/skyrim-recorder/runtime.json": "0cc26c0735b871b7c2f78c9e02cdcd66ffc46e6e739a5b02ac1ca19dff40455b"
+  },
+  "validation": {
+    "clippy": "cargo clippy -p engine --lib --tests -- -D warnings passed",
+    "fmt": "cargo fmt --all -- --check passed",
+    "fresh_production_replay": {
+      "maximum_pointwise_error": 0.22509765625,
+      "maximum_rmse": 0.11414554895231227,
+      "n": 12,
+      "passes": 12
+    },
+    "native_trace_cli_cadence": {
+      "artifact": "cli-cadence.json",
+      "requested_30_actual_29_98_exit": 0,
+      "requested_30_actual_60_86_exit": 1,
+      "sha256": "e348b4c0b69b5abe8bb9900629617348877a5e13261bff856426ea38d4ea5d43"
+    },
+    "new_native_recordings": 0,
+    "python_passed": 176,
+    "raw_trace_frozen_and_evaluator_artifacts_unchanged": 27,
+    "rust_physics_ignored_exports": 3,
+    "rust_physics_passed": 106
+  }
+}

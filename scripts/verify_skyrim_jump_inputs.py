@@ -8,6 +8,7 @@ from pathlib import Path
 import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, require
+from publish_skyrim_evidence import source_digest
 from capture_skyrim_jump_inputs import ROOT, control_prediction, digest
 
 
@@ -42,7 +43,7 @@ def verify(corpus, plan_path):
         require(run['proof']['source_save_sha256'] == plan['source_save_sha256'], 'Recorded save differs')
         require(run['proof']['source_save_unchanged'], 'Source save was modified')
         for source, expected in run['receipt']['sources'].items():
-            require(hashlib.sha256(captured_sources[source]).hexdigest() == expected,
+            require(source_digest(corpus / 'capture-source.zip', source, captured_sources[source]) == expected,
                     f'Archived capture source differs {source}')
         if run['id'] != 'baseline':
             prediction = control_prediction(baseline, condition)

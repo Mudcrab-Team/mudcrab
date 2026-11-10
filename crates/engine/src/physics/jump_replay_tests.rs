@@ -146,6 +146,113 @@ fn native_first_launch_step() {
     );
 }
 
+#[test]
+fn production_jump_matches_independent_heldout_cadence_targets() {
+    use sha2::{Digest, Sha256};
+    use std::{collections::BTreeMap, io::Read};
+
+    let trace = include_bytes!(
+        "../../../../tools/skyrim-recorder/reference/jump-cadence-v3/traces/heldout-30hz-1x-1.bin.gz"
+    );
+    let mut bytes = Vec::new();
+    flate2::read::GzDecoder::new(trace.as_slice())
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        "6bdd4cd3907f01a90af35a00b2b012a5781138bd2c9ebc6901ac6d6831f18a65"
+    );
+    // Narrow reader of the sealed <4Q4I40f48s v3 wire format. Full capture
+    // qualification stays in check_skyrim_jump_runtime.qualified_observations.
+    assert_eq!(bytes.len() % 256, 0);
+    let rows = bytes.as_chunks::<256>().0;
+    let sample = |row: &[u8; 256]| u64::from_le_bytes(row[16..24].try_into().unwrap());
+    let kind = |row: &[u8; 256]| u32::from_le_bytes(row[32..36].try_into().unwrap());
+    let value = |row: &[u8; 256], index: usize| {
+        let offset = 48 + index * 4;
+        f32::from_le_bytes(row[offset..offset + 4].try_into().unwrap())
+    };
+    let press = rows
+        .iter()
+        .find(|row| {
+            kind(row) == 2
+                && &row[208..213] == b"Jump\0"
+                && value(row, 0) > 0.0
+                && value(row, 1) == 0.0
+        })
+        .unwrap();
+    let launch_sample = rows
+        .iter()
+        .find(|row| kind(row) == 8 && sample(row) >= sample(press) && value(row, 16) == 2.0)
+        .map(&sample)
+        .unwrap();
+    let cameras: Vec<_> = rows.iter().filter(|row| kind(row) == 3).collect();
+    let mut floor: Vec<_> = cameras
+        .iter()
+        .rev()
+        .filter(|row| sample(row) <= sample(press))
+        .take(15)
+        .map(|row| value(row, 2))
+        .collect();
+    assert_eq!(floor.len(), 15);
+    floor.sort_by(f32::total_cmp);
+    let baseline = floor[7];
+    let controllers: BTreeMap<_, _> = rows
+        .iter()
+        .filter(|row| kind(row) == 7)
+        .map(|row| (sample(row), value(row, 2)))
+        .collect();
+    let observations: Vec<_> = cameras
+        .into_iter()
+        .filter(|row| sample(row) >= launch_sample)
+        .map(|row| (controllers[&sample(row)], value(row, 2) - baseline))
+        .collect();
+    assert!(
+        observations
+            .iter()
+            .all(|&(dt, rise)| { dt.is_finite() && dt > 0.0 && dt <= 0.25 && rise.is_finite() })
+    );
+    let predicted = predict(
+        &ReplayRun {
+            id: "heldout-30hz-1x-1".into(),
+            initial_floor_height: 0.0,
+            controller_dt_seconds: observations[1..].iter().map(|&(dt, _)| dt).collect(),
+        },
+        &MovementTuning {
+            // Direct original-training launch inputs, never heldout heights.
+            jump_height: JumpHeight::new(78.28, "original training profile".into()).unwrap(),
+            ..default()
+        },
+    );
+    let mut elapsed = 0.0_f64;
+    let mut squared_error = 0.0_f64;
+    let mut max_error = 0.0_f64;
+    let mut scored = 0;
+    for (index, (&height, &(dt, observed))) in
+        predicted.heights.iter().zip(&observations).enumerate()
+    {
+        if index > 0 {
+            elapsed += f64::from(dt);
+        }
+        if elapsed <= 1.15 {
+            let error = f64::from(height) - f64::from(observed);
+            squared_error += error * error;
+            max_error = max_error.max(error.abs());
+            scored += 1;
+        }
+    }
+    assert!(
+        elapsed >= 1.15,
+        "heldout trace must cover the frozen score window"
+    );
+    let rmse = (squared_error / f64::from(scored)).sqrt();
+    assert!(rmse <= 1.0, "heldout RMSE {rmse} exceeds frozen gate 1");
+    assert!(
+        max_error <= 3.0,
+        "heldout max error {max_error} exceeds frozen gate 3"
+    );
+}
+
 #[derive(Resource, Default)]
 struct JumpCapture {
     armed: bool,

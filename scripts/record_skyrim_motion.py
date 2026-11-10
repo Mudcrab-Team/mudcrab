@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import statistics
 import struct
 import subprocess
 import sys
@@ -21,23 +22,28 @@ import traceback
 
 RECORD = struct.Struct('<4Q4I40f48s')
 ROOT = Path(__file__).resolve().parents[1]
+SCREENSHOT_PATH = Path('/tmp/gamescope.png')
+SCREENSHOT_LOCK_PATH = Path('/tmp/mudcrab-gamescope-screenshot.lock')
 
 
 def capture(display, destination):
-    source = Path('/tmp/gamescope.png')
-    previous = source.stat().st_mtime_ns if source.exists() else None
-    subprocess.run(['xprop', '-root', '-f', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '32c',
-                    '-set', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '1'],
-                   env=dict(os.environ, DISPLAY=display), check=True, capture_output=True)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if source.exists() and source.stat().st_mtime_ns != previous:
-            data = source.read_bytes()
-            if data.startswith(b'\x89PNG\r\n\x1a\n') and data[-8:-4] == b'IEND':
-                destination.write_bytes(data)
-                return
-        time.sleep(0.1)
-    raise RuntimeError('Gamescope did not produce a complete fresh screenshot')
+    # Gamescope shares this output path across otherwise isolated displays.
+    with SCREENSHOT_LOCK_PATH.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        source = SCREENSHOT_PATH
+        previous = source.stat().st_mtime_ns if source.exists() else None
+        subprocess.run(['xprop', '-root', '-f', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '32c',
+                        '-set', 'GAMESCOPECTRL_REQUEST_SCREENSHOT', '1'],
+                       env=dict(os.environ, DISPLAY=display), check=True, capture_output=True)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if source.exists() and source.stat().st_mtime_ns != previous:
+                data = source.read_bytes()
+                if data.startswith(b'\x89PNG\r\n\x1a\n') and data[-8:-4] == b'IEND':
+                    destination.write_bytes(data)
+                    return
+            time.sleep(0.1)
+        raise RuntimeError('Gamescope did not produce a complete fresh screenshot')
 
 
 class GameWindow:
@@ -398,7 +404,7 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         while True:
             rows = read_trace(output / 'trace.bin', live=True)
             try:
-                proof = verify_trace(rows)
+                proof = verify_trace(rows, requested_fps=frame_cap)
                 break
             except ValueError:
                 if time.monotonic() > deadline:
@@ -422,6 +428,9 @@ def run_recording(session, output, ocr_prefix, fixture_path=None, frame_cap=60):
         (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
         (output / 'trace.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
         print(json.dumps(proof, indent=2))
+        phase = 'achieved-cadence'
+        if proof['status'] != 'passed':
+            raise ValueError('Camera cadence did not meet the requested frame cap; retained proof and trace')
     except BaseException as error:
         (output / 'failure.json').write_text(json.dumps({'phase': phase, 'error': str(error),
                                                         'traceback': traceback.format_exc()}, indent=2) + '\n')
@@ -462,7 +471,24 @@ def read_trace(path, *, live=False):
     return rows
 
 
-def verify_trace(rows):
+def qualify_cadence(frames, frequency, requested_fps, relative_tolerance=0.1):
+    if not math.isfinite(requested_fps) or requested_fps <= 0:
+        raise ValueError('Requested camera cadence must be positive and finite')
+    if not math.isfinite(relative_tolerance) or not 0 <= relative_tolerance < 1:
+        raise ValueError('Camera cadence tolerance must be in [0, 1)')
+    intervals = [b['qpc'] - a['qpc'] for a, b in zip(frames, frames[1:])]
+    if frequency <= 0 or not intervals or min(intervals) <= 0:
+        raise ValueError('Insufficient increasing camera timestamps for cadence qualification')
+    median_seconds = statistics.median(intervals) / frequency
+    achieved_fps = 1 / median_seconds
+    passed = abs(achieved_fps - requested_fps) <= requested_fps * relative_tolerance
+    return {'status': 'passed' if passed else 'failed', 'requested_fps': requested_fps,
+            'achieved_fps': achieved_fps, 'relative_tolerance': relative_tolerance,
+            'clock': 'qpc', 'window': 'first_person_camera_during_W',
+            'sample_count': len(frames), 'median_interval_seconds': median_seconds}
+
+
+def verify_trace(rows, *, requested_fps=None):
     def require(condition, message):
         if not condition:
             raise ValueError(message)
@@ -517,7 +543,7 @@ def verify_trace(rows):
     require(math.hypot(*eye_delta[:2]) > 1.0, 'Attached NiCamera did not follow movement')
     require(max(math.dist(r['values'][:2], start[:2]) for r in before[-10:]) < 1.0,
             'Player was already moving before the press')
-    return {'status': 'passed', 'received_down_up': True, 'forward_input_accepted': True,
+    proof = {'status': 'passed', 'received_down_up': True, 'forward_input_accepted': True,
             'input_threads': sorted({r['thread'] for r in events}),
             'camera_threads': sorted({r['thread'] for r in selected}), 'first_person': True,
             'hold_seconds': (up['qpc'] - down['qpc']) / frequency,
@@ -527,6 +553,10 @@ def verify_trace(rows):
             'samples': {'before': len(before), 'during': len(during), 'after': len(after)},
             'camera_boundary': 'post_PlayerCamera_Update_before_position_submission',
             'render_consumer_verified': False}
+    if requested_fps is not None:
+        proof['camera_cadence'] = qualify_cadence(during, frequency, requested_fps)
+        proof['status'] = proof['camera_cadence']['status']
+    return proof
 
 
 def main():
@@ -546,6 +576,7 @@ def main():
     run.add_argument('--frame-cap', type=int, choices=(30, 60, 120), default=60)
     verify = sub.add_parser('verify')
     verify.add_argument('trace', type=Path)
+    verify.add_argument('--frame-cap', type=int, choices=(30, 60, 120))
     args = parser.parse_args()
     if args.action == 'prepare':
         prepare_session(args.game.resolve(), args.save.resolve(), args.proton.resolve(), args.session.resolve(), args.profile)
@@ -557,7 +588,10 @@ def main():
                           args.fixture.resolve() if args.fixture else None, args.frame_cap)
         return
     if args.action == 'verify':
-        print(json.dumps(verify_trace(read_trace(args.trace)), indent=2))
+        proof = verify_trace(read_trace(args.trace), requested_fps=args.frame_cap)
+        print(json.dumps(proof, indent=2))
+        if proof['status'] != 'passed':
+            raise SystemExit(1)
 
 
 if __name__ == '__main__':

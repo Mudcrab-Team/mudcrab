@@ -44,7 +44,7 @@ python3 -B scripts/check_skyrim_jump_runtime.py \
 
 The [portable audit recheck](recheck.py) retains the evidence reviewer's verification logic with only the repository-root lookup and output destinations made portable. It verifies saved hashes, independent rescoring, input isolation, raw headless metrics, native input controls, chart regeneration and local report links. Its [recorded output](validation/evidence-recheck.json) is retained. It does not execute Rust; the last command does.
 
-The evidence audit's light source-linkage finding is resolved by the bounded RTTI, vtable, CALL and `.pdata` excerpt in [light-radius-construction.txt](../light-radius-construction.txt). The published extraction command was rerun against the pinned executable. Rebuilt recorder DLLs are not claimed to be byte-identical to captured DLLs; capture provenance uses the archived source bytes and original receipts.
+The original evidence audit checked bounded RTTI, vtable, CALL and `.pdata` observations. Their [published structural summary](../light-radius-construction.txt) now omits copied instruction listings and executable byte strings; the publication mapping identifies that derivative. The published extraction command was rerun against the pinned executable. Rebuilt recorder DLLs are not claimed to be byte-identical to captured DLLs; capture provenance uses the archived source bytes and original receipts.
 
 
 ## Review corrections
@@ -63,3 +63,10 @@ A second hosted review showed that the recorder can fail its file/Steam checks b
 The wrapper now records a generic recorder failure when the child exits without a failure file. Proof loading, analysis and public-proof extraction share an error boundary that retains trace bytes, records the exception type, and re-raises. The verifier independently requires exactly one zero-exit, nonfailed attempt per accepted run in declared order. An unclassified attempt cannot be hidden by a later successful retry.
 
 The final [158-test Python run](validation/attempt-accounting-after.log.gz) passes. Its seven failure/resume scenarios include invoking the real recorder against a session whose game files are absent, exercising the pre-`try` failure without starting Skyrim; finite float32 factors whose product overflows; and missing proof fields before and after analysis. The [receipt](validation/attempt-accounting-receipt.json) identifies the corrected sources. Both historical evidence rechecks pass. Production code, original acquisition archives and native measurements remain unchanged.
+
+
+## Publication and review corrections, 2026-11-10
+
+The [review response](../review-2026-11-10.md) records the new findings, corrections and focused verification. Earlier receipts and counts above remain historical. The [publication mapping](../publication.json) binds their original hashes to sanitized public files, including nested archives and logs. It does not turn a sanitized derivative into the original acquisition bytes. The numerical traces, frozen model and evaluator are unchanged.
+
+Both production source snapshots are now archived. The portable recheck validates historical evidence against those archives; CI separately executes the current production transition against pinned recordings. Fresh capture proofs qualify achieved camera cadence and retain failed controls. The ordinary Rust suite also reads one committed native trace.

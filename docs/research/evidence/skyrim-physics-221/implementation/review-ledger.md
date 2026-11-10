@@ -35,3 +35,11 @@ The follow-up diff entering round 2 contained 15 files, 235 additions and 9 dele
 The [third Sol round](sol-review-round3.md) approved these changes with no findings. B4, B5 and P1 are resolved. It independently passed all 158 Python tests, both historical rechecks, receipt hashes and the staged whitespace check. The source delta is three Python files, 59 additions and 14 deletions before evidence documentation. The complete diff entering review was nine files, 99 additions and 14 deletions. Approval adds only the reviewer report, this ledger update and the decision entry.
 
 Sol-loop is complete after three rounds with gpt-6.1-sol. No effort setting or token usage was exposed. The final round made no behavior changes and did not rerun Cargo or native Skyrim. Hosted checks must cover the final committed head, and required human approval remains separate.
+
+## Maintainer review follow-up, 2026-11-10
+
+The [new review](https://github.com/Mudcrab-Team/mudcrab/pull/544#issuecomment-6761164439) raised six numbered findings and four additional points. Their reproduced mechanisms, fixes and retained policies are recorded in the [response](../review-2026-11-10.md). The fixes cover publication provenance, shared screenshot ownership, achieved cadence, default native replay and input diagnostics. Manifest integrity is pinned independently of the training seal. The predeclared numerical score gates remain unchanged.
+
+The review budget extends to a fourth round because this follow-up changes shared-resource ownership and evidence integrity. The [fourth Sol round](sol-review-round4.md) approved the follow-up with no findings. It independently passed the publication audit, portable historical recheck, 174 Python tests selected by `test*skyrim*.py`, and staged whitespace. The parent ran the full 176-test Python discovery, 106 Rust physics tests, Clippy, formatting, native recorder builds, and fresh production replay. No new native capture is claimed.
+
+The follow-up entered review with 72 files, 1,358 additions and 5,329 deletions. Approval adds only this ledger update, the review report and a decision entry. No effort setting or token usage was exposed. Sol-loop is complete after four rounds with gpt-6.1-sol. Hosted CI and required human approval remain separate gates.

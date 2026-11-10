@@ -10,9 +10,10 @@ import sys
 import zipfile
 
 from analyze_skyrim_jump_inputs import analyze_rows, decode, f32
+from publish_skyrim_evidence import public_value
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ['scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
+SOURCES = ['scripts/publish_skyrim_evidence.py', 'scripts/record_skyrim_motion.py', 'scripts/capture_skyrim_jump_inputs.py',
            'scripts/analyze_skyrim_jump_inputs.py', 'scripts/inspect_skyrim_jump_inputs.py',
            'tools/skyrim-recorder/probe.cpp', 'tools/skyrim-recorder/jump_inputs.h',
            'tools/skyrim-recorder/build.py', 'tools/skyrim-recorder/runtime.json',
@@ -43,7 +44,7 @@ def control_prediction(baseline, condition):
 
 def retain_failure(corpus, output, attempt, failure):
     """Keep available failed bytes, or explicitly record that capture never created them."""
-    attempt['failure'] = failure
+    attempt['failure'] = public_value(failure)
     trace = output / 'trace.bin'
     if trace.is_file():
         raw = trace.read_bytes()
@@ -162,6 +163,8 @@ def main():
                         raise ValueError('Control changed an unrequested base factor')
             public_proof = {key: proof[key] for key in ('status', 'received_down_up', 'forward_input_accepted',
                             'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+            if 'camera_cadence' in proof:
+                public_proof['camera_cadence'] = proof['camera_cadence']
             public_proof.update(exe_sha256=session['exe_sha256'], source_save_sha256=session['source_save_sha256'],
                                 dll_sha256=session['build']['dll_sha256'], input_sha256=session['input_sha256'],
                                 proton_sha256=session['proton_sha256'])
@@ -174,7 +177,7 @@ def main():
         destination.write_bytes(gzip.compress((output / 'trace.bin').read_bytes(), mtime=0))
         manifest['runs'].append({'id': name, 'path': str(destination.relative_to(args.corpus)),
                                  'sha256': raw_digest, 'fixture': fixture, 'proof': public_proof,
-                                 'receipt': receipt, 'result': result})
+                                 'receipt': public_value(receipt), 'result': result})
         write(manifest_path, manifest)
         print(json.dumps({'id': name, 'result': result}), flush=True)
 

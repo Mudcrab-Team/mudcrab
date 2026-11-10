@@ -18,6 +18,7 @@ import subprocess
 import zipfile
 
 from evaluate_skyrim_jump import decode
+from publish_skyrim_evidence import source_digest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,11 @@ EVIDENCE = ROOT / 'docs/research/evidence/skyrim-physics-221'
 CORPORA = ('jump-v3', 'jump-cadence-v3')
 FROZEN_SEAL = 'c1026fb434bb72d0bb4b255888fd340dd202590e0f9a73d7a19b6a6e0607d575'
 RULES = {'window_game_seconds': 1.15, 'rmse_gate': 1, 'peak_error_gate': 3}
+PINNED_EVIDENCE = {
+    'tools/skyrim-recorder/reference/jump-v3/manifest.json': '9166561625570b6f016e29f9918e24e47389eb6902a2319f1b74f539d623e7fc',
+    'tools/skyrim-recorder/reference/jump-cadence-v3/manifest.json': 'e7a70ab8d7c094c644489587af21358cddacd98e29af6c63ef750bf75f9e08d8',
+    'docs/research/evidence/skyrim-physics-221/publication.json': '9e136d6de79095772715ca1bd4175dabe42d46a8d1a97ae7545652c8b25fe2ac',
+}
 BRIDGE = 'physics::jump_replay_tests::export_production_jump_replay'
 SOURCES = ('scripts/check_skyrim_jump_runtime.py',
            'crates/engine/src/physics/jump_replay_tests.rs',
@@ -57,18 +63,22 @@ def load_json(path):
 
 
 def validate_sources(corpus, frozen_bytes, receipts):
+    origins = {}
     with zipfile.ZipFile(EVIDENCE / 'captured-source.zip') as archive:
         archived = {name: archive.read(name) for name in archive.namelist()}
+        origins.update({name: EVIDENCE / 'captured-source.zip' for name in archive.namelist()})
     if corpus == 'jump-cadence-v3':
         with zipfile.ZipFile(EVIDENCE / 'cadence-source.zip') as archive:
             archived.update({name: archive.read(name) for name in archive.namelist()})
+            origins.update({name: EVIDENCE / 'cadence-source.zip' for name in archive.namelist()})
     plan = f'tools/skyrim-recorder/fixtures/{corpus}.json'
     for receipt_name in receipts:
         path = REFERENCE / corpus / receipt_name
         receipt = load_json(path)
         require(sha(archived[plan]) == receipt['plan_sha256'], f'{path}: archived plan changed')
         for name, expected in receipt['sources'].items():
-            require(sha(archived[name]) == expected, f'{path}: archived source changed: {name}')
+            require(source_digest(origins[name], name, archived[name]) == expected,
+                    f'{path}: original acquisition source identity differs: {name}')
         expected_frozen = receipt['frozen_sha256']
         require(expected_frozen is None if receipt_name == 'train-capture.json'
                 else expected_frozen == sha(frozen_bytes), f'{path}: frozen capture receipt changed')
@@ -115,6 +125,8 @@ def qualified_observations(path, run):
 
 
 def prepare():
+    for name, expected in PINNED_EVIDENCE.items():
+        require(sha((ROOT / name).read_bytes()) == expected, f'Pinned evidence identity changed: {name}')
     observations, unique, training = {}, {}, {}
     provenance = {'corpora': {}, 'source_archives': {}}
     frozen_reference = None

@@ -27,15 +27,15 @@ def at(rva, size):
             return data[raw + rva - address:raw + rva - address + size]
     raise ValueError(f'RVA 0x{rva:x} is not file-backed')
 
-constants = {'havok_to_game': (0x17f423c, '85fb8b42'),
-             'game_to_havok': (0x17fde5c, '1e166a3c'),
-             'fall_multiplier': (0x20d2558, 'cdccac3f'),
-             'ordinary_multiplier': (0x1b5be28, '0000803f'),
-             'launch_factor': (0x1b5be44, '00000040')}
+constants = {'havok_to_game': (0x17f423c, {'length': 4, 'sha256': '1c2665f1d14ba95cc9e76c55515d3bf755c024c6e2eac29525e9b75113fd7251'}),
+             'game_to_havok': (0x17fde5c, {'length': 4, 'sha256': 'b5db0bd9d29d70e88a2fea7f30e0f0d7e61c5fc45ea035a3a16d5f6fb9de6816'}),
+             'fall_multiplier': (0x20d2558, {'length': 4, 'sha256': 'a20789a7f63f03f8e14941bd6d57167bb5e9243bfd9536babfb0062869a58fe6'}),
+             'ordinary_multiplier': (0x1b5be28, {'length': 4, 'sha256': 'e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c'}),
+             'launch_factor': (0x1b5be44, {'length': 4, 'sha256': 'd88c86f15bbea365d658ad95a81d45367c465f7af6f7264fb077f01747ddc77d'})}
 result = {'executable_sha256': sha256, 'constants': {}, 'callbacks': {}, 'checks': []}
 for name, (rva, expected) in constants.items():
     actual = at(rva, 4)
-    if actual.hex() != expected:
+    if hashlib.sha256(actual).hexdigest() != expected['sha256']:
         raise ValueError(f'{name} changed')
     result['constants'][name] = {'rva': hex(rva), 'float32': struct.unpack('<f', actual)[0]}
 for name, slot, target in [('air', 0x1a92608, 0x10c7cc0), ('launch', 0x1a92680, 0x10c8030)]:
@@ -43,19 +43,19 @@ for name, slot, target in [('air', 0x1a92608, 0x10c7cc0), ('launch', 0x1a92680, 
         raise ValueError(f'{name} callback changed')
     result['callbacks'][name] = {'slot_rva': hex(slot), 'function_rva': hex(target)}
 for name, rva, expected in [
-    ('height comparison', 0x10c7ee3, '0f2f9740020000760a'),
-    ('gravity scale read', 0x10c7f1d, 'f30f59b748020000'),
-    ('controller timestep read', 0x10c7f25, 'f30f108788000000'),
-    ('launch height read', 0x10c80bb, 'f30f10b73c020000'),
-    ('launch square root', 0x10c815e, 'f30f51c6'),
-    ('actor process read', 0x66ffa7, '488b81f8000000'),
-    ('jump setting load', 0x7cf220, 'f30f103538978d01'),
-    ('jump setting times reference scale', 0x7cf23c, 'f30f59fe'),
-    ('jump height conversion', 0x10645e0, 'f30f590d74987900'),
-    ('jump height store', 0x10645f2, 'f30f11893c020000'),
-    ('reference scale read', 0x2e6f34, '0fb78198000000'),
-    ('NPC base height times race height', 0x3c65f6, 'f30f5983f8010000')]:
-    if at(rva, len(bytes.fromhex(expected))).hex() != expected:
+    ('height comparison', 0x10c7ee3, {'length': 9, 'sha256': '4d04b53ad68a23c90ab519e1ed849d9a453d905e5df478f02e7138789843b52e'}),
+    ('gravity scale read', 0x10c7f1d, {'length': 8, 'sha256': '0ca04ef5f5152f567cf2ffea09aa2fc7138ea360b442df964e1fcfc30839ecda'}),
+    ('controller timestep read', 0x10c7f25, {'length': 8, 'sha256': 'cebeaeba07b2131e448571dd03c8e63f241df1f8568d0493bccfd604bd3728d0'}),
+    ('launch height read', 0x10c80bb, {'length': 8, 'sha256': '458ed3bf3f977a84af6dd1db33564244d6b2ba45537d0d88e0093cd962cf9d86'}),
+    ('launch square root', 0x10c815e, {'length': 4, 'sha256': '821555acccc2b7a821afd93342a60fbeb172b59fe46e2008bd431121d776fc60'}),
+    ('actor process read', 0x66ffa7, {'length': 7, 'sha256': '143456023a8a99c1bb4edf4d7d841f5a655bfbd9973a08ec35a5e895eb89863c'}),
+    ('jump setting load', 0x7cf220, {'length': 8, 'sha256': '7eaad574c1695b0884a0bd3038e4b37df943948ee09e4db85f4174300c84676f'}),
+    ('jump setting times reference scale', 0x7cf23c, {'length': 4, 'sha256': 'dcad82a963e26da298728203730c620921876e02ce3469bb2ca4765e75024de9'}),
+    ('jump height conversion', 0x10645e0, {'length': 8, 'sha256': '0d58c7296249f69d00b1a3010ca7e99233aeb2e687b39e6f15195b4c50c5a35b'}),
+    ('jump height store', 0x10645f2, {'length': 8, 'sha256': 'daa3b96d090852a1ef6cfce25d298af44019094238d96efdf54f81d4ae6305ef'}),
+    ('reference scale read', 0x2e6f34, {'length': 7, 'sha256': '1448e787ff803019c5ce61e29e61bdb9678a5fb13682e5706ad6d4a1f8297665'}),
+    ('NPC base height times race height', 0x3c65f6, {'length': 8, 'sha256': '0def8ddf96deb43c6be678b95d826d6a1d542beee5da936d141d896cbab3f1db'})]:
+    if hashlib.sha256(at(rva, expected['length'])).hexdigest() != expected['sha256']:
         raise ValueError(f'{name} changed')
     result['checks'].append({'fact': name, 'rva': hex(rva), 'verified': True})
 result['scope'] = 'Static identity and field-consumer evidence. Runtime trajectories and scheduling are not verified.'

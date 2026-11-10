@@ -8,7 +8,7 @@ These files were captured before changing production movement at revision `1dcca
 
 `headless.json` records raw post-Writeback transforms and KinematicCharacterController outputs from the real production fixture. The first resolved rise is 5.66666794 Creation units, the apex rise is 67.08328247, and landing occurs at tick 47. `first-step-failure.txt` records the old transition failing the native first-step assertion. The assertion process exited 101.
 
-To reproduce the baseline, use a separate checkout at the revision above. Overlay `production-source.zip`, `scripts/evaluate_skyrim_jump.py`, both `tools/skyrim-recorder/reference/jump*-v3/` corpora and their two acquisition source archives from this change, preserving their repository paths. Run the commands below from that checkout. Choose a fresh output directory so the saved evidence remains intact.
+To reproduce the baseline, use a separate checkout at the revision above. Overlay `production-source.zip`, then use the current `scripts/check_skyrim_jump_runtime.py`, `scripts/publish_skyrim_evidence.py`, unchanged `scripts/evaluate_skyrim_jump.py`, both `tools/skyrim-recorder/reference/jump*-v3/` corpora, their acquisition source archives and `docs/research/evidence/skyrim-physics-221/publication.json` from this change, preserving their repository paths. The current checker understands the publication derivatives while executing the archived Rust transition. The archived original checker remains available for historical source verification. Run the commands below from that checkout. Choose a fresh output directory so the saved evidence remains intact.
 
 ```sh
 python3 -B scripts/check_skyrim_jump_runtime.py --output /tmp/mudcrab-jump-before

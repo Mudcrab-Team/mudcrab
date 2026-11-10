@@ -1,93 +1,19 @@
 Executable SHA256: 846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f
-Command: llvm-objdump -d --start-address=0x14027468e --stop-address=0x1402746fd /path/to/SkyrimSE.exe
-Scope: light-construction radius selection and stores only; reference helper and downstream photometry are unresolved.
+Publication derivative. Copied instruction listings and executable byte strings were removed.
+The original artifact SHA256 and derivative SHA256 are recorded in publication.json.
+Scope: light-construction radius selection and stores only. The reference helper and downstream photometry remain unresolved.
 
-<operator-owned SkyrimSE.exe>:	file format coff-x86-64
+Recorded structural observations (RVAs and numeric facts, not an instruction listing):
+- The bounded radius-selection region starts at RVA 0x27468e.
+- The selected scalar is stored in the three construction fields at offsets 0x128, 0x12c, and 0x130.
+- The optional helper target is RVA 0x2ffd70. Its semantics remain unresolved.
+- Type descriptor RVA 0x20dc1b8 identifies TESObjectLIGH.
+- Complete-object locator RVA 0x1b741d0 and vtable RVA 0x18140f0 identify this path.
+- Vtable slot 0x4a targets RVA 0x274090.
+- The constructor call at RVA 0x274263 targets RVA 0x274390.
+- PE function bounds for the vtable entry are [0x274090, 0x2742c9), with unwind RVA 0x1cd4120.
 
-Disassembly of section .text:
-
-0000000140001000 <.text>:
-14027468e: 0f 11 86 28 01 00 00        	movups	%xmm0, 0x128(%rsi)
-140274695: 8b 05 5d 90 0a 03           	movl	0x30a905d(%rip), %eax   # 0x14331d6f8
-14027469b: 41 89 86 30 01 00 00        	movl	%eax, 0x130(%r14)
-1402746a2: 41 8b 87 e4 00 00 00        	movl	0xe4(%r15), %eax
-1402746a9: 0f 57 ff                    	xorps	%xmm7, %xmm7
-1402746ac: f3 48 0f 2a f8              	cvtsi2ss	%rax, %xmm7
-1402746b1: 48 85 f6                    	testq	%rsi, %rsi
-1402746b4: 74 14                       	je	0x1402746ca <.text+0x2736ca>
-1402746b6: 80 bd 00 01 00 00 00        	cmpb	$0x0, 0x100(%rbp)
-1402746bd: 75 0b                       	jne	0x1402746ca <.text+0x2736ca>
-1402746bf: 48 8b ce                    	movq	%rsi, %rcx
-1402746c2: e8 a9 b6 08 00              	callq	0x1402ffd70 <.text+0x2fed70>
-1402746c7: 0f 28 f8                    	movaps	%xmm0, %xmm7
-1402746ca: 0f 57 f6                    	xorps	%xmm6, %xmm6
-1402746cd: 0f 2f fe                    	comiss	%xmm6, %xmm7
-1402746d0: 77 08                       	ja	0x1402746da <.text+0x2736da>
-1402746d2: f3 0f 10 3d 0a 77 8e 01     	movss	0x18e770a(%rip), %xmm7  # 0x141b5bde4
-1402746da: f3 0f 11 7c 24 68           	movss	%xmm7, 0x68(%rsp)
-1402746e0: 0f 28 c7                    	movaps	%xmm7, %xmm0
-1402746e3: 0f 14 c7                    	unpcklps	%xmm7, %xmm0            # xmm0 = xmm0[0],xmm7[0],xmm0[1],xmm7[1]
-1402746e6: f2 41 0f 11 86 28 01 00 00  	movsd	%xmm0, 0x128(%r14)
-1402746ef: 8b 44 24 68                 	movl	0x68(%rsp), %eax
-1402746f3: 41 89 86 30 01 00 00        	movl	%eax, 0x130(%r14)
-1402746fa: f2 0f 10 44 24 20           	movsd	0x20(%rsp), %xmm0
-
-Identity and caller chain from the same pinned executable:
-{
-  "type_descriptor_rva": "0x20dc1b8",
-  "type_name": ".?AVTESObjectLIGH@@",
-  "complete_object_locator_rva": "0x1b741d0",
-  "locator_fields_u32": [
-    "0x1",
-    "0x0",
-    "0x0",
-    "0x20dc1b8",
-    "0x1b741f8",
-    "0x1b741d0"
-  ],
-  "vtable_rva": "0x18140f0",
-  "slot_4a_pointer_bytes": "9040274001000000",
-  "slot_4a_target_rva": "0x274090",
-  "constructor_call_rva": "0x274263",
-  "constructor_call_bytes": "e828010000"
-}
-
-Command: llvm-objdump -d --start-address=0x140274250 --stop-address=0x140274268 /path/to/SkyrimSE.exe
-
-<operator-owned SkyrimSE.exe>:	file format coff-x86-64
-
-Disassembly of section .text:
-
-0000000140001000 <.text>:
-140274250: 28 00                       	subb	%al, (%rax)
-140274252: c6 44 24 20 00              	movb	$0x0, 0x20(%rsp)
-140274257: 45 33 c9                    	xorl	%r9d, %r9d
-14027425a: 4c 8b c7                    	movq	%rdi, %r8
-14027425d: 48 8b d6                    	movq	%rsi, %rdx
-140274260: 49 8b ce                    	movq	%r14, %rcx
-140274263: e8 28 01 00 00              	callq	0x140274390 <.text+0x273390>
-
-Reproduce the bounded RTTI pointer reads (standard Python; pass the pinned executable):
-python3 - /path/to/SkyrimSE.exe <<'PYTHON'
-import struct, sys
-from pathlib import Path
-raw = Path(sys.argv[1]).read_bytes()
-pe = struct.unpack_from('<I', raw, 0x3c)[0]
-count = struct.unpack_from('<H', raw, pe + 6)[0]
-optional = struct.unpack_from('<H', raw, pe + 20)[0]
-sections = [struct.unpack_from('<8sIIII', raw, pe + 24 + optional + i * 40) for i in range(count)]
-def at(rva, size):
-    for _, _, address, length, offset in sections:
-        if address <= rva and rva + size <= address + length:
-            return raw[offset + rva - address:offset + rva - address + size]
-    raise ValueError(hex(rva))
-base = 0x140000000
-vtable = 0x18140f0
-locator = struct.unpack('<Q', at(vtable - 8, 8))[0] - base
-fields = struct.unpack('<6I', at(locator, 24))
-print('locator:', hex(locator), 'fields:', [hex(x) for x in fields])
-print('type:', at(fields[3] + 16, 40).split(b'\0')[0].decode())
-print('slot 0x4a:', hex(struct.unpack('<Q', at(vtable + 0x4a * 8, 8))[0] - base))
-PYTHON
-
-PE .pdata bounds for vtable entry: [0x274090, 0x2742c9), unwind RVA 0x1cd4120. The constructor CALL at 0x274263 lies in this function. Raw entry bytes: 90402700c94227002041cd01
+Operators can inspect these bounded regions locally in their own pinned executable:
+llvm-objdump -d --start-address=0x14027468e --stop-address=0x1402746fd /path/to/SkyrimSE.exe
+llvm-objdump -d --start-address=0x140274250 --stop-address=0x140274268 /path/to/SkyrimSE.exe
+Do not publish the resulting instruction listings or executable bytes.

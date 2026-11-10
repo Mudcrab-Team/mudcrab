@@ -1,6 +1,13 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import tempfile
+import threading
+from unittest.mock import patch
 
-from record_skyrim_motion import parse_ocr, verify_trace
+import record_skyrim_motion as recorder
+
+from record_skyrim_motion import parse_ocr, qualify_cadence, verify_trace
 
 
 def recording():
@@ -32,6 +39,38 @@ def recording():
     return rows
 
 
+class ScreenshotOwnershipTests(unittest.TestCase):
+    def test_two_sessions_receive_their_own_screenshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'gamescope.png'
+            first_requested = threading.Event()
+            second_requested = threading.Event()
+            images = {display: b'\x89PNG\r\n\x1a\n' + display.encode() + b'IENDxxxx'
+                      for display in (':1', ':2')}
+
+            def request(*args, env, **kwargs):
+                display = env['DISPLAY']
+                source.write_bytes(images[display])
+                if display == ':1':
+                    first_requested.set()
+                    second_requested.wait(0.2)
+                else:
+                    second_requested.set()
+
+            with patch.object(recorder, 'SCREENSHOT_PATH', source), \
+                    patch.object(recorder, 'SCREENSHOT_LOCK_PATH', root / 'screenshot.lock'), \
+                    patch.object(recorder.subprocess, 'run', side_effect=request):
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    first = workers.submit(recorder.capture, ':1', root / 'first.png')
+                    self.assertTrue(first_requested.wait(2))
+                    second = workers.submit(recorder.capture, ':2', root / 'second.png')
+                    first.result(timeout=3)
+                    second.result(timeout=3)
+            self.assertEqual((root / 'first.png').read_bytes(), images[':1'])
+            self.assertEqual((root / 'second.png').read_bytes(), images[':2'])
+
+
 class MotionProofTests(unittest.TestCase):
     def test_dialog_quotes_do_not_swallow_the_no_button(self):
         text, words = parse_ocr('left\ttop\twidth\theight\ttext\n'
@@ -41,6 +80,57 @@ class MotionProofTests(unittest.TestCase):
         self.assertEqual(text, '"survival mode" no')
         self.assertEqual(words[-1]['text'], 'No')
         self.assertEqual(words[-1]['top'], '539')
+
+    def test_requested_30hz_camera_cadence_passes(self):
+        rows = recording()
+        rows[0]['sample'] = 1500
+        proof = verify_trace(rows, requested_fps=30)
+        self.assertEqual(proof['status'], 'passed')
+        self.assertEqual(proof['camera_cadence']['achieved_fps'], 30)
+
+    def test_requested_30hz_with_60hz_camera_cadence_fails(self):
+        rows = recording()
+        rows[0]['sample'] = 3000
+        proof = verify_trace(rows, requested_fps=30)
+        self.assertEqual(proof['status'], 'failed')
+        self.assertEqual(proof['camera_cadence']['achieved_fps'], 60)
+        self.assertTrue(proof['received_down_up'])
+        self.assertEqual(verify_trace(rows)['status'], 'passed')
+
+    def test_half_timescale_does_not_halve_camera_wall_rate(self):
+        rows = recording()
+        rows[0]['sample'] = 3000
+        with_controller = []
+        for row in rows:
+            if row['kind'] == 3:
+                values = [0.0] * 40
+                values[2:4] = [1 / 120, 120]
+                with_controller.append(dict(row, kind=7, values=values))
+            with_controller.append(row)
+        for sequence, row in enumerate(with_controller, 1):
+            row['sequence'] = sequence
+        proof = verify_trace(with_controller, requested_fps=60)
+        self.assertEqual(proof['status'], 'passed')
+        self.assertEqual(proof['camera_cadence']['achieved_fps'], 60)
+
+    def test_cadence_tolerance_includes_27_and_33_for_30hz(self):
+        frames = [{'qpc': 0}, {'qpc': 100}]
+        for frequency in (2700, 3300):
+            with self.subTest(frequency=frequency):
+                self.assertEqual(qualify_cadence(frames, frequency, 30)['status'], 'passed')
+        for frequency in (2690, 3310):
+            with self.subTest(frequency=frequency):
+                self.assertEqual(qualify_cadence(frames, frequency, 30)['status'], 'failed')
+
+    def test_cadence_uses_median_qpc_interval(self):
+        frames = [{'qpc': qpc} for qpc in (0, 100, 200, 500, 600)]
+        proof = qualify_cadence(frames, 3000, 30)
+        self.assertEqual(proof['status'], 'passed')
+        self.assertEqual(proof['achieved_fps'], 30)
+
+    def test_cadence_rejects_nonincreasing_camera_timestamps(self):
+        with self.assertRaisesRegex(ValueError, 'increasing camera timestamps'):
+            qualify_cadence([{'qpc': 1}, {'qpc': 1}], 1000, 60)
 
     def test_native_received_press_moves_player_and_camera(self):
         result = verify_trace(recording())

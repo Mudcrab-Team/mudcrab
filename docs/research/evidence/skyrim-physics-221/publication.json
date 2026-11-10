@@ -1,0 +1,149 @@
+{
+  "changes": {
+    "docs/research/evidence/skyrim-physics-221/captured-source.zip": {
+      "original_sha256": "a22b7ca61b1c021cc0e72064cd990054baf16b4c40e06771f259c91bf6ce427a",
+      "published_sha256": "0813eb775ffbff8dade16beff8ca33e0d41c38287fc89e9d3c4b72eab92345b8"
+    },
+    "docs/research/evidence/skyrim-physics-221/captured-source.zip!members": {
+      "tools/skyrim-recorder/build.py": {
+        "original_sha256": "f94075ecb765f6434112f878ac1fbd0e8838b1ddf702a3efe27d40b60bd85a9f",
+        "published_sha256": "5b4d4a12c234d34fefd8383c14aa2478ec292ecf1c66f0f2ed30de1a4b5e1e5a"
+      },
+      "tools/skyrim-recorder/runtime.json": {
+        "original_sha256": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+        "published_sha256": "0cc26c0735b871b7c2f78c9e02cdcd66ffc46e6e739a5b02ac1ca19dff40455b"
+      }
+    },
+    "docs/research/evidence/skyrim-physics-221/decisions.tsv": {
+      "original_sha256": "2acbb9721c4b1e99cc1325259258638a31e308a10625cbfc2259bd23fd1c90b6",
+      "published_sha256": "7a2dfb255730e63380981202acc1651f43110fa8f9beea55a86feb9546ea821c"
+    },
+    "docs/research/evidence/skyrim-physics-221/dxvk-corrected.txt": {
+      "original_sha256": "7a53188bec606722c6adacb43ffb0df15f60ae0d299c256f1315050c22571c37",
+      "published_sha256": "0316904bc52e060e1a368e934546293be4d8ca400a9b4915ea3d089fc52f9283"
+    },
+    "docs/research/evidence/skyrim-physics-221/dxvk-original.txt": {
+      "original_sha256": "00b5f5d3e09b6f69fff3a1e9d9a16f8fc352e1ce5d723f47049f13a5ee925e68",
+      "published_sha256": "30d35508ebcf368c7fdd2656b55fa43b74926354946f97dfd319b79d21e46fdb"
+    },
+    "docs/research/evidence/skyrim-physics-221/final-audit.md": {
+      "original_sha256": "8d02b3d4c10859a892fa38ae84043d164174d601729af8ad102d2cf705443291",
+      "published_sha256": "99c3fa641d3f8dcef289cbcfed0b0e27aa8bc3cb1e9076903dfb3dd8286deff5"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/attempt-accounting-before.log.gz": {
+      "original_sha256": "f2dd2a2779c66864cdce12c34355678bc282328d134f91f8bc77062a034dea47",
+      "published_sha256": "a8974a741a018ff9cb50e5cb344fec66df5df43103591aac511bdd8f67a9cf45"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/clippy.log.gz": {
+      "original_sha256": "db524fe81d625498ae61989e81c46e03a3f49bfb739d96c7ea60d3a826f52dd7",
+      "published_sha256": "83a0a5d1b4419cfd36051670d691ae3f5fd62a4c6514a047ed10f93d244d50f5"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/dependency-audit.log.gz": {
+      "original_sha256": "64f4139b4d30ac3715d443c427a464138f7df359d4eaad107017f564d032c0f0",
+      "published_sha256": "8515d5c7419c9da853a72d4eb677deab04c35d2478e2e75193a26fcf125e62e0"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/doctests.log.gz": {
+      "original_sha256": "4f9b573d38ed10be8fff60aaeb7caf664cdfbb559bd76899123288374586b736",
+      "published_sha256": "383d14e5279b009ac1c6786f1ae6324a5762dd71bcfd30e9042e02e73203b163"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/gpu-no-adapter.log.gz": {
+      "original_sha256": "8b92b1e2dc843d8a641cb99b44edfb7a09c4573d58dec4a5f44ce7bc7f4ee4e5",
+      "published_sha256": "f1434da60cedca68193ec15b918d154ead88cddde86757a6a88677101f7a0829"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/jump-tests.log.gz": {
+      "original_sha256": "2f0e7f453bfb408f8b90ed8978ec08c16104c16bb6ca34ef7c34fb1362f09222",
+      "published_sha256": "56d13bb36c579dbfad3b8dc90edc93adfa0ec29889b02bf3178049442821fd33"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/native-v3-build.log.gz": {
+      "original_sha256": "2c13110757eafb6e7bd02d136d3446dc33ea93ebdb043fd2d7a8e883af4a4c75",
+      "published_sha256": "2e5429bbb162fb00465933c7b63fd411fe7037615bf2ff35461714c71d32a3f8"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/native-v4-build.log.gz": {
+      "original_sha256": "9eee5bbc99b804d49a4f5f9b95b21a9a9f8727bc3582601d629a0557345dcb47",
+      "published_sha256": "4cfa983d2837a472f09464d7ec0155a446d2b11daeb9235dacdf8dbba2ebaa7f"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/nextest.log.gz": {
+      "original_sha256": "024aa7cd029c7640efbb130d10cc340a22a98e7d18148e80649fc2a3ff4b8598",
+      "published_sha256": "6c5b2bb88cf99dd716050a443cc28155b4d840e709fbcd7ed5e8268b9f8d7b53"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/production-replay.log.gz": {
+      "original_sha256": "8648653882995171978e2aba73435016cdb34ba24bf8884ec36e212d6fe357c5",
+      "published_sha256": "91b579007186979ee32c5347eb9b68568458191f6ffa0b94312d727137ad754d"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/review-capture-before.log.gz": {
+      "original_sha256": "251bddb15a148f0d90f1b9c4849b0ae7bcdafe80ff360b88e8760cf647b4e01a",
+      "published_sha256": "2c345e29663323babddf6868e0d3522564c16001f04a2939a03ff47ec9aa02be"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/review-ci-before.log.gz": {
+      "original_sha256": "08de5a203cabedf1740a689b906fe8bec1f3434430dc9effa5276ceb3ec73dea",
+      "published_sha256": "47c41e9e7d10e5c6319551ed0612cef8cc993017b34027ca870fe77c514e7f70"
+    },
+    "docs/research/evidence/skyrim-physics-221/implementation/validation/review-config-audit.log.gz": {
+      "original_sha256": "3e326e95a375df9dd02496dc84cd9cf6dcf4d3bd3220e4d6660151ac536803da",
+      "published_sha256": "d5578ccf83419c0bd1120564542291fab7e0fbb30ca8b1c908635a5436084d94"
+    },
+    "docs/research/evidence/skyrim-physics-221/light-radius-construction.txt": {
+      "original_sha256": "c3f9cbc3ab56f0d1447799c0fa7cae2db89f8de8b3b89e7c2a56d2cd6317a83c",
+      "published_sha256": "213ddf261efd1cbc9932f3aaf01579cf3089c704831f133e61dec47b83ce5fca"
+    },
+    "tools/skyrim-recorder/reference/jump-inputs-v4/capture-source.zip": {
+      "original_sha256": "1a412594a03829d11d761bb484a94bc81a6df915c79f3de27aad7ba801a5efbd",
+      "published_sha256": "6e3125c4a9fe4ff52790993ccf0e5769eb8ce1ef2ecb451e52835b1a95b8c4e1"
+    },
+    "tools/skyrim-recorder/reference/jump-inputs-v4/capture-source.zip!members": {
+      "scripts/inspect_skyrim_jump_inputs.py": {
+        "original_sha256": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+        "published_sha256": "ae5dbe45cb32769e29a3256a54872b87bf92f3a9b63c201d1ff831c609a56f59"
+      },
+      "tools/skyrim-recorder/build.py": {
+        "original_sha256": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+        "published_sha256": "60664671fdd6ec9bd65afdbdba0c73a2e54c73756faa824cacd53c7b89532ba5"
+      },
+      "tools/skyrim-recorder/runtime-inputs-v4.json": {
+        "original_sha256": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+        "published_sha256": "aaca81025d05e18aaefe8fd0b0487392a60285ff61a17ed5d75d15953a75ba2c"
+      },
+      "tools/skyrim-recorder/runtime.json": {
+        "original_sha256": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+        "published_sha256": "0cc26c0735b871b7c2f78c9e02cdcd66ffc46e6e739a5b02ac1ca19dff40455b"
+      }
+    },
+    "tools/skyrim-recorder/reference/jump-inputs-v4/implementation-inputs.md": {
+      "original_sha256": "c92a39f51c5ebe640493cf33a0afb58bec8b3a285f70b9fcf527a3ebf4b37743",
+      "published_sha256": "a10b1ec9638234dc5cb8039a537ce2198c1569830bb6cee5ada1efdb39f6121e"
+    },
+    "tools/skyrim-recorder/reference/jump-inputs-v4/manifest.json": {
+      "original_sha256": "64b976903329befee27e59d77beaa4a89d57611e3c7b00034b8ee4762adbacd7",
+      "published_sha256": "ea723e14c317772ab818c23a50827adeec9b6082ec4e72099a148201c978b6c6"
+    },
+    "tools/skyrim-recorder/reference/jump-inputs-v4/result.json": {
+      "original_sha256": "5ac094605107d0ee561e78d170b275709e92fac0951f0e6f40f628a7f250d969",
+      "published_sha256": "f6e434925e1ef89f255399a732f398fe2b3dac353d1510b385390c7f31174ae2"
+    }
+  },
+  "schema": 1,
+  "scope": "Publication derivatives. Acquisition receipts retain original hashes; raw numeric traces and frozen evaluator/model are unchanged. source_transforms records the historical live-source edit, not a permanent working-tree pin. changes identifies immutable published evidence derivatives.",
+  "source_transforms": {
+    "scripts/inspect_skyrim_jump_inputs.py": {
+      "original_sha256": "4a6c6a88af4f8b403a5827abf0a08b8d2a07c2cae0b1945933a8651ffa0c801f",
+      "published_sha256": "ae5dbe45cb32769e29a3256a54872b87bf92f3a9b63c201d1ff831c609a56f59"
+    },
+    "scripts/inspect_skyrim_physics.py": {
+      "original_sha256": "3296af04dd6653396d2a6e4f1aed7194c2f46fb138e9a278a308b99c0965567c",
+      "published_sha256": "86173cd56e3dc5eb567f231970b031e877d755eae2c2e8b507ec3152b20893ae"
+    },
+    "tools/skyrim-recorder/build.py": {
+      "original_sha256": "cd4839a8ad00e0aa1536730ac0d96b6127850098f4b431241318af855954282c",
+      "published_sha256": "60664671fdd6ec9bd65afdbdba0c73a2e54c73756faa824cacd53c7b89532ba5"
+    },
+    "tools/skyrim-recorder/runtime-inputs-v4.json": {
+      "original_sha256": "96603b3e445277ee3936961b68918fa0bbcce5d58843adc66fe65b011ab57b48",
+      "published_sha256": "aaca81025d05e18aaefe8fd0b0487392a60285ff61a17ed5d75d15953a75ba2c"
+    },
+    "tools/skyrim-recorder/runtime.json": {
+      "original_sha256": "85c137814e5efe6ba9b5dee676e2be366ca3ea6d347b1e71d123e5f3bc4ebf47",
+      "published_sha256": "0cc26c0735b871b7c2f78c9e02cdcd66ffc46e6e739a5b02ac1ca19dff40455b"
+    }
+  },
+  "transform": "scripts/publish_skyrim_evidence.py"
+}

@@ -83,6 +83,8 @@ def main():
             public_proof = {key: proof[key] for key in
                             ('status', 'received_down_up', 'forward_input_accepted',
                              'source_save_unchanged', 'frame_cap_request', 'dxvk_config', 'ini', 'fixture_sha256')}
+            if 'camera_cadence' in proof:
+                public_proof['camera_cadence'] = proof['camera_cadence']
             public_proof['source_save_sha256'] = session['source_save_sha256']
             public_proof['exe_sha256'] = session['exe_sha256']
             public_proof['dll_sha256'] = session['build']['dll_sha256']

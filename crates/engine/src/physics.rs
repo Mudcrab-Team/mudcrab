@@ -197,9 +197,8 @@ impl MovementTuning {
                 "MOVT 0003580D SPED[{index}] is invalid: {value}"
             );
         }
-        let jump_height = load_player_jump_height(&conn, race_id).wrap_err(
-            "record-backed jump inputs are incomplete or unsupported; reconvert assets",
-        )?;
+        let jump_height = load_player_jump_height(&conn, race_id)
+            .wrap_err("record-backed jump inputs are incomplete or unsupported")?;
         Ok(Self {
             jump_height,
             walk_speed: values[4],
@@ -379,8 +378,12 @@ fn load_player_jump_height(conn: &Connection, race_id: u32) -> Result<JumpHeight
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     ensure!(
+        !settings.is_empty(),
+        "expected one effective fJumpHeightMin, found 0"
+    );
+    ensure!(
         settings.len() == 1,
-        "expected one effective fJumpHeightMin, found {}",
+        "expected one effective fJumpHeightMin, found {}; multiple GMST FormIDs with this EDID are unsupported; inspect plugin load order and settings",
         settings.len()
     );
     let (setting_id, setting, priority) = settings[0];
@@ -1204,6 +1207,26 @@ mod tests {
                 setting * (0.8_f32 * 1.2_f32)
             );
         }
+    }
+
+    #[test]
+    fn duplicate_jump_setting_edids_report_unsupported_plugin_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = generated_player_database(directory.path());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO movement_game_settings(id,editor_id,value,load_order) VALUES (?1,?2,?3,?4)",
+            params![0x0300_0810_u32, "fjumpheightmin", 64.0, 3],
+        )
+        .unwrap();
+        let error = format!(
+            "{:#}",
+            MovementTuning::from_world_database(&path).unwrap_err()
+        );
+        assert!(error.contains("found 2"), "{error}");
+        assert!(error.contains("multiple GMST FormIDs"), "{error}");
+        assert!(error.contains("inspect plugin load order"), "{error}");
+        assert!(!error.contains("reconvert"), "{error}");
     }
 
     #[test]

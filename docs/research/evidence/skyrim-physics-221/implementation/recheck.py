@@ -3,11 +3,17 @@ import hashlib,json,re,struct,subprocess,sys,zipfile
 root=Path(__file__).resolve().parents[5]
 sys.path.insert(0,str(root/'scripts'))
 import check_skyrim_jump_runtime as c
+from publish_skyrim_evidence import artifact_digest,source_digest
 import verify_skyrim_jump_inputs as v
 import report_skyrim_jump_runtime as r
 sha=lambda value:hashlib.sha256(value).hexdigest()
 f32=lambda value:struct.unpack('<f',struct.pack('<f',value))[0]
 payload,observations,provenance=c.prepare()
+historical_provenance=json.loads(json.dumps(provenance))
+for corpus,item in historical_provenance['corpora'].items():
+ item['manifest_sha256']=artifact_digest(c.REFERENCE/corpus/'manifest.json')
+for name in historical_provenance['source_archives']:
+ historical_provenance['source_archives'][name]=artifact_digest(c.EVIDENCE/name)
 directory=c.EVIDENCE/'implementation'
 original_input=(directory/'baseline/input.json').read_bytes()
 assert original_input==(directory/'current/input.json').read_bytes()==c.canonical(payload)+b'\n'
@@ -30,17 +36,16 @@ for version in ['baseline','current']:
  assert result['prediction_sha256']==sha((folder/'predictions.json').read_bytes())
  assert result['source_sha256']==receipt['source_sha256']==sha(c.canonical(receipt['sources']))
  for key in ['corpora','source_archives','profile_source','trace_sha256']:
-  assert receipt[key]==provenance[key]
+  assert receipt[key]==historical_provenance[key]
  heldout=[row for row in rescored if row['split']=='heldout']
  metrics={'n':len(heldout),'passes':sum(row['passes_frozen_report_gate'] for row in heldout),'maximum_rmse':max(row['rmse'] for row in heldout),'maximum_pointwise_error':max(row['max_abs'] for row in heldout)}
  assert metrics==result['heldout']
  summary['replay'][version]=metrics
- if version=='current':
-  assert all(sha((root/name).read_bytes())==expected for name,expected in receipt['sources'].items())
- else:
-  with zipfile.ZipFile(folder/'production-source.zip') as archive:
-   assert set(archive.namelist())==set(receipt['sources'])
-   assert all(sha(archive.read(name))==expected for name,expected in receipt['sources'].items())
+ with zipfile.ZipFile(folder/'production-source.zip') as archive:
+  assert set(archive.namelist())==set(receipt['sources'])
+  assert all(source_digest(folder/'production-source.zip',name,archive.read(name))==expected
+             for name,expected in receipt['sources'].items())
+  if version=='baseline':
    old=archive.read('crates/engine/src/physics.rs')
    base=subprocess.check_output(['git','show','1dcca42fc398baaf626e588694f9e08084117f11:crates/engine/src/physics.rs'],cwd=root)
    assert old.replace(b'\n#[cfg(test)]\nmod jump_replay_tests;\n',b'',1)==base
@@ -58,7 +63,10 @@ for version in ['baseline','current']:
  summary['headless'][version]={key:head[key] for key in ['first_delta_y','sampled_apex_rise','apex_tick','landing_tick']}
 corpus=root/'tools/skyrim-recorder/reference/jump-inputs-v4'
 verified=v.verify(corpus,root/'tools/skyrim-recorder/fixtures/jump-inputs-v4.json')
-assert verified==json.loads((corpus/'result.json').read_bytes())
+historical_result=json.loads((corpus/'result.json').read_bytes())
+assert historical_result['manifest_sha256']==artifact_digest(corpus/'manifest.json')
+historical_result['manifest_sha256']=sha((corpus/'manifest.json').read_bytes())
+assert verified==historical_result
 summary['native_inputs']={'status':verified['status'],'accepted':len(verified['runs']),'attempts':verified['attempts'],'failed':len(verified['failed_attempts']),'archive_sha256':sha((corpus/'capture-source.zip').read_bytes())}
 assert all(row['launch_prediction_error']==0 for row in verified['runs'])
 chart=r.render()

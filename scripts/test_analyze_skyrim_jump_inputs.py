@@ -125,6 +125,23 @@ class JumpInputsProofTests(unittest.TestCase):
 
 
 class CaptureResumeTests(unittest.TestCase):
+    def test_public_failure_redacts_home_path_and_preserves_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'private'
+            output.mkdir()
+            (output / 'trace.bin').write_bytes(b'partial numeric trace')
+            corpus = root / 'corpus'
+            (corpus / 'traces').mkdir(parents=True)
+            attempt = {'id': 'baseline', 'attempt': 1, 'exit_code': 1}
+            failure = {'phase': 'recorder', 'error': '/home/private-operator/game/proof.json missing'}
+            capture.retain_failure(corpus, output, attempt, failure)
+            self.assertNotIn('/home/private-operator', json.dumps(attempt))
+            self.assertIn('<operator-home>/game/proof.json', attempt['failure']['error'])
+            self.assertEqual(failure['error'], '/home/private-operator/game/proof.json missing')
+            self.assertEqual(gzip.decompress((corpus / attempt['path']).read_bytes()),
+                             (output / 'trace.bin').read_bytes())
+
     def test_failed_attempt_then_resume_produces_a_verifiable_campaign(self):
         reference = capture.ROOT / 'tools/skyrim-recorder/reference/jump-inputs-v4'
         observed = json.loads((reference / 'manifest.json').read_text())

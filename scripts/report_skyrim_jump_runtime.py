@@ -28,6 +28,8 @@ def render():
         runs.append({
             'id': key,
             'dt_ms': statistics.median(sample['controller_dt'] for sample in samples) * 1000,
+            'camera_hz': 1 / statistics.median(b['qpc'] - a['qpc'] for a, b in zip(samples, samples[1:])),
+            'requested_fps': run['frame_cap'],
             'timescale': run['time_multiplier'],
             'time': [times[index] for index in keep],
             'native': [samples[index]['z'] - observed['baseline'] for index in keep],
@@ -55,17 +57,17 @@ COUNTS Unchanged gates: RMSE ≤ 1 and maximum error ≤ 3 Creation units.</p>
 <div class="legend"><span class="native">Native observation</span><span class="baseline">Old production</span><span class="current">New production</span></div>
 <svg viewBox="0 0 680 300" role="img" aria-label="Height above takeoff over game time">
 <g id="axes"></g><path class="curve baseline" id="baseline"></path><path class="curve native" id="native"></path><path class="curve current" id="current"></path></svg>
-<p id="metrics"></p><p class="small">Rust receives recorded timesteps and one original-training height. It evolves its own position and floor contact. The overlay tests the production transition, not native frame scheduling. Reusing this corpus is regression validation, not a new blinded experiment.</p>
+<p id="metrics"></p><p class="small">Rust receives recorded timesteps and one original-training height. It evolves its own position and floor contact. The overlay tests the production transition, not native frame scheduling. Six recordings repeat the training cadence despite 30/120 Hz requests; three use half game speed and three achieve 30 camera Hz. Reusing this corpus is regression validation, not a new blinded experiment.</p>
 <script>
 const runs=DATA;
 const select=document.getElementById('run');
-for(const run of runs){const option=document.createElement('option');option.textContent=run.id;select.append(option);}
+for(const run of runs){const option=document.createElement('option');option.textContent=`${run.id} · requested ${run.requested_fps} Hz, observed ${run.camera_hz.toFixed(1)} camera Hz`;select.append(option);}
 const x=t=>52+t/1.15*608,y=h=>258-h/100*230;
 const axes=document.getElementById('axes');
 for(const h of [0,25,50,75,100])axes.innerHTML+=`<path class="axis" d="M52 ${y(h)}H660"/><text x="42" y="${y(h)+4}" text-anchor="end">${h}</text>`;
 for(const t of [0,.25,.5,.75,1])axes.innerHTML+=`<text x="${x(t)}" y="279" text-anchor="middle">${t}</text>`;
 axes.innerHTML+='<text x="54" y="16">Height above takeoff · Creation units</text><text x="660" y="298" text-anchor="end">Game seconds</text>';
-function draw(){const r=runs[select.selectedIndex];for(const key of ['native','baseline','current'])document.getElementById(key).setAttribute('d',r.time.map((t,i)=>(i?'L':'M')+x(t)+' '+y(r[key][i])).join(' '));document.getElementById('metrics').textContent=`Median controller step ${r.dt_ms.toFixed(3)} ms · game speed ${r.timescale}× · RMSE before ${r.rmse.baseline.toFixed(3)}, after ${r.rmse.current.toFixed(3)} Creation units`;}
+function draw(){const r=runs[select.selectedIndex];for(const key of ['native','baseline','current'])document.getElementById(key).setAttribute('d',r.time.map((t,i)=>(i?'L':'M')+x(t)+' '+y(r[key][i])).join(' '));document.getElementById('metrics').textContent=`Observed camera ${r.camera_hz.toFixed(1)} Hz (requested ${r.requested_fps}) · median controller step ${r.dt_ms.toFixed(3)} ms · game speed ${r.timescale}× · RMSE before ${r.rmse.baseline.toFixed(3)}, after ${r.rmse.current.toFixed(3)} Creation units`;}
 select.addEventListener('change',draw);draw();
 </script></body></html>'''.replace('DATA', data).replace('COUNTS', counts)
 
