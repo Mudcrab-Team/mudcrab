@@ -299,7 +299,7 @@ fn a_jump_still_leaves_the_ground_and_lands_once() {
         apex = apex.max(headless::player_pose(&mut app).0.y - ground);
     }
     let ticks = std::mem::take(&mut app.world_mut().resource_mut::<Ticks>().0);
-    let expected = tuning.jump_launch * tuning.jump_launch / (2.0 * tuning.gravity);
+    let expected = tuning.jump_height.creation().abs();
     assert!(
         (apex - expected).abs() <= 0.15 * expected,
         "jump apex {apex:.1}, expected about {expected:.1}"
@@ -311,7 +311,7 @@ fn a_jump_still_leaves_the_ground_and_lands_once() {
     assert_eq!(ticks.iter().filter(|tick| tick.state.landed).count(), 1);
     let last = ticks.last().unwrap();
     assert!(
-        !last.state.airborne && last.state.grounded,
+        !last.state.airborne && last.state.grounded(),
         "standing again after the jump"
     );
 }
@@ -345,7 +345,7 @@ fn the_jump_launch_tick_starts_the_air_state_at_the_launch_height() {
         app.update();
         let first = app.world().resource::<Ticks>().0[0];
         assert!(
-            first.state.jump_active && first.state.vertical_velocity > 0.0,
+            first.state.jump_active() && first.state.vertical_velocity() > 0.0,
             "{place}: the press did not launch: {:?}",
             first.state
         );
@@ -377,8 +377,8 @@ fn the_jump_launch_tick_starts_the_air_state_at_the_launch_height() {
             }
             assert!(
                 !(tick.state.landed
-                    && tick.state.jump_active
-                    && tick.state.vertical_velocity > 0.0),
+                    && tick.state.jump_active()
+                    && tick.state.vertical_velocity() > 0.0),
                 "{place}: a landing was flagged while rising: {:?}",
                 tick.state
             );
@@ -400,9 +400,9 @@ fn walk_state(app: &mut App) -> WalkState {
         .unwrap()
 }
 
-/// A tick that accepted a jump launch: `integrate_walk` sets the jump time to 0 only then.
+/// A tick that accepted a jump launch, including a relaunch on landing.
 fn launched(tick: &Tick) -> bool {
-    tick.state.jump_active && tick.state.jump_time == 0.0
+    tick.state.jump_launched()
 }
 
 /// Jumps held down between platforms of different height: every accepted launch, including the one
@@ -501,7 +501,6 @@ fn a_jump_pressed_on_the_landing_tick_after_a_ledge_fall_reports_the_landing() {
 /// previous tick was part of a cast-hit descent, the case where a press used to be dropped.
 #[test]
 fn a_jump_pressed_mid_glide_down_the_stairs_still_launches() {
-    let launch = MovementTuning::default().jump_launch;
     for (name, speed) in SPEEDS {
         let mut app = app_with_ticks();
         let top = flight(&mut app);
@@ -528,8 +527,8 @@ fn a_jump_pressed_mid_glide_down_the_stairs_still_launches() {
                 (
                     unsupported
                         && !state.airborne
-                        && !state.jump_active
-                        && state.vertical_velocity < -1.0,
+                        && !state.jump_active()
+                        && state.vertical_velocity() < -1.0,
                     body.translation.x,
                 )
             };
@@ -548,7 +547,7 @@ fn a_jump_pressed_mid_glide_down_the_stairs_still_launches() {
         }
         let state = pressed.unwrap_or_else(|| panic!("{name}: no unsupported glide tick found"));
         assert!(
-            state.jump_active && state.vertical_velocity >= launch - 1.0,
+            state.jump_launched() && state.jump_active() && state.vertical_velocity() > 0.0,
             "{name}: a jump pressed mid-glide did not launch: {state:?}"
         );
     }
