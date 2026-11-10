@@ -61,8 +61,8 @@ jobs:
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*)$'
-          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.rs|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*|tools/skyrim-recorder/.*|docs/research/evidence/skyrim-physics-221/.*|scripts/[^/]*skyrim[^/]*\.py)$'
+          check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^tools/skyrim-recorder/|^docs/research/evidence/skyrim-physics-221/|^tools/world_data_inventory/|^docs/data-inventory/|^crates/(converter|shared)/|^crates/engine/src/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_world_data" '^(tools/world_data_inventory/|docs/data-inventory/|crates/(converter|shared)/|crates/engine/src/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -129,6 +129,12 @@ jobs:
 
       - name: Test Skyrim capture, replay and comparison helpers
         run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Verify native jump input evidence and retained failed attempts
+        run: python3 -B scripts/verify_skyrim_jump_inputs.py > "$RUNNER_TEMP/skyrim-jump-inputs.json"
+
+      - name: Audit published Skyrim evidence and nested archives
+        run: python3 -B scripts/publish_skyrim_evidence.py
 
       - name: Test actor idle CPU qualification tools
         run: |
