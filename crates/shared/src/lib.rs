@@ -1,8 +1,10 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
+pub mod actor_idle_catalog;
 pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
+pub mod creature_idle;
 pub mod form_key;
 pub mod legacy_id_view;
 pub mod lod;
