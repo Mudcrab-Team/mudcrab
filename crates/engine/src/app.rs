@@ -488,6 +488,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
     }
+    crate::render_teardown::install(&mut app);
     if let Some(run) = shots {
         info!(
             shots = run.file.shots.len(),
