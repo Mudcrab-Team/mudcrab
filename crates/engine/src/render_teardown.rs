@@ -119,8 +119,8 @@ mod tests {
         time::Duration,
     };
 
-    /// Generous: a passing shutdown takes milliseconds, the margin is for a loaded machine.
-    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Generous: each step takes milliseconds when it passes, the margin is for a loaded machine.
+    const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
     struct FakeRender;
@@ -131,11 +131,16 @@ mod tests {
     /// bevy_winit's `exiting` does (`World::clear_all`) and the drop.
     ///
     /// The `App` lives on its own thread, which is that app's main thread, so a deadlock leaves
-    /// that thread blocked and the test still ends. Returns whether shutdown finished within
-    /// `timeout`, and how many render frames ran.
-    fn shut_down(with_guard: bool, extra_updates: usize, timeout: Duration) -> (bool, usize) {
+    /// that thread blocked and the test still ends. `teardown_timeout` only starts once that thread
+    /// has finished its updates, so a slow start on a loaded machine cannot read as a deadlock.
+    /// Returns whether teardown finished within it, and how many render frames ran.
+    fn shut_down(
+        with_guard: bool,
+        extra_updates: usize,
+        teardown_timeout: Duration,
+    ) -> (bool, usize) {
         let frames = Arc::new(AtomicUsize::new(0));
-        let (done, finished) = mpsc::channel();
+        let (progress, steps) = mpsc::channel();
         let counter = frames.clone();
         std::thread::spawn(move || {
             let mut app = App::new();
@@ -159,22 +164,32 @@ mod tests {
             for _ in 0..extra_updates {
                 app.update();
             }
+            progress.send(()).ok();
             app.world_mut().clear_all();
             drop(app);
-            done.send(()).ok();
+            progress.send(()).ok();
         });
-        let completed = finished.recv_timeout(timeout).is_ok();
+        steps
+            .recv_timeout(STEP_TIMEOUT)
+            .expect("the app thread should finish its updates");
+        let completed = match steps.recv_timeout(teardown_timeout) {
+            Ok(()) => true,
+            Err(mpsc::RecvTimeoutError::Timeout) => false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the app thread panicked in teardown")
+            }
+        };
         (completed, frames.load(Ordering::SeqCst))
     }
 
     #[test]
     fn shutdown_completes_when_the_last_render_frame_needs_the_main_thread() {
-        assert_eq!(shut_down(true, 0, SHUTDOWN_TIMEOUT), (true, 3));
+        assert_eq!(shut_down(true, 0, STEP_TIMEOUT), (true, 3));
     }
 
     #[test]
     fn updates_after_the_exit_do_not_reach_the_render_thread() {
-        assert_eq!(shut_down(true, 2, SHUTDOWN_TIMEOUT), (true, 3));
+        assert_eq!(shut_down(true, 2, STEP_TIMEOUT), (true, 3));
     }
 
     #[test]
