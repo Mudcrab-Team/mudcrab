@@ -67,6 +67,7 @@ pub struct NifParseDiagnostics {
     pub parsed_block_count: usize,
     pub geometry_block_count: usize,
     pub scene_node_count: usize,
+    /// Longest parsed scene-node chain; geometry and other blocks contribute zero.
     pub max_scene_depth: usize,
     pub block_types: BTreeMap<String, usize>,
     pub fallback_blocks: BTreeMap<String, usize>,
@@ -113,8 +114,9 @@ impl MeshConverter {
     /// Converts using an explicitly resolved winning skeleton, without physical-neighbor fallback.
     ///
     /// `None` means the mesh is a self-contained rig: the vendor builds its bone
-    /// tree from the mesh's own joints. Unusable skins retain their geometry
-    /// as rigid nodes; valid shapes in the same NIF stay skinned.
+    /// tree from the mesh's own joints. Parsed skins with unusable bindings
+    /// retain rigid geometry; valid sibling skins stay skinned. An undecodable
+    /// declared skin instance refuses the model before either export path.
     pub fn convert_nif_to_glb_with_skeleton(
         nif_path: &Path,
         glb_output_path: &Path,
@@ -961,6 +963,7 @@ const SKIN_INSTANCE_BLOCKS: [&str; 3] = [
     "BSDismemberSkinInstance",
 ];
 
+/// Identifies header type names whose instances carry mesh-to-skeleton bindings.
 fn is_declared_skin_block(block_type: &str) -> bool {
     SKIN_INSTANCE_BLOCKS.contains(&block_type)
 }
@@ -979,9 +982,10 @@ const MAX_REPORTED_SKIN_OFFSETS: usize = 8;
 /// Refuses a NIF whose declared skin instance block did not parse.
 ///
 /// Rescuing an unparsable block keeps the rest of the file readable, but for a
-/// skin instance it would also silently drop the mesh's bones: the declared
-/// block type still says the mesh is skinned, so the conversion stops here
-/// instead of publishing a static mesh that can never follow a bone.
+/// skin instance the binding references are unavailable. This policy refuses
+/// the model, including any usable sibling shapes, rather than silently making
+/// its skin rigid. The ordinary pipeline records that asset's failure and keeps
+/// converting other assets. Parsed skins still use per-shape binding recovery.
 fn ensure_declared_skins_parsed(diagnostics: &NifParseDiagnostics, path: &Path) -> Result<()> {
     for (block_type, count) in &diagnostics.fallback_blocks {
         if !is_declared_skin_block(block_type) {
@@ -1459,7 +1463,9 @@ fn apply_vertex_color_contract(
 
 /// Loads Skyrim NIF blocks within their declared sizes, recording parse failures as unhandled blocks.
 ///
-/// Returns the parsed file, diagnostics, and validated material contract.
+/// Returns the parsed file, diagnostics, and validated material contract. Scene
+/// cycles, excessive node depth and undecodable declared skin instances return
+/// a model error; the ordinary pipeline reports it through its asset-skip path.
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
@@ -1659,9 +1665,9 @@ pub(crate) fn build_skinned_model_with_materials(
 }
 
 /// Applies the shared export contract: a declared skin must yield usable skinned
-/// or rigid geometry, and the model must validate and carry the runtime
-/// coordinate rotation and vertex-colour policy. Strict composition builds its
-/// skins before reaching this shared finishing step.
+/// or rigid geometry after its instance blocks have parsed. The model must
+/// validate and carry the runtime coordinate rotation and vertex-colour policy.
+/// Strict composition builds its skins before reaching this shared finishing step.
 fn finish_skinned_model(
     nif: &NifFile,
     nif_path: &Path,
@@ -1729,10 +1735,10 @@ pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Deepest scene-node chain a NIF may declare.
 ///
-/// Authored scenes nest a few dozen nodes at most; the collision walk applies
-/// the same limit to the node hierarchy it walks (`collision.rs`,
-/// `target_transform`). The model export recurses along these edges, so a file
-/// past this bound is rejected before it can exhaust the stack.
+/// This is an engineering bound, not a NIF format limit. The official vanilla
+/// and Creation Club census reached 26 nodes; modded scenes can exceed it.
+/// Collision's `target_transform` also bounds node visits at 64, and recursive
+/// model validation needs a bound before export. Geometry leaves do not count.
 const MAX_SCENE_DEPTH: usize = 64;
 
 /// Deepest chain of scene nodes in the NIF's block graph.
@@ -1780,9 +1786,9 @@ fn nif_scene_depth(blocks: &[NifBlock]) -> Result<usize> {
                     _ => stack[top].2 = stack[top].2.max(depths[child]),
                 }
             } else {
-                // A scene node counts itself above its deepest child; any other
-                // block the graph references is a leaf.
-                let depth = if node.is_some() { 1 + best } else { 1 };
+                // Count only scene nodes: geometry and unrelated blocks do not
+                // consume a slot in the node-hierarchy budget.
+                let depth = if node.is_some() { 1 + best } else { 0 };
                 depths[index] = depth;
                 state[index] = 2;
                 max_depth = max_depth.max(depth);
@@ -4127,11 +4133,13 @@ mod tests {
         const NIF_VERSION: u32 = 0x1402_0007;
         const USER_VERSION: u32 = 12;
         const BETHESDA_VERSION: u32 = 100;
+        /// Append little-endian transform components to a procedural node block.
         fn push_f32(bytes: &mut Vec<u8>, values: impl IntoIterator<Item = f32>) {
             for value in values {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
+        /// Encode one node with the requested child references and an identity transform.
         fn node(children: &[u32]) -> Vec<u8> {
             let mut bytes = Vec::new();
             for value in [0u32, u32::MAX, u32::MAX, 0] {
@@ -4175,6 +4183,7 @@ mod tests {
         bytes
     }
 
+    /// Reject a long procedural chain before recursive export can exhaust the stack.
     #[test]
     fn crafted_deep_scene_chain_is_refused_not_walked() {
         let directory = tempfile::tempdir().unwrap();
@@ -4190,6 +4199,7 @@ mod tests {
         assert!(!output.exists(), "a refused scene must not publish a GLB");
     }
 
+    /// Accept a chain at the configured node limit.
     #[test]
     fn scene_chain_at_the_depth_limit_is_readable() {
         let directory = tempfile::tempdir().unwrap();
@@ -4199,6 +4209,35 @@ mod tests {
         assert_eq!(diagnostics.max_scene_depth, MAX_SCENE_DEPTH);
     }
 
+    /// Geometry and other non-node child blocks do not consume the scene-node budget.
+    #[test]
+    fn scene_depth_refusal_counts_only_nodes_including_at_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("limit.nif");
+        fs::write(&input, node_chain_nif(64)).unwrap();
+        let (mut nif, _, _) = open_nif_resilient(&input).unwrap();
+        let NifBlock::NiNode(last) = &mut nif.blocks[63] else {
+            panic!("fixture must end in a scene node");
+        };
+        last.children.push(64);
+        let geometry = directory.path().join("geometry.nif");
+        fs::write(&geometry, static_nif()).unwrap();
+        let (geometry, _, _) = open_nif_resilient(&geometry).unwrap();
+        let shape = geometry
+            .blocks
+            .into_iter()
+            .find(|block| matches!(block, NifBlock::BSTriShape(_)))
+            .unwrap();
+        nif.blocks.push(shape);
+        assert_eq!(nif_scene_depth(&nif.blocks).unwrap(), 64);
+        assert_eq!(nif_scene_depth(&[NifBlock::Unhandled]).unwrap(), 0);
+        assert_eq!(nif_scene_depth(&[]).unwrap(), 0);
+        fs::write(&input, node_chain_nif(65)).unwrap();
+        let error = MeshConverter::inspect_nif(&input).unwrap_err();
+        assert!(format!("{error:#}").contains("65 scene nodes"));
+    }
+
+    /// Bound malformed-instance diagnostics and distinguish a caught parser panic.
     #[test]
     fn skin_parse_refusal_names_only_the_first_offsets() {
         let mut diagnostics = NifParseDiagnostics::default();
@@ -4219,6 +4258,7 @@ mod tests {
         assert!(!message.contains("offset 107"), "{message}");
     }
 
+    /// Reject an ancestor back edge in a disconnected-capable block walk.
     #[test]
     fn scene_graph_loop_is_refused() {
         let directory = tempfile::tempdir().unwrap();
@@ -4229,6 +4269,7 @@ mod tests {
         assert!(message.contains("loops through block 1"), "{message}");
     }
 
+    /// Reuse completed depths without losing a shared child's longest parent chain.
     #[test]
     fn shared_scene_children_count_their_depth_once_from_every_parent() {
         let directory = tempfile::tempdir().unwrap();
@@ -4243,6 +4284,7 @@ mod tests {
         assert_eq!(diagnostics.max_scene_depth, 4);
     }
 
+    /// Refuse an undecodable binding instead of publishing a silently rigid model.
     #[test]
     fn unparsable_skin_instance_is_an_error_not_a_static_mesh() {
         use dummy_content::nif::{LegacySkin, SkinInstanceKind, legacy_skinned_shape};
@@ -4335,6 +4377,7 @@ mod tests {
             inspect_and_convert(&bytes);
         }
 
+        /// Exercise header and block-table recovery beyond the small arbitrary-input budget.
         #[test]
         fn nif_never_panics_on_larger_arbitrary_bytes(tail in arbitrary_bytes(4096)) {
             // Longer than the 512-byte budget, so whole headers and block tables
@@ -4345,6 +4388,7 @@ mod tests {
             inspect_and_convert(&bytes);
         }
 
+        /// Exercise loops, shared subgraphs and out-of-range references in procedural graphs.
         #[test]
         fn nif_scene_graphs_never_panic_and_stay_within_the_depth_limit(
             // Child indices run past the last block too: the walk skips those.

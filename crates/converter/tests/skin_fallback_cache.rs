@@ -113,6 +113,261 @@ async fn publish(config: &PipelineConfig) -> converter::pipeline::PipelineReport
     result.unwrap()
 }
 
+/// Corrupt a declared skin's bone count while preserving its block and all neighboring bytes.
+fn unparsable_skin() -> Vec<u8> {
+    let mut bytes = body_fixture();
+    let skin = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "NiSkinInstance")
+        .unwrap()
+        .1;
+    bytes[skin + 12..skin + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes
+}
+
+/// Pin the actual pre-refusal proof independently of the current contract list.
+fn pre_refusal_mesh_proof() -> String {
+    hash_bytes(
+        &serde_json::to_vec(&serde_json::json!({
+            "mesh_producer": 28,
+            "mesh_contracts": [
+                "legacy-skin-export", "msn-vertex-normals", "facegen-tint-slot",
+                "lighting-type-data", "msn-specular-default", "hidden-niavobject-excluded",
+                "nif-root-transform-ignored", "skin-static-fallback"
+            ]
+        }))
+        .unwrap(),
+    )
+}
+
+/// A malformed skin fails only its model; valid assets and plugin records still publish.
+#[tokio::test]
+async fn malformed_skin_refusal_publishes_valid_neighbors_and_records_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    prepare_data(&data);
+    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
+    // Resolver failure is a neutral answer, never permission to publish static geometry.
+    assert_eq!(
+        find_skeleton(&data.join(BODY_KEY)),
+        SkeletonResolution::SelfContained
+    );
+    let direct = root.path().join("refused-direct.glb");
+    assert!(MeshConverter::convert_nif_to_glb(data.join(BODY_KEY), direct.clone()).is_err());
+    assert!(!direct.exists());
+    let output = root.path().join("modern");
+    assert_refused_model(&publish(&config(&data, &output)).await, &output);
+}
+
+/// Check the saved failure, diagnostic, omitted bytes and neighboring records after publication.
+fn assert_refused_model(report: &converter::pipeline::PipelineReport, output: &Path) {
+    assert!(!report.complete, "malformed skin was reused: {report:?}");
+    assert_eq!(report.skipped, 1, "{report:?}");
+    let saved = manifest(output);
+    assert_eq!(saved.failures.len(), 1, "{:?}", saved.failures);
+    let failure = &saved.failures[BODY_KEY];
+    assert!(failure.contains("NiSkinInstance"), "{failure}");
+    assert!(failure.contains("offset"), "{failure}");
+    assert!(failure.len() < 2048, "asset diagnostic must stay bounded");
+    assert_eq!(
+        report
+            .warnings
+            .iter()
+            .filter(|warning| *warning == failure)
+            .count(),
+        1
+    );
+    assert!(!saved.entries.contains_key(BODY_KEY));
+    assert!(!output.join(BODY_OUTPUT).exists());
+    assert!(output.join("meshes/generated.glb").is_file());
+    assert!(saved.entries.contains_key("meshes/generated.nif"));
+    let database = rusqlite::Connection::open_with_flags(
+        output.join("skyrim_world.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let records: u64 = database
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .unwrap();
+    assert!(records > 0, "usable plugin records did not survive");
+}
+
+/// Seed tool inputs with a valid neighboring GLB and an old static success for a malformed NIF.
+fn tool_inputs(root: &Path) -> (PathBuf, PathBuf) {
+    let data = root.join("Data");
+    prepare_data(&data);
+    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
+    let assets = root.join("old-assets");
+    fs::create_dir_all(assets.join(BODY_OUTPUT).parent().unwrap()).unwrap();
+    MeshConverter::convert_nif_to_glb(
+        data.join("meshes/generated.nif"),
+        assets.join("meshes/generated.glb"),
+    )
+    .unwrap();
+    fs::copy(
+        assets.join("meshes/generated.glb"),
+        assets.join(BODY_OUTPUT),
+    )
+    .unwrap();
+    (data.join("meshes"), assets)
+}
+
+/// A batch annotation tool must process good neighbors and record a failed model after refusal.
+#[test]
+fn collision_annotation_tool_refusal_preserves_neighbors_and_reports_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let (sources, assets) = tool_inputs(root.path());
+    let output = root.path().join("annotated");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_collision-annotate"))
+        .arg(&sources)
+        .arg(assets.join("meshes"))
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "incomplete annotation needs a failing exit status"
+    );
+    let report = output.join("collision-annotation-report.json");
+    assert!(
+        report.is_file(),
+        "a bad model aborted the batch before its failure report"
+    );
+    let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["complete"], false);
+    assert_eq!(report["annotated"], 1);
+    let failures = report["failures"].as_object().unwrap();
+    assert_eq!(failures.len(), 1);
+    let message = failures["actors/test/body.glb"].as_str().unwrap();
+    assert!(message.contains("NiSkinInstance"), "{message}");
+    assert!(message.len() < 4096);
+    assert!(output.join("generated.glb").is_file());
+    assert!(!output.join("actors/test/body.glb").exists());
+    assert!(
+        assets.join(BODY_OUTPUT).is_file(),
+        "input pack must stay intact"
+    );
+}
+
+/// Closure conversion must validate current NIF input before reusing an old static GLB.
+#[test]
+fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
+    let root = tempfile::tempdir().unwrap();
+    let (sources, assets) = tool_inputs(root.path());
+    let neighbor = fs::read(assets.join("meshes/generated.glb")).unwrap();
+    let database = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    database.execute_batch("CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT); CREATE TABLE \"references\"(base_form_id INTEGER); INSERT INTO statics VALUES(1,'generated.nif'),(2,'actors/test/body.nif'); INSERT INTO \"references\" VALUES(1),(2);").unwrap();
+    drop(database);
+    let report = root.path().join("closure-report.json");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_asset-closure-convert"))
+        .arg(&sources)
+        .arg(&assets)
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "closure reused a refused NIF's old GLB"
+    );
+    let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["passed"], false);
+    assert_eq!(report["failures"], 1);
+    assert_eq!(report["reused"], 1);
+    let failed = report["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["status"] == "failed")
+        .unwrap();
+    assert_eq!(failed["model_path"], "actors/test/body.nif");
+    let message = failed["error"].as_str().unwrap();
+    assert!(message.contains("NiSkinInstance"), "{message}");
+    assert!(message.len() < 4096);
+    assert!(!assets.join(BODY_OUTPUT).exists());
+    assert_eq!(
+        fs::read(assets.join("meshes/generated.glb")).unwrap(),
+        neighbor
+    );
+}
+
+/// A published old static success for the same malformed source must be rebuilt and refused.
+#[tokio::test]
+async fn warm_cache_refuses_pre_refusal_static_success() {
+    assert_old_skin_success_is_refused(0).await;
+}
+
+/// A resumed journal must also reject the old same-producer mesh settings proof.
+#[tokio::test]
+async fn resumed_cache_refuses_pre_refusal_static_success() {
+    assert_old_skin_success_is_refused(1).await;
+}
+
+/// A staging copy without a journal must not recover old proof from the published manifest.
+#[tokio::test]
+async fn resumed_manifest_cache_refuses_pre_refusal_static_success() {
+    assert_old_skin_success_is_refused(2).await;
+}
+
+/// Seed genuine valid output bytes with an independently pinned old proof and unchanged bad input.
+async fn assert_old_skin_success_is_refused(mode: u8) {
+    use converter::cache::{StagedOutput, StagingJournal};
+
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    prepare_data(&data);
+    fs::write(data.join(BODY_KEY), body_fixture()).unwrap();
+    let output = root.path().join("modern");
+    let mut config = config(&data, &output);
+    assert!(publish(&config).await.complete);
+    let mut saved = manifest(&output);
+    let texture_proof = saved.asset_configuration_hashes["dds"].clone();
+    let script_proof = saved.asset_configuration_hashes["pex"].clone();
+    let neighbor = fs::read(output.join("meshes/generated.glb")).unwrap();
+    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
+    // A valid static GLB is what the old parser's Unhandled skin could publish.
+    fs::write(output.join(BODY_OUTPUT), &neighbor).unwrap();
+    let entry = saved.entries.get_mut(BODY_KEY).unwrap();
+    entry.source_hash = hash_file(&data.join(BODY_KEY)).unwrap();
+    entry.output_hash = hash_bytes(&neighbor);
+    entry.output_size = neighbor.len() as u64;
+    let record = StagedOutput {
+        schema_version: saved.schema_version,
+        configuration_hash: pre_refusal_mesh_proof(),
+        source_hash: entry.source_hash.clone(),
+        output_size: entry.output_size,
+        output_hash: entry.output_hash.clone(),
+    };
+    saved
+        .asset_configuration_hashes
+        .insert("nif".into(), pre_refusal_mesh_proof());
+    saved
+        .save(&output.join("conversion-manifest.json"))
+        .unwrap();
+    if mode != 0 {
+        let staging = root.path().join("modern.staging-old-skin");
+        fs::create_dir_all(staging.join(BODY_OUTPUT).parent().unwrap()).unwrap();
+        fs::write(staging.join(BODY_OUTPUT), &neighbor).unwrap();
+        if mode == 1 {
+            StagingJournal::open(&staging)
+                .unwrap()
+                .record(BODY_KEY, &record)
+                .unwrap();
+            // Exercise the journal alone, independently of manifest reuse.
+            fs::rename(&output, root.path().join("retained-old-pack")).unwrap();
+        }
+        config.resume_staging = Some(staging);
+    }
+    let report = publish(&config).await;
+    assert_refused_model(&report, &output);
+    assert_eq!(
+        fs::read(output.join("meshes/generated.glb")).unwrap(),
+        neighbor
+    );
+    let current = manifest(&output);
+    assert_eq!(current.asset_configuration_hashes["dds"], texture_proof);
+    assert_eq!(current.asset_configuration_hashes["pex"], script_proof);
+}
+
 /// Read the actual saved proof, including failures and per-kind settings.
 fn manifest(output: &Path) -> ConversionManifest {
     serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap()).unwrap()

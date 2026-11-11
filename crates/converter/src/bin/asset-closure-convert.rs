@@ -149,6 +149,7 @@ fn required(args: &mut impl Iterator<Item = std::ffi::OsString>, name: &str) -> 
 /// Converts or reuses one reachable model. A stored path the canonicalizer refuses is reported,
 /// never joined onto the roots: a raw `..` or absolute plugin string would read or write outside
 /// both the source and the assets tree.
+/// Validates current NIF input before converting or reusing a model, recording local failure.
 fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> ConversionResult {
     let relative = match relative_model_path(&model_path) {
         Ok(relative) => relative,
@@ -181,33 +182,41 @@ fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> 
             error: Some("source NIF is missing".to_owned()),
         };
     }
-    if output.is_file()
-        && MeshConverter::glb_bounds(&output).is_ok()
-        && MeshConverter::glb_texture_uris(&output).is_ok()
-    {
-        return ConversionResult {
+    // This utility has no manifest settings proof. Validate the current source
+    // even when the old GLB is readable, so it cannot bypass NIF refusal.
+    let result = MeshConverter::inspect_nif(&source).and_then(|_| {
+        if output.is_file()
+            && MeshConverter::glb_bounds(&output).is_ok()
+            && MeshConverter::glb_texture_uris(&output).is_ok()
+        {
+            Ok("reused")
+        } else {
+            MeshConverter::convert_nif_to_glb(&source, &output).map(|_| "converted")
+        }
+    });
+    match result {
+        Ok(status) => ConversionResult {
             model_path,
             source_path: Some(source.to_string_lossy().into_owned()),
             output_path: relative_output,
-            status: "reused",
-            error: None,
-        };
-    }
-    match MeshConverter::convert_nif_to_glb(&source, &output) {
-        Ok(()) => ConversionResult {
-            model_path,
-            source_path: Some(source.to_string_lossy().into_owned()),
-            output_path: relative_output,
-            status: "converted",
+            status,
             error: None,
         },
-        Err(error) => ConversionResult {
-            model_path,
-            source_path: Some(source.to_string_lossy().into_owned()),
-            output_path: relative_output,
-            status: "failed",
-            error: Some(format!("{error:#}")),
-        },
+        Err(error) => {
+            let mut message = format!("{error:#}");
+            match fs::remove_file(&output) {
+                Ok(()) => {}
+                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {}
+                Err(cleanup) => message.push_str(&format!("; failed output cleanup: {cleanup}")),
+            }
+            ConversionResult {
+                model_path,
+                source_path: Some(source.to_string_lossy().into_owned()),
+                output_path: relative_output,
+                status: "failed",
+                error: Some(message.chars().take(2048).collect()),
+            }
+        }
     }
 }
 
