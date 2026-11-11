@@ -39,6 +39,7 @@ use bevy::{
     math::DVec3,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
+    render::error_handler::{ErrorType, RenderError, RenderErrorHandler, RenderErrorPolicy},
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -500,20 +501,77 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ShotsPlugin { run },
         ));
     }
+    // Replaces the handler `RenderPlugin` installed, so it must come after `DefaultPlugins`.
+    app.insert_resource(RenderErrorHandler(handle_render_error));
     let exit = app.run();
     drop(app);
     drop(streaming_fixture_dir);
     finished(&exit)
 }
 
+/// Process exit code for a run that ended because the GPU device was lost.
+///
+/// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
+/// acceptance script can tell a driver or system fault from a regression in the engine.
+pub const EXIT_DEVICE_LOST: u8 = 3;
+
+/// The run ended because the GPU device was lost, not because of anything the engine did wrong.
+///
+/// Returned from [`run`] so `main` can turn it into [`EXIT_DEVICE_LOST`] instead of the generic
+/// failure code.
+#[derive(Debug)]
+pub struct DeviceLost;
+
+impl std::fmt::Display for DeviceLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the GPU device was lost (exit code {EXIT_DEVICE_LOST}); the system or graphics driver \
+             dropped the device, so this run says nothing about the engine - retry it"
+        )
+    }
+}
+
+impl std::error::Error for DeviceLost {}
+
+/// The exit a render error asks for: device loss gets its own code, everything else the generic
+/// failure Bevy's default handler used.
+fn exit_for_render_error(error: &RenderError) -> AppExit {
+    match error.ty {
+        ErrorType::DeviceLost => AppExit::from_code(EXIT_DEVICE_LOST),
+        _ => AppExit::error(),
+    }
+}
+
+/// Same policy as Bevy's default handler (quit and stop rendering, since carrying on after a
+/// render error risks rapid flashing), but with an exit code that names device loss.
+fn handle_render_error(
+    error: &RenderError,
+    main_world: &mut World,
+    _render_world: &mut World,
+) -> RenderErrorPolicy {
+    if matches!(error.ty, ErrorType::DeviceLost) {
+        error!(
+            description = %error.description,
+            "the GPU device was lost; quitting"
+        );
+    } else {
+        error!("Quitting the application due to {:?} RenderError", error.ty);
+    }
+    main_world.write_message(exit_for_render_error(error));
+    RenderErrorPolicy::StopRendering
+}
+
 /// What the process reports after an [`App`] has run.
 ///
 /// A shots run that could not write an image, and an acceptance run whose gates did not pass, end
 /// with [`AppExit::Error`]; dropping that would report success to whatever ran the process - the
-/// acceptance script reads the exit code - so the error is handed back to `main` instead.
+/// acceptance script reads the exit code - so the error is handed back to `main` instead. A lost
+/// device comes back as [`DeviceLost`], which `main` maps to [`EXIT_DEVICE_LOST`].
 fn finished(exit: &AppExit) -> Result<()> {
     match exit {
         AppExit::Success => Ok(()),
+        AppExit::Error(code) if code.get() == EXIT_DEVICE_LOST => Err(DeviceLost.into()),
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
@@ -3609,6 +3667,61 @@ mod tests {
             .expect_err("a failed run must not report success")
             .to_string();
         assert!(message.contains("exit code"), "{message}");
+    }
+
+    fn render_error(ty: ErrorType) -> RenderError {
+        RenderError {
+            ty,
+            description: String::new(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn device_loss_exits_with_its_own_code() {
+        assert_eq!(
+            exit_for_render_error(&render_error(ErrorType::DeviceLost)),
+            AppExit::from_code(EXIT_DEVICE_LOST)
+        );
+    }
+
+    #[test]
+    fn other_render_errors_keep_the_generic_failure_code() {
+        for ty in [
+            ErrorType::OutOfMemory,
+            ErrorType::Validation,
+            ErrorType::Internal,
+        ] {
+            assert_eq!(exit_for_render_error(&render_error(ty)), AppExit::error());
+        }
+    }
+
+    #[test]
+    fn the_handler_quits_with_the_device_loss_code_and_stops_rendering() {
+        let mut main_world = World::new();
+        main_world.init_resource::<Messages<AppExit>>();
+        let mut render_world = World::new();
+        let policy = handle_render_error(
+            &render_error(ErrorType::DeviceLost),
+            &mut main_world,
+            &mut render_world,
+        );
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        let exits: Vec<_> = main_world
+            .resource_mut::<Messages<AppExit>>()
+            .drain()
+            .collect();
+        assert_eq!(exits, vec![AppExit::from_code(EXIT_DEVICE_LOST)]);
+    }
+
+    #[test]
+    fn a_lost_device_run_is_reported_as_device_loss() {
+        let error = finished(&AppExit::from_code(EXIT_DEVICE_LOST))
+            .expect_err("a lost device must not report success");
+        assert!(error.downcast_ref::<DeviceLost>().is_some());
+        assert!(error.to_string().contains("GPU device was lost"), "{error}");
+        let other = finished(&AppExit::error()).expect_err("a failed run is an error");
+        assert!(other.downcast_ref::<DeviceLost>().is_none());
     }
 
     /// The streaming fixture's own systems over its own fixture database, with no window, GPU or

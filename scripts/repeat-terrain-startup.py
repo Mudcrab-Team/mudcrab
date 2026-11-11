@@ -254,7 +254,10 @@ def retry_accounting(logs, failures):
 def analyze_run(directory, manifest):
     failures = []
     notes = ["Visual inspection pending: lifecycle counters and PNG validity do not prove terrain pixel coverage."]
-    if manifest.get("exit_code") != 0 or manifest.get("timed_out") or manifest.get("interrupted"):
+    if manifest.get("exit_code") == 3:
+        # Engine EXIT_DEVICE_LOST: a system or driver fault, to be retried rather than analysed.
+        failures.append("GPU device lost (engine exit code 3); retry the run")
+    elif manifest.get("exit_code") != 0 or manifest.get("timed_out") or manifest.get("interrupted"):
         failures.append("engine did not complete successfully")
     if manifest.get("input_hashes_before") != manifest.get("input_hashes_after"):
         failures.append("engine or primary asset inputs changed during the run")

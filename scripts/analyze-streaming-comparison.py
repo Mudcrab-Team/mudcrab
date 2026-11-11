@@ -577,7 +577,10 @@ def analyze_run(experiment, record):
     if not result["render_configuration"]["physical_resolution"] or not result["render_configuration"]["reported_build_profile"]:
         warnings.append("physical resolution or reported build profile unavailable for pair verification")
     result["host_observations"] = host
-    if record.get("exit_code", run.get("exit_code")) != 0 or run.get("exit_code") != 0:
+    if run.get("exit_code") == 3 or record.get("exit_code") == 3:
+        # Engine EXIT_DEVICE_LOST: the GPU device was lost, so the run is unusable but not a regression.
+        errors.append("GPU device lost (engine exit code 3); retry the run")
+    elif record.get("exit_code", run.get("exit_code")) != 0 or run.get("exit_code") != 0:
         errors.append("engine exit was not successful")
     if run.get("timed_out") or run.get("interrupted") or record.get("status") in ("timeout", "timed_out", "aborted", "interrupted"):
         errors.append("run was interrupted or timed out")
