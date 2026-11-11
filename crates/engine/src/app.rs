@@ -501,7 +501,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ShotsPlugin { run },
         ));
     }
-    // Replaces the handler `RenderPlugin` installed, so it must come after `DefaultPlugins`.
+    // `RenderPlugin` only `init_resource`s its default handler, so this one wins wherever it is
+    // inserted.
     app.insert_resource(RenderErrorHandler(handle_render_error));
     let exit = app.run();
     drop(app);
@@ -512,10 +513,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
 /// Process exit code for a run that ended because the GPU device was lost.
 ///
 /// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
-/// acceptance script can tell a driver or system fault from a regression in the engine.
+/// acceptance script can record a lost device apart from other failures. It does not clear the
+/// engine: a GPU fault or a command buffer the driver times out also loses the device.
 pub const EXIT_DEVICE_LOST: u8 = 3;
 
-/// The run ended because the GPU device was lost, not because of anything the engine did wrong.
+/// The run ended because the GPU device was lost.
 ///
 /// Returned from [`run`] so `main` can turn it into [`EXIT_DEVICE_LOST`] instead of the generic
 /// failure code.
@@ -526,8 +528,9 @@ impl std::fmt::Display for DeviceLost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the GPU device was lost (exit code {EXIT_DEVICE_LOST}); the system or graphics driver \
-             dropped the device, so this run says nothing about the engine - retry it"
+            "the GPU device was lost, the engine is exiting (exit code {EXIT_DEVICE_LOST}); the log \
+             above has the driver's reason. Retry the run; if it keeps happening, the engine may \
+             be the cause"
         )
     }
 }
@@ -3696,22 +3699,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_handler_quits_with_the_device_loss_code_and_stops_rendering() {
+    /// Calls the handler the way Bevy's render state machine does and returns its policy and the
+    /// exits it wrote to the main world.
+    fn handle(ty: ErrorType) -> (RenderErrorPolicy, Vec<AppExit>) {
         let mut main_world = World::new();
         main_world.init_resource::<Messages<AppExit>>();
         let mut render_world = World::new();
-        let policy = handle_render_error(
-            &render_error(ErrorType::DeviceLost),
-            &mut main_world,
-            &mut render_world,
-        );
-        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
-        let exits: Vec<_> = main_world
+        let policy = handle_render_error(&render_error(ty), &mut main_world, &mut render_world);
+        let exits = main_world
             .resource_mut::<Messages<AppExit>>()
             .drain()
             .collect();
+        (policy, exits)
+    }
+
+    #[test]
+    fn the_handler_quits_with_the_device_loss_code_and_stops_rendering() {
+        let (policy, exits) = handle(ErrorType::DeviceLost);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
         assert_eq!(exits, vec![AppExit::from_code(EXIT_DEVICE_LOST)]);
+    }
+
+    /// Bevy's default handler quits with the generic failure and stops rendering for every error;
+    /// any other error must still do exactly that.
+    #[test]
+    fn the_handler_keeps_bevys_default_for_other_render_errors() {
+        let (policy, exits) = handle(ErrorType::Validation);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        assert_eq!(exits, vec![AppExit::error()]);
     }
 
     #[test]

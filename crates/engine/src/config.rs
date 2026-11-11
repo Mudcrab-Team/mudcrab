@@ -435,7 +435,7 @@ Exit codes:
   0  success
   1  the run failed
   2  the command line could not be used
-  3  the GPU device was lost (system or driver fault; retry, do not count it as an engine failure)
+  3  the GPU device was lost (retry the run; repeated losses can still be an engine fault)
 
 Example (the dummy-content fixture's worldspace is 1):
   engine --assets modern_assets --worldspace 1

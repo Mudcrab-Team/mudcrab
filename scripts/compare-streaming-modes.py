@@ -105,8 +105,8 @@ MODES = {
     "adaptive64": {"jobs": 64, "activations": 32, "upload_mib": 16, "adaptive": True,
                    "backlog": 256, "memory_mib": 16384},
 }
-# Engine exit code for a lost GPU device (crates/engine/src/app.rs, EXIT_DEVICE_LOST): a system or
-# driver fault to retry, not an engine regression.
+# Engine exit code for a lost GPU device (crates/engine/src/app.rs, EXIT_DEVICE_LOST). Such a run
+# measured nothing and is worth retrying, but repeated losses can still be the engine's fault.
 EXIT_DEVICE_LOST = 3
 EXPECTED = {"cells": 25, "models": 2029, "lod_chunks": 176, "terrain": 100, "water": 25}
 # The engine stops a route at this many real seconds, so its report and profile bundle are written
