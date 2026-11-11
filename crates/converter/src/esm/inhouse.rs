@@ -108,6 +108,8 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "room_links",
     "reference_rooms",
     "room_graph_stats",
+    "projection_omission_stats",
+    "projection_omission_samples",
     "cell_environment",
     "cell_regions",
     "cell_lighting",
@@ -1758,7 +1760,10 @@ fn parse_text_table(
         .filter(|end| *end <= bytes.len())
         .ok_or_else(|| color_eyre::eyre::eyre!("truncated STRINGS directory/data"))?;
     let data = &bytes[data_start..data_end];
-    let mut strings = HashMap::with_capacity(count);
+    // The declared count is bounded by the table's own directory, but every
+    // entry costs several times its eight directory bytes, so the map grows
+    // from validated entries instead of reserving for the declared count.
+    let mut strings = HashMap::new();
     let mut malformed_ids = BTreeSet::new();
     for index in 0..count {
         let id = word(8 + index * 8).expect("bounded directory");
@@ -1789,6 +1794,7 @@ fn parse_text_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// A four-byte event code without a terminator keeps its width; padded and accented
     /// text become canonical UTF-8 with one NUL.
@@ -1822,6 +1828,41 @@ mod tests {
         assert_eq!(decoded.malformed_ids, BTreeSet::from([41]));
         table[4..8].copy_from_slice(&13u32.to_le_bytes());
         assert!(parse_text_table(&table, true, crate::config::DEFAULT_LANGUAGE).is_err());
+    }
+
+    /// The declared count sizes no reservation: a table whose entries are all
+    /// malformed returns a map that never allocated for them.
+    #[test]
+    fn text_table_capacity_grows_only_from_validated_entries() {
+        let count = 4096u32;
+        let mut table = Vec::new();
+        table.extend(count.to_le_bytes());
+        table.extend(0u32.to_le_bytes());
+        for index in 0..count {
+            table.extend(index.to_le_bytes());
+            table.extend(u32::MAX.to_le_bytes());
+        }
+        let decoded = parse_text_table(&table, false, crate::config::DEFAULT_LANGUAGE).unwrap();
+        assert!(decoded.values.is_empty());
+        assert_eq!(decoded.malformed_ids.len() as u32, count);
+        assert!(
+            decoded.values.capacity() < count as usize,
+            "an empty table reserved {} slots for {count} malformed entries",
+            decoded.values.capacity()
+        );
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_strategies::config(256))]
+
+        #[test]
+        fn arbitrary_text_table_bytes_never_panic(
+            bytes in crate::test_strategies::arbitrary_bytes(512),
+        ) {
+            for length_prefixed in [false, true] {
+                let _ = parse_text_table(&bytes, length_prefixed, crate::config::DEFAULT_LANGUAGE);
+            }
+        }
     }
 }
 

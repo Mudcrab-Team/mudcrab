@@ -35,6 +35,7 @@ impl<'a> BsaRawEntry<'a> {
     pub fn decompress(&self) -> Result<Vec<u8>> {
         if self.is_compressed {
             decompress(self.payload, self.version)
+                .wrap_err_with(|| format!("failed to decompress BSA entry {:?}", self.name))
         } else {
             Ok(self.payload.to_vec())
         }
@@ -226,10 +227,39 @@ pub(crate) fn iter_raw_entries<'a>(bytes: &'a [u8]) -> Result<Vec<BsaRawEntry<'a
         .collect()
 }
 
+/// The largest decompressed size any BSA entry may declare. Retail textures,
+/// meshes and sounds stay well under this; a larger declared size is a corrupt
+/// or crafted entry, not a payload the game itself ships.
+const MAX_ENTRY_SIZE: usize = 1024 * 1024 * 1024;
+/// Deflate cannot expand a stream by more than 1032:1 (the loosest ratio of the
+/// three codecs a BSA payload may use).
+const MAX_ZLIB_EXPANSION: usize = 1032;
+/// Headroom for the framing of a tiny stream, whose own block headers cost
+/// more than the data it carries.
+const DECOMPRESSION_SLACK: usize = 4096;
+
+/// The largest decompressed size a payload of `packed_len` bytes can honestly
+/// declare. The absolute `MAX_ENTRY_SIZE` ceiling keeps a large packed payload
+/// from licensing a multi-gigabyte reservation through the ratio alone.
+fn expansion_limit(packed_len: usize) -> usize {
+    packed_len
+        .saturating_mul(MAX_ZLIB_EXPANSION)
+        .saturating_add(DECOMPRESSION_SLACK)
+        .min(MAX_ENTRY_SIZE)
+}
+
 fn decompress(payload: &[u8], version: u32) -> Result<Vec<u8>> {
     ensure!(payload.len() >= 4, "compressed BSA payload is truncated");
     let expected = u32_at(payload, 0)? as usize;
     let compressed = &payload[4..];
+    // One choke point for every decoder below, so no codec arm can reserve the
+    // declared size before its own length check runs.
+    let limit = expansion_limit(compressed.len());
+    ensure!(
+        expected <= limit,
+        "compressed BSA entry declares {expected} decompressed bytes from a {} byte payload, over the {limit} byte safety limit",
+        compressed.len()
+    );
     let decoded = if version >= 105 {
         if compressed.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
             read_bounded(lz4_flex::frame::FrameDecoder::new(compressed), expected)
@@ -722,6 +752,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_declared_size_over_the_absolute_cap_errors_instead_of_allocating() {
+        // Sixteen payload bytes (four of declared size plus twelve of stream) that
+        // declare a gigabyte: the 255x ratio once admitted this to the LZ4 block
+        // decoder, which zero-fills the whole declared size before checking it.
+        let payload = with_declared_size(MAX_ENTRY_SIZE as u32, &[0u8; 12]);
+        for version in [104, 105] {
+            let error = decompress(&payload, version)
+                .expect_err("a gigabyte from sixteen bytes is rejected")
+                .to_string();
+            assert!(error.contains("safety limit"), "unexpected error: {error}");
+            assert!(
+                error.contains(&MAX_ENTRY_SIZE.to_string()),
+                "unexpected error: {error}"
+            );
+        }
+
+        let entry = BsaRawEntry {
+            name: "textures/landscape/foo.dds".to_owned(),
+            payload: &payload,
+            version: 105,
+            is_compressed: true,
+        };
+        let error = entry.decompress().unwrap_err().to_string();
+        assert!(
+            error.contains("textures/landscape/foo.dds"),
+            "the entry name is missing from: {error}"
+        );
+    }
+
+    #[test]
+    fn the_ratio_bound_never_exceeds_the_absolute_entry_cap() {
+        assert_eq!(expansion_limit(usize::MAX), MAX_ENTRY_SIZE);
+        assert_eq!(
+            expansion_limit(1024),
+            1024 * MAX_ZLIB_EXPANSION + DECOMPRESSION_SLACK
+        );
+        assert!(expansion_limit(0) >= DECOMPRESSION_SLACK);
     }
 
     #[test]

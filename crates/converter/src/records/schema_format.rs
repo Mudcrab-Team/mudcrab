@@ -5,6 +5,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+/// Most elements one schema array may hold. The decoder refuses a larger count, and
+/// schema loading refuses a fixed count above it, so the rule fails where it is written.
+pub const MAX_ARRAY_ELEMENTS: usize = 1_000_000;
+
 /// A complete schema, with reusable authored definitions and source citations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -391,6 +395,10 @@ impl Schema {
         for child in field.members.iter().chain(&field.fields) {
             self.validate_field(child, depth + 1)?;
         }
+        // The alternate-texture decider owns its own counted layout and ignores `count`.
+        if field.kind == "array" && field.decider.as_deref() != Some("alternate_textures") {
+            self.validate_array_count(field)?;
+        }
         if matches!(field.kind.as_str(), "struct" | "array") {
             let member_payload_size = if field.kind == "array" {
                 field
@@ -409,6 +417,83 @@ impl Schema {
             self.check_member_overlaps(field, member_payload_size)?;
         }
         Ok(())
+    }
+
+    /// Check the count rules before the decoder can reject every matching
+    /// subrecord; an absent rule keeps the decoder's documented "remaining" default.
+    fn validate_array_count(&self, field: &FieldSchema) -> Result<(), String> {
+        let Some(rule) = field.count.as_ref() else {
+            self.array_stride(field, None)?;
+            return Ok(());
+        };
+        let rule = rule
+            .as_object()
+            .ok_or_else(|| format!("array count rule for {} must be an object", field.name))?;
+        let kind = rule
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| format!("array count rule for {} must name its kind", field.name))?;
+        if !matches!(kind, "fixed" | "remaining" | "prefix_u32") {
+            return Err(format!(
+                "unsupported array count rule {kind} for {}",
+                field.name
+            ));
+        }
+        let declared_stride = rule
+            .get("stride")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|&stride| stride > 0)
+                    .ok_or_else(|| {
+                        format!("array count rule for {} has an invalid stride", field.name)
+                    })
+            })
+            .transpose()?;
+        self.array_stride(field, declared_stride)?;
+        if kind == "fixed" {
+            let count = rule
+                .get("value")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| {
+                    format!("fixed array {} lacks an integer count value", field.name)
+                })?;
+            let limit = MAX_ARRAY_ELEMENTS;
+            if u128::from(count) > limit as u128 {
+                return Err(format!(
+                    "fixed array {} declares {count} elements, above the {limit}-element limit",
+                    field.name
+                ));
+            }
+            // A declared stride makes `size` unambiguously the array's extent;
+            // without one the decoder uses `size` as the stride itself.
+            if let (Some(stride), Some(size)) = (declared_stride, field.size)
+                && u128::from(count) * stride as u128 != size as u128
+            {
+                return Err(format!(
+                    "fixed array {} declares {count} x {stride} bytes but size {size}",
+                    field.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirror the decoder's stride preference: count stride, then size, then first member width.
+    fn array_stride(&self, field: &FieldSchema, declared: Option<usize>) -> Result<usize, String> {
+        declared
+            .or(field.size)
+            .or_else(|| {
+                field
+                    .members
+                    .first()
+                    .and_then(|member| self.resolve(member).ok())
+                    .as_ref()
+                    .and_then(field_width)
+            })
+            .filter(|&stride| stride > 0)
+            .ok_or_else(|| format!("array {} has no positive stride", field.name))
     }
 
     /// Reject aliases of writable link bytes while preserving nonlink overlays.
@@ -564,6 +649,80 @@ fn check_signature(signature: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Parse one TEST record whose single DATA array carries the given descriptor.
+    fn schema_with_array(field: &str) -> Result<Schema, String> {
+        Schema::parse(
+            format!(
+                r#"{{"version":1,"records":[{{"signature":"TEST","fields":[{{"signature":"DATA","name":"values","kind":"array",{field}}}]}}]}}"#
+            )
+            .as_bytes(),
+        )
+    }
+
+    #[test]
+    fn array_count_rules_are_refused_before_decode() {
+        for (field, expected) in [
+            (
+                r#""count":{"kind":"prefix_u64","stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+                "unsupported array count rule prefix_u64",
+            ),
+            (
+                r#""count":{"kind":"fixed"},"members":[{"name":"value","kind":"u32"}]"#,
+                "lacks an integer count value",
+            ),
+            (
+                r#""count":{"kind":"fixed","value":"four"},"members":[{"name":"value","kind":"u32"}]"#,
+                "lacks an integer count value",
+            ),
+            (
+                r#""count":{"kind":"remaining","stride":0},"members":[{"name":"value","kind":"u32"}]"#,
+                "has an invalid stride",
+            ),
+            (
+                r#""count":{"kind":"remaining","stride":"4"},"members":[{"name":"value","kind":"u32"}]"#,
+                "has an invalid stride",
+            ),
+            (r#""count":{"kind":"remaining"}"#, "has no positive stride"),
+            (
+                r#""count":5,"members":[{"name":"value","kind":"u32"}]"#,
+                "must be an object",
+            ),
+            (
+                r#""count":{},"members":[{"name":"value","kind":"u32"}]"#,
+                "must name its kind",
+            ),
+            (
+                r#""size":12,"count":{"kind":"fixed","value":2,"stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+                "declares 2 x 4 bytes but size 12",
+            ),
+            (
+                r#""count":{"kind":"fixed","value":1000001,"stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+                "declares 1000001 elements, above the 1000000-element limit",
+            ),
+        ] {
+            let error = schema_with_array(field).expect_err(field);
+            assert!(error.contains(expected), "{field}: {error}");
+        }
+    }
+
+    #[test]
+    fn array_count_rules_accept_every_documented_form() {
+        for field in [
+            // An absent rule keeps the decoder's remaining-count default.
+            r#""members":[{"name":"value","kind":"u32"}]"#,
+            r#""size":8"#,
+            r#""count":{"kind":"remaining","stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+            r#""count":{"kind":"prefix_u32","stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+            r#""count":{"kind":"fixed","value":2,"stride":4},"size":8,"members":[{"name":"value","kind":"u32"}]"#,
+            r#""count":{"kind":"fixed","value":2},"members":[{"name":"value","kind":"u32"}]"#,
+            r#""count":{"kind":"fixed","value":1000000,"stride":4},"members":[{"name":"value","kind":"u32"}]"#,
+            // The alternate-texture decider owns its own counted layout.
+            r#""count":{"kind":"unsupported"},"decider":"alternate_textures""#,
+        ] {
+            schema_with_array(field).unwrap_or_else(|error| panic!("{field}: {error}"));
+        }
+    }
 
     #[test]
     fn borrowed_resolution_preserves_layout_and_occurrence_overrides() {

@@ -22,6 +22,7 @@ use crate::{
             WorldPosition, WorldTransform,
         },
         database::{AssetCatalog, CellKey, CellPayload, DatabaseRequest, WorldDatabase},
+        water::{FlatWater, FlatWaterBody},
     },
 };
 use bevy::{
@@ -45,7 +46,7 @@ use shared::collision::{
 };
 use shared::lod::LodTier;
 use shared::terrain_mesh::TerrainCellMesh;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Instant;
@@ -498,6 +499,10 @@ pub struct StreamingMetrics {
     pub resident_static_colliders: usize,
     /// NIF models that explicitly have no physical collision.
     pub static_colliders_authored_absent: u64,
+    /// Placements whose record type is outside every collision tier while their model does carry
+    /// authored collision. Counted per placement, not per model, so a repeated model counts each
+    /// time it is placed.
+    pub static_colliders_excluded_authored: u64,
     /// Eligible fixed placements for which no supported collision could be made.
     pub static_colliders_skipped: u64,
     /// Placed clutter references simulated as dynamic Rapier bodies from authored physics data.
@@ -572,7 +577,7 @@ pub struct StreamingMetrics {
     pub streaming_fixture_failures: u64,
     pub physics_fixture_validated: bool,
     pub physics_fixture_failures: u64,
-    pub asset_failures: Vec<AssetFailure>,
+    pub asset_failures: AssetFailureLog,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -582,6 +587,70 @@ pub struct AssetFailure {
     pub base_form_id: u32,
     pub cell_id: u32,
     pub dependency_chain: Vec<String>,
+}
+
+/// How many recent [`AssetFailure`] records [`StreamingMetrics`] retains.
+///
+/// A failure is recorded per failing reference per cell commit, and a cell committed again
+/// records the same failure again, so the count grows with play time rather than with content.
+/// The collector bounds what it keeps; [`AssetFailureLog::total`] keeps the exact number
+/// recorded and the bug report exports the newest entries plus that total, so the bound hides
+/// no count. The ring is well above the bug report's export limit so every export the report
+/// can show has retained detail behind it.
+pub const MAX_ASSET_FAILURES: usize = 256;
+
+/// The newest [`MAX_ASSET_FAILURES`] asset failures, plus the exact number ever recorded.
+///
+/// [`Self::push`] is the only way in and applies the bound itself, so no call site can grow
+/// the log without bound. Serialized as the retained failures alone (the shape the profiling
+/// and comparison scripts read); the exact count is published by the bug report through
+/// [`Self::total`].
+#[derive(Debug, Clone, Default)]
+pub struct AssetFailureLog {
+    /// Newest last; `push` evicts the oldest, making this a ring.
+    recent: VecDeque<AssetFailure>,
+    total: u64,
+}
+
+impl AssetFailureLog {
+    /// Records one failure, keeping the newest [`MAX_ASSET_FAILURES`] and the exact total.
+    pub fn push(&mut self, failure: AssetFailure) {
+        self.total = self.total.saturating_add(1);
+        self.recent.push_back(failure);
+        if self.recent.len() > MAX_ASSET_FAILURES {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Every failure ever recorded through this log, including ones no longer retained.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// Retained failures; never more than [`MAX_ASSET_FAILURES`].
+    pub fn len(&self) -> usize {
+        self.recent.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recent.is_empty()
+    }
+
+    /// Oldest retained failure first; `.rev()` yields newest first.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AssetFailure> {
+        self.recent.iter()
+    }
+
+    /// The oldest retained failure.
+    pub fn first(&self) -> Option<&AssetFailure> {
+        self.recent.front()
+    }
+}
+
+impl Serialize for AssetFailureLog {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.recent.serialize(serializer)
+    }
 }
 
 #[derive(Resource, Default)]
@@ -604,6 +673,8 @@ enum StaticCollisionDecision {
     Clutter(Box<ClutterSpec>),
     /// A movable-type model with no dynamic body: it keeps no collision, as before.
     ClutterNone,
+    /// An ineligible record type whose model does carry authored collision.
+    ExcludedWithAuthored,
     /// A movable-type model whose dynamic body could not be built. It gets no collider at all.
     ClutterSkipped(String),
 }
@@ -1496,7 +1567,7 @@ fn spawn_cell(
     terrain_physics: bool,
     schedule_scenes: bool,
     payload: CellPayload,
-    terrain: Option<TerrainSnapshot>,
+    mut terrain: Option<TerrainSnapshot>,
     merged: Option<MergedSpawn>,
     model_sequence: &mut u64,
     profiler: &mut ProfilingState,
@@ -1514,6 +1585,11 @@ fn spawn_cell(
         CellKey::Exterior { grid_x, grid_y, .. } => Some(IVec2::new(grid_x, grid_y)),
         CellKey::Interior(_) => None,
     };
+    // The merged mesh may have welded edges different from the cached LAND. Query shorelines
+    // against the height field actually drawn, while keeping the cache's CELL/WRLD water data.
+    if let (Some(terrain), Some(merged)) = (&mut terrain, &merged) {
+        terrain.heights = crate::terrain_merge::mesh::cell_to_grid(&merged.cell)?.0;
+    }
     // The merged cell's one mesh and its one collider, built from the same buffers.
     let merged_cell = merged
         .map(|spawn| {
@@ -1651,15 +1727,12 @@ fn spawn_cell(
                     ));
                 }
             }
-            if let Some(height) = terrain
-                .water_height
-                .filter(|height| height.is_finite() && height.abs() < 1.0e7)
-            {
+            if let Some(surface) = FlatWater::from_terrain(&terrain) {
                 let water_mesh = meshes.add(Plane3d::default().mesh().size(CELL_SIZE, CELL_SIZE));
-                let water_colors = terrain
+                let water_colors = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_colors(form_id));
-                let flow_normal = terrain
+                let flow_normal = surface
                     .water_type_form_id
                     .and_then(|form_id| catalog.water_flow(form_id))
                     .map(|path| {
@@ -1707,13 +1780,13 @@ fn spawn_cell(
                             }),
                     ),
                 });
-                parent.spawn((
+                let mut water = parent.spawn((
                     Name::new("Water"),
                     Mesh3d(water_mesh),
                     MeshMaterial3d(water_material),
                     Transform::from_translation(Vec3::new(
                         CELL_SIZE * 0.5,
-                        height,
+                        surface.height,
                         -CELL_SIZE * 0.5,
                     )),
                     WaterSurface,
@@ -1724,6 +1797,9 @@ fn spawn_cell(
                     },
                     RenderLayers::layer(WATER_LAYER),
                 ));
+                if let Some(body) = FlatWaterBody::from_terrain(payload.key, &terrain) {
+                    water.insert(body);
+                }
             }
         }
         let references_started = Instant::now();
@@ -1875,6 +1951,7 @@ fn spawn_cell(
                         collision_candidate: terrain_physics
                             && fixed_collision_record_eligible(
                                 reference.base_record_type.as_deref(),
+                                &path,
                             ),
                         handle: None,
                         started: Instant::now(),
@@ -1954,10 +2031,43 @@ fn static_proxy_eligible(record_type: Option<&str>, path: &str) -> bool {
     }
 }
 
+/// How a fixed record type may receive static collision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FixedCollisionTier {
+    /// Authored shapes, then the verified render proxy.
+    Full,
+    /// Authored fixed/keyframed bodies only; no render proxy; dynamic bodies ignored.
+    AuthoredOnly,
+    /// Audited container models with one intact, static-layer body on the root only.
+    VerifiedContainer,
+}
+
+/// Container paths are a positive audited subset, not a filename prefix or a record-wide grant.
+/// See `docs/riverwood-static-collision.md` for the source inventory and deferred moving lids.
+fn fixed_collision_tier(record_type: Option<&str>, path: &str) -> Option<FixedCollisionTier> {
+    match record_type {
+        Some("STAT" | "TREE" | "FURN") => Some(FixedCollisionTier::Full),
+        Some("ACTI") => Some(FixedCollisionTier::AuthoredOnly),
+        Some("CONT")
+            if !crate::collision_measure::disabled()
+                && matches!(
+                    path,
+                    "meshes/clutter/barrel01.glb"
+                        | "meshes/clutter/tgbarrel01.glb"
+                        | "meshes/clutter/sovngarde/sovbarrel01.glb"
+                        | "meshes/clutter/sburialurn01.glb"
+                ) =>
+        {
+            Some(FixedCollisionTier::VerifiedContainer)
+        }
+        _ => None,
+    }
+}
+
 /// Placed furniture is fixed in the world, but may use only its authored NIF shape.
 /// Render proxies remain restricted to the verified STAT/TREE families above.
-fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
-    matches!(record_type, Some("STAT" | "TREE" | "FURN"))
+fn fixed_collision_record_eligible(record_type: Option<&str>, path: &str) -> bool {
+    fixed_collision_tier(record_type, path).is_some()
 }
 
 /// Base record types whose placed references may become dynamic bodies (#104 phase a). These are
@@ -1965,8 +2075,9 @@ fn fixed_collision_record_eligible(record_type: Option<&str>) -> bool {
 /// one of them remains fixed.
 ///
 /// `CONT`, `MSTT`, `ACTI`, `FLOR`, `DOOR` and `FURN` are deliberately left out of this slice:
-/// barrels and chests (`CONT`), ingredient plants (`FLOR`) and the ambiguous `ACTI` props stay
-/// fixed for now even when their NIF carries simulated dynamics.
+/// barrels and chests (`CONT`) and ingredient plants (`FLOR`) stay fixed for now even when their
+/// NIF carries simulated dynamics. `ACTI` keeps its fixed and keyframed bodies on the static path
+/// instead, so only its dynamic bodies are left unsimulated.
 fn dynamic_clutter_record_eligible(record_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -2158,6 +2269,145 @@ fn collider_parts_from_authored(
     asset: &CollisionAsset,
 ) -> Result<Vec<AuthoredColliderPart>, String> {
     asset.shapes.iter().map(collider_part_from_shape).collect()
+}
+
+/// Decide a fixed record's static collision from its asset alone.
+///
+/// `Full` keeps every authored shape, whatever its body's kind, which is what fixed record types
+/// have always done. `AuthoredOnly` keeps a shape unless every body that owns it is dynamic, so a
+/// prop's fixed and keyframed bodies stay solid while its simulated parts are left to nothing.
+/// `VerifiedContainer` requires complete ownership by one static-layer root body; unowned shapes
+/// and animated components cannot inherit ACTI's rest-pose fallback.
+fn static_decision_from_asset(
+    tier: FixedCollisionTier,
+    asset: &CollisionAsset,
+) -> StaticCollisionDecision {
+    match tier {
+        FixedCollisionTier::VerifiedContainer => verified_container_collision(asset),
+        FixedCollisionTier::Full => match collider_parts_from_authored(asset) {
+            Ok(parts) if !parts.is_empty() => {
+                StaticCollisionDecision::Authored(parts, asset.skipped.clone())
+            }
+            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
+            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
+            Err(reason) => StaticCollisionDecision::Skipped(reason),
+        },
+        FixedCollisionTier::AuthoredOnly => {
+            let mut owned_by_fixed = vec![false; asset.shapes.len()];
+            let mut owned_by_dynamic = vec![false; asset.shapes.len()];
+            for body in &asset.bodies {
+                let dynamic = body.kind == BodyKind::Dynamic;
+                for shape_index in &body.shapes {
+                    let Some(index) = usize::try_from(*shape_index)
+                        .ok()
+                        .filter(|index| *index < asset.shapes.len())
+                    else {
+                        return StaticCollisionDecision::Skipped(
+                            "authored collision body lists a shape that does not exist".to_owned(),
+                        );
+                    };
+                    if dynamic {
+                        owned_by_dynamic[index] = true;
+                    } else {
+                        owned_by_fixed[index] = true;
+                    }
+                }
+            }
+            let mut parts = Vec::new();
+            let mut kept = vec![false; asset.shapes.len()];
+            for (index, shape) in asset.shapes.iter().enumerate() {
+                if owned_by_dynamic[index] && !owned_by_fixed[index] {
+                    continue;
+                }
+                match collider_part_from_shape(shape) {
+                    Ok(part) => {
+                        kept[index] = true;
+                        parts.push(part);
+                    }
+                    Err(reason) => return StaticCollisionDecision::Skipped(reason),
+                }
+            }
+            let lost_bodies = asset
+                .bodies
+                .iter()
+                .filter(|body| {
+                    body.kind == BodyKind::Dynamic
+                        && body
+                            .shapes
+                            .iter()
+                            .any(|index| !kept.get(*index as usize).copied().unwrap_or(false))
+                })
+                .count();
+            if !parts.is_empty() {
+                let mut notes = asset.skipped.clone();
+                if lost_bodies > 0 {
+                    notes.push(format!(
+                        "{lost_bodies} dynamic bodies left unsimulated on a fixed record"
+                    ));
+                }
+                StaticCollisionDecision::Authored(parts, notes)
+            } else if asset.skipped.is_empty() {
+                // Nothing was dropped and nothing failed to convert: the tier is the whole reason
+                // this record has no shapes, which is a policy outcome rather than a failure.
+                StaticCollisionDecision::AuthoredAbsent
+            } else {
+                StaticCollisionDecision::Skipped(asset.skipped.join("; "))
+            }
+        }
+    }
+}
+
+/// The admitted container models were audited without node animation and with collision on their
+/// root. Keep that narrow contract even when an existing pack has lost body bindings, or a model
+/// override changes the authored body kind, layer, node or shape ownership.
+fn verified_container_collision(asset: &CollisionAsset) -> StaticCollisionDecision {
+    if !asset.skipped.is_empty() {
+        return StaticCollisionDecision::Skipped(asset.skipped.join("; "));
+    }
+    if asset.shapes.is_empty() {
+        return StaticCollisionDecision::AuthoredAbsent;
+    }
+    if asset.version < 2 {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires version 2 body ownership".to_owned(),
+        );
+    }
+    let [body] = asset.bodies.as_slice() else {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires one intact root body".to_owned(),
+        );
+    };
+    if body.kind != BodyKind::Fixed
+        || body.node != 0
+        || body.target.is_empty()
+        || body.mass != 0.0
+        || body.havok.collision_layer != 1
+    {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision requires a massless fixed STATIC-layer root body".to_owned(),
+        );
+    }
+    let mut owned = vec![false; asset.shapes.len()];
+    for index in &body.shapes {
+        let Some(shape) = usize::try_from(*index)
+            .ok()
+            .and_then(|index| owned.get_mut(index))
+        else {
+            return StaticCollisionDecision::Skipped(
+                "fixed container body lists a shape that does not exist".to_owned(),
+            );
+        };
+        *shape = true;
+    }
+    if owned.contains(&false) {
+        return StaticCollisionDecision::Skipped(
+            "fixed container collision has shapes without root-body ownership".to_owned(),
+        );
+    }
+    match collider_parts_from_authored(asset) {
+        Ok(parts) => StaticCollisionDecision::Authored(parts, Vec::new()),
+        Err(reason) => StaticCollisionDecision::Skipped(reason),
+    }
 }
 
 fn collider_part_from_shape(shape: &CollisionShape) -> Result<AuthoredColliderPart, String> {
@@ -2487,14 +2737,14 @@ fn static_collision_from_hierarchy(
     materials: &Assets<StandardMaterial>,
 ) -> StaticCollisionDecision {
     match authored_collision_from_hierarchy(root, children, scene_extras) {
-        Ok(Some(asset)) => match collider_parts_from_authored(&asset) {
-            Ok(parts) if !parts.is_empty() => {
-                StaticCollisionDecision::Authored(parts, asset.skipped)
-            }
-            Ok(_) if asset.skipped.is_empty() => StaticCollisionDecision::AuthoredAbsent,
-            Ok(_) => StaticCollisionDecision::Skipped(asset.skipped.join("; ")),
-            Err(reason) => StaticCollisionDecision::Skipped(reason),
-        },
+        // Only a tiered record type reaches this path, so a missing tier is a broken invariant
+        // rather than a case to fall back on: the fallback would hand a record the shapes its
+        // tier exists to withhold.
+        Ok(Some(asset)) => static_decision_from_asset(
+            fixed_collision_tier(record_type, path)
+                .expect("static collision is only built for a tiered record type"),
+            &asset,
+        ),
         Ok(None) if static_proxy_eligible(record_type, path) => {
             match static_proxy_from_hierarchy(
                 path, root, children, transforms, primitives, meshes, materials,
@@ -2508,6 +2758,22 @@ fn static_collision_from_hierarchy(
         }
         Ok(None) => StaticCollisionDecision::LegacyExcluded,
         Err(reason) => StaticCollisionDecision::Skipped(reason),
+    }
+}
+
+/// Read a model once for a record type that no collision tier accepts, reporting whether the
+/// exclusion silently drops authored collision. A malformed asset counts as no authored collision
+/// so it cannot inflate the report.
+fn exclusion_decision_from_hierarchy(
+    root: Entity,
+    children: &Query<&Children>,
+    scene_extras: &Query<&GltfSceneExtras>,
+) -> StaticCollisionDecision {
+    match authored_collision_from_hierarchy(root, children, scene_extras) {
+        Ok(Some(asset)) if !asset.shapes.is_empty() => {
+            StaticCollisionDecision::ExcludedWithAuthored
+        }
+        Ok(Some(_)) | Ok(None) | Err(_) => StaticCollisionDecision::LegacyExcluded,
     }
 }
 
@@ -2955,7 +3221,7 @@ fn track_asset_readiness(
             break;
         }
         let static_candidate = pending.static_physics
-            && fixed_collision_record_eligible(pending.base_record_type.as_deref());
+            && fixed_collision_record_eligible(pending.base_record_type.as_deref(), &pending.path);
         let load_failure =
             asset_server
                 .get_load_states(root.0.id())
@@ -3194,6 +3460,7 @@ fn track_asset_readiness(
                     // A fixed record type never asks for the clutter decision, so these arms cannot
                     // be reached on this path; the movable path above owns them.
                     StaticCollisionDecision::LegacyExcluded
+                    | StaticCollisionDecision::ExcludedWithAuthored
                     | StaticCollisionDecision::Clutter(_)
                     | StaticCollisionDecision::ClutterNone
                     | StaticCollisionDecision::ClutterSkipped(_) => {}
@@ -3202,6 +3469,31 @@ fn track_asset_readiness(
                             warn!(model = %pending.path, %reason, "static collision skipped");
                         }
                         note_static_proxy_skip(&mut metrics, &mut profiler);
+                    }
+                }
+            }
+            // A record type outside every tier used to drop authored collision without a trace.
+            // Report the placements that do carry it so the exclusion is visible in metrics.
+            if pending.static_physics
+                && fixed_collision_tier(pending.base_record_type.as_deref(), &pending.path)
+                    .is_none()
+                && !dynamic_clutter_record_eligible(pending.base_record_type.as_deref())
+            {
+                let key = (pending.base_record_type.clone(), pending.path.clone());
+                let first_placement = !static_cache.0.contains_key(&key);
+                let decision = static_cache.0.entry(key).or_insert_with(|| {
+                    exclusion_decision_from_hierarchy(entity, &children, &scene_extras)
+                });
+                if matches!(decision, StaticCollisionDecision::ExcludedWithAuthored) {
+                    metrics.static_colliders_excluded_authored =
+                        metrics.static_colliders_excluded_authored.saturating_add(1);
+                    profiler.increment("physics/static_excluded_authored", 1);
+                    if first_placement {
+                        debug!(
+                            record_type = ?pending.base_record_type,
+                            model = %pending.path,
+                            "authored collision ignored: record type not eligible"
+                        );
                     }
                 }
             }
@@ -4343,8 +4635,8 @@ pub(crate) fn quadrant_layers(
     Ok(layers)
 }
 
-/// Validates terrain geometry and nonzero image dependencies. Normalized zero-ID layers retain
-/// their slots and weights without requiring a converted texture.
+/// Validates terrain geometry while retaining unresolved texture layers and their weights.
+/// Missing diffuse images use the same material fallback as normalized zero-ID layers.
 fn validate_terrain_snapshot(
     terrain: &TerrainSnapshot,
     catalog: &AssetCatalog,
@@ -4381,16 +4673,20 @@ fn validate_terrain_snapshot(
             terrain.vertex_colors.len()
         ));
     }
+    let mut missing_diffuse = HashSet::new();
     for quadrant in 0..4 {
         for layer in quadrant_layers(terrain, quadrant)? {
             if layer.texture_form_id == 0 {
                 continue;
             }
-            if catalog.landscape_diffuse(layer.texture_form_id).is_none() {
-                return Err(format!(
-                    "quadrant {quadrant} texture {:08X} has no converted diffuse image",
-                    layer.texture_form_id
-                ));
+            if catalog.landscape_diffuse(layer.texture_form_id).is_none()
+                && missing_diffuse.insert(layer.texture_form_id)
+            {
+                warn!(
+                    cell_id = terrain.cell_id,
+                    texture_form_id = layer.texture_form_id,
+                    "LAND texture has no converted diffuse image; retaining its layer and weights with a missing-image fallback"
+                );
             }
         }
     }
@@ -5031,6 +5327,51 @@ mod tests {
         AdditionalMassProperties, ColliderMassProperties, QueryFilter, ReadRapierContext, Velocity,
     };
 
+    /// A broken pack re-records the same failure on every cell commit, so the collector, not
+    /// the exporter, must hold the bound: the log keeps the newest entries and the exact total.
+    #[test]
+    fn asset_failures_keep_the_newest_entries_and_an_exact_total() {
+        let mut metrics = StreamingMetrics::default();
+        let recorded = MAX_ASSET_FAILURES + 68;
+        for id in 0..recorded as u32 {
+            metrics.asset_failures.push(AssetFailure {
+                model_path: format!("meshes/model-{id}.nif"),
+                reference_form_id: id,
+                base_form_id: 0,
+                cell_id: 7,
+                dependency_chain: vec!["missing texture".to_owned()],
+            });
+        }
+        assert_eq!(metrics.asset_failures.len(), MAX_ASSET_FAILURES);
+        assert_eq!(
+            metrics
+                .asset_failures
+                .iter()
+                .next_back()
+                .expect("the newest failure is retained")
+                .reference_form_id,
+            recorded as u32 - 1
+        );
+        assert_eq!(
+            metrics
+                .asset_failures
+                .first()
+                .expect("the oldest retained failure")
+                .reference_form_id,
+            68,
+            "the ring drops only the oldest entries"
+        );
+        assert_eq!(metrics.asset_failures.total(), recorded as u64);
+        assert!(!metrics.asset_failures.is_empty());
+        // The reported streaming JSON keeps its array shape for the comparison scripts; the
+        // exact count is published by the bug report.
+        let json = serde_json::to_value(&metrics).unwrap();
+        assert_eq!(
+            json["asset_failures"].as_array().unwrap().len(),
+            MAX_ASSET_FAILURES
+        );
+    }
+
     #[test]
     fn a_capsule_hull_covers_the_diagonals_of_its_end_spheres() {
         let radius = 2.0;
@@ -5186,8 +5527,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
-        assert!(fixed_collision_record_eligible(Some("FURN")));
-        assert!(!fixed_collision_record_eligible(Some("MISC")));
+        assert!(fixed_collision_record_eligible(Some("FURN"), ""));
+        assert!(!fixed_collision_record_eligible(Some("MISC"), ""));
         assert!(!static_proxy_eligible(
             Some("FURN"),
             "meshes/furniture/clutter/milllogpile.glb"
@@ -5250,6 +5591,540 @@ mod tests {
                         | StaticCollisionDecision::AuthoredAbsent
                 ));
             }
+        }
+    }
+
+    fn authored_box_shape() -> CollisionShape {
+        CollisionShape::Box {
+            center: [0.0, 1.0, 0.0],
+            half_extents: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn authored_mesh_shape() -> CollisionShape {
+        CollisionShape::Mesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+        }
+    }
+
+    fn authored_hull_shape() -> CollisionShape {
+        CollisionShape::Hull {
+            points: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+    }
+
+    fn authored_asset(shapes: Vec<CollisionShape>, bodies: Vec<CollisionBody>) -> CollisionAsset {
+        CollisionAsset {
+            version: COLLISION_ASSET_VERSION,
+            authored: true,
+            shapes,
+            skipped: Vec::new(),
+            bodies,
+        }
+    }
+
+    #[test]
+    fn fixed_collision_tier_splits_fixed_and_authored_only_records() {
+        assert_eq!(
+            fixed_collision_tier(Some("ACTI"), ""),
+            Some(FixedCollisionTier::AuthoredOnly)
+        );
+        for record in ["STAT", "TREE", "FURN"] {
+            assert_eq!(
+                fixed_collision_tier(Some(record), ""),
+                Some(FixedCollisionTier::Full),
+                "{record}"
+            );
+        }
+        for record in ["DOOR", "MSTT", "FLOR", "CONT", "MISC"] {
+            assert_eq!(fixed_collision_tier(Some(record), ""), None, "{record}");
+        }
+        assert_eq!(fixed_collision_tier(None, ""), None);
+        assert!(fixed_collision_record_eligible(Some("ACTI"), ""));
+    }
+
+    fn verified_container_asset() -> CollisionAsset {
+        let mut body = clutter_body(BodyKind::Fixed, vec![0], true);
+        body.node = 0;
+        body.target = "Barrel01".to_owned();
+        body.mass = 0.0;
+        body.havok.motion_system = 5;
+        body.havok.quality_type = 0;
+        body.havok.collision_layer = 1;
+        authored_asset(vec![authored_box_shape()], vec![body])
+    }
+
+    #[test]
+    fn container_collision_tier_requires_an_audited_model_and_cont_base() {
+        for path in [
+            "meshes/clutter/barrel01.glb",
+            "meshes/clutter/tgbarrel01.glb",
+            "meshes/clutter/sovngarde/sovbarrel01.glb",
+            "meshes/clutter/sburialurn01.glb",
+        ] {
+            assert_eq!(
+                fixed_collision_tier(Some("CONT"), path),
+                Some(FixedCollisionTier::VerifiedContainer)
+            );
+            assert!(!dynamic_clutter_record_eligible(Some("CONT")));
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+            for record in ["MISC", "MSTT", "FLOR", "DOOR", "TACT", "LIGH"] {
+                assert_eq!(fixed_collision_tier(Some(record), path), None);
+            }
+        }
+        for path in [
+            "meshes/clutter/upperclass/upperchest01.glb",
+            "meshes/clutter/ruins/ruinslargeurnwithstand01.glb",
+            "meshes/clutter/barrel01extra.glb",
+            "meshes/architecture/barrel01.glb",
+        ] {
+            assert_eq!(fixed_collision_tier(Some("CONT"), path), None);
+            assert!(!static_proxy_eligible(Some("CONT"), path));
+        }
+    }
+
+    #[test]
+    fn container_collision_keeps_all_shapes_of_the_verified_root_body() {
+        let mut asset = verified_container_asset();
+        asset.shapes.push(authored_hull_shape());
+        asset.bodies[0].shapes.push(1);
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty());
+            }
+            _ => panic!("an intact audited root body must be solid"),
+        }
+    }
+
+    #[test]
+    fn container_collision_defers_ambiguous_moving_or_nonphysical_assets() {
+        let asset = verified_container_asset();
+        let mut cases = Vec::new();
+        let mut legacy = asset.clone();
+        legacy.version = 1;
+        legacy.bodies.clear();
+        cases.push(("legacy", legacy));
+        let mut unbound = asset.clone();
+        unbound.bodies.clear();
+        cases.push(("lost body", unbound));
+        let mut unowned = asset.clone();
+        unowned.shapes.push(authored_box_shape());
+        cases.push(("unowned shape", unowned));
+        let mut invalid = asset.clone();
+        invalid.bodies[0].shapes.push(u32::MAX);
+        cases.push(("missing shape", invalid));
+        let mut mixed = asset.clone();
+        mixed.shapes.push(authored_box_shape());
+        mixed
+            .bodies
+            .push(clutter_body(BodyKind::Dynamic, vec![1], true));
+        cases.push(("mixed bodies", mixed));
+        for kind in [BodyKind::Dynamic, BodyKind::Keyframed] {
+            let mut changed = asset.clone();
+            changed.bodies[0].kind = kind;
+            cases.push(("moving body", changed));
+        }
+        for layer in [2, 4, 12, 15] {
+            let mut changed = asset.clone();
+            changed.bodies[0].havok.collision_layer = layer;
+            cases.push(("different layer", changed));
+        }
+        let mut child_body = asset.clone();
+        child_body.bodies[0].node = 1;
+        cases.push(("child body", child_body));
+        let mut unnamed = asset.clone();
+        unnamed.bodies[0].target.clear();
+        cases.push(("unnamed target", unnamed));
+        let mut massive = asset.clone();
+        massive.bodies[0].mass = 1.0;
+        cases.push(("massive body", massive));
+        let mut skipped = asset;
+        skipped.skipped.push("lost animated lid".to_owned());
+        cases.push(("conversion skip", skipped));
+        for (case, asset) in cases {
+            assert!(
+                matches!(
+                    static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+                    StaticCollisionDecision::Skipped(_)
+                ),
+                "{case} must stay excluded and counted as a skip"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_preserves_authored_absence_and_conversion_failures() {
+        let mut asset = authored_asset(Vec::new(), Vec::new());
+        assert!(matches!(
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset),
+            StaticCollisionDecision::AuthoredAbsent
+        ));
+        asset.skipped.push("unsupported shape".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset) {
+            StaticCollisionDecision::Skipped(reason) => assert_eq!(reason, "unsupported shape"),
+            _ => panic!("a conversion failure is not authored absence"),
+        }
+    }
+
+    #[test]
+    fn container_collision_readiness_attaches_once_and_counts_deferred_assets() {
+        for (path, physics, valid, attached, skipped, excluded) in [
+            ("meshes/clutter/barrel01.glb", true, true, 1, 0, 0),
+            ("meshes/clutter/barrel01.glb", false, true, 0, 0, 0),
+            ("meshes/clutter/barrel01.glb", true, false, 0, 1, 0),
+            (
+                "meshes/clutter/upperclass/upperchest01.glb",
+                true,
+                true,
+                0,
+                0,
+                1,
+            ),
+        ] {
+            let mut app = model_app();
+            let mut asset = verified_container_asset();
+            if !valid {
+                asset.bodies.clear();
+            }
+            let (reference, metrics) =
+                ready_clutter_reference_with(&mut app, "CONT", path, physics, &asset);
+            assert_eq!(metrics.static_colliders_authored, attached);
+            assert_eq!(metrics.static_colliders_skipped, skipped);
+            assert_eq!(metrics.static_colliders_excluded_authored, excluded);
+            assert_eq!(metrics.static_colliders_proxy, 0);
+            assert_eq!(metrics.dynamic_clutter_bodies, 0);
+            assert_eq!(
+                app.world().get::<RigidBody>(reference),
+                (attached == 1).then_some(&RigidBody::Fixed)
+            );
+            let mut colliders = app.world_mut().query_filtered::<Entity, With<Collider>>();
+            assert_eq!(colliders.iter(app.world()).count(), attached as usize);
+            settle_readiness(&mut app);
+            assert_eq!(
+                app.world()
+                    .resource::<StreamingMetrics>()
+                    .static_colliders_authored,
+                attached,
+                "a settled reference must not get another collider"
+            );
+        }
+    }
+
+    #[test]
+    fn container_collision_without_metadata_has_no_render_proxy() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let root = app.world_mut().spawn_empty().id();
+        let decision = app
+            .world_mut()
+            .run_system_once(
+                move |children: Query<&Children>,
+                      extras: Query<&GltfSceneExtras>,
+                      transforms: Query<(&Transform, &GlobalTransform)>,
+                      primitives: RenderPrimitiveQuery,
+                      meshes: Res<Assets<Mesh>>,
+                      materials: Res<Assets<StandardMaterial>>| {
+                    static_collision_from_hierarchy(
+                        Some("CONT"),
+                        "meshes/clutter/barrel01.glb",
+                        root,
+                        &children,
+                        &extras,
+                        &transforms,
+                        &primitives,
+                        &meshes,
+                        &materials,
+                    )
+                },
+            )
+            .unwrap();
+        assert!(matches!(decision, StaticCollisionDecision::LegacyExcluded));
+    }
+
+    #[test]
+    fn container_collision_preserves_scaled_pose_rebase_unload_and_reload() {
+        let mut app = crate::physics::headless::fixture_app();
+        app.insert_resource(EngineConfig::default())
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .init_resource::<ActiveSpace>()
+            .add_systems(Update, update_render_origin);
+        let cell = app
+            .world_mut()
+            .spawn((ExteriorCellGrid(IVec2::ZERO), Transform::default()))
+            .id();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 10.0, 0.0],
+            half_extents: [10.0, 10.0, 20.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) = static_decision_from_asset(
+            fixed_collision_tier(Some("CONT"), "meshes/clutter/barrel01.glb").unwrap(),
+            &asset,
+        ) else {
+            panic!("verified container must supply the fixture collider");
+        };
+        let transform = Transform::from_xyz(700.0, 100.0, 700.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::splat(2.0));
+        let root = app.world_mut().spawn((transform, ChildOf(cell))).id();
+        let attach = |app: &mut App, entity, parts: Vec<AuthoredColliderPart>| {
+            app.world_mut()
+                .run_system_once(move |mut commands: Commands| {
+                    attach_authored_collision(&mut commands, entity, &parts);
+                })
+                .unwrap();
+        };
+        attach(&mut app, root, parts.clone());
+        for _ in 0..3 {
+            app.update();
+        }
+        let hit = |app: &mut App, x: f32| {
+            app.world_mut()
+                .run_system_once(move |context: ReadRapierContext| {
+                    context.single().unwrap().cast_ray(
+                        Vec3::new(x, 200.0, 700.0),
+                        Vec3::NEG_Y,
+                        100.0,
+                        true,
+                        QueryFilter::default().groups(crate::physics::player_collision_groups()),
+                    )
+                })
+                .unwrap()
+        };
+        // Rotation makes the 20-unit local Z half-extent the 40-unit world X half-extent.
+        let (collider, distance) = hit(&mut app, 730.0).expect("scaled container has contact");
+        assert!((distance - 60.0).abs() < 0.01, "contact at {distance}");
+        assert!(
+            hit(&mut app, 750.0).is_none(),
+            "container grew beyond authored extent"
+        );
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x += CELL_SIZE;
+        app.update();
+        let rebased_body_x = app
+            .world_mut()
+            .run_system_once(move |context: ReadRapierContext| {
+                let context = context.single().unwrap();
+                context.rigidbody_set.bodies[context.entity2body()[&root]]
+                    .translation()
+                    .x
+            })
+            .unwrap();
+        assert!((rebased_body_x - (700.0 - CELL_SIZE)).abs() < 0.01);
+        assert!(
+            (app.world()
+                .get::<GlobalTransform>(root)
+                .unwrap()
+                .translation()
+                .x
+                - rebased_body_x)
+                .abs()
+                < 0.01
+        );
+        // Rebasing runs in Update, after the fixed physics step. The following fixed step
+        // refreshes Rapier's broad phase before spatial queries use the new collider bounds.
+        app.update();
+        let (rebased, distance) = hit(&mut app, 730.0 - CELL_SIZE).expect("rebased contact");
+        assert_eq!(rebased, collider);
+        assert!((distance - 60.0).abs() < 0.01);
+        assert!(
+            hit(&mut app, 730.0).is_none(),
+            "stale collider at the old origin"
+        );
+        app.world_mut().entity_mut(cell).despawn();
+        app.update();
+        assert!(app.world().get_entity(collider).is_err());
+        assert!(
+            hit(&mut app, 730.0 - CELL_SIZE).is_none(),
+            "unloaded collider remains"
+        );
+        let reloaded = app.world_mut().spawn(transform).id();
+        attach(&mut app, reloaded, parts);
+        for _ in 0..3 {
+            app.update();
+        }
+        let (_, distance) = hit(&mut app, 730.0).expect("reloaded contact");
+        assert!((distance - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn container_collision_blocks_the_fixture_player() {
+        let mut app = crate::physics::headless::fixture_app();
+        let mut asset = verified_container_asset();
+        asset.shapes = vec![CollisionShape::Box {
+            center: [0.0, 150.0, 0.0],
+            half_extents: [10.0, 150.0, 250.0],
+        }];
+        let StaticCollisionDecision::Authored(parts, _) =
+            static_decision_from_asset(FixedCollisionTier::VerifiedContainer, &asset)
+        else {
+            panic!("verified container must supply the blocking collider");
+        };
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_xyz(250.0, 0.0, 750.0))
+            .id();
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                attach_authored_collision(&mut commands, root, &parts);
+            })
+            .unwrap();
+        crate::physics::headless::place_player(&mut app, Vec3::new(0.0, 200.0, 900.0));
+        app.insert_resource(crate::physics::WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: crate::physics::MovementTuning::default().run_speed,
+            jump_pressed: false,
+        });
+        for _ in 0..180 {
+            app.update();
+        }
+        let (player, _) = crate::physics::headless::player_pose(&mut app);
+        assert!(
+            player.x > 100.0,
+            "player never approached the container: {player:?}"
+        );
+        assert!(player.x < 225.0, "player crossed the container: {player:?}");
+        assert!(
+            app.world()
+                .get::<crate::physics::DynamicClutter>(root)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn acti_never_receives_a_render_proxy() {
+        let path = "meshes/architecture/whiterun/wrdrawbridge01.glb";
+        assert!(static_proxy_eligible(Some("STAT"), path));
+        assert!(!static_proxy_eligible(Some("ACTI"), path));
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_owned_by_fixed_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_mesh_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+                clutter_body(BodyKind::Fixed, vec![0, 1], true),
+                clutter_body(BodyKind::Fixed, vec![1], false),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("fixed bodies must keep their shapes"),
+        }
+    }
+
+    #[test]
+    fn authored_only_drops_shapes_owned_only_by_dynamic_bodies() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(
+                    notes,
+                    vec!["1 dynamic bodies left unsimulated on a fixed record".to_owned()]
+                );
+            }
+            _ => panic!("the fixed body must stay solid"),
+        }
+    }
+
+    #[test]
+    fn authored_only_ignores_a_dynamic_only_model_without_skipping_it() {
+        let asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        let decision = static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset);
+        assert!(matches!(decision, StaticCollisionDecision::AuthoredAbsent));
+    }
+
+    #[test]
+    fn authored_only_still_reports_a_converter_failure_on_a_dynamic_only_model() {
+        let mut asset = authored_asset(
+            vec![authored_hull_shape()],
+            vec![clutter_body(BodyKind::Dynamic, vec![0], true)],
+        );
+        asset
+            .skipped
+            .push("block 4: collision target is not exported".to_owned());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("not exported"), "{reason}");
+            }
+            _ => panic!("a converter failure must not be reported as an authored absence"),
+        }
+    }
+
+    #[test]
+    fn authored_only_keeps_every_shape_of_a_version_one_asset() {
+        let mut asset = authored_asset(vec![authored_box_shape()], Vec::new());
+        asset.version = 1;
+        asset.shapes.push(authored_mesh_shape());
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a version one asset has no dynamic ownership"),
+        }
+    }
+
+    #[test]
+    fn authored_only_skips_a_body_that_names_a_missing_shape() {
+        let asset = authored_asset(
+            vec![authored_box_shape()],
+            vec![clutter_body(BodyKind::Fixed, vec![0, 5], true)],
+        );
+        match static_decision_from_asset(FixedCollisionTier::AuthoredOnly, &asset) {
+            StaticCollisionDecision::Skipped(reason) => {
+                assert!(reason.contains("does not exist"), "{reason}");
+            }
+            _ => panic!("an out-of-range shape index must be reported"),
+        }
+    }
+
+    #[test]
+    fn full_tier_keeps_dynamic_body_shapes_on_a_fixed_record() {
+        let asset = authored_asset(
+            vec![authored_box_shape(), authored_hull_shape()],
+            vec![
+                clutter_body(BodyKind::Fixed, vec![0], true),
+                clutter_body(BodyKind::Dynamic, vec![1], true),
+            ],
+        );
+        match static_decision_from_asset(FixedCollisionTier::Full, &asset) {
+            StaticCollisionDecision::Authored(parts, notes) => {
+                assert_eq!(parts.len(), 2);
+                assert!(notes.is_empty(), "{notes:?}");
+            }
+            _ => panic!("a full-tier fixed record keeps every authored shape"),
         }
     }
 
@@ -6815,10 +7690,10 @@ mod tests {
         assert!(quadrant_layers(&terrain, 0).unwrap().is_empty());
     }
 
-    /// Zero overlays retain ordered weights and geometry validation while missing nonzero
-    /// diffuse images still fail locally and a subsequent placeholder snapshot remains usable.
+    /// Zero and unresolved nonzero overlays retain ordered weights while malformed geometry
+    /// still fails validation.
     #[test]
-    fn terrain_zero_texture_overlay_preserves_weights_and_nonzero_image_errors() {
+    fn terrain_unresolved_texture_overlays_preserve_weights_and_geometry_validation() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("placeholder-catalogue.db");
         write_empty_catalogue(&path);
@@ -6864,8 +7739,10 @@ mod tests {
         assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
 
         terrain.layers[4].texture_form_id = 0x844;
-        let error = validate_terrain_snapshot(&terrain, &catalog).unwrap_err();
-        assert!(error.contains("00000844") && error.contains("no converted diffuse image"));
+        validate_terrain_snapshot(&terrain, &catalog)
+            .expect("a missing diffuse image must not discard the cell and its objects");
+        assert_eq!(quadrant_overlay_weights(&terrain, 0).unwrap(), grids);
+        assert!(build_terrain_quadrant_mesh(&terrain, 0).is_ok());
         terrain.layers[4].texture_form_id = 0;
         assert!(validate_terrain_snapshot(&terrain, &catalog).is_ok());
 
@@ -7349,6 +8226,65 @@ mod tests {
             .single(app.world())
             .expect("the cell has one water surface");
         assert_eq!(layers, &RenderLayers::layer(WATER_LAYER));
+    }
+
+    #[test]
+    fn flat_water_query_matches_spawned_surface_and_cell_unload() {
+        use crate::world::water::water_at_point;
+
+        let mut app = model_app();
+        app.init_resource::<AssetCatalog>()
+            .init_resource::<ActorCatalog>()
+            .init_asset::<TerrainMaterial>()
+            .init_asset::<WaterMaterial>()
+            .insert_resource(RenderOrigin(IVec2::ZERO))
+            .insert_resource(WaterReflectionTexture(Handle::default()))
+            .add_systems(Update, spawn_test_cell);
+        app.update();
+
+        let point = WorldPosition::from_creation_units(Vec3::new(64.0, 64.0, 100.0));
+        let mut surfaces = app
+            .world_mut()
+            .query_filtered::<(&FlatWaterBody, &Transform, &ChildOf), With<WaterSurface>>();
+        let (body, transform, parent) = surfaces.single(app.world()).unwrap();
+        let root = parent.parent();
+        let sample = water_at_point([body], 60, point).unwrap();
+        assert_eq!(sample.cell_id, 0x02D4E0);
+        assert_eq!(sample.surface.height, transform.translation.y);
+        assert_eq!(sample.surface.water_type_form_id, None);
+
+        // A floating-origin shift changes rendering, not this Creation-space query.
+        app.world_mut()
+            .get_mut::<Transform>(root)
+            .unwrap()
+            .translation += Vec3::new(4096.0, 0.0, -8192.0);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+
+        // Retiring meshes remain queryable until the real unload removes their cell subtree.
+        app.world_mut()
+            .resource_mut::<StreamingWorld>()
+            .cells
+            .insert(
+                CellKey::Exterior {
+                    worldspace_id: 60,
+                    grid_x: 0,
+                    grid_y: 0,
+                },
+                CellStatus::Retiring { root },
+            );
+        assert_eq!(
+            water_at_point(bodies.iter(app.world()), 60, point),
+            Some(sample)
+        );
+        assert_eq!(unload_all_cells_now(app.world_mut()), 1);
+        let mut bodies = app.world_mut().query::<&FlatWaterBody>();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
+        app.update();
+        assert!(water_at_point(bodies.iter(app.world()), 60, point).is_none());
     }
 
     /// A model reference's meshes arrive from the converted glb, frames after the reference itself,
@@ -8727,6 +9663,7 @@ mod tests {
     fn ready_clutter_reference_with(
         app: &mut App,
         record_type: &str,
+        path: &str,
         static_physics: bool,
         asset: &CollisionAsset,
     ) -> (Entity, StreamingMetrics) {
@@ -8752,7 +9689,7 @@ mod tests {
         {
             let mut entity_mut = app.world_mut().entity_mut(reference);
             let mut pending = entity_mut.get_mut::<PendingAssetProfile>().unwrap();
-            pending.path = "meshes/clutter/test/clutter01.glb".to_owned();
+            pending.path = path.to_owned();
             pending.base_record_type = Some(record_type.to_owned());
             pending.static_physics = static_physics;
         }
@@ -8776,8 +9713,13 @@ mod tests {
         asset: &CollisionAsset,
     ) -> (App, Entity, StreamingMetrics) {
         let mut app = model_app();
-        let (reference, metrics) =
-            ready_clutter_reference_with(&mut app, record_type, static_physics, asset);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            record_type,
+            "meshes/clutter/test/clutter01.glb",
+            static_physics,
+            asset,
+        );
         (app, reference, metrics)
     }
 
@@ -9216,7 +10158,13 @@ mod tests {
                 max_angular_velocity: 0.0,
             });
         }
-        let (reference, metrics) = ready_clutter_reference_with(&mut app, "MISC", true, &dynamic);
+        let (reference, metrics) = ready_clutter_reference_with(
+            &mut app,
+            "MISC",
+            "meshes/clutter/test/clutter01.glb",
+            true,
+            &dynamic,
+        );
         assert_eq!(metrics.dynamic_clutter_bodies, 0);
         assert_eq!(metrics.dynamic_clutter_overflow, 1);
         assert!(app.world().get::<RigidBody>(reference).is_none());
@@ -9927,3 +10875,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod collision_placement_probe;
