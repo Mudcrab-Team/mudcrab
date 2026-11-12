@@ -24,6 +24,21 @@ function Runtime:native(target, name, args)
     return callback(target, table.unpack(args))
 end
 
+-- Search each script's current state, then its empty state, before its parent.
+-- The receiver remains the original instance when executing inherited code.
+function Runtime:find_method(class, state, name)
+    local seen = {}
+    while class ~= nil do
+        assert(not seen[class], "cyclic Papyrus parent hierarchy")
+        seen[class] = true
+        local callback = state ~= "" and class[state .. "::" .. name] or nil
+        if callback == nil then callback = class[name] end
+        if callback ~= nil then return callback end
+        class = self.classes[class.__parent]
+    end
+    return nil
+end
+
 function Runtime:call_method(target, name, args)
     assert(target ~= nil, "Papyrus method target is None")
     if name == "GotoState" then
@@ -32,18 +47,23 @@ function Runtime:call_method(target, name, args)
     elseif name == "GetState" then
         return target.__state or target.__autoState or ""
     end
-    local callback = target[name]
+    local state = target.__state or target.__autoState or ""
+    local callback = self:find_method(target, state, name)
     if callback == nil and target.dispatch ~= nil then
         return target:dispatch(name, table.unpack(args))
     end
-    assert(type(callback) == "function", "unknown Papyrus method: " .. name)
+    assert(type(callback) == "function", "unknown Papyrus method: " .. (target.__name or "") .. "::" .. name)
     return callback(target, table.unpack(args))
 end
 
-function Runtime:call_parent(target, name, args)
-    local class = self.classes[target.__parent]
-    assert(class, "unknown Papyrus parent class: " .. tostring(target.__parent))
-    local callback = class[name]
+-- Emitted Parent calls supply the lexical parent's name, so a parent method's
+-- own Parent call can advance through the hierarchy on a derived receiver.
+function Runtime:call_parent(target, name, args, parent_name)
+    local parent = parent_name or target.__parent
+    local class = self.classes[parent]
+    assert(class, "unknown Papyrus parent class: " .. tostring(parent))
+    local state = target.__state or target.__autoState or ""
+    local callback = self:find_method(class, state, name)
     assert(type(callback) == "function", "unknown parent method: " .. name)
     return callback(target, table.unpack(args))
 end
@@ -112,8 +132,26 @@ function Runtime:array_rfind(array, value, start_index)
     return -1
 end
 
+-- Unknown destinations are diagnosed before any script side effects. This is
+-- Mudcrab policy; Skyrim's CK documentation also describes undefined states.
 function Runtime:goto_state(target, state)
+    assert(target ~= nil, "Papyrus state target is None")
+    assert(type(state) == "string", "Papyrus state name must be a string")
+    local class, seen = target, {}
+    local declared = state == ""
+    while class ~= nil and not declared do
+        assert(not seen[class], "cyclic Papyrus parent hierarchy")
+        seen[class] = true
+        declared = class.__states ~= nil and class.__states[state] == true
+        class = self.classes[class.__parent]
+    end
+    assert(declared, "unknown Papyrus state: " .. (target.__name or "") .. "::" .. state)
+    local old_state = target.__state or target.__autoState or ""
+    local on_end = self:find_method(target, old_state, "OnEndState")
+    if on_end ~= nil then on_end(target) end
     target.__state = state
+    local on_begin = self:find_method(target, state, "OnBeginState")
+    if on_begin ~= nil then on_begin(target) end
 end
 
 return Runtime

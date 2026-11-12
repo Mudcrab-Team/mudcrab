@@ -18,6 +18,9 @@ thread_local! {
     static THREAD_STRING_BUF: RefCell<String> = RefCell::new(String::with_capacity(32 * 1024));
 }
 
+/// Script emission ABI shared with runtime contract definitions.
+pub const SCRIPT_ABI_VERSION: u32 = shared::PAPYRUS_SCRIPT_ABI_VERSION;
+
 const SKYRIM_MAGIC: u32 = 0xFA57_C0DE;
 const OPCODE_ARGS: [usize; 36] = [
     0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 1, 2, 2, 3, 2, 3, 1, 3, 3, 3, 2, 2,
@@ -266,6 +269,7 @@ impl ScriptConverter {
         Ok(out)
     }
 
+    /// Emits verified class metadata, instance initialization and functions into a reusable buffer.
     pub fn emit_luau_to(pex: &PexFile, out: &mut String) -> Result<()> {
         let object = pex.objects.first().expect("verified object");
 
@@ -288,6 +292,11 @@ impl ScriptConverter {
             "Script.__autoState = {}",
             lua_string(&object.auto_state)
         )?;
+        writeln!(out, "Script.__states = {{ [\"\"] = true,")?;
+        for state in &object.states {
+            writeln!(out, "    [{}] = true,", lua_string(&state.name))?;
+        }
+        writeln!(out, "}}")?;
         writeln!(out, "Script.__types = {{")?;
         for variable in &object.variables {
             writeln!(
@@ -302,7 +311,7 @@ impl ScriptConverter {
         writeln!(out, "    assert(runtime, \"Papyrus runtime is required\")")?;
         writeln!(
             out,
-            "    local self = setmetatable({{ __runtime = runtime }}, Script)"
+            "    local self = setmetatable({{ __runtime = runtime, __state = Script.__autoState }}, Script)"
         )?;
         for variable in &object.variables {
             writeln!(
@@ -312,6 +321,10 @@ impl ScriptConverter {
                 default_value_expr(&variable.default)
             )?;
         }
+        writeln!(
+            out,
+            "    assert(Script.__states[Script.__autoState], \"unknown Papyrus auto state: \" .. Script.__name .. \"::\" .. Script.__autoState)"
+        )?;
         writeln!(out, "    return self")?;
         writeln!(out, "end")?;
         for state in &object.states {
@@ -719,6 +732,7 @@ fn emit_function(out: &mut String, state: &State, function: &Function) -> Result
     Ok(())
 }
 
+/// Emits one instruction, preserving lexical ownership for Parent calls.
 fn emit_instruction(out: &mut String, ip: usize, ins: &Instruction) -> Result<()> {
     let a = &ins.args;
     let next = ip + 1;
@@ -800,7 +814,7 @@ fn emit_instruction(out: &mut String, ip: usize, ins: &Instruction) -> Result<()
             out,
             &a[1],
             &format!(
-                "__rt:call_parent(self, {}, {})",
+                "__rt:call_parent(self, {}, {}, Script.__parent)",
                 symbol_expr(&a[0]),
                 values_table(&ins.varargs)
             ),

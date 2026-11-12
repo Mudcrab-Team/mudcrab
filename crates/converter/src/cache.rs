@@ -1940,7 +1940,7 @@ mod tests {
                 .unwrap()
             );
             let mut changed = config.clone();
-            changed.script_abi_version = 2;
+            changed.script_abi_version += 1;
             assert!(
                 !retained_configuration_matches_for_reader(
                     &changed,
@@ -2054,9 +2054,11 @@ mod tests {
         );
     }
 
+    /// Reconstructs the original ABI-1 proof independently of the current emitter default.
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.script_abi_version = 1; // Reconstruct the fixed historical ABI-1 proof.
         config.record_reader = crate::config::RecordReader::Legacy;
         // Exact configuration hash in the protected original schema-15
         // manifest and its metadata rebuild's retained producer provenance.
@@ -2072,7 +2074,7 @@ mod tests {
         changed.texture_fallback_quality = 191;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config.clone();
-        changed.script_abi_version = 2;
+        changed.script_abi_version += 1;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config;
         changed.texture_zstd_level = 7;
