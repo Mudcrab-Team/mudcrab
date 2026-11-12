@@ -37,6 +37,9 @@ longest finite chain even beyond the conversion limit, along with declared-block
 and bounded conversion-refusal reasons. A cycle has no finite depth: its reported depth is zero
 and its refusal reason identifies the loop. `nif-audit` retains these measurements and lists
 refused files separately from unreadable files, including when conversion is not requested.
+If material inspection also fails for an already refused scene/skin input, its structural
+diagnostics remain available. A bounded refusal reason marks the material counters unavailable
+(zero). Material-only failures retain the existing inspection error result.
 
 Mesh export, skeleton loading and collision entry points enforce one shared limit of 256 parsed
 scene nodes and refuse cycles or undecodable declared skin instances. Geometry and other

@@ -1058,3 +1058,65 @@ async fn warm_cache_rebuilds_pre_depth_expansion_mesh_proof() {
     assert_eq!(current.asset_configuration_hashes["dds"], texture_proof);
     assert_eq!(current.asset_configuration_hashes["pex"], script_proof);
 }
+
+/// Preserve block boundaries while making the first shape's shader reference out of range.
+fn invalid_material_reference(mut bytes: Vec<u8>) -> Vec<u8> {
+    let shape = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "BSTriShape")
+        .unwrap()
+        .1;
+    // NiAVObject (72), bounds (16), skin reference (4), then shader reference.
+    bytes[shape + 92..shape + 96].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+    bytes
+}
+
+/// A second material error must preserve a scene/skin refusal's already measured diagnostics.
+#[test]
+fn nif_audit_retains_policy_diagnostics_when_material_inspection_fails() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("input");
+    fs::create_dir(&input).unwrap();
+    let combined = input.join("combined.nif");
+    fs::write(&combined, invalid_material_reference(unparsable_skin())).unwrap();
+    fs::write(input.join("healthy.nif"), body_fixture()).unwrap();
+    let diagnostics = MeshConverter::inspect_nif(&combined)
+        .expect("a material failure must retain the skin and scene measurements");
+    assert_eq!(diagnostics.fallback_blocks["NiSkinInstance"], 1);
+    assert!(diagnostics.max_scene_depth > 0);
+    let material_reason = diagnostics
+        .conversion_refusals
+        .iter()
+        .find(|reason| reason.starts_with("material inspection unavailable: "))
+        .unwrap();
+    assert!(material_reason.chars().count() <= 512);
+    assert_eq!(diagnostics.material_shape_count, 0);
+    assert!(MeshConverter::validate_nif_for_conversion(&combined).is_err());
+    let output = root.path().join("refused.glb");
+    assert!(MeshConverter::convert_nif_to_glb(&combined, &output).is_err());
+    assert!(!output.exists());
+    assert!(MeshConverter::extract_collision(&combined).is_err());
+    let report_path = root.path().join("audit.json");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_nif-audit"))
+        .arg(&input)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["summary"]["total_files"], 2);
+    assert_eq!(report["summary"]["parsed_files"], 2);
+    assert_eq!(report["summary"]["refused_files"], 1);
+    assert_eq!(report["summary"]["material_failures"], 0);
+    let file = &report["files"][0];
+    assert_eq!(file["path"], "combined.nif");
+    assert_eq!(file["fallback_blocks"]["NiSkinInstance"], 1);
+    assert_eq!(file["max_scene_depth"], diagnostics.max_scene_depth);
+    assert!(file["parse_error"].is_null());
+    assert_eq!(file["conversion_refusals"].as_array().unwrap().len(), 2);
+    // A material-only failure keeps the existing inspection error contract.
+    let material_only = root.path().join("material-only.nif");
+    fs::write(&material_only, invalid_material_reference(body_fixture())).unwrap();
+    let error = MeshConverter::inspect_nif(&material_only).unwrap_err();
+    assert!(format!("{error:#}").contains("invalid NIF material"));
+}

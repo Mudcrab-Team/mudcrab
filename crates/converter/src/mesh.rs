@@ -75,6 +75,7 @@ pub struct NifParseDiagnostics {
     pub block_types: BTreeMap<String, usize>,
     pub fallback_blocks: BTreeMap<String, usize>,
     pub fallback_offsets: BTreeMap<String, Vec<usize>>,
+    /// Inspected material shapes; zero when material inspection is unavailable (see refusals).
     pub material_shape_count: usize,
     pub validated_material_shape_count: usize,
     pub excluded_material_shape_count: usize,
@@ -988,6 +989,9 @@ fn declares_skin_type(diagnostics: &NifParseDiagnostics) -> bool {
 /// Offsets named in a skin-parse refusal before the rest are only counted.
 const MAX_REPORTED_SKIN_OFFSETS: usize = 8;
 
+/// Characters retained when an already refused file also has an invalid material contract.
+const MAX_REPORTED_MATERIAL_REFUSAL_CHARS: usize = 512;
+
 /// Refuses a NIF whose declared skin instance block did not parse.
 ///
 /// Rescuing an unparsable block keeps the rest of the file readable, but for a
@@ -1488,6 +1492,8 @@ fn open_nif_for_conversion(
 ///
 /// Returns parsed blocks, diagnostics and material contracts. Conversion refusals
 /// remain in diagnostics, so inspection can measure files beyond the export limit.
+/// Material errors on already refused inputs become bounded reasons with zero
+/// material counters. Material-only inspection failures retain their error path.
 fn open_nif_resilient(
     path: &Path,
 ) -> Result<(NifFile, NifParseDiagnostics, Vec<NifShapeMaterial>)> {
@@ -1615,7 +1621,19 @@ fn open_nif_resilient(
             .push(format!("invalid scene in {}: {error:#}", path.display())),
     }
     let nif = NifFile { header, blocks };
-    let material_contract = build_nif_material_contract(&nif, path)?;
+    let material_contract = match build_nif_material_contract(&nif, path) {
+        Ok(contract) => contract,
+        Err(error) if !diagnostics.conversion_refusals.is_empty() => {
+            diagnostics.conversion_refusals.push(
+                format!("material inspection unavailable: {error:#}")
+                    .chars()
+                    .take(MAX_REPORTED_MATERIAL_REFUSAL_CHARS)
+                    .collect(),
+            );
+            Vec::new()
+        }
+        Err(error) => return Err(error),
+    };
     diagnostics.material_shape_count = material_contract.len();
     for shape in &material_contract {
         match &shape.disposition {
@@ -4351,6 +4369,32 @@ mod tests {
                 .unwrap_err();
         assert!(format!("{error:#}").contains("257 scene nodes"));
         assert!(build_skinned_model_with_materials(&input, &skeleton).is_err());
+        assert!(!output.exists());
+    }
+
+    /// A deep scene retains its measured depth when its material contract is also invalid.
+    #[test]
+    fn deep_scene_diagnostics_survive_material_inspection_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("deep-material.nif");
+        let mut bytes = static_scene_chain_nif(257);
+        let (data, header) = parse_skyrim_header(&bytes, &input).unwrap();
+        // Geometry remains block 1; its shader reference follows AV/bounds/skin.
+        let shape = bytes.len() - data.len() + header.block_size_index[0] as usize;
+        bytes[shape + 92..shape + 96].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+        fs::write(&input, bytes).unwrap();
+        let diagnostics = MeshConverter::inspect_nif(&input)
+            .expect("material failure must preserve an already refused scene's depth");
+        assert_eq!(diagnostics.max_scene_depth, 257);
+        assert_eq!(diagnostics.conversion_refusals.len(), 2);
+        assert!(diagnostics.conversion_refusals[0].contains("257 scene nodes"));
+        assert!(
+            diagnostics.conversion_refusals[1].starts_with("material inspection unavailable: ")
+        );
+        assert!(diagnostics.conversion_refusals[1].chars().count() <= 512);
+        assert!(MeshConverter::validate_nif_for_conversion(&input).is_err());
+        let output = input.with_extension("glb");
+        assert!(MeshConverter::convert_nif_to_glb(&input, &output).is_err());
         assert!(!output.exists());
     }
 
