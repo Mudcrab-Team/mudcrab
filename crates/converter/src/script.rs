@@ -294,7 +294,11 @@ impl ScriptConverter {
         )?;
         writeln!(out, "Script.__states = {{ [\"\"] = true,")?;
         for state in &object.states {
-            writeln!(out, "    [{}] = true,", lua_string(&state.name))?;
+            writeln!(
+                out,
+                "    [{}] = true,",
+                lua_string(&state.name.to_ascii_lowercase())
+            )?;
         }
         writeln!(out, "}}")?;
         writeln!(out, "Script.__types = {{")?;
@@ -321,10 +325,6 @@ impl ScriptConverter {
                 default_value_expr(&variable.default)
             )?;
         }
-        writeln!(
-            out,
-            "    assert(Script.__states[Script.__autoState], \"unknown Papyrus auto state: \" .. Script.__name .. \"::\" .. Script.__autoState)"
-        )?;
         writeln!(out, "    return self")?;
         writeln!(out, "end")?;
         for state in &object.states {
@@ -337,7 +337,7 @@ impl ScriptConverter {
                 if property.readable {
                     writeln!(
                         out,
-                        "Script[{}] = function(self) return self[{}] end",
+                        "Script[{}] = function(self) return self.__runtime:get_field(self, {}) end",
                         lua_string(&format!("get_{}", property.name)),
                         lua_string(auto_var)
                     )?;
@@ -345,7 +345,7 @@ impl ScriptConverter {
                 if property.writable {
                     writeln!(
                         out,
-                        "Script[{}] = function(self, value) self[{}] = value end",
+                        "Script[{}] = function(self, value) self.__runtime:set_field(self, {}, value) end",
                         lua_string(&format!("set_{}", property.name)),
                         lua_string(auto_var)
                     )?;
@@ -687,11 +687,11 @@ fn emit_function(out: &mut String, state: &State, function: &Function) -> Result
     }
     writeln!(
         out,
-        "    local function __get(key) if key == \"self\" then return self elseif __locals[key] then return __v[key] else return self[key] end end"
+        "    local function __get(key) if string.lower(key) == \"self\" then return self end local k = __rt:identifier_key(__locals, key) if k then return __v[k] else return __rt:get_field(self, key) end end"
     )?;
     writeln!(
         out,
-        "    local function __set(key, value) if __locals[key] then __v[key] = value else self[key] = value end end"
+        "    local function __set(key, value) local k = __rt:identifier_key(__locals, key) if k then __v[k] = value else __rt:set_field(self, key, value) end end"
     )?;
     writeln!(out, "    local __pc = 0")?;
     writeln!(out, "    while true do")?;
@@ -768,7 +768,7 @@ fn emit_instruction(out: &mut String, ip: usize, ins: &Instruction) -> Result<()
                 out,
                 &a[0],
                 &format!(
-                    "__rt:cast({}, __types[{}] or Script.__types[{}])",
+                    "__rt:cast({}, __rt:get_field(__types, {}) or __rt:get_field(Script.__types, {}))",
                     value_expr(&a[1]),
                     lua_string(destination),
                     lua_string(destination)

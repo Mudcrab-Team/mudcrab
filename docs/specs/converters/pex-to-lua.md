@@ -15,7 +15,17 @@ Initial creation does not send state transition callbacks.
 Functions in the empty state use `Script["Method"]`; named-state functions use
 `Script["State::Method"]`. Events use the same function export and dispatch
 mechanism. Declared states with no functions still appear in `__states`.
-Property accessors use bare `get_Property` / `set_Property` keys.
+Property accessors use bare `get_Property` / `set_Property` keys. Emitted
+function, property and variable keys retain their source spelling; declared-state
+metadata keys in `__states` use ASCII lowercase. Runtime name lookup is ASCII
+case-insensitive, including state/function names, locals, instance fields,
+property accessors, class/parent identifiers and native/static registrations.
+An exact-key fast path falls back to scanning original keys for the same lowercase
+name, so hand-written host class tables keep their keys and callbacks. Class and
+native registries use lowercase keys. Names differing only by case denote one
+Papyrus identifier; malformed duplicate declarations with conflicting bodies are
+outside this contract. Data strings are preserved, including GotoState arguments
+and GetState results. External dispatch adapters receive the original method name.
 
 The shared helper is `crates/shared/src/papyrus_runtime.luau`. Conversion stages
 that source as `scripts/papyrus_runtime.luau`; the Rust host helpers in
@@ -34,21 +44,22 @@ Parent cycles are diagnosed instead of looping indefinitely.
 Emitted `Parent.Method()` calls pass their defining class's parent name to
 `Runtime:call_parent`. A parent's own Parent call therefore advances to its own
 parent, even on a derived receiver. Static calls and property accessors remain
-outside state selection. Parent construction, inherited native ownership and
-automatic inheritance of a parent's auto state are not implemented here.
+outside state selection. Static functions receive a per-call class context with
+the invoking runtime, so generated global functions and natives can make further
+calls without storing mutable runtime ownership on the registered class. Property
+accessors use empty-state and parent lookup. Parent construction, inherited native
+ownership and automatic inheritance of a parent's auto state are not implemented here.
 
-The current resolver preserves exact state/function spelling. The precedence
-of a child's empty-state method over a parent's named-state method follows this
-implementation's contract; CK inheritance precedence was not independently
+The precedence of a child's empty-state method over a parent's named-state
+method follows this implementation's contract; CK inheritance precedence was not independently
 verified. These limits must not be described as complete Papyrus parity.
 
 `GetState()` returns the instance's current state name. `GotoState(name)`:
 
-1. Validates the destination against declared states in the script hierarchy,
-   including the empty state, before invoking any script code.
+1. Accepts a string destination, including an undeclared name or the empty string.
 2. Invokes the old state's `OnEndState()` if present, using normal state/empty/
    parent fallback while the old state is still visible.
-3. Sets the instance state to the destination.
+3. Sets the instance state to the destination exactly as supplied.
 4. Invokes the new state's `OnBeginState()` if present, using the same fallback
    while the new state is visible.
 
@@ -58,9 +69,12 @@ When callbacks do not themselves change state, an end-callback error leaves the
 old state and a begin-callback error leaves the new state. Script side effects are not rolled back. Nested transitions are not
 given a special queue or cancellation policy by this synchronous helper.
 
-Unknown destinations raise a per-invocation error. This is Mudcrab's requested
-validation policy: CK's OnBeginState documentation also describes undefined
-destinations, so rejection is an intentional compatibility limitation.
+An undeclared destination is stored and calls use the ordinary empty-state
+fallback, including lifecycle handlers. Undeclared auto-state metadata uses the
+same fallback during initialization, without lifecycle callbacks. The PEX name
+is safely decoded; no compiler invariant requiring rejection has been verified,
+so this helper keeps that script usable rather than raising a construction error.
+That permissive initial-metadata choice is not original-game differential proof.
 
 Invocation errors propagate through `mlua::Result`; callers can report a failing
 script and continue invoking others. There is no global error handler or world
@@ -70,6 +84,11 @@ recovery after memory exhaustion or budget exhaustion.
 
 ## Sources and verification limits
 
+- [Identifier Reference](https://ck.uesp.net/wiki/Identifier_Reference),
+  [Function Reference](https://ck.uesp.net/wiki/Function_Reference) and
+  [Script File Structure](https://ck.uesp.net/wiki/Script_File_Structure): intended
+  references for case-insensitive Papyrus identifiers. This well-established rule
+  is the required lookup contract; fresh primary retrieval was blocked by HTTP 403.
 - [States (Papyrus)](https://ck.uesp.net/wiki/States_(Papyrus)) and
   [State Reference](https://ck.uesp.net/wiki/State_Reference): intended reference
   for state overrides, empty-state fallback and starting-state selection.
@@ -81,7 +100,8 @@ recovery after memory exhaustion or budget exhaustion.
   Skyrim signature, no initial auto-state callback and repeated begin notification
   for same-state GotoState. It also documents undefined destinations.
 
-Only OnBeginState was retrievable during this change's primary-source research.
+Only OnBeginState was retrievable during the preceding state-dispatch research;
+fresh retrieval, including the identifier references, was blocked during follow-up.
 The other links identify the intended rules; their ordering, inheritance and
 end-event details remain unverified against retrieved primary text. The sequence
 above is the explicit runtime contract covered by synthetic regressions, not a
@@ -89,13 +109,15 @@ claim of original-game differential validation.
 
 ## Converted output compatibility
 
-State metadata, explicit initial state and lexical Parent calls advance the
-script emission ABI to 2. New configurations select the current ABI. Full
-conversion raises saved older ABI values to the current minimum before cache
+Script emission ABI 2 added state metadata, explicit initial state and lexical
+Parent calls. The current ABI adds case-insensitive generated identifier/field
+access and permissive auto-state initialization (see the shared
+`PAPYRUS_SCRIPT_ABI_VERSION` constant). New configurations select the current ABI.
+Full conversion raises saved older ABI values to the current minimum before cache
 selection, so unchanged PEX inputs regenerate old scripts. Existing per-kind
 proofs preserve unrelated eligible mesh and texture outputs. Mesh/texture schema
 versions are unchanged. Converted packs need reconversion; rebuilding only the
-engine cannot add metadata to old emitted modules.
+engine cannot update identifier helpers in old emitted modules.
 
 ## Future work
 

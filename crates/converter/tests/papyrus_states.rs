@@ -38,6 +38,47 @@ impl Pex {
         pex
     }
 
+    /// Replaces the initial empty property table with auto and explicit accessors.
+    fn add_properties(&mut self) {
+        let states = self.body.split_off(self.body.len() - 2);
+        self.body.truncate(self.body.len() - 2);
+        self.word(2);
+        for (name, flags) in [("Counter", 7), ("Handled", 3)] {
+            self.symbol(name);
+            self.symbol("int");
+            self.symbol("");
+            self.body.extend(0u32.to_be_bytes());
+            self.body.push(flags);
+            if flags == 7 {
+                self.symbol("eVeNtVaLuE");
+            } else {
+                let mut getter = returns("", 0);
+                getter.instructions[0].args = vec![id("EVENTVALUE")];
+                self.function(getter);
+                let mut setter = returns("", 0);
+                setter.return_type = "None".into();
+                setter.params = vec![TypedName {
+                    name: "Value".into(),
+                    type_name: "int".into(),
+                }];
+                setter.instructions = vec![
+                    Instruction {
+                        opcode: 13,
+                        args: vec![id("eventvalue"), id("vAlUe")],
+                        varargs: vec![],
+                    },
+                    Instruction {
+                        opcode: 26,
+                        args: vec![Value::None],
+                        varargs: vec![],
+                    },
+                ];
+                self.function(setter);
+            }
+        }
+        self.body.extend(states);
+    }
+
     /// Appends a big-endian count or string index.
     fn word(&mut self, value: u16) {
         self.body.extend(value.to_be_bytes());
@@ -86,30 +127,35 @@ impl Pex {
         self.word(functions.len().try_into().unwrap());
         for function in functions {
             self.symbol(&function.name);
-            self.symbol(&function.return_type);
-            self.symbol("");
-            self.body.extend(0u32.to_be_bytes());
-            self.body.push(function.flags);
-            for names in [&function.params, &function.locals] {
-                self.word(names.len().try_into().unwrap());
-                for name in names {
-                    self.symbol(&name.name);
-                    self.symbol(&name.type_name);
-                }
+            self.function(function);
+        }
+    }
+
+    /// Encodes a PEX function body for both states and explicit property handlers.
+    fn function(&mut self, function: Function) {
+        self.symbol(&function.return_type);
+        self.symbol("");
+        self.body.extend(0u32.to_be_bytes());
+        self.body.push(function.flags);
+        for names in [&function.params, &function.locals] {
+            self.word(names.len().try_into().unwrap());
+            for name in names {
+                self.symbol(&name.name);
+                self.symbol(&name.type_name);
             }
-            self.word(function.instructions.len().try_into().unwrap());
-            for instruction in function.instructions {
-                self.body.push(instruction.opcode);
-                for value in &instruction.args {
+        }
+        self.word(function.instructions.len().try_into().unwrap());
+        for instruction in function.instructions {
+            self.body.push(instruction.opcode);
+            for value in &instruction.args {
+                self.value(value);
+            }
+            if matches!(instruction.opcode, 23..=25) {
+                self.value(&Value::Integer(
+                    instruction.varargs.len().try_into().unwrap(),
+                ));
+                for value in &instruction.varargs {
                     self.value(value);
-                }
-                if matches!(instruction.opcode, 23..=25) {
-                    self.value(&Value::Integer(
-                        instruction.varargs.len().try_into().unwrap(),
-                    ));
-                    for value in &instruction.varargs {
-                        self.value(value);
-                    }
                 }
             }
         }
@@ -151,7 +197,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
     parent_call.instructions = vec![
         Instruction {
             opcode: 24,
-            args: vec![Value::String("Chain".into()), id("result")],
+            args: vec![Value::String("cHaIn".into()), id("result")],
             varargs: vec![],
         },
         Instruction {
@@ -160,7 +206,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
             varargs: vec![],
         },
     ];
-    let mut parent = Pex::class("ParentFixture", "Grand", "", 2);
+    let mut parent = Pex::class("ParentFixture", "gRaNd", "", 2);
     let mut virtual_call = parent_call.clone();
     virtual_call.name = "Virtual".into();
     virtual_call.instructions[0] = Instruction {
@@ -183,7 +229,7 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
         "Ready",
         vec![returns("InheritedState", 61), returns("Fallback", 63)],
     );
-    let mut child = Pex::new("Ready", 2);
+    let mut child = Pex::class("StateFixture", "pArEnTfIxTuRe", "Ready", 2);
     child.state("", vec![parent_call, returns("Fallback", 17)]);
     child.state("Ready", vec![returns("Value", 31)]);
     for (name, pex) in [
@@ -201,11 +247,11 @@ fn pex_parent_dispatch_preserves_receiver_and_defining_class() {
         rt:register_class('StateFixture', Child)
         local a = Child.new(rt)
         local function call(name) return rt:call_method(a, name, {}) end
-        assert(call('InheritedState') == 61, 'parent named state')
+        assert(call('iNhErItEdStAtE') == 61, 'parent named state')
         assert(call('OnlyParent') == 67 and call('OnlyGrand') == 79, 'ancestor fallback')
         assert(call('Fallback') == 17, 'child empty state precedes parent per dispatch contract')
         assert(call('Chain') == 73, 'nested Parent calls use the defining class')
-        assert(call('Virtual') == 31, 'inherited code keeps the original receiver')
+        assert(call('vIrTuAl') == 31, 'inherited code keeps the original receiver')
     "#,
     )
     .exec()
@@ -244,24 +290,42 @@ fn lifecycle_failures_leave_other_instances_callable() {
     "#).exec().unwrap();
 }
 
-/// A malformed initial state fails instance construction without poisoning another script.
+/// An undeclared initial state uses empty-state fallback and ordinary errors stay local.
 #[test]
-fn undeclared_auto_state_is_an_instance_error() {
+fn undeclared_auto_state_uses_empty_fallback() {
     let lua = Lua::new();
     runtime(&lua);
-    let mut broken = Pex::new("Typo", 1);
-    broken.state("", vec![returns("Value", 11)]);
+    let mut unlisted = Pex::new("Typo", 1);
+    unlisted.state("", vec![returns("Value", 11)]);
     let mut good = Pex::new("", 1);
     good.state("", vec![returns("Value", 93)]);
-    let broken = load(&lua, &broken.finish());
+    let unlisted = load(&lua, &unlisted.finish());
     let good = load(&lua, &good.finish());
     let runtime: Table = lua.load("return Runtime.new()").eval().unwrap();
-    let error = broken
+    let initial: Table = unlisted
         .get::<mlua::Function>("new")
         .unwrap()
-        .call::<Table>(runtime.clone())
-        .unwrap_err();
-    assert!(error.to_string().contains("unknown Papyrus auto state"));
+        .call(runtime.clone())
+        .expect("undeclared initial state can use empty fallback");
+    let dispatch = runtime.get::<mlua::Function>("call_method").unwrap();
+    let value: i32 = dispatch
+        .call((
+            runtime.clone(),
+            initial.clone(),
+            "Value",
+            lua.create_table().unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(value, 11);
+    let state: String = dispatch
+        .call((
+            runtime.clone(),
+            initial,
+            "GetState",
+            lua.create_table().unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(state, "Typo");
     let instance: Table = good
         .get::<mlua::Function>("new")
         .unwrap()
@@ -285,19 +349,6 @@ fn undeclared_auto_state_is_an_instance_error() {
         error
             .to_string()
             .contains("unknown Papyrus method: StateFixture::Absent")
-    );
-    let error = dispatch
-        .call::<()>((
-            runtime.clone(),
-            failing,
-            "GotoState",
-            lua.create_sequence_from(["Typo"]).unwrap(),
-        ))
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("unknown Papyrus state: StateFixture::Typo")
     );
     let value: i32 = dispatch
         .call((runtime, instance, "Value", lua.create_table().unwrap()))
@@ -323,6 +374,17 @@ async fn convert(config: converter::PipelineConfig) -> converter::PipelineReport
 /// ABI-1 cached scripts rebuild without invalidating mesh or texture output proofs.
 #[tokio::test]
 async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
+    rebuild_old_script_abi(1).await;
+}
+
+/// The immediately preceding emitter ABI also rebuilds with saved legacy settings.
+#[tokio::test]
+async fn abi_two_scripts_regenerate_case_insensitive_helpers() {
+    rebuild_old_script_abi(2).await;
+}
+
+/// Installs actual prior emitted bytes and verifies script-only cache invalidation.
+async fn rebuild_old_script_abi(abi: u32) {
     use converter::cache::{
         ConversionManifest, asset_configuration_hash_for_schema, configuration_hash, hash_bytes,
     };
@@ -343,7 +405,7 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
     let mut manifest: ConversionManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     let mut legacy = config.clone();
-    legacy.script_abi_version = 1;
+    legacy.script_abi_version = abi;
     manifest.configuration_hash = configuration_hash(&legacy).unwrap();
     manifest.asset_configuration_hashes.insert(
         "pex".into(),
@@ -367,26 +429,34 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
         "            return nil\n            end\n            continue\n",
         "        end\n    end\nend\nreturn Script\n"
     );
+    let old = if abi == 2 {
+        old.replace("Script.__autoState = \"\"\n", "Script.__autoState = \"\"\nScript.__states = { [\"\"] = true,\n    [\"\"] = true,\n}\n")
+            .replace("{ __runtime = runtime }", "{ __runtime = runtime, __state = Script.__autoState }")
+            .replace("    return self\n", "    assert(Script.__states[Script.__autoState], \"unknown Papyrus auto state: \" .. Script.__name .. \"::\" .. Script.__autoState)\n    return self\n")
+    } else {
+        old.to_owned()
+    };
+    // Fixed SHA-256 proofs pin the historical output independently of current emission.
+    use sha2::{Digest, Sha256};
+    let expected = if abi == 1 {
+        "5f64b25597b527984312044b2cd39179a4754669340fb18e8c551e785edc8be4"
+    } else {
+        "98a3a1424dbd8d510f479f49fb44dace43bd8ca6fa056dce3867de27b463194f"
+    };
+    assert_eq!(format!("{:x}", Sha256::digest(old.as_bytes())), expected);
     let mut scripts = 0;
     for entry in manifest
         .entries
         .values_mut()
         .filter(|entry| entry.output.ends_with(".luau"))
     {
-        let original = std::fs::read_to_string(output.join(&entry.output)).unwrap();
-        if entry.output.ends_with("/generated.luau") && !original.contains("Script.__states") {
-            assert_eq!(
-                original, old,
-                "the retained sample is the actual ABI-1 emitter output"
-            );
-        }
-        std::fs::write(output.join(&entry.output), old).unwrap();
+        std::fs::write(output.join(&entry.output), &old).unwrap();
         entry.output_hash = hash_bytes(old.as_bytes());
         scripts += 1;
     }
     assert!(scripts > 0);
     manifest.save(&manifest_path).unwrap();
-    // Old saved configuration must not opt the current emitter back into ABI-1 reuse.
+    // Old saved configuration must not opt the current emitter back into prior-ABI reuse.
     let report = convert(legacy).await;
     assert_eq!(report.converted, scripts);
     assert_eq!(report.cache_hits, manifest.entries.len() as u64 - scripts);
@@ -397,7 +467,7 @@ async fn old_script_abi_rebuilds_only_scripts_even_with_legacy_configuration() {
     {
         let source = std::fs::read_to_string(output.join(&entry.output)).unwrap();
         assert!(
-            source.contains("Script.__states"),
+            source.contains("__rt:identifier_key(__locals, key)"),
             "legacy script must be regenerated"
         );
     }
@@ -469,12 +539,12 @@ fn switch() -> Function {
         instructions: vec![
             Instruction {
                 opcode: 23,
-                args: vec![Value::String("GotoState".into()), id("self"), id("unused")],
+                args: vec![Value::String("gOtOsTaTe".into()), id("self"), id("unused")],
                 varargs: vec![id("destination")],
             },
             Instruction {
                 opcode: 23,
-                args: vec![Value::String("GetState".into()), id("self"), id("result")],
+                args: vec![Value::String("gEtStAtE".into()), id("self"), id("result")],
                 varargs: vec![],
             },
             Instruction {
@@ -504,7 +574,7 @@ fn transition(name: &str, label: &str) -> Function {
     function.instructions = vec![
         Instruction {
             opcode: 23,
-            args: vec![Value::String("GetState".into()), id("self"), id("current")],
+            args: vec![Value::String("gEtStAtE".into()), id("self"), id("current")],
             varargs: vec![],
         },
         Instruction {
@@ -545,7 +615,7 @@ fn runtime(lua: &Lua) {
 /// Distinguishes auto, named and empty dispatch, lifecycle order, fallback and instance isolation.
 #[test]
 fn pex_state_dispatch_and_transitions() {
-    let mut pex = Pex::new("Ready", 4);
+    let mut pex = Pex::new("rEaDy", 4);
     pex.state(
         "",
         vec![
@@ -553,8 +623,8 @@ fn pex_state_dispatch_and_transitions() {
             event(12),
             returns("Fallback", 17),
             switch(),
-            transition("OnBeginState", "empty-begin"),
-            transition("OnEndState", "empty-end"),
+            transition("oNbEgInStAtE", "empty-begin"),
+            transition("oNeNdStAtE", "empty-end"),
             Function {
                 name: "Record".into(),
                 return_type: "None".into(),
@@ -579,7 +649,7 @@ fn pex_state_dispatch_and_transitions() {
         vec![
             returns("Value", 31),
             event(32),
-            transition("OnEndState", "ready-end"),
+            transition("oNeNdStAtE", "ready-end"),
         ],
     );
     pex.state(
@@ -587,8 +657,8 @@ fn pex_state_dispatch_and_transitions() {
         vec![
             returns("Value", 51),
             event(52),
-            transition("OnBeginState", "busy-begin"),
-            transition("OnEndState", "busy-end"),
+            transition("oNbEgInStAtE", "busy-begin"),
+            transition("oNeNdStAtE", "busy-end"),
         ],
     );
     pex.state("Quiet", vec![]);
@@ -608,36 +678,245 @@ fn pex_state_dispatch_and_transitions() {
         end)
         local a, b = Script.new(rt), Script.new(rt)
         local function call(target, name, ...) return rt:call_method(target, name, {...}) end
-        assert(call(a, 'GetState') == 'Ready')
-        assert(call(a, 'Value') == 31, 'auto method dispatch')
-        call(a, 'OnPulse')
+        assert(Script.__states.ready and Script.__states.busy)
+        assert(call(a, 'GetState') == 'rEaDy')
+        assert(call(a, 'vAlUe') == 31, 'auto method dispatch')
+        call(a, 'oNpUlSe')
         assert(a.EventValue == 32, 'auto event dispatch')
         assert(call(a, 'Fallback') == 17)
         assert(#log == 0, 'auto state starts without transition events')
-        assert(call(a, 'Switch', 'Busy') == 'Busy')
-        assert(call(a, 'GetState') == 'Busy')
-        call(a, 'OnPulse')
-        assert(call(a, 'Value') == 51 and a.EventValue == 52)
+        assert(call(a, 'sWiTcH', 'bUsY') == 'bUsY')
+        assert(call(a, 'GetState') == 'bUsY')
+        call(a, 'oNpUlSe')
+        assert(call(a, 'vAlUe') == 51 and a.EventValue == 52)
         assert(call(a, 'Fallback') == 17)
-        assert(table.concat(log, ',') == 'ready-end:Ready,busy-begin:Busy')
-        call(a, 'GotoState', 'Busy')
-        assert(table.concat(log, ',') == 'ready-end:Ready,busy-begin:Busy,busy-end:Busy,busy-begin:Busy')
+        assert(table.concat(log, ',') == 'ready-end:rEaDy,busy-begin:bUsY')
+        call(a, 'gOtOsTaTe', 'bUsY')
+        assert(table.concat(log, ',') == 'ready-end:rEaDy,busy-begin:bUsY,busy-end:bUsY,busy-begin:bUsY')
         call(a, 'GotoState', '')
         assert(call(a, 'GetState') == '')
-        call(a, 'OnPulse')
-        assert(call(a, 'Value') == 11 and a.EventValue == 12)
-        assert(log[5] == 'busy-end:Busy' and log[6] == 'empty-begin:')
+        call(a, 'oNpUlSe')
+        assert(call(a, 'vAlUe') == 11 and a.EventValue == 12)
+        assert(log[5] == 'busy-end:bUsY' and log[6] == 'empty-begin:')
         call(a, 'GotoState', 'Quiet')
-        assert(call(a, 'GetState') == 'Quiet' and call(a, 'Value') == 11)
+        assert(call(a, 'GetState') == 'Quiet' and call(a, 'vAlUe') == 11)
         assert(log[7] == 'empty-end:' and log[8] == 'empty-begin:Quiet')
-        assert(call(b, 'GetState') == 'Ready' and call(b, 'Value') == 31)
-        local before_invalid = #log
-        local ok, err = pcall(call, a, 'GotoState', 'Typo')
-        assert(not ok and string.find(err, 'unknown Papyrus state'), 'invalid state diagnostic')
-        assert(call(a, 'GetState') == 'Quiet', 'invalid transition preserves old state')
-        assert(#log == before_invalid, 'invalid transition invokes no callbacks')
-        ok, err = pcall(call, a, 'Absent')
+        assert(call(b, 'GetState') == 'rEaDy' and call(b, 'Value') == 31)
+        local before_unknown = #log
+        assert(call(a, 'Switch', 'Not Declared!') == 'Not Declared!')
+        assert(call(a, 'GetState') == 'Not Declared!', 'unknown name stored verbatim')
+        call(a, 'oNpUlSe')
+        assert(call(a, 'vAlUe') == 11 and a.EventValue == 12, 'unknown state uses empty functions and events')
+        assert(log[before_unknown+1] == 'empty-end:Quiet' and log[before_unknown+2] == 'empty-begin:Not Declared!')
+        call(a, 'GotoState', 'Ready')
+        assert(log[before_unknown+3] == 'empty-end:Not Declared!' and log[before_unknown+4] == 'empty-begin:Ready')
+        local ok, err = pcall(call, a, 'Absent')
         assert(not ok and string.find(err, 'unknown Papyrus method'))
         assert(call(b, 'Value') == 31, 'another script still runs after errors')
+    "#).exec().unwrap();
+}
+
+/// Undeclared GotoState stores the argument and uses empty lifecycle and method fallback.
+#[test]
+fn undeclared_destination_falls_back_and_notifies() {
+    let lua = Lua::new();
+    runtime(&lua);
+    let mut pex = Pex::new("Ready", 2);
+    pex.state(
+        "",
+        vec![
+            returns("Value", 11),
+            switch(),
+            transition("oNbEgInStAtE", "begin"),
+            transition("oNeNdStAtE", "end"),
+            Function {
+                flags: 2,
+                return_type: "None".into(),
+                instructions: vec![],
+                params: vec![
+                    TypedName {
+                        name: "label".into(),
+                        type_name: "string".into(),
+                    },
+                    TypedName {
+                        name: "state".into(),
+                        type_name: "string".into(),
+                    },
+                ],
+                ..returns("Record", 0)
+            },
+        ],
+    );
+    pex.state("Ready", vec![returns("Value", 31)]);
+    lua.globals()
+        .set("Script", load(&lua, &pex.finish()))
+        .unwrap();
+    lua.load(r#"
+        local rt, log = Runtime.new(), {}
+        rt:register_native('StateFixture', 'Record', function(self, label, state) table.insert(log, label .. ':' .. state) end)
+        local a, b = Script.new(rt), Script.new(rt)
+        assert(rt:call_method(a, 'Switch', {'Not Declared!'}) == 'Not Declared!')
+        assert(rt:call_method(a, 'GetState', {}) == 'Not Declared!')
+        assert(rt:call_method(a, 'Value', {}) == 11)
+        assert(table.concat(log, ',') == 'end:Ready,begin:Not Declared!')
+        rt:goto_state(a, 'Ready')
+        assert(table.concat(log, ',') == 'end:Ready,begin:Not Declared!,end:Not Declared!,begin:Ready')
+        assert(rt:call_method(b, 'Value', {}) == 31)
+    "#).exec().unwrap();
+}
+
+/// Mixed-case local/field operands, static calls, class identifiers and natives share name resolution.
+#[test]
+fn pex_mixed_case_identifiers_static_calls_and_natives() {
+    let lua = Lua::new();
+    runtime(&lua);
+    let mut pex = Pex::class("CaseFixture", "", "", 1);
+    let mut run = returns("Run", 0);
+    run.locals = vec![TypedName {
+        name: "Result".into(),
+        type_name: "int".into(),
+    }];
+    run.instructions = vec![
+        Instruction {
+            opcode: 13,
+            args: vec![id("eVeNtVaLuE"), Value::Integer(37)],
+            varargs: vec![],
+        },
+        Instruction {
+            opcode: 25,
+            args: vec![
+                Value::String("cAsEfIxTuRe".into()),
+                Value::String("cOmPuTe".into()),
+                id("rEsUlT"),
+            ],
+            varargs: vec![id("EVENTVALUE")],
+        },
+        Instruction {
+            opcode: 14,
+            args: vec![id("RESULT"), id("rEsUlT")],
+            varargs: vec![],
+        },
+        Instruction {
+            opcode: 26,
+            args: vec![id("RESULT")],
+            varargs: vec![],
+        },
+    ];
+    let mut compute = returns("Compute", 0);
+    compute.return_type = "float".into();
+    compute.flags = 1; // global bytecode, distinct from the global native below
+    compute.params = vec![TypedName {
+        name: "Input".into(),
+        type_name: "int".into(),
+    }];
+    compute.locals = vec![TypedName {
+        name: "Answer".into(),
+        type_name: "float".into(),
+    }];
+    compute.instructions = vec![
+        Instruction {
+            opcode: 25,
+            args: vec![
+                Value::String("CASEFIXTURE".into()),
+                Value::String("dOuBlE".into()),
+                id("ANSWER"),
+            ],
+            varargs: vec![id("iNpUt")],
+        },
+        Instruction {
+            opcode: 26,
+            args: vec![id("answer")],
+            varargs: vec![],
+        },
+    ];
+    pex.state(
+        "",
+        vec![
+            run,
+            compute,
+            Function {
+                flags: 3,
+                return_type: "float".into(),
+                instructions: vec![],
+                params: vec![TypedName {
+                    name: "Value".into(),
+                    type_name: "int".into(),
+                }],
+                ..returns("Double", 0)
+            },
+        ],
+    );
+    lua.globals()
+        .set("Script", load(&lua, &pex.finish()))
+        .unwrap();
+    lua.load(r#"
+        local rt = Runtime.new()
+        rt:register_class('CASEFIXTURE', Script)
+        rt:register_native('casefixture', 'DOUBLE', function(self, value) return value * 2 + 0.75 end)
+        assert(rt:resolve_identifier(nil, 'cAsEfIxTuRe') == Script)
+        local a = Script.new(rt)
+        assert(rt:call_method(a, 'Run', {}) == 74)
+        assert(a.EventValue == 37 and a.eVeNtVaLuE == nil, 'one canonical field')
+        local other = Runtime.new()
+        other:register_class('casefixture', Script)
+        other:register_native('CASEFIXTURE', 'double', function(self, value) return value * 3 + 0.75 end)
+        assert(other:call_method(Script.new(other), 'RUN', {}) == 111)
+        assert(rt:call_method(a, 'Run', {}) == 74, 'static contexts use the invoking runtime')
+        assert(Script.__runtime == nil, 'class registration data stays immutable')
+    "#).exec().unwrap();
+}
+
+/// Auto and explicit properties resolve mixed-case accessors and one backing field through PEX opcodes.
+#[test]
+fn pex_mixed_case_properties_use_canonical_backing_fields() {
+    let lua = Lua::new();
+    runtime(&lua);
+    let mut pex = Pex::new("", 1);
+    pex.add_properties();
+    let mut run = returns("Run", 0);
+    run.locals = vec![TypedName {
+        name: "Result".into(),
+        type_name: "int".into(),
+    }];
+    run.instructions = vec![
+        Instruction {
+            opcode: 29,
+            args: vec![
+                Value::String("cOuNtEr".into()),
+                id("SELF"),
+                Value::Integer(43),
+            ],
+            varargs: vec![],
+        },
+        Instruction {
+            opcode: 28,
+            args: vec![Value::String("COUNTER".into()), id("self"), id("RESULT")],
+            varargs: vec![],
+        },
+        Instruction {
+            opcode: 26,
+            args: vec![id("Result")],
+            varargs: vec![],
+        },
+    ];
+    pex.state("", vec![run]);
+    lua.globals()
+        .set("Script", load(&lua, &pex.finish()))
+        .unwrap();
+    lua.load(r#"
+        local rt = Runtime.new()
+        local a = Script.new(rt)
+        assert(rt:call_method(a, 'Run', {}) == 43)
+        assert(a.EventValue == 43 and a.eVeNtVaLuE == nil)
+        rt:set_property(a, 'hAnDlEd', 67)
+        assert(rt:get_property(a, 'HANDLED') == 67)
+        rt:set_property(a, 'EVENTVALUE', 89)
+        assert(rt:get_property(a, 'eventvalue') == 89 and a.EventValue == 89)
+        a.EventValue = nil
+        rt:set_property(a, 'eVeNtVaLuE', 97)
+        assert(a.EventValue == 97 and a.eVeNtVaLuE == nil, 'None keeps its declared field name')
+        rt:register_class('PARENT', { get_Inherited = function(self) return self.EventValue + 2 end })
+        Script.__parent = 'pArEnT'
+        assert(rt:get_property(a, 'iNhErItEd') == 99)
     "#).exec().unwrap();
 }
