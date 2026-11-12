@@ -951,6 +951,17 @@ fn save_settings(path: &Path, settings: &RenderingSettings) -> Result<(), String
     result.map_err(|e: std::io::Error| e.to_string())
 }
 
+/// Retain live grass coverage without flagging unchanged renderer preferences.
+fn retain_live_grass_coverage(mut settings: Mut<RenderingSettings>, config: &EngineConfig) {
+    let before = (settings.stream_radius, settings.unload_radius);
+    settings
+        .bypass_change_detection()
+        .retain_grass_coverage(config);
+    if before != (settings.stream_radius, settings.unload_radius) {
+        settings.set_changed();
+    }
+}
+
 /// Targets affected by interactive renderer preferences, grouped under Bevy's system parameter limit.
 #[derive(bevy::ecs::system::SystemParam)]
 #[allow(clippy::type_complexity)]
@@ -1004,7 +1015,7 @@ pub(crate) fn apply_render_settings(
     if !settings.is_changed() {
         return;
     }
-    settings.retain_grass_coverage(&config);
+    retain_live_grass_coverage(settings.reborrow(), &config);
     let old_mode = current_mode
         .as_deref()
         .copied()
@@ -1259,6 +1270,57 @@ mod tests {
             ))
             .id();
         (app, camera, reflection)
+    }
+
+    /// No-op coverage checks stay clean, while actual radius repairs mark the resource changed.
+    #[test]
+    fn g3_live_grass_coverage_only_dirties_settings_when_radii_change() {
+        for (args, radii, expected) in [
+            (vec![], (1, 1), (1, 1)),
+            (vec!["--benchmark-only", "--grass"], (1, 1), (1, 1)),
+            (vec!["--grass", "--grass-radius", "7"], (8, 9), (8, 9)),
+            (vec!["--grass", "--grass-radius", "7"], (11, 15), (11, 15)),
+            (vec!["--grass", "--stream-radius", "3"], (3, 4), (3, 4)),
+            (vec!["--grass", "--grass-radius", "7"], (2, 3), (8, 9)),
+            (vec!["--grass", "--grass-radius", "7"], (8, 8), (8, 9)),
+            (vec!["--grass", "--stream-radius", "3"], (1, 1), (2, 2)),
+        ] {
+            let mut config = launch(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>());
+            if args.is_empty() {
+                config.grass = false;
+            }
+            let mut world = World::new();
+            world.insert_resource(RenderingSettings {
+                stream_radius: radii.0,
+                unload_radius: radii.1,
+                ..default()
+            });
+            world.clear_trackers();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            let settings = world.resource::<RenderingSettings>();
+            assert_eq!(
+                (settings.stream_radius, settings.unload_radius),
+                expected,
+                "{args:?}"
+            );
+            assert_eq!(
+                world.is_resource_changed::<RenderingSettings>(),
+                radii != expected,
+                "{args:?}: unchanged coverage must not dirty settings"
+            );
+            world.clear_trackers();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            assert!(
+                !world.is_resource_changed::<RenderingSettings>(),
+                "{args:?}: second check"
+            );
+            world.resource_mut::<RenderingSettings>().set_changed();
+            retain_live_grass_coverage(world.resource_mut::<RenderingSettings>(), &config);
+            assert!(
+                world.is_resource_changed::<RenderingSettings>(),
+                "{args:?}: existing change"
+            );
+        }
     }
 
     /// Saved narrow terrain radii cannot remove the ring required by automatically sized grass.
