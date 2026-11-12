@@ -32,13 +32,21 @@ floated about 170 units away from the forge.
 Node-wrapper support predates the scene-validation guard below. The current mesh output
 contract makes normal conversion rebuild older same-producer GLBs.
 
-Before export, an iterative, memoized walk checks every scene-node component, rejects child
-cycles, and limits the deepest chain to 64 scene nodes. Geometry and other non-node blocks
-contribute zero to this depth; a chain of 64 nodes ending in geometry remains within the limit.
-The bound protects recursive model validation and follows the collision node-walk budget. It is
-an engineering policy rather than a NIF format maximum: a read-only census of 25,433 official
-vanilla and Creation Club NIFs reached 26 nodes, but modded assets can exceed 64. The normal
-pipeline records a refused model as a failed asset and continues publishing usable neighbors.
+Inspection uses an iterative, memoized walk over every scene-node component. It reports the
+longest finite chain even beyond the conversion limit, along with declared-block parse failures
+and bounded conversion-refusal reasons. A cycle has no finite depth: its reported depth is zero
+and its refusal reason identifies the loop. `nif-audit` retains these measurements and lists
+refused files separately from unreadable files, including when conversion is not requested.
+
+Mesh export, skeleton loading and collision entry points enforce one shared limit of 256 parsed
+scene nodes and refuse cycles or undecodable declared skin instances. Geometry and other
+non-node blocks contribute zero to depth. The bound protects recursive model validation,
+collision parent transforms and GLB bounds. Tests actually export and bound geometry below
+256 nodes and walk the deepest collision target on default worker stacks; Windows measurements
+also exercise the executable main and default std/Rayon stacks with the geometry leaf and
+export wrapper. This is an engineering policy: deeper modded assets are recorded as failed
+models while the normal pipeline continues publishing usable neighbors. Block order and the
+collision block-to-glTF-node mapping are preserved throughout the accepted scene.
 
 **Root transform.** A placed reference replaces its model root's local transform with its own, so
 the root block's authored translation, rotation and scale never apply in game. The static scene
@@ -325,7 +333,8 @@ cannot resolve that shape's joints. Repair uses the same recovery path as normal
 Skin declaration comes from the header's per-block types, including instances the parser could
 not decode. An unparsable `NiSkinInstance`, `BSDismemberSkinInstance` or `BSSkin::Instance`
 refuses the whole model before export. Its binding references cannot establish a usable rig;
-this conservative asset-level policy also drops usable sibling shapes in that NIF. Parsed-skin
+this conservative asset-level policy also drops usable sibling shapes in that NIF, including
+when the bad instance is unreferenced. Inspection keeps the parse diagnostics for that file. Parsed-skin
 binding recovery above remains per shape. The refusal names the source, type and count, up to
 eight failure offsets and the omitted count. Normal conversion, including restoration from
 older published manifests or staging journals, omits the refused model, retains other usable
@@ -346,7 +355,9 @@ and `WEIGHTS_0`.
 
 The existing `skin-static-fallback` mesh settings contract covers parsed-skin recovery. The
 appended `nif-scene-and-skin-parse` contract covers scene-depth/cycle and malformed-instance
-validation. Normal caches rebuild older same-producer meshes, and metadata retention rejects an
+validation. The appended `nif-scene-depth-256` contract covers the raised scene/collision budget:
+additional collision parent visits can change output even for previously accepted files.
+Normal caches rebuild older same-producer meshes, and metadata retention rejects an
 older or missing mesh proof until normal conversion regenerates it. Texture/script and archive
 producer identities are unchanged.
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial

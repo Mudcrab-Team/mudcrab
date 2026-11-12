@@ -125,6 +125,115 @@ fn unparsable_skin() -> Vec<u8> {
     bytes
 }
 
+/// Build an independent raw node-only NIF for the audit's above-limit measurement.
+fn audit_scene_chain(depth: u32) -> Vec<u8> {
+    let mut blocks = Vec::new();
+    for index in 0..depth {
+        let mut words = vec![u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, 0];
+        words.extend([
+            1.0_f32.to_bits(),
+            0,
+            0,
+            0,
+            1.0_f32.to_bits(),
+            0,
+            0,
+            0,
+            1.0_f32.to_bits(),
+        ]);
+        words.extend([1.0_f32.to_bits(), u32::MAX]);
+        if index + 1 < depth {
+            words.extend([1, index + 1]);
+        } else {
+            words.push(0);
+        }
+        words.push(0); // effects
+        blocks.push(
+            words
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+    bytes.extend(0x1402_0007_u32.to_le_bytes());
+    bytes.push(1);
+    for value in [12, depth, 100] {
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes.extend([0, 0, 0]); // author/process/export script
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(6_u32.to_le_bytes());
+    bytes.extend(b"NiNode");
+    for _ in 0..depth {
+        bytes.extend(0_u16.to_le_bytes());
+    }
+    for block in &blocks {
+        bytes.extend((block.len() as u32).to_le_bytes());
+    }
+    bytes.extend([0; 12]); // string count, max string length, group count
+    for block in blocks {
+        bytes.extend(block);
+    }
+    bytes
+}
+
+/// The audit keeps measurements for deep scenes and malformed skins without exporting them.
+#[test]
+fn nif_audit_retains_refused_scene_and_skin_diagnostics() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("input");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("broken.nif"), unparsable_skin()).unwrap();
+    fs::write(input.join("healthy.nif"), body_fixture()).unwrap();
+    fs::write(input.join("deep.nif"), audit_scene_chain(257)).unwrap();
+    let report_path = root.path().join("audit.json");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_nif-audit"))
+        .arg(&input)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["summary"]["total_files"], 3);
+    assert_eq!(report["summary"]["refused_files"], 2);
+    assert_eq!(report["summary"]["max_scene_depth"], 257);
+    let broken = &report["files"][0];
+    assert_eq!(broken["path"], "broken.nif");
+    assert_eq!(broken["fallback_blocks"]["NiSkinInstance"], 1);
+    assert_eq!(
+        broken["fallback_offsets"]["NiSkinInstance"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(broken["max_scene_depth"].as_u64().unwrap() > 0);
+    assert!(
+        broken["conversion_refusals"][0]
+            .as_str()
+            .unwrap()
+            .contains("NiSkinInstance")
+    );
+    assert!(broken["parse_error"].is_null());
+    assert_eq!(report["summary"]["conversion_attempts"], 0);
+    let deep = &report["files"][1];
+    assert_eq!(deep["path"], "deep.nif");
+    assert_eq!(deep["max_scene_depth"], 257);
+    assert!(
+        deep["conversion_refusals"][0]
+            .as_str()
+            .unwrap()
+            .contains("257 scene nodes")
+    );
+    assert!(
+        report["files"][2]["conversion_refusals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// Pin the actual pre-refusal proof independently of the current contract list.
 fn pre_refusal_mesh_proof() -> String {
     hash_bytes(
@@ -896,4 +1005,56 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
+}
+
+/// Pin the mesh proof before raising the shared scene/collision traversal budget.
+fn pre_depth_expansion_mesh_proof() -> String {
+    hash_bytes(
+        &serde_json::to_vec(&serde_json::json!({
+            "mesh_producer": 28,
+            "mesh_contracts": [
+                "legacy-skin-export", "msn-vertex-normals", "facegen-tint-slot",
+                "lighting-type-data", "msn-specular-default", "hidden-niavobject-excluded",
+                "nif-root-transform-ignored", "skin-static-fallback", "nif-scene-and-skin-parse"
+            ]
+        }))
+        .unwrap(),
+    )
+}
+
+/// A warm pack carrying the old collision traversal proof must rebuild its meshes only.
+#[tokio::test]
+async fn warm_cache_rebuilds_pre_depth_expansion_mesh_proof() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    prepare_data(&data);
+    let output = root.path().join("modern");
+    let config = config(&data, &output);
+    assert!(publish(&config).await.complete);
+    let mut saved = manifest(&output);
+    let texture_proof = saved.asset_configuration_hashes["dds"].clone();
+    let script_proof = saved.asset_configuration_hashes["pex"].clone();
+    let old_proof = pre_depth_expansion_mesh_proof();
+    assert_eq!(
+        old_proof,
+        "b62ec72de284a86f9352426adeda91c0c400cf922ffd931c6be9d3c040031036"
+    );
+    saved
+        .asset_configuration_hashes
+        .insert("nif".into(), old_proof.clone());
+    fs::write(
+        output.join("conversion-manifest.json"),
+        serde_json::to_vec_pretty(&saved).unwrap(),
+    )
+    .unwrap();
+    let report = publish(&config).await;
+    assert!(report.complete, "{report:?}");
+    assert!(
+        report.converted >= 1,
+        "old traversal proof was reused: {report:?}"
+    );
+    let current = manifest(&output);
+    assert_ne!(current.asset_configuration_hashes["nif"], old_proof);
+    assert_eq!(current.asset_configuration_hashes["dds"], texture_proof);
+    assert_eq!(current.asset_configuration_hashes["pex"], script_proof);
 }
