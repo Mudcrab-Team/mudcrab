@@ -517,6 +517,7 @@ fn remap(
     diagnostics.link(value);
     let result = (|| {
         let order = context.order.form_key_context()?;
+        order.note_projection(context.plugin_index, value);
         let key = order
             .resolve(
                 context.plugin_index,
@@ -629,24 +630,23 @@ fn decode_with_identity_inner(
         "decode",
     );
     diagnostics.set_field("record_header".into());
-    // Original ownership stays strict; GMST convention applies only at the header boundary.
+    // Runtime ownership uses the common self rule; original source provenance stays distinct.
     let source_identity = super::source_identity::resolve(
         &scanned.record_type,
         scanned.source_form_id,
         context.plugin_index,
         context.order,
     );
-    let id = if scanned.record_type == *b"GMST" {
-        super::source_identity::header_runtime_id(
-            &scanned.record_type,
-            scanned.source_form_id,
-            context.plugin_index,
-            context.order,
-        )
-        .ok_or_else(|| "invalid GMST header FormID".to_string())?
-    } else {
-        remap(scanned.source_form_id, context, false, diagnostics)?
-    };
+    let id = remap(scanned.source_form_id, context, false, diagnostics)?;
+    if source_identity.state == super::source_identity::SourceIdentityState::MasterIndexOutOfRange {
+        diagnostics.note("compatibility", || {
+            format!(
+                "{} {:08X}: original owner unresolved; supplier-self runtime projection {id:08X}",
+                String::from_utf8_lossy(&scanned.record_type),
+                scanned.source_form_id
+            )
+        });
+    }
     diagnostics.event_context.form_id = Some(id);
     if id == 0 && !matches!(&scanned.record_type, b"GMST" | b"TES4") {
         return Err("non-GMST record has null FormID".into());

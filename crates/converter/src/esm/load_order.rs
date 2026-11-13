@@ -341,6 +341,25 @@ pub(crate) fn order_explicit_plugins_with_notices(
     notices: &mut Vec<String>,
     skipped_plugins: &mut Vec<String>,
 ) -> Result<Vec<PathBuf>> {
+    order_explicit_plugins_with_capacity(paths, notices, skipped_plugins, true)
+}
+
+/// Recover the same official/CCC priority without applying legacy publication slot caps.
+pub(crate) fn order_explicit_form_key_plugins(
+    paths: Vec<PathBuf>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
+    order_explicit_plugins_with_capacity(paths, notices, skipped_plugins, false)
+}
+
+/// Keep dependency recovery common while choosing capacity only at the writer boundary.
+fn order_explicit_plugins_with_capacity(
+    paths: Vec<PathBuf>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    legacy_caps: bool,
+) -> Result<Vec<PathBuf>> {
     let headers = PluginHeaders::read(&paths)?;
     let skipped = headers.skip_cycles(notices);
     let master_files: Vec<_> = paths
@@ -379,6 +398,12 @@ pub(crate) fn order_explicit_plugins_with_notices(
     ordered.extend((0..paths.len()).filter(|&index| !emitted[index] && !skipped[index]));
     let skipped = headers.skip_inversions(&ordered, skipped, notices);
     ordered.retain(|&index| !skipped[index]);
+    if !legacy_caps {
+        return Ok(ordered
+            .into_iter()
+            .map(|index| paths[index].clone())
+            .collect());
+    }
     Ok(admit_slots(
         paths,
         &headers,

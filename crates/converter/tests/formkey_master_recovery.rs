@@ -1,4 +1,4 @@
-//! Publication retains valid neighbors when a record header exceeds its original MAST list.
+//! Publication uses one supplier-self rule for every out-of-range source selector.
 use converter::esm::{EsmParser, inhouse};
 use rusqlite::Connection;
 use std::{fs, path::Path};
@@ -43,9 +43,9 @@ fn plugin(root: &Path, name: &str, masters: &[&str], body: Vec<u8>) {
     .unwrap();
 }
 
-/// Exercise both publication paths, including a bad tombstone and valid surrounding records.
+/// Exercise unified header ownership while retaining collision protection and valid neighbors.
 #[test]
-fn invalid_header_selector_skips_candidate_and_preserves_neighbors_in_both_writers() {
+fn past_master_selectors_resolve_to_self_in_both_writers() {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     fs::create_dir(&data).unwrap();
@@ -65,6 +65,12 @@ fn invalid_header_selector_skips_candidate_and_preserves_neighbors_in_both_write
             record(b"STAT", 0x0100_0844, 0, &sub(b"EDID", b"retained\0")),
             record(b"STAT", 0x0200_0844, 0x20, &[]),
             record(b"STAT", 0x0100_0855, 0, &sub(b"EDID", b"after\0")),
+            record(
+                b"CELL",
+                0x0200_0866,
+                0,
+                &[sub(b"EDID", b"SelfCell\0"), sub(b"DATA", &[1, 0])].concat(),
+            ),
         ]
         .concat(),
     );
@@ -86,14 +92,21 @@ fn invalid_header_selector_skips_candidate_and_preserves_neighbors_in_both_write
             .unwrap();
         assert_eq!(
             ids,
-            [0x811, 0x0100_0822, 0x0100_0844, 0x0100_0855],
-            "bad headers must not publish or delete a valid neighboring identity"
+            [
+                0x811,
+                0x0100_0822,
+                0x0100_0833,
+                0x0100_0844,
+                0x0100_0855,
+                0x0100_0866
+            ],
+            "out-of-range selectors use self; a colliding candidate cannot erase its valid neighbor"
         );
     }
     let diagnostics: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("inhouse-reader-diagnostics.json")).unwrap())
             .unwrap();
-    assert_eq!(diagnostics["decoder"]["patch.esp"]["skipped_records"], 2);
+    assert_eq!(diagnostics["decoder"]["patch.esp"]["skipped_records"], 1);
 }
 
 /// The native path admits every full/light owner and refuses only legacy publication.
@@ -117,7 +130,18 @@ fn extended_native_conversion_preserves_all_owners_and_unrelated_output() {
     let unrelated = root.path().join("existing-asset.bin");
     fs::write(&unrelated, b"retained unrelated output").unwrap();
     let database = root.path().join("unavailable.db");
-    let (converted, outcome) = EsmParser::convert_form_key_plugins(&paths, &database).unwrap();
+    let list = root.path().join("plugins.txt");
+    fs::write(
+        &list,
+        paths
+            .iter()
+            .map(|path| format!("*{}\n", path.file_name().unwrap().to_string_lossy()))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let (converted, outcome) =
+        EsmParser::convert_selected_form_key_plugins(root.path(), &list, None, None, &database)
+            .unwrap();
     assert_eq!(converted.records.len(), 4352);
     assert!(converted.warnings.is_empty(), "{:?}", converted.warnings);
     assert!(
@@ -127,8 +151,8 @@ fn extended_native_conversion_preserves_all_owners_and_unrelated_output() {
     assert_eq!(converted.notices.len(), 1);
     assert!(!database.exists());
     assert_eq!(fs::read(unrelated).unwrap(), b"retained unrelated output");
-    let full = converted.order.table.id("P0254.esm").unwrap();
-    let light = converted.order.table.id("P4096.esl").unwrap();
+    let full = converted.order.table().id("P0254.esm").unwrap();
+    let light = converted.order.table().id("P4096.esl").unwrap();
     assert!(
         converted
             .records

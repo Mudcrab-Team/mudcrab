@@ -602,6 +602,24 @@ fn read_plugins_with_prepared(
     let identities = order
         .form_key_context()
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    color_eyre::eyre::ensure!(
+        identities.plugin_order().len() == order.names.len(),
+        "load-order snapshot changed after identity allocation"
+    );
+    for (priority, metadata) in order.metadata.iter().enumerate() {
+        let entry = identities
+            .table()
+            .entry(identities.plugin_order()[priority])
+            .expect("allocated supplier");
+        color_eyre::eyre::ensure!(
+            entry.normalized_name
+                == crate::esm::load_order::normalize_plugin_name(&order.names[priority])
+                && entry.facts.masters == metadata.masters
+                && entry.facts.flags.light == (metadata.flags & 0x200 != 0),
+            "load-order facts changed after identity allocation"
+        );
+    }
+    identities.start_resolution_run();
     let legacy = identities.legacy_view()?;
     let key_of = |word| legacy.from_legacy_u32(word).ok().flatten();
     let mut winners = HashMap::<shared::form_key::FormKey, DecodedRecord>::new();
@@ -918,6 +936,9 @@ fn read_plugins_with_prepared(
     let targets_stage = profile::ProfileStage::start("validate_targets");
     decoder::validate_targets_with_prepared(&mut result, schema, prepared, order);
     targets_stage.finish(result.records.len());
+    for warning in identities.projection_warnings() {
+        eprintln!("{warning}");
+    }
     for (name, diagnostics) in &result.diagnostics {
         for line in diagnostics
             .warning_summary_lines(name)

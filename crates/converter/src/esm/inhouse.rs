@@ -1305,6 +1305,9 @@ fn convert_plugins_with_text_sources_report_impl(
     drop(decoded);
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
+    if let Ok(context) = order.form_key_context() {
+        report_warnings.extend(context.projection_warnings());
+    }
     report_notices.extend(warnings.report_notices());
     phases.insert(
         "reader_target_validation_and_diagnostics".into(),

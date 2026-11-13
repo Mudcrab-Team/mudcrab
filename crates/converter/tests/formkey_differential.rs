@@ -74,6 +74,18 @@ fn key(t: &PluginTable, p: &Plugin, raw: u32) -> Resolution {
 
 fn compare(plugins: &[Plugin], records: &[(usize, u32, u32)]) -> Vec<u8> {
     let t = table(plugins);
+    let converter_order = converter::esm::form_keys::FormKeyOrder::from_facts(
+        plugins
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    t.entry(t.id(&p.name).unwrap()).unwrap().facts.clone(),
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
     let order: Vec<_> = plugins.iter().map(|p| t.id(&p.name).unwrap()).collect();
     let view = LegacyIdView::from_load_order(&t, &order).unwrap();
     let mut old = BTreeMap::new();
@@ -81,7 +93,22 @@ fn compare(plugins: &[Plugin], records: &[(usize, u32, u32)]) -> Vec<u8> {
     for &(supplier, raw, payload) in records {
         let expected = old_pack(plugins, supplier, raw).unwrap();
         let resolved = key(&t, &plugins[supplier], raw).key();
-        let actual = resolved.map_or(0, |k| view.to_legacy_u32(k).unwrap());
+        let converter_key = if (raw >> 24) as usize > plugins[supplier].masters.len() {
+            // The real-input caller independently verifies that only GMST uses this convention.
+            converter_order.gmst_header_key(supplier, raw).unwrap()
+        } else {
+            converter_order
+                .resolve(supplier, raw, ZeroPolicy::Null)
+                .unwrap()
+        };
+        assert_eq!(converter_key, resolved);
+        let actual = converter_key.map_or(0, |k| {
+            converter_order
+                .legacy_view()
+                .unwrap()
+                .to_legacy_u32(k)
+                .unwrap()
+        });
         assert_eq!(actual, expected, "{}:{raw:08X}", plugins[supplier].name);
         assert_eq!(view.from_legacy_u32(actual).unwrap(), resolved);
         if expected != 0 {
@@ -166,8 +193,24 @@ fn malformed_master_and_light_width_are_distinguished_from_valid_neighbors() {
         key(&t, &plugins[1], 0x01001000),
         Resolution::InvalidWidth { .. }
     ));
-    // Step 1 explicitly projects past-MAST headers; step 2 must decide whether to
-    // reject this outcome at the converter seam, without changing the pure resolver.
+    let native = converter::esm::form_keys::FormKeyOrder::from_facts(vec![
+        ("Base.esm".into(), PluginFacts::default()),
+        (
+            "Patch.esl".into(),
+            PluginFacts {
+                masters: vec!["Base.esm".into()],
+                ..Default::default()
+            },
+        ),
+    ])
+    .unwrap();
+    assert!(
+        native
+            .resolve(1, 0x7f000801, ZeroPolicy::Null)
+            .unwrap()
+            .is_some()
+    );
+    // The converter and untouched step-1 contract both select self beyond MAST.
     assert!(matches!(
         key(&t, &plugins[1], 0x7f000801),
         Resolution::SelfProjected { .. }
@@ -208,6 +251,167 @@ fn synthetic_exact_and_exceeded_full_and_light_limits() {
         assert_eq!(resolved, full + light);
         assert_eq!(refused, usize::from(full > 254) + usize::from(light > 4096));
     }
+}
+
+/// Encode synthetic native bytes independently of converter identity resolution.
+fn native_record(tag: &[u8; 4], id: u32, flags: u32, body: &[u8]) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(body.len() as u32).to_le_bytes(),
+        &flags.to_le_bytes(),
+        &id.to_le_bytes(),
+        &[0; 8],
+        body,
+    ]
+    .concat()
+}
+
+/// Frame an authored field; fixtures use asymmetric IDs and nonalphabetical priorities.
+fn native_field(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
+    [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
+}
+
+/// Read every SQLite schema object and every table row, including virtual shadow tables.
+fn logical_dump(path: &std::path::Path) -> Vec<String> {
+    use rusqlite::{Connection, types::Value};
+    let conn = Connection::open(path).unwrap();
+    let schema: Vec<(String, String, Option<String>)> = conn
+        .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name,sql")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let mut dump = Vec::new();
+    for (kind, name, sql) in schema {
+        dump.push(format!("schema {kind} {name} {sql:?}"));
+        if kind != "table" {
+            continue;
+        }
+        let mut query = conn
+            .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
+            .unwrap();
+        let count = query.column_count();
+        let mut rows: Vec<String> = query
+            .query_map([], |row| {
+                Ok(format!(
+                    "{:?}",
+                    (0..count)
+                        .map(|i| row.get::<_, Value>(i))
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.sort();
+        dump.extend(rows.into_iter().map(|row| format!("{name} {row}")));
+    }
+    dump
+}
+
+/// Compare actual conversion against frozen old packing, all-table SQL content and cache bytes.
+#[test]
+fn synthetic_publication_matches_independent_old_packer_and_cell_cache() {
+    use converter::esm::{EsmParser, exporter, load_order::LoadOrder};
+    use rusqlite::{Connection, params};
+    let root = tempfile::tempdir().unwrap();
+    let plugins = [
+        Plugin {
+            name: "Z.esm".into(),
+            light: false,
+            masters: vec![],
+        },
+        Plugin {
+            name: "L.esl".into(),
+            light: true,
+            masters: vec!["Z.esm".into()],
+        },
+        Plugin {
+            name: "A.esp".into(),
+            light: false,
+            masters: vec!["L.esl".into(), "Z.esm".into()],
+        },
+    ];
+    let bodies = [
+        native_record(b"STAT", 0x811, 0, &native_field(b"EDID", b"earlier\0")),
+        native_record(b"STAT", 0x0100_0812, 0, &native_field(b"EDID", b"light\0")),
+        [
+            native_record(b"STAT", 0x0100_0811, 0, &native_field(b"EDID", b"winner\0")),
+            native_record(
+                b"CELL",
+                0x0200_0913,
+                0,
+                &[
+                    native_field(b"EDID", b"InteriorFixture\0"),
+                    native_field(b"DATA", &[1, 0]),
+                ]
+                .concat(),
+            ),
+        ]
+        .concat(),
+    ];
+    let mut paths = Vec::new();
+    for (p, body) in plugins.iter().zip(&bodies) {
+        let mut header = native_field(
+            b"HEDR",
+            &[1.71f32.to_le_bytes(), [0; 4], 0x800u32.to_le_bytes()].concat(),
+        );
+        for master in &p.masters {
+            header.extend(native_field(b"MAST", format!("{master}\0").as_bytes()));
+            header.extend(native_field(b"DATA", &[0; 8]));
+        }
+        let path = root.path().join(&p.name);
+        std::fs::write(
+            &path,
+            [
+                native_record(b"TES4", 0, if p.light { 0x200 } else { 0 }, &header),
+                body.clone(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        paths.push(path);
+    }
+    let mut expected = std::collections::HashMap::new();
+    for (supplier, path) in paths.iter().enumerate() {
+        for mut record in parse_plugin_file(path).unwrap() {
+            record.form_id = old_pack(&plugins, supplier, record.form_id).unwrap();
+            record.load_order = supplier as u32;
+            expected.insert(record.form_id, record);
+        }
+    }
+    assert_eq!(expected[&0x811].load_order, 2);
+    assert!(expected.contains_key(&0xfe00_0812));
+    let old_db = root.path().join("old.db");
+    let conn = Connection::open(&old_db).unwrap();
+    exporter::create_tables(&conn).unwrap();
+    for (priority, path) in paths.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO plugins(id,name,priority,checksum) VALUES(?1,?2,?1,?3)",
+            params![
+                priority as u32,
+                path.file_name().unwrap().to_string_lossy(),
+                Sha256::digest(std::fs::read(path).unwrap()).as_slice()
+            ],
+        )
+        .unwrap();
+    }
+    exporter::export_to_db_with_load_order(&conn, &expected, &LoadOrder::read(&paths).unwrap())
+        .unwrap();
+    drop(conn);
+    let new_db = root.path().join("new.db");
+    EsmParser::convert_plugins(&paths, &new_db).unwrap();
+    assert_eq!(logical_dump(&old_db), logical_dump(&new_db));
+    let actual = EsmParser::merge_plugins(&paths).unwrap();
+    let old_cache = root.path().join("old.rkyv");
+    let new_cache = root.path().join("new.rkyv");
+    converter::esm::cell_cache::write_cell_cache(&expected, &old_cache).unwrap();
+    converter::esm::cell_cache::write_cell_cache(&actual, &new_cache).unwrap();
+    assert_eq!(
+        std::fs::read(old_cache).unwrap(),
+        std::fs::read(new_cache).unwrap()
+    );
 }
 
 #[test]
@@ -252,6 +456,12 @@ fn real80_record_identity_baseline_audit() {
             Sha256::digest(&bytes)
         ));
         for record in parse_plugin_file(path).unwrap() {
+            if (record.form_id >> 24) as usize > plugins[supplier].masters.len() {
+                assert_eq!(
+                    record.record_type, *b"GMST",
+                    "unexpected shipped invalid header"
+                );
+            }
             records.push((supplier, record.form_id, supplier as u32));
         }
     }

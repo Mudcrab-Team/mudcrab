@@ -10,20 +10,39 @@ use shared::{
     plugin_table::{PluginFacts, PluginFlags, PluginTable},
     source_form_id::ZeroPolicy,
 };
-use std::{collections::HashMap, io::Read, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Read,
+    path::PathBuf,
+    sync::Mutex,
+};
+
+/// Warning counts are isolated by calling thread and supplier, independently of slot limits.
+type ProjectionCounts = HashMap<std::thread::ThreadId, BTreeMap<usize, (u64, u32)>>;
 
 /// One immutable accepted order. Allocation ids, owner priority and writer slots are separate.
 #[derive(Debug)]
 pub struct FormKeyOrder {
-    pub table: PluginTable,
-    pub order: Vec<PluginId>,
+    pub(crate) table: PluginTable,
+    pub(crate) order: Vec<PluginId>,
     priority: HashMap<PluginId, usize>,
     identity_order: HashMap<PluginId, (u8, usize)>,
     legacy: LegacyIdView<'static>,
+    projections: Mutex<ProjectionCounts>,
     full_count: usize,
     light_count: usize,
 }
 impl FormKeyOrder {
+    /// Inspect the immutable pack-local plugin identity table.
+    pub fn table(&self) -> &PluginTable {
+        &self.table
+    }
+
+    /// Inspect supplier priority independently of table allocation order.
+    pub fn plugin_order(&self) -> &[PluginId] {
+        &self.order
+    }
+
     /// Read original TES4 facts without slot admission caps or invented HEDR versions.
     /// The caller supplies the established recovered official/CCC order; this does not select it.
     pub fn read(paths: &[PathBuf]) -> Result<Self> {
@@ -130,12 +149,13 @@ impl FormKeyOrder {
             priority,
             identity_order,
             legacy,
+            projections: Mutex::new(HashMap::new()),
             full_count,
             light_count,
         })
     }
 
-    /// Resolve before packing. Invalid selectors never project to self, even for source FE.
+    /// Resolve before packing. Every selector at or beyond MAST count selects self.
     /// Converter compatibility intentionally permits low light locals without HEDR 1.71;
     /// shared's stricter version policy remains available to callers of its resolver.
     pub fn resolve(&self, supplier: usize, raw: u32, zero: ZeroPolicy) -> Result<Option<FormKey>> {
@@ -151,11 +171,7 @@ impl FormKeyOrder {
             .entry(id)
             .ok_or_else(|| eyre!("unknown supplier"))?;
         let selector = (raw >> 24) as usize;
-        ensure!(
-            selector <= entry.facts.masters.len(),
-            "FormID {raw:08X} exceeds original master list"
-        );
-        let owner = if selector == entry.facts.masters.len() {
+        let owner = if selector >= entry.facts.masters.len() {
             id
         } else {
             self.table
@@ -163,35 +179,56 @@ impl FormKeyOrder {
                 .ok_or_else(|| eyre!("absent original owner"))?
         };
         let local = raw & 0x00ff_ffff;
-        ensure!(
-            !self.table.is_light(owner) || local <= 0xfff,
-            "light FormID {raw:08X} is wider than 12 bits"
-        );
         Ok(Some(FormKey::new(owner, local)?))
     }
 
-    /// Explicit conventional GMST header identity; never use for links or ownership provenance.
+    /// GMST still overrides by EDID; its source-word ownership uses the common self rule.
     pub fn gmst_header_key(&self, supplier: usize, raw: u32) -> Result<Option<FormKey>> {
-        if raw == 0 {
-            return Ok(None);
-        }
-        let id = *self
+        self.resolve(supplier, raw, ZeroPolicy::Null)
+    }
+
+    /// Count out-of-range occurrences without changing the persisted diagnostic/event formats.
+    pub(crate) fn note_projection(&self, supplier: usize, raw: u32) {
+        let Some(entry) = self
             .order
             .get(supplier)
-            .ok_or_else(|| eyre!("unknown supplier"))?;
-        let entry = self
-            .table
-            .entry(id)
-            .ok_or_else(|| eyre!("unknown supplier"))?;
-        if (raw >> 24) as usize <= entry.facts.masters.len() {
-            return self.resolve(supplier, raw, ZeroPolicy::Null);
+            .and_then(|&id| self.table.entry(id))
+        else {
+            return;
+        };
+        if (raw >> 24) as usize > entry.facts.masters.len() {
+            let mut counts = self
+                .projections
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let count = counts
+                .entry(std::thread::current().id())
+                .or_default()
+                .entry(supplier)
+                .or_insert((0, raw));
+            count.0 += 1;
         }
-        let local = raw & 0x00ff_ffff;
-        ensure!(
-            !self.table.is_light(id) || local <= 0xfff,
-            "wide conventional GMST local"
-        );
-        Ok(Some(FormKey::new(id, local)?))
+    }
+
+    /// Start a per-thread read without mixing counts from reused or concurrent snapshots.
+    pub(crate) fn start_resolution_run(&self) {
+        self.projections
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&std::thread::current().id());
+    }
+
+    /// One warning per supplier reports all projected source occurrences and the first word.
+    pub fn projection_warnings(&self) -> Vec<String> {
+        let counts = self
+            .projections
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        counts.get(&std::thread::current().id()).into_iter().flat_map(|entries| entries.iter())
+            .map(|(&supplier, &(count, first))| format!(
+                "warning: {}: {count} FormID occurrence(s) past the original master list resolved to self (first: {first:08X})",
+                self.table.entry(self.order[supplier]).expect("allocated supplier").display_name))
+            .collect()
     }
 
     /// Obtain the checked writer adapter; overcapacity identities remain in this context.
@@ -225,7 +262,7 @@ impl FormKeyOrder {
 mod tests {
     use super::*;
 
-    /// Original MAST selectors must not be mistaken for global slots or projected onto self.
+    /// Original MAST selectors differ from global slots; out-of-range selectors resolve to self.
     #[test]
     fn original_masters_and_invalid_selectors() {
         let order = FormKeyOrder::from_facts(vec![
@@ -248,7 +285,10 @@ mod tests {
             order.legacy_view().unwrap().to_legacy_u32(key).unwrap(),
             0x0200_1234
         );
-        assert!(order.resolve(2, 0x0200_1234, ZeroPolicy::Identity).is_err());
+        assert_eq!(
+            order.resolve(2, 0x0200_1234, ZeroPolicy::Identity).unwrap(),
+            Some(key)
+        );
         let convention = order.gmst_header_key(2, 0x0200_1234).unwrap().unwrap();
         assert_eq!(key, convention);
         assert_eq!(order.identity_sort_tuple(key).unwrap(), (0, 2, 0x1234));
@@ -268,7 +308,12 @@ mod tests {
             0xfe00_0234
         );
         assert_eq!(order.table.entries()[0].facts.header_version, None);
-        assert!(order.resolve(0, 0x1234, ZeroPolicy::Identity).is_err());
+        let wide = order
+            .resolve(0, 0x1234, ZeroPolicy::Identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wide.local(), 0x1234);
+        assert!(order.legacy_view().unwrap().to_legacy_u32(wide).is_err());
         assert_eq!(order.resolve(0, 0, ZeroPolicy::Null).unwrap(), None);
         assert!(order.resolve(0, 0, ZeroPolicy::Identity).unwrap().is_some());
     }

@@ -6,7 +6,11 @@ use super::{
 };
 use color_eyre::Result;
 use shared::{form_key::FormKey, source_form_id::ZeroPolicy};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+};
 
 /// A recognized native link resolved without any runtime slot allocation.
 #[derive(Debug, Clone)]
@@ -41,6 +45,19 @@ pub enum LegacyWriterOutcome {
 }
 
 impl EsmParser {
+    /// Select and convert native FormKeys with Skyrim's priority rules and no slot exclusions.
+    pub fn convert_selected_form_key_plugins(
+        data: &std::path::Path,
+        plugins: &std::path::Path,
+        ccc: Option<&std::path::Path>,
+        ini: Option<&std::path::Path>,
+        database: &std::path::Path,
+    ) -> Result<(FormKeyConversion, LegacyWriterOutcome)> {
+        let paths =
+            super::plugins_txt::read_form_key_plugins_with_options(plugins, data, ccc, ini)?;
+        Self::convert_form_key_plugins(&paths, database)
+    }
+
     /// Run native FormKey resolution and request the legacy writer only when all owners fit.
     /// Extended orders retain their complete native winner set and leave the destination untouched.
     pub fn convert_form_key_plugins(
@@ -66,6 +83,7 @@ impl EsmParser {
         let mut records = HashMap::new();
         let mut settings = GameSettingIdentities::default();
         for (priority, path) in paths.iter().enumerate() {
+            let mut sources = HashMap::<FormKey, (u32, bool)>::new();
             let name = &order
                 .table
                 .entry(order.order[priority])
@@ -89,18 +107,20 @@ impl EsmParser {
                     }
                 };
                 let links = RefCell::new(Vec::new());
+                let first_word = Cell::new(true);
                 let mut checked = source.clone();
                 let admission = remap_record_using(
                     &mut checked,
                     name,
                     &warnings,
                     |word, strict| {
+                        order.note_projection(priority, word);
                         let resolved = if !strict && source.record_type == *b"GMST" {
                             order.gmst_header_key(priority, word)?
                         } else {
                             order.resolve(priority, word, ZeroPolicy::Null)?
                         };
-                        if strict {
+                        if !first_word.replace(false) {
                             links.borrow_mut().push(ResolvedLink {
                                 source_word: word,
                                 key: resolved,
@@ -114,6 +134,25 @@ impl EsmParser {
                 if let Err(error) = admission {
                     warnings.skipped_record(name, &source, raw, error.to_string());
                     continue;
+                }
+                if let Some(key) = key {
+                    let projected = (raw >> 24) as usize
+                        > order
+                            .table
+                            .entry(order.order[priority])
+                            .expect("supplier")
+                            .facts
+                            .masters
+                            .len();
+                    if let Some(&(earlier, earlier_projected)) = sources.get(&key)
+                        && earlier != raw
+                        && (projected || earlier_projected)
+                    {
+                        warnings.skipped_record(name, &source, raw,
+                            format!("records {earlier:08X} and {raw:08X} resolve to the same key; an out-of-range master index would replace another record"));
+                        continue;
+                    }
+                    sources.insert(key, (raw, projected));
                 }
                 if source.record_type == *b"GMST" {
                     match settings.resolve(&source, key, name, &records) {
@@ -180,6 +219,7 @@ impl EsmParser {
         }
         let (remap_warnings, mut notices) = warnings.report();
         summaries.extend(remap_warnings);
+        summaries.extend(order.projection_warnings());
         if let Some(notice) = order.notice() {
             notices.push(notice);
         }

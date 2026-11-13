@@ -323,6 +323,42 @@ pub(crate) fn read_with_selection_diagnostics(
     skipped_plugins: &mut Vec<String>,
     selection_warnings: &mut Vec<CreationFallbackWarning>,
 ) -> Result<Vec<PathBuf>> {
+    read_with_capacity(
+        SelectionInputs {
+            path,
+            data_dir,
+            ccc,
+            ini,
+        },
+        notices,
+        skipped_plugins,
+        selection_warnings,
+        true,
+    )
+}
+
+/// Explicit selection inputs keep capacity independent of official and Creation Club ordering.
+struct SelectionInputs<'a> {
+    path: &'a Path,
+    data_dir: &'a Path,
+    ccc: Option<&'a Path>,
+    ini: Option<&'a Path>,
+}
+
+/// Share all selection and dependency recovery rules; only legacy slot admission differs.
+fn read_with_capacity(
+    inputs: SelectionInputs<'_>,
+    notices: &mut Vec<String>,
+    skipped_plugins: &mut Vec<String>,
+    selection_warnings: &mut Vec<CreationFallbackWarning>,
+    legacy_caps: bool,
+) -> Result<Vec<PathBuf>> {
+    let SelectionInputs {
+        path,
+        data_dir,
+        ccc,
+        ini,
+    } = inputs;
     let bytes =
         std::fs::read(path).wrap_err_with(|| format!("reading plugins.txt {}", path.display()))?;
     let text = decode_windows_1252(&bytes);
@@ -392,14 +428,50 @@ pub(crate) fn read_with_selection_diagnostics(
         .collect();
     let selected = usable_plugins(selected, &mut warnings);
     warnings.finish(notices);
-    let selected =
-        load_order::order_explicit_plugins_with_notices(selected, notices, &mut Vec::new())?;
+    let selected = if legacy_caps {
+        load_order::order_explicit_plugins_with_notices(selected, notices, &mut Vec::new())?
+    } else {
+        load_order::order_explicit_form_key_plugins(selected, notices, &mut Vec::new())?
+    };
     record_recovery_skips(&candidates, &selected, skipped_plugins);
     ensure!(
         !selected.is_empty(),
         "no usable active plugins remain after plugins.txt selection"
     );
     Ok(selected)
+}
+
+/// Select every usable plugin for native FormKey conversion, preserving Skyrim/CCC priority.
+/// Invalid headers, missing masters, cycles and inversions retain bounded local recovery.
+/// Legacy publication preflights the complete result separately, including empty owners.
+pub fn read_form_key_plugins_with_options(
+    path: &Path,
+    data_dir: &Path,
+    ccc: Option<&Path>,
+    ini: Option<&Path>,
+) -> Result<Vec<PathBuf>> {
+    let mut notices = Vec::new();
+    let mut skipped = Vec::new();
+    let mut selection_warnings = Vec::new();
+    let selected = read_with_capacity(
+        SelectionInputs {
+            path,
+            data_dir,
+            ccc,
+            ini,
+        },
+        &mut notices,
+        &mut skipped,
+        &mut selection_warnings,
+        false,
+    );
+    for notice in notices {
+        eprintln!("warning: {notice}");
+    }
+    for warning in selection_warnings {
+        eprintln!("warning: {warning}");
+    }
+    selected
 }
 
 /// Read an explicit player list with optional CCC and INI paths; omitted INI stays unused.

@@ -253,6 +253,7 @@ impl EsmParser {
         let mut game_settings = GameSettingIdentities::default();
         let warnings = RemapWarnings::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
+            let mut sources = HashMap::<shared::form_key::FormKey, (u32, bool)>::new();
             let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
             summaries.extend(parser_summaries);
             for mut record in records {
@@ -280,16 +281,15 @@ impl EsmParser {
                     }
                 };
                 let kind = record.record_type;
-                if kind == *b"GMST"
-                    && (source_id >> 24) as usize > order.metadata[priority].masters.len()
-                {
-                    warnings.out_of_range(&order.names[priority], source_id, kind);
-                }
                 let admission = remap_record_using(
                     &mut record,
                     &order.names[priority],
                     &warnings,
                     |raw, strict| {
+                        identities.note_projection(priority, raw);
+                        if (raw >> 24) as usize > order.metadata[priority].masters.len() {
+                            warnings.out_of_range(&order.names[priority], raw, kind);
+                        }
                         let key = if !strict && kind == *b"GMST" {
                             identities.gmst_header_key(priority, raw)?
                         } else {
@@ -299,9 +299,30 @@ impl EsmParser {
                                 shared::source_form_id::ZeroPolicy::Null,
                             )?
                         };
-                        Ok(legacy.to_nullable_legacy_u32(key)?)
+                        match legacy.to_nullable_legacy_u32(key) {
+                            Ok(value) => Ok(value),
+                            Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
+                                if !strict =>
+                            {
+                                let key = key.expect("non-null wide key");
+                                let owner = &identities
+                                    .table
+                                    .entry(key.plugin())
+                                    .expect("owner")
+                                    .normalized_name;
+                                warnings.truncated(owner, raw);
+                                Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
+                                    key.plugin(),
+                                    key.local() & 0xfff,
+                                )?)?)
+                            }
+                            Err(error) => Err(error.into()),
+                        }
                     },
-                    false,
+                    matches!(
+                        &kind,
+                        b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
+                    ),
                 )
                 .and_then(|()| {
                     if !record.is_deleted() {
@@ -320,6 +341,26 @@ impl EsmParser {
                         error.to_string(),
                     );
                     continue;
+                }
+                // Preserve the old explicit malformed-light recovery at the legacy boundary;
+                // the native FormKey path retains the original full local without masking.
+                if key.is_some_and(|key| {
+                    key.local() > 0xfff && identities.table.is_light(key.plugin())
+                }) {
+                    key = legacy.from_legacy_u32(record.form_id)?;
+                }
+                if let Some(key) = key {
+                    let projected =
+                        (source_id >> 24) as usize > order.metadata[priority].masters.len();
+                    if let Some(&(earlier, earlier_projected)) = sources.get(&key)
+                        && earlier != source_id
+                        && (projected || earlier_projected)
+                    {
+                        warnings.skipped_record(&order.names[priority], &record, source_id,
+                            format!("records {earlier:08X} and {source_id:08X} resolve to the same key; an out-of-range master index would replace another record"));
+                        continue;
+                    }
+                    sources.insert(key, (source_id, projected));
                 }
                 if record.record_type == *b"GMST" {
                     let canonical = match game_settings.resolve(
@@ -380,6 +421,10 @@ impl EsmParser {
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
+        for warning in identities.projection_warnings() {
+            eprintln!("{warning}");
+            summaries.push(warning);
+        }
         Ok(RecordConversion {
             records: merged
                 .into_values()
@@ -413,7 +458,6 @@ struct RemapWarnings {
 
 impl RemapWarnings {
     /// Accumulate one truncation without emitting a per-reference diagnostic.
-    #[cfg(test)]
     fn truncated(&self, owner: &str, form_id: u32) {
         let mut counts = self.truncations.borrow_mut();
         let entry = counts.entry(owner.to_owned()).or_insert((0, form_id));
@@ -686,8 +730,8 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
     })
 }
 
-/// Remaps local FormIDs within a record header, parent cell/worldspace references,
-/// and relevant subrecords according to master plugin load-order indices.
+/// Frozen pre-FormKey remapper for differential controls on the old policy boundaries.
+/// Production uses FormKey resolution and `remap_record_using` instead.
 #[cfg(test)]
 fn remap_record_form_ids(
     record: &mut RawRecord,
@@ -811,9 +855,9 @@ fn remap_record_using(
             continue;
         }
         if tag.as_slice() == b"VMAD" {
-            // Primary script objects retain the record kind's established legacy
-            // ownership compatibility. Malformed framing still rejects the candidate.
-            records::record_type::vmad::remap_primary_form_ids(data, &remap_link)
+            // Object links use the same supplier-self selector rule as every field.
+            // The existing record-kind light-width policy and framing recovery are retained.
+            records::record_type::vmad::remap_primary_form_ids(data, &remap)
                 .wrap_err("VMAD references")?;
             continue;
         }
