@@ -43,6 +43,7 @@ pub mod shots;
 pub mod skin_material;
 pub mod sky;
 pub mod skyrim_ini;
+pub mod sun;
 pub mod streaming;
 mod streaming_gpu_metrics;
 mod streaming_preparation;
