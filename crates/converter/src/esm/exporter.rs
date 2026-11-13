@@ -619,7 +619,8 @@ pub(crate) fn validate_inhouse_record(record: &RawRecord) -> Result<()> {
 }
 
 /// Writes every merged record; with a load order, also records each record's
-/// owning plugin and plugin-local ID in `formid_map`.
+/// owning plugin and plugin-local ID in `formid_map`. SQL insertion follows unsigned
+/// legacy owner identity order, independently of the winning supplier's load order.
 fn export_records(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
@@ -676,8 +677,11 @@ fn export_records(
         HashMap::new()
     };
 
+    // Legacy IDs encode owner identity, not the winning supplier priority.
+    let mut ordered: Vec<_> = master.iter().collect();
+    ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
     if runtime_views {
-        for (&form_id, record) in master
+        for &(&form_id, record) in ordered
             .iter()
             .filter(|(_, record)| &record.record_type == b"CELL")
         {
@@ -717,8 +721,6 @@ fn export_records(
         .map(|(&form_id, _)| form_id)
         .collect();
 
-    let mut ordered: Vec<_> = master.iter().collect();
-    ordered.sort_unstable_by_key(|(form_id, _)| **form_id);
     // Keep the hot statement checked out. Repeated cache checkout/return recreates
     // its owned SQL key and cache entry for every record. Prepare lazily for an
     // empty legacy subset, and clear each row's bindings as before.
@@ -1105,7 +1107,8 @@ fn report_actor_model_diagnostics(diagnostics: &[crate::actor_models::ActorModel
 /// Lighting colour at each time of day (see [`crate::esm::emittance`]). A target that is missing
 /// or does not resolve gets no row, so the runtime keeps the model's own emission for its
 /// references. Rows from an earlier export into the same database are dropped first, so a target
-/// that no longer resolves loses its old colour.
+/// that no longer resolves loses its old colour. Targets use unsigned legacy owner
+/// identity order so SQL insertion does not depend on the query planner.
 fn insert_emittance_sources(
     tx: &Transaction<'_>,
     master: &HashMap<u32, RawRecord>,
@@ -1113,7 +1116,7 @@ fn insert_emittance_sources(
 ) -> Result<()> {
     tx.execute("DELETE FROM emittance", [])?;
     let targets: Vec<u32> = tx
-        .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL")?
+        .prepare("SELECT DISTINCT emittance_id FROM \"references\" WHERE emittance_id IS NOT NULL ORDER BY emittance_id")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<_>>()?;
     for target in targets {

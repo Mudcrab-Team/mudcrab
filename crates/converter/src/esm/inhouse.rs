@@ -860,6 +860,8 @@ fn convert_plugins_with_text_sources_impl(
 }
 
 /// Return published records and summaries by severity without changing recovery semantics.
+/// Auxiliary SQL maps use unsigned legacy owner identity order; authored layer lists
+/// and the winning supplier metadata retain their original order and meaning.
 fn convert_plugins_with_text_sources_report_impl(
     plugin_paths: &[PathBuf],
     db_path: &Path,
@@ -1202,6 +1204,8 @@ fn convert_plugins_with_text_sources_report_impl(
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_source_records(form_id INTEGER PRIMARY KEY, source_form_id INTEGER NOT NULL, load_order INTEGER NOT NULL, record_type TEXT NOT NULL, flags INTEGER NOT NULL, payload BLOB NOT NULL); DELETE FROM inhouse_source_records;")?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS inhouse_localized_fields(form_id INTEGER NOT NULL, field_index INTEGER NOT NULL, signature TEXT NOT NULL, field_name TEXT NOT NULL, string_table TEXT NOT NULL, string_id INTEGER NOT NULL, load_order INTEGER NOT NULL, resolved_text TEXT, status TEXT NOT NULL CHECK(status IN ('resolved','null_id','missing')), PRIMARY KEY(form_id,field_index)); DELETE FROM inhouse_localized_fields; CREATE TABLE IF NOT EXISTS inhouse_terrain_source_order(form_id INTEGER PRIMARY KEY, source_record_offset INTEGER NOT NULL); DELETE FROM inhouse_terrain_source_order;")?;
     super::inhouse_terrain_diagnostics::replace_snapshot_tables(&tx)?;
+    let mut preserved_layers: Vec<_> = preserved_layers.into_iter().collect();
+    preserved_layers.sort_unstable_by_key(|(id, _)| *id);
     for (id, layers) in preserved_layers {
         let Some(record) = master.get(&id) else {
             continue;
@@ -1228,6 +1232,8 @@ fn convert_plugins_with_text_sources_report_impl(
             params![field.form_id, field.field_index as u64, String::from_utf8_lossy(&field.signature), field.field_name, field.string_table, field.string_id, field.load_order, field.resolved_text, field.status],
         )?;
     }
+    let mut terrain_offsets: Vec<_> = terrain_offsets.into_iter().collect();
+    terrain_offsets.sort_unstable_by_key(|(id, _)| *id);
     for (id, offset) in terrain_offsets {
         tx.prepare_cached(
             "INSERT INTO inhouse_terrain_source_order(form_id,source_record_offset) VALUES (?1,?2)",
