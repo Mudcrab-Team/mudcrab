@@ -628,6 +628,7 @@ fn read_plugins_with_prepared(
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
+    let mut gmst_form_keys = HashMap::<u32, shared::form_key::FormKey>::new();
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
         let name = &order.names[index];
@@ -640,6 +641,15 @@ fn read_plugins_with_prepared(
                 .push(history::header_entry(header, order, index));
         };
         scanner::scan_plugin(path, &mut diagnostics, observe, |scanned, diagnostics| {
+            // Retain native identity before the decoder packs its compatibility fields.
+            let native_key = identities
+                .resolve(
+                    index,
+                    scanned.source_form_id,
+                    shared::source_form_id::ZeroPolicy::Null,
+                )
+                .ok()
+                .flatten();
             let offset = scanned.source_record_offset;
             let context = decoder::Context {
                 order,
@@ -870,7 +880,16 @@ fn read_plugins_with_prepared(
                 entry.accepted = true;
                 entry.reason = None;
             }
-            let Some(winner_key) = key_of(record.form_id) else {
+            let winner_key = if record.record_type == *b"GMST" {
+                let key = gmst_form_keys.get(&record.form_id).copied().or(native_key);
+                if let Some(key) = key {
+                    gmst_form_keys.insert(record.form_id, key);
+                }
+                key
+            } else {
+                native_key
+            };
+            let Some(winner_key) = winner_key else {
                 diagnostics.note("record", || {
                     format!("record {:08X} has no legacy identity", record.form_id)
                 });
