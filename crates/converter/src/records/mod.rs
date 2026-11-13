@@ -599,6 +599,12 @@ fn read_plugins_with_prepared(
         plugin_paths.len() == order.names.len(),
         "plugin/order length mismatch"
     );
+    let identities = order
+        .form_key_context()
+        .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let legacy = identities.legacy_view()?;
+    let key_of = |word| legacy.from_legacy_u32(word).ok().flatten();
+    let mut winners = HashMap::<shared::form_key::FormKey, DecodedRecord>::new();
     let mut result = ReadResult::default();
     // Retain payloads only while an admitted winner still needs catalogue replay.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
@@ -628,30 +634,29 @@ fn read_plugins_with_prepared(
                     entry.editor_id = Some(name.to_ascii_lowercase());
                 }
             };
-            let mut record = match decoder::decode_with_identity(
-                scanned,
-                schema,
-                prepared,
-                &context,
-                diagnostics,
-                &mut identity,
-            ) {
-                Ok(record) => record,
-                Err(error) => {
-                    if let Some(entry) = history.borrow_mut().last_mut() {
-                        entry.reason = Some(error.clone());
+            let mut record =
+                match decoder::decode_with_identity(
+                    scanned,
+                    schema,
+                    prepared,
+                    &context,
+                    diagnostics,
+                    &mut identity,
+                ) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        if let Some(entry) = history.borrow_mut().last_mut() {
+                            entry.reason = Some(error.clone());
+                        }
+                        if diagnostics.event_context.form_id.is_some_and(|id| {
+                            key_of(id).is_some_and(|key| winners.contains_key(&key))
+                        }) {
+                            diagnostics.event_context.action = Some("kept_earlier_version");
+                        }
+                        diagnostics.note("record", || error);
+                        return;
                     }
-                    if diagnostics
-                        .event_context
-                        .form_id
-                        .is_some_and(|id| result.records.contains_key(&id))
-                    {
-                        diagnostics.event_context.action = Some("kept_earlier_version");
-                    }
-                    diagnostics.note("record", || error);
-                    return;
-                }
-            };
+                };
             if record.record_type == *b"TES4" {
                 result.headers.push(record);
                 return;
@@ -685,7 +690,7 @@ fn read_plugins_with_prepared(
                 if let Some(entry) = history.borrow_mut().last_mut() {
                     entry.reason = Some(format!("unusable runtime candidate: {error}"));
                 }
-                if result.records.contains_key(&record.form_id) {
+                if key_of(record.form_id).is_some_and(|key| winners.contains_key(&key)) {
                     diagnostics.event_context.action = Some("kept_earlier_version");
                 }
                 diagnostics.note("record", || {
@@ -720,9 +725,8 @@ fn read_plugins_with_prepared(
             };
             if record.flags & 0x20 == 0
                 && !record.payload_complete
-                && result
-                    .records
-                    .get(&candidate_id)
+                && key_of(candidate_id)
+                    .and_then(|key| winners.get(&key))
                     .is_some_and(|previous| previous.payload_complete)
             {
                 if let Some(entry) = history.borrow_mut().last_mut() {
@@ -782,9 +786,8 @@ fn read_plugins_with_prepared(
                             && (gmst_aliases
                                 .get(&record.form_id)
                                 .is_some_and(|&previous| known != Some(previous))
-                                || result
-                                    .records
-                                    .get(&record.form_id)
+                                || key_of(record.form_id)
+                                    .and_then(|key| winners.get(&key))
                                     .is_some_and(|previous| previous.record_type != *b"GMST"))
                     {
                         if let Some(entry) = history.borrow_mut().last_mut() {
@@ -849,7 +852,13 @@ fn read_plugins_with_prepared(
                 entry.accepted = true;
                 entry.reason = None;
             }
-            if let Some(previous) = result.records.get(&record.form_id) {
+            let Some(winner_key) = key_of(record.form_id) else {
+                diagnostics.note("record", || {
+                    format!("record {:08X} has no legacy identity", record.form_id)
+                });
+                return;
+            };
+            if let Some(previous) = winners.get(&winner_key) {
                 result
                     .overrides
                     .entry(record.form_id)
@@ -867,12 +876,12 @@ fn read_plugins_with_prepared(
                 result.overrides.insert(record.form_id, vec![source]);
             }
             if record.flags & 0x20 != 0 {
-                result.records.remove(&record.form_id);
+                winners.remove(&winner_key);
                 deferred_predecessors.remove(&record.form_id);
             } else {
                 let id = record.form_id;
                 let tentative = decoder::record_contains_deferred(&record);
-                let previous = result.records.insert(id, record);
+                let previous = winners.insert(winner_key, record);
                 if tentative {
                     if let Some(previous) = previous {
                         deferred_predecessors.entry(id).or_default().push(previous);
@@ -885,6 +894,12 @@ fn read_plugins_with_prepared(
         result.history.extend(history.into_inner());
         result.diagnostics.insert(name.clone(), diagnostics);
     }
+    // The unchanged decoder/catalogue APIs receive a checked legacy projection only
+    // after native winner identity has been merged using FormKey equality.
+    result.records = winners
+        .into_values()
+        .map(|record| (record.form_id, record))
+        .collect();
     scan_stage.finish(result.records.len());
     let deferred_stage = profile::ProfileStage::start("resolve_deferred");
     history::reconcile_gmst(&mut result.history, &gmst_ids);

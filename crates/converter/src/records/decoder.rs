@@ -507,6 +507,7 @@ fn subrecords<'a>(
 }
 
 /// Resolve a file-relative link; invalid optional values become null with one counted diagnostic.
+/// Resolve native words before checked legacy projection; invalid optional links clear locally.
 fn remap(
     value: u32,
     context: &Context<'_>,
@@ -514,51 +515,27 @@ fn remap(
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<u32, String> {
     diagnostics.link(value);
-    if value == 0 {
-        return Ok(0);
-    }
-    let masters = &context.order.metadata[context.plugin_index].masters;
-    let index = (value >> 24) as usize;
-    if optional && index > masters.len() {
-        note_decode_link(
-            diagnostics,
-            format!("optional FormID {value:08X} exceeds master list"),
-        );
-        return Ok(0);
-    }
-    let owner = if index < masters.len() {
-        crate::esm::load_order::normalize_plugin_name(&masters[index])
-    } else {
-        crate::esm::load_order::normalize_plugin_name(&context.order.names[context.plugin_index])
-    };
-    if let Some(&slot) = context.order.light.get(&owner) {
-        if value & 0x00ff_ffff > 0xfff {
-            if optional {
-                note_decode_link(
-                    diagnostics,
-                    format!("optional light FormID {value:08X} is wider than 12 bits"),
-                );
-                return Ok(0);
-            }
-            return Err(format!(
-                "record light FormID {value:08X} is wider than 12 bits"
-            ));
+    let result = (|| {
+        let order = context.order.form_key_context()?;
+        let key = order
+            .resolve(
+                context.plugin_index,
+                value,
+                shared::source_form_id::ZeroPolicy::Null,
+            )
+            .map_err(|error| error.to_string())?;
+        order
+            .legacy_view()
+            .map_err(|error| error.to_string())?
+            .to_nullable_legacy_u32(key)
+            .map_err(|error| error.to_string())
+    })();
+    match result {
+        Err(error) if optional => {
+            note_decode_link(diagnostics, format!("optional FormID {value:08X}: {error}"));
+            Ok(0)
         }
-        return Ok(0xfe00_0000 | slot << 12 | value & 0xfff);
-    }
-    if let Some(slot) = context.order.normal.get(&owner) {
-        return Ok(slot << 24 | value & 0x00ff_ffff);
-    }
-    if optional {
-        note_decode_link(
-            diagnostics,
-            format!("optional FormID {value:08X} has absent owner {owner}"),
-        );
-        Ok(0)
-    } else {
-        Err(format!(
-            "record FormID {value:08X} has absent owner {owner}"
-        ))
+        result => result,
     }
 }
 
@@ -652,27 +629,27 @@ fn decode_with_identity_inner(
         "decode",
     );
     diagnostics.set_field("record_header".into());
-    // Original ownership stays strict; required headers retain supplier-self runtime compatibility.
+    // Original ownership stays strict; GMST convention applies only at the header boundary.
     let source_identity = super::source_identity::resolve(
         &scanned.record_type,
         scanned.source_form_id,
         context.plugin_index,
         context.order,
     );
-    let id = remap(scanned.source_form_id, context, false, diagnostics)?;
+    let id = if scanned.record_type == *b"GMST" {
+        super::source_identity::header_runtime_id(
+            &scanned.record_type,
+            scanned.source_form_id,
+            context.plugin_index,
+            context.order,
+        )
+        .ok_or_else(|| "invalid GMST header FormID".to_string())?
+    } else {
+        remap(scanned.source_form_id, context, false, diagnostics)?
+    };
     diagnostics.event_context.form_id = Some(id);
     if id == 0 && !matches!(&scanned.record_type, b"GMST" | b"TES4") {
         return Err("non-GMST record has null FormID".into());
-    }
-    if source_identity.state == super::source_identity::SourceIdentityState::MasterIndexOutOfRange {
-        // Count header projection, not final admission; later body/collision checks remain independent.
-        diagnostics.note("compatibility", || {
-            format!(
-                "{} {:08X}: original owner unresolved; supplier-self runtime projection {id:08X}",
-                String::from_utf8_lossy(&scanned.record_type),
-                scanned.source_form_id
-            )
-        });
     }
     let before_groups = DiagnosticCounts::read(diagnostics);
     let cell = scanned

@@ -96,19 +96,15 @@ pub(crate) fn header_runtime_id(
     if raw == 0 {
         return Some(0);
     }
-    let source = resolve(signature, raw, supplier, order);
-    let owner = match source.state {
-        SourceIdentityState::Resolved => source.original_owner.as_deref()?,
-        SourceIdentityState::GmstEditorIdConvention => &order.names[supplier],
-        _ => return None,
-    };
-    let local = source.full_local?;
-    if let Some(slot) = order.light.get(owner) {
-        // No OR spill into an adjacent owner and no truncated alias.
-        (local <= 0xfff).then_some(0xfe00_0000 | slot << 12 | local)
+    let context = order.form_key_context().ok()?;
+    let key = if signature == b"GMST" {
+        context.gmst_header_key(supplier, raw).ok()?
     } else {
-        order.normal.get(owner).map(|slot| slot << 24 | local)
-    }
+        context
+            .resolve(supplier, raw, shared::source_form_id::ZeroPolicy::Null)
+            .ok()?
+    };
+    context.legacy_view().ok()?.to_nullable_legacy_u32(key).ok()
 }
 
 #[cfg(test)]

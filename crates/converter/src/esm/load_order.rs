@@ -492,6 +492,7 @@ pub struct LoadOrder {
     pub metadata: Vec<PluginMetadata>,
     pub normal: HashMap<String, u32>,
     pub light: HashMap<String, u32>,
+    form_keys: std::sync::OnceLock<Result<super::form_keys::FormKeyOrder, String>>,
     normal_by_slot: Vec<String>,
     light_by_slot: Vec<String>,
 }
@@ -540,6 +541,7 @@ impl LoadOrder {
             metadata: Vec::new(),
             normal: HashMap::new(),
             light: HashMap::new(),
+            form_keys: std::sync::OnceLock::new(),
             normal_by_slot: Vec::new(),
             light_by_slot: Vec::new(),
         };
@@ -570,6 +572,37 @@ impl LoadOrder {
             result.metadata.push(metadata);
         }
         Ok(result)
+    }
+
+    /// Cache a cap-free identity authority for both legacy readers without changing u32 APIs.
+    /// Metadata-only orders have unknown HEDR versions; low light locals retain converter policy.
+    pub fn form_key_context(&self) -> Result<&super::form_keys::FormKeyOrder, String> {
+        self.form_keys
+            .get_or_init(|| {
+                super::form_keys::FormKeyOrder::from_facts(
+                    self.names
+                        .iter()
+                        .zip(&self.metadata)
+                        .map(|(name, metadata)| {
+                            (
+                                name.clone(),
+                                shared::plugin_table::PluginFacts {
+                                    flags: shared::plugin_table::PluginFlags {
+                                        master: metadata.flags & 1 != 0,
+                                        light: metadata.flags & 0x200 != 0,
+                                        medium: metadata.flags & 0x400 != 0,
+                                    },
+                                    masters: metadata.masters.clone(),
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Resolve the original owning plugin, rejecting null, absent, or inconsistent slots.

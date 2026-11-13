@@ -20,6 +20,8 @@ pub mod emittance;
 mod environment;
 pub mod exporter;
 pub mod extractors;
+pub mod form_key_merge;
+pub mod form_keys;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
@@ -242,6 +244,8 @@ impl EsmParser {
         order: &load_order::LoadOrder,
     ) -> Result<RecordConversion> {
         let mut merged = HashMap::new();
+        let identities = form_keys::FormKeyOrder::read(plugin_paths)?;
+        let legacy = identities.legacy_view()?;
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
         // the first definition's key/owner while taking the last setting value.
@@ -249,23 +253,55 @@ impl EsmParser {
         let mut game_settings = GameSettingIdentities::default();
         let warnings = RemapWarnings::default();
         for (priority, path) in plugin_paths.iter().enumerate() {
-            let masters = &order.metadata[priority].masters;
-            // Final ID -> (source ID, whether its master index was out of range). Two different
-            // source IDs that resolve to one final ID would silently replace each other.
-            let mut sources: HashMap<u32, (u32, bool)> = HashMap::new();
             let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
             summaries.extend(parser_summaries);
             for mut record in records {
                 record.load_order = priority as u32;
                 let source_id = record.form_id;
-                let out_of_range = (source_id >> 24) as usize > masters.len();
-                let admission = remap_record_form_ids(
+                let key = if record.record_type == *b"GMST" {
+                    identities.gmst_header_key(priority, source_id)
+                } else {
+                    identities.resolve(
+                        priority,
+                        source_id,
+                        shared::source_form_id::ZeroPolicy::Null,
+                    )
+                };
+                let mut key = match key {
+                    Ok(key) => key,
+                    Err(error) => {
+                        warnings.skipped_record(
+                            &order.names[priority],
+                            &record,
+                            source_id,
+                            error.to_string(),
+                        );
+                        continue;
+                    }
+                };
+                let kind = record.record_type;
+                if kind == *b"GMST"
+                    && (source_id >> 24) as usize > order.metadata[priority].masters.len()
+                {
+                    warnings.out_of_range(&order.names[priority], source_id, kind);
+                }
+                let admission = remap_record_using(
                     &mut record,
                     &order.names[priority],
-                    masters,
-                    &order.normal,
-                    &order.light,
                     &warnings,
+                    |raw, strict| {
+                        let key = if !strict && kind == *b"GMST" {
+                            identities.gmst_header_key(priority, raw)?
+                        } else {
+                            identities.resolve(
+                                priority,
+                                raw,
+                                shared::source_form_id::ZeroPolicy::Null,
+                            )?
+                        };
+                        Ok(legacy.to_nullable_legacy_u32(key)?)
+                    },
+                    false,
                 )
                 .and_then(|()| {
                     if !record.is_deleted() {
@@ -285,45 +321,36 @@ impl EsmParser {
                     );
                     continue;
                 }
-                let remapped_source_id = record.form_id;
-                if let Some((earlier, earlier_out_of_range)) = sources.get(&record.form_id) {
-                    // Light-ID truncation keeps its documented last-record-wins behaviour; only
-                    // an out-of-range master index is rejected when it lands on another record.
-                    if *earlier != source_id && (out_of_range || *earlier_out_of_range) {
-                        warnings.skipped_record(
-                            &order.names[priority],
-                            &record,
-                            source_id,
-                            format!("records {earlier:08X} and {source_id:08X} both resolve to {:08X}; an out-of-range master index would replace another record", record.form_id),
-                        );
-                        continue;
-                    }
-                }
                 if record.record_type == *b"GMST" {
-                    let canonical =
-                        match game_settings.resolve(&record, &order.names[priority], &merged) {
-                            Ok(Some(canonical)) => canonical,
-                            Ok(None) => {
-                                warnings.skipped_record(
-                                    &order.names[priority],
-                                    &record,
-                                    source_id,
-                                    "deleted GMST has no EditorID or known setting identity".into(),
-                                );
-                                continue;
-                            }
-                            Err(error) => {
-                                warnings.skipped_record(
-                                    &order.names[priority],
-                                    &record,
-                                    source_id,
-                                    error.to_string(),
-                                );
-                                continue;
-                            }
-                        };
-                    record.form_id = canonical;
-                } else if game_settings.aliases.contains_key(&record.form_id) {
+                    let canonical = match game_settings.resolve(
+                        &record,
+                        key,
+                        &order.names[priority],
+                        &merged,
+                    ) {
+                        Ok(Some(canonical)) => canonical,
+                        Ok(None) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                "deleted GMST has no EditorID or known setting identity".into(),
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
+                    record.form_id = legacy.to_legacy_u32(canonical)?;
+                    key = Some(canonical);
+                } else if key.is_some_and(|key| game_settings.aliases.contains_key(&key)) {
                     warnings.skipped_record(
                         &order.names[priority],
                         &record,
@@ -335,18 +362,29 @@ impl EsmParser {
                     );
                     continue;
                 }
-                sources.insert(remapped_source_id, (source_id, out_of_range));
+                let Some(key) = key else {
+                    warnings.skipped_record(
+                        &order.names[priority],
+                        &record,
+                        source_id,
+                        "record has a null identity".into(),
+                    );
+                    continue;
+                };
                 if record.is_deleted() {
-                    merged.remove(&record.form_id);
+                    merged.remove(&key);
                 } else {
-                    merged.insert(record.form_id, record);
+                    merged.insert(key, record);
                 }
             }
         }
         let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
         Ok(RecordConversion {
-            records: merged,
+            records: merged
+                .into_values()
+                .map(|record| (record.form_id, record))
+                .collect(),
             warnings: summaries,
             notices,
             phases: std::collections::BTreeMap::new(),
@@ -375,6 +413,7 @@ struct RemapWarnings {
 
 impl RemapWarnings {
     /// Accumulate one truncation without emitting a per-reference diagnostic.
+    #[cfg(test)]
     fn truncated(&self, owner: &str, form_id: u32) {
         let mut counts = self.truncations.borrow_mut();
         let entry = counts.entry(owner.to_owned()).or_insert((0, form_id));
@@ -453,8 +492,8 @@ impl RemapWarnings {
 /// earlier definition's FormID. Keep every non-null alias, even after deletion.
 #[derive(Default)]
 struct GameSettingIdentities {
-    canonical_ids: HashMap<String, u32>,
-    aliases: HashMap<u32, u32>,
+    canonical_ids: HashMap<String, shared::form_key::FormKey>,
+    aliases: HashMap<shared::form_key::FormKey, shared::form_key::FormKey>,
 }
 
 impl GameSettingIdentities {
@@ -462,9 +501,10 @@ impl GameSettingIdentities {
     fn resolve(
         &mut self,
         record: &RawRecord,
+        key: Option<shared::form_key::FormKey>,
         plugin: &str,
-        merged: &HashMap<u32, RawRecord>,
-    ) -> Result<Option<u32>> {
+        merged: &HashMap<shared::form_key::FormKey, impl std::borrow::Borrow<RawRecord>>,
+    ) -> Result<Option<shared::form_key::FormKey>> {
         let source_id = record.form_id;
         let editor_id = extractors::SubrecordView::new(&record.subrecords)
             .get_string(b"EDID")
@@ -472,7 +512,7 @@ impl GameSettingIdentities {
             .map(|name| name.to_ascii_lowercase());
         let Some(editor_id) = editor_id else {
             if record.is_deleted() {
-                if let Some(&canonical) = self.aliases.get(&source_id) {
+                if let Some(canonical) = key.and_then(|key| self.aliases.get(&key)).copied() {
                     return Ok(Some(canonical));
                 }
                 return Ok(None);
@@ -480,22 +520,17 @@ impl GameSettingIdentities {
             color_eyre::eyre::bail!("{plugin} GMST {source_id:08X} has no EditorID");
         };
         let known = self.canonical_ids.get(&editor_id).copied();
-        let canonical = known.unwrap_or(source_id);
-        color_eyre::eyre::ensure!(
-            canonical != 0,
-            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"
-        );
-        if source_id != 0 {
+        let canonical = known.or(key).ok_or_else(|| color_eyre::eyre::eyre!(
+            "GMST {editor_id} has a null FormID; needs an EditorID-keyed database representation"))?;
+        if let Some(key) = key {
             color_eyre::eyre::ensure!(
-                self.aliases
-                    .get(&source_id)
-                    .is_none_or(|id| known == Some(*id))
+                self.aliases.get(&key).is_none_or(|id| known == Some(*id))
                     && merged
-                        .get(&source_id)
-                        .is_none_or(|previous| previous.record_type == *b"GMST"),
+                        .get(&key)
+                        .is_none_or(|previous| previous.borrow().record_type == *b"GMST"),
                 "GMST {editor_id} collides with another record at {source_id:08X}"
             );
-            self.aliases.insert(source_id, canonical);
+            self.aliases.insert(key, canonical);
         }
         self.canonical_ids.insert(editor_id, canonical);
         Ok(Some(canonical))
@@ -653,6 +688,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
 
 /// Remaps local FormIDs within a record header, parent cell/worldspace references,
 /// and relevant subrecords according to master plugin load-order indices.
+#[cfg(test)]
 fn remap_record_form_ids(
     record: &mut RawRecord,
     plugin_name: &str,
@@ -706,6 +742,19 @@ fn remap_record_form_ids(
         })?;
         Ok((index << 24) | (form_id & 0x00FF_FFFF))
     };
+    remap_record_using(record, plugin_name, warnings, remap_with_validation, strict)
+}
+
+/// Adapt resolved identities to the unchanged four-byte projection fields.
+/// Caller errors reject only this candidate; optional link failures clear only that link.
+fn remap_record_using(
+    record: &mut RawRecord,
+    plugin_name: &str,
+    warnings: &RemapWarnings,
+    remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
+    strict: bool,
+) -> Result<()> {
+    let record_type = record.record_type;
     let remap = |form_id| remap_with_validation(form_id, strict);
     let remap_link = |form_id| remap_with_validation(form_id, true);
     let source_id = record.form_id;
@@ -764,7 +813,7 @@ fn remap_record_form_ids(
         if tag.as_slice() == b"VMAD" {
             // Primary script objects retain the record kind's established legacy
             // ownership compatibility. Malformed framing still rejects the candidate.
-            records::record_type::vmad::remap_primary_form_ids(data, &remap)
+            records::record_type::vmad::remap_primary_form_ids(data, &remap_link)
                 .wrap_err("VMAD references")?;
             continue;
         }
