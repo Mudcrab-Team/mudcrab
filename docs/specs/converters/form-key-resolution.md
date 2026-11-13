@@ -16,6 +16,14 @@ still overrides by EditorID; source provenance separately marks an out-of-range
 selector as unproven original ownership. A projected collision cannot replace an
 earlier complete candidate. No per-record vanilla exception exists.
 
+The named `LegacyTypedReaderProjection` preserves the typed u32 writer's previous
+NULL for optional words whose selector exceeds N, after resolving their native
+FormKey. It does not change native ownership or the handwritten reader's self
+rule. Per-plugin counts expose these adaptations separately. NAVM ONAM contains
+float-looking words such as `3F00003F`; its FormID schema is suspected mis-typing
+and requires a separate layout investigation. This adapter uses source context,
+with no plugin or record-ID allowlist, and preserves existing diagnostic rows.
+
 `EsmParser::merge_plugins_form_keys` accepts an already recovered load order
 without full/light slot caps. Its records retain native source words separately
 from resolved header, group and recognized link identities. It does not publish

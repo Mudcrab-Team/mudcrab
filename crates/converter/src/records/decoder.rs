@@ -506,8 +506,7 @@ fn subrecords<'a>(
     }
 }
 
-/// Resolve a file-relative link; invalid optional values become null with one counted diagnostic.
-/// Resolve native words before checked legacy projection; invalid optional links clear locally.
+/// Resolve native words before the named legacy projection; optional failures clear locally.
 fn remap(
     value: u32,
     context: &Context<'_>,
@@ -517,7 +516,16 @@ fn remap(
     diagnostics.link(value);
     let result = (|| {
         let order = context.order.form_key_context()?;
-        order.note_projection(context.plugin_index, value);
+        let observed = order.note_typed_source(
+            context.plugin_index,
+            value,
+            diagnostics.event_context.source_record_offset,
+            diagnostics.event_context.field.as_deref(),
+            diagnostics.event_context.occurrence,
+        );
+        if observed {
+            order.note_projection(context.plugin_index, value);
+        }
         let key = order
             .resolve(
                 context.plugin_index,
@@ -525,15 +533,63 @@ fn remap(
                 shared::source_form_id::ZeroPolicy::Null,
             )
             .map_err(|error| error.to_string())?;
+        if crate::esm::legacy_projection::LegacyTypedReaderProjection::maps_to_null(
+            value,
+            context.order.metadata[context.plugin_index].masters.len(),
+            optional,
+        ) {
+            if observed {
+                order.note_typed_null(context.plugin_index, value);
+            }
+            note_decode_link(
+                diagnostics,
+                format!("optional FormID {value:08X} exceeds master list"),
+            );
+            return Ok(0);
+        }
         order
             .legacy_view()
             .map_err(|error| error.to_string())?
             .to_nullable_legacy_u32(key)
-            .map_err(|error| error.to_string())
+            .map_err(|error| {
+                let wide = matches!(
+                    error,
+                    shared::legacy_id_view::LegacyError::LightLocalTooWide(_)
+                );
+                let category = match (optional, wide) {
+                    (true, true) => "cleared wide-light optional link",
+                    (false, true) => "rejected wide-light required identity",
+                    (true, false) => "cleared unrepresentable optional link",
+                    (false, false) => "rejected unrepresentable required identity",
+                };
+                order.note_typed_loss(
+                    context.plugin_index,
+                    category,
+                    (
+                        diagnostics.event_context.source_record_offset,
+                        diagnostics.event_context.field.as_deref(),
+                        diagnostics.event_context.occurrence,
+                        value,
+                    ),
+                );
+                if wide {
+                    format!(
+                        "{} light FormID {value:08X} is wider than 12 bits",
+                        if optional { "optional" } else { "record" }
+                    )
+                } else {
+                    error.to_string()
+                }
+            })
     })();
     match result {
         Err(error) if optional => {
-            note_decode_link(diagnostics, format!("optional FormID {value:08X}: {error}"));
+            let reason = if error.starts_with("optional light FormID ") {
+                error
+            } else {
+                format!("optional FormID {value:08X}: {error}")
+            };
+            note_decode_link(diagnostics, reason);
             Ok(0)
         }
         result => result,

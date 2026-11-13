@@ -25,6 +25,7 @@ pub mod form_keys;
 pub mod inhouse;
 mod inhouse_script_properties;
 mod inhouse_terrain_diagnostics;
+pub(crate) mod legacy_projection;
 mod legacy_text;
 pub mod load_order;
 pub mod lodsettings;

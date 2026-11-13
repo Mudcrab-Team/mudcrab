@@ -958,6 +958,9 @@ fn read_plugins_with_prepared(
     for warning in identities.projection_warnings() {
         eprintln!("{warning}");
     }
+    for warning in identities.legacy_projection_warnings() {
+        eprintln!("{warning}");
+    }
     for (name, diagnostics) in &result.diagnostics {
         for line in diagnostics
             .warning_summary_lines(name)

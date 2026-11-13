@@ -109,6 +109,178 @@ fn past_master_selectors_resolve_to_self_in_both_writers() {
     assert_eq!(diagnostics["decoder"]["patch.esp"]["skipped_records"], 1);
 }
 
+/// Preserve old typed publication without changing native ownership or usable neighbors.
+#[test]
+fn typed_optional_projection_preserves_null_after_native_self_resolution() {
+    use converter::esm::form_keys::FormKeyOrder;
+    use shared::source_form_id::ZeroPolicy;
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    plugin(
+        &data,
+        "Synthetic.esm",
+        &[],
+        [
+            record(b"STAT", 0x3f, 0, &sub(b"EDID", b"valid_target\0")),
+            record(b"STAT", 0x811, 0, &sub(b"EDID", b"before\0")),
+            record(
+                b"NAVM",
+                0x822,
+                0,
+                &sub(b"ONAM", &0x3f00_003fu32.to_le_bytes()),
+            ),
+            record(b"STAT", 0x833, 0, &sub(b"EDID", b"after\0")),
+        ]
+        .concat(),
+    );
+    let order = FormKeyOrder::read(&[data.join("Synthetic.esm")]).unwrap();
+    let key = order
+        .resolve(0, 0x3f00_003f, ZeroPolicy::Null)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.local(), 0x3f);
+    assert_eq!(key.plugin(), order.table().id("Synthetic.esm").unwrap());
+    let list = data.join("plugins.txt");
+    fs::write(&list, "*Synthetic.esm\n").unwrap();
+    let output = root.path().join("published");
+    inhouse::export_record_bundle(&data, &list, &output).unwrap();
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT data FROM records WHERE form_id=2082", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let archived =
+        rkyv::from_bytes::<converter::esm::types::ArchivedRecordData, rkyv::rancor::Error>(&bytes)
+            .unwrap();
+    assert_eq!(archived.subrecords.len(), 1);
+    assert_eq!(archived.subrecords[0].tag, *b"ONAM");
+    assert_eq!(
+        archived.subrecords[0].data, [0; 4],
+        "legacy typed writer keeps NULL even when self:00003F exists"
+    );
+    let count: u32 = conn
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 4);
+    let event: (u32, String) = conn
+        .query_row(
+            "SELECT link_value,reason FROM record_diagnostics WHERE category='link'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        event,
+        (
+            0x3f00_003f,
+            "optional FormID 3F00003F exceeds master list".into()
+        )
+    );
+    let paths = [data.join("Synthetic.esm")];
+    let legacy_order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
+    converter::records::read_plugins(&paths, &legacy_order).unwrap();
+    let identities = legacy_order.form_key_context().unwrap();
+    assert_eq!(
+        identities.projection_warnings(),
+        [
+            "warning: synthetic.esm: 1 FormID occurrence(s) past the original master list resolved to self (first: 3F00003F)"
+        ]
+    );
+    assert_eq!(
+        identities.legacy_projection_warnings(),
+        [
+            "warning: synthetic.esm: LegacyTypedReaderProjection kept NULL for 1 native self FormKey link occurrence(s) (first source: 3F00003F)"
+        ]
+    );
+}
+
+/// Checked light-width projection preserves old diagnostic rows and valid neighbors.
+#[test]
+fn typed_light_width_projection_retains_old_diagnostics_and_neighbors() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        record(b"STAT", 0x811, 0, &sub(b"EDID", b"base\0")),
+    );
+    plugin(
+        &data,
+        "Light.esl",
+        &["Base.esm"],
+        [
+            record(b"STAT", 0x0100_0822, 0, &sub(b"EDID", b"before\0")),
+            record(
+                b"CELL",
+                0x0100_0833,
+                0,
+                &[
+                    sub(b"DATA", &[1, 0]),
+                    sub(b"XCWT", &0x0100_1234u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+            record(b"STAT", 0x0100_1235, 0, &sub(b"EDID", b"wide\0")),
+            record(b"STAT", 0x0100_0844, 0, &sub(b"EDID", b"after\0")),
+        ]
+        .concat(),
+    );
+    let list = data.join("plugins.txt");
+    fs::write(&list, "*Base.esm\n*Light.esl\n").unwrap();
+    let output = root.path().join("published");
+    inhouse::export_record_bundle(&data, &list, &output).unwrap();
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let reasons = conn
+        .prepare("SELECT reason FROM record_diagnostics ORDER BY diagnostic_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r == "optional light FormID 01001234 is wider than 12 bits"),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("record light FormID 01001235 is wider than 12 bits")),
+        "{reasons:?}"
+    );
+    let count: u32 = conn
+        .query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 4);
+    let paths = [data.join("Base.esm"), data.join("Light.esl")];
+    let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
+    converter::records::read_plugins(&paths, &order).unwrap();
+    let identities = order.form_key_context().unwrap();
+    assert!(
+        identities
+            .resolve(1, 0x0100_1235, shared::source_form_id::ZeroPolicy::Identity)
+            .unwrap()
+            .is_some()
+    );
+    let warnings = identities.legacy_projection_warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("cleared wide-light optional link for 1"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("rejected wide-light required identity for 1"))
+    );
+}
+
 /// The native path admits every full/light owner and refuses only legacy publication.
 #[test]
 fn extended_native_conversion_preserves_all_owners_and_unrelated_output() {

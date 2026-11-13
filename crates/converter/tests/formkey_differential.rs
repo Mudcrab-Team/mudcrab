@@ -93,14 +93,9 @@ fn compare(plugins: &[Plugin], records: &[(usize, u32, u32)]) -> Vec<u8> {
     for &(supplier, raw, payload) in records {
         let expected = old_pack(plugins, supplier, raw).unwrap();
         let resolved = key(&t, &plugins[supplier], raw).key();
-        let converter_key = if (raw >> 24) as usize > plugins[supplier].masters.len() {
-            // The real-input caller independently verifies that only GMST uses this convention.
-            converter_order.gmst_header_key(supplier, raw).unwrap()
-        } else {
-            converter_order
-                .resolve(supplier, raw, ZeroPolicy::Null)
-                .unwrap()
-        };
+        let converter_key = converter_order
+            .resolve(supplier, raw, ZeroPolicy::Null)
+            .unwrap();
         assert_eq!(converter_key, resolved);
         let actual = converter_key.map_or(0, |k| {
             converter_order
@@ -300,6 +295,33 @@ fn native_field(tag: &[u8; 4], bytes: &[u8]) -> Vec<u8> {
     [tag.as_slice(), &(bytes.len() as u16).to_le_bytes(), bytes].concat()
 }
 
+/// Frame a contextual CELL child group without using converter remapping.
+fn cell_group(label: u32, records: &[u8]) -> Vec<u8> {
+    [
+        b"GRUP".as_slice(),
+        &((records.len() + 24) as u32).to_le_bytes(),
+        &label.to_le_bytes(),
+        &6i32.to_le_bytes(),
+        &[0; 8],
+        records,
+    ]
+    .concat()
+}
+
+/// One format-2 VMAD object with distinct alias and padding sentinels.
+fn script_object(raw: u32) -> Vec<u8> {
+    let mut bytes = [5i16.to_le_bytes(), 2i16.to_le_bytes(), 1u16.to_le_bytes()].concat();
+    bytes.extend(11u16.to_le_bytes());
+    bytes.extend(b"Independent");
+    bytes.push(0);
+    bytes.extend(1u16.to_le_bytes());
+    bytes.extend(6u16.to_le_bytes());
+    bytes.extend(b"Object");
+    bytes.extend([1, 1, 0xa1, 0xb2, 0x56, 0x34]);
+    bytes.extend(raw.to_le_bytes());
+    bytes
+}
+
 /// Read every SQLite schema object and every table row, including virtual shadow tables.
 fn logical_dump(path: &std::path::Path) -> Vec<String> {
     use rusqlite::{Connection, types::Value};
@@ -366,7 +388,16 @@ fn synthetic_publication_matches_independent_old_packer_and_cell_cache() {
         native_record(b"STAT", 0x811, 0, &native_field(b"EDID", b"earlier\0")),
         native_record(b"STAT", 0x0100_0812, 0, &native_field(b"EDID", b"light\0")),
         [
-            native_record(b"STAT", 0x0100_0811, 0, &native_field(b"EDID", b"winner\0")),
+            native_record(
+                b"STAT",
+                0x0100_0811,
+                0,
+                &[
+                    native_field(b"EDID", b"winner\0"),
+                    native_field(b"VMAD", &script_object(0x0000_0812)),
+                ]
+                .concat(),
+            ),
             native_record(
                 b"CELL",
                 0x0200_0913,
@@ -376,6 +407,23 @@ fn synthetic_publication_matches_independent_old_packer_and_cell_cache() {
                     native_field(b"DATA", &[1, 0]),
                 ]
                 .concat(),
+            ),
+            cell_group(
+                0x0200_0913,
+                &native_record(
+                    b"REFR",
+                    0x0200_0914,
+                    0,
+                    &[
+                        native_field(b"NAME", &0x0100_0811u32.to_le_bytes()),
+                        native_field(
+                            b"XESP",
+                            &[0x0000_0812u32.to_le_bytes(), [1, 0xa7, 0xb8, 0xc9]].concat(),
+                        ),
+                        native_field(b"DATA", &[0; 24]),
+                    ]
+                    .concat(),
+                ),
             ),
         ]
         .concat(),
@@ -406,6 +454,18 @@ fn synthetic_publication_matches_independent_old_packer_and_cell_cache() {
     for (supplier, path) in paths.iter().enumerate() {
         for mut record in parse_plugin_file(path).unwrap() {
             record.form_id = old_pack(&plugins, supplier, record.form_id).unwrap();
+            if record.cell_form_id.is_some() {
+                assert_eq!(record.cell_form_id, Some(0x0200_0913));
+                record.cell_form_id = Some(0x0100_0913);
+            }
+            for (tag, data) in &mut record.subrecords {
+                match tag.as_slice() {
+                    b"VMAD" => *data = script_object(0xfe00_0812),
+                    b"NAME" => *data = 0x811u32.to_le_bytes().to_vec(),
+                    b"XESP" => data[..4].copy_from_slice(&0xfe00_0812u32.to_le_bytes()),
+                    _ => {}
+                }
+            }
             record.load_order = supplier as u32;
             expected.insert(record.form_id, record);
         }

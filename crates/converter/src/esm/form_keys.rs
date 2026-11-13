@@ -11,7 +11,7 @@ use shared::{
     source_form_id::ZeroPolicy,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::Read,
     path::PathBuf,
     sync::Mutex,
@@ -19,6 +19,15 @@ use std::{
 
 /// Warning counts are isolated by calling thread and supplier, independently of slot limits.
 type ProjectionCounts = HashMap<std::thread::ThreadId, BTreeMap<usize, (u64, u32)>>;
+
+/// Physical typed source sites exclude speculative queries and deduplicate deferred replay.
+type TypedObservations = HashMap<std::thread::ThreadId, BTreeSet<(usize, u64, String, u64, u32)>>;
+
+/// Other checked typed-writer losses, grouped by supplier and projection category.
+type TypedLosses = HashMap<
+    std::thread::ThreadId,
+    BTreeMap<(usize, &'static str), BTreeSet<(u64, String, u64, u32)>>,
+>;
 
 /// One immutable accepted order. Allocation ids, owner priority and writer slots are separate.
 #[derive(Debug)]
@@ -29,6 +38,9 @@ pub struct FormKeyOrder {
     identity_order: HashMap<PluginId, (u8, usize)>,
     legacy: LegacyIdView<'static>,
     projections: Mutex<ProjectionCounts>,
+    typed_nulls: Mutex<ProjectionCounts>,
+    typed_observations: Mutex<TypedObservations>,
+    typed_losses: Mutex<TypedLosses>,
     full_count: usize,
     light_count: usize,
 }
@@ -150,6 +162,9 @@ impl FormKeyOrder {
             identity_order,
             legacy,
             projections: Mutex::new(HashMap::new()),
+            typed_nulls: Mutex::new(HashMap::new()),
+            typed_observations: Mutex::new(HashMap::new()),
+            typed_losses: Mutex::new(HashMap::new()),
             full_count,
             light_count,
         })
@@ -216,6 +231,107 @@ impl FormKeyOrder {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove(&std::thread::current().id());
+        self.typed_nulls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&std::thread::current().id());
+        self.typed_observations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&std::thread::current().id());
+        self.typed_losses
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&std::thread::current().id());
+    }
+
+    /// Count checked writer losses only at physical source sites, not lookup probes/replays.
+    pub(crate) fn note_typed_loss(
+        &self,
+        supplier: usize,
+        category: &'static str,
+        site: (Option<u64>, Option<&str>, u64, u32),
+    ) {
+        let (Some(offset), Some(field), occurrence, raw) = site else {
+            return;
+        };
+        self.typed_losses
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .entry(std::thread::current().id())
+            .or_default()
+            .entry((supplier, category))
+            .or_default()
+            .insert((offset, field.to_owned(), occurrence, raw));
+    }
+
+    /// Observe an anomalous physical source site once, ignoring temporary type-query contexts.
+    pub(crate) fn note_typed_source(
+        &self,
+        supplier: usize,
+        raw: u32,
+        offset: Option<u64>,
+        field: Option<&str>,
+        occurrence: u64,
+    ) -> bool {
+        let Some(entry) = self
+            .order
+            .get(supplier)
+            .and_then(|&id| self.table.entry(id))
+        else {
+            return false;
+        };
+        if (raw >> 24) as usize <= entry.facts.masters.len() {
+            return false;
+        }
+        let (Some(offset), Some(field)) = (offset, field) else {
+            return false;
+        };
+        self.typed_observations
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .entry(std::thread::current().id())
+            .or_default()
+            .insert((supplier, offset, field.to_owned(), occurrence, raw))
+    }
+
+    /// Count a native self link projected to NULL only by the old typed writer policy.
+    pub(crate) fn note_typed_null(&self, supplier: usize, raw: u32) {
+        let mut counts = self
+            .typed_nulls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let count = counts
+            .entry(std::thread::current().id())
+            .or_default()
+            .entry(supplier)
+            .or_insert((0, raw));
+        count.0 += 1;
+    }
+
+    /// Keep compatibility adaptations visible separately from native resolution counts.
+    pub fn legacy_projection_warnings(&self) -> Vec<String> {
+        let counts = self
+            .typed_nulls
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut warnings: Vec<_> = counts.get(&std::thread::current().id()).into_iter().flat_map(|entries| entries.iter())
+            .map(|(&supplier, &(count, first))| format!(
+                "warning: {}: LegacyTypedReaderProjection kept NULL for {count} native self FormKey link occurrence(s) (first source: {first:08X})",
+                self.table.entry(self.order[supplier]).expect("allocated supplier").display_name))
+            .collect()
+        ;
+        let losses = self
+            .typed_losses
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(entries) = losses.get(&std::thread::current().id()) {
+            for (&(supplier, category), sites) in entries {
+                let first = sites.first().expect("nonempty projection sites").3;
+                warnings.push(format!("warning: {}: LegacyTypedReaderProjection {category} for {} native FormKey occurrence(s) (first source: {first:08X})", self.table.entry(self.order[supplier]).expect("allocated supplier").display_name, sites.len()));
+            }
+        }
+        warnings
     }
 
     /// One warning per supplier reports all projected source occurrences and the first word.
@@ -261,6 +377,32 @@ impl FormKeyOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Replayed fields count once; speculative catalogue queries have no physical site.
+    #[test]
+    fn typed_counts_ignore_queries_and_replay_but_retain_distinct_occurrences() {
+        let order =
+            FormKeyOrder::from_facts(vec![("Example.esm".into(), PluginFacts::default())]).unwrap();
+        assert!(!order.note_typed_source(0, 0x3f00_003f, None, None, 1));
+        for (offset, occurrence) in [(24, 1), (24, 1), (24, 2), (48, 1)] {
+            if order.note_typed_source(
+                0,
+                0x3f00_003f,
+                Some(offset),
+                Some("ONAM.object"),
+                occurrence,
+            ) {
+                order.note_typed_null(0, 0x3f00_003f);
+            }
+        }
+        assert!(
+            order.legacy_projection_warnings()[0]
+                .contains("NULL for 3 native self FormKey link occurrence(s)")
+        );
+        order.start_resolution_run();
+        assert!(order.legacy_projection_warnings().is_empty());
+        assert!(order.note_typed_source(0, 0x3f00_003f, Some(24), Some("ONAM.object"), 1));
+    }
 
     /// Original MAST selectors differ from global slots; out-of-range selectors resolve to self.
     #[test]
