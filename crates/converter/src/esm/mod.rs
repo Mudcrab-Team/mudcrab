@@ -419,11 +419,12 @@ impl EsmParser {
                 }
             }
         }
-        let (remap_warnings, notices) = warnings.report();
+        let (remap_warnings, mut notices) = warnings.report();
         summaries.extend(remap_warnings);
+        // A faithful self projection warns about source spelling without claiming data loss.
         for warning in identities.projection_warnings() {
             eprintln!("{warning}");
-            summaries.push(warning);
+            notices.push(warning);
         }
         Ok(RecordConversion {
             records: merged
