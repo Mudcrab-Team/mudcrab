@@ -253,6 +253,35 @@ fn synthetic_exact_and_exceeded_full_and_light_limits() {
     }
 }
 
+/// Interleaved light owners and alphabetic table allocation must retain unsigned Skyrim order.
+#[test]
+fn explicit_owner_priority_order_matches_literal_legacy_ids() {
+    use converter::esm::form_keys::FormKeyOrder;
+    let order = FormKeyOrder::from_facts(
+        ["Z.esm", "A.esl", "C.esp", "Y.esl", "B.esp"]
+            .map(|name| (name.to_owned(), PluginFacts::default()))
+            .to_vec(),
+    )
+    .unwrap();
+    let mut keys = [4, 3, 2, 1, 0].map(|supplier| {
+        order
+            .resolve(supplier, 0x812, ZeroPolicy::Identity)
+            .unwrap()
+            .unwrap()
+    });
+    keys.sort_unstable_by_key(|key| order.identity_sort_tuple(*key).unwrap());
+    assert_eq!(
+        keys[0].plugin().get(),
+        5,
+        "alphabetical registry allocation is not owner priority"
+    );
+    let actual = keys.map(|key| order.legacy_view().unwrap().to_legacy_u32(key).unwrap());
+    assert_eq!(
+        actual,
+        [0x812, 0x0100_0812, 0x0200_0812, 0xfe00_0812, 0xfe00_1812]
+    );
+}
+
 /// Encode synthetic native bytes independently of converter identity resolution.
 fn native_record(tag: &[u8; 4], id: u32, flags: u32, body: &[u8]) -> Vec<u8> {
     [
