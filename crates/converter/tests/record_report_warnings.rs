@@ -992,7 +992,7 @@ async fn severity_reuse_assets_cli_replays_compatibility_notices_and_exits_zero(
     }
 }
 
-/// Real ESL-width truncation and cleared optional ownership remain warnings, with no compatibility notice.
+/// Real ESL-width truncation and wide optional clearing remain warnings, without self projection.
 #[tokio::test]
 async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
     let directory = tempfile::tempdir().unwrap();
@@ -1012,7 +1012,7 @@ async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
             0,
             &[
                 field(b"DATA", &[1, 0]),
-                field(b"XOWN", &0x0700_0900u32.to_le_bytes()),
+                field(b"XOWN", &0x0000_1900u32.to_le_bytes()),
             ]
             .concat(),
         ),
@@ -1044,6 +1044,6 @@ async fn severity_legacy_light_truncation_and_optional_clear_remain_warnings() {
         optional.contains("1 invalid optional FormID links"),
         "{optional}"
     );
-    assert!(optional.contains("07000900"), "{optional}");
+    assert!(optional.contains("00001900"), "{optional}");
     incomplete(&report, &output, 2);
 }

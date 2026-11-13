@@ -1306,8 +1306,10 @@ fn convert_plugins_with_text_sources_report_impl(
     release_stage.finish(master.len());
     report_warnings.extend(warnings.report());
     if let Ok(context) = order.form_key_context() {
-        report_warnings.extend(context.projection_warnings());
-        report_warnings.extend(context.legacy_projection_warnings());
+        // Successful compatibility publication retains the existing completeness policy.
+        // Counted warning text is also emitted by the reader; actual data loss stays above.
+        report_notices.extend(context.projection_warnings());
+        report_notices.extend(context.legacy_projection_warnings());
     }
     report_notices.extend(warnings.report_notices());
     phases.insert(

@@ -17,6 +17,7 @@ struct Plugin {
     masters: Vec<String>,
 }
 
+/// Allocate pack-local plugin IDs independently of the supplied legacy slot order.
 fn table(plugins: &[Plugin]) -> PluginTable {
     PluginTable::fresh(
         plugins
@@ -40,8 +41,8 @@ fn table(plugins: &[Plugin]) -> PluginTable {
     .unwrap()
 }
 
-// Frozen old permissive header packer: source selectors address MAST, then self.
-// This oracle never calls resolve, FormKey, LegacyIdView, or converter remapping.
+/// Frozen old permissive header packer: source selectors address MAST, then self.
+/// This oracle never calls resolve, FormKey, LegacyIdView, or converter remapping.
 fn old_pack(plugins: &[Plugin], supplier: usize, raw: u32) -> Option<u32> {
     if raw == 0 {
         return Some(0);
@@ -61,6 +62,7 @@ fn old_pack(plugins: &[Plugin], supplier: usize, raw: u32) -> Option<u32> {
     }
 }
 
+/// Exercise the shared identity contract separately from the converter's resolver.
 fn key(t: &PluginTable, p: &Plugin, raw: u32) -> Resolution {
     resolve(
         t,
@@ -72,6 +74,7 @@ fn key(t: &PluginTable, p: &Plugin, raw: u32) -> Resolution {
     )
 }
 
+/// Compare independent packed winner bytes against shared and production native identities.
 fn compare(plugins: &[Plugin], records: &[(usize, u32, u32)]) -> Vec<u8> {
     let t = table(plugins);
     let converter_order = converter::esm::form_keys::FormKeyOrder::from_facts(
@@ -132,6 +135,7 @@ fn compare(plugins: &[Plugin], records: &[(usize, u32, u32)]) -> Vec<u8> {
 }
 
 #[test]
+/// Asymmetric master indices and interleaved owners retain overrides and null semantics.
 fn synthetic_nonidentity_masters_lights_overrides_and_null() {
     let plugins = vec![
         Plugin {
@@ -166,6 +170,7 @@ fn synthetic_nonidentity_masters_lights_overrides_and_null() {
 }
 
 #[test]
+/// Missing owners and wide light locals remain distinct from usable neighboring identities.
 fn malformed_master_and_light_width_are_distinguished_from_valid_neighbors() {
     let plugins = vec![
         Plugin {
@@ -215,6 +220,7 @@ fn malformed_master_and_light_width_are_distinguished_from_valid_neighbors() {
 }
 
 #[test]
+/// Every native owner remains addressable when only checked legacy packing exceeds capacity.
 fn synthetic_exact_and_exceeded_full_and_light_limits() {
     for (full, light) in [(254, 4096), (255, 4097)] {
         let plugins: Vec<_> = (0..full + light)
@@ -505,6 +511,7 @@ fn synthetic_publication_matches_independent_old_packer_and_cell_cache() {
 
 #[test]
 #[ignore = "read-only 80-plugin audit; set FORMKEY_REAL80_AUDIT=1 explicitly"]
+/// Optionally compare an installed source identity stream with a separately pinned receipt.
 fn real80_record_identity_baseline_audit() {
     assert_eq!(std::env::var("FORMKEY_REAL80_AUDIT").as_deref(), Ok("1"));
     let input = std::path::PathBuf::from(

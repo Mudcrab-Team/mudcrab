@@ -72,6 +72,7 @@ fn ids(conn: &Connection) -> Vec<u32> {
 }
 
 #[test]
+/// Past-master membership resolves to self; wide light links clear and rank/padding survive.
 fn npc_faction_structures_publish_resolved_ids_and_preserve_rank_padding() {
     let dir = tempfile::tempdir().unwrap();
     let membership = |id: u32, rank: u8| [id.to_le_bytes(), [rank, 0xA1, 0xB2, 0xC3]].concat();
@@ -118,7 +119,7 @@ fn npc_faction_structures_publish_resolved_ids_and_preserve_rank_padding() {
             membership(0xFE00_0801, 0xFF),
             membership(0x0100_0802, 4),
             membership(0x0200_0803, 7),
-            membership(0, 8),
+            membership(0x0200_0804, 8),
             membership(0, 9),
             // The legacy archive keeps malformed SNAM bytes opaque; the independent
             // in-house typed reader still rejects malformed faction memberships.
@@ -191,7 +192,8 @@ fn torn_payloads_preserve_earlier_winners_neighbors_and_authoritative_deletions(
 }
 
 #[test]
-fn scalar_optional_links_clear_or_drop_locally_before_sql_publication() {
+/// Self-owned required/optional links survive while malformed fields drop locally.
+fn scalar_links_resolve_self_while_malformed_fields_drop_before_sql_publication() {
     let dir = tempfile::tempdir().unwrap();
     let paths = vec![
         plugin(dir.path(), "Base.esm", &[], 1, Vec::new()),
@@ -238,14 +240,21 @@ fn scalar_optional_links_clear_or_drop_locally_before_sql_publication() {
     let db = dir.path().join("world.db");
     EsmParser::convert_plugins(&paths, &db).unwrap();
     let conn = Connection::open(db).unwrap();
-    assert_eq!(ids(&conn), [0x0200_0800, 0x0200_0801, 0x0200_0803]);
+    assert_eq!(
+        ids(&conn),
+        [0x0200_0800, 0x0200_0801, 0x0200_0802, 0x0200_0803]
+    );
     assert_eq!(
         fields(&conn, 0x0200_0800, b"XOWN"),
-        [0u32.to_le_bytes().to_vec()]
+        [0x0200_0900u32.to_le_bytes().to_vec()]
     );
     assert_eq!(
         fields(&conn, 0x0200_0800, b"XCWT"),
-        [0u32.to_le_bytes().to_vec()]
+        [0x0200_0901u32.to_le_bytes().to_vec()]
+    );
+    assert_eq!(
+        fields(&conn, 0x0200_0802, b"NAME"),
+        [0x0200_0904u32.to_le_bytes().to_vec()]
     );
     assert!(fields(&conn, 0x0200_0800, b"XLCN").is_empty());
     assert_eq!(

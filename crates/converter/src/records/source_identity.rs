@@ -144,8 +144,8 @@ mod tests {
     }
 
     #[test]
-    /// The signature-specific GMST fallback is explicit; generic invalid owners remain unknown.
-    fn invalid_master_index_is_not_self_but_gmst_convention_is_explicit() {
+    /// Runtime self resolution does not authenticate original ownership in provenance.
+    fn past_master_runtime_is_self_while_original_owner_stays_unproven() {
         let order = LoadOrder::from_metadata(
             vec!["Base.esm".into(), "Patch.esp".into()],
             vec![
@@ -166,7 +166,10 @@ mod tests {
         let bad = resolve(b"STAT", 0x0200_0700, 1, &order);
         assert_eq!(bad.state, SourceIdentityState::MasterIndexOutOfRange);
         assert_eq!(bad.original_owner, None);
-        assert_eq!(header_runtime_id(b"STAT", 0x0200_0700, 1, &order), None);
+        assert_eq!(
+            header_runtime_id(b"STAT", 0x0200_0700, 1, &order),
+            Some(0x0100_0700)
+        );
         assert_eq!(
             resolve(b"GMST", 0x0200_0700, 1, &order).state,
             SourceIdentityState::GmstEditorIdConvention
