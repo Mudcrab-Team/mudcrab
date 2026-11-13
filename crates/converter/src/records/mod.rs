@@ -304,6 +304,9 @@ impl PluginDiagnostics {
     /// Summarize omitted records, fields and unexpected subrecords as bounded warnings.
     pub(crate) fn warning_summary_lines(&self, plugin: &str) -> Vec<String> {
         let mut lines = Vec::new();
+        if let Some(warning) = self.first_by_category.get("input") {
+            lines.push(warning.clone());
+        }
         if let Some(example) = ["record", "field", "unexpected"]
             .iter()
             .find_map(|category| self.first_by_category.get(*category))
@@ -496,10 +499,9 @@ pub struct RecordSource {
 }
 
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
+/// Input-path recovery uses the reserved `<input>` diagnostics scope, never a plugin owner.
 #[derive(Debug, Default)]
 pub struct ReadResult {
-    /// Recovery of explicit input paths before plugin identities are allocated.
-    pub input_warnings: Vec<String>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -609,7 +611,16 @@ fn read_plugins_with_prepared(
             validate,
             observe,
         )?;
-        result.input_warnings.extend(input_warnings);
+        if !input_warnings.is_empty() {
+            // Keep the existing public result shape and expose input loss without
+            // pretending it belongs to an accepted plugin or a counted record.
+            let warning = input_warnings.join("\n");
+            let diagnostics = result.diagnostics.entry("<input>".into()).or_default();
+            diagnostics.first_example = Some(warning.clone());
+            diagnostics
+                .first_by_category
+                .insert("input".into(), warning);
+        }
         return Ok(result);
     }
     color_eyre::eyre::ensure!(

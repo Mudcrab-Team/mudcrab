@@ -235,6 +235,17 @@ fn typed_invalid_plugin_name_keeps_valid_neighbors() {
         "typed reader must preserve usable neighbors: {result:?}"
     );
     let result = result.unwrap();
+    assert!(
+        result
+            .diagnostics
+            .get("<input>")
+            .is_some_and(|diagnostics| diagnostics
+                .first_by_category
+                .get("input")
+                .is_some_and(|warning| warning.contains("1 invalid plugin name"))),
+        "skipped inputs must remain visible through the existing diagnostics map"
+    );
+
     let mut ids: Vec<_> = result.records.keys().copied().collect();
     ids.sort_unstable();
     assert_eq!(ids, [0x811, 0x0100_0833]);

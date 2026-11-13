@@ -1303,7 +1303,6 @@ fn convert_plugins_with_text_sources_report_impl(
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
-    report_warnings.append(&mut decoded.input_warnings);
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
     release_stage.finish(master.len());
@@ -2580,7 +2579,6 @@ mod runtime_move_tests {
             editor_id: Some("authored identity".into()),
         };
         let mut decoded = records::ReadResult {
-            input_warnings: Vec::new(),
             records: HashMap::from([(id, winner.clone())]),
             headers: vec![winner],
             overrides: HashMap::from([(
