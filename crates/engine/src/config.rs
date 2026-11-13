@@ -1258,37 +1258,11 @@ impl EngineConfig {
                         )
                     })?;
                 }
-                "--game-hour" | "--timescale" => {
-                    let option = if argument == "--game-hour" {
-                        "--game-hour"
-                    } else {
-                        "--timescale"
-                    };
-                    let raw = take_raw(option, "a finite nonnegative number", args.next())?;
-                    let value: f64 = raw
-                        .parse()
-                        .ok()
-                        .filter(|v: &f64| {
-                            v.is_finite()
-                                && *v >= 0.0
-                                && if option == "--game-hour" {
-                                    *v < 24.0
-                                } else {
-                                    *v <= 1_000_000.0
-                                }
-                        })
-                        .ok_or_else(|| {
-                            ConfigError::invalid_value(
-                                option,
-                                Some(raw),
-                                "hour in [0,24), or timescale in [0,1000000]",
-                            )
-                        })?;
-                    if option == "--game-hour" {
-                        config.game_hour = value;
-                    } else {
-                        config.timescale = value;
-                    }
+                "--game-hour" => {
+                    config.game_hour = take_clock_value("--game-hour", args.next())?;
+                }
+                "--timescale" => {
+                    config.timescale = take_clock_value("--timescale", args.next())?;
                 }
                 "--sun-position" => {
                     let raw = take_raw("--sun-position", SUN_POSITION_EXPECTED, args.next())?;
@@ -1632,6 +1606,29 @@ where
             }
     });
     accepted.ok_or_else(|| ConfigError::invalid_value(option, Some(raw), expected))
+}
+
+/// Parse the two clock controls with finite ranges while keeping each CLI match arm discoverable.
+fn take_clock_value(option: &'static str, value: Option<String>) -> Result<f64, ConfigError> {
+    let raw = take_raw(option, "a finite nonnegative number", value)?;
+    raw.parse::<f64>()
+        .ok()
+        .filter(|v| {
+            v.is_finite()
+                && *v >= 0.0
+                && if option == "--game-hour" {
+                    *v < 24.0
+                } else {
+                    *v <= 1_000_000.0
+                }
+        })
+        .ok_or_else(|| {
+            ConfigError::invalid_value(
+                option,
+                Some(raw),
+                "hour in [0,24), or timescale in [0,1000000]",
+            )
+        })
 }
 
 /// The option `argument` most likely meant, if it is within two edits of one.
