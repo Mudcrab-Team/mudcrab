@@ -353,7 +353,9 @@ fn incomplete(report: &PipelineReport, output: &Path, warning_count: usize) {
 /// Match a compatibility category without confusing it with a data-loss summary.
 fn compatibility_kind(reader: RecordReader) -> &'static str {
     match reader {
-        RecordReader::Legacy => "FormID occurrences name a master index past",
+        RecordReader::Legacy => {
+            "FormID occurrence(s) past the original master list resolved to self"
+        }
         RecordReader::Inhouse => "used supplier-self runtime compatibility",
     }
 }
@@ -374,7 +376,7 @@ fn compatibility_notice(report: &PipelineReport, reader: RecordReader) {
     );
     let message = messages[0];
     let count = match reader {
-        RecordReader::Legacy => "2 FormID occurrences",
+        RecordReader::Legacy => "2 FormID occurrence(s)",
         RecordReader::Inhouse => "for 1 headers",
     };
     assert!(message.contains(count), "{message}");

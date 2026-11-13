@@ -211,8 +211,11 @@ impl EsmParser {
         db_path: &Path,
         string_sources: inhouse::StringSources<'_>,
     ) -> Result<RecordConversion> {
+        let (accepted_paths, name_warnings) = form_keys::recover_plugin_paths(plugin_paths)?;
+        let plugin_paths = accepted_paths.as_slice();
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
+        master.warnings.extend(name_warnings);
         let (unresolved, localization_warnings, localization_notices) =
             legacy_text::resolve_localized_fields(
                 &mut master.records,
@@ -234,6 +237,8 @@ impl EsmParser {
 
     /// Merge plugin records with validated slots and EditorID-based game settings.
     pub fn merge_plugins(plugin_paths: &[PathBuf]) -> Result<HashMap<u32, RawRecord>> {
+        let (accepted_paths, _) = form_keys::recover_plugin_paths(plugin_paths)?;
+        let plugin_paths = accepted_paths.as_slice();
         let order = load_order::LoadOrder::read(plugin_paths)?;
         Self::merge_plugins_with_load_order(plugin_paths, &order)
             .map(|conversion| conversion.records)
@@ -245,7 +250,10 @@ impl EsmParser {
         order: &load_order::LoadOrder,
     ) -> Result<RecordConversion> {
         let mut merged = HashMap::new();
-        let identities = form_keys::FormKeyOrder::read(plugin_paths)?;
+        let identities = order
+            .form_key_context()
+            .map_err(|error| color_eyre::eyre::eyre!(error))?;
+        identities.start_resolution_run();
         let legacy = identities.legacy_view()?;
         let mut summaries = Vec::new();
         // Unlike ordinary forms, game settings override by EditorID. Retain
@@ -288,9 +296,6 @@ impl EsmParser {
                     &warnings,
                     |raw, strict| {
                         identities.note_projection(priority, raw);
-                        if (raw >> 24) as usize > order.metadata[priority].masters.len() {
-                            warnings.out_of_range(&order.names[priority], raw, kind);
-                        }
                         let key = if !strict && kind == *b"GMST" {
                             identities.gmst_header_key(priority, raw)?
                         } else {
@@ -348,7 +353,18 @@ impl EsmParser {
                 if key.is_some_and(|key| {
                     key.local() > 0xfff && identities.table.is_light(key.plugin())
                 }) {
-                    key = legacy.from_legacy_u32(record.form_id)?;
+                    key = match legacy.from_legacy_u32(record.form_id) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
                 }
                 if let Some(key) = key {
                     let projected =
@@ -358,11 +374,11 @@ impl EsmParser {
                         && (projected || earlier_projected)
                     {
                         warnings.skipped_record(&order.names[priority], &record, source_id,
-                            format!("records {earlier:08X} and {source_id:08X} resolve to the same key; an out-of-range master index would replace another record"));
+                            format!("records {earlier:08X} and {source_id:08X} resolve to the same key ({:08X}); an out-of-range master index would replace another record", record.form_id));
                         continue;
                     }
-                    sources.insert(key, (source_id, projected));
                 }
+                let source_key = key;
                 if record.record_type == *b"GMST" {
                     let canonical = match game_settings.resolve(
                         &record,
@@ -390,7 +406,18 @@ impl EsmParser {
                             continue;
                         }
                     };
-                    record.form_id = legacy.to_legacy_u32(canonical)?;
+                    record.form_id = match legacy.to_legacy_u32(canonical) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            warnings.skipped_record(
+                                &order.names[priority],
+                                &record,
+                                source_id,
+                                error.to_string(),
+                            );
+                            continue;
+                        }
+                    };
                     key = Some(canonical);
                 } else if key.is_some_and(|key| game_settings.aliases.contains_key(&key)) {
                     warnings.skipped_record(
@@ -413,6 +440,16 @@ impl EsmParser {
                     );
                     continue;
                 };
+                // Reserve admitted tombstones too, using the source identity before EDID canonicalization.
+                if let Some(source_key) = source_key {
+                    sources.insert(
+                        source_key,
+                        (
+                            source_id,
+                            (source_id >> 24) as usize > order.metadata[priority].masters.len(),
+                        ),
+                    );
+                }
                 if record.is_deleted() {
                     merged.remove(&key);
                 } else {
@@ -467,6 +504,7 @@ impl RemapWarnings {
     }
 
     /// Accumulate one permissive supplier-self remap without changing recovery diagnostics.
+    #[cfg(test)]
     fn out_of_range(&self, plugin: &str, form_id: u32, record_type: [u8; 4]) {
         let mut counts = self.out_of_range.borrow_mut();
         let entry = counts

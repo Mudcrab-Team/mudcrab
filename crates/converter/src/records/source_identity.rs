@@ -83,7 +83,7 @@ pub(crate) fn resolve(
     }
 }
 
-/// Preserve the existing runtime convention without manufacturing wide-ID handles.
+/// Project source headers and opaque links with the common self rule and checked u32 width.
 pub(crate) fn header_runtime_id(
     signature: &[u8; 4],
     raw: u32,
@@ -177,6 +177,69 @@ mod tests {
         assert_eq!(
             header_runtime_id(b"GMST", 0x0200_0700, 1, &order),
             Some(0x0100_0700)
+        );
+    }
+    /// Frozen 21f02498 projection oracle for opaque XLOC keys and history runtime IDs.
+    fn baseline_header_runtime_id(
+        signature: &[u8; 4],
+        raw: u32,
+        supplier: usize,
+        order: &LoadOrder,
+    ) -> Option<u32> {
+        if signature == b"TES4" {
+            return None;
+        }
+        if raw == 0 {
+            return Some(0);
+        }
+        let source = resolve(signature, raw, supplier, order);
+        let owner = match source.state {
+            SourceIdentityState::Resolved => source.original_owner.as_deref()?,
+            SourceIdentityState::GmstEditorIdConvention => &order.names[supplier],
+            _ => return None,
+        };
+        let local = source.full_local?;
+        if let Some(slot) = order.light.get(owner) {
+            (local <= 0xfff).then_some(0xfe00_0000 | slot << 12 | local)
+        } else {
+            order.normal.get(owner).map(|slot| slot << 24 | local)
+        }
+    }
+
+    /// Name the accepted old/new XLOC-key and history delta with literal asymmetric slots.
+    #[test]
+    fn past_master_xloc_key_and_history_intentionally_change_from_old_projection() {
+        let order = LoadOrder::from_metadata(
+            vec!["Base.esm".into(), "Patch.esp".into()],
+            vec![
+                PluginMetadata::default(),
+                PluginMetadata {
+                    flags: 0,
+                    masters: vec!["Base.esm".into()],
+                },
+            ],
+        )
+        .unwrap();
+        for (signature, source, projected) in [
+            (b"KEYM", 0x0200_0840, 0x0100_0840),
+            (b"STAT", 0x0200_0880, 0x0100_0880),
+        ] {
+            assert_eq!(
+                baseline_header_runtime_id(signature, source, 1, &order),
+                None
+            );
+            assert_eq!(
+                header_runtime_id(signature, source, 1, &order),
+                Some(projected)
+            );
+        }
+        assert_eq!(
+            baseline_header_runtime_id(b"KEYM", 0x0100_0840, 1, &order),
+            Some(0x0100_0840)
+        );
+        assert_eq!(
+            header_runtime_id(b"KEYM", 0x0100_0840, 1, &order),
+            Some(0x0100_0840)
         );
     }
 }

@@ -880,6 +880,8 @@ fn convert_plugins_with_text_sources_report_impl(
             &builtin
         }
     };
+    let (accepted_paths, name_warnings) = super::form_keys::recover_plugin_paths(plugin_paths)?;
+    let plugin_paths = accepted_paths.as_slice();
     let total_started = Instant::now();
     let mut phases = BTreeMap::<String, f64>::new();
     let order_stage = records::profile::ProfileStage::start("read_load_order");
@@ -1301,9 +1303,11 @@ fn convert_plugins_with_text_sources_report_impl(
         .iter()
         .flat_map(|(name, diagnostics)| diagnostics.notice_summary_lines(name))
         .collect::<Vec<_>>();
+    report_warnings.append(&mut decoded.input_warnings);
     let release_stage = records::profile::ProfileStage::start("decoded_release");
     drop(decoded);
     release_stage.finish(master.len());
+    report_warnings.extend(name_warnings);
     report_warnings.extend(warnings.report());
     if let Ok(context) = order.form_key_context() {
         // Successful compatibility publication retains the existing completeness policy.
@@ -2576,6 +2580,7 @@ mod runtime_move_tests {
             editor_id: Some("authored identity".into()),
         };
         let mut decoded = records::ReadResult {
+            input_warnings: Vec::new(),
             records: HashMap::from([(id, winner.clone())]),
             headers: vec![winner],
             overrides: HashMap::from([(

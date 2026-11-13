@@ -1373,6 +1373,13 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                             ]
                             .concat(),
                         ),
+                        // Forward self target for the deliberately past-master XESP word.
+                        record(
+                            b"REFR",
+                            0x0200_0802,
+                            0,
+                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
+                        ),
                     ]
                     .concat(),
                 ),
@@ -1434,12 +1441,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         config.record_reader = reader;
     }
     let mut expected_asset_rebuilds = 0;
-    // Typed publication retains its old optional NULL; handwritten publication uses native self.
-    let projected_parent = if matches!(reader, Some(converter::config::RecordReader::Legacy)) {
-        0x0300_0802u32
-    } else {
-        0
-    };
+    // Both readers project a past-master selector to the supplying plugin.
+    let projected_parent = 0x0300_0802u32;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1502,7 +1505,7 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 ]
             );
         }
-        // Enable-parent columns follow the chosen publication adapter, retaining flags;
+        // Both readers retain the usable self parent and its flags;
         // malformed subrecords still leave SQL NULL.
         for (id, expected) in [
             (0x0300_0800u32, (Some(0xFE00_0802i64), Some(3i64))),

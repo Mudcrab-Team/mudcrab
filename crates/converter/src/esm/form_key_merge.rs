@@ -77,9 +77,11 @@ impl EsmParser {
     /// Inputs must be in their recovered load order; this API neither selects nor reorders plugins.
     /// The old writer remains a separate checked boundary; no stand-in numbers are allocated.
     pub fn merge_plugins_form_keys(paths: &[PathBuf]) -> Result<FormKeyConversion> {
+        let (accepted_paths, name_warnings) = super::form_keys::recover_plugin_paths(paths)?;
+        let paths = accepted_paths.as_slice();
         let order = FormKeyOrder::read(paths)?;
         let warnings = RemapWarnings::default();
-        let mut summaries = Vec::new();
+        let mut summaries = name_warnings;
         let mut records = HashMap::new();
         let mut settings = GameSettingIdentities::default();
         for (priority, path) in paths.iter().enumerate() {
@@ -135,6 +137,7 @@ impl EsmParser {
                     warnings.skipped_record(name, &source, raw, error.to_string());
                     continue;
                 }
+                // from_facts allocates every supplier and requires all original masters to precede it.
                 if let Some(key) = key {
                     let projected = (raw >> 24) as usize
                         > order
@@ -152,8 +155,8 @@ impl EsmParser {
                             format!("records {earlier:08X} and {raw:08X} resolve to the same key; an out-of-range master index would replace another record"));
                         continue;
                     }
-                    sources.insert(key, (raw, projected));
                 }
+                let source_key = key;
                 if source.record_type == *b"GMST" {
                     match settings.resolve(&source, key, name, &records) {
                         Ok(canonical) => key = canonical,
@@ -180,10 +183,6 @@ impl EsmParser {
                     );
                     continue;
                 };
-                if source.is_deleted() {
-                    records.remove(&key);
-                    continue;
-                }
                 let cell = source
                     .cell_form_id
                     .map(|id| order.resolve(priority, id, ZeroPolicy::Null))
@@ -192,28 +191,46 @@ impl EsmParser {
                     .worldspace_form_id
                     .map(|id| order.resolve(priority, id, ZeroPolicy::Null))
                     .transpose();
-                match (cell, world) {
-                    (Ok(cell), Ok(world)) => {
-                        records.insert(
-                            key,
-                            FormKeyRecord {
-                                source,
-                                cell: cell.flatten(),
-                                worldspace: world.flatten(),
-                                links: links.into_inner(),
-                            },
+                let (cell, worldspace) = match (cell, world) {
+                    (Ok(cell), Ok(world)) => (cell.flatten(), world.flatten()),
+                    (cell, world) => {
+                        warnings.skipped_record(
+                            name,
+                            &source,
+                            raw,
+                            format!(
+                                "invalid containing group: {:?} {:?}",
+                                cell.err(),
+                                world.err()
+                            ),
                         );
+                        continue;
                     }
-                    (cell, world) => warnings.skipped_record(
-                        name,
-                        &source,
-                        raw,
-                        format!(
-                            "invalid containing group: {:?} {:?}",
-                            cell.err(),
-                            world.err()
-                        ),
-                    ),
+                };
+                // Admission is complete. Tombstones reserve the pre-canonical source key too.
+                if let Some(source_key) = source_key {
+                    let projected = (raw >> 24) as usize
+                        > order
+                            .table
+                            .entry(order.order[priority])
+                            .expect("allocated supplier")
+                            .facts
+                            .masters
+                            .len();
+                    sources.insert(source_key, (raw, projected));
+                }
+                if source.is_deleted() {
+                    records.remove(&key);
+                } else {
+                    records.insert(
+                        key,
+                        FormKeyRecord {
+                            source,
+                            cell,
+                            worldspace,
+                            links: links.into_inner(),
+                        },
+                    );
                 }
             }
         }

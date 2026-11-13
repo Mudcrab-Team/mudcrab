@@ -498,6 +498,8 @@ pub struct RecordSource {
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    /// Recovery of explicit input paths before plugin identities are allocated.
+    pub input_warnings: Vec<String>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -595,6 +597,21 @@ fn read_plugins_with_prepared(
     mut validate: impl FnMut(&DecodedRecord) -> std::result::Result<(), String>,
     mut observe: impl FnMut(&ReadResult),
 ) -> Result<ReadResult> {
+    let (accepted_paths, input_warnings) =
+        crate::esm::form_keys::recover_plugin_paths(plugin_paths)?;
+    if accepted_paths.len() != plugin_paths.len() {
+        let recovered_order = LoadOrder::read(&accepted_paths)?;
+        let mut result = read_plugins_with_prepared(
+            &accepted_paths,
+            &recovered_order,
+            schema,
+            prepared,
+            validate,
+            observe,
+        )?;
+        result.input_warnings.extend(input_warnings);
+        return Ok(result);
+    }
     color_eyre::eyre::ensure!(
         plugin_paths.len() == order.names.len(),
         "plugin/order length mismatch"
@@ -629,6 +646,21 @@ fn read_plugins_with_prepared(
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
     let mut gmst_aliases: HashMap<u32, u32> = HashMap::new();
     let mut gmst_form_keys = HashMap::<u32, shared::form_key::FormKey>::new();
+    // A header catalogue distinguishes absent self targets from forward references.
+    // Keep old dangling-link diagnostics without changing ownership of usable self links.
+    let mut source_ids = std::collections::HashSet::new();
+    for (index, path) in plugin_paths.iter().enumerate() {
+        scanner::scan_plugin_headers(path, &mut PluginDiagnostics::default(), |header| {
+            if let Some(id) = source_identity::header_runtime_id(
+                &header.record_type,
+                header.source_form_id,
+                index,
+                order,
+            ) {
+                source_ids.insert(id);
+            }
+        })?;
+    }
     let scan_stage = profile::ProfileStage::start("scan_decode_merge");
     for (index, path) in plugin_paths.iter().enumerate() {
         let name = &order.names[index];
@@ -655,6 +687,7 @@ fn read_plugins_with_prepared(
                 order,
                 plugin_index: index,
                 localized: order.metadata[index].flags & 0x80 != 0,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             };
             let mut identity = |name: &str| {

@@ -234,6 +234,7 @@ fn rv_a_checked_schema_defers_then_really_rejects_missing_rank_alternative() {
         order: &order,
         plugin_index: 1,
         localized: false,
+        source_ids: None,
         winning_types: None,
     };
     let initial = decoder::decode_with_prepared(
@@ -252,6 +253,7 @@ fn rv_a_checked_schema_defers_then_really_rejects_missing_rank_alternative() {
     );
     let kinds = std::collections::HashMap::from([(0x0100_1900, *b"FACT")]);
     let replay = decoder::Context {
+        source_ids: None,
         winning_types: Some(&kinds),
         ..context
     };
@@ -657,6 +659,7 @@ fn rv_a_injected_baseline_failure_omits_unresolved_first_definition_fields() {
         order: &order,
         plugin_index: 4,
         localized: false,
+        source_ids: None,
         winning_types: None,
     };
     super::scanner::scan_plugin(

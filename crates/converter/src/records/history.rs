@@ -352,11 +352,12 @@ fn decode_version(
     expected: &[u8],
     entry: &HistoryEntry,
     order: &LoadOrder,
-    kinds: &HashMap<u32, [u8; 4]>,
+    catalogues: (&HashMap<u32, [u8; 4]>, &std::collections::HashSet<u32>),
     runtime: (&RuntimeSchemas, &decoder::PreparedSchemas),
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<DecodedRecord> {
     let (schemas, prepared) = runtime;
+    let (kinds, source_ids) = catalogues;
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -426,6 +427,7 @@ fn decode_version(
         order,
         plugin_index: entry.plugin_index as usize,
         localized: order.metadata[entry.plugin_index as usize].flags & 0x80 != 0,
+        source_ids: Some(source_ids),
         winning_types: Some(kinds),
     };
     let mut record =
@@ -528,6 +530,29 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
         .filter_map(|row| row.ok())
         .filter_map(|(id, tag)| tag.as_bytes().try_into().ok().map(|tag| (id, tag)))
         .collect();
+    // Reconstruct the same source-header authority as first-pass decoding, including
+    // rejected/deleted versions and pre-canonical GMST aliases. Winners are a separate catalogue.
+    let mut source_ids = std::collections::HashSet::new();
+    // Older metadata-only TES4 rows can lack a source word and supply no runtime identity.
+    let mut source_statement =
+        conn.prepare("SELECT record_type,source_form_id,plugin_id FROM record_overrides WHERE source_form_id IS NOT NULL AND record_type IS NOT NULL AND plugin_id IS NOT NULL")?;
+    let source_rows = source_statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, usize>(2)?,
+        ))
+    })?;
+    for row in source_rows {
+        let (signature, raw, supplier) = row?;
+        if let Ok(signature) = signature.as_bytes().try_into()
+            && supplier < order.names.len()
+            && let Some(id) =
+                super::source_identity::header_runtime_id(&signature, raw, supplier, &order)
+        {
+            source_ids.insert(id);
+        }
+    }
     // The retained 18-column layout predates authenticated group bounds and raw signatures.
     // Keep its available chain facts visible, but never infer missing replay authority.
     let mut layout = conn.prepare("PRAGMA table_info(record_overrides)")?;
@@ -656,7 +681,7 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
                 checksum,
                 &entry,
                 &order,
-                &kinds,
+                (&kinds, &source_ids),
                 (schemas, prepared),
                 &mut version.diagnostics,
             )

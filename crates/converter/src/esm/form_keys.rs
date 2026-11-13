@@ -29,6 +29,88 @@ type TypedLosses = HashMap<
     BTreeMap<(usize, &'static str), BTreeSet<(u64, String, u64, u32)>>,
 >;
 
+/// Remove invalid explicit filenames and their dependent closure before assigning supplier indices.
+/// Both frontends must use the returned paths for reading, metadata and publication.
+pub fn recover_plugin_paths(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, Vec<String>)> {
+    let names: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let mut skipped: Vec<_> = names
+        .iter()
+        .map(|name| shared::form_key::NamedFormKey::new(name, 1).is_err())
+        .collect();
+    if !skipped.iter().any(|skip| *skip) {
+        return Ok((paths.to_vec(), Vec::new()));
+    }
+    let invalid_count = skipped.iter().filter(|skip| **skip).count();
+    let first = names
+        .iter()
+        .zip(&skipped)
+        .find(|(_, skip)| **skip)
+        .map(|(name, _)| {
+            name.chars()
+                .take(80)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+        })
+        .expect("at least one invalid name");
+    let metadata = paths
+        .iter()
+        .zip(&skipped)
+        .map(|(path, skip)| {
+            if *skip {
+                Ok(None)
+            } else {
+                super::binary::parse_plugin_metadata(path).map(Some)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    loop {
+        let rejected: std::collections::HashSet<_> = names
+            .iter()
+            .zip(&skipped)
+            .filter(|(_, skip)| **skip)
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
+        let mut changed = false;
+        for (index, header) in metadata.iter().enumerate() {
+            if !skipped[index]
+                && header.as_ref().is_some_and(|header| {
+                    header
+                        .masters
+                        .iter()
+                        .any(|master| rejected.contains(&master.to_lowercase()))
+                })
+            {
+                skipped[index] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let dependents = skipped.iter().filter(|skip| **skip).count() - invalid_count;
+    let warning = format!(
+        "warning: skipped {invalid_count} invalid plugin name(s) (first: {first}); skipped {dependents} dependent plugins"
+    );
+    eprintln!("{warning}");
+    Ok((
+        paths
+            .iter()
+            .zip(skipped)
+            .filter_map(|(path, skip)| (!skip).then_some(path.clone()))
+            .collect(),
+        vec![warning],
+    ))
+}
+
 /// One immutable accepted order. Allocation ids, owner priority and writer slots are separate.
 #[derive(Debug)]
 pub struct FormKeyOrder {

@@ -369,7 +369,7 @@ fn package_links_remap_independently_of_aliases_unused_words_and_bad_neighbors()
     let package = &result.records[&0x0200_1DB2];
     assert_eq!(
         named(package, "animations").value,
-        Value::Array(vec![Value::FormId(0x0200_1DB1), Value::FormId(0)])
+        Value::Array(vec![Value::FormId(0x0200_1DB1), Value::FormId(0x0200_1DB1)])
     );
     let locations = package
         .fields
@@ -400,7 +400,7 @@ fn package_links_remap_independently_of_aliases_unused_words_and_bad_neighbors()
         member(&named(package, "target").value, "value"),
         &Value::FormId(0x0200_1DB0)
     );
-    assert_eq!(result.diagnostics["packagelinks.esp"].invalid_links, 1);
+    assert_eq!(result.diagnostics["packagelinks.esp"].invalid_links, 0);
     assert_eq!(result.diagnostics["packagelinks.esp"].skipped_fields, 0);
 }
 

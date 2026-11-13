@@ -51,8 +51,28 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 pub(crate) fn scan_plugin(
     path: &Path,
     diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+    receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+) -> Result<()> {
+    scan_plugin_with_payloads(path, diagnostics, observe, receive, true)
+}
+
+/// Visit safely framed source identities without allocating or inflating record bodies.
+pub(crate) fn scan_plugin_headers(
+    path: &Path,
+    diagnostics: &mut PluginDiagnostics,
+    observe: impl FnMut(ObservedHeader),
+) -> Result<()> {
+    scan_plugin_with_payloads(path, diagnostics, observe, |_, _| {}, false)
+}
+
+/// Share exactly the same frame boundaries between header catalogues and full decoding.
+fn scan_plugin_with_payloads(
+    path: &Path,
+    diagnostics: &mut PluginDiagnostics,
     mut observe: impl FnMut(ObservedHeader),
     mut receive: impl FnMut(ScannedRecord, &mut PluginDiagnostics),
+    payloads: bool,
 ) -> Result<()> {
     diagnostics.set_record(0, None, None, None, "framing");
     let file = File::open(path).wrap_err_with(|| format!("open {}", path.display()))?;
@@ -66,7 +86,7 @@ pub(crate) fn scan_plugin(
         diagnostics.note("record", || "input has no complete TES4 header".into());
         return Ok(());
     }
-    scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe);
+    scan_bytes_observed(&map, diagnostics, &mut receive, &mut observe, payloads);
     Ok(())
 }
 
@@ -77,7 +97,7 @@ fn scan_bytes(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
 ) {
-    scan_bytes_observed(bytes, diagnostics, receive, &mut |_| {});
+    scan_bytes_observed(bytes, diagnostics, receive, &mut |_| {}, true);
 }
 
 /// Keep history observation separate from payload allocation and existing recovery policy.
@@ -86,6 +106,7 @@ fn scan_bytes_observed(
     diagnostics: &mut PluginDiagnostics,
     receive: &mut impl FnMut(ScannedRecord, &mut PluginDiagnostics),
     observe: &mut impl FnMut(ObservedHeader),
+    payloads: bool,
 ) {
     let mut position = 0;
     let mut end = bytes.len();
@@ -184,6 +205,10 @@ fn scan_bytes_observed(
         let source_record_offset = position as u64;
         let payload = &bytes[position + 24..position + 24 + size];
         position += 24 + size;
+        if !payloads {
+            observe(observed);
+            continue;
+        }
         let flags = u32_at(header, 8);
         let source_form_id = u32_at(header, 12);
         let inflated = if flags & 0x0004_0000 != 0 {
@@ -316,5 +341,25 @@ mod tests {
         assert!(inflate(&payload).is_err());
         payload[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(inflate(&payload).is_err());
+    }
+    /// Header cataloguing skips corrupt compressed bodies while retaining subsequent frames.
+    #[test]
+    fn header_catalogue_does_not_inflate_payloads() {
+        let mut bytes = frame(b"TES4", 0, 0, &[]);
+        bytes.extend(frame(b"STAT", 1, 0x40000, &[0, 0, 0, 0, 99]));
+        bytes.extend(frame(b"STAT", 2, 0, b"EDID\x02\x00x\0"));
+        let mut diagnostics = PluginDiagnostics::default();
+        let mut ids = Vec::new();
+        scan_bytes_observed(
+            &bytes,
+            &mut diagnostics,
+            &mut |_, _| {
+                panic!("header-only scanning must not allocate record payloads");
+            },
+            &mut |header| ids.push(header.source_form_id),
+            false,
+        );
+        assert_eq!(ids, [0, 1, 2]);
+        assert_eq!(diagnostics.skipped_records, 0);
     }
 }

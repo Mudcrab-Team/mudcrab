@@ -1,4 +1,4 @@
-//! Additive differential tests: existing remapping/selection remains the independent oracle.
+//! Differential controls: the frozen old record remapper pins equivalence and policy differences.
 use super::{
     RawRecord, RemapWarnings, binary::PluginMetadata, load_order::LoadOrder, remap_record_form_ids,
 };
@@ -9,7 +9,7 @@ use shared::{
     source_form_id::{Resolution, SourceFormId, ZeroPolicy, resolve},
 };
 
-/// Keep all existing u32 APIs untouched; compare their actual output with the new pure view.
+/// Compare the frozen permissive header remapper with the new pure view.
 fn check(
     order: &LoadOrder,
     table: &PluginTable,
@@ -323,4 +323,290 @@ fn form_key_differential_official_and_ccc_order() {
     ] {
         check(&order, &table, supplier, 0x800, Some(packed), runtime);
     }
+}
+
+/// Frame synthetic bytes independently of either remapping implementation.
+fn oracle_field(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    [tag.as_slice(), &(data.len() as u16).to_le_bytes(), data].concat()
+}
+
+fn oracle_record(tag: &[u8; 4], id: u32, body: &[u8]) -> Vec<u8> {
+    [
+        tag.as_slice(),
+        &(body.len() as u32).to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &id.to_le_bytes(),
+        &[0; 8],
+        body,
+    ]
+    .concat()
+}
+
+/// Three full owners: Patch's MAST[0] is Base, while self packs into slot 2.
+/// The old side calls the frozen real record remapper, never the new resolver.
+fn record_oracle_fixture() -> (
+    tempfile::TempDir,
+    Vec<std::path::PathBuf>,
+    std::collections::HashMap<u32, RawRecord>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let body = [
+        // Strict-header difference, separate from the optional-link difference.
+        oracle_record(b"CELL", 0x0200_0810, &[]),
+        oracle_record(
+            b"CELL",
+            0x0100_0800,
+            &[
+                oracle_field(b"XOWN", &0x0200_0900u32.to_le_bytes()),
+                oracle_field(b"XCWT", &0x0200_0901u32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+        oracle_record(
+            b"REFR",
+            0x0100_0802,
+            &oracle_field(b"NAME", &0x0200_0904u32.to_le_bytes()),
+        ),
+        // Ordinary equivalence: in-range master, normal self and permissive past-MAST header.
+        oracle_record(b"STAT", 0x0000_0803, &oracle_field(b"EDID", b"Master\0")),
+        oracle_record(b"STAT", 0x0100_0804, &oracle_field(b"EDID", b"Self\0")),
+        oracle_record(b"STAT", 0x0700_0805, &oracle_field(b"EDID", b"Projected\0")),
+        oracle_record(
+            b"REFR",
+            0x0100_0806,
+            &oracle_field(b"NAME", &0x0000_0803u32.to_le_bytes()),
+        ),
+    ]
+    .concat();
+    let mut paths = Vec::new();
+    for name in ["Base.esm", "Filler.esm", "Patch.esp"] {
+        let mut header = oracle_field(
+            b"HEDR",
+            &[1.71f32.to_le_bytes(), [0; 4], 0x800u32.to_le_bytes()].concat(),
+        );
+        if name == "Patch.esp" {
+            header.extend(oracle_field(b"MAST", b"Base.esm\0"));
+            header.extend(oracle_field(b"DATA", &[0; 8]));
+        }
+        let path = dir.path().join(name);
+        let mut bytes = oracle_record(b"TES4", 0, &header);
+        if name == "Patch.esp" {
+            bytes.extend_from_slice(&body);
+        }
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path);
+    }
+    let order = LoadOrder::read(&paths).unwrap();
+    let mut old = std::collections::HashMap::new();
+    for mut record in super::binary::parse_plugin_file(&paths[2]).unwrap() {
+        record.load_order = 2;
+        if remap_record_form_ids(
+            &mut record,
+            &order.names[2],
+            &order.metadata[2].masters,
+            &order.normal,
+            &order.light,
+            &RemapWarnings::default(),
+        )
+        .is_ok()
+        {
+            old.insert(record.form_id, record);
+        }
+    }
+    (dir, paths, old)
+}
+
+/// Read the one independent four-byte literal in an oracle record field.
+fn oracle_word(record: &RawRecord, tag: &[u8; 4]) -> u32 {
+    let data = &record
+        .subrecords
+        .iter()
+        .find(|(t, _)| t.as_slice() == tag)
+        .unwrap()
+        .1;
+    u32::from_le_bytes(data.as_slice().try_into().unwrap())
+}
+
+/// Compare production publication with the retained old record remapper.
+#[test]
+fn real_old_record_oracle_names_strict_header_difference() {
+    let (_dir, paths, old) = record_oracle_fixture();
+    let new = super::EsmParser::merge_plugins(&paths).unwrap();
+    assert!(!old.contains_key(&0x0200_0810));
+    assert_eq!(new[&0x0200_0810].record_type, *b"CELL");
+}
+
+/// Compare production publication with the retained old record remapper.
+#[test]
+fn real_old_record_oracle_names_optional_xown_xcwt_difference() {
+    let (_dir, paths, old) = record_oracle_fixture();
+    let new = super::EsmParser::merge_plugins(&paths).unwrap();
+    for (tag, expected) in [(b"XOWN", 0x0200_0900), (b"XCWT", 0x0200_0901)] {
+        assert_eq!(oracle_word(&old[&0x0200_0800], tag), 0);
+        assert_eq!(oracle_word(&new[&0x0200_0800], tag), expected);
+    }
+}
+
+/// Compare production publication with the retained old record remapper.
+#[test]
+fn real_old_record_oracle_names_required_refr_name_difference() {
+    let (_dir, paths, old) = record_oracle_fixture();
+    let new = super::EsmParser::merge_plugins(&paths).unwrap();
+    assert!(!old.contains_key(&0x0200_0802));
+    assert_eq!(oracle_word(&new[&0x0200_0802], b"NAME"), 0x0200_0904);
+}
+
+/// Compare production publication with the retained old record remapper.
+#[test]
+fn real_old_record_oracle_preserves_ordinary_equivalence() {
+    let (_dir, paths, old) = record_oracle_fixture();
+    let new = super::EsmParser::merge_plugins(&paths).unwrap();
+    assert_eq!(old.len(), 5);
+    assert_eq!(new.len(), 7);
+    for id in [0x0000_0803, 0x0200_0804, 0x0200_0805, 0x0200_0806] {
+        let (old, new) = (&old[&id], &new[&id]);
+        assert_eq!(old.form_id, id);
+        assert_eq!(new.form_id, id);
+        assert_eq!(old.record_type, new.record_type);
+        assert_eq!(old.flags, new.flags);
+        assert_eq!(old.subrecords, new.subrecords);
+        assert_eq!(old.cell_form_id, new.cell_form_id);
+        assert_eq!(old.worldspace_form_id, new.worldspace_form_id);
+        assert_eq!(old.load_order, new.load_order);
+    }
+    assert_eq!(oracle_word(&new[&0x0200_0806], b"NAME"), 0x0000_0803);
+}
+
+/// Compare production publication with the retained old record remapper.
+#[test]
+fn real_old_record_oracle_sol3_publication_keeps_links_and_reference() {
+    use rusqlite::Connection;
+    let (dir, paths, old) = record_oracle_fixture();
+    let old_db = Connection::open_in_memory().unwrap();
+    super::exporter::create_tables(&old_db).unwrap();
+    super::exporter::export_to_db(&old_db, &old).unwrap();
+    let new_path = dir.path().join("new.db");
+    super::EsmParser::convert_plugins(&paths, &new_path).unwrap();
+    let new_db = Connection::open(new_path).unwrap();
+    let published = |conn: &Connection, id: u32| {
+        let blob: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        rkyv::from_bytes::<super::types::ArchivedRecordData, rkyv::rancor::Error>(&blob).unwrap()
+    };
+    let old_cell = published(&old_db, 0x0200_0800);
+    let new_cell = published(&new_db, 0x0200_0800);
+    for (tag, expected) in [(b"XOWN", 0x0200_0900u32), (b"XCWT", 0x0200_0901)] {
+        let word = |record: &super::types::ArchivedRecordData| {
+            let field = record.subrecords.iter().find(|f| &f.tag == tag).unwrap();
+            u32::from_le_bytes(field.data.as_slice().try_into().unwrap())
+        };
+        assert_eq!(word(&old_cell), 0);
+        assert_eq!(word(&new_cell), expected);
+    }
+    let old_count: u32 = old_db
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE form_id=?1",
+            [0x0200_0802u32],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_count, 0);
+    let reference = published(&new_db, 0x0200_0802);
+    let name = reference
+        .subrecords
+        .iter()
+        .find(|f| f.tag == *b"NAME")
+        .unwrap();
+    assert_eq!(name.data, 0x0200_0904u32.to_le_bytes());
+}
+
+/// Handwritten remaps emit one counted projection notice rather than two summaries.
+#[test]
+fn handwritten_projection_notice_is_not_duplicated() {
+    let (_dir, paths, _old) = record_oracle_fixture();
+    let order = LoadOrder::read(&paths).unwrap();
+    let conversion = super::EsmParser::merge_plugins_with_load_order(&paths, &order).unwrap();
+    let projected: Vec<_> = conversion
+        .notices
+        .iter()
+        .filter(|line| line.contains("master list") || line.contains("out-of-range master"))
+        .collect();
+    assert_eq!(projected.len(), 1, "{projected:?}");
+}
+
+/// Typed publication also filters explicit filenames before both decode and plugin export.
+#[test]
+fn typed_publication_skips_invalid_name_before_identity_construction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for (name, local) in [
+        ("Before.esp", 0x811u32),
+        (" Invalid.esp", 0x822),
+        ("Dependent.esp", 0x0100_0844),
+        ("Transitive.esp", 0x0100_0855),
+        ("After.esp", 0x833),
+    ] {
+        let mut header = oracle_field(
+            b"HEDR",
+            &[1.71f32.to_le_bytes(), [0; 4], 0x800u32.to_le_bytes()].concat(),
+        );
+        let master = match name {
+            "Dependent.esp" => Some(" Invalid.esp"),
+            "Transitive.esp" => Some("Dependent.esp"),
+            _ => None,
+        };
+        if let Some(master) = master {
+            header.extend(oracle_field(b"MAST", format!("{master}\0").as_bytes()));
+            header.extend(oracle_field(b"DATA", &[0; 8]));
+        }
+        let path = dir.path().join(name);
+        std::fs::write(
+            &path,
+            [
+                oracle_record(b"TES4", 0, &header),
+                oracle_record(b"STAT", local, &oracle_field(b"EDID", b"valid\0")),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        paths.push(path);
+    }
+    let db_path = dir.path().join("world.db");
+    let conversion = super::inhouse::convert_plugins_with_string_sources_report(
+        &paths,
+        &db_path,
+        super::inhouse::StringSources::default_language(
+            super::inhouse::StringRoots::PluginLooseFirst(dir.path()),
+        ),
+        None,
+    );
+    assert!(
+        conversion.is_ok(),
+        "skip an invalid explicit path: {:?}",
+        conversion.as_ref().err()
+    );
+    let conversion = conversion.unwrap();
+    assert!(
+        conversion
+            .warnings
+            .iter()
+            .any(|line| line.contains("invalid plugin name")
+                && line.contains("skipped 2 dependent plugins"))
+    );
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let ids = conn
+        .prepare("SELECT form_id FROM records ORDER BY form_id")
+        .unwrap()
+        .query_map([], |r| r.get::<_, u32>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(ids, [0x811, 0x0100_0833]);
+    let plugins: u32 = conn
+        .query_row("SELECT COUNT(*) FROM plugins", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(plugins, 2);
 }

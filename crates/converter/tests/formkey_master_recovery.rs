@@ -109,9 +109,9 @@ fn past_master_selectors_resolve_to_self_in_both_writers() {
     assert_eq!(diagnostics["decoder"]["patch.esp"]["skipped_records"], 1);
 }
 
-/// Preserve old typed publication without changing native ownership or usable neighbors.
+/// Preserve the named NAVM ONAM NULL policy without changing native ownership or neighbors.
 #[test]
-fn typed_optional_projection_preserves_null_after_native_self_resolution() {
+fn navm_onam_projection_preserves_null_after_native_self_resolution() {
     use converter::esm::form_keys::FormKeyOrder;
     use shared::source_form_id::ZeroPolicy;
     let root = tempfile::tempdir().unwrap();
@@ -337,4 +337,232 @@ fn extended_native_conversion_preserves_all_owners_and_unrelated_output() {
             .keys()
             .any(|key| key.plugin() == light && key.local() == 0xabc)
     );
+}
+
+/// Optional links, opaque XLOC keys, header history and diagnostics share self resolution.
+#[test]
+fn self_selector_publication_keeps_optional_owner_lock_and_diagnostic_id() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let lock = [
+        [50, 0, 0, 0].as_slice(),
+        &0x0200_0840u32.to_le_bytes(),
+        &[0; 12],
+    ]
+    .concat();
+    plugin(&data, "Base.esm", &[], Vec::new());
+    plugin(
+        &data,
+        "Patch.esp",
+        &["Base.esm"],
+        [
+            record(b"KEYM", 0x0100_0840, 0, &sub(b"EDID", b"SelfKey\0")),
+            record(b"STAT", 0x0100_0850, 0, &sub(b"EDID", b"BaseObject\0")),
+            record(
+                b"CELL",
+                0x0100_0860,
+                0,
+                &[
+                    sub(b"DATA", &[1, 0]),
+                    sub(b"XOWN", &0x0200_0830u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+            record(
+                b"REFR",
+                0x0100_0870,
+                0,
+                &[
+                    sub(b"NAME", &0x0100_0850u32.to_le_bytes()),
+                    sub(b"XLOC", &lock),
+                    sub(b"DATA", &[0; 24]),
+                ]
+                .concat(),
+            ),
+            record(b"STAT", 0x0200_0880, 0, &sub(b"EDID", b"ProjectedHeader\0")),
+            record(b"FACT", 0x0100_0830, 0, &sub(b"EDID", b"OwnerFaction\0")),
+        ]
+        .concat(),
+    );
+    let paths = [data.join("Base.esm"), data.join("Patch.esp")];
+    let legacy = root.path().join("legacy.db");
+    EsmParser::convert_plugins(&paths, &legacy).unwrap();
+    let list = data.join("plugins.txt");
+    fs::write(&list, "*Base.esm\n*Patch.esp\n").unwrap();
+    let output = root.path().join("typed");
+    inhouse::export_record_bundle(&data, &list, &output).unwrap();
+    for path in [legacy, output.join("skyrim_world.db")] {
+        let conn = Connection::open(path).unwrap();
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=16779360", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let archived = rkyv::from_bytes::<
+            converter::esm::types::ArchivedRecordData,
+            rkyv::rancor::Error,
+        >(&bytes)
+        .unwrap();
+        let owner = archived
+            .subrecords
+            .iter()
+            .find(|s| s.tag == *b"XOWN")
+            .unwrap();
+        assert_eq!(
+            owner.data,
+            0x0100_0830u32.to_le_bytes(),
+            "both readers keep optional self owner"
+        );
+        let key: Option<u32> = conn
+            .query_row(
+                "SELECT lock_key_id FROM reference_details WHERE reference_id=16779376",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, Some(0x0100_0840), "opaque XLOC also uses self");
+    }
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let event: Option<u32> = conn.query_row("SELECT form_id FROM record_diagnostics WHERE category='compatibility' AND source_form_id=33556608", [], |r| r.get(0)).unwrap();
+    assert_eq!(
+        event,
+        Some(0x0100_0880),
+        "journal the projected runtime ID before the notice"
+    );
+    let history: Option<u32> = conn
+        .query_row(
+            "SELECT form_id FROM record_overrides WHERE source_form_id=33556608",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        history,
+        Some(0x0100_0880),
+        "history keeps self runtime ID alongside unproven provenance"
+    );
+}
+
+/// An absent optional self target keeps its original NULL publication and source diagnostic.
+#[test]
+fn absent_optional_self_target_keeps_old_diagnostic() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        record(
+            b"CELL",
+            0x811,
+            0,
+            &[
+                sub(b"DATA", &[1, 0]),
+                sub(b"XCWT", &0x0200_1234u32.to_le_bytes()),
+            ]
+            .concat(),
+        ),
+    );
+    let list = data.join("plugins.txt");
+    fs::write(&list, "*Base.esm\n").unwrap();
+    let output = root.path().join("typed");
+    inhouse::export_record_bundle(&data, &list, &output).unwrap();
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let reasons = conn
+        .prepare("SELECT reason FROM record_diagnostics WHERE category='link'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(reasons, ["optional FormID 02001234 exceeds master list"]);
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT data FROM records WHERE form_id=2065", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let record =
+        rkyv::from_bytes::<converter::esm::types::ArchivedRecordData, rkyv::rancor::Error>(&bytes)
+            .unwrap();
+    assert_eq!(
+        record
+            .subrecords
+            .iter()
+            .find(|field| field.tag == *b"XCWT")
+            .unwrap()
+            .data,
+        [0; 4]
+    );
+}
+
+/// Group labels project self even without a CELL header; field-target recovery does not apply.
+#[test]
+fn past_master_group_labels_keep_self_in_both_readers() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    fs::create_dir(&data).unwrap();
+    let group = |kind: u32, label: u32, body: Vec<u8>| {
+        [
+            b"GRUP".as_slice(),
+            &((body.len() + 24) as u32).to_le_bytes(),
+            &label.to_le_bytes(),
+            &kind.to_le_bytes(),
+            &[0; 8],
+            &body,
+        ]
+        .concat()
+    };
+    plugin(
+        &data,
+        "Base.esm",
+        &[],
+        [
+            record(b"STAT", 0x820, 0, &sub(b"EDID", b"base\0")),
+            group(
+                6,
+                0x0200_0900,
+                group(
+                    9,
+                    0x0200_0900,
+                    record(b"REFR", 0x811, 0, &sub(b"NAME", &0x820u32.to_le_bytes())),
+                ),
+            ),
+        ]
+        .concat(),
+    );
+    let paths = [data.join("Base.esm")];
+    let legacy = EsmParser::merge_plugins(&paths).unwrap();
+    let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
+    let typed = converter::records::read_plugins(&paths, &order).unwrap();
+    assert_eq!(legacy[&0x811].cell_form_id, Some(0x900));
+    assert_eq!(typed.records[&0x811].cell_form_id, Some(0x900));
+    let native = EsmParser::merge_plugins_form_keys(&paths).unwrap();
+    let reference = native
+        .records
+        .values()
+        .find(|record| record.source.record_type == *b"REFR")
+        .unwrap();
+    assert_eq!(reference.cell.unwrap().local(), 0x900);
+    let legacy_db = root.path().join("legacy.db");
+    EsmParser::convert_plugins(&paths, &legacy_db).unwrap();
+    let list = data.join("plugins.txt");
+    fs::write(&list, "*Base.esm\n").unwrap();
+    let output = root.path().join("typed");
+    inhouse::export_record_bundle(&data, &list, &output).unwrap();
+    for path in [legacy_db, output.join("skyrim_world.db")] {
+        let conn = Connection::open(path).unwrap();
+        let count: u32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE form_id IN (2065,2080)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 2,
+            "orphan group metadata must not abort publication or remove usable records"
+        );
+    }
 }

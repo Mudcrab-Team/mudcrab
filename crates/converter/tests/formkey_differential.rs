@@ -1,4 +1,5 @@
-//! Independent legacy packing versus the Mutagen-inspired FormKey contract.
+//! Independent permissive legacy packing versus the Mutagen-inspired FormKey contract.
+//! Strict old record policies are tested with the retained real remapper in esm's unit tests.
 //! Synthetic fixtures are generated in-process; the real-input audit is explicitly opt-in.
 use converter::esm::binary::{parse_plugin_file, parse_plugin_metadata};
 use sha2::{Digest, Sha256};
@@ -42,6 +43,7 @@ fn table(plugins: &[Plugin]) -> PluginTable {
 }
 
 /// Frozen old permissive header packer: source selectors address MAST, then self.
+/// Scope: representable, valid-width identities only, not strict headers or link recovery.
 /// This oracle never calls resolve, FormKey, LegacyIdView, or converter remapping.
 fn old_pack(plugins: &[Plugin], supplier: usize, raw: u32) -> Option<u32> {
     if raw == 0 {

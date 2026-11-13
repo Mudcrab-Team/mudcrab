@@ -87,6 +87,8 @@ pub(crate) struct Context<'a> {
     pub order: &'a LoadOrder,
     pub plugin_index: usize,
     pub localized: bool,
+    /// All safely observed source headers, including forward optional-link targets.
+    pub source_ids: Option<&'a std::collections::HashSet<u32>>,
     pub winning_types: Option<&'a HashMap<u32, [u8; 4]>>,
 }
 
@@ -514,7 +516,7 @@ fn remap(
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<u32, String> {
     diagnostics.link(value);
-    let result = (|| {
+    let result: Result<u32, String> = (|| {
         let order = context.order.form_key_context()?;
         let observed = order.note_typed_source(
             context.plugin_index,
@@ -537,6 +539,8 @@ fn remap(
             value,
             context.order.metadata[context.plugin_index].masters.len(),
             optional,
+            diagnostics.event_context.record_type,
+            diagnostics.event_context.field.as_deref(),
         ) {
             if observed {
                 order.note_typed_null(context.plugin_index, value);
@@ -547,7 +551,7 @@ fn remap(
             );
             return Ok(0);
         }
-        order
+        let projected = order
             .legacy_view()
             .map_err(|error| error.to_string())?
             .to_nullable_legacy_u32(key)
@@ -580,7 +584,34 @@ fn remap(
                 } else {
                     error.to_string()
                 }
-            })
+            })?;
+        // Ownership is self; an optional link to an absent target still publishes NULL.
+        // Preserve the old source-context diagnostic, including losing/rejected versions.
+        let past_master =
+            (value >> 24) as usize > context.order.metadata[context.plugin_index].masters.len();
+        // Only runtime schema fields have the ordinary dangling-target NULL policy. Group labels
+        // and catalogue probes still project self without an extra presence requirement.
+        let source_field = diagnostics.event_context.record_type != Some(*b"TES4")
+            && diagnostics
+                .event_context
+                .field
+                .as_deref()
+                .is_some_and(|field| field.contains("[source:"));
+        if optional
+            && past_master
+            && source_field
+            && projected >= 0x800
+            && context
+                .source_ids
+                .is_some_and(|ids| !ids.contains(&projected))
+        {
+            note_decode_link(
+                diagnostics,
+                format!("optional FormID {value:08X} exceeds master list"),
+            );
+            return Ok(0);
+        }
+        Ok(projected)
     })();
     match result {
         Err(error) if optional => {
@@ -694,6 +725,7 @@ fn decode_with_identity_inner(
         context.order,
     );
     let id = remap(scanned.source_form_id, context, false, diagnostics)?;
+    diagnostics.event_context.form_id = Some(id);
     if source_identity.state == super::source_identity::SourceIdentityState::MasterIndexOutOfRange {
         diagnostics.note("compatibility", || {
             format!(
@@ -703,7 +735,6 @@ fn decode_with_identity_inner(
             )
         });
     }
-    diagnostics.event_context.form_id = Some(id);
     if id == 0 && !matches!(&scanned.record_type, b"GMST" | b"TES4") {
         return Err("non-GMST record has null FormID".into());
     }
@@ -2917,6 +2948,8 @@ pub(crate) fn resolve_deferred(
     // History is complete before resolution and only its entries change here, so
     // one key index serves every acceptance and rejection without rescanning it.
     let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
+    let mut source_ids = std::collections::HashSet::new();
+    let source_catalogued = !result.history.is_empty();
     // A conversion with nothing deferred pays neither pass over its records.
     if !pending.is_empty() {
         kinds.extend(
@@ -2926,6 +2959,14 @@ pub(crate) fn resolve_deferred(
                 .map(|(&id, record)| (id, record.record_type)),
         );
         for (index, entry) in result.history.iter().enumerate() {
+            if let Some(id) = super::source_identity::header_runtime_id(
+                &entry.record_type,
+                entry.source_form_id,
+                entry.plugin_index as usize,
+                order,
+            ) {
+                source_ids.insert(id);
+            }
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
@@ -2955,6 +2996,7 @@ pub(crate) fn resolve_deferred(
                 order,
                 plugin_index: priority,
                 localized: order.metadata[priority].flags & 0x80 != 0,
+                source_ids: source_catalogued.then_some(&source_ids),
                 winning_types: Some(&kinds),
             };
             let mut baseline = PluginDiagnostics::default();
@@ -3701,13 +3743,17 @@ mod tests {
                 source_record_offset: header.len() as u64,
                 payload: payload.clone(),
             };
+            // Source headers are independent of the injected winning-kind probe.
+            let source_ids = std::collections::HashSet::from([0x1880]);
             let first_context = Context {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: Some(&source_ids),
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -3921,9 +3967,11 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: None,
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -4105,9 +4153,11 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: None,
             };
             let resolved_context = Context {
+                source_ids: None,
                 winning_types: Some(&kinds),
                 ..first_context
             };
@@ -4307,6 +4357,7 @@ mod tests {
                 order: &order,
                 plugin_index: 0,
                 localized: false,
+                source_ids: None,
                 winning_types: Some(&kinds),
             },
             &mut diagnostics,
@@ -4568,6 +4619,8 @@ mod tests {
             source_record_offset: record.source_record_offset,
             payload: probe_payload.clone(),
         };
+        // Independently enumerated source headers: two TESTs and their NPC_ owner.
+        let source_ids = std::collections::HashSet::from([0x0100_1880, 0x0100_1881, 0x0100_1900]);
         let mut baseline = PluginDiagnostics::default();
         decode_with_prepared(
             scan(),
@@ -4577,6 +4630,7 @@ mod tests {
                 order: &order,
                 plugin_index: 1,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: None,
             },
             &mut baseline,
@@ -4591,6 +4645,7 @@ mod tests {
                 order: &order,
                 plugin_index: 1,
                 localized: false,
+                source_ids: Some(&source_ids),
                 winning_types: Some(&kinds),
             },
             &mut replay,
@@ -4655,6 +4710,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -4794,6 +4850,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -5015,6 +5072,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let selection = super::super::deciders::Context {
@@ -5129,6 +5187,7 @@ mod tests {
             order: &order,
             plugin_index: 0,
             localized: false,
+            source_ids: None,
             winning_types: None,
         };
         let mut diagnostics = PluginDiagnostics::default();
