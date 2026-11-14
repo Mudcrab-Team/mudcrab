@@ -142,16 +142,30 @@ fn authored_fade_changes_actual_light_power_without_changing_range_or_colour() {
 
 #[test]
 fn signed_offsets_zero_and_backend_limits_survive_storage() {
-    for (offset, expected) in [
-        (-400.0, 112.0),
-        (0.0, 512.0),
-        (100.0, 612.0),
-        (20_000.0, 8192.0),
+    // (offset, backend range, authored radius, backend-limited). A sum above the cap clamps; the
+    // base radius is 512. An offset above the cap (retail outliers) is ignored: base radius stays.
+    for (offset, expected, authored, limited) in [
+        (-400.0, 112.0, 112.0, false),
+        (0.0, 512.0, 512.0, false),
+        (100.0, 612.0, 612.0, false),
+        (7_000.0, 7_512.0, 7_512.0, false),
+        (8_000.0, 8192.0, 8_512.0, true),
+        (20_000.0, 512.0, 512.0, true),
+        (3_736_737.5, 512.0, 512.0, true),
     ] {
         let evaluated = consume(&records(1.0, 1.0, offset), false);
-        assert_eq!(evaluated.authored_radius, Some(512.0 + f64::from(offset)));
-        assert_eq!(evaluated.point_light().unwrap().range, expected);
-        assert_eq!(evaluated.backend_limited, offset == 20_000.0);
+        assert_eq!(evaluated.authored_radius, Some(authored), "offset {offset}");
+        assert_eq!(
+            evaluated.point_light().unwrap().range,
+            expected,
+            "offset {offset}"
+        );
+        assert_eq!(evaluated.backend_limited, limited, "offset {offset}");
+        assert_eq!(
+            evaluated.radius_offset_ignored,
+            offset > 8192.0,
+            "offset {offset}"
+        );
     }
     for offset in [-512.0, -1024.0, f32::NAN, f32::INFINITY] {
         // The procedural writer rejects non-finite radii. Inject malformed raw fields after
@@ -291,10 +305,20 @@ fn older_packages_use_labelled_fallbacks_and_reexport_clears_removed_xlig() {
 
 #[test]
 fn backend_saturates_extreme_fade_and_consumes_authored_flags() {
-    let extreme = consume(&records(f32::MAX, 1.0, 0.0), false);
-    assert!(extreme.backend_limited);
-    assert_eq!(extreme.source.fade, Some(f32::MAX));
+    // A finite fade far above any authored value saturates the backend instead of overflowing.
+    let extreme = consume(&records(3.0e38, 1.0, 0.0), false);
+    assert!(extreme.backend_limited && !extreme.fade_sentinel);
+    assert_eq!(extreme.source.fade, Some(3.0e38));
     assert_eq!(extreme.point_light().unwrap().intensity, f32::MAX);
+    // The f32::MAX sentinel is "no fade": stored raw, evaluated as unit power, never a maximum light.
+    let unit = consume(&records(1.0, 1.0, 0.0), false)
+        .point_light()
+        .unwrap();
+    let sentinel = consume(&records(f32::MAX, 1.0, 0.0), false);
+    assert_eq!(sentinel.source.fade, Some(f32::MAX));
+    assert!(sentinel.fade_sentinel && !sentinel.backend_limited);
+    assert_eq!(sentinel.effective_fade, 1.0);
+    assert_eq!(sentinel.point_light().unwrap().intensity, unit.intensity);
     let mut source = records(1.0, 1.0, 0.0);
     let light = light_record(&mut source);
     let data = &mut light
@@ -320,12 +344,10 @@ fn native_fade_sentinel_signed_offsets_and_shadow_falloff_have_explicit_backend_
         (-1.0, 1.0),
         (-2.0, 0.0),
         (-3.0, 0.0),
-        (f32::MAX, f32::MAX),
+        // The sentinel is "no reference fade": the base fade of 2 is left as it is.
+        (f32::MAX, 2.0),
     ] {
-        // MAX + MAX would overflow without the native sentinel bypass. A small base fade
-        // cannot distinguish the sentinel branch from ordinary rounded floating addition.
-        let base_fade = if offset == f32::MAX { f32::MAX } else { 2.0 };
-        let mut source = records(base_fade, 4.0, 0.0);
+        let mut source = records(2.0, 4.0, 0.0);
         let data = [0.0f32, offset, 0.0, 0.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)
@@ -334,26 +356,26 @@ fn native_fade_sentinel_signed_offsets_and_shadow_falloff_have_explicit_backend_
             .subrecords
             .push((b"XLIG".to_vec(), data));
         let actual = consume(&source, false);
-        assert_eq!(actual.effective_fade, expected);
+        let sentinel = offset == f32::MAX;
+        assert_eq!(actual.effective_fade, expected, "offset {offset}");
         assert_eq!(
             actual.authored_fade,
-            if offset == f32::MAX {
-                f64::from(f32::MAX)
+            if sentinel {
+                2.0
             } else {
                 2.0 + f64::from(offset)
             }
         );
+        assert_eq!(actual.fade_sentinel, sentinel);
+        assert_eq!(actual.reference_fade_applied, !sentinel);
+        assert!(!actual.invalid_reference_fade && !actual.malformed_reference_data);
         assert!(!actual.unsupported_reference_data);
-        assert_eq!(actual.backend_limited, offset < -2.0 || offset == f32::MAX);
-        if offset != f32::MAX {
-            assert!(
-                (actual.point_light().unwrap().intensity / baseline.intensity - expected / 2.0)
-                    .abs()
-                    < 1e-5
-            );
-        } else {
-            assert_eq!(actual.point_light().unwrap().intensity, f32::MAX);
-        }
+        assert_eq!(actual.backend_limited, offset < -2.0, "offset {offset}");
+        assert!(
+            (actual.point_light().unwrap().intensity / baseline.intensity - expected / 2.0).abs()
+                < 1e-5,
+            "offset {offset}"
+        );
     }
     for flags in [0x400u32, 0x800, 0x1000] {
         let mut source = records(1.0, 4.0, 0.0);

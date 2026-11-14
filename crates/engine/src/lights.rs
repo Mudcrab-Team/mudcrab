@@ -83,6 +83,10 @@ pub struct LightEvaluation {
     pub invalid_fade: bool,
     pub invalid_radius: bool,
     pub backend_limited: bool,
+    /// An FNAM or XLIG fade equal to the `f32::MAX` sentinel meant "no fade" and was not applied.
+    pub fade_sentinel: bool,
+    /// A finite XRDS offset above [`MAX_RADIUS_OVERRIDE`] was ignored and the base radius kept.
+    pub radius_offset_ignored: bool,
     pub unsupported_reference_data: bool,
     pub malformed_reference_data: bool,
     pub unsupported_falloff: bool,
@@ -115,12 +119,26 @@ impl LightEvaluation {
 /// Resolve supported inputs without modifying their stored values. XRDS is an additive signed
 /// offset (xEdit wbREFRRadiusToStr). Invalid present offsets are rejected, not replaced by base
 /// radius. The native constructor replaces nonpositive sums with 0.1. XLIG fade is an additive
-/// offset, with f32::MAX as the native sentinel. Native 1.7.104 evidence is pinned in the spec.
+/// offset. An `f32::MAX` fade, in FNAM or XLIG, is the native "no fade" sentinel: this backend
+/// cannot emit "unbounded power", so the sentinel is not applied and the light keeps the unit
+/// (or authored base) fade instead of becoming a maximum-intensity light.
+///
+/// A finite XRDS offset above [`MAX_RADIUS_OVERRIDE`] is a retail outlier (nine references,
+/// 15,967 up to 3,736,737 units). The pre-additive code ignored it and kept the record radius; that
+/// is preserved so those lights do not jump to the range cap. Native 1.7.104 evidence is pinned in
+/// the spec.
 pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEvaluation {
+    let radius_offset_ignored =
+        radius_offset.is_some_and(|offset| offset.is_finite() && offset > MAX_RADIUS_OVERRIDE);
+    let applied_offset = if radius_offset_ignored {
+        None
+    } else {
+        radius_offset
+    };
     let authored_radius = (light.radius_status != Some(2)
         && light.radius.is_finite()
-        && radius_offset.is_none_or(f32::is_finite))
-    .then(|| f64::from(light.radius) + f64::from(radius_offset.unwrap_or(0.0)));
+        && applied_offset.is_none_or(f32::is_finite))
+    .then(|| f64::from(light.radius) + f64::from(applied_offset.unwrap_or(0.0)));
     let native_radius_fallback = authored_radius.is_some_and(|radius| radius <= 0.0);
     let backend_range = authored_radius.map(|radius| {
         if radius <= 0.0 {
@@ -129,11 +147,12 @@ pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEval
             radius.min(f64::from(MAX_RADIUS_OVERRIDE)) as f32
         }
     });
+    let base_fade_sentinel = light.fade == Some(f32::MAX);
     let invalid_fade = light.fade_status == Some(2)
         || light
             .fade
             .is_some_and(|fade| !fade.is_finite() || fade < 0.0);
-    let base_fade = if invalid_fade {
+    let base_fade = if invalid_fade || base_fade_sentinel {
         1.0
     } else {
         light
@@ -141,21 +160,21 @@ pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEval
             .filter(|fade| fade.is_finite() && *fade >= 0.0)
             .unwrap_or(1.0)
     };
-    let reference_fade = light.reference_data.as_ref().and_then(|data| {
+    let reference_fade_raw = light.reference_data.as_ref().and_then(|data| {
         [16, 20]
             .contains(&data.data_size)
             .then_some(data.fade_offset)
             .flatten()
             .filter(|fade| fade.is_finite())
     });
-    let invalid_reference_fade = light.reference_data.is_some() && reference_fade.is_none();
-    // Native 1.7.104: RVA 0x300020 returns the MAX sentinel unchanged; otherwise adds FNAM.
-    // Keep the authored signed result. Bevy's additive light backend cannot emit negative power.
+    let reference_fade_sentinel = reference_fade_raw == Some(f32::MAX);
+    let reference_fade = reference_fade_raw.filter(|fade| *fade != f32::MAX);
+    let invalid_reference_fade = light.reference_data.is_some() && reference_fade_raw.is_none();
     let authored_fade = match reference_fade {
-        Some(f32::MAX) => f64::from(f32::MAX),
         Some(offset) => f64::from(base_fade) + f64::from(offset),
         None => f64::from(base_fade),
     };
+    // Keep the authored signed result. Bevy's additive light backend cannot emit negative power.
     let effective_fade = authored_fade.clamp(0.0, f64::from(f32::MAX)) as f32;
     let shadow_mode = light.flags & LIGHT_FLAG_SHADOW_MODES != 0;
     let native_falloff = if shadow_mode {
@@ -186,15 +205,18 @@ pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEval
         invalid_reference_fade,
         native_radius_fallback,
         native_falloff,
-        legacy_fade: light.fade.is_none() || invalid_fade,
+        legacy_fade: light.fade.is_none() || invalid_fade || base_fade_sentinel,
         invalid_fade,
         invalid_radius: authored_radius.is_none(),
         backend_limited: authored_fade < 0.0
             || authored_fade > f64::from(f32::MAX)
+            || radius_offset_ignored
             || authored_radius.is_some_and(|radius| radius > f64::from(MAX_RADIUS_OVERRIDE))
             || f64::from(intensity_for_radius(backend_range.unwrap_or(0.0)))
                 * f64::from(effective_fade)
                 > f64::from(f32::MAX),
+        fade_sentinel: base_fade_sentinel || reference_fade_sentinel,
+        radius_offset_ignored,
         // Fade is consumed. Other nonzero/invalid fields still require their own native path.
         unsupported_reference_data: light.reference_data.as_ref().is_some_and(|data| {
             [
@@ -269,8 +291,9 @@ pub fn point_light(light: &LightRow, radius_offset: Option<f32>) -> Option<Point
     evaluate_light(light, radius_offset).point_light()
 }
 
-/// Maximum backend range for both base radius and signed XRDS result. Preserve the authored
-/// result on LightEvaluation and clamp explicitly instead of silently substituting base radius.
+/// Maximum backend range for a base radius or an additive XRDS result. An in-range sum is clamped
+/// to this cap and its authored value kept on `LightEvaluation`. A finite XRDS offset above the cap
+/// is a retail outlier and is ignored, so the light keeps its base radius (see `evaluate_light`).
 pub const MAX_RADIUS_OVERRIDE: f32 = 8_192.0;
 
 /// Native 1.7.104 CreatePointLight, RVA 0x2746d2; not an editor hint or arbitrary range knob.
@@ -811,16 +834,112 @@ mod tests {
         }
     }
 
+    /// A large radius or an in-range offset whose sum passes the cap is clamped to the cap, with the
+    /// authored sum kept. An offset above the cap is a retail outlier and is ignored instead.
     #[test]
-    fn backend_range_limit_preserves_authored_radius_and_never_substitutes_base() {
-        let record = light_row(256.0, 0);
-        let evaluated = evaluate_light(&record, Some(25_074.0));
-        assert_eq!(evaluated.authored_radius, Some(25_330.0));
-        assert_eq!(evaluated.point_light().unwrap().range, MAX_RADIUS_OVERRIDE);
-        assert!(evaluated.backend_limited);
+    fn backend_range_limit_clamps_a_large_sum_but_ignores_an_outlier_offset() {
         assert_eq!(
             point_light(&light_row(20_000.0, 0), None).unwrap().range,
             MAX_RADIUS_OVERRIDE
+        );
+        let sum = evaluate_light(&light_row(2_000.0, 0), Some(7_000.0));
+        assert_eq!(sum.authored_radius, Some(9_000.0));
+        assert_eq!(sum.point_light().unwrap().range, MAX_RADIUS_OVERRIDE);
+        assert!(sum.backend_limited && !sum.radius_offset_ignored);
+        // The cap itself is an offset that is kept, not an outlier.
+        let at_cap = evaluate_light(&light_row(256.0, 0), Some(MAX_RADIUS_OVERRIDE));
+        assert!(!at_cap.radius_offset_ignored);
+        assert_eq!(at_cap.point_light().unwrap().range, MAX_RADIUS_OVERRIDE);
+
+        // The nine retail references above the cap (15,967 up to 3,736,737 units) keep the
+        // record's radius, as before XRDS became additive; they do not jump to the range cap.
+        let unit = point_light(&light_row(256.0, 0), None).unwrap();
+        for outlier in [15_967.0, 25_074.0, 456_444.0, 844_567.0, 3_736_737.5] {
+            let evaluated = evaluate_light(&light_row(256.0, 0), Some(outlier));
+            assert_eq!(evaluated.radius_offset, Some(outlier), "raw offset is kept");
+            assert_eq!(evaluated.authored_radius, Some(256.0), "offset {outlier}");
+            assert!(evaluated.radius_offset_ignored && evaluated.backend_limited);
+            let light = evaluated.point_light().unwrap();
+            assert_eq!(light.range, 256.0, "offset {outlier}");
+            assert_eq!(light.intensity, unit.intensity, "offset {outlier}");
+        }
+        // An unusable record radius is not rescued by an ignored outlier.
+        assert_eq!(
+            evaluate_light(&light_row(0.0, 0), Some(25_074.0))
+                .point_light()
+                .unwrap()
+                .range,
+            NATIVE_NONPOSITIVE_RADIUS
+        );
+        // A non-finite offset stays invalid rather than being treated as an outlier.
+        let infinite = evaluate_light(&light_row(256.0, 0), Some(f32::INFINITY));
+        assert!(infinite.invalid_radius && !infinite.radius_offset_ignored);
+    }
+
+    fn reference_light_data(fade_offset: Option<f32>) -> crate::world::database::ReferenceLightRow {
+        crate::world::database::ReferenceLightRow {
+            data_size: 16,
+            fov_offset: Some(0.0),
+            fade_offset,
+            end_distance_cap: Some(0.0),
+            shadow_depth_bias: Some(0.0),
+        }
+    }
+
+    /// `f32::MAX` in FNAM or XLIG is the "no fade" sentinel. It must not become a light at
+    /// maximum intensity: it leaves the unit fade (or the authored base fade) in place.
+    #[test]
+    fn the_max_fade_sentinel_means_no_fade_and_never_a_maximum_light() {
+        let unit = point_light(&light_row(256.0, 0), None).unwrap();
+
+        // Absent fade is also "no fade": unit power, no sentinel disposition.
+        let absent = evaluate_light(&light_row(256.0, 0), None);
+        assert_eq!(absent.effective_fade, 1.0);
+        assert!(!absent.fade_sentinel);
+
+        // FNAM sentinel alone.
+        let mut row = light_row(256.0, 0);
+        row.fade = Some(f32::MAX);
+        row.fade_status = Some(1);
+        let evaluated = evaluate_light(&row, None);
+        assert!(evaluated.fade_sentinel && evaluated.legacy_fade && !evaluated.invalid_fade);
+        assert_eq!(evaluated.base_fade, 1.0);
+        assert_eq!(evaluated.effective_fade, 1.0);
+        assert_eq!(evaluated.authored_fade, 1.0);
+        assert!(!evaluated.backend_limited);
+        assert_eq!(evaluated.point_light().unwrap().intensity, unit.intensity);
+
+        // XLIG sentinel keeps the authored base fade and is neither applied nor malformed.
+        let mut row = light_row(256.0, 0);
+        row.fade = Some(2.0);
+        row.fade_status = Some(1);
+        row.reference_data = Some(reference_light_data(Some(f32::MAX)));
+        let evaluated = evaluate_light(&row, None);
+        assert!(evaluated.fade_sentinel);
+        assert!(!evaluated.reference_fade_applied && !evaluated.invalid_reference_fade);
+        assert!(!evaluated.malformed_reference_data && !evaluated.unsupported_reference_data);
+        assert_eq!(evaluated.authored_fade, 2.0);
+        assert_eq!(evaluated.effective_fade, 2.0);
+        assert!(!evaluated.backend_limited);
+        let light = evaluated.point_light().unwrap();
+        assert!((light.intensity / unit.intensity - 2.0).abs() < 1.0e-5);
+        assert_ne!(light.intensity, f32::MAX);
+
+        // Both sentinels together leave unit power.
+        row.fade = Some(f32::MAX);
+        let evaluated = evaluate_light(&row, None);
+        assert!(evaluated.fade_sentinel);
+        assert_eq!(evaluated.effective_fade, 1.0);
+        assert_eq!(evaluated.point_light().unwrap().intensity, unit.intensity);
+
+        // A near-sentinel finite offset is an ordinary offset, not the sentinel.
+        let mut row = light_row(256.0, 0);
+        row.reference_data = Some(reference_light_data(Some(f32::MAX / 2.0)));
+        let evaluated = evaluate_light(&row, None);
+        assert!(!evaluated.fade_sentinel && evaluated.reference_fade_applied);
+        assert!(
+            evaluated.backend_limited,
+            "the saturated product is flagged"
         );
     }
 

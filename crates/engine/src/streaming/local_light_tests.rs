@@ -47,21 +47,17 @@ fn stored_light_reference(update: impl FnOnce(&rusqlite::Connection)) -> Referen
 #[test]
 fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
     // Numeric expectations are independent of evaluate_light: base fade 2, signed XRDS
-    // -256, and unit-fade compatibility intensity at radius 256.
+    // -256, and unit-fade compatibility intensity at radius 256. The f32::MAX reference fade is
+    // the "no fade" sentinel: it leaves the base fade of 2 in place and is not applied.
     for initially_lit in [true, false] {
         for (offset, expected_fade) in [
             (0.5f32, 2.5f32),
             (-1.0, 1.0),
             (-2.0, 0.0),
             (-3.0, 0.0),
-            (f32::MAX, f32::MAX),
+            (f32::MAX, 2.0),
         ] {
             let reference = stored_light_reference(|connection| {
-                if offset == f32::MAX {
-                    connection
-                        .execute("UPDATE lights SET fade=?1", [f32::MAX])
-                        .unwrap();
-                }
                 connection
                     .execute(
                         "INSERT INTO reference_light_data VALUES (256,16,0,?1,0,0)",
@@ -84,17 +80,15 @@ fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
             assert_eq!(
                 evaluation.authored_fade,
                 if offset == f32::MAX {
-                    f64::from(f32::MAX)
+                    2.0
                 } else {
                     2.0 + f64::from(offset)
                 }
             );
+            assert_eq!(evaluation.fade_sentinel, offset == f32::MAX);
             assert_eq!(evaluation.native_falloff, Some(1.0));
             assert!(!evaluation.unsupported_falloff);
-            assert_eq!(
-                evaluation.backend_limited,
-                offset < -2.0 || offset == f32::MAX
-            );
+            assert_eq!(evaluation.backend_limited, offset < -2.0);
             if !initially_lit {
                 assert!(app.world().get::<Children>(parent).is_none());
                 assert!(
@@ -109,11 +103,7 @@ fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
             assert_eq!(children.len(), 1);
             let child = children[0];
             let light = app.world().get::<PointLight>(child).unwrap();
-            let expected_intensity = if offset == f32::MAX {
-                f32::MAX
-            } else {
-                crate::lights::intensity_for_radius(256.0) * expected_fade
-            };
+            let expected_intensity = crate::lights::intensity_for_radius(256.0) * expected_fade;
             assert_eq!(light.range, 256.0);
             assert!(
                 (f64::from(light.intensity) - f64::from(expected_intensity)).abs()
@@ -135,7 +125,10 @@ fn stored_authored_light_inputs_reach_immediate_and_deferred_point_lights() {
             );
             let coverage = app.world().resource::<crate::lights::LightInputCoverage>();
             assert_eq!(coverage.evaluated, 1);
-            assert_eq!(coverage.reference_fade_applied, 1);
+            assert_eq!(
+                coverage.reference_fade_applied,
+                u64::from(offset != f32::MAX)
+            );
             app.world_mut().resource_mut::<EngineConfig>().lights = false;
             app.update();
             assert_eq!(

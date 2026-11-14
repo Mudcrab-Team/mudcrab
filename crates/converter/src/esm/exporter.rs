@@ -394,12 +394,28 @@ const LIGHT_DETAIL_COLUMNS: &[(&str, &str)] = &[
 
 type CellMetadata = (Option<i32>, Option<i32>, Option<u32>);
 
+/// Light inputs the in-house decoder rejected as malformed. A rejected field is in neither the
+/// canonical subrecords nor the runtime projection, so without this record the status columns
+/// would read "absent" (0) where the legacy reader, which sees the raw bytes, writes "malformed" (2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RejectedLightInputs {
+    /// `LIGH` `FNAM` fade was rejected.
+    pub fnam: bool,
+    /// Reference `XRDS` radius offset was rejected.
+    pub xrds: bool,
+}
+
+/// Rejected light inputs by form ID, for the in-house reader.
+pub(crate) type RejectedLightFields = HashMap<u32, RejectedLightInputs>;
+
 /// Select runtime projections and script storage independently of snapshot ownership.
-struct ExportOptions {
+struct ExportOptions<'a> {
     /// Emit runtime views as well as the canonical record archive.
     runtime_views: bool,
     /// Replace in-house script snapshots using their normalized scalar layout.
     scalar_scripts: bool,
+    /// Malformed light fields the decoder rejected; `None` for the legacy reader.
+    rejected_light_fields: Option<&'a RejectedLightFields>,
 }
 
 /// Export selected records without changing existing provenance. Grass records
@@ -417,6 +433,7 @@ pub fn export_to_db(conn: &Connection, master: &HashMap<u32, RawRecord>) -> Resu
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            rejected_light_fields: None,
         },
     )
 }
@@ -440,6 +457,7 @@ pub fn export_to_db_with_load_order(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            rejected_light_fields: None,
         },
     )
 }
@@ -464,11 +482,13 @@ pub(super) fn export_plugins_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: false,
+            rejected_light_fields: None,
         },
     )
 }
 
 /// Export canonical decoded fields with Skyrim's texture slots and byte-wide XESP flags.
+/// `rejected_light_fields` records light fields the decoder rejected as malformed.
 pub(crate) fn export_inhouse_to_db(
     conn: &Connection,
     master: &HashMap<u32, RawRecord>,
@@ -476,6 +496,7 @@ pub(crate) fn export_inhouse_to_db(
     plugin_paths: &[PathBuf],
     unresolved_fields: &HashMap<u32, BTreeSet<usize>>,
     terrain_offsets: &HashMap<u32, u64>,
+    rejected_light_fields: Option<&RejectedLightFields>,
 ) -> Result<()> {
     export_records(
         conn,
@@ -487,6 +508,7 @@ pub(crate) fn export_inhouse_to_db(
         ExportOptions {
             runtime_views: true,
             scalar_scripts: true,
+            rejected_light_fields,
         },
     )
 }
@@ -509,6 +531,7 @@ pub(crate) fn export_inhouse_record_archive_to_db(
         ExportOptions {
             runtime_views: false,
             scalar_scripts: true,
+            rejected_light_fields: None,
         },
     )
 }
@@ -632,11 +655,12 @@ fn export_records(
     plugin_paths: Option<&[PathBuf]>,
     unresolved_fields: Option<&HashMap<u32, BTreeSet<usize>>>,
     terrain_offsets: Option<&HashMap<u32, u64>>,
-    options: ExportOptions,
+    options: ExportOptions<'_>,
 ) -> Result<()> {
     let ExportOptions {
         runtime_views,
         scalar_scripts,
+        rejected_light_fields,
     } = options;
     conn.set_prepared_statement_cache_capacity(64);
     let tx = conn.unchecked_transaction()?;
@@ -829,6 +853,9 @@ fn export_records(
                     record.flags,
                     &record.subrecords,
                     &canonical_record.subrecords,
+                    rejected_light_fields
+                        .and_then(|rejected| rejected.get(&form_id))
+                        .is_some_and(|rejected| rejected.xrds),
                 )?;
                 crate::esm::reference_links::insert(
                     &tx,
@@ -849,7 +876,16 @@ fn export_records(
                 let view = SubrecordView::new(&record.subrecords);
                 // Every `LIGH` lights the space whether or not it has
                 // geometry, so it gets a `lights` row regardless.
-                insert_light(&tx, master, form_id, &view, &mut omissions)?;
+                insert_light(
+                    &tx,
+                    master,
+                    form_id,
+                    &view,
+                    rejected_light_fields
+                        .and_then(|rejected| rejected.get(&form_id))
+                        .is_some_and(|rejected| rejected.fnam),
+                    &mut omissions,
+                )?;
                 // Most `LIGH` records carry no model: they light the space with
                 // nothing to draw. Storing one row per invisible light would put
                 // a meshless entry in `statics` for every candle in the game, so
@@ -1328,6 +1364,7 @@ fn insert_light(
     master: &HashMap<u32, RawRecord>,
     form_id: u32,
     view: &SubrecordView<'_>,
+    fnam_rejected: bool,
     omissions: &mut ProjectionOmissions,
 ) -> Result<()> {
     let Some(data) = view.find(b"DATA") else {
@@ -1361,6 +1398,8 @@ fn insert_light(
     // 0 absent, 1 valid finite nonnegative, 2 malformed/unsupported negative.
     // Do not merge valid zero, missing FNAM and malformed FNAM into one state.
     let fade_status = match view.find(b"FNAM") {
+        // The in-house decoder rejected a malformed FNAM; the legacy reader would see it as 2.
+        None if fnam_rejected => 2,
         None => 0,
         Some(bytes) if bytes.len() == 4 && fade.is_some_and(|v| v.is_finite() && v >= 0.0) => 1,
         Some(_) => 2,
@@ -1427,7 +1466,16 @@ pub fn insert_reference(
     header_flags: u32,
     subs: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<()> {
-    insert_reference_with_canonical_data(tx, form_id, cell_id, cell, header_flags, subs, subs)
+    insert_reference_with_canonical_data(
+        tx,
+        form_id,
+        cell_id,
+        cell,
+        header_flags,
+        subs,
+        subs,
+        false,
+    )
 }
 
 /// Extract runtime reference columns from projected fields and preserve the canonical data mirror.
@@ -1439,6 +1487,7 @@ fn insert_reference_with_canonical_data(
     header_flags: u32,
     projected_subrecords: &[(Vec<u8>, Vec<u8>)],
     canonical_subrecords: &[(Vec<u8>, Vec<u8>)],
+    xrds_rejected: bool,
 ) -> Result<()> {
     let view = SubrecordView::new(projected_subrecords);
     let transform = view.get_f32_slice(b"DATA").unwrap_or_default();
@@ -1475,6 +1524,8 @@ fn insert_reference_with_canonical_data(
         .filter(|bytes| bytes.len() >= 4)
         .map(|bytes| f32::from_le_bytes(bytes[..4].try_into().expect("four-byte XRDS radius")));
     let radius_status = match view.find(b"XRDS") {
+        // The in-house decoder rejected a malformed XRDS; the legacy reader would see it as 2.
+        None if xrds_rejected => 2,
         None => 0,
         Some(bytes) if bytes.len() == 4 && radius_override.is_some_and(f32::is_finite) => 1,
         Some(_) => 2,
@@ -2389,6 +2440,110 @@ mod tests {
         assert_eq!(radius(0x3000), None, "a two-byte XRDS holds no radius");
     }
 
+    /// The in-house decoder drops a field too short for its float before export, so the exporter
+    /// never sees the bytes. The rejection it reports must write the same "malformed" status (2)
+    /// the legacy reader writes for the same bytes, not "absent" (0).
+    #[test]
+    fn rejected_light_inputs_write_the_same_malformed_status_as_the_legacy_reader() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let mut master = HashMap::new();
+        let data = || light_data_bytes(256, [255, 200, 120], 0, 1.0);
+        // Legacy shape: the short fields are still in the record.
+        let mut legacy_light = light(0xA00, "LegacyShortFade", data(), None, None);
+        legacy_light
+            .subrecords
+            .push((b"FNAM".to_vec(), vec![0xAE, 0x18]));
+        master.insert(0xA00, legacy_light);
+        let mut legacy_ref = reference(0xB00, 0x100, 0xA00, [0.0; 3], [0.0; 3]);
+        legacy_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), vec![0xAE, 0x18]));
+        master.insert(0xB00, legacy_ref);
+        // In-house shape: the same fields were rejected, so the record has no such subrecord.
+        master.insert(0xA01, light(0xA01, "RejectedFade", data(), None, None));
+        master.insert(0xB01, reference(0xB01, 0x100, 0xA01, [0.0; 3], [0.0; 3]));
+        // Neither shape: genuinely absent.
+        master.insert(0xA02, light(0xA02, "NoFade", data(), None, None));
+        master.insert(0xB02, reference(0xB02, 0x100, 0xA02, [0.0; 3], [0.0; 3]));
+        // A valid field that is present wins over a rejection flag for a duplicate occurrence.
+        master.insert(0xA03, light(0xA03, "ValidFade", data(), Some(1.5), None));
+        let mut valid_ref = reference(0xB03, 0x100, 0xA03, [0.0; 3], [0.0; 3]);
+        valid_ref
+            .subrecords
+            .push((b"XRDS".to_vec(), 64.0f32.to_le_bytes().to_vec()));
+        master.insert(0xB03, valid_ref);
+
+        let mut rejected = RejectedLightFields::new();
+        rejected.insert(
+            0xA01,
+            RejectedLightInputs {
+                fnam: true,
+                xrds: false,
+            },
+        );
+        rejected.insert(
+            0xB01,
+            RejectedLightInputs {
+                fnam: false,
+                xrds: true,
+            },
+        );
+        rejected.insert(
+            0xA03,
+            RejectedLightInputs {
+                fnam: true,
+                xrds: false,
+            },
+        );
+        rejected.insert(
+            0xB03,
+            RejectedLightInputs {
+                fnam: false,
+                xrds: true,
+            },
+        );
+        export_records(
+            &conn,
+            &master,
+            None,
+            None,
+            None,
+            None,
+            ExportOptions {
+                runtime_views: true,
+                scalar_scripts: false,
+                rejected_light_fields: Some(&rejected),
+            },
+        )
+        .unwrap();
+
+        let fade = |id: u32| -> (Option<f64>, i64) {
+            conn.query_row(
+                "SELECT fade, fade_status FROM lights WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        let radius = |id: u32| -> (Option<f64>, i64) {
+            conn.query_row(
+                "SELECT radius_override, radius_status FROM \"references\" WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(fade(0xA00), (None, 2), "legacy short FNAM");
+        assert_eq!(fade(0xA01), (None, 2), "rejected FNAM");
+        assert_eq!(fade(0xA02), (None, 0), "absent FNAM");
+        assert_eq!(fade(0xA03), (Some(1.5), 1), "valid FNAM beats the flag");
+        assert_eq!(radius(0xB00), (None, 2), "legacy short XRDS");
+        assert_eq!(radius(0xB01), (None, 2), "rejected XRDS");
+        assert_eq!(radius(0xB02), (None, 0), "absent XRDS");
+        assert_eq!(radius(0xB03), (Some(64.0), 1), "valid XRDS beats the flag");
+    }
+
     fn omission_ids(conn: &Connection) -> Vec<(String, u64, Vec<u32>)> {
         ProjectionOmissions::read(conn)
             .unwrap()
@@ -2995,6 +3150,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .unwrap();
         let expected = rooms::RoomGraphReport::read(&conn).unwrap();
@@ -3035,6 +3191,7 @@ mod tests {
             &paths,
             &HashMap::new(),
             &HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(rooms::RoomGraphReport::read(&conn).unwrap(), expected);
@@ -3113,6 +3270,7 @@ mod tests {
                 &paths,
                 &HashMap::new(),
                 &HashMap::new(),
+                None,
             )
             .unwrap()
         };

@@ -14,13 +14,22 @@ Lights are **opt-in**: nothing in this document happens unless the engine is run
 The cell query joins `lights` to the reference's canonical winning base record. It reads radius,
 RGB, flags, FNAM fade/status and DATA falloff. `references.radius_override` retains the signed raw
 XRDS offset; `radius_status` distinguishes absent (0), finite (1), and malformed/non-finite (2).
+The legacy and in-house record readers write the same status (and `fade_status`) for the same
+bytes, including a field too short for its float, which the in-house decoder rejects before export.
 Despite the historical column name, XRDS is **not an absolute replacement radius**:
 
 ```text
-authored_radius = LIGH.DATA.radius + REFR.XRDS (absent offset = 0)
+offset_used = XRDS unless XRDS is finite and > 8192 (then ignored, as 0)
+authored_radius = LIGH.DATA.radius + offset_used (absent offset = 0)
 native_radius = authored_radius if authored_radius > 0 else 0.1
 backend_range = min(native_radius, 8192)
 ```
+
+An XRDS offset above 8192 is a retail outlier: nine `LIGH` references carry 15,967 up to
+3,736,737. The engine ignored these before XRDS became additive, so each light kept its record
+radius. That is kept: the offset stays queryable, the light keeps its base radius, and the
+evaluation is marked `radius_offset_ignored` and backend-limited. Only a sum that passes 8192
+through an in-range offset or a large base radius is clamped to the cap.
 
 Negative offsets are valid. Zero offset preserves the base radius. The native constructor replaces
 a nonpositive sum with 0.1; this adapter does the same. An invalid present offset is rejected instead of silently using the base radius. The range
@@ -96,7 +105,10 @@ authored_fade = reference_fade if reference_fade == f32::MAX else base_fade + re
 effective_fade = clamp(authored_fade, 0, f32::MAX)  // bounded Bevy adapter
 ```
 
-The native sentinel bypasses addition. `Fade 1.35+/-` is an editor label, not an extra 1.35 in the
+The native sentinel bypasses addition. This adapter reads `f32::MAX` as "no fade": the Bevy light
+has no unbounded power, and a maximum-intensity light is not what the sentinel means. An `f32::MAX`
+in XLIG leaves the base fade as it is, and an `f32::MAX` in FNAM is read as an absent fade (unit
+power). Both are marked `fade_sentinel`, and neither counts as malformed or backend-limited. `Fade 1.35+/-` is an editor label, not an extra 1.35 in the
 runtime equation. Signed offsets can cancel base fade; zero remains zero. Malformed/non-finite
 reference fade uses offset zero with `invalid_reference_fade`, never a fabricated multiplier.
 Negative authored sums remain inspectable but clamp to zero because this backend cannot subtract
