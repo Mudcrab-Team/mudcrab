@@ -546,6 +546,120 @@ async fn mo2_no_lod_lost_default_winner_is_advisory() {
     assert_eq!(neighbor, 1);
 }
 
+/// A locked, readable stale DDS must not become the default or abort publication.
+#[cfg(windows)]
+#[tokio::test]
+async fn mo2_no_lod_locked_stale_default_is_withdrawn() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (directory, mut config, instance) = fixture();
+    let bytes = fs::read(config.data_dir.join("textures/landscape/dirt02.dds")).unwrap();
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &bytes,
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(
+        &ini,
+        "[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\n",
+    )
+    .unwrap();
+    config.no_lod = true;
+    config.terrain_ini = Some(ini);
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    let output = config.output_dir.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(1);
+    let inspect = tokio::spawn(async move {
+        let mut planted = false;
+        let mut survived = false;
+        let mut locked = None;
+        while let Some(event) = rx.recv().await {
+            if !planted && event.stage == converter::ProgressStage::Scripts {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                let stale = staging.join("vfs/textures/landscape/custombase.dds");
+                write(
+                    &staging.join("vfs"),
+                    "textures/landscape/custombase.dds",
+                    &bytes,
+                );
+                // FILE_SHARE_READ allows decoding these valid bytes but denies replacement/removal.
+                locked = Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(1)
+                        .open(&stale)
+                        .unwrap(),
+                );
+                assert_eq!(fs::read(&stale).unwrap(), bytes);
+                assert_eq!(
+                    fs::remove_file(&stale).unwrap_err().kind(),
+                    std::io::ErrorKind::PermissionDenied
+                );
+                planted = true;
+            }
+            if locked.is_some() && event.stage == converter::ProgressStage::LodChunks {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                assert_eq!(
+                    fs::read(staging.join("vfs/textures/landscape/custombase.dds")).unwrap(),
+                    bytes
+                );
+                assert!(!staging.join("terrain/default-diffuse.ktx2").exists());
+                // Release before the output directory is published; the stale copy still exists.
+                locked.take();
+                survived = true;
+            }
+        }
+        (planted, survived)
+    });
+    let result = AssetPipeline::run_async(config.clone(), tx).await;
+    assert_eq!(inspect.await.unwrap(), (true, true));
+    let report = result.expect("a stale optional default must not abort conversion");
+    assert!(report.complete && report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report.notices.iter().any(|notice| {
+            notice.contains("configured default withdrawn")
+                && notice.contains("vfs")
+                && notice.contains("custombase.dds")
+                && notice.contains("os error")
+        }),
+        "{report:?}"
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-diffuse.ktx2")
+            .exists()
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-normal.ktx2")
+            .exists()
+    );
+    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let default: (Option<String>, Option<String>, Option<String>) = database.query_row(
+        "SELECT diffuse_path,normal_path,source_diffuse FROM terrain_default_texture WHERE id=0",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(default, (None, None, None));
+    let neighbor: f32 = database
+        .query_row(
+            "SELECT value FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 333.0);
+    assert!(
+        converter::cache::ConversionManifest::load(
+            &config.output_dir.join("conversion-manifest.json")
+        )
+        .unwrap()
+        .complete
+    );
+}
+
 /// Winning loose defaults are converted without LOD, through both record readers.
 #[tokio::test]
 async fn mo2_no_lod_uses_winning_configured_default_images() {
