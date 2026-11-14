@@ -103,17 +103,22 @@ cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-spee
 
 ## Game clock and sun direction
 
-`--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 12).
+`--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 8, the retail `GameHour` global in the pack data). A capture that needs another hour
+passes it explicitly, for example `--game-hour 12`.
 Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20, the retail `TimeScale` global;
 0 freezes). Shots, acceptance screenshots, benchmarks (including `--benchmark-only` alone) and matched routes freeze at the launch
 hour regardless of timescale, so streaming duration cannot move shadows between captures.
+The clock advances with Bevy virtual time, which clamps each frame delta to its default maximum
+of 250 ms. A frame slower than 4 FPS therefore advances the clock slower than real time, and a
+pause of virtual time (the console, the settings menu) stops it. Retail behaviour is not
+established; see REA Q4.
 
 The directional light follows the active worldspace's climate TNAM sunrise/sunset midpoints
 (including PNAM-requested parent climate inheritance),
 expanded by half `fSunAlphaTransTime`. A parameter sweeps from +1 to -1 across this day window
 and returns overnight. The Creation-space toward-sun vector is
 `v = (parameter * fSunDirXExtreme, fSunYExtreme * fSunDirXExtreme / fSunXExtreme, -fSunZExtreme)`,
-normalized as `v / |v|` so it has unit length; engine axes map the result to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4) and is pending a retail check;
+normalized as `v / |v|` so it has unit length; engine axes map the result to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4) and is pending retail check (REA Q4);
 it is distinct from the visible sun-disc path.
 
 Winning canonical GMST records supply those five values. Optional `[Sky]` keys of the same names

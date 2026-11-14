@@ -86,7 +86,9 @@ pub struct EngineConfig {
     pub sun_shadow_distance_limit: Option<f32>,
     /// Optional sun bearing clockwise from north and elevation above the horizon, in degrees.
     pub sun_position: Option<(f32, f32)>,
-    /// Initial game hour; deterministic captures freeze at this hour.
+    /// Initial game hour; deterministic captures freeze at this hour. The default is the retail
+    /// `GameHour` global (8.0 in the pack data). A capture that needs another hour, such as noon
+    /// for the native Riverwood comparison, passes `--game-hour` explicitly.
     pub game_hour: f64,
     /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
     /// is the retail `TimeScale` global (GLOB 0x3A, 20.0).
@@ -239,7 +241,7 @@ impl Default for EngineConfig {
             unload_radius: 3,
             sun_shadow_distance_limit: None,
             sun_position: None,
-            game_hour: 12.0,
+            game_hour: crate::sun::RETAIL_GAME_HOUR, // retail GameHour global = 8.0 in the pack data
             timescale: 20.0,
             sun_settings_overrides: [None; 5],
             terrain_lod: TerrainLodDistances::default(),
@@ -415,7 +417,7 @@ Benchmark and profiling:
   --image-space-weather <FormID>       select an authored WTHR image-space slot, not live weather
   --image-space-slot <slot>            sunrise|day|sunset|night; requires --image-space-weather
   --visual-preset <vivid|cool-gray>      select sky and grading look (default: cool-gray)
-  --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 12; captures freeze)
+  --game-hour <hour>                   initial hour, 0 <= hour < 24 (default 8; captures freeze)
   --timescale <scale>                  game seconds per real second (default 20; 0 freezes)
   --sun-position <azimuth,elevation>     sun bearing clockwise from north and elevation above horizon, degrees
   --shots <file>                        render the camera poses in a shots file, one PNG each, then exit
@@ -1920,6 +1922,9 @@ mod tests {
     /// Clock options validate finite ranges rather than admitting nonfinite runtime state.
     #[test]
     fn sun_clock_options_validate_hour_and_timescale() {
+        // The default start hour is the retail `GameHour` global; noon must be requested.
+        assert_eq!(run_config(&[]).game_hour, 8.0);
+        assert_eq!(run_config(&["--game-hour", "12"]).game_hour, 12.0);
         let config = run_config(&["--game-hour", "9.25", "--timescale", "0"]);
         assert_eq!((config.game_hour, config.timescale), (9.25, 0.0));
         for (key, value) in [

@@ -2,11 +2,15 @@
 //!
 //! Sun path follows spud (MIT, chasmlol/spud), commit e5f2de4,
 //! src/engine/weather.cpp::sun_parameter / Sky::evaluate. Written independently in Rust.
-//! The formula is third-party and has not been compared with a retail capture; this is pending
-//! a retail check. Every fallback constant below comes from a retail record, not from spud.
+//! The formula is third-party and has not been compared with a retail capture: pending retail
+//! check (REA Q4). Every fallback constant below comes from a retail record, not from spud.
 
 use crate::{config::EngineConfig, streaming::ActiveSpace, world::environment::EnvironmentCatalog};
 use bevy::prelude::*;
+
+/// Retail `GameHour` global (GLOB 0x38): 8.0 in the registered pack data. It is the default start
+/// hour and the fallback for a non-finite hour.
+pub const RETAIL_GAME_HOUR: f64 = 8.0;
 
 /// Settings in GMST order; the same names may be explicitly overridden in `[Sky]` INI files.
 pub const SUN_KEYS: [&str; 5] = [
@@ -108,8 +112,7 @@ pub fn sun_direction(hour: f64, timing: SunTiming, settings: SunSettings) -> Vec
     let hour = if hour.is_finite() {
         hour.rem_euclid(24.0)
     } else {
-        // Retail `GameHour` global (GLOB 0x38, 8.0); only reached for a non-finite hour.
-        8.0
+        RETAIL_GAME_HOUR
     };
     let elapsed = (hour - start).rem_euclid(24.0);
     let parameter = if elapsed < length {
@@ -174,6 +177,11 @@ pub fn world_sun_direction(
 }
 
 /// Advance before rendering; no allocations or database access occur per frame.
+///
+/// The clock advances by the delta of `Res<Time>`, which in `Update` is virtual time. Bevy clamps
+/// a virtual-time delta to its default maximum (250 ms) and no production code changes that limit,
+/// so a frame slower than 4 FPS advances the clock slower than real time. A pause of virtual time
+/// (the console, the settings menu) stops the clock. Retail behaviour not established; see REA Q4.
 pub(crate) fn update_sun(
     time: Res<Time>,
     mut clock: ResMut<GameClock>,
