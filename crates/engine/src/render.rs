@@ -49,6 +49,19 @@ pub(crate) const WAVE_STRENGTH: f32 = 0.05;
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
 
+/// How long the shared shader clock (`globals.time`) runs before it wraps to zero. Bevy wraps it
+/// after one hour, and the waves would jump to a different pattern at that instant, because the
+/// wave phase is the clock times the wave speed and is not periodic in an hour. A day keeps `f32`
+/// resolution near 8 ms, which is far finer than the wave motion needs.
+pub(crate) const SHADER_CLOCK_WRAP: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Lengthens the shader clock's wrap period so the water waves do not jump once per hour.
+fn extend_shader_clock(time: Option<ResMut<Time<Virtual>>>) {
+    if let Some(mut time) = time {
+        time.set_wrap_period(SHADER_CLOCK_WRAP);
+    }
+}
+
 /// Skyrim's DefaultWater after Update.esm: Fresnel Amount 0.10 and a Reflectivity Amount of 0.8
 /// (WATR `DNAM`). Used when a water has no decoded colours yet, e.g. a database converted before
 /// `crates/converter` started reading them.
@@ -162,7 +175,7 @@ impl Plugin for VercidiumRendererPlugin {
             crate::water_depth::WaterDepthPlugin,
         ))
         .init_resource::<RendererMetrics>()
-        .add_systems(Startup, setup_water_reflection)
+        .add_systems(Startup, (setup_water_reflection, extend_shader_clock))
         .add_systems(PostUpdate, animate_water_materials)
         .add_systems(
             Update,
@@ -881,11 +894,15 @@ fn animate_water_materials(
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut profiler: ResMut<ProfilingState>,
     settings: Option<Res<crate::settings::RenderingSettings>>,
+    mut ids: Local<Vec<AssetId<WaterMaterial>>>,
 ) {
     let started = std::time::Instant::now();
     let phase = water_phase(config.as_deref()).unwrap_or(ANIMATED_WAVE_PHASE);
-    let ids: Vec<_> = materials.ids().collect();
-    for id in ids {
+    // Reading the assets by id keeps an unchanged material from being marked changed; the ids sit
+    // in a buffer the system keeps, so a steady frame allocates nothing.
+    ids.clear();
+    ids.extend(materials.ids());
+    for &id in ids.iter() {
         let Some(current) = materials.get(id) else {
             continue;
         };
@@ -2175,6 +2192,39 @@ mod tests {
             ..default()
         };
         assert_eq!(water_phase(Some(&pinned_shots)), Some(3.25));
+    }
+
+    #[test]
+    fn the_shader_clock_does_not_wrap_at_the_hour() {
+        let two_hours = std::time::Duration::from_secs(2 * 3600);
+        // Bevy's default wrap period would restart the clock, and with it the waves, at one hour.
+        let mut default_clock = Time::<Virtual>::default();
+        default_clock.advance_by(two_hours);
+        assert_eq!(default_clock.elapsed_secs_wrapped(), 0.0);
+
+        let mut clock = Time::<Virtual>::default();
+        clock.set_wrap_period(SHADER_CLOCK_WRAP);
+        clock.advance_by(two_hours);
+        assert_eq!(clock.elapsed_secs_wrapped(), 7200.0);
+    }
+
+    #[test]
+    fn the_renderer_extends_the_clock_the_shaders_read() {
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_systems(Startup, extend_shader_clock);
+        // The first frame runs Startup; the next copies the virtual clock into the generic one
+        // that the render world extracts as `globals.time`.
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().resource::<Time<Virtual>>().wrap_period(),
+            SHADER_CLOCK_WRAP
+        );
+        assert_eq!(
+            app.world().resource::<Time>().wrap_period(),
+            SHADER_CLOCK_WRAP
+        );
     }
 
     #[test]

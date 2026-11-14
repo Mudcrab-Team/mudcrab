@@ -37,11 +37,16 @@ struct WaterSettings {
 // transparent pass. See `water_depth.rs`.
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var bed_depth: texture_2d<f32>;
 
-// Clamp on the distance the view travels through water; anything longer is treated as bottomless.
+// The constants below are not taken from Skyrim. They were tuned by eye by the author on the Lake
+// Ilinalta shots, so look at water again after changing one. Distances are world units, and one
+// exterior cell is 4096 units.
+
+// Clamp on the distance the view travels through water (four cells); anything longer is treated as
+// bottomless.
 const MAX_WATER_PATH: f32 = 16384.0;
 
-// Camera distance (world units) where ripple detail starts to fade, and where it is gone.
-// Past the end the surface is flat, which avoids the shimmer of sub-pixel ripples.
+// Camera distance where ripple detail starts to fade (half a cell) and where it is gone (four
+// cells). Past the end the surface is flat, which avoids the shimmer of sub-pixel ripples.
 const NORMAL_FADE_START: f32 = 2048.0;
 const NORMAL_FADE_END: f32 = 16384.0;
 // How far a ripple shifts the reflection lookup, in screen UV at one world unit of view depth;
@@ -49,6 +54,14 @@ const NORMAL_FADE_END: f32 = 16384.0;
 const REFLECTION_DISTORTION: f32 = 24.0;
 // Largest UV offset a ripple may apply, so grazing angles do not tear the reflection.
 const MAX_REFLECTION_OFFSET: f32 = 0.04;
+
+// The finer second ripple octave: its scale and speed relative to the first, its strength as a
+// fraction of the first, and the direction it moves (against the first). It keeps the surface from
+// reading as one swell.
+const SECOND_OCTAVE_SCALE: f32 = 2.7;
+const SECOND_OCTAVE_SPEED: f32 = 1.3;
+const SECOND_OCTAVE_STRENGTH: f32 = 0.5;
+const SECOND_OCTAVE_DIRECTION: vec2<f32> = vec2<f32>(-0.35, 0.8);
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because this view has no bed-depth
@@ -122,9 +135,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var dx = cos(p.x + sin(p.y * 1.7)) * strength;
     var dz = cos(p.y * 1.3 + sin(p.x)) * strength;
     // A finer second octave moving against the first, so the surface does not read as one swell.
-    let p2 = in.world_position.xz * scale * 2.7 + vec2<f32>(-0.35, 0.8) * phase * 1.3;
-    dx += cos(p2.x * 1.1 + sin(p2.y * 0.9)) * strength * 0.5;
-    dz += cos(p2.y * 0.8 + sin(p2.x * 1.4)) * strength * 0.5;
+    let p2 = in.world_position.xz * scale * SECOND_OCTAVE_SCALE
+        + SECOND_OCTAVE_DIRECTION * phase * SECOND_OCTAVE_SPEED;
+    dx += cos(p2.x * 1.1 + sin(p2.y * 0.9)) * strength * SECOND_OCTAVE_STRENGTH;
+    dz += cos(p2.y * 0.8 + sin(p2.x * 1.4)) * strength * SECOND_OCTAVE_STRENGTH;
     if water.flow_direction.w > 0.5 {
         let flow = textureSample(water_flow_normal, water_flow_normal_sampler, fract(p * 0.25)).xy * 2.0 - 1.0;
         dx += flow.x * strength;

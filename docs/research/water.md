@@ -1,8 +1,9 @@
 # Water (WATR) record research
 
-The converter projects a WATR record's colours, reflectivity factors and above-water fog from its
-`DNAM` subrecord into the `waters` table (`docs/specs/converters/db-schema.md` section 13). This
-file records the `DNAM` byte layout those columns come from.
+The converter projects a WATR record's colours and reflectivity factors from its `DNAM` subrecord
+into the `waters` table (`docs/specs/converters/db-schema.md` section 13). The engine reads the
+above-water fog straight from the `DNAM` inside the table's `data` column, so fog needs no column.
+This file records the `DNAM` byte layout both come from.
 
 ## 1. DNAM layout
 
@@ -20,21 +21,21 @@ slots are four-byte `Color`s (RGBA) and read little-endian like the floats; `u32
 The fog distances are floats in world units, and `above_water_fog_amount` is the curve exponent
 (0 keeps the body clear).
 
-| offset | field | decoded by the converter |
+| offset | field | decoded by |
 | --- | --- | --- |
 | 0x00 | unknown (`unk00`) | |
 | 0x04 | unknown (`unk04`) | |
 | 0x08 | unknown (`unk08`) | |
 | 0x0C | unknown (`unk0C`) | |
 | 0x10 | `sun_specular_power` | |
-| 0x14 | `reflection_amount` (reflectivity) | ✓ |
-| 0x18 | `fresnel_amount` | ✓ |
+| 0x14 | `reflection_amount` (reflectivity) | converter |
+| 0x18 | `fresnel_amount` | converter |
 | 0x1C | unknown (`unk1C`, u32) | |
-| 0x20 | `above_water_fog_dist_near` | ✓ |
-| 0x24 | `above_water_fog_dist_far` | ✓ |
-| 0x28 | `shallow_water_color` | ✓ |
-| 0x2C | `deep_water_color` | ✓ |
-| 0x30 | `reflection_water_color` | ✓ |
+| 0x20 | `above_water_fog_dist_near` | engine, from `data` |
+| 0x24 | `above_water_fog_dist_far` | engine, from `data` |
+| 0x28 | `shallow_water_color` | converter |
+| 0x2C | `deep_water_color` | converter |
+| 0x30 | `reflection_water_color` | converter |
 | 0x34 | unknown (`unk34`, u32) | |
 | 0x38 | unknown (`unk38`) | |
 | 0x3C | unknown (`unk3C`) | |
@@ -55,7 +56,7 @@ The fog distances are floats in world units, and `above_water_fog_amount` is the
 | 0x78 | `noise_wind_speed_a[2]` | |
 | 0x7C | unknown (`unk7C`) | |
 | 0x80 | unknown (`unk80`) | |
-| 0x84 | `above_water_fog_amount` | ✓ |
+| 0x84 | `above_water_fog_amount` | engine, from `data` |
 | 0x88 | unknown (`unk88`) | |
 | 0x8C | `underwater_fog_amount` | |
 | 0x90 | `underwater_fog_dist_near` | |
@@ -81,13 +82,16 @@ The fog distances are floats in world units, and `above_water_fog_amount` is the
 | 0xE0 | `sun_sparkle_power` | |
 | 0xE4 | `flowmap_scale` (SSE only) | |
 
-The converter decodes eight slots: +20 (reflectivity), +24 (fresnel), +32/+36 (above-water fog
-near/far), +40/+44/+48 (shallow/deep/reflection colour) and +132 (above-water fog amount).
+The converter decodes five slots into columns: +20 (reflectivity), +24 (fresnel) and
++40/+44/+48 (shallow/deep/reflection colour). The engine decodes three more from `data`: +32/+36
+(above-water fog near/far) and +132 (above-water fog amount).
 
 ### 1.3 DefaultWater reference values
 
 The engine falls back to Skyrim's DefaultWater fog per water when a record's `DNAM` does not carry
-a complete fog triple. DefaultWater (Skyrim.esm, Update.esm) holds near −10.0, far 150.0, amount
+a complete, finite fog triple. In the registered packs (`schema_info` 9) the `waters` table has 60
+rows and no fog columns; reading `data` gives for example DefaultWater -10 / 150 / 0.7 and the
+creek waters 10 / 90 / 0.71 and 20 / 160 / 0.87. DefaultWater (Skyrim.esm, Update.esm) holds near −10.0, far 150.0, amount
 0.7. Other observed retail values: `PuddleWater` far 10.0, `ClearInteriorWaterAnkleHeightStill`
 amount 0.0, and `DLC1FrostreachWaterFlowNE` (Dawnguard.esm) −290.0 / 720.0 / 0.7.
 

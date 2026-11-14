@@ -203,6 +203,7 @@ fn sync_water_depth_materials(
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut reported_missing: Local<bool>,
     mut reported_snapshot: Local<bool>,
+    mut ids: Local<Vec<AssetId<WaterMaterial>>>,
 ) {
     let wants_snapshot = snapshot.handle.is_some();
     if !wants_snapshot
@@ -220,8 +221,10 @@ fn sync_water_depth_materials(
         );
         *reported_missing = true;
     }
-    let ids: Vec<_> = materials.ids().collect();
-    for id in ids {
+    // The ids sit in a buffer the system keeps, so a steady frame allocates nothing.
+    ids.clear();
+    ids.extend(materials.ids());
+    for &id in ids.iter() {
         let Some(current) = materials.get(id) else {
             continue;
         };

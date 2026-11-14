@@ -5454,6 +5454,8 @@ mod tests {
 
     #[test]
     fn a_waters_catalog_fog_reaches_its_material() {
+        use crate::world::database::{WaterFog, water_fixtures::water_record_with_fog};
+
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("world.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
@@ -5461,12 +5463,32 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT); \
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER); \
-                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,fog_near REAL,fog_far REAL,fog_amount REAL); \
-                 INSERT INTO waters VALUES (1,40,1,2,3,0.1,0.8,NULL,0.0,10.0,0.0); \
-                 INSERT INTO waters VALUES (2,60,1,2,3,0.1,0.8,NULL,-290.0,720.0,0.7); \
-                 INSERT INTO waters VALUES (3,50,1,2,3,0.1,0.8,NULL,NULL,NULL,NULL);",
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,opacity INTEGER,shallow_color INTEGER,deep_color INTEGER,reflection_color INTEGER,fresnel REAL,reflectivity REAL,flow_normal_path TEXT,data BLOB NOT NULL);",
             )
             .unwrap();
+        let clear = WaterFog {
+            near: 0.0,
+            far: 10.0,
+            amount: 0.0,
+        };
+        let frostreach = WaterFog {
+            near: -290.0,
+            far: 720.0,
+            amount: 0.7,
+        };
+        for (id, opacity, record) in [
+            (1u32, 40u32, water_record_with_fog(228, clear)),
+            (2, 60, water_record_with_fog(232, frostreach)),
+            // A record whose DNAM stops short of the fog amount.
+            (3, 50, water_record_with_fog(100, frostreach)),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO waters VALUES (?1,?2,1,2,3,0.1,0.8,NULL,?3)",
+                    rusqlite::params![id, opacity, record],
+                )
+                .unwrap();
+        }
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
         let body = |form_id| {
@@ -5479,8 +5501,8 @@ mod tests {
         assert_eq!(body(1), Vec4::new(0.4, 0.0, 10.0, 0.0));
         // A far distance other than DefaultWater's 150.
         assert_eq!(body(2), Vec4::new(0.6, -290.0, 720.0, 0.7));
-        // No decoded fog, and no row at all: DefaultWater's fog.
-        let fallback = crate::world::database::WaterFog::default();
+        // A DNAM with no readable fog, and no row at all: DefaultWater's fog.
+        let fallback = WaterFog::default();
         assert_eq!(
             body(3),
             Vec4::new(0.5, fallback.near, fallback.far, fallback.amount)
