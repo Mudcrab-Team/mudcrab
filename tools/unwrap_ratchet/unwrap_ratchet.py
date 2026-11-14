@@ -27,10 +27,12 @@ import sys
 from pathlib import Path
 
 PATTERN = re.compile(r"\.unwrap\(\)|\.expect\(|\bpanic!\(")
+# Out-of-line module declarations with the attributes in front of them.
 MOD_DECLARATION = re.compile(
-    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+    r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
-PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\s*\]')
+ATTRIBUTE = re.compile(r"#\[([^\]]*)\]")
+TEST_DIRECTORIES = {"tests", "benches"}
 DEFAULT_BASELINE = Path("tools/unwrap_ratchet/baseline.json")
 
 
@@ -137,11 +139,59 @@ def matching_bracket(code, start):
     return len(code) - 1
 
 
+def split_arguments(text):
+    """Split `text` at the commas that are not inside parentheses."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def requires_test(predicate):
+    """True when a `cfg` predicate can only hold in a test build.
+
+    `test`, `all(test, ...)` and `all(..., any(test, ...))` qualify. `not(test)`,
+    `any(test, other)` and predicates without `test` do not.
+    """
+    predicate = predicate.strip()
+    call = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$", predicate, re.S)
+    if call:
+        name, inner = call.group(1), call.group(2)
+        arguments = split_arguments(inner)
+        if name == "all":
+            return any(requires_test(argument) for argument in arguments)
+        if name == "any":
+            return bool(arguments) and all(requires_test(argument) for argument in arguments)
+        return False
+    return predicate == "test"
+
+
+def attributes_require_test(attributes):
+    """Whether any `#[cfg(...)]` among `attributes` (text) requires a test build."""
+    for match in re.finditer(r"#!?\[\s*cfg\s*\(", attributes):
+        open_bracket = attributes.index("[", match.start())
+        close = matching_bracket(attributes, open_bracket)
+        body = attributes[open_bracket + 1 : close].strip()
+        if requires_test(body[body.index("(") + 1 : body.rindex(")")]):
+            return True
+    return False
+
+
 def cfg_test_spans(code):
-    """Character spans of items under `#[cfg(test)]` in masked `code`."""
+    """Character spans of items under a test-only `#[cfg(...)]` in masked `code`."""
     spans = []
-    for match in re.finditer(r"#\[cfg\(test\)\]", code):
-        index = match.end()
+    for match in re.finditer(r"#\[\s*cfg\s*\(", code):
+        close = matching_bracket(code, code.index("[", match.start()))
+        if not attributes_require_test(code[match.start() : close + 1]):
+            continue
+        index = close + 1
         while True:  # skip whitespace and further attributes on the same item
             while index < len(code) and code[index].isspace():
                 index += 1
@@ -168,6 +218,20 @@ def cfg_test_spans(code):
     return spans
 
 
+def is_test_file(crate_dir, path):
+    """A file under `tests/` or `benches/`, or one named `tests.rs`, holds test code."""
+    relative = path.relative_to(crate_dir.resolve()).parts
+    return bool(TEST_DIRECTORIES.intersection(relative[:-1])) or relative[-1] == "tests.rs"
+
+
+def inner_cfg_requires_test(code):
+    """Whether the file starts with a test-only inner attribute such as `#![cfg(test)]`."""
+    return any(
+        attributes_require_test(match.group(0))
+        for match in re.finditer(r"#!\[\s*cfg\s*\([^\]]*\]", code)
+    )
+
+
 def child_directory(path, root_files):
     """Directory that holds the out-of-line modules declared by `path`."""
     if path.name in root_files or path.name == "mod.rs":
@@ -176,7 +240,12 @@ def child_directory(path, root_files):
 
 
 def production_files(crate_dir):
-    """Source files of modules that are not declared under `#[cfg(test)]`."""
+    """Source files of modules that are not test-only.
+
+    Modules declared under a test-only `cfg` (`#[cfg(test)]`, `#[cfg(all(test, ...))]`),
+    files under `tests/` or `benches/`, files named `tests.rs`, and files that begin with a
+    test-only inner attribute are left out, together with the modules they declare.
+    """
     src = crate_dir / "src"
     roots = [src / name for name in ("lib.rs", "main.rs") if (src / name).is_file()]
     roots += sorted((src / "bin").glob("*.rs")) if (src / "bin").is_dir() else []
@@ -187,31 +256,24 @@ def production_files(crate_dir):
         path = stack.pop().resolve()
         if path in seen or not path.is_file():
             continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        code = mask(text)
+        if is_test_file(crate_dir, path) or inner_cfg_requires_test(code):
+            continue
         seen.add(path)
-        is_root = path in resolved_roots
-        base = path.parent if is_root else child_directory(path, root_files)
-        pending_test, pending_path = False, None
-        for line in path.read_text(encoding="utf-8", errors="replace").split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("#[cfg(test)]"):
-                pending_test = True
+        base = path.parent if path in resolved_roots else child_directory(path, root_files)
+        for declaration in MOD_DECLARATION.finditer(code):
+            # Positions match between `code` and `text`; only `text` still has strings.
+            attributes = text[declaration.start(1) : declaration.end(1)]
+            if attributes_require_test(code[declaration.start(1) : declaration.end(1)]):
                 continue
-            attribute = PATH_ATTRIBUTE.search(line)
-            if attribute:
-                pending_path = attribute.group(1)
-                continue
-            declaration = MOD_DECLARATION.match(line)
-            if declaration:
-                if not pending_test:
-                    if pending_path:
-                        candidates = [path.parent / pending_path]
-                    else:
-                        name = declaration.group(1)
-                        candidates = [base / f"{name}.rs", base / name / "mod.rs"]
-                    stack.extend(candidate for candidate in candidates if candidate.is_file())
-                pending_test, pending_path = False, None
-            elif stripped and not stripped.startswith("#["):
-                pending_test, pending_path = False, None
+            custom = re.search(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', attributes)
+            if custom:
+                candidates = [path.parent / custom.group(1)]
+            else:
+                name = declaration.group(2)
+                candidates = [base / f"{name}.rs", base / name / "mod.rs"]
+            stack.extend(candidate for candidate in candidates if candidate.is_file())
     return sorted(seen)
 
 
@@ -272,12 +334,13 @@ def main(argv=None):
         print(f"ratchet: cannot read baseline {baseline_path}: {error}", file=sys.stderr)
         return 2
 
-    raised, lowered = [], []
+    raised, lowered, unrecorded = [], [], []
     for name in names:
         limit = allowed.get(name)
         if limit is None:
-            print(f"ratchet: {name}: no baseline entry; run with --update", file=sys.stderr)
-            return 2
+            print(f"{name:16} {measured[name]:5} / {'-':>5}  new crate, no baseline entry")
+            unrecorded.append(name)
+            continue
         state = "ok"
         if measured[name] > limit:
             state = "RAISED"
@@ -286,6 +349,14 @@ def main(argv=None):
             state = "below baseline"
             lowered.append(name)
         print(f"{name:16} {measured[name]:5} / {limit:5}  {state}")
+    if unrecorded:
+        print(
+            "ratchet: no baseline entry for "
+            + ", ".join(unrecorded)
+            + ". The count is shown above and passes. Record it with "
+            "`python3 tools/unwrap_ratchet/unwrap_ratchet.py --update`.",
+            file=sys.stderr,
+        )
     if raised:
         print(
             "ratchet: a production unwrap, expect or panic! count rose in "

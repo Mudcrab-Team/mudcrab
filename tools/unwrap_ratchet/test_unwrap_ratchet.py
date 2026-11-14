@@ -101,6 +101,49 @@ class CountTests(unittest.TestCase):
         )
 
 
+    def test_skips_every_cfg_that_requires_test(self):
+        self.assertEqual(
+            count(
+                """
+                #[cfg(all(test, target_os = "macos"))]
+                fn a(x: Option<u8>) { x.unwrap(); }
+                #[cfg(all(unix, any(test, debug_assertions), test))]
+                fn b(x: Option<u8>) { x.unwrap(); }
+                #[cfg(any(test, feature = "x"))]
+                fn c(x: Option<u8>) { x.unwrap(); }
+                #[cfg(not(test))]
+                fn d(x: Option<u8>) { x.unwrap(); }
+                #[cfg(feature = "test")]
+                fn e(x: Option<u8>) { x.unwrap(); }
+                #[cfg(all(
+                    test,
+                    unix,
+                ))]
+                mod tests { fn t(x: Option<u8>) { x.unwrap(); } }
+                """
+            ),
+            3,  # c (it also builds without `test`), d and e
+        )
+
+
+class RequiresTestTests(unittest.TestCase):
+    def test_predicates(self):
+        cases = {
+            "test": True,
+            "all(test, unix)": True,
+            "all(unix, all(test))": True,
+            "any(test, unix)": False,
+            "any(test, test)": True,
+            "not(test)": False,
+            "unix": False,
+            'feature = "test"': False,
+            "target_os = \"macos\"": False,
+        }
+        for predicate, expected in cases.items():
+            with self.subTest(predicate):
+                self.assertEqual(ratchet.requires_test(predicate), expected)
+
+
 class CrateWalkTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -126,6 +169,41 @@ class CrateWalkTests(unittest.TestCase):
         self.write("crates/demo/src/outer/inner.rs", "fn b(x: Option<u8>) { x.unwrap(); }\n")
         self.write("crates/demo/src/outer_tests.rs", "fn c(x: Option<u8>) { x.unwrap(); }\n")
         self.assertEqual(ratchet.count_crate(self.root, "demo"), 2)
+
+    def test_skips_test_modules_in_separate_files_whatever_the_cfg_spelling(self):
+        self.write(
+            "crates/demo/src/lib.rs",
+            """
+            mod real;
+            #[cfg(test)]
+            mod tests;
+            #[cfg(all(test, target_os = "macos"))]
+            mod native_tests;
+            #[cfg(all(test, unix))] #[allow(dead_code)] mod same_line;
+            // A `tests.rs` with no cfg on its declaration is still test code.
+            mod tests_by_name;
+            """,
+        )
+        self.write("crates/demo/src/real.rs", "fn a(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/tests.rs", "mod nested;\nfn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/tests/nested.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/native_tests.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/same_line.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/tests_by_name.rs", "#![cfg(test)]\nfn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
+
+    def test_skips_files_under_tests_and_benches_directories(self):
+        self.write(
+            "crates/demo/src/lib.rs",
+            '#[path = "tests/helpers.rs"]\nmod helpers;\n#[path = "benches/b.rs"]\nmod b;\nmod real;\n',
+        )
+        self.write("crates/demo/src/tests/helpers.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/benches/b.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/src/real.rs", "fn a(x: Option<u8>) { x.unwrap(); }\n")
+        # Integration tests and benches outside `src` are never reached.
+        self.write("crates/demo/tests/it.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.write("crates/demo/benches/b.rs", "fn t(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(ratchet.count_crate(self.root, "demo"), 1)
 
     def test_follows_path_attributes(self):
         self.write("crates/demo/src/lib.rs", '#[path = "elsewhere/real.rs"]\nmod fake;\n')
@@ -182,9 +260,22 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(baseline["counts"]["demo"], 0)
         self.assertEqual(self.run_ratchet("--strict")[0], 0)
 
-    def test_a_missing_baseline_entry_is_a_usage_error(self):
+    def test_a_crate_without_a_baseline_entry_passes_with_a_notice(self):
         (self.root / "tools/unwrap_ratchet/baseline.json").write_text(json.dumps({"counts": {}}))
-        self.assertEqual(self.run_ratchet()[0], 2)
+        code, output = self.run_ratchet()
+        self.assertEqual(code, 0)
+        self.assertIn("no baseline entry", output)
+        self.assertIn("demo", output)
+        self.assertIn(" 1 ", output)  # the measured count is shown
+        # The baseline file is not touched by a check.
+        counts = json.loads((self.root / "tools/unwrap_ratchet/baseline.json").read_text())
+        self.assertEqual(counts, {"counts": {}})
+
+    def test_a_new_crate_does_not_hide_a_raised_one(self):
+        (self.root / "crates/other/src").mkdir(parents=True)
+        (self.root / "crates/other/src/lib.rs").write_text("fn f() {}\n")
+        self.source.write_text(self.source.read_text() + "fn g(x: Option<u8>) { x.unwrap(); }\n")
+        self.assertEqual(self.run_ratchet()[0], 1)
 
     def test_an_unknown_crate_is_a_usage_error(self):
         self.assertEqual(self.run_ratchet("--crate", "nope")[0], 2)
