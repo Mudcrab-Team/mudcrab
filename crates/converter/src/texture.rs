@@ -1964,6 +1964,15 @@ fn validate_ktx2(bytes: &[u8], encoding: TextureEncoding) -> Result<()> {
     Ok(())
 }
 
+/// Narrow output recipe for packed normal sources; other DDS proofs stay compatible.
+pub(crate) fn packed_normal_contract(source: &std::path::Path, encoding: TextureEncoding) -> bool {
+    encoding == TextureEncoding::NormalLinear
+        && std::fs::File::open(source)
+            .ok()
+            .and_then(|file| Dds::read(&mut std::io::BufReader::new(file)).ok())
+            .is_some_and(|dds| packed_rgba8_layout(&dds).is_some())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -4613,13 +4622,4 @@ pub(crate) mod tests {
             .unwrap()
             .into_raw()
     }
-}
-
-/// Narrow output recipe for packed normal sources; other DDS proofs stay compatible.
-pub(crate) fn packed_normal_contract(source: &std::path::Path, encoding: TextureEncoding) -> bool {
-    encoding == TextureEncoding::NormalLinear
-        && std::fs::File::open(source)
-            .ok()
-            .and_then(|file| Dds::read(&mut std::io::BufReader::new(file)).ok())
-            .is_some_and(|dds| packed_rgba8_layout(&dds).is_some())
 }

@@ -1185,7 +1185,14 @@ async fn metadata_rebuild_of_current_source_keeps_meshes_as_cache_hits() {
         .map(|archive| archive.files.len())
         .sum::<usize>();
     assert_eq!(report.converted, extracted as u64);
-    assert_eq!(report.cache_hits, retained.entries.len() as u64);
+    assert_eq!(
+        report.cache_hits,
+        retained
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+    );
     assert_eq!(current.retained_mesh_schema_version, None);
 }
 

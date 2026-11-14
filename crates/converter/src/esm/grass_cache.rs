@@ -1002,7 +1002,7 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
     Ok((references, unbounded))
 }
 
-/// Resolve modeled obstruction paths after base-header filtering, excluding vegetation and effects.
+/// Resolve only static-like obstruction bases after authoritative header filtering.
 fn obstruction_model_path(model: Option<&str>, kind: Option<&str>) -> Option<String> {
     if !matches!(
         kind,

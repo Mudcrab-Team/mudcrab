@@ -1297,6 +1297,21 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
         .collect())
 }
 
+/// Record the derived grass archive so quick/full checks verify its presence and digest.
+pub(crate) fn record_grass_artifact(manifest: &mut ConversionManifest, root: &Path) -> Result<()> {
+    let path = root.join("grass_cache.rkyv");
+    manifest.entries.insert(
+        "derived/grass-cache".into(),
+        CacheEntry {
+            source_hash: format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION),
+            output: "grass_cache.rkyv".into(),
+            output_size: fs::metadata(&path)?.len(),
+            output_hash: hash_file(&path)?,
+        },
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2639,19 +2654,4 @@ mod tests {
             assert!(eligible.entries.contains_key("scripts/a.luau"));
         }
     }
-}
-
-/// Record the derived grass archive so quick/full checks verify its presence and digest.
-pub(crate) fn record_grass_artifact(manifest: &mut ConversionManifest, root: &Path) -> Result<()> {
-    let path = root.join("grass_cache.rkyv");
-    manifest.entries.insert(
-        "derived/grass-cache".into(),
-        CacheEntry {
-            source_hash: format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION),
-            output: "grass_cache.rkyv".into(),
-            output_size: fs::metadata(&path)?.len(),
-            output_hash: hash_file(&path)?,
-        },
-    );
-    Ok(())
 }
