@@ -115,10 +115,16 @@ impl AssetPipeline {
             config.mo2.is_none(),
             "metadata rebuild does not support MO2 selection; use normal conversion"
         );
-        // A saved configuration cannot make rebuilt scripts use an older ABI.
-        config.script_abi_version = config
-            .script_abi_version
-            .max(crate::script::SCRIPT_ABI_VERSION);
+        // A saved configuration cannot make rebuilt scripts use an older ABI, and it cannot
+        // name an ABI this converter does not emit: the stamped proof would not describe
+        // the script bytes.
+        ensure!(
+            config.script_abi_version <= crate::script::SCRIPT_ABI_VERSION,
+            "script ABI {} is newer than the ABI {} this converter emits; use a converter that emits it",
+            config.script_abi_version,
+            crate::script::SCRIPT_ABI_VERSION
+        );
+        config.script_abi_version = crate::script::SCRIPT_ABI_VERSION;
         config.validate()?;
         config.freeze_schema_addons()?;
         ensure!(
@@ -475,6 +481,20 @@ fn new_output_path(output: &Path, source: &Path, data: &Path) -> Result<PathBuf>
         "metadata rebuild requires a new output directory: {}",
         output.display()
     );
+    // The lock file and the staging folder would land inside another pack, and a registered
+    // pack is immutable. The converter does not read the pack registry, so refuse any output
+    // folder that sits inside a directory holding a conversion manifest.
+    if let Some(pack) = output
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.join("conversion-manifest.json").exists())
+    {
+        bail!(
+            "metadata output {} lies inside the asset pack {}; choose a folder outside every pack",
+            output.display(),
+            pack.display()
+        );
+    }
     Ok(output)
 }
 

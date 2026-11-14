@@ -1058,6 +1058,31 @@ mod schema_addon_controls {
         }
     }
 
+    /// A lineage digest relaxes only the diagnostic digest of a pack without add-ons. Without
+    /// the lineage, or with add-ons present, the earlier digest still refuses.
+    #[test]
+    fn lineage_digest_is_accepted_only_without_addons() {
+        let earlier = "ee".repeat(32);
+        let builtins = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+        let conn = snapshot(&builtins);
+        conn.execute("UPDATE record_overrides SET schema_sha256=?1", [&earlier])
+            .unwrap();
+        assert!(stored_schemas(&conn).is_err());
+        assert!(stored_schemas_with_lineage(&conn, Some(&"ff".repeat(32))).is_err());
+        assert_eq!(
+            stored_schemas_with_lineage(&conn, Some(&earlier))
+                .unwrap()
+                .schema_sha256(),
+            builtins.schema_sha256()
+        );
+        let addons = RuntimeSchemas::from_addon_bytes(&[ADDON]).unwrap();
+        let with_addons = snapshot(&addons);
+        with_addons
+            .execute("UPDATE record_overrides SET schema_sha256=?1", [&earlier])
+            .unwrap();
+        assert!(stored_schemas_with_lineage(&with_addons, Some(&earlier)).is_err());
+    }
+
     /// A subsequent no-add-on snapshot clears stale add-on rows in a reused database.
     #[test]
     fn builtin_history_write_clears_previous_addon_provenance() {

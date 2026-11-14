@@ -1995,3 +1995,129 @@ async fn normal_conversion_into_a_clone_rebuilds_only_the_stale_mesh_kind() {
         source_manifest
     );
 }
+
+/// Rewrite one manifest field of a pack in place.
+fn edit_manifest(source: &Path, edit: impl FnOnce(&mut ConversionManifest)) {
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    edit(&mut manifest);
+    manifest.save(&path).unwrap();
+}
+
+/// A texture proof that differs refuses on its own, even when the combined proof matches and
+/// the scripts would rebuild. The refusal names the clone-and-convert path.
+#[tokio::test]
+async fn changed_texture_proof_alone_refuses_a_rebuild() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    edit_manifest(&source, |manifest| {
+        manifest
+            .asset_configuration_hashes
+            .insert("dds".into(), "0".repeat(64));
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("texture settings"), "{error}");
+    assert!(error.contains("normal conversion into a clone"), "{error}");
+    assert!(!output.exists());
+}
+
+/// A combined proof that differs in any setting besides the script ABI finds no ABI and
+/// refuses, whatever the per-kind proofs say.
+#[tokio::test]
+async fn combined_proof_differing_in_a_non_abi_setting_refuses() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let config = common::cpu_lod_config(&data, &output);
+    let identity: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("record-reader.json")).unwrap()).unwrap();
+    let mut other = config.clone();
+    other.texture_zstd_level += 1;
+    edit_manifest(&source, |manifest| {
+        manifest.configuration_hash = combined_hash(&other, &identity, 1);
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(
+        error.contains("retained asset configuration does not match rebuild settings"),
+        "{error}"
+    );
+    assert!(!output.exists());
+}
+
+/// The lineage path never skips the mesh check: a trusted earlier schema together with a stale
+/// mesh proof still refuses.
+#[tokio::test]
+async fn trusted_earlier_schema_does_not_skip_the_mesh_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let earlier = "ee7e85d996711c656abcc427fb76496452c7d0e89c1b383abf64a8acd1392d30";
+    age_source(&source, &data, 1, Some(earlier));
+    edit_manifest(&source, |manifest| {
+        manifest
+            .asset_configuration_hashes
+            .insert("nif".into(), "0".repeat(64));
+    });
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("mesh output contract"), "{error}");
+    assert!(!output.exists());
+}
+
+/// A saved configuration cannot name a script ABI newer than the converter emits.
+#[tokio::test]
+async fn saved_script_abi_newer_than_the_converter_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.script_abi_version = converter::script::SCRIPT_ABI_VERSION + 1;
+    let error = AssetPipeline::rebuild_metadata_async(config, &source, tx)
+        .await
+        .unwrap_err();
+    drain.await.unwrap();
+    assert!(
+        format!("{error:?}").contains("newer than the ABI"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}
+
+/// An output folder inside any asset pack is refused before a lock file or staging folder can
+/// be created there.
+#[tokio::test]
+async fn output_inside_another_pack_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let other = directory.path().join("other");
+    generate(&data);
+    convert(&data, &source).await;
+    convert(&data, &other).await;
+    let output = other.join("rebuilt");
+    let error = format!("{:?}", rebuild(&data, &source, &output).await.unwrap_err());
+    assert!(error.contains("lies inside the asset pack"), "{error}");
+    assert!(!output.exists());
+    let leftovers: Vec<_> = fs::read_dir(&other)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains("rebuilt"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
