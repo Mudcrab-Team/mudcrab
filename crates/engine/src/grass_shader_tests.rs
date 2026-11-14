@@ -76,17 +76,78 @@ fn registry_roots() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Read exact package versions independently of lockfile line endings and TOML key order.
+fn locked_bevy_crates(lock: &str) -> [String; 3] {
+    let document = lock
+        .parse::<toml_edit::Document<String>>()
+        .expect("parse Cargo.lock for real Bevy shader sources");
+    let packages = document
+        .get("package")
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .expect("Cargo.lock package tables");
+    ["bevy_pbr", "bevy_render", "bevy_core_pipeline"].map(|name| {
+        let mut matches = packages
+            .iter()
+            .filter(|package| package.get("name").and_then(|value| value.as_str()) == Some(name));
+        let package = matches
+            .next()
+            .unwrap_or_else(|| panic!("Cargo.lock is missing {name}"));
+        assert!(
+            matches.next().is_none(),
+            "ambiguous locked Bevy crate {name}"
+        );
+        let version = package
+            .get("version")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("Cargo.lock has no version for {name}"));
+        assert!(
+            package
+                .get("source")
+                .and_then(|value| value.as_str())
+                .is_some_and(|source| source.starts_with("registry+")),
+            "locked Bevy crate {name} must have registry sources"
+        );
+        format!("{name}-{version}")
+    })
+}
+
+/// LF and Windows CRLF lockfiles resolve the same exact packages despite intervening keys.
+#[test]
+fn locked_bevy_sources_accept_both_line_endings_and_key_order() {
+    let lock = r#"version = 4
+[[package]]
+name = "unrelated"
+version = "99.0.0"
+[[package]]
+name = "bevy_pbr"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+version = "0.19.0"
+[[package]]
+version = "0.19.1"
+name = "bevy_render"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+[[package]]
+source = "registry+https://github.com/rust-lang/crates.io-index"
+version = "0.19.2"
+name = "bevy_core_pipeline"
+"#;
+    for newline in ["\n", "\r\n"] {
+        assert_eq!(
+            locked_bevy_crates(&lock.replace('\n', newline)),
+            [
+                "bevy_pbr-0.19.0",
+                "bevy_render-0.19.1",
+                "bevy_core_pipeline-0.19.2"
+            ]
+        );
+    }
+}
+
 /// Load one coherent registry's real dependencies once, failing clearly if they are absent.
 fn real_sources() -> &'static Sources {
     static SOURCES: OnceLock<Sources> = OnceLock::new();
     SOURCES.get_or_init(|| {
-        let lock = include_str!("../../../Cargo.lock");
-        let crates = ["bevy_pbr", "bevy_render", "bevy_core_pipeline"].map(|name| {
-            let marker = format!("name = \"{name}\"\nversion = \"");
-            let start = lock.find(&marker).expect("locked Bevy crate") + marker.len();
-            let version = lock[start..].split('"').next().unwrap();
-            format!("{name}-{version}")
-        });
+        let crates = locked_bevy_crates(include_str!("../../../Cargo.lock"));
         let roots = registry_roots();
         for root in &roots {
             let entries = match std::fs::read_dir(root) {

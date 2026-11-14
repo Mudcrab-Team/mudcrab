@@ -437,7 +437,19 @@ fn grass_ini_preserves_streaming_and_grass_radius_boundaries() {
         parse(&["--grass", "--grass-radius", "2147483647"])
             .validate_grass()
             .unwrap_err()
-            .contains("terrain streaming coordinate range")
+            .contains("automatic grass radius exceeds 32")
+    );
+    assert!(
+        parse(&[
+            "--grass",
+            "--grass-radius",
+            "2147483647",
+            "--stream-radius",
+            &maximum
+        ])
+        .validate_grass()
+        .unwrap_err()
+        .contains("terrain streaming coordinate range")
     );
     assert!(
         parse(&["--grass", "--grass-radius", "1073741823"])

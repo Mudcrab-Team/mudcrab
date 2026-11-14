@@ -1546,10 +1546,14 @@ mod tests {
     }
 
     #[test]
-    fn g3_explicit_too_small_radius_remains_invalid_after_preferences() {
+    /// An explicit narrow terrain window disables session grass after preferences resolve.
+    fn g3_explicit_small_radius_disables_grass_after_preferences() {
         let mut config = launch(&["--grass".into(), "--stream-radius".into(), "1".into()]);
-        let _ = prepare_settings_at(&mut config, None);
-        assert!(config.validate_grass().is_err());
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert!(!config.grass);
+        assert!(settings.grass, "the next-start request is retained");
+        assert_eq!((config.stream_radius, config.unload_radius), (1, 2));
+        assert!(config.validate_grass().is_ok());
     }
 
     #[test]
