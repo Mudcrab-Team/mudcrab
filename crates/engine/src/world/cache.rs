@@ -36,6 +36,9 @@ impl CellCache {
     pub fn open(path: &Path) -> Result<Self> {
         let file =
             File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+        // SAFETY: read-only mapping of the cell cache. The engine does not write it while it is
+        // mapped. An outside truncation or in-place rewrite would fault reads of the map; that
+        // risk is accepted here (#633).
         let mmap = unsafe { Mmap::map(&file) }.wrap_err("failed to map cell cache")?;
         let archived = rkyv::access::<shared::ArchivedCellCache, Error>(&mmap)
             .wrap_err("invalid cell cache")?;
