@@ -336,7 +336,16 @@ fn settings_for_source_reader(
                 && [
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
-                    crate::cache::inhouse_adapter12_reader_identity(&schemas),
+                    crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
+                ]
+                .iter()
+                .any(|prior| prior.as_ref() == Some(identity)))
+            || (reader == crate::config::RecordReader::Legacy
+                && schemas.identities().is_empty()
+                && [
+                    crate::cache::legacy_projection4_reader_identity(&language),
+                    crate::cache::legacy_projection5_reader_identity(&language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
@@ -347,9 +356,7 @@ fn settings_for_source_reader(
                     || identity
                         == &serde_json::json!({"mode": "legacy", "projection_version": 2})
                     || identity
-                        == &serde_json::json!({"mode": "legacy", "projection_version": 3})
-                    || crate::cache::legacy_projection_v4_reader_identity(&language).as_ref()
-                        == Some(identity))
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 3}))
                 && schemas.identities().is_empty()),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
@@ -756,6 +763,11 @@ async fn rebuild_into(
     manifest.schema_addons = config.schemas()?.identities().to_vec();
     // No archive extraction cache is copied by this route.
     manifest.archives.clear();
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            manifest, staging,
+        )?);
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
     crate::cache::record_grass_artifact(manifest, staging)?;
@@ -1465,9 +1477,9 @@ mod tests {
             },
         );
         let mut aliases = Vec::new();
-        for mode in 0..3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+        for sampler in shared::texture_aliases::WRAP_TEXTURE_SUFFIXES {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 fs::write(source.join(&alias), b"verified texture").unwrap();
                 aliases.push(alias);
             }
@@ -1614,7 +1626,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11, 12] {
+        for adapter in [10, 11, 12, 13] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1639,7 +1651,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1665,6 +1677,71 @@ mod metadata_schema_controls {
                     )
                     .is_err(),
                     "accepted altered {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adapter12_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter12_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(
+            recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+            ORIGINAL
+        );
+        assert_eq!(identity["adapter_version"], 12);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    /// Adapter 13 source proofs preserve language and schemas without authorizing altered identities.
+    #[test]
+    fn adapter13_source_settings_preserve_exact_schema_and_language() {
+        for language in ["english", "french"] {
+            let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+            let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+                RecordReader::Inhouse,
+                &schemas,
+                language,
+            );
+            identity["adapter_version"] = serde_json::json!(13);
+            let config = PipelineConfig::new("Data", "output");
+            let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+            assert_eq!(recovered.language, language);
+            assert_eq!(
+                recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+                ORIGINAL
+            );
+            assert_ne!(
+                crate::esm::inhouse::configured_reader_identity(&recovered).unwrap(),
+                identity
+            );
+            assert!(
+                settings_for_source_reader(
+                    &config,
+                    &identity,
+                    RuntimeSchemas::from_addon_bytes(&[REQUESTED]).unwrap(),
+                )
+                .is_err()
+            );
+            for (field, value) in [
+                ("adapter_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("string_table_encoding", serde_json::json!("unproven")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    settings_for_source_reader(
+                        &config,
+                        &altered,
+                        RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap(),
+                    )
+                    .is_err()
                 );
             }
         }
@@ -1727,7 +1804,8 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
-            serde_json::json!({"mode": "legacy", "projection_version": 4, "language": "english", "text_encoding": "windows-1252"}),
+            crate::cache::legacy_projection4_reader_identity("english").unwrap(),
+            crate::cache::legacy_projection5_reader_identity("english").unwrap(),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1740,7 +1818,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 5}),
+            serde_json::json!({"mode": "legacy", "projection_version": 99}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(
@@ -1754,13 +1832,18 @@ mod metadata_schema_controls {
         }
     }
 
-    /// Projection-four source assets retain exact language and encoding identities.
+    /// Projection-four/five source assets retain exact language and encoding identities.
     #[test]
     fn legacy_projection_four_source_settings_preserve_language_and_reject_unproven_variants() {
-        for language in ["english", "french"] {
+        for (projection, language) in [
+            (4, "english"),
+            (4, "french"),
+            (5, "english"),
+            (5, "french"),
+        ] {
             let config = PipelineConfig::new("Data", "output");
             let mut identity = serde_json::json!({
-                "mode": "legacy", "projection_version": 4, "language": language,
+                "mode": "legacy", "projection_version": projection, "language": language,
                 "text_encoding": "windows-1252",
             });
             if language == "french" {

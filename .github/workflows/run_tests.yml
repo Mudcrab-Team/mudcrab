@@ -61,7 +61,7 @@ jobs:
             fi
           }
 
-          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|\.cargo/.*|\.github/workflows/.*)$'
+          check_pattern "check_rust" '^(rust-toolchain\.toml|devenv\.nix|Cargo\.lock|(.*/)?Cargo\.toml|.*\.(rs|wgsl)|crates/converter/src/records/.*\.json|\.cargo/.*|\.github/workflows/.*)$'
           check_pattern "check_scripts" '(\.(ps1|py)$|^scripts/[^/]*\.sh$|^scripts/lod-experiment/|^tools/record_comparison/|^docs/research/lod-acceptance-20261005/|^\.github/workflows/run_tests\.yml$)'
           check_pattern "check_lod_experiment" '^(scripts/lod-experiment/|\.github/workflows/run_tests\.yml$)'
           check_pattern "check_native_profiling" '^(scripts/profiling/(analyze_native\.py|correlate_drawables\.py|metal_trace\.m|source-manifest\.json|fixtures/.*\.json)|scripts/tests/test_native_metal_profiling\.py|\.github/workflows/run_tests\.yml)$'
@@ -108,6 +108,9 @@ jobs:
         with:
           clean: false
 
+      - name: Test model inspector launcher
+        run: python3 -B -m unittest discover -s scripts/tests -p test_inspect_model.py -v
+
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
@@ -119,6 +122,11 @@ jobs:
 
       - name: Test CPU grass parity helpers
         run: python3 -B -m unittest discover -s scripts/grass-parity -p 'test_*.py' -v
+
+      - name: Test actor idle CPU qualification tools
+        run: |
+          python3 -B tools/actor_idle/test_actor_idle_cpu_qualification.py
+          python3 -B tools/actor_idle/test_actor_idle_preparation.py
 
       - name: Test Riverwood asset reuse audit
         run: python3 -B -m unittest discover -s scripts/tests -p test_audit_riverwood_reuse.py -v
@@ -137,6 +145,9 @@ jobs:
 
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
+
+      - name: Test cluster bounds audit lockfile parsing
+        run: python3 -B -m unittest discover -s tools -p 'test_diagnose_cluster_bounds.py' -v
 
       - name: Test Windows installer checksum handling
         run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1

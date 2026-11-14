@@ -271,7 +271,7 @@ Height, normal, colour dimensions and complete record framing retain their exist
 validation. The in-house projection recovers original BTXT/ATXT/VTXT occurrences
 when typed array rejection would otherwise erase valid neighboring weights, remaps
 their identities through the same load-order mapping, and retains the existing
-opaque-field policy for other fields. Adapter 13 and legacy projection 5 invalidate
+opaque-field policy for other fields. Adapter 14 and legacy projection 6 invalidate
 older metadata projections; converted mesh/texture bytes remain independently proven.
 Grass selection restores only the single LAND chosen by terrain's supplying-plugin,
 native-source-order and FormID precedence, never a merge of losing source records.
