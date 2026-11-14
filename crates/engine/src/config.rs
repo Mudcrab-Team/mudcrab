@@ -1690,6 +1690,16 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        // footprint_guard.py owns its own CLI and its test drives that CLI. The
+        // guard watches a process the caller started and is not an engine
+        // launcher. `--pid` is already in NON_ENGINE_FLAGS.
+        ("footprint_guard.py", "--limit-gib"),
+        ("footprint_guard.py", "--interval-ms"),
+        ("footprint_guard.py", "--deadline-s"),
+        ("footprint_guard.py", "--no-children"),
+        ("footprint_guard.py", "--log"),
+        ("test_footprint_guard.py", "--limit-gib"),
+        ("test_footprint_guard.py", "--log"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
