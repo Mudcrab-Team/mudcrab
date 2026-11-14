@@ -33,6 +33,7 @@ pub mod prepass_vertex_alpha;
 pub mod profiling;
 pub mod raw_texel;
 pub mod render;
+mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
 pub mod route;

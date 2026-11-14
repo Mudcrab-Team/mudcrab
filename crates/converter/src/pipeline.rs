@@ -349,6 +349,10 @@ impl AssetPipeline {
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
+        // Saved configurations cannot make current emitted bytes reuse an older script ABI.
+        config.script_abi_version = config
+            .script_abi_version
+            .max(crate::script::SCRIPT_ABI_VERSION);
         config.validate()?;
         config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
