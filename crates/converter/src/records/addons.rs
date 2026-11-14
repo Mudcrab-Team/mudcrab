@@ -90,6 +90,13 @@ impl RuntimeSchemas {
 
     /// Rebuild a bundle from exact retained documents without needing their original paths.
     pub fn from_addon_bytes(documents: &[&[u8]]) -> Result<Self, String> {
+        Self::from_base_and_addon_bytes(SCHEMA_BYTES, documents)
+    }
+
+    /// Reconstruct a retained producer's declarations for read-only audit tooling.
+    /// Production conversions continue to use the compiled built-ins through `from_addon_bytes`.
+    /// This does not grant an older schema permission to drive a current conversion.
+    pub fn from_base_and_addon_bytes(base: &[u8], documents: &[&[u8]]) -> Result<Self, String> {
         if documents.len() > MAX_SCHEMA_ADDONS {
             return Err(format!(
                 "schema add-ons exceed the {MAX_SCHEMA_ADDONS}-file limit"
@@ -128,7 +135,7 @@ impl RuntimeSchemas {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let mut schema = Schema::parse(SCHEMA_BYTES)?;
+        let mut schema = Schema::parse(base)?;
         // Install the complete definitions namespace first: batch references may
         // point forward, while no declaration can replace an existing definition.
         for document in &mut parsed {
@@ -245,13 +252,13 @@ impl RuntimeSchemas {
             }
         }
         let schema_bytes = if documents.is_empty() {
-            SCHEMA_BYTES.to_vec()
+            base.to_vec()
         } else {
             serde_json::to_vec_pretty(&effective).map_err(|error| error.to_string())?
         };
         Schema::parse(&schema_bytes)
             .map_err(|error| format!("invalid schema add-on batch [{addon_names}]: {error}"))?;
-        let schema_sha256 = fingerprint(&identities);
+        let schema_sha256 = fingerprint(base, &identities);
         Ok(Self {
             schema,
             identities,
@@ -365,13 +372,13 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 /// Keep the original built-in hash for an empty batch and include exact order otherwise.
-fn fingerprint(identities: &[SchemaAddonIdentity]) -> String {
+fn fingerprint(base: &[u8], identities: &[SchemaAddonIdentity]) -> String {
     if identities.is_empty() {
-        return digest(SCHEMA_BYTES);
+        return digest(base);
     }
     let mut hash = Sha256::new();
     hash.update(b"MudCrab runtime schema add-ons v1\0");
-    hash.update(Sha256::digest(SCHEMA_BYTES));
+    hash.update(Sha256::digest(base));
     hash.update((identities.len() as u64).to_le_bytes());
     for identity in identities {
         hash.update((identity.name.len() as u64).to_le_bytes());
@@ -431,6 +438,35 @@ mod tests {
         assert_eq!(schemas.schema_sha256(), digest(SCHEMA_BYTES));
         assert!(schemas.identities().is_empty());
         assert!(schemas.extensions().is_empty());
+    }
+
+    #[test]
+    fn retained_base_schema_is_explicit_and_does_not_replace_compiled_defaults() {
+        let base = br#"{"version":1,"records":[{"signature":"ZOLD","fields":[{"signature":"EDID","name":"editor_id","kind":"zstring"}]}]}"#;
+        let extension = addon(
+            "old-pack",
+            json!([{"signature":"ZOLD","extends":true,"fields":[{"signature":"XVAL","name":"old_value","kind":"u32"}]}]),
+        );
+        assert!(RuntimeSchemas::from_addon_bytes(&[&extension]).is_err());
+        let retained = RuntimeSchemas::from_base_and_addon_bytes(base, &[&extension]).unwrap();
+        assert_eq!(retained.schema().records[0].signature, "ZOLD");
+        assert_eq!(retained.extension_fields(b"ZOLD")[0].name, "old_value");
+        let mut changed = base.to_vec();
+        changed.push(b' ');
+        let changed = RuntimeSchemas::from_base_and_addon_bytes(&changed, &[&extension]).unwrap();
+        assert_ne!(retained.schema_sha256(), changed.schema_sha256());
+        let empty = RuntimeSchemas::from_base_and_addon_bytes(base, &[]).unwrap();
+        assert_eq!(empty.schema_bytes(), base);
+        assert_eq!(empty.schema_sha256(), digest(base));
+        let current = RuntimeSchemas::from_addon_bytes(&[]).unwrap();
+        assert_eq!(current.schema_bytes(), SCHEMA_BYTES);
+        assert!(
+            !current
+                .schema()
+                .records
+                .iter()
+                .any(|record| record.signature == "ZOLD")
+        );
     }
 
     /// New records and additive fields retain their complete typed link descriptor.
