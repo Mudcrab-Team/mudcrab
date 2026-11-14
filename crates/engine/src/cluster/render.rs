@@ -6807,3 +6807,7 @@ mod upload_tests;
 #[cfg(test)]
 #[path = "render_layout_tests.rs"]
 mod render_layout_tests;
+
+#[cfg(test)]
+#[path = "render_pulled_draw_gpu_tests.rs"]
+mod render_pulled_draw_gpu_tests;

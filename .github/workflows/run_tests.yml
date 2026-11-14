@@ -327,7 +327,7 @@ jobs:
           NEXTEST_NO_TESTS: warn
 
       - name: Test GPU texture encoder on software Vulkan
-        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots)'
+        run: cargo nextest run --locked --workspace --lib --bins --tests --examples --run-ignored only -E 'test(v210_software_gpu_encodes_and_decodes_color_alpha_normals_and_mips) | test(gpu_authored_atlas_software_vulkan_preserves_mips_gutters_padding_and_slots) | test(pulled_draw_indirect_covers_exactly_each_groups_slots)'
         env:
           WGPU_BACKEND: vulkan
 
