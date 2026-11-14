@@ -216,8 +216,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
-    // Read only; nothing renders from it yet.
-    // InteriorEnvironmentPlugin now consumes interior lighting below; exterior weather is deferred.
+    // Read only; nothing renders from it yet. InteriorEnvironmentPlugin resolves the interior
+    // selection for diagnostics and sky flags below. It applies no light.
     let environment = runtime_data.as_ref().map(|_| {
         crate::world::environment::EnvironmentCatalog::open(
             &config.assets_dir.join("skyrim_world.db"),
@@ -2439,7 +2439,6 @@ fn setup_world(
             ..default()
         },
         sun_shadow_cascades(&config),
-        crate::world::environment::interior::WorldEnvironmentLight,
         RenderLayers::from_layers(LIGHT_LAYERS),
         Transform::from_rotation(sun_rotation(&config)),
     ));

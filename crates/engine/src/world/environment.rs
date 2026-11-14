@@ -5,7 +5,8 @@
 //! optional: a database converted before them, or with a table of another shape, loads an empty
 //! map for that table and the engine keeps its built-in lighting. Nothing renders from this
 //! catalog yet; it is the reader later lighting and sky work consumes (#264).
-//! Interior runtime consumption now lives in [`interior`]; exterior weather selection remains open.
+//! [`interior`] selects the authored interior lighting for diagnostics and sky flags. It applies
+//! no light; exterior weather selection also remains open.
 
 pub(crate) mod interior;
 

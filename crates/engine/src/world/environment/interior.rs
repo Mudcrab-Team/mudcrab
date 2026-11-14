@@ -1,8 +1,8 @@
-//! Authored interior selection and the explicitly approximate Bevy lighting adapter.
+//! Authored interior lighting selection. The resolved values are reported, not applied.
 //! See docs/specs/engine/interior-environment.md for evidence and unresolved native semantics.
 
 use super::{EnvironmentCatalog, Lighting};
-use crate::{settings::RenderingSettings, streaming::ActiveSpace};
+use crate::streaming::ActiveSpace;
 use bevy::{prelude::*, transform::TransformSystems};
 use std::collections::BTreeMap;
 
@@ -110,7 +110,7 @@ impl EnvironmentCatalog {
     }
 }
 
-/// One scene selection shared by lighting and sky. ActiveSpace owns scene identity.
+/// One scene selection shared by diagnostics and sky. ActiveSpace owns scene identity.
 #[derive(Resource, Debug, Clone, PartialEq, Default, serde::Serialize)]
 pub(crate) struct SceneEnvironment {
     pub interior: Option<InteriorLighting>,
@@ -138,19 +138,6 @@ impl SceneEnvironment {
     }
 }
 
-/// Only the streamed world's environment light is controlled here; fixture lights are separate.
-#[derive(Component)]
-pub(crate) struct WorldEnvironmentLight;
-
-#[derive(Clone, Copy)]
-struct ExteriorLighting {
-    color: Color,
-    illuminance: f32,
-    rotation: Quat,
-    ambient_color: Color,
-    ambient_brightness: f32,
-}
-
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct EnvironmentSet;
 
@@ -160,7 +147,7 @@ impl Plugin for InteriorEnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SceneEnvironment>().add_systems(
             PostUpdate,
-            apply_environment
+            select_environment
                 .in_set(EnvironmentSet)
                 .after(crate::door_crossing::DoorCrossingSet)
                 .before(TransformSystems::Propagate),
@@ -168,124 +155,28 @@ impl Plugin for InteriorEnvironmentPlugin {
     }
 }
 
-/// Runs after Update preferences and queued PostUpdate door switches, before sky and extraction.
-/// RGB preferences remain exterior overrides; interior authored RGB is not replaced by them.
-fn apply_environment(
+/// Runs after queued PostUpdate door switches, before sky and extraction. It records the
+/// selection only. No Bevy light is written: the mapping from authored values to the renderer
+/// has no Skyrim source yet (#693 to #696).
+fn select_environment(
     catalog: Res<EnvironmentCatalog>,
     space: Res<ActiveSpace>,
     mut scene: ResMut<SceneEnvironment>,
-    settings: Option<Res<RenderingSettings>>,
-    mut lights: Query<(&mut DirectionalLight, &mut Transform), With<WorldEnvironmentLight>>,
-    mut ambient: ResMut<GlobalAmbientLight>,
-    mut exterior: Local<Option<ExteriorLighting>>,
+    mut selected_once: Local<bool>,
 ) {
-    let Ok((mut light, mut transform)) = lights.single_mut() else {
-        return;
-    };
-    let first_application = exterior.is_none();
-    let baseline = *exterior.get_or_insert(ExteriorLighting {
-        color: light.color,
-        illuminance: light.illuminance,
-        rotation: transform.rotation,
-        ambient_color: ambient.color,
-        ambient_brightness: ambient.brightness,
-    });
-    if first_application
+    let first_selection = !std::mem::replace(&mut *selected_once, true);
+    if first_selection
         || catalog.is_changed()
         || space.is_changed()
         || scene.interior.is_none() && space.interior.is_some()
     {
         let selected = SceneEnvironment::select(&catalog, &space);
         if *scene != selected {
-            info!(environment = ?selected, adapter = "bevy-interior-v1", "selected scene environment");
+            info!(environment = ?selected, "selected scene environment");
             *scene = selected;
         }
     }
-    let sun_enabled = settings.as_ref().is_none_or(|s| s.sun);
-    let sun_level = settings
-        .as_ref()
-        .map_or(baseline.illuminance, |s| s.sun_illuminance);
-    let ambient_level = settings
-        .as_ref()
-        .map_or(baseline.ambient_brightness, |s| s.ambient_brightness);
-    let (sun_color, sun_fade, rotation, ambient_color) = if !scene.use_sky_lighting
-        && let Some(interior) = &scene.interior
-    {
-        let lighting = &interior.lighting;
-        let color = lighting.directional.map_or(Color::BLACK, rgb);
-        // Native fade and angle evaluation is unresolved. These are named backend adapters,
-        // not recovered Skyrim equations. Invalid negative fade is suppressed, never abs().
-        let fade = lighting.directional_fade.unwrap_or(1.0).max(0.0);
-        let rotation = interior_rotation(lighting).unwrap_or(Quat::IDENTITY);
-        let ambient_color = if let Some(cube) = lighting.directional_ambient {
-            // Isotropic linear mean, no native G assumption and no use of specular scale.
-            let sum = cube
-                .colors
-                .map(|face| rgb(face).to_linear())
-                .into_iter()
-                .fold(LinearRgba::NONE, |sum, face| sum + face);
-            Color::LinearRgba(sum * (1.0 / 6.0))
-        } else {
-            lighting.ambient.map_or(Color::BLACK, rgb)
-        };
-        (color, fade, rotation, ambient_color)
-    } else {
-        (
-            settings.as_ref().map_or(baseline.color, |s| {
-                Color::srgb(s.sun_color[0], s.sun_color[1], s.sun_color[2])
-            }),
-            1.0,
-            baseline.rotation,
-            settings.as_ref().map_or(baseline.ambient_color, |s| {
-                Color::srgb(s.ambient_color[0], s.ambient_color[1], s.ambient_color[2])
-            }),
-        )
-    };
-    let illuminance = if sun_enabled {
-        sun_level * sun_fade
-    } else {
-        0.0
-    };
-    let shadows = sun_enabled && settings.as_ref().is_none_or(|s| s.shadows);
-    if light.color != sun_color {
-        light.color = sun_color;
-    }
-    if light.illuminance != illuminance {
-        light.illuminance = illuminance;
-    }
-    if light.shadow_maps_enabled != shadows {
-        light.shadow_maps_enabled = shadows;
-    }
-    if transform.rotation != rotation {
-        transform.rotation = rotation;
-    }
-    if ambient.color != ambient_color {
-        ambient.color = ambient_color;
-    }
-    if ambient.brightness != ambient_level {
-        ambient.brightness = ambient_level;
-    }
 }
-
-fn rgb([r, g, b]: [u8; 3]) -> Color {
-    Color::srgb_u8(r, g, b)
-}
-
-/// Creation bearing in XY and elevation above XY, then (x,y,z) -> (x,z,-y).
-/// Angle convention is a renderer approximation pending build-identified native validation.
-fn interior_rotation(lighting: &Lighting) -> Option<Quat> {
-    let bearing = (lighting.directional_rotation_xy? as f32).to_radians();
-    let elevation = (lighting.directional_rotation_z? as f32).to_radians();
-    let toward_light = Vec3::new(
-        bearing.sin() * elevation.cos(),
-        elevation.sin(),
-        -bearing.cos() * elevation.cos(),
-    );
-    Some(Quat::from_rotation_arc(Vec3::NEG_Z, -toward_light))
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod native_tests;
 
 #[cfg(test)]
 mod tests {
@@ -312,38 +203,13 @@ mod tests {
         EnvironmentCatalog::from_connection(&connection)
     }
 
-    pub(super) fn app(catalog: EnvironmentCatalog) -> (App, Entity) {
+    pub(super) fn app(catalog: EnvironmentCatalog) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(catalog)
             .init_resource::<ActiveSpace>()
-            .init_resource::<crate::config::EngineConfig>()
-            .insert_resource(RenderingSettings {
-                sun_color: [0.8, 0.7, 0.6],
-                ambient_color: [0.6, 0.5, 0.4],
-                ..default()
-            })
-            .insert_resource(GlobalAmbientLight {
-                color: Color::srgb(0.1, 0.2, 0.3),
-                brightness: 160.0,
-                ..default()
-            })
-            .add_plugins(InteriorEnvironmentPlugin)
-            // Exercise the real preference writer, not a stand-in that merely edits RGB.
-            .add_systems(Update, crate::settings::apply_render_settings);
-        let light = app
-            .world_mut()
-            .spawn((
-                WorldEnvironmentLight,
-                DirectionalLight {
-                    illuminance: 12_000.0,
-                    ..default()
-                },
-                CascadeShadowConfig::default(),
-                Transform::from_rotation(Quat::from_rotation_y(0.4)),
-            ))
-            .id();
-        (app, light)
+            .add_plugins(InteriorEnvironmentPlugin);
+        app
     }
 
     pub(super) fn enter(app: &mut App, cell: Option<u32>) {
@@ -351,134 +217,69 @@ mod tests {
         app.update();
     }
 
-    pub(super) fn light(app: &App, entity: Entity) -> &DirectionalLight {
-        app.world().get::<DirectionalLight>(entity).unwrap()
+    fn selected(app: &App) -> &InteriorLighting {
+        app.world()
+            .resource::<SceneEnvironment>()
+            .interior
+            .as_ref()
+            .unwrap()
     }
 
     #[test]
-    fn interior_first_application_and_late_sun_preserve_the_startup_exterior_baseline() {
-        for late_sun in [false, true] {
-            let mut app = App::new();
-            app.add_plugins(MinimalPlugins)
-                .insert_resource(fixture())
-                .insert_resource(ActiveSpace {
-                    interior: Some(10),
+    fn interior_selection_writes_no_bevy_light() {
+        let exterior_rotation = Quat::from_rotation_y(0.4);
+        let mut app = app(fixture());
+        app.insert_resource(GlobalAmbientLight {
+            color: Color::srgb(0.1, 0.2, 0.3),
+            brightness: 123.0,
+            ..default()
+        });
+        let sun = app
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    color: Color::srgb(0.8, 0.7, 0.6),
+                    illuminance: 4321.0,
                     ..default()
-                })
-                .insert_resource(GlobalAmbientLight {
-                    color: Color::srgb(0.1, 0.2, 0.3),
-                    brightness: 123.0,
-                    ..default()
-                })
-                .add_plugins(InteriorEnvironmentPlugin);
-            if late_sun {
-                app.update();
-            }
-            let rotation = Quat::from_rotation_y(0.4);
-            let sun = app
-                .world_mut()
-                .spawn((
-                    WorldEnvironmentLight,
-                    DirectionalLight {
-                        color: Color::srgb(0.8, 0.7, 0.6),
-                        illuminance: 4321.0,
-                        ..default()
-                    },
-                    Transform::from_rotation(rotation),
-                ))
-                .id();
-            app.update();
-            assert_eq!(light(&app, sun).color, rgb([60, 70, 80]));
-            assert_eq!(light(&app, sun).illuminance, 1080.25);
-            assert_eq!(
-                app.world().resource::<GlobalAmbientLight>().color,
-                rgb([30, 40, 50])
-            );
-            enter(&mut app, None);
-            assert_eq!(light(&app, sun).color, Color::srgb(0.8, 0.7, 0.6));
-            assert_eq!(light(&app, sun).illuminance, 4321.0);
-            assert_eq!(
-                app.world().get::<Transform>(sun).unwrap().rotation,
-                rotation
-            );
-            let ambient = app.world().resource::<GlobalAmbientLight>();
-            assert_eq!(ambient.color, Color::srgb(0.1, 0.2, 0.3));
-            assert_eq!(ambient.brightness, 123.0);
-        }
-    }
-
-    #[test]
-    fn transition_and_real_preferences_keep_interior_authorship_and_restore_exterior() {
-        let (mut app, sun) = app(fixture());
+                },
+                CascadeShadowConfig::default(),
+                Transform::from_rotation(exterior_rotation),
+            ))
+            .id();
         app.update();
-        let exterior_rotation = app.world().get::<Transform>(sun).unwrap().rotation;
-        assert_eq!(light(&app, sun).color, Color::srgb(0.8, 0.7, 0.6));
         app.world_mut().clear_trackers();
-        app.update();
-        assert!(
-            !app.world()
-                .entity(sun)
-                .get_ref::<DirectionalLight>()
-                .unwrap()
-                .is_changed()
-        );
-        assert!(
-            !app.world()
-                .entity(sun)
-                .get_ref::<Transform>()
-                .unwrap()
-                .is_changed()
+        // Cell 10 authors non-black ambient and directional colours, a nonzero fade and a
+        // rotation, and does not use sky lighting.
+        enter(&mut app, Some(10));
+        let lighting = &selected(&app).lighting;
+        assert_eq!(lighting.ambient, Some([30, 40, 50]));
+        assert_eq!(lighting.directional, Some([60, 70, 80]));
+        assert_eq!(lighting.directional_fade, Some(0.25));
+        assert_eq!(lighting.directional_rotation_xy, Some(90));
+        assert!(!app.world().resource::<SceneEnvironment>().use_sky_lighting);
+
+        let entity = app.world().entity(sun);
+        let light = entity.get_ref::<DirectionalLight>().unwrap();
+        assert!(!light.is_changed());
+        assert_eq!(light.color, Color::srgb(0.8, 0.7, 0.6));
+        assert_eq!(light.illuminance, 4321.0);
+        let transform = entity.get_ref::<Transform>().unwrap();
+        assert!(!transform.is_changed());
+        assert_eq!(transform.rotation, exterior_rotation);
+        let cascades = entity.get_ref::<CascadeShadowConfig>().unwrap();
+        assert!(!cascades.is_changed());
+        assert_eq!(
+            format!("{:?}", *cascades),
+            format!("{:?}", CascadeShadowConfig::default())
         );
         assert!(!app.world().is_resource_changed::<GlobalAmbientLight>());
-        enter(&mut app, Some(10));
-        assert_eq!(light(&app, sun).color, rgb([60, 70, 80]));
-        assert_eq!(light(&app, sun).illuminance, 3_000.0);
-        assert_eq!(
-            app.world().resource::<GlobalAmbientLight>().color,
-            rgb([30, 40, 50])
-        );
-        let rotation = app.world().get::<Transform>(sun).unwrap().rotation;
-        let direction = rotation * Vec3::NEG_Z;
-        assert!((direction - Vec3::new(-30f32.to_radians().cos(), -0.5, 0.0)).length() < 1e-5);
-        {
-            let mut preferences = app.world_mut().resource_mut::<RenderingSettings>();
-            preferences.sun_color = [1.0, 0.0, 0.0];
-            preferences.ambient_color = [0.0, 1.0, 0.0];
-            preferences.sun_illuminance = 8_000.0;
-            preferences.ambient_brightness = 80.0;
-            preferences.shadows = false;
-            preferences.tone_map = 0;
-        }
-        app.update();
-        assert_eq!(light(&app, sun).color, rgb([60, 70, 80]));
-        assert_eq!(light(&app, sun).illuminance, 2_000.0);
-        assert!(!light(&app, sun).shadow_maps_enabled);
         let ambient = app.world().resource::<GlobalAmbientLight>();
-        assert_eq!(ambient.color, rgb([30, 40, 50]));
-        assert_eq!(ambient.brightness, 80.0);
-        app.world_mut().resource_mut::<RenderingSettings>().sun = false;
-        app.update();
-        assert_eq!(light(&app, sun).illuminance, 0.0);
-        assert_eq!(
-            app.world().resource::<GlobalAmbientLight>().color,
-            rgb([30, 40, 50])
-        );
-        app.world_mut().resource_mut::<RenderingSettings>().sun = true;
-        enter(&mut app, None);
-        assert_eq!(light(&app, sun).color, Color::srgb(1.0, 0.0, 0.0));
-        assert_eq!(light(&app, sun).illuminance, 8_000.0);
-        assert_eq!(
-            app.world().resource::<GlobalAmbientLight>().color,
-            Color::srgb(0.0, 1.0, 0.0)
-        );
-        assert_eq!(
-            app.world().get::<Transform>(sun).unwrap().rotation,
-            exterior_rotation
-        );
+        assert_eq!(ambient.color, Color::srgb(0.1, 0.2, 0.3));
+        assert_eq!(ambient.brightness, 123.0);
     }
 
     #[test]
-    fn local_inherited_zero_and_missing_values_reach_the_light() {
+    fn local_inherited_zero_and_missing_values_are_reported_unchanged() {
         let mut catalog = fixture();
         {
             let cell = catalog.cells.get_mut(&10).unwrap();
@@ -489,22 +290,17 @@ mod tests {
             cell.lighting.directional_rotation_z = Some(0);
             cell.lighting.directional_fade = Some(0.0);
         }
-        let (mut app, sun) = app(catalog);
+        let mut app = app(catalog);
         enter(&mut app, Some(10));
-        assert_eq!(light(&app, sun).color.to_linear(), Color::BLACK.to_linear());
-        assert_eq!(light(&app, sun).illuminance, 0.0);
+        let lighting = &selected(&app).lighting;
+        assert_eq!(lighting.ambient, Some([0; 3]));
+        assert_eq!(lighting.directional, Some([0; 3]));
+        assert_eq!(lighting.directional_fade, Some(0.0));
+        assert!(!selected(&app).missing.contains(&"directional_fade"));
         assert_eq!(
-            app.world()
-                .resource::<GlobalAmbientLight>()
-                .color
-                .to_linear(),
-            Color::BLACK.to_linear()
+            selected(&app).sources["directional"],
+            LightingSource::CellXcll
         );
-        let scene = app.world().resource::<SceneEnvironment>();
-        let selected = scene.interior.as_ref().unwrap();
-        assert_eq!(selected.lighting.directional_fade, Some(0.0));
-        assert!(!selected.missing.contains(&"directional_fade"));
-        assert_eq!(selected.sources["directional"], LightingSource::CellXcll);
         {
             let mut catalog = app.world_mut().resource_mut::<EnvironmentCatalog>();
             let cell = catalog.cells.get_mut(&10).unwrap();
@@ -512,26 +308,21 @@ mod tests {
             cell.lighting_template = Some(999);
         }
         app.update();
-        assert_eq!(light(&app, sun).color, Color::BLACK);
-        let selected = app
-            .world()
-            .resource::<SceneEnvironment>()
-            .interior
-            .as_ref()
-            .unwrap();
+        assert_eq!(selected(&app).lighting.directional, None);
         assert_eq!(
-            selected.sources["directional"],
+            selected(&app).sources["directional"],
             LightingSource::MissingTemplate(Some(999))
         );
-        assert!(selected.missing.contains(&"directional"));
+        assert!(selected(&app).missing.contains(&"directional"));
         enter(&mut app, Some(404));
-        assert_eq!(light(&app, sun).color, Color::BLACK);
-        assert_eq!(
-            app.world().resource::<GlobalAmbientLight>().color,
-            Color::BLACK
-        );
+        assert_eq!(selected(&app).lighting, Lighting::default());
         enter(&mut app, None);
-        assert_eq!(light(&app, sun).color, Color::srgb(0.8, 0.7, 0.6));
+        assert!(
+            app.world()
+                .resource::<SceneEnvironment>()
+                .interior
+                .is_none()
+        );
     }
 
     #[test]
@@ -547,23 +338,14 @@ mod tests {
             scale: Some(25.0),
             ..default()
         });
-        let (mut app, _) = app(catalog);
+        let mut app = app(catalog);
         enter(&mut app, Some(10));
+        let cube = selected(&app).lighting.directional_ambient.unwrap();
+        assert_eq!(cube.colors, [[0; 3]; 6]);
+        assert_eq!(cube.scale, Some(25.0));
+        assert!(!selected(&app).missing.contains(&"directional_ambient"));
         assert_eq!(
-            app.world()
-                .resource::<GlobalAmbientLight>()
-                .color
-                .to_linear()
-                .red,
-            0.0
-        );
-        assert_eq!(
-            app.world()
-                .resource::<SceneEnvironment>()
-                .interior
-                .as_ref()
-                .unwrap()
-                .sources["directional_ambient"],
+            selected(&app).sources["directional_ambient"],
             LightingSource::TemplateDalc(20)
         );
         {
@@ -573,13 +355,10 @@ mod tests {
                 [[255, 0, 0], [0; 3], [0; 3], [0; 3], [0; 3], [0; 3]];
         }
         app.update();
-        let ambient = app
-            .world()
-            .resource::<GlobalAmbientLight>()
-            .color
-            .to_linear();
-        assert!((ambient.red - 1.0 / 6.0).abs() < 1e-6);
-        assert_eq!(ambient.green, 0.0);
+        assert_eq!(
+            selected(&app).lighting.directional_ambient.unwrap().colors,
+            [[255, 0, 0], [0; 3], [0; 3], [0; 3], [0; 3], [0; 3]]
+        );
     }
 
     #[test]
@@ -630,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn individual_light_inheritance_bits_reach_independent_render_consumers() {
+    fn individual_inheritance_bits_select_independent_scene_fields() {
         let mut catalog = fixture();
         catalog
             .cells
@@ -646,7 +425,7 @@ mod tests {
                 colors: [[0, 255, 0]; 6],
                 ..default()
             });
-        let (mut app, sun) = app(catalog);
+        let mut app = app(catalog);
         for mask in [0, 1, 2, 0x20, 0x40, 0x61, 0x7ff, 0] {
             app.world_mut()
                 .resource_mut::<EnvironmentCatalog>()
@@ -655,38 +434,44 @@ mod tests {
                 .unwrap()
                 .inherit_flags = Some(mask);
             enter(&mut app, Some(10));
+            let lighting = &selected(&app).lighting;
             assert_eq!(
-                light(&app, sun).color,
-                rgb(if mask & 2 != 0 {
+                lighting.directional,
+                Some(if mask & 2 != 0 {
                     [60, 70, 80]
                 } else {
                     [210, 211, 212]
                 })
             );
             assert_eq!(
-                light(&app, sun).illuminance,
-                if mask & 0x40 != 0 { 9_000.0 } else { 3_000.0 }
+                lighting.directional_fade,
+                Some(if mask & 0x40 != 0 { 0.75 } else { 0.25 })
             );
-            let ambient = app
-                .world()
-                .resource::<GlobalAmbientLight>()
-                .color
-                .to_linear();
-            assert_eq!(ambient.red, if mask & 1 != 0 { 0.0 } else { 1.0 });
-            assert_eq!(ambient.green, if mask & 1 != 0 { 1.0 } else { 0.0 });
-            let expected_direction = if mask & 0x20 != 0 {
-                Vec3::new(0.0, -60f32.to_radians().sin(), -60f32.to_radians().cos())
-            } else {
-                Vec3::new(-30f32.to_radians().cos(), -0.5, 0.0)
-            };
-            let direction = app.world().get::<Transform>(sun).unwrap().rotation * Vec3::NEG_Z;
-            assert!((direction - expected_direction).length() < 1e-5);
+            assert_eq!(
+                lighting.directional_ambient.unwrap().colors,
+                if mask & 1 != 0 {
+                    [[0, 255, 0]; 6]
+                } else {
+                    [[255, 0, 0]; 6]
+                }
+            );
+            assert_eq!(
+                (
+                    lighting.directional_rotation_xy,
+                    lighting.directional_rotation_z
+                ),
+                if mask & 0x20 != 0 {
+                    (Some(180), Some(60))
+                } else {
+                    (Some(90), Some(30))
+                }
+            );
         }
     }
 
     #[test]
     fn show_sky_and_use_sky_lighting_are_independent_runtime_choices() {
-        let (mut app, sun) = app(fixture());
+        let mut app = app(fixture());
         for (cell, sky, sky_lighting) in [
             (10, false, false),
             (11, true, false),
@@ -697,32 +482,26 @@ mod tests {
             let scene = app.world().resource::<SceneEnvironment>();
             assert_eq!(scene.show_sky, sky);
             assert_eq!(scene.use_sky_lighting, sky_lighting);
-            assert_eq!(
-                light(&app, sun).color,
-                if sky_lighting {
-                    Color::srgb(0.8, 0.7, 0.6)
-                } else {
-                    rgb([60, 70, 80])
-                }
-            );
         }
     }
 
     #[test]
-    fn old_database_never_leaks_previous_scene_lighting() {
+    fn old_database_reports_every_authored_field_missing() {
         let catalog = EnvironmentCatalog::from_connection(&Connection::open_in_memory().unwrap());
-        let (mut app, sun) = app(catalog);
+        let mut app = app(catalog);
         app.update();
         enter(&mut app, Some(10));
-        assert_eq!(light(&app, sun).color, Color::BLACK);
         let scene = app.world().resource::<SceneEnvironment>();
         assert!(!scene.show_sky);
         assert_eq!(
             scene.interior.as_ref().unwrap().sources["ambient"],
             LightingSource::MissingCell
         );
+        assert_eq!(selected(&app).lighting, Lighting::default());
         enter(&mut app, None);
-        assert_eq!(light(&app, sun).color, Color::srgb(0.8, 0.7, 0.6));
+        let scene = app.world().resource::<SceneEnvironment>();
+        assert!(scene.interior.is_none());
+        assert!(scene.show_sky && scene.use_sky_lighting);
     }
 }
 
@@ -774,8 +553,16 @@ mod plugin_tests {
         result
     }
 
+    fn selected(app: &App) -> &InteriorLighting {
+        app.world()
+            .resource::<SceneEnvironment>()
+            .interior
+            .as_ref()
+            .unwrap()
+    }
+
     #[test]
-    fn procedural_plugin_override_reaches_real_runtime_consumer() {
+    fn procedural_plugin_override_reaches_the_scene_environment() {
         // A new cell/template pair, with an unrelated plugin between master and override.
         // Both the identity remap and the override winner go through the actual converter.
         let root = tempfile::tempdir().unwrap();
@@ -819,7 +606,6 @@ mod plugin_tests {
         )
         .unwrap();
         std::fs::write(&paths[1], header(true)).unwrap();
-        let mut observed = Vec::new();
         for (index, color) in [[64, 96, 128], [0, 0, 0], [255, 32, 16]]
             .into_iter()
             .enumerate()
@@ -830,21 +616,21 @@ mod plugin_tests {
             let database = root.path().join(format!("case-{index}.db"));
             converter::esm::EsmParser::convert_plugins(&paths, &database).unwrap();
             let catalog = EnvironmentCatalog::open(&database).unwrap();
-            let selected = catalog.resolve_interior(0x801);
-            assert_eq!(selected.lighting.directional, Some(color));
+            let resolved = catalog.resolve_interior(0x801);
+            assert_eq!(resolved.lighting.directional, Some(color));
             assert_eq!(
-                selected.sources["directional"],
+                resolved.sources["directional"],
                 LightingSource::TemplateData(0x800)
             );
-            let (mut app, sun) = super::tests::app(catalog);
+            let mut app = super::tests::app(catalog);
             super::tests::enter(&mut app, Some(0x801));
-            assert_eq!(super::tests::light(&app, sun).color, rgb(color));
-            assert_eq!(super::tests::light(&app, sun).illuminance, 6_000.0);
+            assert_eq!(selected(&app).lighting.directional, Some(color));
+            // The override changes the directional colour only. Authored ambient is unchanged.
+            assert_eq!(selected(&app).lighting.ambient, Some([32, 48, 64]));
+            assert_eq!(selected(&app).lighting.directional_fade, Some(0.5));
             assert!(app.world().resource::<SceneEnvironment>().show_sky);
             assert!(!app.world().resource::<SceneEnvironment>().use_sky_lighting);
-            observed.push(app.world().resource::<GlobalAmbientLight>().color);
         }
-        assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[test]
@@ -910,18 +696,13 @@ mod plugin_tests {
                 assert_eq!(catalog.resolve_interior(id).template_only, size.is_none());
             }
             assert_eq!(catalog.cell_lighting(0x806).unwrap().xcll_size, Some(71));
-            let (mut app, sun) = super::tests::app(catalog);
+            let mut app = super::tests::app(catalog);
             for cell in [0x801, 0x802, 0x803, 0x804, 0x805, 0x806, 0x801] {
                 super::tests::enter(&mut app, Some(cell));
-                let selected = app
-                    .world()
-                    .resource::<SceneEnvironment>()
-                    .interior
-                    .as_ref()
-                    .unwrap();
+                let resolved = selected(&app);
                 let malformed = matches!(cell, 0x802 | 0x803 | 0x806);
                 assert_eq!(
-                    selected.sources["directional"],
+                    resolved.sources["directional"],
                     if cell == 0x801 {
                         LightingSource::TemplateData(0x800)
                     } else if malformed {
@@ -930,39 +711,21 @@ mod plugin_tests {
                         LightingSource::CellXcll
                     }
                 );
-                assert_eq!(selected.missing.contains(&"directional"), malformed);
+                assert_eq!(resolved.missing.contains(&"directional"), malformed);
                 assert_eq!(
-                    super::tests::light(&app, sun).color.to_linear(),
-                    if malformed {
-                        Color::BLACK
-                    } else {
-                        rgb([64, 96, 128])
-                    }
-                    .to_linear()
+                    resolved.lighting.directional,
+                    (!malformed).then_some([64, 96, 128])
                 );
                 assert_eq!(
-                    app.world()
-                        .resource::<GlobalAmbientLight>()
-                        .color
-                        .to_linear(),
-                    if malformed {
-                        Color::BLACK
-                    } else {
-                        rgb([255, 0, 0])
-                    }
-                    .to_linear()
+                    resolved.lighting.ambient,
+                    (!malformed).then_some([255, 0, 0])
                 );
             }
-            super::tests::enter(&mut app, None);
-            assert_eq!(
-                super::tests::light(&app, sun).color,
-                Color::srgb(0.8, 0.7, 0.6)
-            );
         }
     }
 
     #[test]
-    fn procedural_dalc_overrides_change_ambient_without_replacing_directional_light() {
+    fn procedural_dalc_overrides_reach_the_scene_environment_unchanged() {
         use converter::config::RecordReader;
 
         for reader in [RecordReader::Legacy, RecordReader::Inhouse] {
@@ -1005,7 +768,7 @@ mod plugin_tests {
                 [header(true), template(&[0; 24]), cells].concat(),
             )
             .unwrap();
-            let (mut app, sun) = super::tests::app(EnvironmentCatalog::default());
+            let mut app = super::tests::app(EnvironmentCatalog::default());
             for (index, face) in [[0, 255, 0], [0, 0, 0], [255, 0, 0]]
                 .into_iter()
                 .enumerate()
@@ -1024,60 +787,37 @@ mod plugin_tests {
                 .unwrap();
                 app.insert_resource(EnvironmentCatalog::open(&database).unwrap());
                 super::tests::enter(&mut app, Some(0x801));
-                let selected = app
-                    .world()
-                    .resource::<SceneEnvironment>()
-                    .interior
-                    .as_ref()
-                    .unwrap();
+                let resolved = selected(&app);
                 assert_eq!(
-                    selected.sources["directional_ambient"],
+                    resolved.sources["directional_ambient"],
                     LightingSource::TemplateDalc(0x800)
                 );
                 assert_eq!(
-                    selected.lighting.directional_ambient.unwrap().colors,
+                    resolved.lighting.directional_ambient.unwrap().colors,
                     [face; 6]
                 );
-                assert_eq!(
-                    app.world()
-                        .resource::<GlobalAmbientLight>()
-                        .color
-                        .to_linear(),
-                    rgb(face).to_linear()
-                );
-                assert_eq!(super::tests::light(&app, sun).color, rgb([40, 50, 60]));
-                assert_eq!(super::tests::light(&app, sun).illuminance, 6_000.0);
+                assert_eq!(resolved.lighting.directional, Some([40, 50, 60]));
             }
         }
     }
 
     #[test]
     #[ignore = "opt-in read-only managed-pack check; set MUDCRAB_INTERIOR_TEST_DB"]
-    fn managed_farm_cells_reach_runtime_without_modifying_pack() {
+    fn managed_farm_cells_reach_the_scene_environment_without_modifying_pack() {
         let path =
             std::env::var_os("MUDCRAB_INTERIOR_TEST_DB").expect("explicit managed database path");
         let catalog = EnvironmentCatalog::open(std::path::Path::new(&path)).unwrap();
-        let (mut app, sun) = super::tests::app(catalog);
+        let mut app = super::tests::app(catalog);
         for (cell, elevation) in [(78791, 0), (78792, 30)] {
             super::tests::enter(&mut app, Some(cell));
             let scene = app.world().resource::<SceneEnvironment>();
-            let selected = scene.interior.as_ref().unwrap();
-            assert_eq!(selected.template_id, Some(659862));
-            assert_eq!(selected.lighting.directional, Some([65, 70, 80]));
-            assert_eq!(selected.lighting.directional_rotation_z, Some(elevation));
-            assert_eq!(selected.lighting.directional_fade, Some(0.0));
+            let resolved = scene.interior.as_ref().unwrap();
+            assert_eq!(resolved.template_id, Some(659862));
+            assert_eq!(resolved.lighting.directional, Some([65, 70, 80]));
+            assert_eq!(resolved.lighting.directional_rotation_z, Some(elevation));
+            assert_eq!(resolved.lighting.directional_fade, Some(0.0));
             assert!(scene.show_sky);
             assert!(!scene.use_sky_lighting);
-            assert_eq!(super::tests::light(&app, sun).color, rgb([65, 70, 80]));
-            assert_eq!(super::tests::light(&app, sun).illuminance, 0.0);
-            assert!(
-                app.world()
-                    .resource::<GlobalAmbientLight>()
-                    .color
-                    .to_linear()
-                    .red
-                    > 0.0
-            );
         }
     }
 }

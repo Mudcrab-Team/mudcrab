@@ -998,26 +998,11 @@ mod tests {
 
     fn app_with_environment(
         door: LoadDoor,
-        environment: Option<crate::world::environment::EnvironmentCatalog>,
+        environment: crate::world::environment::EnvironmentCatalog,
     ) -> (App, Entity) {
         app_with_extra(door, |app| {
-            if let Some(environment) = environment {
-                app.insert_resource(environment)
-                    .insert_resource(GlobalAmbientLight {
-                        color: Color::srgb(0.1, 0.2, 0.3),
-                        brightness: 160.0,
-                        ..default()
-                    })
-                    .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
-                app.world_mut().spawn((
-                    crate::world::environment::interior::WorldEnvironmentLight,
-                    DirectionalLight {
-                        illuminance: 12_000.0,
-                        ..default()
-                    },
-                    Transform::from_rotation(Quat::from_rotation_y(0.4)),
-                ));
-            }
+            app.insert_resource(environment)
+                .add_plugins(crate::world::environment::interior::InteriorEnvironmentPlugin);
         })
     }
 
@@ -1472,20 +1457,17 @@ mod tests {
     }
 
     #[test]
-    fn crossing_and_timed_out_landing_restore_render_lighting_in_the_scene_switch_frame() {
-        check_crossing_restores_lighting(false);
+    fn crossing_and_timed_out_landing_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(false);
     }
 
     #[test]
-    fn crossing_and_failed_cell_restore_render_lighting_in_the_scene_switch_frame() {
-        check_crossing_restores_lighting(true);
+    fn crossing_and_failed_cell_switch_scene_environment_in_the_scene_switch_frame() {
+        check_crossing_switches_scene_environment(true);
     }
 
-    fn check_crossing_restores_lighting(fail_destination: bool) {
-        use crate::world::environment::{
-            EnvironmentCatalog,
-            interior::{SceneEnvironment, WorldEnvironmentLight},
-        };
+    fn check_crossing_switches_scene_environment(fail_destination: bool) {
+        use crate::world::environment::{EnvironmentCatalog, interior::SceneEnvironment};
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         converter::esm::exporter::create_tables(&connection).unwrap();
         connection
@@ -1499,14 +1481,8 @@ mod tests {
             .unwrap();
         let (mut app, _) = app_with_environment(
             interior_door(),
-            Some(EnvironmentCatalog::from_connection(&connection)),
+            EnvironmentCatalog::from_connection(&connection),
         );
-        let sun = app
-            .world_mut()
-            .query_filtered::<Entity, With<WorldEnvironmentLight>>()
-            .single(app.world())
-            .unwrap();
-        let exterior_rotation = app.world().get::<Transform>(sun).unwrap().rotation;
         press_e(&mut app);
         let mut saw_interior = false;
         let mut saw_restore = false;
@@ -1518,13 +1494,12 @@ mod tests {
                 scene.interior.as_ref().map(|lighting| lighting.cell_id),
                 cell
             );
-            let light = app.world().get::<DirectionalLight>(sun).unwrap();
-            let ambient = app.world().resource::<GlobalAmbientLight>();
             if cell.is_some() {
                 saw_interior = true;
-                assert_eq!(light.color, Color::srgb_u8(40, 50, 60));
-                assert_eq!(light.illuminance, 6_000.0);
-                assert_eq!(ambient.color, Color::srgb_u8(10, 20, 30));
+                assert_eq!(
+                    scene.interior.as_ref().unwrap().lighting.directional,
+                    Some([40, 50, 60])
+                );
                 if fail_destination {
                     app.world_mut()
                         .resource_mut::<StreamingWorld>()
@@ -1533,13 +1508,7 @@ mod tests {
             } else if saw_interior {
                 // The real failure or timeout path queues the exterior restoration.
                 saw_restore = true;
-                assert_eq!(light.color, DirectionalLight::default().color);
-                assert_eq!(light.illuminance, 12_000.0);
-                assert_eq!(ambient.color, Color::srgb(0.1, 0.2, 0.3));
-                assert_eq!(
-                    app.world().get::<Transform>(sun).unwrap().rotation,
-                    exterior_rotation
-                );
+                assert!(scene.show_sky && scene.use_sky_lighting);
                 break;
             }
         }
