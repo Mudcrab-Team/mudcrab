@@ -1312,6 +1312,23 @@ pub fn hash_file(path: &Path) -> Result<String> {
     hash_open_file(&file).wrap_err_with(|| format!("failed to hash {}", path.display()))
 }
 
+/// Hashes `path`, or returns `None` when it does not exist.
+///
+/// A missing file is a normal state on a resumed run. Any other failure, such as a permission
+/// error or an I/O error, is returned with the path, so a caller cannot mistake an unreadable
+/// file for a changed one.
+pub fn hash_file_if_present(path: &Path) -> Result<Option<String>> {
+    match fs::File::open(path) {
+        Ok(file) => hash_open_file(&file)
+            .map(Some)
+            .wrap_err_with(|| format!("failed to hash {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).wrap_err_with(|| format!("failed to open {} for hashing", path.display()))
+        }
+    }
+}
+
 fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
@@ -1412,6 +1429,30 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// An absent file has no hash. An unreadable one is an error that names the path, not an
+    /// empty hash that looks like a changed file.
+    #[test]
+    fn hash_file_if_present_separates_absent_from_unreadable() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("output.glb");
+        assert_eq!(hash_file_if_present(&file).unwrap(), None);
+
+        fs::write(&file, b"bytes").unwrap();
+        assert_eq!(
+            hash_file_if_present(&file).unwrap(),
+            Some(hash_file(&file).unwrap())
+        );
+
+        // A directory cannot be read as a file on any platform.
+        let unreadable = directory.path().join("directory");
+        fs::create_dir(&unreadable).unwrap();
+        let error = hash_file_if_present(&unreadable).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("directory"),
+            "the error names the path: {error:#}"
+        );
     }
 
     #[test]
