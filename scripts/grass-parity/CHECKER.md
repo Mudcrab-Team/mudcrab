@@ -25,7 +25,9 @@ The example uses `EngineConfig::default()` and the Tamriel world (`0x3c`).
 Both input caches must describe the same source content and load order; changing
 one side's inputs invalidates a claim about generator parity.
 
-The cell list is a headerless UTF-8 CSV, one integer `cell_x,cell_y` pair per line. The MudCrab dumper also accepts an optional third hexadecimal worldspace ID for input-alignment diagnostics; the spud list remains two columns.
+The cell list is a headerless UTF-8 CSV, one integer `cell_x,cell_y` pair per
+line. The MudCrab dumper also accepts an optional third hexadecimal worldspace
+ID for input-alignment diagnostics; the spud list remains two columns.
 Cells are 4096 Skyrim units wide. Floor division determines cells for negative
 coordinates. Include cells with zero grass; their dump files contain a header.
 Use a grass-dump-enabled `skytool` executable and its compatible world cache.
@@ -60,6 +62,19 @@ cells on each side, and `receipt.json` with UTC time, commands, input/binary
 SHA-256 hashes, command exit codes, default-cache checks, and CSV output hashes
 on success. A failed command stops subsequent commands and retains the receipt
 and logs. Source/build provenance should accompany this receipt.
+
+Use optional `--ours-cells` to select a different source world at the same XY
+coordinates, for example when a reference merges child-world LAND into a parent.
+The wrapper verifies that the coordinate scope is unchanged and hashes both lists.
+Keep a literal production-input run alongside any diagnostic alignment. Record
+every modified input, including inherited water and unit-conversion rounding;
+changing inputs is an experiment, not a generator fix. Never deploy a diagnostic
+cache copy as a converted production pack.
+
+The grass cache is sparse: conversion omits cells without grass nominations.
+An absent cache entry produces an empty cell CSV, as the production generator
+does, and remains explicit as `absent-cache` in `cells.csv` and a dump warning.
+Audit such cells against the reference/source data before claiming input parity.
 
 ## Compare existing dumps
 

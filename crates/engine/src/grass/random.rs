@@ -39,7 +39,7 @@ impl CellRandom {
     }
 }
 
-/// Map unsigned random words to [-1,1) using the reference float operations.
+/// Map unsigned words with reference float operations; rounding can reach both -1 and 1.
 pub(super) fn signed(word: u32) -> f32 {
     word as f32 * 4.656_613e-10 - 1.0
 }

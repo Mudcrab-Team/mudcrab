@@ -22,9 +22,22 @@ fn signed(word: u32) -> f32 {
 
 /// Quantize to binary16 for direct comparison with the exported reference shader inputs.
 fn half(value: f32) -> f32 {
+    if !value.is_finite() || value.abs() >= 65_520.0 {
+        return value.signum() * f32::INFINITY;
+    }
     let exponent = ((value.abs().to_bits() >> 23) & 255) as i32 - 127;
     let step = 2.0f32.powi((exponent - 10).max(-24));
     (value / step).round_ties_even() * step
+}
+
+/// Diagnostic half values retain tie, subnormal, and overflow behavior of the reference.
+#[test]
+fn diagnostic_half_boundaries() {
+    assert_eq!(half(2051.0), 2052.0);
+    assert_eq!(half(-2051.0), -2052.0);
+    assert_eq!(half(0.000_000_03), 2.0f32.powi(-24));
+    assert_eq!(half(65_519.0), 65_504.0);
+    assert_eq!(half(65_520.0), f32::INFINITY);
 }
 
 /// Normalize authored or packed normals, retaining the reference's zero vector.
@@ -158,9 +171,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16))
             .transpose()?
             .unwrap_or(0x3c);
-        let mut csv = BufWriter::new(File::create(
-            out.join(format!("cell_{}_{}.csv", grid[0], grid[1])),
-        )?);
+        let mut csv = BufWriter::with_capacity(
+            4 * 1024 * 1024,
+            File::create(out.join(format!("cell_{}_{}.csv", grid[0], grid[1])))?,
+        );
         writeln!(csv, "{HEADER}")?;
         let Some(id) = cache.cell_at(world, grid[0], grid[1]) else {
             // The grass cache is sparse: conversion omits cells without grass nominations.

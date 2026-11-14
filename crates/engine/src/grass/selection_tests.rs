@@ -1,6 +1,46 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
+/// Z staging must respect the existing dense-worker retained allocation ceiling.
+#[test]
+fn dense_staging_respects_retained_allocation_budget() {
+    let cache = mapped(
+        (1..=8).map(|id| rule(id, 20.0)).collect(),
+        cell(vec![
+            layer(vec![1, 2, 3, 4], 0.5, true),
+            layer(vec![5, 6, 7, 8], 0.5, false),
+        ]),
+    );
+    let config = EngineConfig {
+        grass_max_types_per_texture: 4,
+        ..EngineConfig::default()
+    };
+    let generated = generate(&cache, 42, &config);
+    assert_eq!(generated.batches.len(), 8);
+    assert_eq!(
+        generated
+            .batches
+            .iter()
+            .map(|b| b.instances.len())
+            .sum::<usize>(),
+        294_912
+    );
+    assert!(
+        generated.bytes <= 9_469_952,
+        "retained staging capacity exceeds the existing dense-worker budget: {}",
+        generated.bytes
+    );
+}
+
+/// A world root near zero must not be reconstructed from a lower-precision cell-local float.
+#[test]
+fn observed_world_root_retains_small_half_coordinates() {
+    let (world, local) = root_coordinates(-0.12212, 0.0, -4096.0);
+    assert_eq!(world.to_bits(), 0xbdfa_2000);
+    assert_eq!(local, 4095.878);
+    assert_ne!(world, -4096.0 + local);
+}
+
 /// Diagnostics observe all selections and leave the production stream and batches unchanged.
 #[test]
 fn observer_accounts_for_mask_without_changing_production() {
@@ -21,6 +61,31 @@ fn observer_accounts_for_mask_without_changing_production() {
     assert_eq!(blocked, 256);
     assert_eq!(plain.batches[0].instances, observed.batches[0].instances);
     assert_eq!(plain.batches[0].instances.len(), selected - blocked);
+}
+
+/// Binary16 rounding at high elevations must remain representable inside batch bounds.
+#[test]
+fn packed_height_bounds_include_half_rounded_surface() {
+    for (height, expected) in [
+        (16_392.0, 16_384.0),
+        (16_408.0, 16_416.0),
+        (12.0, 16.0),
+        (-12.0, -16.0),
+    ] {
+        let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+        source.heights.fill(height);
+        let cache = mapped(vec![rule(7, 128.0)], source);
+        let generated = generate(&cache, 42, &EngineConfig::default());
+        let batch = &generated.batches[0];
+        for instance in batch.instances.iter() {
+            let decoded =
+                batch.height_min + f32::from(instance.position[2]) * batch.height_span / 65535.0;
+            assert_eq!(
+                decoded, expected,
+                "height {height} must not clip to the unrounded LAND extrema"
+            );
+        }
+    }
 }
 
 /// One flat synthetic cell with no proprietary records or assets.
@@ -384,4 +449,87 @@ fn committed_absent_colours_do_not_reuse_cached_tint() {
             .iter()
             .all(|instance| instance.color == 253)
     );
+}
+
+/// An unrepresentable surface is skipped locally; another valid cell still generates normally.
+#[test]
+fn overflowing_half_height_is_skipped_without_poisoning_other_cells() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.heights.fill(70_000.0);
+    let bad = mapped(vec![rule(7, 128.0)], source);
+    assert!(
+        generate(&bad, 42, &EngineConfig::default())
+            .batches
+            .is_empty()
+    );
+    let good = mapped(vec![rule(7, 128.0)], cell(vec![layer(vec![7], 1.0, true)]));
+    assert_eq!(
+        generate(&good, 42, &EngineConfig::default()).batches[0]
+            .instances
+            .len(),
+        1024
+    );
+}
+
+/// Preserve authored direction ratios and their least-component tangent choice.
+#[test]
+fn authored_normal_bytes_survive_renderer_packing() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.normals = [101, 100, 127].repeat(1089);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let generated = generate(&cache, 42, &EngineConfig::default());
+    assert!(!generated.batches.is_empty());
+    for instance in generated.batches[0].instances.iter() {
+        assert_eq!(
+            instance.normal,
+            [101, 100, 127],
+            "normalizing into signed bytes loses the authored direction"
+        );
+        assert!(
+            instance.normal[1] < instance.normal[0],
+            "the authored tangent must select Y, without a new XY tie"
+        );
+    }
+}
+
+/// Integer edge splitting extrapolates; selected root bounds must include even masked extrema.
+#[test]
+fn selected_height_bounds_include_extrapolated_masked_roots() {
+    let heights = |i: usize| {
+        if (i % 33).is_multiple_of(2) {
+            16_384.0
+        } else {
+            16_392.0
+        }
+    };
+    let sample = sampling::sample(128.5, 0.0, &heights, &|_| Some([0.0, 0.0, 1.0])).unwrap();
+    assert_eq!(sample.height, 16_392.031);
+    assert_eq!(sampling::half_round(sample.height), 16_400.0);
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.grid_x = 0;
+    source.grid_y = 0;
+    source.heights = (0..1089).map(heights).collect();
+    source.quadrants[0].exclusion.fill(255);
+    source.quadrants[2].exclusion.fill(255);
+    let cache = mapped(vec![rule(7, 20.0)], source);
+    let mut observations = Vec::new();
+    let generated = generate_observed(&cache, 42, &EngineConfig::default(), |p| {
+        observations.push(p)
+    });
+    assert!(!generated.batches.is_empty());
+    assert!(
+        observations
+            .iter()
+            .any(|p| p.position[2] == 16_400.0 && p.obstructed),
+        "fixture must produce a masked extrapolated extremum"
+    );
+    for p in observations {
+        let decoded = p.height_min + f32::from(p.instance.position[2]) * p.height_span / 65535.0;
+        assert_eq!(
+            decoded, p.position[2],
+            "both half-Z endpoints must remain representable"
+        );
+        assert_eq!(p.height_min, generated.batches[0].height_min);
+        assert_eq!(p.height_span, generated.batches[0].height_span);
+    }
 }

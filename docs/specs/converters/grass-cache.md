@@ -12,12 +12,12 @@ Grassless cells are omitted. Each stored cell keeps its 33 by 33 height field,
 resolved water height, and
 four quadrants in Creation XY order (southwest, southeast, northwest,
 northeast). Each terrain layer retains every resolved grass species assigned
-by the winning LTEX record, in GNAM occurrence order. Duplicate links retain their
-first occurrence; unresolved or deleted species are filtered without reordering
+by the winning LTEX record, in GNAM occurrence order. Duplicate occurrences are
+retained; unresolved or deleted species are filtered without reordering
 survivors. A winning override replaces the entire list, including an empty list.
 Runtime species caps can take the first N in this order; the global rule table
-remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores raw
-painted opacity and the base residual. Base layers are marked explicitly and ordered first. Existing databases without stored GNAM
+remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores
+transformed byte-opacity weights and the base residual. Base layers are marked explicitly and ordered first. Existing databases without stored GNAM
 ordinals recover order from the winning remapped raw LTEX payloads, including
 during asset repair. An unreadable legacy payload omits that list; an invalid GNAM
 field omits only that field. Both produce a bounded warning while usable entries,

@@ -119,6 +119,12 @@ fn quantize(value: f32, span: f32) -> u16 {
     (value / span * 65535.0).round().clamp(0.0, 65535.0) as u16
 }
 
+/// Retain the binary16 world root before cell-local float subtraction loses low bits near zero.
+fn root_coordinates(value: f32, block: f32, cell: f32) -> (f32, f32) {
+    let world = block + sampling::half_round(value - block);
+    (world, world - cell)
+}
+
 /// Keep distance thinning spatially distributed without advancing the placement random stream.
 fn fade_rank(mut value: u32) -> u32 {
     value ^= value >> 16;
@@ -159,7 +165,7 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
     let Some(cell) = cache.cell(cell_id) else {
         return empty();
     };
-    generate_field(
+    generate_field::<false>(
         cache,
         cell_id,
         config,
@@ -171,8 +177,9 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
     )
 }
 
-/// A production selection event, before the optional obstruction rejection and renderer packing.
-/// Appearance words are retained so CPU diagnostics can decode the reference frame exactly.
+/// A source selection event, including candidates later removed by obstruction.
+/// Instances and bounds describe final packing. Callbacks run after cell selection,
+/// in original generation order. Appearance words retain the reference frame inputs.
 pub struct Placement {
     pub form_id: u32,
     pub is_base: bool,
@@ -196,7 +203,7 @@ pub fn generate_observed(
     let Some(cell) = cache.cell(cell_id) else {
         return empty();
     };
-    generate_field(
+    generate_field::<true>(
         cache,
         cell_id,
         config,
@@ -216,7 +223,7 @@ pub(super) fn generate_on_terrain(
     terrain: &GrassTerrain,
 ) -> GeneratedGrass {
     let white = [1.0; 1089];
-    generate_field(
+    generate_field::<false>(
         cache,
         cell_id,
         config,
@@ -242,7 +249,7 @@ fn empty() -> GeneratedGrass {
     clippy::too_many_arguments,
     reason = "observer extends the existing surface sampling inputs without changing their behavior"
 )]
-fn generate_field(
+fn generate_field<const OBSERVE: bool>(
     cache: &GrassCache,
     cell_id: u32,
     config: &EngineConfig,
@@ -263,13 +270,29 @@ fn generate_field(
     {
         return result;
     }
-    let height_min = (0..height_count)
-        .map(&height_at)
-        .fold(f32::INFINITY, f32::min);
-    let height_max = (0..height_count)
-        .map(&height_at)
-        .fold(f32::NEG_INFINITY, f32::max);
-    let height_span = (height_max - height_min).max(1.0);
+    // Reject an unusable source field locally, without poisoning other cells.
+    if (0..height_count).any(|i| {
+        let height = height_at(i);
+        let height = if cell.normals.len() == 3267 {
+            (height / 8.0).round() * 8.0
+        } else {
+            height
+        };
+        !sampling::half_round(height).is_finite()
+    }) {
+        tracing::warn!(
+            cell_id,
+            "skipping grass cell with heights outside binary16 range"
+        );
+        return result;
+    }
+    // The reference's integer edge split can extrapolate beyond vertex extrema.
+    // Keep exact selected half-Z until their shared cell range is known (spud MIT; SPUD-MIT.txt).
+    let mut height_min = f32::INFINITY;
+    let mut height_max = f32::NEG_INFINITY;
+    let mut invalid_roots = 0usize;
+    // OBSERVE=false never pushes, so production allocates no diagnostic event buffer.
+    let mut observations = Vec::new();
     let cx = i32::from(cell.grid_x);
     let cy = i32::from(cell.grid_y);
     let cell_origin = [cx as f32 * 4096.0, cy as f32 * 4096.0];
@@ -278,7 +301,7 @@ fn generate_field(
         (cy / 12 * 12) as f32 * 4096.0,
     ];
     let mut rng = CellRandom::new(cx.wrapping_mul(cy) as u32);
-    let mut instances: BTreeMap<u32, Vec<GrassInstance>> = BTreeMap::new();
+    let mut instances: BTreeMap<u32, Vec<(GrassInstance, f32)>> = BTreeMap::new();
     let mut ordinal = 0u32;
     for quadrant in cell.quadrants.iter() {
         let q = usize::from(quadrant.quadrant);
@@ -319,17 +342,16 @@ fn generate_field(
                             }
                             let u1 = rng.next();
                             let u2 = rng.next();
-                            let px = block_origin[0]
-                                + sampling::half_round(
-                                    (signed(u1) * half + (xoff + origin[0])) - block_origin[0],
-                                )
-                                - cell_origin[0];
-                            let py = block_origin[1]
-                                + sampling::half_round(
-                                    (signed(u2) * half + ((if_ * half) + (if_ * half) + origin[1]))
-                                        - block_origin[1],
-                                )
-                                - cell_origin[1];
+                            let (world_x, px) = root_coordinates(
+                                signed(u1) * half + (xoff + origin[0]),
+                                block_origin[0],
+                                cell_origin[0],
+                            );
+                            let (world_y, py) = root_coordinates(
+                                signed(u2) * half + ((if_ * half) + (if_ * half) + origin[1]),
+                                block_origin[1],
+                                cell_origin[1],
+                            );
                             let normal_at = |vertex: usize| {
                                 (cell.normals.len() == 3267).then(|| {
                                     std::array::from_fn(|axis| {
@@ -358,6 +380,13 @@ fn generate_field(
                             let u3 = rng.next();
                             let u4 = rng.next();
                             let u5 = rng.next();
+                            let rounded_height = sampling::half_round(sample.height);
+                            if !rounded_height.is_finite() {
+                                invalid_roots += 1;
+                                continue;
+                            }
+                            height_min = height_min.min(rounded_height);
+                            height_max = height_max.max(rounded_height);
                             let qx = ((px / 2048.0) as usize).min(1);
                             let qy = ((py / 2048.0) as usize).min(1);
                             let mask = &cell.quadrants[qx + 2 * qy];
@@ -388,39 +417,49 @@ fn generate_field(
                                 position: [
                                     quantize(px, GRASS_CELL_SIZE),
                                     quantize(py, GRASS_CELL_SIZE),
-                                    quantize(
-                                        sampling::half_round(sample.height) - height_min,
-                                        height_span,
-                                    ),
+                                    0, // finalized once all selected heights are known
                                 ],
                                 rotation: rotation(u4, rule.flags & 4 != 0),
                                 scale: ((1.0 + signed(u5) * range).clamp(0.0, 2.0) * 127.5).round()
                                     as u8,
                                 color,
-                                normal: sample.normal.map(|value| (value * 127.0).round() as i8),
+                                // The shader normalizes these signed bytes. Preserve authored ratios and
+                                // least-component ties instead of rounding a normalized vector again.
+                                normal: if cell.normals.len() == 3267 {
+                                    std::array::from_fn(|axis| {
+                                        cell.normals[sample.nearest * 3 + axis]
+                                    })
+                                } else {
+                                    sample.normal.map(|value| (value * 127.0).round() as i8)
+                                },
                                 slot: fade_rank(identity)
                                     | ((luma.clamp(0.0, 1.0) * 127.0).round() as u32) << 18
                                     | ((((factor.clamp(-1.0, 1.0) + 1.0) * 63.5).round() as u32)
                                         << 25),
                             };
-                            observe(Placement {
-                                form_id: entry.id,
-                                is_base: entry.is_base,
-                                obstructed,
-                                position: [
-                                    cell_origin[0] + px,
-                                    cell_origin[1] + py,
-                                    sampling::half_round(sample.height),
-                                ],
-                                normal: sample.normal,
-                                luma,
-                                appearance: [u3, u4, u5],
-                                instance,
-                                height_min,
-                                height_span,
-                            });
+                            if OBSERVE {
+                                observations.push(Placement {
+                                    form_id: entry.id,
+                                    is_base: entry.is_base,
+                                    obstructed,
+                                    position: [
+                                        world_x,
+                                        world_y,
+                                        sampling::half_round(sample.height),
+                                    ],
+                                    normal: sample.normal,
+                                    luma,
+                                    appearance: [u3, u4, u5],
+                                    instance,
+                                    height_min,
+                                    height_span: 1.0,
+                                });
+                            }
                             if !obstructed {
-                                instances.entry(entry.id).or_default().push(instance);
+                                instances
+                                    .entry(entry.id)
+                                    .or_default()
+                                    .push((instance, rounded_height));
                             }
                         }
                     }
@@ -428,7 +467,40 @@ fn generate_field(
             }
         }
     }
-    for (id, mut values) in instances {
+    if invalid_roots != 0 {
+        tracing::warn!(
+            cell_id,
+            invalid_roots,
+            "skipped grass roots outside binary16 range"
+        );
+    }
+    let height_min = if height_min.is_finite() {
+        height_min
+    } else {
+        0.0
+    };
+    let height_span = if height_max.is_finite() {
+        (height_max - height_min).max(1.0)
+    } else {
+        1.0
+    };
+    for mut placement in observations {
+        placement.height_min = height_min;
+        placement.height_span = height_span;
+        placement.instance.position[2] = quantize(placement.position[2] - height_min, height_span);
+        observe(placement);
+    }
+    for (id, values) in instances {
+        let mut values: Vec<GrassInstance> = values
+            .into_iter()
+            .map(|(mut instance, height)| {
+                instance.position[2] = quantize(height - height_min, height_span);
+                instance
+            })
+            .collect();
+        // In-place tuple collection can retain its 20-byte allocation for 16-byte instances.
+        // Release that staging slack before charging and publishing the persistent batch.
+        values.shrink_to_fit();
         values.sort_by_key(GrassInstance::candidate_slot);
         let rule = cache.species(id).expect("generated species is mapped");
         result.bytes += values.capacity() * std::mem::size_of::<GrassInstance>()

@@ -16,7 +16,7 @@ when grass is disabled.
 
 `GrassPlugin` observes committed exterior cell roots in `PostUpdate`; it adds
 no generation work to `collect_cells`. At most four asynchronous placement jobs
-run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow raw painted opacity and base residual 17x17
+run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow transformed byte-opacity weights and base residual 17x17
 blend grids, species rules and 32-unit exclusion bits directly from a validated
 immutable memory mapping. Committed cells retain an immutable shared copy of
 their post-weld 33x33 height field. The selection sampler applies the
@@ -74,6 +74,17 @@ height fields remain lifetime-checked; their non-source welding can differ
 from spud's original LAND. The renderer retains quantized u16 positions,
 byte rotation/scale and signed-byte normals, so this is not bit-identical to
 spud's half-precision orientation matrix.
+Authored normal bytes retain their original ratios and least-component ties;
+the shader normalizes them. Missing-normal geometry uses the quantized fallback.
+Batch Z bounds cover the actual selected binary16 roots, including obstruction
+rejections, so packing does not clip high-elevation or extrapolated roots. The
+reference integer edge split can sample just beyond a square's vertex range.
+Workers temporarily stage each retained instance with its four-byte Z until selection
+finishes, then quantize all forms with one cell
+range; diagnostic callbacks receive that same finalized packing. A surface outside the
+finite binary16 range is skipped with a warning.
+Staging spare capacity is released before batch publication; the pool charges
+the final instance vector's retained capacity.
 
 Water mode 0 accepts `height >= water - distance`. Modes 1..5 use the inclusive
 above-near, below-far, below-near, either-far and either-near intervals.
@@ -134,9 +145,10 @@ are `0x01` Vertex Lighting, `0x02` Uniform Scaling and `0x04` Fit to Slope;
 the audited official grasses use `0x06`, leaving Vertex Lighting off.
 
 The existing shader byte decode remains `byte/255`; 128 is approximately half
-brightness. LAND VCLR was already decoded for terrain and remains absent from
-the serialized grass cache. Grass now consumes the committed terrain snapshot,
-so no converter, shader, cache schema or pack rebuild is needed. Wave Period drives the current scrolling
+brightness. LAND VCLR is retained in the version-nine grass cache for speculative
+and CPU generation. Runtime grass consumes the committed terrain snapshot's
+luminance instead; missing committed colours use white. Upgrading from version
+eight requires regenerating the grass cache once. Wave Period drives the current scrolling
 wind model, but its exact native timing and waveform remain unverified.
 
 The color pass receives the existing directional shadows using Bevy's prepared
@@ -302,8 +314,9 @@ the bounded CPU generator's supported range and is rejected. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
 
-`iMinGrassSize` controls density, not mesh height: spacing 20 provides 41,944
-candidate slots per species per cell versus 4,096 at 64. Authored mesh/node dimensions are
+`iMinGrassSize` controls density, not mesh height: spacing 20 permits 36,864
+attempts per fully supported entry per cell versus 4,096 at 64, subject to
+Position Range. Authored mesh/node dimensions are
 preserved. Matching default inputs and terrain grounding does not establish
 exact Skyrim placement, variation, animation or visual parity.
 

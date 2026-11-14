@@ -128,7 +128,8 @@ pub struct GrassInstance {
     pub scale: u8,
     /// Darken-only brightness uses the unit range (byte / 255).
     pub color: u8,
-    /// Creation-space unit normal multiplied by 127.
+    /// Creation-space authored signed direction bytes; the shader normalizes them.
+    /// Missing-normal geometry fallback uses a unit normal multiplied by 127.
     pub normal: [i8; 3],
     /// Spatial fade rank retained in low 18 bits for deterministic prefix thinning.
     /// Tuning-only high bits retain 7-bit LAND luminance and signed range factor.
