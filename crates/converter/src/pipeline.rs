@@ -1909,11 +1909,10 @@ fn reusable_manifest(
                     }
                 }
             }
-            // Combined metadata proofs cannot establish the lossless-normal recipe
-            // or fixed-producer mesh contracts. Require each kind's explicit proof.
-            matched
-                && kind != "dds"
-                && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
+            // Exact historical settings proofs can retain DDS candidates: the later
+            // per-source normal recipe rejects only packed normals that need rebuilding.
+            // Combined metadata still cannot establish fixed-producer mesh contracts.
+            matched && (kind != "nif" || !crate::cache::mesh_output_contracts_apply(producer))
         };
         compatible.insert(
             kind,
