@@ -78,7 +78,10 @@ const CURATED: &[(u32, &str)] = &[
     (0x1C195, "Khajiit mage"),
     (0x1328D, "Argonian in hide"),
     (0x1335A, "Argonian in hide, helmet and gauntlets"),
-    (0x537F2, "Heavy armor: Markarth guard cuirass, gauntlets, shield"),
+    (
+        0x537F2,
+        "Heavy armor: Markarth guard cuirass, gauntlets, shield",
+    ),
     (0x40195AF, "Heavy armor: Redoran guard, helmet"),
     (0x1C1A0, "Mage robe: Mirabelle Ervine"),
     (0x1C19E, "Mage robe: Tolfdir"),
@@ -251,7 +254,11 @@ fn settings() -> WgpuSettings {
 /// The text before the first NUL of a record's data is its `EDID`.
 fn editor_id_of(connection: &Connection, form_id: u32) -> Option<String> {
     let data: Vec<u8> = connection
-        .query_row("SELECT data FROM records WHERE form_id = ?1", [form_id], |row| row.get(0))
+        .query_row(
+            "SELECT data FROM records WHERE form_id = ?1",
+            [form_id],
+            |row| row.get(0),
+        )
         .ok()?;
     let end = data.iter().position(|byte| *byte == 0)?;
     let text = std::str::from_utf8(&data[..end]).ok()?;
@@ -269,7 +276,9 @@ fn lookup(connection: &Connection, form_id: u32, note: &str) -> Option<Npc> {
     let editor_id = editor_id.unwrap_or_default();
     Some(Npc {
         form_id,
-        name: name.filter(|n| !n.is_empty()).unwrap_or_else(|| editor_id.clone()),
+        name: name
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| editor_id.clone()),
         editor_id,
         race_id,
         race: editor_id_of(connection, race_id).unwrap_or_else(|| format!("{race_id:08X}")),
@@ -317,7 +326,10 @@ fn parse_args() -> Options {
     let mut args = std::env::args().skip(1);
     let usage = "npc_viewer --assets <absolute converted pack> [--npc <FormID|EditorID>]... [--only] [--list] [--capture <new dir>]";
     while let Some(arg) = args.next() {
-        let mut value = |name: &str| args.next().unwrap_or_else(|| panic!("{name} needs a value"));
+        let mut value = |name: &str| {
+            args.next()
+                .unwrap_or_else(|| panic!("{name} needs a value"))
+        };
         match arg.as_str() {
             "--assets" => options.assets = PathBuf::from(value("--assets")),
             "--npc" => options.npcs.push(value("--npc")),
@@ -332,14 +344,20 @@ fn parse_args() -> Options {
             other => panic!("unknown option {other}\n{usage}"),
         }
     }
-    assert!(options.assets.is_absolute() && options.assets.is_dir(), "{usage}");
+    assert!(
+        options.assets.is_absolute() && options.assets.is_dir(),
+        "{usage}"
+    );
     options
 }
 
 fn main() {
     let options = parse_args();
     let connection = Connection::open_with_flags(
-        format!("file:{}?mode=ro", options.assets.join("skyrim_world.db").display()),
+        format!(
+            "file:{}?mode=ro",
+            options.assets.join("skyrim_world.db").display()
+        ),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
     .expect("open skyrim_world.db read-only");
@@ -360,10 +378,13 @@ fn main() {
     let mut start = 0;
     for (n, query) in options.npcs.iter().enumerate() {
         let npc = find_npc(&connection, query).unwrap_or_else(|error| panic!("{error}"));
-        let position = list.iter().position(|item| item.form_id == npc.form_id).unwrap_or_else(|| {
-            list.push(npc);
-            list.len() - 1
-        });
+        let position = list
+            .iter()
+            .position(|item| item.form_id == npc.form_id)
+            .unwrap_or_else(|| {
+                list.push(npc);
+                list.len() - 1
+            });
         if n == 0 {
             start = position;
         }
@@ -422,8 +443,12 @@ fn main() {
         plugins.disable::<bevy::winit::WinitPlugin>()
     });
     if !windowed {
-        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(Duration::from_millis(8)));
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 30.0)));
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
+            Duration::from_millis(8),
+        ));
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 30.0,
+        )));
     }
     app.add_plugins((
         EffectPaletteMaterialPlugin,
@@ -442,14 +467,20 @@ fn main() {
         ..default()
     });
     let capture = options.capture.map(|dir| {
-        assert!(dir.is_absolute() && !dir.exists(), "--capture needs a new absolute directory");
+        assert!(
+            dir.is_absolute() && !dir.exists(),
+            "--capture needs a new absolute directory"
+        );
         std::fs::create_dir_all(&dir).unwrap();
-        let target = app.world_mut().resource_mut::<Assets<Image>>().add(Image::new_target_texture(
-            width,
-            height,
-            TextureFormat::Rgba8UnormSrgb,
-            None,
-        ));
+        let target =
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::new_target_texture(
+                    width,
+                    height,
+                    TextureFormat::Rgba8UnormSrgb,
+                    None,
+                ));
         Capture {
             dir,
             target,
@@ -549,7 +580,12 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
         root: Entity::PLACEHOLDER,
         plan: None,
         skip: None,
-        outfit_id: viewer.outfits.outfits.iter().find(|o| o.npc_id == npc.form_id).map(|o| o.outfit_id),
+        outfit_id: viewer
+            .outfits
+            .outfits
+            .iter()
+            .find(|o| o.npc_id == npc.form_id)
+            .map(|o| o.outfit_id),
         outfit_name: None,
         head: None,
         parts: Vec::new(),
@@ -563,7 +599,9 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
         timed_out: false,
         hidden_meshes: Vec::new(),
     };
-    shown.outfit_name = shown.outfit_id.and_then(|id| editor_id_of(&viewer.connection.lock().unwrap(), id));
+    shown.outfit_name = shown
+        .outfit_id
+        .and_then(|id| editor_id_of(&viewer.connection.lock().unwrap(), id));
     let catalog = world.resource::<ActorCatalog>();
     let plan = match catalog.get(npc.form_id) {
         None => Err("no actor_models row".to_owned()),
@@ -608,7 +646,10 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
         entity.insert(ActorBodyWeight((1.0 - weight / 100.0).clamp(0.0, 1.0)));
     }
     if plan.uses_composed_body() {
-        entity.insert((ActorClips::load(&server, plan.actor.sex), ActorDrive::default()));
+        entity.insert((
+            ActorClips::load(&server, plan.actor.sex),
+            ActorDrive::default(),
+        ));
         shown.idle_expected = true;
     } else if let Some(scene) = idle_scene {
         entity.insert((
@@ -633,7 +674,8 @@ fn spawn(world: &mut World, viewer: &mut Viewer) -> Shown {
     if let Some(outfit) = &plan.outfit {
         for part in &outfit.0 {
             let mut tracked = track(&server, &part.scene, &short(&part.scene), part.biped_mask);
-            tracked.instance_name = Some(format!("Outfit {:08X} {:08X}", npc.form_id, part.armo_id));
+            tracked.instance_name =
+                Some(format!("Outfit {:08X} {:08X}", npc.form_id, part.armo_id));
             shown.parts.push(tracked);
         }
     }
@@ -663,7 +705,9 @@ fn named_child(world: &mut World, root: Entity, name: &str) -> Option<Entity> {
         .filter(|(_, n)| n.as_str() == name)
         .map(|(e, _)| e)
         .collect();
-    candidates.into_iter().find(|entity| is_descendant(world, *entity, root))
+    candidates
+        .into_iter()
+        .find(|entity| is_descendant(world, *entity, root))
 }
 
 fn is_descendant(world: &World, mut entity: Entity, root: Entity) -> bool {
@@ -696,7 +740,11 @@ fn refresh(world: &mut World, shown: &mut Shown) {
     shown.frames += 1;
     let server = world.resource::<AssetServer>().clone();
     let root = shown.root;
-    let mut trackers: Vec<&mut Tracked> = shown.parts.iter_mut().chain(shown.head.iter_mut()).collect();
+    let mut trackers: Vec<&mut Tracked> = shown
+        .parts
+        .iter_mut()
+        .chain(shown.head.iter_mut())
+        .collect();
     for tracked in &mut trackers {
         if tracked.state == PartState::LoadFailed {
             continue;
@@ -775,13 +823,19 @@ fn bounds(world: &mut World, root: Entity) -> Option<(Vec3, Vec3)> {
 fn label_text(viewer: &Viewer) -> String {
     let total = viewer.list.len();
     let npc = &viewer.list[viewer.index];
+    let hint = if viewer.capture.is_none() {
+        "     >> press N = next NPC, P = previous <<"
+    } else {
+        ""
+    };
     let mut out = format!(
-        "[{}/{}] {}   NPC_ {:08X} ({})\nRace: {} ({:08X})",
+        "[{}/{}] {}   NPC_ {:08X} ({}){}\nRace: {} ({:08X})",
         viewer.index + 1,
         total,
         npc.name,
         npc.form_id,
         npc.editor_id,
+        hint,
         npc.race,
         npc.race_id
     );
@@ -793,7 +847,11 @@ fn label_text(viewer: &Viewer) -> String {
             " · {} · weight {} · {}\nBody: {}",
             plan.actor.sex.as_str(),
             plan.weight.map_or("?".into(), |w| format!("{w:.0}")),
-            if plan.skin_tone.is_some() { "skin tone" } else { "no skin tone" },
+            if plan.skin_tone.is_some() {
+                "skin tone"
+            } else {
+                "no skin tone"
+            },
             short(&plan.scene_path)
         );
     }
@@ -809,7 +867,11 @@ fn label_text(viewer: &Viewer) -> String {
     }
     match (shown.outfit_id, shown.parts.is_empty()) {
         (Some(id), false) => {
-            let attached = shown.parts.iter().filter(|p| p.state == PartState::Attached).count();
+            let attached = shown
+                .parts
+                .iter()
+                .filter(|p| p.state == PartState::Attached)
+                .count();
             out += &format!(
                 "\nOutfit: {} ({:08X})  attached {}/{}",
                 shown.outfit_name.as_deref().unwrap_or("unnamed"),
@@ -834,16 +896,30 @@ fn label_text(viewer: &Viewer) -> String {
                 id
             );
         }
-        (None, _) => out += "\nOutfit: none in actor-outfits.json (leveled list, template or no DOFT)",
+        (None, _) => {
+            out += "\nOutfit: none in actor-outfits.json (leveled list, template or no DOFT)"
+        }
     }
     out += &format!(
         "\nBody meshes hidden by outfit: {}",
-        if shown.hidden_meshes.is_empty() { "none".to_owned() } else { shown.hidden_meshes.join(", ") }
+        if shown.hidden_meshes.is_empty() {
+            "none".to_owned()
+        } else {
+            shown.hidden_meshes.join(", ")
+        }
     );
     let status = if !shown.revealed {
-        if shown.timed_out { "TIMED OUT" } else { "loading" }
+        if shown.timed_out {
+            "TIMED OUT"
+        } else {
+            "loading"
+        }
     } else if shown.idle_playing {
-        if viewer.paused { "idle paused" } else { "idle playing" }
+        if viewer.paused {
+            "idle paused"
+        } else {
+            "idle playing"
+        }
     } else {
         "NO IDLE (bind pose): no gait clip for this body"
     };
@@ -866,7 +942,8 @@ fn move_camera(world: &mut World, viewer: &Viewer) {
     for mut camera in cameras.iter_mut(world) {
         *camera = transform;
     }
-    let mut lights = world.query_filtered::<&mut Transform, (With<ViewLight>, Without<ViewCamera>)>();
+    let mut lights =
+        world.query_filtered::<&mut Transform, (With<ViewLight>, Without<ViewCamera>)>();
     for mut light in lights.iter_mut(world) {
         *light = Transform::from_translation(position + Vec3::new(40.0, 120.0, 0.0))
             .looking_at(viewer.center, Vec3::Y);
@@ -898,7 +975,10 @@ fn select(world: &mut World, viewer: &mut Viewer, index: usize) {
     viewer.yaw = 0.5;
     viewer.pitch = 0.1;
     let shown = spawn(world, viewer);
-    println!("NPC_START {:08X} {} ({})", shown.npc.form_id, shown.npc.name, shown.npc.editor_id);
+    println!(
+        "NPC_START {:08X} {} ({})",
+        shown.npc.form_id, shown.npc.name, shown.npc.editor_id
+    );
     viewer.shown = Some(shown);
 }
 
@@ -913,7 +993,9 @@ fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>) -> NpcRecord {
         problems.push(format!("not spawned: {reason}"));
     }
     if shown.outfit_id.is_some() && shown.parts.is_empty() && shown.skip.is_none() {
-        problems.push("outfit in sidecar but not worn (actor is not on the shared composed body)".into());
+        problems.push(
+            "outfit in sidecar but not worn (actor is not on the shared composed body)".into(),
+        );
     }
     for part in shown.parts.iter().chain(shown.head.iter()) {
         if part.state != PartState::Attached {
@@ -934,14 +1016,21 @@ fn record(viewer: &Viewer, shown: &Shown, images: Vec<String>) -> NpcRecord {
         race: shown.npc.race.clone(),
         note: shown.npc.note.clone(),
         skipped: shown.skip.clone(),
-        outfit: shown.outfit_id.map(|id| format!("{} ({id:08X})", shown.outfit_name.clone().unwrap_or_default())),
+        outfit: shown.outfit_id.map(|id| {
+            format!(
+                "{} ({id:08X})",
+                shown.outfit_name.clone().unwrap_or_default()
+            )
+        }),
         head: shown.head.as_ref().map(part),
         parts: shown.parts.iter().map(part).collect(),
         hidden_body_meshes: shown.hidden_meshes.clone(),
         idle_playing: shown.idle_playing,
         timed_out: shown.timed_out,
         problems,
-        seconds_to_ready: shown.ready_since.map_or(0.0, |t| t.duration_since(shown.started).as_secs_f32()),
+        seconds_to_ready: shown
+            .ready_since
+            .map_or(0.0, |t| t.duration_since(shown.started).as_secs_f32()),
         images,
     }
 }
@@ -979,7 +1068,9 @@ fn update(world: &mut World) {
                 (
                     held(KeyCode::ArrowRight) - held(KeyCode::ArrowLeft),
                     held(KeyCode::ArrowDown) - held(KeyCode::ArrowUp),
-                    world.resource::<ButtonInput<MouseButton>>().pressed(MouseButton::Left),
+                    world
+                        .resource::<ButtonInput<MouseButton>>()
+                        .pressed(MouseButton::Left),
                 ),
             )
         };
@@ -992,7 +1083,11 @@ fn update(world: &mut World) {
         if viewer.capture.is_none() {
             if next || prev {
                 let count = viewer.list.len();
-                let index = if next { viewer.index + 1 } else { viewer.index + count - 1 };
+                let index = if next {
+                    viewer.index + 1
+                } else {
+                    viewer.index + count - 1
+                };
                 select(world, viewer, index);
                 return;
             }
@@ -1070,7 +1165,11 @@ fn update(world: &mut World) {
             if label.0 != text {
                 label.0.clone_from(&text);
             }
-            *visibility = if visible { Visibility::Inherited } else { Visibility::Hidden };
+            *visibility = if visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
         }
         drive_capture(world, viewer);
         move_camera(world, viewer);
@@ -1137,7 +1236,12 @@ fn step_capture(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
         capture.phase = Phase::Posed;
         return;
     }
-    let file = format!("{:02}-{:08X}-{}.png", viewer.index + 1, shown.npc.form_id, shot.name);
+    let file = format!(
+        "{:02}-{:08X}-{}.png",
+        viewer.index + 1,
+        shown.npc.form_id,
+        shot.name
+    );
     let path = capture.dir.join(&file);
     capture.phase = Phase::Requested;
     let target = capture.target.clone();
@@ -1178,7 +1282,10 @@ fn finish_npc(world: &mut World, viewer: &mut Viewer, capture: &mut Capture) {
     capture.phase = Phase::Pose;
     let next = viewer.index + 1;
     let report = capture.dir.join("capture.json");
-    let _ = std::fs::write(&report, serde_json::to_vec_pretty(&capture.records).unwrap());
+    let _ = std::fs::write(
+        &report,
+        serde_json::to_vec_pretty(&capture.records).unwrap(),
+    );
     if next >= viewer.list.len() {
         println!("CAPTURE_DONE {}", capture.records.len());
         world.write_message(AppExit::Success);
