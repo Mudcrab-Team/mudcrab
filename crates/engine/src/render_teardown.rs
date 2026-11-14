@@ -22,6 +22,12 @@
 //! extract. The channels' `Drop` then has nothing to wait for, and later updates never reach the
 //! render thread. Bevy 0.20 makes `Drop for RenderAppChannels` tick the main-thread executor
 //! (bevyengine/bevy#25722), which removes the deadlock; this module can go with that upgrade.
+//!
+//! The vendored `bevy_render` in this repository carries the same fix (a backport of
+//! bevyengine/bevy#25722), so this guard is redundant while that vendoring lasts. Keep it for now.
+//! Remove it together with the vendoring when the Bevy 0.20 upgrade lands (#340, Bevy 0.20 B01:
+//! upgrade the engine, launcher and Rapier). Issue #497 tracks upstream Bevy PRs worth adopting,
+//! starting with Metal performance.
 
 use bevy::{
     app::{AppExit, SubApp},
@@ -196,7 +202,8 @@ mod tests {
     fn vendored_bevy_render_no_longer_blocks_this_shutdown() {
         // The vendored `bevy_render` backports bevyengine/bevy#25722, so dropping the render app
         // channels ticks the main-thread executor. This guard is now redundant on that build;
-        // keep it until the vendor patch is removed or the removal is decided.
+        // keep it for now. Remove it together with the vendoring when the Bevy 0.20 upgrade lands
+        // (#340); see also #497.
         assert_eq!(
             shut_down(false, 0, Duration::from_secs(2)),
             (true, 3),
