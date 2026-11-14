@@ -43,7 +43,8 @@ impl Options {
         if let Some(report) = &config.grass_settings_report
             && report.settings["iGrassCellRadius"].effective.line.is_some()
         {
-            config.grass_radius = report.integer("iGrassCellRadius").unwrap();
+            let report = Arc::clone(report);
+            config.map_grass_radius(&report);
         }
         if config.grass {
             let report = Arc::clone(config.grass_settings_report.as_ref().unwrap());
@@ -78,11 +79,8 @@ impl Options {
             ));
         }
         let world_grass = config.grass && config.loads_world();
-        if world_grass && self.explicit_stream_radius && config.stream_radius < 2 {
-            config.grass_settings_error.get_or_insert_with(|| {
-                "explicit --stream-radius must be at least 2 when grass is enabled".into()
-            });
-        }
+        config.disable_grass_outside_explicit_terrain();
+        let world_grass = world_grass && config.grass;
         // Bound automatic terrain expansion before settings or the planner sees it.
         // Explicit terrain radii retain the caller's deliberate coverage limit.
         if world_grass && !self.explicit_stream_radius && config.grass_radius > 32 {
@@ -125,6 +123,28 @@ impl Options {
 }
 
 impl EngineConfig {
+    /// Honor a terrain-only launch limit without replacing the next-start grass request.
+    pub(crate) fn disable_grass_outside_explicit_terrain(&mut self) {
+        if self.grass
+            && self.loads_world()
+            && self.stream_radius < 2
+            && self
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "--stream-radius")
+        {
+            self.grass = false;
+            self.grass_disabled_by_terrain = true;
+            let diagnostic = format!(
+                "grass disabled for this session: explicit --stream-radius {} cannot cover grass (requires at least 2)",
+                self.stream_radius
+            );
+            if !self.grass_settings_diagnostics.contains(&diagnostic) {
+                self.grass_settings_diagnostics.push(diagnostic);
+            }
+        }
+    }
+
     /// Saved-off grass must ignore generator imports just as an explicit off switch does.
     /// Numeric CLI fields retain their values and validation for this session.
     pub(crate) fn discard_inactive_grass_imports(&mut self) {
@@ -168,13 +188,8 @@ impl EngineConfig {
     pub(crate) fn apply_grass_settings(&mut self, report: Report) {
         let defaults = GrassSettings::default();
         // Explicit INI assignments are launch overrides, just like numeric CLI values.
-        for (key, ownership) in [
-            ("bDrawShaderGrass", "ini:grass"),
-            ("iGrassCellRadius", "ini:grass-radius"),
-        ] {
-            if report.settings[key].effective.line.is_some() {
-                self.settings_overrides.push(ownership.into());
-            }
+        if report.settings["bDrawShaderGrass"].effective.line.is_some() {
+            self.settings_overrides.push("ini:grass".into());
         }
         self.grass &= report
             .boolean("bDrawShaderGrass")
@@ -199,15 +214,25 @@ impl EngineConfig {
         // A source named "default" can be a real file; line provenance identifies imports.
         let imported = |key: &str| report.settings[key].effective.line.is_some();
         if imported("iMinGrassSize") {
-            self.grass_min_spacing = report.integer("iMinGrassSize").unwrap() as f32;
+            let value = report.integer("iMinGrassSize").unwrap() as f32;
+            if value >= 8.0 {
+                self.grass_min_spacing = value;
+            } else {
+                self.grass_settings_diagnostics.push(
+                    "iMinGrassSize below generator minimum 8 ignored; retaining supported spacing"
+                        .into(),
+                );
+            }
         }
-        if imported("iGrassCellRadius") {
-            self.grass_radius = report.integer("iGrassCellRadius").unwrap();
-        }
-        if imported("iMaxGrassTypesPerTexure")
-            && let Ok(value) = usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap())
-        {
-            self.grass_max_types_per_texture = value;
+        self.map_grass_radius(report);
+        if imported("iMaxGrassTypesPerTexure") {
+            match usize::try_from(report.integer("iMaxGrassTypesPerTexure").unwrap()) {
+                Ok(value) => self.grass_max_types_per_texture = value,
+                Err(_) => self.grass_settings_diagnostics.push(
+                    "negative iMaxGrassTypesPerTexure ignored; retaining supported type limit"
+                        .into(),
+                ),
+            }
         }
         if imported("fTexturePctThreshold") {
             self.grass_texture_threshold = report.float("fTexturePctThreshold").unwrap();
@@ -221,10 +246,58 @@ impl EngineConfig {
             } else {
                 self.grass_fade_end - self.grass_fade_start
             };
-            if imported("fGrassStartFadeDistance") {
-                self.grass_fade_start = report.float("fGrassStartFadeDistance").unwrap();
+            let start = if imported("fGrassStartFadeDistance") {
+                report.float("fGrassStartFadeDistance").unwrap()
+            } else {
+                self.grass_fade_start
+            };
+            let end = start + range;
+            if start >= 0.0
+                && start.is_finite()
+                && range >= 0.0
+                && end >= start
+                && (!self.grass_enable_fade || end > start)
+                && end.is_finite()
+            {
+                self.grass_fade_start = start;
+                self.grass_fade_end = end;
+            } else {
+                self.grass_settings_diagnostics.push("unsupported fGrassStartFadeDistance/fGrassFadeRange ignored; retaining supported fade distances".into());
             }
-            self.grass_fade_end = self.grass_fade_start + range;
+        }
+    }
+
+    /// Ignore unsupported imported coverage while keeping explicit CLI validation strict.
+    fn map_grass_radius(&mut self, report: &Report) {
+        if report.settings["iGrassCellRadius"].effective.line.is_none() {
+            return;
+        }
+        let radius = report.integer("iGrassCellRadius").unwrap();
+        let explicit_terrain = self
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "--stream-radius");
+        let ceiling = if explicit_terrain {
+            super::MAX_STREAM_RADIUS - 1
+        } else {
+            32
+        };
+        if (1..=ceiling).contains(&radius) {
+            self.grass_radius = radius;
+            if !self
+                .settings_overrides
+                .iter()
+                .any(|flag| flag == "ini:grass-radius")
+            {
+                self.settings_overrides.push("ini:grass-radius".into());
+            }
+        } else {
+            let diagnostic = format!(
+                "unsupported iGrassCellRadius={radius} ignored; supported imported radius is 1..{ceiling}"
+            );
+            if !self.grass_settings_diagnostics.contains(&diagnostic) {
+                self.grass_settings_diagnostics.push(diagnostic);
+            }
         }
     }
 }
