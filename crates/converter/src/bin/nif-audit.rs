@@ -34,6 +34,7 @@ struct AuditFile {
     validated_material_shape_count: usize,
     excluded_material_shape_count: usize,
     material_exclusions: BTreeMap<String, usize>,
+    conversion_refusals: Vec<String>,
     unparsed_regions: usize,
     unparsed_bytes: usize,
     unparsed_by_reason: BTreeMap<String, usize>,
@@ -51,6 +52,7 @@ struct AuditSummary {
     unaccounted_file_bytes: u64,
     parsed_files: usize,
     structural_failures: usize,
+    refused_files: usize,
     material_failures: usize,
     renderable_candidates: usize,
     unsupported_geometry_files: usize,
@@ -81,6 +83,7 @@ struct AuditReport {
     files: Vec<AuditFile>,
 }
 
+/// Audits loose NIFs while retaining measurements and per-file conversion refusals.
 fn main() -> Result<()> {
     color_eyre::install()?;
     let (root, report_path, convert_output) = parse_args(std::env::args_os().skip(1).collect())?;
@@ -178,7 +181,10 @@ fn audit(root: PathBuf, convert_output: Option<PathBuf>) -> Result<AuditReport> 
                     .filter(|(block_type, _)| is_geometry_block_type(block_type))
                     .map(|(_, count)| *count)
                     .sum::<usize>();
-                let classification = if diagnostics.geometry_block_count > 0 {
+                let classification = if !diagnostics.conversion_refusals.is_empty() {
+                    summary.refused_files += 1;
+                    "refused"
+                } else if diagnostics.geometry_block_count > 0 {
                     summary.renderable_candidates += 1;
                     "renderable"
                 } else if declared_geometry_count > 0 {
@@ -205,6 +211,7 @@ fn audit(root: PathBuf, convert_output: Option<PathBuf>) -> Result<AuditReport> 
                     validated_material_shape_count: diagnostics.validated_material_shape_count,
                     excluded_material_shape_count: diagnostics.excluded_material_shape_count,
                     material_exclusions: diagnostics.material_exclusions,
+                    conversion_refusals: diagnostics.conversion_refusals,
                     unparsed_regions: diagnostics.unparsed_regions,
                     unparsed_bytes: diagnostics.unparsed_bytes,
                     unparsed_by_reason: diagnostics.unparsed_by_reason,
@@ -248,6 +255,7 @@ fn audit(root: PathBuf, convert_output: Option<PathBuf>) -> Result<AuditReport> 
                     validated_material_shape_count: 0,
                     excluded_material_shape_count: 0,
                     material_exclusions: BTreeMap::new(),
+                    conversion_refusals: Vec::new(),
                     unparsed_regions: 0,
                     unparsed_bytes: 0,
                     unparsed_by_reason: BTreeMap::new(),
@@ -276,7 +284,7 @@ fn audit(root: PathBuf, convert_output: Option<PathBuf>) -> Result<AuditReport> 
         }
     }
     Ok(AuditReport {
-        format_version: 4,
+        format_version: 5,
         root,
         elapsed_ms: started.elapsed().as_millis(),
         summary,
@@ -332,7 +340,7 @@ mod tests {
         )
         .unwrap();
         let report = audit(root.path().to_owned(), None).unwrap();
-        assert_eq!(report.format_version, 4);
+        assert_eq!(report.format_version, 5);
         assert_eq!(report.summary.total_files, 2);
         assert_eq!(report.summary.parsed_files, 0);
         assert_eq!(report.summary.total_file_bytes, 11);
