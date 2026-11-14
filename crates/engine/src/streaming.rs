@@ -1852,6 +1852,9 @@ fn spawn_cell(
                 if let Some(head) = &plan.head {
                     entity.insert(head.clone());
                 }
+                if let Some(outfit) = &plan.outfit {
+                    entity.insert(outfit.clone());
+                }
                 if let Some(tone) = plan.skin_tone {
                     entity.insert(tone);
                 }
@@ -10837,6 +10840,51 @@ mod tests {
         );
         assert!(entity.get::<PendingModel>().is_some());
         assert_eq!(entity.get::<FormId>(), Some(&FormId(0x13475)));
+    }
+
+    /// The worn outfit travels with the spawned actor as one component, so the attachment system
+    /// can find it; an actor without an outfit row gets none.
+    #[test]
+    fn a_referenced_npc_carries_its_worn_outfit_component() {
+        let directory = tempfile::tempdir().unwrap();
+        let composed = directory
+            .path()
+            .join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+        let outfit = shared::actor_outfits::ActorOutfitCatalog {
+            version: shared::actor_outfits::VERSION,
+            outfits: vec![shared::actor_outfits::ActorOutfit {
+                npc_id: 0x13475,
+                outfit_id: 0x57c4c,
+                parts: vec![shared::actor_outfits::OutfitPart {
+                    armo_id: 0x5b69f,
+                    armature_id: 0x5b6a2,
+                    biped_mask: shared::actor_outfits::BIPED_BODY,
+                    armature_race_id: 25,
+                    scene: "meshes/clothes/blacksmith/m/torso_1.glb".into(),
+                }],
+            }],
+            skipped: Default::default(),
+        };
+        std::fs::write(
+            directory.path().join(shared::actor_outfits::PATH),
+            serde_json::to_vec(&outfit).unwrap(),
+        )
+        .unwrap();
+        let connection = actor_catalog_connection();
+        insert_alvor(&connection);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let mut reference = lit_reference(0x13475, None, None);
+        reference.base_form_id = 0x13475;
+        let app = spawn_reference_cell_app_with_catalog(vec![reference], false, catalog);
+
+        let entity = app.world().entity(reference_entity(&app, 0x13475));
+        let worn = entity
+            .get::<crate::actors::ActorOutfit>()
+            .expect("the worn outfit component");
+        assert_eq!(worn.0.len(), 1);
+        assert_eq!(worn.0[0].scene, "meshes/clothes/blacksmith/m/torso_1.glb");
     }
 
     /// Before a composed body is published, the same spawn draws the catalog's authored body part.
