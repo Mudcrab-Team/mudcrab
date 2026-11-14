@@ -406,7 +406,7 @@ fn grass_ini_zero_fade_range_is_allowed_only_when_fading_is_disabled() {
         } else {
             assert_eq!(
                 (config.grass_fade_start, config.grass_fade_end),
-                (7000.0, 8000.0)
+                (0.0, 1000.0)
             );
             assert!(
                 config

@@ -241,16 +241,28 @@ impl EngineConfig {
             self.grass_enable_fade = report.boolean("bEnableGrassFade").unwrap();
         }
         if imported("fGrassStartFadeDistance") || imported("fGrassFadeRange") {
-            let range = if imported("fGrassFadeRange") {
-                report.float("fGrassFadeRange").unwrap()
-            } else {
-                self.grass_fade_end - self.grass_fade_start
-            };
-            let start = if imported("fGrassStartFadeDistance") {
-                report.float("fGrassStartFadeDistance").unwrap()
-            } else {
-                self.grass_fade_start
-            };
+            let mut range = self.grass_fade_end - self.grass_fade_start;
+            if imported("fGrassFadeRange") {
+                let value = report.float("fGrassFadeRange").unwrap();
+                if value.is_finite() && value >= 0.0 && (!self.grass_enable_fade || value > 0.0) {
+                    range = value;
+                } else {
+                    self.grass_settings_diagnostics.push(
+                        "unsupported fGrassFadeRange ignored; retaining the supported range".into(),
+                    );
+                }
+            }
+            let mut start = self.grass_fade_start;
+            if imported("fGrassStartFadeDistance") {
+                let value = report.float("fGrassStartFadeDistance").unwrap();
+                if value.is_finite() && value >= 0.0 {
+                    start = value;
+                } else {
+                    self.grass_settings_diagnostics.push(
+                        "unsupported fGrassStartFadeDistance ignored; retaining the supported start".into(),
+                    );
+                }
+            }
             let end = start + range;
             if start >= 0.0
                 && start.is_finite()
