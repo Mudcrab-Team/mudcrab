@@ -656,12 +656,7 @@ impl TerrainAtlas {
     }
 
     pub fn encode(self) -> Result<Vec<u8>> {
-        TextureConverter::encode_rgba_mips(
-            self.size as u32,
-            self.size as u32,
-            &mip_chain(self.size, self.rgba),
-            TextureEncoding::ColorSrgb,
-        )
+        encode_srgb_atlas(self.size, self.rgba)
     }
 
     /// Uses the same authored three-mip chain for both encoders. The caller
@@ -768,6 +763,25 @@ fn encode_atlas_batch_with(
             })
         })
         .collect()
+}
+
+/// Publishes a square sRGB RGBA8 image as a terrain LOD atlas is published: the given base level
+/// and the two smaller levels derived from it, each texel the linear-light mean of the four it
+/// covers, encoded as a colour KTX2.
+///
+/// Public so a GPU probe can sample exactly the levels a compiled chunk carries.
+pub fn encode_srgb_atlas(size: usize, rgba: Vec<u8>) -> Result<Vec<u8>> {
+    ensure!(
+        rgba.len() == size * size * 4,
+        "atlas has {} bytes, expected {size}x{size} RGBA8",
+        rgba.len()
+    );
+    TextureConverter::encode_rgba_mips(
+        size as u32,
+        size as u32,
+        &mip_chain(size, rgba),
+        TextureEncoding::ColorSrgb,
+    )
 }
 
 fn mip_chain(size: usize, rgba: Vec<u8>) -> Vec<Vec<u8>> {
