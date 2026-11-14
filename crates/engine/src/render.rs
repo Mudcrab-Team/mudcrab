@@ -49,6 +49,16 @@ pub(crate) const WAVE_STRENGTH: f32 = 0.05;
 /// uploaded, so an interactive run does not rewrite every water material every frame.
 pub(crate) const ANIMATED_WAVE_PHASE: f32 = -1.0;
 
+/// The one flow every water's waves run on: the vector `(0.8, 0.35)` in world X and Z. The data has
+/// no flow to use instead (see `docs/research/water.md`, "Flow"). The shader moves the wave pattern
+/// toward the negative of this vector.
+pub(crate) const DEFAULT_WATER_FLOW: Vec2 = Vec2::new(0.8, 0.35);
+
+/// The most of the water the Fresnel reflection may cover, as in `REFLECTION_SHARE` in
+/// `water.wgsl` (a test keeps the two equal). Tuned by eye.
+#[cfg(test)]
+pub(crate) const REFLECTION_SHARE: f32 = 0.6;
+
 /// How long the shared shader clock (`globals.time`) runs before it wraps to zero. Bevy wraps it
 /// after one hour, and the waves would jump to a different pattern at that instant, because the
 /// wave phase is the clock times the wave speed and is not periodic in an hour. A day keeps `f32`
@@ -747,7 +757,7 @@ impl Default for WaterExtension {
                     WAVE_STRENGTH,
                     ANIMATED_WAVE_PHASE,
                 ),
-                flow_direction: Vec4::new(0.8, 0.35, 0.0, 0.0),
+                flow_direction: Vec4::new(DEFAULT_WATER_FLOW.x, DEFAULT_WATER_FLOW.y, 0.0, 0.0),
                 fresnel_reflectivity: Vec4::new(
                     DEFAULT_WATER_FRESNEL,
                     DEFAULT_WATER_REFLECTIVITY,
@@ -802,7 +812,12 @@ impl WaterExtension {
                     WAVE_STRENGTH,
                     ANIMATED_WAVE_PHASE,
                 ),
-                flow_direction: Vec4::new(0.8, 0.35, 0.0, has_flow_normal),
+                flow_direction: Vec4::new(
+                    DEFAULT_WATER_FLOW.x,
+                    DEFAULT_WATER_FLOW.y,
+                    0.0,
+                    has_flow_normal,
+                ),
                 // z gates the reflection strength; 1.0 keeps reflections on until settings set it.
                 fresnel_reflectivity: Vec4::new(fresnel, reflectivity, 1.0, 0.0),
                 reflection_color: linear_rgb(DEFAULT_WATER_REFLECTION_COLOR),
@@ -2270,6 +2285,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_second_ripple_octave_runs_along_the_flow_not_across_it() {
+        let source = include_str!("shaders/water.wgsl");
+        let turn: f32 = source
+            .lines()
+            .find_map(|line| line.strip_prefix("const SECOND_OCTAVE_TURN_DEGREES: f32 = "))
+            .expect("water.wgsl declares SECOND_OCTAVE_TURN_DEGREES")
+            .trim_end_matches(';')
+            .parse()
+            .expect("a float");
+        // It used to be a fixed direction at right angles to the default flow, so half of the
+        // ripple motion ran across any current. A turn under 45 degrees keeps it within the flow.
+        let old_second = Vec2::new(-0.35, 0.8);
+        assert!(
+            old_second.dot(DEFAULT_WATER_FLOW).abs() < 1.0e-6,
+            "the old pair was perpendicular"
+        );
+        assert!(
+            turn.abs() < 45.0,
+            "turn {turn} would put the second octave across the flow"
+        );
+        assert!(
+            !source.contains("SECOND_OCTAVE_DIRECTION"),
+            "a fixed direction is back"
+        );
+    }
+
+    #[test]
+    fn the_shader_and_the_renderer_agree_on_the_reflection_share() {
+        let source = include_str!("shaders/water.wgsl");
+        let line = source
+            .lines()
+            .find(|line| line.starts_with("const REFLECTION_SHARE: f32 = "))
+            .expect("water.wgsl declares REFLECTION_SHARE");
+        let value: f32 = line
+            .trim_start_matches("const REFLECTION_SHARE: f32 = ")
+            .trim_end_matches(';')
+            .parse()
+            .expect("a float");
+        assert_eq!(value, REFLECTION_SHARE);
     }
 
     #[test]

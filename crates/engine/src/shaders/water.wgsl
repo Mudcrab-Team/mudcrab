@@ -56,12 +56,21 @@ const REFLECTION_DISTORTION: f32 = 24.0;
 const MAX_REFLECTION_OFFSET: f32 = 0.04;
 
 // The finer second ripple octave: its scale and speed relative to the first, its strength as a
-// fraction of the first, and the direction it moves (against the first). It keeps the surface from
-// reading as one swell.
+// fraction of the first, and the angle in degrees its travel direction is turned from the first
+// (the water's flow direction). A small turn keeps both octaves running along the flow while the
+// surface still does not read as one swell. It was a fixed direction at right angles to the old
+// fixed flow, so on a river the finer ripples ran across the current.
 const SECOND_OCTAVE_SCALE: f32 = 2.7;
 const SECOND_OCTAVE_SPEED: f32 = 1.3;
 const SECOND_OCTAVE_STRENGTH: f32 = 0.5;
-const SECOND_OCTAVE_DIRECTION: vec2<f32> = vec2<f32>(-0.35, 0.8);
+const SECOND_OCTAVE_TURN_DEGREES: f32 = 30.0;
+
+// The most the reflection may cover of the water: the Fresnel reflection is scaled by this. The
+// water used to be drawn at a fixed 60 % alpha over the bed, which left the reflection at most 60 %
+// of its weight on screen; with the body alpha now near 1 in deep water, the same Fresnel weight
+// made the reflection read as a sky image laid over the waves. The value is tuned by eye and kept
+// in step with `REFLECTION_SHARE` in `render.rs` by a test.
+const REFLECTION_SHARE: f32 = 0.6;
 
 // How far, in world units, the view ray travels through water before it reaches whatever opaque
 // lies behind this fragment; negative when that is unknown because this view has no bed-depth
@@ -136,9 +145,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let p = in.world_position.xz * scale + water.flow_direction.xy * phase;
     var dx = cos(p.x + sin(p.y * 1.7)) * strength;
     var dz = cos(p.y * 1.3 + sin(p.x)) * strength;
-    // A finer second octave moving against the first, so the surface does not read as one swell.
+    // A finer second octave, turned a little from the first so the surface does not read as one
+    // swell, but still running along the flow.
+    let turn = radians(SECOND_OCTAVE_TURN_DEGREES);
+    let flow = water.flow_direction.xy;
+    let second_direction = vec2<f32>(
+        flow.x * cos(turn) - flow.y * sin(turn),
+        flow.x * sin(turn) + flow.y * cos(turn),
+    );
     let p2 = in.world_position.xz * scale * SECOND_OCTAVE_SCALE
-        + SECOND_OCTAVE_DIRECTION * phase * SECOND_OCTAVE_SPEED;
+        + second_direction * phase * SECOND_OCTAVE_SPEED;
     dx += cos(p2.x * 1.1 + sin(p2.y * 0.9)) * strength * SECOND_OCTAVE_STRENGTH;
     dz += cos(p2.y * 0.8 + sin(p2.x * 1.4)) * strength * SECOND_OCTAVE_STRENGTH;
     if water.flow_direction.w > 0.5 {
@@ -181,7 +197,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // it is blended in after lighting rather than lit a second time as albedo, which washed the
     // water out to white.
     out.color = apply_pbr_lighting(pbr_input);
-    let reflected = fresnel * water.fresnel_reflectivity.y * water.fresnel_reflectivity.z;
+    let reflected = fresnel * water.fresnel_reflectivity.y * water.fresnel_reflectivity.z * REFLECTION_SHARE;
     // The Fresnel reflection can make the surface less transparent at grazing angles than the body
     // alone, so shallow water still reflects.
     let body_alpha = body.y;

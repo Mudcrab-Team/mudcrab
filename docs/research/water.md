@@ -98,3 +98,28 @@ amount 0.0, and `DLC1FrostreachWaterFlowNE` (Dawnguard.esm) −290.0 / 720.0 / 0
 Sources: xEdit `Core/wbDefinitionsTES5.pas` WATR `DNAM` struct (TES5Edit/TES5Edit);
 CommonLibSSE-NG `include/RE/T/TESWaterForm.h` `WaterShaderData` byte offsets; UESP
 "Skyrim Mod:Mod File Format/WATR".
+
+## 2. Flow
+
+The waves run on one flow vector for every water (`DEFAULT_WATER_FLOW` in `render.rs`). The data the
+engine has was checked for a better one, and none that can be trusted exists:
+
+- **WATR `DNAM`** holds three noise wind directions (`+0x64`, `+0x68`, `+0x6C`, degrees) and three
+  speeds (`+0x70..`). They differ per record (47 distinct direction, speed and falloff sets among the 60 retail waters), but the
+  record gives no reference direction or axis for the angle, and the directional record names
+  disagree with it: `RiverWaterFlowNE`, `NW` and `SE` hold 233, 141 and 340 degrees for their first
+  layer, which no single convention maps to north-east, north-west and south-east. Using it would
+  guess the axis, and a wrong guess is the same wrong direction as the constant.
+- **The cell** gives a water type and a height, no direction. In the retail packs the height is the
+  worldspace's own: many neighbouring cells share one value (for example -250, 600 or -5050), so
+  the height step between cells says nothing about a river.
+- **The bed.** The downhill direction of the LAND grid under the water was tried (mean slope over
+  the wet vertices). Over 52 retail river and creek cells (Tamriel grids -4..16 by -22..0) it points in a different direction in
+  almost every cell, with no continuity along a river, so it is not used.
+- **The mesh.** The water is a flat plane per cell with no flow map; `flow_normal_path` (`NAM5`) is
+  a tiled detail normal, not a direction.
+
+A river in Skyrim carries its direction in its own water mesh and flow map, which the converter does
+not export. Until it does, one direction is the honest default. The second ripple octave used to run
+at right angles to it, so half of the motion crossed any current; it now runs within 30 degrees of
+the flow.
