@@ -191,6 +191,9 @@ pub(crate) fn body_compose_inputs(sex: &str) -> [String; 4] {
 /// Versioned default-gait recipe and its canonical raw input contract.
 pub(crate) const DEFAULT_GAIT_RECIPE: &str = "default-gait-v1";
 
+/// Verified cow/chicken idle over the exact standalone body hierarchy.
+pub(crate) const CREATURE_IDLE_RECIPE: &str = "creature-idle-v1";
+
 /// The complete input set shared by gait proof production and reuse validation.
 pub(crate) fn default_gait_inputs(sex: &str, stem: &str) -> [String; 4] {
     let assets = "meshes/actors/character/character assets";
@@ -697,9 +700,6 @@ pub fn asset_configuration_hash_for_schema(
         }),
         _ => color_eyre::eyre::bail!("unsupported asset cache kind {source_ext}"),
     };
-    if source_ext == "dds" && schema == CONVERTER_SCHEMA_VERSION {
-        relevant["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
-    }
     if source_ext == "dds" && schema >= 16 {
         relevant["texture_zstd_level"] = serde_json::json!(config.texture_zstd_level);
     }
@@ -1945,7 +1945,7 @@ mod tests {
                 .unwrap()
             );
             let mut changed = config.clone();
-            changed.script_abi_version = 2;
+            changed.script_abi_version += 1;
             assert!(
                 !retained_configuration_matches_for_reader(
                     &changed,
@@ -2059,9 +2059,11 @@ mod tests {
         );
     }
 
+    /// Reconstructs the original ABI-1 proof independently of the current emitter default.
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.script_abi_version = 1; // Reconstruct the fixed historical ABI-1 proof.
         config.record_reader = crate::config::RecordReader::Legacy;
         // Exact configuration hash in the protected original schema-15
         // manifest and its metadata rebuild's retained producer provenance.
@@ -2077,7 +2079,7 @@ mod tests {
         changed.texture_fallback_quality = 191;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config.clone();
-        changed.script_abi_version = 2;
+        changed.script_abi_version += 1;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config;
         changed.texture_zstd_level = 7;
@@ -2637,4 +2639,19 @@ mod tests {
             assert!(eligible.entries.contains_key("scripts/a.luau"));
         }
     }
+}
+
+/// Record the derived grass archive so quick/full checks verify its presence and digest.
+pub(crate) fn record_grass_artifact(manifest: &mut ConversionManifest, root: &Path) -> Result<()> {
+    let path = root.join("grass_cache.rkyv");
+    manifest.entries.insert(
+        "derived/grass-cache".into(),
+        CacheEntry {
+            source_hash: format!("grass-producer:{}", shared::grass::GRASS_CACHE_VERSION),
+            output: "grass_cache.rkyv".into(),
+            output_size: fs::metadata(&path)?.len(),
+            output_hash: hash_file(&path)?,
+        },
+    );
+    Ok(())
 }

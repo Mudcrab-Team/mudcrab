@@ -165,6 +165,7 @@ struct GeometryCache {
     meshes: HashMap<String, (Arc<Vec<Triangle>>, u64)>,
     bytes: usize,
     clock: u64,
+    source_changed: bool,
 }
 
 impl GeometryCache {
@@ -184,6 +185,7 @@ impl GeometryCache {
             meshes: HashMap::new(),
             bytes: 0,
             clock: 0,
+            source_changed: false,
         })
     }
 
@@ -193,8 +195,7 @@ impl GeometryCache {
             let result = self.model_bytes(path);
             match result {
                 Ok(bytes) => {
-                    // Classification reads JSON only. Unclassifiable readable models must not
-                    // lose the chance to use the decoder's local static recovery.
+                    // Classification reads JSON only; corrupt containers stay spatially bounded.
                     let skin = (|| -> Option<bool> {
                         let glb = gltf::binary::Glb::from_slice(&bytes).ok()?;
                         let json: serde_json::Value = serde_json::from_slice(&glb.json).ok()?;
@@ -205,7 +206,7 @@ impl GeometryCache {
                                 .any(|node| node.get("skin").is_some()),
                         )
                     })()
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                     self.potential_skins.insert(path.to_owned(), skin);
                     self.hashes
                         .insert(path.to_owned(), Sha256::digest(&bytes).into());
@@ -247,10 +248,21 @@ impl GeometryCache {
             return None;
         }
         let result = (|| -> Result<Arc<Vec<Triangle>>> {
-            let bytes = self.model_bytes(path)?;
-            self.hashes
-                .entry(path.to_owned())
-                .or_insert_with(|| Sha256::digest(&bytes).into());
+            let bytes = self.model_bytes(path).inspect_err(|_| {
+                if self.hashes.contains_key(path) {
+                    self.source_changed = true;
+                }
+            })?;
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            if self
+                .hashes
+                .get(path)
+                .is_some_and(|expected| *expected != digest)
+            {
+                self.source_changed = true;
+                color_eyre::eyre::bail!("obstruction changed during grass bake; retry conversion");
+            }
+            self.hashes.entry(path.to_owned()).or_insert(digest);
             #[cfg(test)]
             {
                 self.decodes += 1;
@@ -544,6 +556,30 @@ pub fn write_grass_cache(
     previous: Option<&Path>,
     path: &Path,
 ) -> Result<GrassBakeReport> {
+    write_grass_cache_with_cancel(
+        conn,
+        asset_root,
+        terrain_path,
+        previous,
+        path,
+        &crate::pipeline::Cancellation::new(),
+    )
+}
+
+/// Bake with cooperative cancellation between references, cells and quadrants.
+pub fn write_grass_cache_with_cancel(
+    conn: &Connection,
+    asset_root: &Path,
+    terrain_path: &Path,
+    previous: Option<&Path>,
+    path: &Path,
+    cancellation: &crate::pipeline::Cancellation,
+) -> Result<GrassBakeReport> {
+    let check_cancel = || -> Result<()> {
+        ensure!(!cancellation.is_cancelled(), "grass bake cancelled");
+        Ok(())
+    };
+    check_cancel()?;
     let mut geometry = GeometryCache::new(asset_root)?;
     let terrain_map = super::cell_cache::validate_cell_cache(terrain_path)?;
     let terrain = rkyv::access::<shared::ArchivedCellCache, Error>(&terrain_map)?;
@@ -569,6 +605,7 @@ pub fn write_grass_cache(
         }
     }
     for reference in &mut references {
+        check_cancel()?;
         geometry.fingerprint(&reference.model_path);
         reference.potential_skin = geometry.potential_skins[&reference.model_path];
     }
@@ -655,6 +692,7 @@ pub fn write_grass_cache(
     };
     let mut cells = Vec::new();
     for archived_land in terrain.cells.iter() {
+        check_cancel()?;
         let id = archived_land.cell_id.to_native();
         let Some(&(worldspace_id, grid_x, grid_y)) = coordinates.get(&id) else {
             continue;
@@ -729,6 +767,7 @@ pub fn write_grass_cache(
         }
         geometry.cell_failures.clear();
         for quadrant in &mut quadrants {
+            check_cancel()?;
             quadrant.exclusion = exclusion_mask(
                 (id, grid_x, grid_y),
                 quadrant.quadrant,
@@ -762,6 +801,11 @@ pub fn write_grass_cache(
         });
         report.baked_cells += 1;
     }
+    check_cancel()?;
+    ensure!(
+        !geometry.source_changed,
+        "obstruction changed during grass bake; retry conversion"
+    );
     cells.sort_unstable_by_key(|cell| cell.cell_id);
     let bytes = rkyv::to_bytes::<Error>(&GrassCache {
         version: GRASS_CACHE_VERSION,
@@ -960,7 +1004,10 @@ fn read_reference_bounds(conn: &Connection) -> Result<(Vec<ReferenceBounds>, usi
 
 /// Resolve modeled obstruction paths after base-header filtering, excluding vegetation and effects.
 fn obstruction_model_path(model: Option<&str>, kind: Option<&str>) -> Option<String> {
-    if matches!(kind, Some("TREE" | "FLOR")) {
+    if !matches!(
+        kind,
+        Some("STAT" | "MSTT" | "ACTI" | "FURN" | "CONT" | "DOOR")
+    ) {
         return None;
     }
     let path = canonical_asset_path(model?, AssetKind::Mesh, "glb").ok()?;
@@ -2035,7 +2082,7 @@ mod tests {
         conn.execute_batch("INSERT INTO cells(id,worldspace_id,grid_x,grid_y,flags) VALUES(10,1,0,0,0),(11,1,1,0,0),(12,2,1,0,0);
             INSERT INTO grass_types(id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags,load_order) VALUES(21,'meshes/grass.glb',50,0,60,0,0,4,0.2,0.1,1.2,1,0),(22,'meshes/grass2.glb',80,0,80,0,0,2,0.1,0.3,2.1,0,0);
             INSERT INTO landscape_texture_grasses(ltex_id,gras_id) VALUES(30,21),(30,22),(30,999);
-            INSERT INTO records(form_id,record_type,load_order,data) VALUES(21,'GRAS',0,x'0102'),(22,'GRAS',0,x'0304'),(30,'LTEX',0,x'0506');
+            INSERT INTO records(form_id,record_type,load_order,data) VALUES(21,'GRAS',0,x'0102'),(22,'GRAS',0,x'0304'),(30,'LTEX',0,x'0506'),(40,'STAT',0,x'00');
             INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(40,'meshes/blocker.glb',0,-64,-16,-48,64,32,48,1);
             INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(50,10,1,40,1,4090,64,0,0,0,0,2);") .unwrap();
         let records: HashMap<_, _> = [(100, 10), (101, 11), (102, 12)]

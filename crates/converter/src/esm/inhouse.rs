@@ -94,6 +94,7 @@ const DEFERRED_RUNTIME_TABLES: &[&str] = &[
     "actor_model_parts",
     "movement_types",
     "race_movement_links",
+    "race_animation_sources",
     "movement_game_settings",
     "waters",
     "texture_sets",
@@ -1150,7 +1151,7 @@ fn convert_plugins_with_text_sources_report_impl(
     let conn = Connection::open(db_path)?;
     // Keep a modest page-cache target for this conversion's private connection.
     // Negative cache_size is in KiB; journal, sync and spill policies stay intact.
-    conn.pragma_update(Some(rusqlite::DatabaseName::Main), "cache_size", -65_536)?;
+    conn.pragma_update(Some("main"), "cache_size", -65_536)?;
     conn.set_prepared_statement_cache_capacity(64);
     create_tables(&conn)?;
     let terrain_offsets = decoded

@@ -1,3 +1,6 @@
+pub(crate) mod authored_actor_idle;
+mod creature_idle;
+
 use crate::{
     animation,
     archive::{
@@ -19,7 +22,7 @@ use crate::{
         EsmParser,
         cell_cache::{write_cell_cache, write_preserved_cell_cache},
         exporter::validate_database,
-        grass_cache::write_grass_cache,
+        grass_cache::write_grass_cache_with_cancel,
         lodsettings::{LodSettings, sidecar_path},
         plugins_txt::read_with_selection_diagnostics,
     },
@@ -350,6 +353,10 @@ impl AssetPipeline {
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
+        // Saved configurations cannot make current emitted bytes reuse an older script ABI.
+        config.script_abi_version = config
+            .script_abi_version
+            .max(crate::script::SCRIPT_ABI_VERSION);
         config.validate()?;
         config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
@@ -1339,6 +1346,20 @@ impl AssetPipeline {
             &mut report,
             &mut manifest,
         )?;
+        authored_actor_idle::convert(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        creature_idle::convert(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
         for sex in ["male", "female"] {
             for (_, stem) in DEFAULT_ANIMATION_CLIPS {
                 let relative = default_animation_output(sex, stem);
@@ -1602,15 +1623,17 @@ impl AssetPipeline {
             report.integration = Some(integration);
             // Explicit invalidation also bypasses otherwise matching published grass masks.
             let previous_grass = config.output_dir.join("grass_cache.rkyv");
-            let grass = write_grass_cache(
+            let grass = write_grass_cache_with_cancel(
                 &Connection::open(staging.join("skyrim_world.db"))?,
                 staging,
                 &staging.join("cell_cache_preserved.rkyv"),
                 (!config.invalidate_cache).then_some(previous_grass.as_path()),
                 &staging.join("grass_cache.rkyv"),
+                cancellation,
             )?;
             // Integration already reports failed model conversion. Missing bounds or geometry the
             // optional sampler cannot inspect only limit the mask; they do not fail this conversion.
+            crate::cache::record_grass_artifact(&mut manifest, staging)?;
             report.notices.extend(grass.notices());
             let grass_warnings = grass.warnings();
             if !grass_warnings.is_empty() {
@@ -2117,6 +2140,9 @@ impl ConversionBatch<'_> {
 
                         if let Some(encoding) = encoding {
                             hash.push_str(&format!(":texture-encoding:{encoding:?}"));
+                            if crate::texture::packed_normal_contract(&source, encoding) {
+                                hash.push_str(":normal-packed:lossless-rgba8-v1");
+                            }
                             // Marks the textures the GPU encodes. Natively preserved
                             // textures and those only the CPU encoder handles
                             // (volumes, arrays) convert the same way in either
@@ -8417,6 +8443,7 @@ mod tests {
                 );
                 assert_eq!(inputs, expected);
                 let mut clip = animation::AnimationClip {
+                    blend_hint: 0,
                     name: String::new(),
                     original_skeleton_name: "synthetic".into(),
                     duration_seconds: 1.0 / 30.0,
@@ -10313,7 +10340,7 @@ mod tests {
             b"skeleton"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }
@@ -10347,7 +10374,7 @@ mod tests {
             b"clip"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }
