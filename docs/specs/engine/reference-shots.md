@@ -105,7 +105,7 @@ cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-spee
 
 `--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 12).
 Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20;
-0 freezes). Shots, acceptance screenshots, benchmarks and matched routes freeze at the launch
+0 freezes). Shots, acceptance screenshots, benchmarks (including `--benchmark-only` alone) and matched routes freeze at the launch
 hour regardless of timescale, so streaming duration cannot move shadows between captures.
 
 The directional light follows the active worldspace's climate TNAM sunrise/sunset midpoints

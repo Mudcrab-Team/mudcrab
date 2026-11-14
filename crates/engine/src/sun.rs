@@ -130,6 +130,7 @@ impl GameClock {
         let frozen = config.shots.is_some()
             || config.acceptance_screenshot.is_some()
             || config.is_benchmark_run()
+            || config.benchmark_only
             || config.matched_route.is_some();
         Self {
             hour: config.game_hour,
@@ -329,6 +330,22 @@ mod tests {
             game_hour: 9.25,
             ..Default::default()
         };
+        let mut clock = GameClock::from_config(&config);
+        clock.advance(1234.0);
+        assert_eq!(clock.hour, 9.25);
+    }
+
+    /// `--benchmark-only` alone is not a benchmark run (no frame or duration limit), but it
+    /// still renders the synthetic sun, so it must freeze the clock too.
+    #[test]
+    fn benchmark_only_alone_freezes_the_clock() {
+        let config = EngineConfig {
+            benchmark_only: true,
+            game_hour: 9.25,
+            timescale: 20.0,
+            ..Default::default()
+        };
+        assert!(!config.is_benchmark_run());
         let mut clock = GameClock::from_config(&config);
         clock.advance(1234.0);
         assert_eq!(clock.hour, 9.25);
