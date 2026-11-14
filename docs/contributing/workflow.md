@@ -48,7 +48,13 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 
 ## 6. Merge (maintainers)
 
-The `main_protection` ruleset requires at least one approving review, approval from a human code owner, a passing `tests_pass` check, and every review thread resolved. `tests_pass` includes a `reviewers_pass` job that waits for a successful CodeRabbit check run on the PR's latest commit (Greptile's result is logged but does not block). Only the CodeRabbit app's own check run counts, never a commit status. The branch does not have to be up to date with `main`; CI also runs on every push to `main`. It dismisses stale approvals when new commits are pushed. Only Owners (organization owners) can bypass the ruleset. The bypass was added on purpose, to work through a backlog of pull requests. `main` accepts squash or rebase merges. A merge queue is planned but not enabled yet (see below).
+The `main_protection` ruleset requires at least one approving review, approval from a human code owner, passing `tests_pass` and `CodeRabbit` checks from their respective GitHub Apps, and every review thread resolved. It dismisses stale approvals when new commits are pushed. Three things differ from what earlier versions of this document said:
+
+- **The branch does not have to be up to date with `main`.** Strict status checks are off, so a PR that is behind `main` can still merge, and a merge to `main` does not force any other PR to be rebased or re-approved. CI also runs on every push to `main`.
+- **The last pusher can approve.** Approval of the latest push by someone other than the pusher is not required.
+- **There is one bypass actor.** Organization administrators (Owners) can bypass the ruleset at any time. The bypass was added on purpose, to work through a backlog of pull requests.
+
+`main` accepts squash or rebase merges in the ruleset, and the repository allows only squash. There is no merge queue and auto-merge is off. `tests_pass` includes a `reviewers_pass` job that waits for a successful CodeRabbit check run on the PR's latest commit (Greptile's result is logged but does not block). Only the CodeRabbit app's own check run counts, never a commit status.
 
 Anyone with Write access (Maintainers and Core) may merge once a Core member has approved and all checks pass, including the PR author. [CODEOWNERS](../../.github/CODEOWNERS) lists the Core team, so promoting someone to Core is a team change, not an edit to that file. Its catch-all rule also covers changes to CODEOWNERS itself. Only Owners can edit repository settings, so changing or disabling these requirements is a separate policy change.
 
@@ -56,29 +62,23 @@ Anyone with Write access (Maintainers and Core) may merge once a Core member has
 - Description: the PR's one-sentence summary, an empty line, then one trailer line per co-author or assistant of the PR's commits (`Co-authored-by:` or `Assisted-by:`, see [AI_POLICY.md](../AI_POLICY.md)). Drop the "Merge branch main" lines and the list of commit titles.
 - After a merge, the other open PRs can still merge without being updated. Update a branch only when it conflicts or needs something that just landed.
 
-### The merge queue and auto-merge
+### After a push: reviewers and approvals
 
-**Pending rollout.** The ruleset has no `merge_queue` rule yet and auto-merge is off. Until an Owner turns them on, use **Squash and merge** on the pull request page once the requirements above are met. This section describes how merging works after the rollout.
-
-Merging means adding the PR to the merge queue, not merging it directly. GitHub builds a temporary commit of the latest `main`, the PRs ahead in the queue, and your PR, runs CI on it (the `merge_group` event), and moves `main` to that exact commit if it passes. Nobody rebases or updates branches for this: your PR branch is not rewritten, so its approval stays valid. If your PR conflicts with one ahead of it, it drops out of the queue, and you resolve the conflict and get a fresh Core approval.
-
-- **Merge when ready** (or `gh pr merge --auto`) arms auto-merge on a PR: it enters the queue as soon as `tests_pass` is green, a Core member has approved, and every thread is resolved. The author or any Maintainer can arm it, ideally when the PR is opened.
-- **A Core approval on a PR with auto-merge armed ships it.** Core reviewers who still have concerns use "Request changes" or a comment, not "Approve".
 - A push after approval dismisses the approval, so the PR waits for a fresh one.
-- CodeRabbit and Greptile review the PR's head commit and never report on the queue's temporary commit. The `reviewers_pass` job in `tests_pass` waits for CodeRabbit on the PR, and is skipped in the queue run.
-- **If `reviewers_pass` fails** because CodeRabbit is rate limited, paused, or skipped the commit (its check run is neutral, for example "Review rate limited"), the job waits 25 minutes and then fails. Comment `@coderabbitai review` on the pull request, wait for the CodeRabbit check to finish, then re-run the failed `reviewers_pass` job from the Actions tab. A `main` merge commit pushed by "Update branch" counts as a new head and needs a new CodeRabbit run.
+- CodeRabbit reviews the PR's head commit, so every push, including a `main` merge commit from "Update branch", needs a new CodeRabbit run.
+- **If `reviewers_pass` fails** because CodeRabbit is rate limited, paused, or skipped the commit (its check run is neutral, for example "Review rate limited"), the job waits 25 minutes and then fails. Comment `@coderabbitai review` on the pull request, wait for the CodeRabbit check to finish, then re-run the failed `reviewers_pass` job from the Actions tab.
 
 ### Updating a branch, and stacks
 
 A rebase rewrites every commit of the branch, and the ruleset dismisses approvals when new commits arrive, so a rebased PR needs a fresh Core approval even if the diff did not change. The rebasing Core member's own approval counts.
 
-- You rarely need to rebase: the branch does not have to be up to date with `main`, and the queue replays your changes onto `main` for you. Rebase or merge `main` only to resolve a real conflict.
+- You rarely need to rebase: the branch does not have to be up to date with `main`. Rebase or merge `main` only to resolve a real conflict or to get something your change depends on.
 - Prefer **Update branch** (a merge of `main` into the branch) over a rebase: it adds a commit instead of rewriting the branch.
 - A stack must be rebased after its bottom PR merges, so each remaining layer needs a fresh Core approval. Ask for reviews layer by layer as they reach the bottom, not all at once.
 
 ## AI agents
 
-Agents follow the same steps, plus [AI_POLICY.md](../AI_POLICY.md). In particular, an agent searches issues and PRs before starting (step 1), never claims, posts, or arms auto-merge without its human's OK, and says in one line that it wrote or helped with a text.
+Agents follow the same steps, plus [AI_POLICY.md](../AI_POLICY.md). In particular, an agent searches issues and PRs before starting (step 1), never claims, posts, or arms auto-merge (if it is ever enabled) without its human's OK, and says in one line that it wrote or helped with a text.
 
 ### Suggesting something to work on
 

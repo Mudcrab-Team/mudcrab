@@ -395,11 +395,11 @@ jobs:
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
 
-  # CodeRabbit and Greptile review a pull request's head commit and never
-  # report on a merge queue commit. The ruleset therefore requires only
-  # tests_pass, and this job makes tests_pass wait for CodeRabbit on the PR.
-  # A PR cannot enter the queue until tests_pass is green, so the queue run
-  # (event merge_group) skips this job.
+  # This job makes tests_pass wait for CodeRabbit on the pull request head.
+  # CodeRabbit and Greptile review a PR's head commit and never report on a
+  # merge queue commit, so the job runs only on pull_request events. No merge
+  # queue is enabled today. If one is ever enabled, the merge_group run skips
+  # this job and the ruleset would have to stop requiring CodeRabbit directly.
   #
   # CodeRabbit reports as a check run, not as a commit status. Only a GitHub
   # App can create a check run, so the job trusts the newest check run named
