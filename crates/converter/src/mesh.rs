@@ -80,6 +80,47 @@ pub struct NifParseDiagnostics {
     pub validated_material_shape_count: usize,
     pub excluded_material_shape_count: usize,
     pub material_exclusions: BTreeMap<String, usize>,
+    pub unparsed_regions: usize,
+    pub unparsed_bytes: usize,
+    pub unparsed_by_reason: BTreeMap<String, usize>,
+    /// At most eight regions, in physical file order. Counts above remain exact.
+    pub unparsed_samples: Vec<NifUnparsedRegion>,
+}
+
+/// Exact source coordinates make ignored tails and fallback blocks recoverable from the
+/// separately hashed input. Opaque bytes are not evidence of decoded or rendered support.
+#[derive(Debug, Clone, Serialize)]
+pub struct NifUnparsedRegion {
+    pub reason: &'static str,
+    pub block_index: Option<usize>,
+    pub block_type: Option<String>,
+    pub file_offset: usize,
+    pub byte_length: usize,
+    pub sha256: String,
+}
+
+impl NifParseDiagnostics {
+    fn record_unparsed(
+        &mut self,
+        reason: &'static str,
+        block: Option<(usize, &str)>,
+        file_offset: usize,
+        bytes: &[u8],
+    ) {
+        self.unparsed_regions += 1;
+        self.unparsed_bytes += bytes.len();
+        *self.unparsed_by_reason.entry(reason.into()).or_default() += 1;
+        if self.unparsed_samples.len() < 8 {
+            self.unparsed_samples.push(NifUnparsedRegion {
+                reason,
+                block_index: block.map(|(index, _)| index),
+                block_type: block.map(|(_, name)| name.to_owned()),
+                file_offset,
+                byte_length: bytes.len(),
+                sha256: crate::cache::hash_bytes(bytes),
+            });
+        }
+    }
 }
 
 impl MeshConverter {
@@ -1520,6 +1561,7 @@ fn open_nif_resilient(
             "NIF block {index} is truncated in {}",
             path.display()
         );
+        let block_offset = bytes.len() - data.len();
         let (raw, remaining) = data.split_at(size);
         data = remaining;
         let block_type = header
@@ -1540,6 +1582,12 @@ fn open_nif_resilient(
         }));
         let block = match parsed {
             Ok(Ok((_, NifBlock::Unhandled))) => {
+                diagnostics.record_unparsed(
+                    "unhandled_block",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 diagnostics
                     .fallback_offsets
                     .entry(block_type.clone())
@@ -1548,7 +1596,15 @@ fn open_nif_resilient(
                 *diagnostics.fallback_blocks.entry(block_type).or_default() += 1;
                 NifBlock::Unhandled
             }
-            Ok(Ok((_, block))) => {
+            Ok(Ok((tail, block))) => {
+                if !tail.is_empty() {
+                    diagnostics.record_unparsed(
+                        "unparsed_block_tail",
+                        Some((index, &block_type)),
+                        block_offset + raw.len() - tail.len(),
+                        tail,
+                    );
+                }
                 diagnostics.parsed_block_count += 1;
                 if matches!(
                     &block,
@@ -1563,6 +1619,12 @@ fn open_nif_resilient(
                 block
             }
             Ok(Err(error)) => {
+                diagnostics.record_unparsed(
+                    "block_parse_failure",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 let offset = match error {
                     nom_derive::nom::Err::Error(error) | nom_derive::nom::Err::Failure(error) => {
                         raw.len().saturating_sub(error.input.len())
@@ -1578,6 +1640,12 @@ fn open_nif_resilient(
                 NifBlock::Unhandled
             }
             Err(_) => {
+                diagnostics.record_unparsed(
+                    "block_parser_panic",
+                    Some((index, &block_type)),
+                    block_offset,
+                    raw,
+                );
                 diagnostics
                     .fallback_offsets
                     .entry(block_type.clone())
@@ -1588,6 +1656,14 @@ fn open_nif_resilient(
             }
         };
         blocks.push(block);
+    }
+    if !data.is_empty() {
+        diagnostics.record_unparsed(
+            "unparsed_file_trailer",
+            None,
+            bytes.len() - data.len(),
+            data,
+        );
     }
     diagnostics.scene_node_count = blocks
         .iter()
@@ -3220,6 +3296,90 @@ mod tests {
         fs::write(&input, b"not a nif").unwrap();
         assert!(MeshConverter::convert_nif_to_glb(&input, &output).is_err());
         assert!(!output.exists());
+    }
+
+    fn single_block_nif(block_type: &str, block: &[u8], trailer: &[u8]) -> Vec<u8> {
+        let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+        bytes.extend(0x1402_0007u32.to_le_bytes());
+        bytes.push(1);
+        bytes.extend(12u32.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(100u32.to_le_bytes());
+        bytes.extend([0, 0, 0]); // absent author/process/export strings
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend((block_type.len() as u32).to_le_bytes());
+        bytes.extend(block_type.as_bytes());
+        bytes.extend(0u16.to_le_bytes());
+        bytes.extend((block.len() as u32).to_le_bytes());
+        bytes.extend([0; 12]); // no strings, maximum string length zero, no groups
+        bytes.extend(block);
+        bytes.extend(trailer);
+        bytes
+    }
+
+    #[test]
+    fn nif_audit_accounts_for_known_block_tails_and_file_trailers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tail.nif");
+        let block = [
+            u32::MAX.to_le_bytes().as_slice(),
+            &0u32.to_le_bytes(),
+            &[9, 7, 5],
+        ]
+        .concat();
+        let bytes = single_block_nif("BSXFlags", &block, &[3, 1]);
+        fs::write(&path, &bytes).unwrap();
+        let audit = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(audit.parsed_block_count, 1);
+        assert!(audit.fallback_blocks.is_empty());
+        assert_eq!(audit.unparsed_regions, 2);
+        assert_eq!(audit.unparsed_bytes, 5);
+        let tail = &audit.unparsed_samples[0];
+        assert_eq!(tail.reason, "unparsed_block_tail");
+        assert_eq!(tail.block_index, Some(0));
+        assert_eq!(tail.block_type.as_deref(), Some("BSXFlags"));
+        assert_eq!(tail.byte_length, 3);
+        assert_eq!(tail.sha256, crate::cache::hash_bytes(&[9, 7, 5]));
+        assert_eq!(
+            &bytes[tail.file_offset..tail.file_offset + tail.byte_length],
+            &[9, 7, 5]
+        );
+        let trailer = &audit.unparsed_samples[1];
+        assert_eq!(trailer.reason, "unparsed_file_trailer");
+        assert_eq!(trailer.block_index, None);
+        assert_eq!(trailer.file_offset, bytes.len() - 2);
+        assert_eq!(trailer.sha256, crate::cache::hash_bytes(&[3, 1]));
+
+        // Changing one ignored input changes its receipt, not its unaffected control.
+        let changed = single_block_nif("BSXFlags", &block, &[3, 2]);
+        fs::write(&path, changed).unwrap();
+        let changed = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(changed.unparsed_samples[0].sha256, tail.sha256);
+        assert_ne!(changed.unparsed_samples[1].sha256, trailer.sha256);
+    }
+
+    #[test]
+    fn nif_audit_accounts_for_whole_fallback_blocks_with_bounded_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unknown.nif");
+        let bytes = single_block_nif("UnknownModBlock", &[0, 1, 2, 3], &[]);
+        fs::write(&path, &bytes).unwrap();
+        let mut audit = MeshConverter::inspect_nif(&path).unwrap();
+        assert_eq!(audit.unparsed_regions, 1);
+        assert_eq!(audit.unparsed_bytes, 4);
+        assert_eq!(audit.unparsed_samples[0].file_offset, bytes.len() - 4);
+        assert_eq!(audit.unparsed_samples[0].reason, "unhandled_block");
+        for index in 1..20 {
+            audit.record_unparsed(
+                "unhandled_block",
+                Some((index, "UnknownModBlock")),
+                index * 4,
+                &[0; 4],
+            );
+        }
+        assert_eq!(audit.unparsed_regions, 20);
+        assert_eq!(audit.unparsed_bytes, 80);
+        assert_eq!(audit.unparsed_samples.len(), 8);
     }
 
     #[test]
