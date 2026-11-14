@@ -44,7 +44,7 @@ do not capture interactive mouse/controller input.
 | `width`, `height` | The frame size in pixels, at most 8192 each. The production camera renders into a dedicated image target at this size, independent of window size or display scaling. Use the size the reference screenshots were taken at. |
 | `name` | Output file stem: the image is `<out>/<name>.png`. A plain file name, unique in the file, that Windows can create (see below). |
 | `worldspace_id` | The worldspace of an exterior shot (60 is Tamriel). `null` or absent leaves it to `--worldspace`. |
-| `interior_cell_id` | An interior cell. Such a shot is skipped and logged: the streamer holds exterior cells only. |
+| `interior_cell_id` | An interior cell to load before posing the camera. `null` or absent selects the exterior worldspace. |
 | `position` | The camera's eye in Creation units, absolute (not relative to a cell or the render origin). |
 | `yaw` | Skyrim heading in degrees: 0 looks north (`+Y`), 90 east (`+X`), clockwise seen from above. |
 | `pitch` | Skyrim's X angle in degrees: positive looks down. |
@@ -66,8 +66,9 @@ names the file and the problem.
 
 Streaming starts at the first exterior shot: its worldspace (when it names one) and the grid square
 its camera stands over. The run streams that one worldspace; a shot in another worldspace is
-skipped and logged, like an interior shot, so a file that mixes worldspaces is rendered one
-worldspace per run.
+skipped and logged, so a file that mixes exterior worldspaces is rendered one worldspace per run.
+Interior poses load their named cell and can be mixed with exterior poses. Switching spaces
+unloads the previous space before loading the next one.
 
 For each shot in order, the run places the camera at the pose (the streamer then loads the cells
 around it) and waits until the view has settled: no cell loading, no database request in flight,

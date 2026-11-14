@@ -8,8 +8,8 @@
 //!
 //! Nothing here is interactive: the run poses the camera, waits for the streamer to finish loading
 //! around the pose, takes the screenshot, and exits when the file runs out of shots. The run streams
-//! one worldspace, the one its first exterior shot names; a shot in an interior or in another
-//! worldspace is skipped, and the log says so.
+//! the interiors each pose names and one exterior worldspace, the one its first exterior shot
+//! names. A shot in another exterior worldspace is skipped, and the log says so.
 //!
 //! `shots.log`, next to the images, has one line per shot: its name, how many frames it waited to
 //! settle, whether it settled or the timeout took it, and the image's path - appended as each shot
@@ -183,7 +183,7 @@ pub struct Shot {
 }
 
 impl Shot {
-    /// Whether this is an exterior pose, which is what the streamer holds cells for.
+    /// Whether this is an exterior pose.
     pub fn is_exterior(&self) -> bool {
         self.interior_cell_id.is_none()
     }
@@ -346,10 +346,10 @@ pub fn shot_camera_translation(position: [f32; 3], origin: IVec2) -> Vec3 {
 }
 
 /// Why a shot is passed over rather than rendered, or `None` when it can be rendered in a run that
-/// streams `worldspace_id`. The streamer holds the exterior cells of one worldspace per run.
+/// streams `worldspace_id`. Interior poses select their own cell independently of that worldspace.
 pub fn skip_reason(shot: &Shot, worldspace_id: u32) -> Option<String> {
     if !shot.is_exterior() {
-        return Some("interior".to_owned());
+        return None;
     }
     match shot.worldspace_id {
         Some(named) if named != worldspace_id => Some(format!(
@@ -587,7 +587,8 @@ pub(crate) struct ShotOutputImage(pub Handle<Image>);
 
 impl Plugin for ShotsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Assets<Image>>();
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<crate::streaming::ActiveSpace>();
         let image = app
             .world_mut()
             .resource_mut::<Assets<Image>>()
@@ -601,8 +602,51 @@ impl Plugin for ShotsPlugin {
         // (the sky dome follows the camera there, and transforms propagate).
         app.insert_resource(self.run.clone())
             .insert_resource(ShotOutputImage(image))
-            .add_systems(Update, run_shots);
+            .add_systems(Update, (select_shot_space, run_shots).chain());
     }
+}
+
+/// Selects a pose's space before moving its camera. As with a load-door crossing, old cells
+/// must disappear together so interiors sharing the same coordinates cannot draw each other.
+fn select_shot_space(world: &mut World) {
+    use crate::{sky::CameraSpace, streaming::ActiveSpace};
+
+    let run = world.resource::<ShotsRun>();
+    if run.phase != Phase::Move {
+        return;
+    }
+    let Some(shot) = run.file.shots.get(run.shot) else {
+        return;
+    };
+    if skip_reason(shot, run.worldspace_id).is_some() {
+        return;
+    }
+    let target = ActiveSpace {
+        worldspace_id: Some(run.worldspace_id),
+        interior: shot.interior_cell_id,
+    };
+    let current = world.resource::<ActiveSpace>();
+    if current.interior == target.interior
+        && current.exterior_worldspace(run.worldspace_id) == run.worldspace_id
+    {
+        return;
+    }
+    // Interior roots use absolute Creation coordinates. Resetting the origin also keeps capture
+    // receipts and probe positions in that same coordinate system.
+    let origin = if shot.is_exterior() {
+        let (x, y) = shot.grid();
+        IVec2::new(x, y)
+    } else {
+        IVec2::ZERO
+    };
+    crate::streaming::unload_all_cells_now(world);
+    *world.resource_mut::<ActiveSpace>() = target;
+    world.resource_mut::<RenderOrigin>().0 = origin;
+    world.insert_resource(if target.interior.is_some() {
+        CameraSpace::Interior
+    } else {
+        CameraSpace::Exterior
+    });
 }
 
 /// The state of a `--shots` run: what to render, where it goes, and how far it has got.
@@ -1975,20 +2019,47 @@ mod tests {
     }
 
     #[test]
-    fn interiors_and_other_worldspaces_are_skipped_with_a_reason() {
+    fn interiors_are_rendered_and_other_exterior_worldspaces_are_skipped() {
         let file = reference_file();
         let exterior = &file.shots[0];
         assert_eq!(skip_reason(exterior, 60), None);
         assert_eq!(skip_reason(exterior, 0x3c), None, "0x3c is 60");
         let other = skip_reason(exterior, 0x0001_EE62).expect("another worldspace is skipped");
         assert!(other.contains("0000003C"), "{other}");
-        assert_eq!(skip_reason(&file.shots[1], 60).as_deref(), Some("interior"));
+        assert_eq!(skip_reason(&file.shots[1], 60), None);
         // A shot that names no worldspace takes the one being streamed.
         let unnamed = Shot {
             worldspace_id: None,
             ..exterior.clone()
         };
         assert_eq!(skip_reason(&unnamed, 0x0001_EE62), None);
+    }
+
+    #[test]
+    fn interior_shots_select_the_cell_and_restore_exterior_coordinates() {
+        use crate::{sky::CameraSpace, streaming::ActiveSpace};
+
+        let mut file = reference_file();
+        file.shots.swap(0, 1);
+        let mut world = World::new();
+        world.insert_resource(ShotsRun::new(file, PathBuf::new(), 60));
+        world.init_resource::<ActiveSpace>();
+        world.insert_resource(RenderOrigin(IVec2::new(20, -11)));
+        world.init_resource::<crate::streaming::StreamingWorld>();
+        world.init_resource::<crate::streaming::TerrainContinuity>();
+        world.init_resource::<StreamingMetrics>();
+        world.init_resource::<crate::profiling::ProfilingState>();
+
+        select_shot_space(&mut world);
+        assert_eq!(world.resource::<ActiveSpace>().interior, Some(355355));
+        assert_eq!(*world.resource::<CameraSpace>(), CameraSpace::Interior);
+        assert_eq!(world.resource::<RenderOrigin>().0, IVec2::ZERO);
+
+        world.resource_mut::<ShotsRun>().shot = 1;
+        select_shot_space(&mut world);
+        assert_eq!(world.resource::<ActiveSpace>().interior, None);
+        assert_eq!(*world.resource::<CameraSpace>(), CameraSpace::Exterior);
+        assert_eq!(world.resource::<RenderOrigin>().0, IVec2::new(18, 19));
     }
 
     #[test]
