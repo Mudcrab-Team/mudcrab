@@ -252,12 +252,17 @@ mod tests {
         struct LightWrites(u32);
         app.init_resource::<LightWrites>().add_systems(
             PostUpdate,
-            |lights: Query<(Ref<DirectionalLight>, Ref<Transform>, Ref<CascadeShadowConfig>)>,
+            |lights: Query<(
+                Ref<DirectionalLight>,
+                Ref<Transform>,
+                Ref<CascadeShadowConfig>,
+            )>,
              ambient: Res<GlobalAmbientLight>,
              mut writes: ResMut<LightWrites>| {
                 for (light, transform, cascades) in &lights {
-                    writes.0 += (light.is_changed() || transform.is_changed() || cascades.is_changed())
-                        as u32;
+                    writes.0 += (light.is_changed()
+                        || transform.is_changed()
+                        || cascades.is_changed()) as u32;
                 }
                 writes.0 += ambient.is_changed() as u32;
             },
