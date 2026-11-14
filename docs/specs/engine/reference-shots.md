@@ -104,7 +104,7 @@ cannot be combined with a benchmark, `--acceptance-screenshot`, `--auto-fly-spee
 ## Game clock and sun direction
 
 `--game-hour <hour>` starts the game clock at a finite hour in `[0,24)` (default 12).
-Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20;
+Ordinary play advances at `--timescale <scale>` game seconds per real second (default 20, the retail `TimeScale` global;
 0 freezes). Shots, acceptance screenshots, benchmarks (including `--benchmark-only` alone) and matched routes freeze at the launch
 hour regardless of timescale, so streaming duration cannot move shadows between captures.
 
@@ -113,12 +113,13 @@ The directional light follows the active worldspace's climate TNAM sunrise/sunse
 expanded by half `fSunAlphaTransTime`. A parameter sweeps from +1 to -1 across this day window
 and returns overnight. The Creation-space toward-sun vector is
 `v = (parameter * fSunDirXExtreme, fSunYExtreme * fSunDirXExtreme / fSunXExtreme, -fSunZExtreme)`,
-normalized as `v / |v|` so it has unit length; engine axes map the result to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4);
+normalized as `v / |v|` so it has unit length; engine axes map the result to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4) and is pending a retail check;
 it is distinct from the visible sun-disc path.
 
 Winning canonical GMST records supply those five values. Optional `[Sky]` keys of the same names
-in `--ini` files override them individually. Missing inputs use fallback values
-400 / 25 / -100 / 400 / 2, and a symmetric 06:00/18:00 day without usable climate timing.
+in `--ini` files override them individually. Missing inputs use the retail GMST values 400 / 40 / -150 / 200 / 0.5 (`fSunXExtreme`, `fSunYExtreme`,
+`fSunZExtreme`, `fSunDirXExtreme`, `fSunAlphaTransTime`) as fallbacks, and the retail `DefaultClimate` and
+`SkyrimClimate` TNAM (05:30, 10:00, 16:00, 20:30) without usable climate timing.
 Invalid record/INI fields warn and retain valid neighbors or fallbacks. TNAM bytes are ten-minute
 units; ordered same-day transitions are supported. A fade that would consume a full day uses
 the unexpanded climate midpoints. `--sun-position` remains a fixed explicit bearing/elevation

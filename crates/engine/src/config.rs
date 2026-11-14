@@ -88,7 +88,8 @@ pub struct EngineConfig {
     pub sun_position: Option<(f32, f32)>,
     /// Initial game hour; deterministic captures freeze at this hour.
     pub game_hour: f64,
-    /// Game seconds per real second during ordinary play; zero freezes the clock.
+    /// Game seconds per real second during ordinary play; zero freezes the clock. The default 20
+    /// is the retail `TimeScale` global (GLOB 0x3A, 20.0).
     pub timescale: f64,
     /// Explicit `[Sky]` overrides in `sun::SUN_KEYS` order; absent keys retain winning GMST values.
     pub sun_settings_overrides: [Option<f32>; 5],

@@ -378,7 +378,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::actor_skin_tone::ActorSkinTonePlugin,
             crate::actor_body_weight::ActorBodyWeightPlugin,
         ))
-        // The renderÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢main "prepared and drawable" bridge. Registered for every
+        // The render→main "prepared and drawable" bridge. Registered for every
         // run: it is what publishes the render world's own answer to "is this surface drawn?" into
         // the main world, and it changes nothing else about the frame.
         .add_plugins(crate::swap_bridge::SwapBridgePlugin)

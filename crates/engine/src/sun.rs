@@ -2,6 +2,8 @@
 //!
 //! Sun path follows spud (MIT, chasmlol/spud), commit e5f2de4,
 //! src/engine/weather.cpp::sun_parameter / Sky::evaluate. Written independently in Rust.
+//! The formula is third-party and has not been compared with a retail capture; this is pending
+//! a retail check. Every fallback constant below comes from a retail record, not from spud.
 
 use crate::{config::EngineConfig, streaming::ActiveSpace, world::environment::EnvironmentCatalog};
 use bevy::prelude::*;
@@ -16,14 +18,16 @@ pub const SUN_KEYS: [&str; 5] = [
 ];
 
 /// X position extreme, Y position extreme, Z lighting extreme, X lighting extreme, fade hours.
-/// These are spud's fallback values; winning GMST records replace them before INI overrides.
+/// The defaults are the retail GMST values (`fSunXExtreme` 400, `fSunYExtreme` 40,
+/// `fSunZExtreme` -150, `fSunDirXExtreme` 200, `fSunAlphaTransTime` 0.5), read from the registered
+/// pack. Winning GMST records replace them before INI overrides.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SunSettings(pub [f32; 5]);
 
 impl Default for SunSettings {
     /// Fallback for packs without the optional game settings.
     fn default() -> Self {
-        Self([400.0, 25.0, -100.0, 400.0, 2.0])
+        Self([400.0, 40.0, -150.0, 200.0, 0.5])
     }
 }
 
@@ -56,9 +60,10 @@ impl SunSettings {
 pub struct SunTiming(pub [u8; 4]);
 
 impl Default for SunTiming {
-    /// A symmetric 06:00/18:00 day for worlds without usable TNAM.
+    /// The retail `DefaultClimate` and `SkyrimClimate` TNAM (05:30, 10:00, 16:00, 20:30) for
+    /// worlds without usable TNAM.
     fn default() -> Self {
-        Self([36, 36, 108, 108])
+        Self([33, 60, 96, 123])
     }
 }
 
@@ -103,7 +108,8 @@ pub fn sun_direction(hour: f64, timing: SunTiming, settings: SunSettings) -> Vec
     let hour = if hour.is_finite() {
         hour.rem_euclid(24.0)
     } else {
-        12.0
+        // Retail `GameHour` global (GLOB 0x38, 8.0); only reached for a non-finite hour.
+        8.0
     };
     let elapsed = (hour - start).rem_euclid(24.0);
     let parameter = if elapsed < length {
