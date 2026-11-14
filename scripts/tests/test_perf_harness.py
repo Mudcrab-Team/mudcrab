@@ -379,6 +379,44 @@ class WatchdogTest(unittest.TestCase):
         self.assertTrue((Path(self.tmp.name) / "ok" / "run.json").is_file())
         self.assertIn("--benchmark-output", run["command"])
 
+    def test_a_background_run_that_leaves_the_frontmost_app_alone_is_clean(self):
+        run = self.run_mode("ok", window="background", focus_probe=lambda: "ASN:0x0-0x1")
+        self.assertEqual(run["focus"]["before"], "ASN:0x0-0x1")
+        self.assertEqual(run["focus"]["after"], "ASN:0x0-0x1")
+        self.assertFalse(run["focus"]["changed"])
+        self.assertGreaterEqual(run["focus"]["samples"], 2)
+        self.assertFalse([w for w in run["warnings"] if "frontmost" in w])
+
+    def test_a_background_run_that_takes_focus_for_a_moment_is_reported(self):
+        answers = iter(["ASN:0x0-0x1", "ASN:0x0-0x2"])
+        # The user's app, then the engine for one poll, then the user's app again.
+        probe = lambda: next(answers, "ASN:0x0-0x1")
+        run = self.run_mode("ok", window="background", focus_probe=probe)
+        self.assertTrue(run["focus"]["changed"])
+        self.assertEqual(run["focus"]["seen"], ["ASN:0x0-0x1", "ASN:0x0-0x2"])
+        self.assertTrue([w for w in run["warnings"] if "frontmost app changed" in w])
+        # The measurement itself is still valid; the warning is for the person reading it.
+        self.assertTrue(run["valid"])
+
+    def test_an_unreadable_frontmost_app_says_so_instead_of_passing(self):
+        run = self.run_mode("ok", window="background", focus_probe=lambda: None)
+        self.assertFalse(run["focus"]["checked"])
+        self.assertFalse(run["focus"]["changed"])
+        self.assertTrue([w for w in run["warnings"] if "could not be read" in w])
+
+    def test_other_window_modes_do_not_watch_focus(self):
+        for mode in ("visible", "hidden"):
+            run = self.run_mode("ok", window=mode, focus_probe=lambda: "ASN:0x0-0x1")
+            self.assertNotIn("focus", run)
+
+    def test_the_frontmost_app_is_read_with_lsappinfo(self):
+        seen = []
+        self.assertEqual(perf.frontmost_app(lambda command: seen.append(command) or "ASN:0x0-0x4a4a4a:\n"),
+                         "ASN:0x0-0x4a4a4a:")
+        self.assertEqual(seen, [["lsappinfo", "front"]])
+        self.assertIsNone(perf.frontmost_app(lambda command: None))
+        self.assertIsNone(perf.frontmost_app(lambda command: "  \n"))
+
     def test_hang_after_report_is_killed_and_still_valid(self):
         run = self.run_mode("hang", grace=0.5, timeout=20)
         self.assertEqual(run["classification"], "hung_after_report")

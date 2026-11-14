@@ -34,7 +34,6 @@ use bevy::{
     camera::visibility::RenderLayers,
     core_pipeline::prepass::DepthPrepass,
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    ecs::system::NonSendMarker,
     light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap},
     log::{Level, LogPlugin},
     math::DVec3,
@@ -273,7 +272,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         title: config.window_title(),
         visible: !config.hidden_window,
         // A background window sits under every ordinary window and opens without key focus, so a
-        // capture run never covers or interrupts whatever is on screen.
+        // capture run never covers or interrupts whatever is on screen. On macOS
+        // `background_window` also keeps the window on every Space and gives focus back to the
+        // app that had it (`crate::background_window`).
         focused: !config.background_window,
         window_level: if config.background_window {
             WindowLevel::AlwaysOnBottom
@@ -302,6 +303,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    // Read before the event loop starts: winit activates the app while it launches, and a background
+    // run gives focus back to whatever app was in front until then.
+    app.insert_resource(if config.background_window {
+        crate::background_window::BackgroundFocus::capture()
+    } else {
+        crate::background_window::BackgroundFocus::default()
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -397,7 +405,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
-        .add_systems(Update, refuse_activation)
+        .add_systems(Update, crate::background_window::hold_focus_with_the_user)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
@@ -612,40 +620,6 @@ fn keep_windows_hidden(config: Res<EngineConfig>, mut windows: Query<&mut Window
         }
     }
 }
-
-/// Keep a background window's app inactive for the whole run.
-///
-/// winit's macOS backend calls `activateIgnoringOtherApps` when the app finishes launching, and
-/// Bevy exposes no way to turn that off. Undoing only that first activation is not enough: the app
-/// was seen taking focus again later in a run, as the window and its surface come up. A background
-/// run is unattended, so the app hands activation back whenever it has it, which returns focus to
-/// the app that had it. To interact with the engine, use an ordinary window instead.
-fn refuse_activation(config: Res<EngineConfig>, _main_thread: NonSendMarker) {
-    if config.background_window {
-        deactivate_if_active();
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn deactivate_if_active() {
-    use objc2_app_kit::NSApplication;
-    use objc2_foundation::MainThreadMarker;
-
-    let Some(main_thread) = MainThreadMarker::new() else {
-        return;
-    };
-    let app = NSApplication::sharedApplication(main_thread);
-    // SAFETY: both calls are main-thread-only, and the marker above proves this is the main thread.
-    unsafe {
-        if app.isActive() {
-            app.deactivate();
-        }
-    }
-}
-
-/// Other platforms honour the unfocused window attribute, so there is nothing to undo.
-#[cfg(not(target_os = "macos"))]
-fn deactivate_if_active() {}
 
 /// Bevy's per-frame render-asset byte budget, seeded from the run's option.
 ///

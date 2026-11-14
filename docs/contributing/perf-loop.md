@@ -25,6 +25,25 @@ Every timing run, `compare` and `shots` takes `--window {auto,background,visible
 | `hidden` | `--hidden-window`: a window with visibility off | nothing on macOS |
 | `auto` (default) | `background` when the engine's `--help` lists `--background-window`, else `visible` | everything |
 
+A background run must not change the Space, take focus or bring another app forward. On macOS the
+engine keeps three promises: the window sits under all others and opens unfocused; it joins every
+Space (full-screen ones too), so activation never makes macOS switch Space to find it; and when the
+engine ends up as the frontmost app, it gives focus back to the app that was in front before it,
+not to whichever app macOS would choose (the earlier `deactivate()` did that, and could switch
+Space). The harness checks this on every background run: it reads the frontmost app with
+`lsappinfo front` every 0.25 s, and `run.json` carries `focus` (`before`, `after`, every app `seen`,
+`changed`). A change, even for a moment, adds a warning to the run; `checked: false` means
+`lsappinfo` gave no answer. The check opens no window itself. To try it by hand, start a short
+background run while another app is in front (on another Space too) and read the result:
+
+```sh
+python3 scripts/perf/perf.py run --engine <engine> --scenario terrain-water --window background --duration 10 \
+  --out evidence/focus-check && python3 -c "import json;print(json.load(open('evidence/focus-check/run.json'))['focus'])"
+```
+
+`changed` must be `false` and your Space must not move. The engine window is visible on the
+desktop while the run lasts.
+
 The `auto` probe runs `<engine> --help` once per binary SHA-256 and caches the answer in
 `~/.cache/mudcrab-perf/engine-flags.json` (`MUDCRAB_PERF_CACHE` moves it). `compare` resolves `auto`
 once for both binaries, so a base without the flag and a candidate with it both run `visible`;

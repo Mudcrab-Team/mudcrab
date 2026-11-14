@@ -26,6 +26,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -391,6 +392,59 @@ def _reap_after_interruption(proc, terminate):
             return
 
 
+def frontmost_app(command_output=None):
+    """The frontmost macOS app as `lsappinfo front` names it (an ASN), or None.
+
+    `lsappinfo` reads the window server's app list. It opens nothing and asks for no permission, so
+    it is safe to call while the user is working.
+    """
+    output = (command_output or _command_output)(["lsappinfo", "front"])
+    return (output or "").strip() or None
+
+
+class FocusWatch:
+    """Polls the frontmost app while a background run is going and records whether it ever changed.
+
+    A background window must not take focus, change the Space or bring another app forward. A
+    change of the frontmost app is how all three show up, so one that differs from the app in front
+    at the start, even for a moment, is reported.
+    """
+
+    def __init__(self, interval=0.25, probe=frontmost_app):
+        self.interval = interval
+        self.probe = probe
+        self.before = None
+        self.seen = []
+        self.samples = 0
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _note(self, app):
+        self.samples += 1
+        if app is not None and app not in self.seen:
+            self.seen.append(app)
+
+    def start(self):
+        self.before = self.probe()
+        self._note(self.before)
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+
+    def _poll(self):
+        while not self._stop.wait(self.interval):
+            self._note(self.probe())
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        after = self.probe()
+        self._note(after)
+        changed = self.before is not None and any(app != self.before for app in self.seen)
+        return {"checked": self.before is not None, "before": self.before, "after": after,
+                "seen": list(self.seen), "samples": self.samples, "changed": changed}
+
+
 def watch_process(command, *, stdout_path, stderr_path, is_done, timeout, grace, poll=0.2, env=None,
                   terminate=None):
     """Run a command and return what happened.
@@ -464,7 +518,7 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
                  grace=20.0, window="visible", run_id=None, commit=None, frame_budget_ms=6.25, dry_run=False,
                  extra_args=(), poll=0.2, profiler="none", samply=None,
                  trace_start=METAL_TRACE_START_ACQUISITION, finalize_timeout=SAMPLY_FINALIZE_SECONDS,
-                 dylib_builder=None):
+                 dylib_builder=None, focus_probe=None):
     """Run one scenario and write run.json beside the report. Returns the run.json dict.
 
     `window` is a concrete mode (background, visible or hidden); resolve `auto` first.
@@ -494,10 +548,18 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
     terminate = None
     if profiler == "samply":
         terminate = lambda proc: terminate_engine_under_samply(proc, engine, finalize_timeout=finalize_timeout)
-    watch = watch_process(plan["launch_command"], stdout_path=out_dir / "stdout.log",
-                          stderr_path=out_dir / "stderr.log",
-                          is_done=lambda: read_complete_report(report_path) is not None,
-                          timeout=timeout, grace=grace, poll=poll, env=env, terminate=terminate)
+    # A background run must leave the user's focus alone; watch for the frontmost app changing.
+    focus = None
+    if window == "background" and (focus_probe is not None or platform.system() == "Darwin"):
+        focus = FocusWatch(probe=focus_probe or frontmost_app)
+        focus.start()
+    try:
+        watch = watch_process(plan["launch_command"], stdout_path=out_dir / "stdout.log",
+                              stderr_path=out_dir / "stderr.log",
+                              is_done=lambda: read_complete_report(report_path) is not None,
+                              timeout=timeout, grace=grace, poll=poll, env=env, terminate=terminate)
+    finally:
+        focus_result = focus.stop() if focus is not None else None
     report = read_complete_report(report_path)
     classification = classify(watch)
     warnings = []
@@ -513,6 +575,13 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
                             "the measured frames include loading; raise --warmup-frames")
     if window == "hidden" and platform.system() == "Darwin":
         warnings.append(HIDDEN_WINDOW_MACOS_WARNING)
+    if focus_result is not None:
+        if not focus_result["checked"]:
+            warnings.append("the frontmost app could not be read (lsappinfo), so focus was not checked")
+        elif focus_result["changed"]:
+            warnings.append(f"the frontmost app changed during a background run (before "
+                            f"{focus_result['before']}, saw {', '.join(focus_result['seen'])}): the window "
+                            "took focus or switched Space")
     outputs = {}
     for label, path in plan["outputs"].items():
         present = Path(path).is_file() and Path(path).stat().st_size > 0
@@ -544,6 +613,8 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
         "report": str(report_path) if report is not None else None,
         "warnings": warnings,
     }
+    if focus_result is not None:
+        run["focus"] = focus_result
     if profiler != "none":
         run["profiler"] = {"name": profiler, "launch_command": plan["launch_command"],
                            "env": plan["env"], "outputs": outputs}
