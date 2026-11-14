@@ -686,6 +686,7 @@ impl AssetPipeline {
                 Ok(())
             })?
         };
+        refuse_to_replace_complete_pack(&config.output_dir, &config.data_dir, &undiscovered)?;
         let archive_keys: BTreeMap<_, _> = resolved_files
             .iter()
             .filter(|(_, source)| extension(source, &["bsa", "ba2"]))
@@ -3498,6 +3499,46 @@ fn discover_inputs(
     }
     files.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     Ok(files)
+}
+
+/// Fails closed when unreadable source paths would make a run publish an incomplete pack over a
+/// complete one. Every unreadable path masks the archive copies under it, so the new pack would
+/// lose assets the previous pack still holds, and publication removes the previous pack. Nothing
+/// is lost when the previous pack is missing, unusable or already incomplete, so those runs
+/// continue. The caller holds the output's exclusive lock, so the manifest cannot change before
+/// publication. The check runs before any conversion work, and it leaves the previous pack as it is.
+fn refuse_to_replace_complete_pack(
+    output: &Path,
+    data_root: &Path,
+    undiscovered: &[PathBuf],
+) -> Result<()> {
+    if undiscovered.is_empty() {
+        return Ok(());
+    }
+    let manifest_path = output.join("conversion-manifest.json");
+    let previous_is_complete = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ConversionManifest>(&bytes).ok())
+        .is_some_and(|manifest| manifest.complete);
+    if !previous_is_complete {
+        return Ok(());
+    }
+    const LISTED: usize = 5;
+    let mut paths = undiscovered
+        .iter()
+        .take(LISTED)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if undiscovered.len() > LISTED {
+        paths.push_str(&format!(", and {} more", undiscovered.len() - LISTED));
+    }
+    bail!(
+        "refusing to replace the complete pack at {} with an incomplete one: {} path(s) under {} cannot be read: {paths}. The previous pack is unchanged. Fix the permissions and run again, or convert to a different output folder",
+        output.display(),
+        undiscovered.len(),
+        data_root.display()
+    )
 }
 
 fn is_loose_vfs_source(

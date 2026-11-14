@@ -97,6 +97,23 @@ fn assert_discovery_failure(
     )));
 }
 
+fn file_listing(root: &Path) -> Vec<String> {
+    let mut files: Vec<String> = walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .strip_prefix(root)
+                .unwrap()
+                .display()
+                .to_string()
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 #[tokio::test]
 async fn unreadable_data_subtree_is_isolated_unless_fail_fast_is_requested() {
     let directory = tempfile::tempdir().unwrap();
@@ -135,7 +152,34 @@ async fn unreadable_data_subtree_is_isolated_unless_fail_fast_is_requested() {
         manifest
     );
 
+    // The previous pack is complete, so an incomplete result must not replace it.
     config.fail_fast = false;
+    let output_files = file_listing(&output);
+    let (result, events) = run(config.clone()).await;
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("refusing to replace the complete pack"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&unreadable.display().to_string()),
+        "{message}"
+    );
+    assert!(events.iter().all(|event| !matches!(
+        event.stage,
+        ProgressStage::Publishing | ProgressStage::Complete
+    )));
+    assert_eq!(
+        fs::read(output.join("conversion-manifest.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(file_listing(&output), output_files);
+    assert!(!output.join("scripts/good.luau").exists());
+
+    // With no complete pack to lose, the same run isolates the folder and publishes.
+    let fresh_output = directory.path().join("fresh");
+    config.output_dir = fresh_output.clone();
+    let output = fresh_output;
     let (result, events) = run(config).await;
     let report = result.unwrap();
     assert!(!report.complete);
