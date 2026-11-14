@@ -566,7 +566,6 @@ impl Plugin for PlayerControlsPlugin {
                     walk_intent_system.run_if(crate::door_crossing::no_door_crossing),
                     toggle_mode_system.run_if(console_closed),
                     walk_camera_follow_system,
-                    sprint_fov_system,
                     overlay_system,
                 )
                     .chain()
@@ -3292,10 +3291,25 @@ mod simulation_tests {
 /// Noclip flight tuning (V6).
 pub const NOCLIP_SPEED: f32 = 900.0;
 pub const NOCLIP_FAST_MULTIPLIER: f32 = 4.0;
-pub const MOUSE_SENSITIVITY: f32 = 0.0025;
-pub const MAX_PITCH_RADIANS: f32 = 1.5533;
-const SPRINT_FOV_BONUS_DEGREES: f32 = 8.0;
-const SPRINT_FOV_HALF_LIFE_SECS: f32 = 0.12;
+/// Retail INI `fMouseHeadingSensitivity` (executable default 0.0125; RF-CAM-010, RF-CAM-011;
+/// scaling at `0x1407aeba0`).
+pub const MOUSE_HEADING_SENSITIVITY: f32 = 0.0125;
+/// Retail INI `fMouseHeadingXScale` (executable default 0.02; RF-CAM-010; `0x1407aeba0`).
+pub const MOUSE_HEADING_X_SCALE: f32 = 0.02;
+/// Retail INI `fMouseHeadingYScale` (executable default 0.85; RF-CAM-011; `0x1407aeba0`).
+pub const MOUSE_HEADING_Y_SCALE: f32 = 0.85;
+/// Retail GMST `fLookingSpeed:Camera` (default 0.1; RF-CAM-011; `0x1408fb2e0`).
+pub const LOOKING_SPEED: f32 = 0.1;
+/// Yaw speed (rad/s) of MOVT `0003580D` NPC_Default_MT, the walk and run movement type: the
+/// SPED rotate-in-place and rotate-while-moving values are all pi (RF-CAM-010; yaw at
+/// `0x1407a3fd0`). The registered pack keeps the record bytes, not a parsed column.
+pub const ROTATE_SPEED_DEFAULT_MT: f32 = std::f32::consts::PI;
+/// Yaw speed (rad/s) of MOVT `00034D9C` NPC_Sprinting_MT: all three SPED rotate values are pi/2
+/// (RF-CAM-010; yaw at `0x1407a3fd0`).
+pub const ROTATE_SPEED_SPRINTING_MT: f32 = std::f32::consts::FRAC_PI_2;
+/// Standing pitch limit, up and down: +-pi/2 (RF-CAM-012; `0x140693050`). The retail sitting,
+/// mounted and flying limits are not used: the engine has no such states yet.
+pub const MAX_PITCH_RADIANS: f32 = std::f32::consts::FRAC_PI_2;
 const SPEED_DISPLAY_DEADZONE: f32 = 5.0;
 
 /// Sampled look intent (V6, V18).
@@ -3326,13 +3340,39 @@ pub fn clamp_pitch(pitch: f32) -> f32 {
     pitch.clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS)
 }
 
-/// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6).
-pub fn sample_look_intent(capture: &CursorCapture, mouse_delta: Vec2, intent: &mut LookIntent) {
+/// Mouse yaw in radians per count: `fMouseHeadingSensitivity * fMouseHeadingXScale` times the
+/// movement type's rotate speed. 0.000785 for walk and run, half of that while sprinting
+/// (RF-CAM-010).
+pub fn yaw_radians_per_count(sprinting: bool) -> f32 {
+    let rotate_speed = if sprinting {
+        ROTATE_SPEED_SPRINTING_MT
+    } else {
+        ROTATE_SPEED_DEFAULT_MT
+    };
+    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_X_SCALE * rotate_speed
+}
+
+/// Mouse pitch in radians per count: `fMouseHeadingSensitivity * fMouseHeadingYScale *
+/// fLookingSpeed`, 0.0010625 (RF-CAM-011). Retail also multiplies by a zoom ratio, which is 1
+/// outside zoom; the engine has no zoom state.
+pub fn pitch_radians_per_count() -> f32 {
+    MOUSE_HEADING_SENSITIVITY * MOUSE_HEADING_Y_SCALE * LOOKING_SPEED
+}
+
+/// Sample mouse motion into look intent; uncaptured pointer yields nothing (V6). Retail applies
+/// counts directly: no smoothing, no acceleration and no frame-time scaling (RF-CAM-010,
+/// RF-CAM-011).
+pub fn sample_look_intent(
+    capture: &CursorCapture,
+    mouse_delta: Vec2,
+    sprinting: bool,
+    intent: &mut LookIntent,
+) {
     if *capture != CursorCapture::Captured {
         return;
     }
-    intent.yaw -= mouse_delta.x * MOUSE_SENSITIVITY;
-    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * MOUSE_SENSITIVITY);
+    intent.yaw -= mouse_delta.x * yaw_radians_per_count(sprinting);
+    intent.pitch = clamp_pitch(intent.pitch - mouse_delta.y * pitch_radians_per_count());
 }
 
 /// Noclip displacement from held keys relative to the view (V6).
@@ -3703,6 +3743,8 @@ fn cursor_lifecycle_system(
 
 fn look_input_system(
     capture: Res<CursorCapture>,
+    mode: Res<MoveMode>,
+    sprint: Res<SprintLatch>,
     mut mouse_motion: MessageReader<MouseMotion>,
     mut intent: ResMut<LookIntent>,
 ) {
@@ -3710,7 +3752,9 @@ fn look_input_system(
     for motion in mouse_motion.read() {
         delta += motion.delta;
     }
-    sample_look_intent(&capture, delta, &mut intent);
+    // Only WALK has a sprinting movement type; NOCLIP flight uses the default one.
+    let sprinting = *mode == MoveMode::Walk && sprint.0;
+    sample_look_intent(&capture, delta, sprinting, &mut intent);
 }
 
 fn noclip_flight_system(
@@ -4011,39 +4055,6 @@ fn actual_walk_speed(output: Option<&KinematicCharacterControllerOutput>) -> f32
     }
 }
 
-fn exponential_fov_step(current: f32, target: f32, delta_secs: f32) -> f32 {
-    let remaining = (-delta_secs / SPRINT_FOV_HALF_LIFE_SECS).exp2();
-    target + (current - target) * remaining
-}
-
-fn sprint_fov_system(
-    mode: Res<MoveMode>,
-    sprint: Res<SprintLatch>,
-    time: Res<Time>,
-    player: Query<Option<&KinematicCharacterControllerOutput>, With<PlayerBody>>,
-    mut camera: Query<&mut Projection, (With<StreamingCamera>, With<ControlledCamera>)>,
-    settings: Option<Res<crate::settings::RenderingSettings>>,
-) {
-    let Ok(mut projection) = camera.single_mut() else {
-        return;
-    };
-    let Projection::Perspective(perspective) = &mut *projection else {
-        return;
-    };
-    let base_fov = settings
-        .as_deref()
-        .map_or(PerspectiveProjection::default().fov, |settings| {
-            settings.fov_degrees.to_radians()
-        });
-    let moving = actual_walk_speed(player.single().ok().flatten()) > 1.0;
-    let target_fov = if *mode == MoveMode::Walk && sprint.0 && moving {
-        base_fov + SPRINT_FOV_BONUS_DEGREES.to_radians()
-    } else {
-        base_fov
-    };
-    perspective.fov = exponential_fov_step(perspective.fov, target_fov, time.delta_secs());
-}
-
 #[cfg(test)]
 mod noclip_tests {
     use super::*;
@@ -4153,71 +4164,6 @@ mod noclip_tests {
     }
 
     #[test]
-    fn sprint_fov_interpolation_is_exponential_and_returns_to_base() {
-        let base = PerspectiveProjection::default().fov;
-        let sprint = base + SPRINT_FOV_BONUS_DEGREES.to_radians();
-        let mut at_30_hz = base;
-        let mut at_120_hz = base;
-        for _ in 0..30 {
-            at_30_hz = exponential_fov_step(at_30_hz, sprint, 1.0 / 30.0);
-        }
-        for _ in 0..120 {
-            at_120_hz = exponential_fov_step(at_120_hz, sprint, 1.0 / 120.0);
-        }
-        assert!((at_30_hz - at_120_hz).abs() < 0.0001);
-        assert!((at_30_hz - sprint).abs() < 0.001);
-        for _ in 0..60 {
-            at_30_hz = exponential_fov_step(at_30_hz, base, 1.0 / 60.0);
-        }
-        assert!((at_30_hz - base).abs() < 0.001);
-    }
-
-    #[test]
-    fn sprint_fov_changes_only_the_controlled_camera_during_actual_motion() {
-        let mut app = App::new();
-        app.insert_resource(MoveMode::Walk)
-            .insert_resource(SprintLatch(true))
-            .insert_resource(Time::<()>::default());
-        app.world_mut()
-            .resource_mut::<Time<()>>()
-            .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
-        let base = PerspectiveProjection::default().fov;
-        let controlled = app
-            .world_mut()
-            .spawn((
-                StreamingCamera,
-                ControlledCamera,
-                Projection::Perspective(PerspectiveProjection::default()),
-            ))
-            .id();
-        let unrelated = app
-            .world_mut()
-            .spawn(Projection::Perspective(PerspectiveProjection::default()))
-            .id();
-        app.world_mut().spawn((
-            PlayerBody,
-            KinematicCharacterControllerOutput {
-                grounded: true,
-                desired_translation: Vec3::ZERO,
-                effective_translation: Vec3::new(0.0, 0.0, -10.0),
-                collisions: Vec::new(),
-                is_sliding_down_slope: false,
-            },
-        ));
-        app.world_mut().run_system_once(sprint_fov_system).unwrap();
-        let fov = |app: &App, entity| match app.world().get::<Projection>(entity).unwrap() {
-            Projection::Perspective(perspective) => perspective.fov,
-            _ => panic!("expected perspective camera"),
-        };
-        let widened = fov(&app, controlled);
-        assert!(widened > base);
-        assert_eq!(fov(&app, unrelated), base);
-        app.insert_resource(MoveMode::Noclip);
-        app.world_mut().run_system_once(sprint_fov_system).unwrap();
-        assert!(fov(&app, controlled) < widened);
-    }
-
-    #[test]
     fn collision_debug_keeps_shapes_crossing_view_plane() {
         let camera = Transform::IDENTITY;
         assert!(debug_collider_in_front(
@@ -4277,9 +4223,100 @@ mod noclip_tests {
 
     #[test]
     fn pitch_clamps_inside_bounded_range() {
+        // RF-CAM-012: the standing limit is +-pi/2.
+        assert_eq!(MAX_PITCH_RADIANS, std::f32::consts::FRAC_PI_2);
         assert_eq!(clamp_pitch(5.0), MAX_PITCH_RADIANS);
         assert_eq!(clamp_pitch(-5.0), -MAX_PITCH_RADIANS);
         assert_eq!(clamp_pitch(0.3), 0.3);
+    }
+
+    #[test]
+    fn mouse_yaw_per_count_follows_retail_rates() {
+        // RF-CAM-010: 0.0125 * 0.02 * pi = 0.000785 rad per count walking and running,
+        // 0.0125 * 0.02 * pi / 2 = 0.0003925 sprinting.
+        assert!((yaw_radians_per_count(false) - 0.000_785).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true) - 0.000_392_5).abs() < 1.0e-6);
+        assert!((yaw_radians_per_count(true) * 2.0 - yaw_radians_per_count(false)).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn mouse_pitch_per_count_follows_retail_rate() {
+        // RF-CAM-011: 0.0125 * 0.85 * 0.1 = 0.0010625 rad per count.
+        assert!((pitch_radians_per_count() - 0.001_062_5).abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn sampled_counts_turn_by_the_retail_rates() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 200.0),
+            false,
+            &mut intent,
+        );
+        assert!((intent.yaw + 100.0 * 0.000_785).abs() < 1.0e-4);
+        assert!((intent.pitch + 200.0 * 0.001_062_5).abs() < 1.0e-4);
+        let mut sprinting = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(100.0, 0.0),
+            true,
+            &mut sprinting,
+        );
+        assert!((sprinting.yaw + 100.0 * 0.000_392_5).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn sampled_pitch_stops_at_plus_or_minus_ninety_degrees() {
+        let mut intent = LookIntent::default();
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(0.0, 1.0e6),
+            false,
+            &mut intent,
+        );
+        assert_eq!(intent.pitch, -std::f32::consts::FRAC_PI_2);
+        sample_look_intent(
+            &CursorCapture::Captured,
+            Vec2::new(0.0, -2.0e6),
+            false,
+            &mut intent,
+        );
+        assert_eq!(intent.pitch, std::f32::consts::FRAC_PI_2);
+    }
+
+    #[test]
+    fn look_input_system_has_no_smoothing_or_frame_time_scaling() {
+        // RF-CAM-010, RF-CAM-011: the same counts give the same rotation at any frame time.
+        let turn = |frame_secs: f32, mode: MoveMode, sprinting: bool| {
+            let mut app = App::new();
+            app.add_message::<bevy::input::mouse::MouseMotion>()
+                .insert_resource(CursorCapture::Captured)
+                .insert_resource(mode)
+                .insert_resource(SprintLatch(sprinting))
+                .insert_resource(LookIntent::default())
+                .insert_resource(Time::<()>::default());
+            app.world_mut()
+                .resource_mut::<Time<()>>()
+                .advance_by(std::time::Duration::from_secs_f32(frame_secs));
+            app.world_mut()
+                .write_message(bevy::input::mouse::MouseMotion {
+                    delta: Vec2::new(1.0, 1.0),
+                });
+            app.world_mut().run_system_once(look_input_system).unwrap();
+            let look = app.world().resource::<LookIntent>();
+            (look.yaw, look.pitch)
+        };
+        let fast = turn(1.0 / 240.0, MoveMode::Walk, false);
+        let slow = turn(1.0 / 20.0, MoveMode::Walk, false);
+        assert_eq!(fast, slow);
+        assert!((fast.0 + 0.000_785).abs() < 1.0e-6);
+        assert!((fast.1 + 0.001_062_5).abs() < 1.0e-7);
+        // Sprinting halves yaw only, and only in WALK.
+        let sprint = turn(1.0 / 60.0, MoveMode::Walk, true);
+        assert!((sprint.0 + 0.000_392_5).abs() < 1.0e-6);
+        assert_eq!(sprint.1, fast.1);
+        assert_eq!(turn(1.0 / 60.0, MoveMode::Noclip, true), fast);
     }
 
     #[test]
