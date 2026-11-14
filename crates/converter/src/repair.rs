@@ -45,16 +45,13 @@ pub struct RepairReport {
     /// Record data was verified complete by its last authoritative conversion.
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
-    /// Data-loss warnings from rebuilding the repaired pack's grass cache.
+    /// Grass data-loss warnings and optional capability declarations dropped during repair.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Advisory grass omissions that do not affect the completeness proof.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<String>,
     pub failures: BTreeMap<String, String>,
-    /// Optional capability declarations dropped because their payload is no longer valid.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -222,7 +219,6 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         warnings: Vec::new(),
         notices: Vec::new(),
         failures: BTreeMap::new(),
-        warnings: Vec::new(),
     };
 
     let mut selection_notices = Vec::new();
@@ -1768,7 +1764,6 @@ mod tests {
                 warnings: Vec::new(),
                 notices: Vec::new(),
                 failures: BTreeMap::new(),
-                warnings: Vec::new(),
             };
             attempt(
                 &config,
@@ -1825,8 +1820,9 @@ mod tests {
             excluded: 0,
             published: false,
             record_data_complete: false,
-            failures: BTreeMap::new(),
             warnings: Vec::new(),
+            notices: Vec::new(),
+            failures: BTreeMap::new(),
         };
 
         attempt(
