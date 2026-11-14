@@ -1587,7 +1587,8 @@ mod tests {
                 params![id, flags, parent, parent_flags],
             ).unwrap();
         }
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         for _ in 0..2 {
             let payload =
                 super::load_cell(&connection, &mut query, 1, CellKey::Interior(600)).unwrap();
