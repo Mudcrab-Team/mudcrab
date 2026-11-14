@@ -1599,7 +1599,8 @@ mod tests {
             dir.path().join("meshes/healthy.glb"),
         )
         .unwrap();
-        conn.execute_batch("INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(41,'meshes/healthy.glb',0,-64,-16,-48,64,32,48,1);
+        conn.execute_batch("INSERT INTO records(form_id,record_type,load_order,data) VALUES(41,'STAT',0,x'00');
+            INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(41,'meshes/healthy.glb',0,-64,-16,-48,64,32,48,1);
             INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(51,11,1,41,1,4090,64,0,0,0,0,2);").unwrap();
         add_skin(dir.path(), false);
         edit_mesh(dir.path(), |json, _| {
@@ -2178,7 +2179,8 @@ mod tests {
         conn.execute("UPDATE statics SET flags=?1 WHERE id=40", [0x00800000u32])
             .unwrap();
         conn.execute_batch(
-            "INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid)
+            "INSERT INTO records(form_id,record_type,load_order,data) VALUES(41,'STAT',0,x'00');
+             INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid)
              SELECT 41,model_path,0,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid FROM statics WHERE id=40;
              INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
              VALUES(51,10,1,41,1,512,512,0,0,0,0,2);",
@@ -2219,7 +2221,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         conn.execute_batch(
-            "INSERT INTO statics(id,model_path,flags) VALUES
+            "INSERT INTO records(form_id,record_type,load_order,data) VALUES(41,'STAT',0,x'00'),(42,'STAT',0,x'00');
+             INSERT INTO statics(id,model_path,flags) VALUES
              (41,'meshes/arbitrary.glb',0),(42,'meshes/ordinary.glb',0);
              INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale)
              VALUES(51,10,1,41,1,0,0,0,0,0,0,1),(52,10,1,42,1,0,0,0,0,0,0,1);",

@@ -317,6 +317,11 @@ fn obstruction_notice_limit_and_first_example_survive_reuse_and_removal() {
     for index in 0..35u32 {
         let path = format!("meshes/bad{index:02}.glb");
         std::fs::write(dir.path().join(&path), b"malformed GLB").unwrap();
+        conn.execute(
+            "INSERT INTO records(form_id,record_type,load_order,data) VALUES(?1,'STAT',0,x'00')",
+            [100 + index],
+        )
+        .unwrap();
         conn.execute("INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(?1,?2,0,-64,-16,-48,64,32,48,1)", rusqlite::params![100+index,path]).unwrap();
         conn.execute("INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(?1,10,1,?2,1,4090,64,0,0,0,0,2)", rusqlite::params![200+index,100+index]).unwrap();
     }
