@@ -1,3 +1,6 @@
+pub(crate) mod authored_actor_idle;
+mod creature_idle;
+
 use crate::{
     animation,
     archive::{
@@ -349,6 +352,10 @@ impl AssetPipeline {
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
+        // Saved configurations cannot make current emitted bytes reuse an older script ABI.
+        config.script_abi_version = config
+            .script_abi_version
+            .max(crate::script::SCRIPT_ABI_VERSION);
         config.validate()?;
         config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
@@ -1329,6 +1336,20 @@ impl AssetPipeline {
             stage_mo2_animation_inputs(&staging.join("vfs"), &resolved_files)?;
         }
         convert_default_animations(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        authored_actor_idle::convert(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        creature_idle::convert(
             staging,
             &source_paths,
             config.fail_fast,
@@ -3326,7 +3347,7 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
                 // companion path as well, retaining `.opensky-wrapN` so clamp/repeat images keep
                 // distinct AssetServer identities and sampler settings.
                 if let Some(linear) = runtime_key.strip_suffix(".ktx2") {
-                    let linear = linear.replace(".opensky-srgb", "");
+                    let linear = linear.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     let linear = format!("{linear}.ktx2");
                     // The canonical source is already the default linear path. Never republish
                     // it over itself; only sampler-specific companion aliases need a file.
@@ -7089,13 +7110,9 @@ mod tests {
 
     #[test]
     fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
-        for mode in 0..=3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let sampler = if mode == 3 {
-                    String::new()
-                } else {
-                    format!(".opensky-wrap{mode}")
-                };
+        for mode in 0..=shared::texture_aliases::WRAP_TEXTURE_SUFFIX_NONE {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let sampler = shared::texture_aliases::wrap_texture_suffix(mode).unwrap_or("");
                 let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
                 assert_eq!(
@@ -7119,12 +7136,12 @@ mod tests {
                 glb.extend_from_slice(b"JSON");
                 glb.extend_from_slice(&json);
                 fs::write(root.join("meshes/alias.glb"), glb).unwrap();
-                let expected = if transfer.is_empty() && mode == 3 {
+                let expected = if transfer.is_empty() && sampler.is_empty() {
                     vec![]
-                } else if transfer.is_empty() || mode == 3 {
+                } else if transfer.is_empty() || sampler.is_empty() {
                     vec![PathBuf::from(&alias)]
                 } else {
-                    let linear = alias.replace(".opensky-srgb", "");
+                    let linear = alias.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     vec![PathBuf::from(&alias), PathBuf::from(linear)]
                 };
                 let published = publish_texture_aliases(root).unwrap();
@@ -8509,6 +8526,7 @@ mod tests {
                 );
                 assert_eq!(inputs, expected);
                 let mut clip = animation::AnimationClip {
+                    blend_hint: 0,
                     name: String::new(),
                     original_skeleton_name: "synthetic".into(),
                     duration_seconds: 1.0 / 30.0,
@@ -10405,7 +10423,7 @@ mod tests {
             b"skeleton"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }
@@ -10439,7 +10457,7 @@ mod tests {
             b"clip"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }

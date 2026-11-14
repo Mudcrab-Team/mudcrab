@@ -868,6 +868,14 @@ fn publish_derived_output(
 /// Cleanup subtree recognition is intentionally broader and cannot establish provenance.
 pub(crate) fn supported_derived_proof(path: &str, proof: &crate::cache::DerivedOutput) -> bool {
     let mut inputs = BTreeSet::new();
+    if crate::pipeline::authored_actor_idle::supported_proof(path, proof) {
+        inputs.extend(proof.inputs.keys().cloned());
+    }
+    for profile in shared::creature_idle::CREATURE_IDLES {
+        if path == profile.clip_scene && proof.recipe == crate::cache::CREATURE_IDLE_RECIPE {
+            inputs.extend(profile.inputs().map(str::to_owned));
+        }
+    }
     for sex in ["male", "female"] {
         if path == format!("meshes/actors/character/composed/default/{sex}/body.glb")
             && matches!(
@@ -1416,9 +1424,9 @@ mod tests {
             },
         );
         let mut aliases = Vec::new();
-        for mode in 0..3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+        for sampler in shared::texture_aliases::WRAP_TEXTURE_SUFFIXES {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 fs::write(source.join(&alias), b"verified texture").unwrap();
                 aliases.push(alias);
             }
