@@ -5,6 +5,12 @@ each cell and form. The dumper executes the production generation code with an
 observer; it does not create an application, renderer, graphics device, or game
 process. Python tooling uses only the standard library.
 
+The dump calls `generate_observed` with baked LAND heights and colours. Runtime
+calls `generate_on_terrain` with committed terrain heights and `GrassTerrain`
+luminance; its floating-point operation order can differ, including brightness
+rounding. Dump results therefore establish parity for the baked-LAND CPU path,
+and do not prove identical runtime positions or brightness on committed terrain.
+
 Keep all game inputs read-only and all dumps, caches, logs, and receipts outside
 the source repository. Use explicit paths on the authorized data drive. On
 Windows set `TEMP` and `TMP` to the authorized temporary directory before
