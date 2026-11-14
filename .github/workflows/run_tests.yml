@@ -12,6 +12,10 @@ on:
     branches: [ main, develop, 'release/**' ]
   pull_request:
     branches: [ main, develop, 'release/**' ]
+    # ready_for_review re-runs the suite so reviewers_pass checks a PR that
+    # was a draft (and skipped it) when it was last pushed.
+    types: [ opened, synchronize, reopened, ready_for_review ]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -33,9 +37,15 @@ jobs:
 
       - id: filter
         name: Filter changed files
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          if [ -z "${GITHUB_BASE_REF:-}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; then
+            echo "In a merge queue run comparing to merge_group.base_sha"
+            git fetch origin "$MERGE_GROUP_BASE_SHA" --depth=350
+            COMPARE_REV="$MERGE_GROUP_BASE_SHA"
+          elif [ -z "${GITHUB_BASE_REF:-}" ]; then
             echo "Not in a PR context (i.e., push event)"
             COMPARE_REV="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           else
@@ -110,6 +120,9 @@ jobs:
 
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
+
+      - name: Test reviewer gate decisions
+        run: python3 -B -m unittest discover -s .github/scripts -p test_reviewer_gate.py -v
 
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
@@ -385,9 +398,52 @@ jobs:
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
 
+  # This job makes tests_pass wait for CodeRabbit on the pull request head.
+  # CodeRabbit and Greptile review a PR's head commit and never report on a
+  # merge queue commit, so the job runs only on pull_request events. No merge
+  # queue is enabled today. If one is ever enabled, the merge_group run skips
+  # this job and the ruleset would have to stop requiring CodeRabbit directly.
+  #
+  # CodeRabbit reports as a check run, not as a commit status. Only a GitHub
+  # App can create a check run, so the job trusts the newest check run named
+  # "CodeRabbit" that the CodeRabbit app (id 347564, the id the ruleset also
+  # pins) owns. Commit statuses are not read: anyone with Write access can post
+  # one under any name. The decision logic and its fixture tests are in
+  # .github/scripts/reviewer_gate.py and .github/scripts/test_reviewer_gate.py.
+  # They live outside scripts/ on purpose: the engine's config tests scan every
+  # file under scripts/ for engine command-line options.
+  #
+  # A rate-limited or skipped CodeRabbit run (neutral) is not a review, so the
+  # job waits and then fails. To recover, comment "@coderabbitai review" on
+  # the PR, wait for the CodeRabbit check to finish, and re-run this job.
+  # Greptile is logged and never blocks.
+  reviewers_pass:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for CodeRabbit on the PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -B .github/scripts/reviewer_gate.py \
+            --repo "$REPO" \
+            --sha "$SHA" \
+            --timeout-seconds 1500 \
+            --interval-seconds 30
+
   tests_pass:
     needs:
       - orchestrate
+      - reviewers_pass
       - format
       - scripts
       - native_profiling
@@ -415,6 +471,7 @@ jobs:
           }
 
           check_result "orchestrate" "$RESULT_ORCHESTRATE"
+          check_result "reviewers_pass" "$RESULT_REVIEWERS_PASS"
           check_result "format" "$RESULT_FORMAT"
           check_result "scripts" "$RESULT_SCRIPTS"
           check_result "native_profiling" "$RESULT_NATIVE_PROFILING"
@@ -429,6 +486,7 @@ jobs:
           exit $EXIT_CODE
         env:
           RESULT_ORCHESTRATE: ${{ needs.orchestrate.result }}
+          RESULT_REVIEWERS_PASS: ${{ needs.reviewers_pass.result }}
           RESULT_FORMAT: ${{ needs.format.result }}
           RESULT_SCRIPTS: ${{ needs.scripts.result }}
           RESULT_NATIVE_PROFILING: ${{ needs.native_profiling.result }}
