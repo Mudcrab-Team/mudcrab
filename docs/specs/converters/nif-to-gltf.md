@@ -339,9 +339,9 @@ refuses the whole model before export. Its binding references cannot establish a
 this conservative asset-level policy also drops usable sibling shapes in that NIF, including
 when the bad instance is unreferenced. Inspection keeps the parse diagnostics for that file. Parsed-skin
 binding recovery above remains per shape. The refusal names the source, type and count, up to
-eight failure offsets and the omitted count. Normal conversion, including restoration from
-older published manifests or staging journals, omits the refused model, retains other usable
-assets and records the failure in the report and manifest with incomplete status.
+eight failure offsets and the omitted count. A normal conversion that builds
+the model omits the refused model, retains other usable assets and records the failure in the
+report and manifest with incomplete status.
 
 The auxiliary tools follow the same per-model validation boundary. `collision-annotate`
 processes usable neighbors, removes each failed output copy, and writes
@@ -365,6 +365,7 @@ The scene-depth bound, the cycle check and the unparsable-skin refusal append no
 so the `nif` proof is unchanged. Vanilla and Creation Club output is unchanged by them. A GLB
 already published from a third-party NIF deeper than 64 nodes, or with an undecodable skin
 instance, stays in its pack until the next normal rebuild of that asset.
+
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
 skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.
 
