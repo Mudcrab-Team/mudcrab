@@ -706,7 +706,6 @@ pub(super) fn convert(
 mod tests {
     use super::*;
     use crate::asset_path::{AssetKind, canonical_asset_path};
-    use rusqlite::OpenFlags;
 
     #[test]
     fn generic_idle_proofs_bind_the_output_identity_to_body_rig_and_clip() {
