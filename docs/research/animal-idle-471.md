@@ -1,7 +1,7 @@
 # Authored creature idle support (#471)
 
-Source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a` plus the local patch.
-Owner: Taylor; prepared with Codex, 2026-10-31. Local review only.
+Source: `64108a1c38b0a854d4f82d7031ea50b57c336a5a` plus the patch described below.
+Owner: Taylor; prepared with Codex, 2026-10-31. Later sections record the review state through 2026-11-01.
 
 ## Contract and observed failure
 
@@ -9,7 +9,7 @@ Taylor identified the cow beside the Riverwood spawn and chickens, then reported
 all observed animals static. The playtest used grid `(5, -12)`, worldspace
 `0000003C`, and the immutable existing conversion:
 
-`/Users/taylor/Projects/mudcrab/.mudcrab-local/packs/user-testing-main-b5259d33`
+`user-testing-main-b5259d33` (`<registered pack path>`, resolved with `workspace.py pack-path`)
 
 Location candidates, not confirmed reference identities:
 
@@ -76,7 +76,7 @@ human bone names, and a shared `NPC Root [Root]` string never establish compatib
 
 ## Coverage and limits
 
-Original source: `/Users/taylor/SkyrimSE/Data`. Independent source audits found
+Original source: `<Skyrim SE Data folder>`. Independent source audits found
 93 active BSAs, 7,705 HKX paths, no relevant cross-archive path collisions and no
 loose `Data/meshes` tree. The retained extracted corpus is therefore suitable for
 this source check; production still uses winning virtual-file lookup.
@@ -143,6 +143,8 @@ visual check.
 Shared storage root is obtained through `workspace.py paths`, respecting
 `MUDCRAB_WORKSPACE_ROOT`. Reports are task-owned under `evidence/`; retail bytes
 and private supplements remain outside Git. No registered pack was mutated.
+The receipts named below are private to the author's machine. They are not in this
+repository, so a reader cannot check them from the repository alone.
 
 - `20261031-issue471-animal-idle-t3-655029eb`: original two-species source,
   conversion and focused test receipts.
@@ -171,9 +173,11 @@ and private supplements remain outside Git. No registered pack was mutated.
   evidence gaps and documentation drift. The subsequent source repair shares
   body-path normalization between publication and lookup, verifies CPU sample
   acknowledgements, preserves RACE parse diagnostics and reports uncalibrated
-  native motion margins. Its focused regressions and successor binary remain
-  unexecuted pending validation admission. Earlier passing receipts do not
-  certify these changed inputs.
+  native motion margins. When this note was written, its focused
+  regressions and successor binary had not been run. Earlier passing receipts do not
+  certify these changed inputs. This note records no later receipt for that repair.
+Later pull request checks and test runs for this stack are not recorded in this
+note. Check the current head's CI result for the present state.
 
 The generic retail probe builds a reduced actor fixture and an animation-only
 supplement using immutable baseline geometry. Its database is **not a playable
@@ -183,15 +187,17 @@ one-shot completion; authored static bindings are counted separately. Native
 review remains a separate gate. The final receipt retains source diffs/archive,
 input hashes, commands, logs and selected test executables with checksums.
 
-Historical private native-review assets are retained at
-`scratch/issue471-review-20261031T160000Z/assets` under shared storage. The full
+Historical private native-review assets were kept in a task-owned scratch
+directory (`issue471-review-20261031T160000Z`) under shared storage. They are not
+in this repository. The full
 world database was APFS-cloned; only actor tables and race animation projection
 were replaced from the validated fixture. Geometry and clips are read through
 without copying or changing the registered baseline. `overlay.json` records
 hashes and table counts. This overlay predates the repairs: its catalog matches,
 but its database and coverage inputs differ from the post-repair export. It is
 not admitted for a current native run without new compatibility proof or an
-authorized successor overlay. Historical launch proposals remain closed.
+authorized successor overlay. No native launch of that overlay is recorded in
+this note.
 
 The actor-only probe bypasses production `spawn_cell`, installs a live clip and
 hides unskinned geometry. Its scope is selected skinned-body motion and capture

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from actor_idle_tools import ROOT, load_json, need, sha, shared
+from actor_idle_tools import workspace_root, load_json, need, sha, shared
 from actor_idle_oracle import check
 
 GIB = 1024**3
@@ -54,7 +54,7 @@ def live_guard(plan, plan_path, admission, owned=None):
     check_admission(plan, admission['plan_sha256'], admission, load_json(plan['ledger']), time.time())
     storage = Path(os.environ.get('MUDCRAB_STORAGE', ''))
     lease = Path(os.environ.get('MUDCRAB_BUILD_LEASE', ''))
-    need(storage.is_absolute() and storage.resolve() == ROOT.resolve(), 'storage root mismatch')
+    need(storage.is_absolute() and storage.resolve() == workspace_root().resolve(), 'storage root mismatch')
     lease_control.verify_lease_admission(storage, lease, Path(plan['checkout']), plan['head'])
     need(shutil.disk_usage(storage).free >= 20 * GIB, 'disk reserve')
     rows = materials.processes()  # Exact qualified lstart/PID/RSS parser and backend.
@@ -236,7 +236,7 @@ def main():
     # Closed plans and memory blocks reject before any host/process sampling or signal installation.
     check_admission(plan, sha(args.plan), admission, load_json(plan['ledger']), time.time())
     root = Path(plan['output'])
-    need(root.is_absolute() and not root.exists() and root.parent.resolve().is_relative_to((ROOT/'evidence').resolve()), 'new owned evidence directory required')
+    need(root.is_absolute() and not root.exists() and root.parent.resolve().is_relative_to((workspace_root()/'evidence').resolve()), 'new owned evidence directory required')
     root.mkdir()
     result = {'status': 'failed', 'plan_sha256': sha(args.plan), 'cases': []}
     deadline = time.monotonic() + 180
