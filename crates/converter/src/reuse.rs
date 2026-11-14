@@ -5,7 +5,8 @@
 //! kind no longer rejects the whole package. A kind is reused only when its recorded proof
 //! equals the current one. A kind whose bytes the rebuild can regenerate from game data without
 //! the normal conversion's extraction, mesh or texture stages is rebuilt. Every other changed
-//! kind refuses the rebuild and names the normal conversion as the way to regenerate it.
+//! kind refuses the rebuild and names a normal conversion into a clone of the package as the
+//! way to regenerate it. That conversion reuses every other kind through its own proof.
 //!
 //! | Kind  | Recorded proof against the current one                        | Decision |
 //! |-------|---------------------------------------------------------------|----------|
@@ -95,14 +96,16 @@ pub(crate) fn decide(
             Some(recorded) if recorded == current => Ok(Action::Reuse),
             _ => Err(Refusal(
                 "retained mesh settings predate the current mesh output contract; \
-                 run normal conversion to regenerate models"
+                 run normal conversion into a clone of this package (it rebuilds the models \
+                 and reuses textures and scripts whose own proofs match)"
                     .into(),
             )),
         },
         Kind::Dds => match recorded {
             Some(recorded) if recorded != current => Err(Refusal(
                 "retained texture settings differ from the rebuild settings; \
-                 run normal conversion to regenerate textures"
+                 run normal conversion into a clone of this package (it rebuilds the textures \
+                 and reuses models and scripts whose own proofs match)"
                     .into(),
             )),
             _ => Ok(Action::Reuse),
