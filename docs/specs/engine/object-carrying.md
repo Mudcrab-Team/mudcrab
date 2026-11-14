@@ -107,9 +107,10 @@ All tracked in [#691](https://github.com/Mudcrab-Team/mudcrab/issues/691).
 - **Throw.** `RF-CARRY-007`: there is no throw or impulse on the Z-key path and no throw setting.
   The executable's throw settings belong to the telekinesis spell. Not implemented, and no toggle.
 - **Stand-on drop.** spud drops the object when the player stands on it. The rule is not in the
-  retail hold checks, so it is not implemented. The character controller is kinematic and does not
-  push loose bodies, so a held box under the player's feet cannot lift or launch the player; a test
-  checks this.
+  retail hold checks, so it is not implemented. **Known problem:** a held box that the spring pulls
+  upward lifts a player standing on it by about 6 units (measured from 159.9 to 166.3) before it
+  slides away. The cause is not verified. The strict test (under 1 unit) is `#[ignore]`d until the
+  held body leaves the player's collision group, as retail's `ZKeyObject` layer probably does.
 - **Spring special cases.** `RF-CARRY-004` (medium confidence): a body on collision layer 14 with no
   held-body list gets S = 0.5 and E = 0.1; a body whose constraints are all of type 0xB gets S x 0.2
   and E = 0.1. What the layer and the type mean is unverified, and Mudcrab bodies carry neither a
