@@ -25,8 +25,11 @@ native_radius = authored_radius if authored_radius > 0 else 0.1
 backend_range = min(native_radius, 8192)
 ```
 
-An XRDS offset above 8192 is a retail outlier: nine `LIGH` references carry 15,967 up to
-3,736,737. The engine ignored these before XRDS became additive, so each light kept its record
+An XRDS offset above 8192 is an outlier. The registered pack (`user-testing-main-b5259d33`) holds
+ten such `LIGH` references. Nine are retail: seven in Skyrim.esm and two in Dragonborn.esm, with
+offsets from 15,967 up to
+3,736,737. One is Creation Club: 9,505.58 on a `BleakFallsSunlight01` reference in
+`ccbgssse031-advcyrus.esm`. The engine ignored these before XRDS became additive, so each light kept its record
 radius. That is kept: the offset stays queryable, the light keeps its base radius, and the
 evaluation is marked `radius_offset_ignored` and backend-limited. Only a sum that passes 8192
 through an in-range offset or a large base radius is clamped to the cap.

@@ -123,8 +123,9 @@ impl LightEvaluation {
 /// cannot emit "unbounded power", so the sentinel is not applied and the light keeps the unit
 /// (or authored base) fade instead of becoming a maximum-intensity light.
 ///
-/// A finite XRDS offset above [`MAX_RADIUS_OVERRIDE`] is a retail outlier (nine references,
-/// 15,967 up to 3,736,737 units). The pre-additive code ignored it and kept the record radius; that
+/// A finite XRDS offset above [`MAX_RADIUS_OVERRIDE`] is an outlier. The registered pack holds ten
+/// such references: nine in retail data (Skyrim.esm and Dragonborn.esm, 15,967 up to 3,736,737
+/// units) and one in a Creation Club plugin (9,505.58, ccbgssse031-advcyrus.esm). The pre-additive code ignored it and kept the record radius; that
 /// is preserved so those lights do not jump to the range cap. Native 1.7.104 evidence is pinned in
 /// the spec.
 pub fn evaluate_light(light: &LightRow, radius_offset: Option<f32>) -> LightEvaluation {
@@ -851,10 +852,18 @@ mod tests {
         assert!(!at_cap.radius_offset_ignored);
         assert_eq!(at_cap.point_light().unwrap().range, MAX_RADIUS_OVERRIDE);
 
-        // The nine retail references above the cap (15,967 up to 3,736,737 units) keep the
-        // record's radius, as before XRDS became additive; they do not jump to the range cap.
+        // The ten references above the cap in the registered pack (nine retail, 15,967 up to
+        // 3,736,737 units, and one Creation Club, 9,505.58) keep the record's radius, as before
+        // XRDS became additive; they do not jump to the range cap.
         let unit = point_light(&light_row(256.0, 0), None).unwrap();
-        for outlier in [15_967.0, 25_074.0, 456_444.0, 844_567.0, 3_736_737.5] {
+        for outlier in [
+            9_505.58,
+            15_967.0,
+            25_074.0,
+            456_444.0,
+            844_567.0,
+            3_736_737.5,
+        ] {
             let evaluated = evaluate_light(&light_row(256.0, 0), Some(outlier));
             assert_eq!(evaluated.radius_offset, Some(outlier), "raw offset is kept");
             assert_eq!(evaluated.authored_radius, Some(256.0), "offset {outlier}");
