@@ -1,0 +1,153 @@
+{
+  "format_version": 1,
+  "umbrella_issue": 498,
+  "canonical_audit": {
+    "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/64376533-ef4f-43ef-8135-2a7693799a30>",
+    "source_head": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
+    "shared_evidence_path": "record-usage-audit-20261031-64108a1c-t3-94d6f392/field-usage.json",
+    "record_types": 135,
+    "authored_field_leaves": 9860,
+    "evidence_kind": "Static source audit; not native runtime or behavioral qualification",
+    "policy": "Reuse this matrix for usage classifications. This branch owns converter retention/publication repairs, audit coverage and CI enforcement. Do not create a competing semantic inventory or feature implementation.",
+    "matrix_sha256": "962f1b3488473a41dcedeef7142416edc803e0f9c0b7927b7b93e9d193292e24"
+  },
+  "category_workstreams": [
+    {
+      "category": "Shared rules and defaults",
+      "existing_issues": [
+        264
+      ],
+      "existing_prs": [
+        246
+      ]
+    },
+    {
+      "category": "Actors and movement",
+      "existing_issues": [
+        221,
+        153
+      ],
+      "existing_prs": [
+        246
+      ]
+    },
+    {
+      "category": "AI, animation and navigation",
+      "category_tracker": "proposed; no new issue number recorded"
+    },
+    {
+      "category": "Placed objects and interactions",
+      "existing_issues": [
+        188,
+        473,
+        474
+      ]
+    },
+    {
+      "category": "Items, inventory and crafting",
+      "category_tracker": "proposed; no new issue number recorded"
+    },
+    {
+      "category": "Combat, magic and effects",
+      "category_tracker": "proposed; no new issue number recorded"
+    },
+    {
+      "category": "Worldspaces and locations",
+      "existing_issues": [
+        269
+      ]
+    },
+    {
+      "category": "Terrain, vegetation and materials",
+      "existing_issues": [
+        147,
+        435
+      ]
+    },
+    {
+      "category": "Lighting, weather and image spaces",
+      "existing_issues": [
+        364,
+        358,
+        264
+      ],
+      "existing_prs": [
+        480,
+        488
+      ]
+    },
+    {
+      "category": "Water",
+      "existing_issues": [
+        227,
+        264,
+        364
+      ],
+      "existing_prs": [
+        299,
+        499
+      ]
+    },
+    {
+      "category": "Quests, dialogue and scenes",
+      "category_tracker": "proposed; no new issue number recorded"
+    },
+    {
+      "category": "Audio",
+      "existing_issues": [
+        302
+      ],
+      "policy": "Keep existing audio milestone and child ownership"
+    },
+    {
+      "category": "Scripts and conditions",
+      "category_tracker": "proposed; no new issue number recorded"
+    }
+  ],
+  "reserved_consumer_threads": [
+    {
+      "scope": "Movement profile selection and authored defaults",
+      "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/mcp:launch:0abad5f738e764c6db87c92fcb91fa0ef674585eb454d2e2d619b67d6d338b4a>",
+      "canonical_prs": [
+        246
+      ],
+      "reserved_work": "NPC_/RACE/DOBJ/MOVT selection, keyboard-intent-to-velocity regression and canonical PR integration"
+    },
+    {
+      "scope": "Interior ambient/directional lighting",
+      "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/mcp:launch:8c28ba0eee044e0f70c93c264db5833ed58b43c3e42e2d25753ff7cc650eb8a9>",
+      "canonical_prs": [
+        480
+      ],
+      "reserved_work": "CELL/LGTM inheritance, sky flags, settings/transition ordering and actual render-light state"
+    },
+    {
+      "scope": "Placed local-light parameters",
+      "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/mcp:launch:99280356705d1d1e3a3f52760431a4d37a9c820cd790047172037ac71e980a57>",
+      "canonical_prs": [
+        488
+      ],
+      "reserved_work": "LIGH/REFR fade, radius/falloff, XLIG/XRDS and production point-light creation/update"
+    },
+    {
+      "scope": "Authored water appearance",
+      "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/mcp:launch:8cc59c149b45ddaef8f5e025d3cccffe417780c5336b7efd2568ea84d01d367d>",
+      "canonical_prs": [
+        299,
+        499
+      ],
+      "reserved_work": "WATR color/opacity/depth/fog material/shader behavior; preserve separate coverage-query ownership"
+    },
+    {
+      "scope": "Per-record materials, texture swaps and snow",
+      "thread": "<t3-thread://v2/3e277669-74f3-4705-bb1b-012dfe5868ff/mcp:launch:4661a0460b4701e00eaefa14304e5b72ca5540d2850940bd6f455338d7e52b33>",
+      "canonical_issues": [
+        435,
+        264,
+        498
+      ],
+      "reserved_work": "MODS substitutions and STAT.DNAM/MATO per-instance material input; retain existing snow prototype ownership"
+    }
+  ],
+  "refresh_policy": "Issue state and thread briefs are snapshots. Re-read live owners before implementing another behavior; no issue/thread messages or publication are authorized by this registry."
+}

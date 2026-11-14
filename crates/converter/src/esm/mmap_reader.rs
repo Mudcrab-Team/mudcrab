@@ -21,6 +21,9 @@ impl EsmReader {
             "{} is too small to be a plugin: {length} bytes, below the {MIN_PLUGIN_LENGTH} byte TES4 header",
             path.display()
         );
+        // SAFETY: read-only mapping of a plugin this process does not write while it is mapped.
+        // An outside truncation or in-place rewrite would fault reads of the map; that
+        // risk is accepted here (#633).
         let mmap = unsafe { Mmap::map(&file)? };
         // The map takes its own length: the file may have shrunk since the metadata check.
         ensure!(

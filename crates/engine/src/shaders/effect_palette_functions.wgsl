@@ -53,7 +53,13 @@ fn effect_alpha(texel: vec4<f32>, tint: vec4<f32>) -> f32 {
 fn effect_color(standard_color: vec4<f32>, texel: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
     var color = vec4<f32>(standard_color.rgb, effect_alpha(texel, tint));
     if effect.lookup.x > 0.5 {
+        // `linear_to_srgb` undoes Bevy's sRGB sampling for the authored grey level. With raw
+        // colour texels the sample already is that grey level.
+#ifdef RAW_COLOUR_TEXELS
+        let grey = texel.g;
+#else
         let grey = linear_to_srgb(texel.rgb).g;
+#endif
         color = vec4<f32>(palette_sample(grey, tint.r).rgb, color.a);
     }
     return vec4<f32>(color.rgb * effect.lookup.z, color.a);
