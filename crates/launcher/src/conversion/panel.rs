@@ -124,6 +124,14 @@ pub struct OutputPathText;
 #[derive(Component, Default, Clone)]
 pub struct OutputLocationsText;
 
+/// The scroll area that bounds [`OutputLocationsText`].
+#[derive(Component, Default, Clone)]
+pub struct OutputLocationsPane;
+
+/// Room for the three location lines at 12 px (about 15 px each) with a little to spare; more
+/// than that scrolls.
+const LOCATIONS_MAX_HEIGHT: f32 = 60.0;
+
 /// The fill inside the progress bar's track.
 #[derive(Component, Default, Clone)]
 pub struct BarFill;
@@ -262,13 +270,27 @@ fn ui_output_row() -> impl Scene {
     }
 }
 
+/// The three location lines in a scroll area no taller than [`LOCATIONS_MAX_HEIGHT`]. A long path
+/// wraps onto more lines; without the bound it would push the progress rows and the button row
+/// off the bottom of the window.
 fn ui_output_locations() -> impl Scene {
     bsn! {
-        OutputLocationsText
-        Text::new("")
-        TextFont { font_size: FontSize::Px(12.0) }
-        TextColor(LABEL_COLOR)
-        Node { flex_shrink: 0.0 }
+        OutputLocationsPane
+        ScrollArea
+        Node {
+            width: Val::Percent(100.0),
+            max_height: Val::Px(LOCATIONS_MAX_HEIGHT),
+            flex_shrink: 0.0,
+            overflow: Overflow::scroll_y(),
+        }
+        Children [
+            (
+                OutputLocationsText
+                Text::new("")
+                TextFont { font_size: FontSize::Px(12.0) }
+                TextColor(LABEL_COLOR)
+            )
+        ]
     }
 }
 
@@ -825,6 +847,23 @@ mod tests {
             .spawn_scene(conversion_panel())
             .expect("the panel scene spawns");
         app
+    }
+
+    /// A long location path wraps onto more lines; the pane that holds the text must stay no
+    /// taller than its bound and scroll instead, so the button row stays on screen.
+    #[test]
+    fn location_lines_sit_in_a_bounded_scroll_area() {
+        let data = data_folder("locations-bounded");
+        let mut app = panel_app(&data);
+        let world = app.world_mut();
+        let mut pane = world.query_filtered::<(&Node, &Children), With<OutputLocationsPane>>();
+        let (node, children) = pane.single(world).expect("one locations pane");
+        assert_eq!(node.max_height, Val::Px(LOCATIONS_MAX_HEIGHT));
+        assert_eq!(node.overflow, Overflow::scroll_y());
+        assert_eq!(node.flex_shrink, 0.0);
+        let child = children[0];
+        assert!(world.entity(child).contains::<OutputLocationsText>());
+        std::fs::remove_dir_all(&data).unwrap();
     }
 
     #[test]
