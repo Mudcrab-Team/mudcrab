@@ -1587,6 +1587,33 @@ tables empty. `NPC_` bases are never written into `statics`.
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and consumers must check that they exist before reading them. No mandatory
 join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
+### 18a. Worn Outfit Catalog (`actor-outfits.json`)
+
+A sidecar file beside the world database, not a table. It holds what each resolved `NPC_` base
+wears by default: `NPC_/DOFT` -> `OTFT/INAM` -> `ARMO/MODL` -> `ARMA`, with each armature matched to
+the base's race and sex by the same rule skin armor uses (exact or additional race first, then
+`DefaultRace`; `MOD3` for female with a `MOD2` fallback) and named as a converted `meshes/**.glb`
+scene. The type is `shared::actor_outfits::ActorOutfitCatalog`; `version` is 1.
+
+Each row is `npc_id`, `outfit_id` and `parts`. A part is `armo_id`, `armature_id`, `biped_mask`
+(`ARMA/BOD2` slots: body bit 2, hands bit 3, feet bit 7), `armature_race_id` and `scene`. A race
+armature wins its slots over a `DefaultRace` armature of the same `ARMO`. A part whose scene is not
+in the pack is skipped. `skipped` counts every item that did not become a part, by reason:
+`leveled_list`, `not_armor`, `item_missing`, `armor_without_armature`, `no_compatible_armature`,
+`armature_without_slots`, `armature_without_model`, `invalid_model_path`,
+`converted_model_missing`.
+
+Scope: the default outfit only. Leveled lists, inventory armor (`CNTO`) and the sleeping outfit
+(`SOFT`) are not resolved. An actor with a Use Inventory template and no own `DOFT` takes the
+template's outfit. The own `DOFT` wins when both exist (9 retail bases differ; not checked against
+the game).
+
+Producer: `converter derive-outfits <clone> --registry <packs.json> --clone-of <pack>` reads the
+records the pack already holds and writes `actor-outfits.json` and `actor-outfits-receipt.json`
+into an APFS clone of a registered pack. It reads no game data, needs no conversion, and refuses a
+registered pack as target. The engine reads the file if present, validates it whole, and spawns
+actors in their skin when it is absent or invalid.
+
 ### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
 
 The light and emittance projections write no row for a record whose data cannot supply one. Each
