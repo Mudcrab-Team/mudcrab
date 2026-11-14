@@ -57,6 +57,10 @@ pub(crate) struct CaptureFrame {
     /// Absent only in harnesses that build a world without the engine's startup resources.
     pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
+    /// The main view's mesh list before and after room culling, present only with
+    /// `--room-culling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_culling: Option<crate::room_culling::MainViewMeshes>,
 }
 
 /// Immutable grading evidence sampled with the rendered camera, before readback.
@@ -267,6 +271,7 @@ fn extract_capture_frames(
         Option<Res<SceneVisualPreset>>,
         Option<Res<SceneToneMapSource>>,
         Option<Res<SceneGradeOverrides>>,
+        Option<Res<crate::room_culling::RoomCullingState>>,
         Option<Res<crate::visual_profile::VisualProfile>>,
     )>,
 ) {
@@ -280,6 +285,7 @@ fn extract_capture_frames(
         visual_preset,
         tone_source,
         grade_overrides,
+        room_culling,
         visual_profile,
     ) = &*scene_inputs;
     extracted.render_frame += 1;
@@ -307,7 +313,8 @@ fn extract_capture_frames(
             profiler,
             uploads,
             renderer.final_path_active(),
-        );
+        )
+        .with_room_graphs(room_culling.as_deref());
         let record = CaptureFrame {
             main_frame: frame.0,
             render_frame: extracted.render_frame,
@@ -334,6 +341,9 @@ fn extract_capture_frames(
                 grade_overrides.as_deref().copied().unwrap_or_default(),
             ),
             terrain_gauges: profiler.terrain_gauges(),
+            room_culling: room_culling
+                .as_deref()
+                .and_then(|state| state.main_view_meshes),
             terrain_coverage: surfaces
                 .iter()
                 .filter(|(_, visible)| visible.get())
@@ -488,6 +498,7 @@ mod tests {
             work: default(),
             terrain_gauges: default(),
             terrain_coverage: default(),
+            room_culling: None,
             visual_profile: None,
             grading: capture_grade(
                 Some(&source),

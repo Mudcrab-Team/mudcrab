@@ -825,8 +825,8 @@ pub struct RenderOrigin(pub IVec2);
 
 /// The space the player is in. The planner streams only this space: the active interior when
 /// there is one, otherwise the exterior cells around the camera in the active worldspace. A load
-/// door crossing (`crate::door_crossing`) changes it; nothing else does, so the default (no
-/// interior, the configured worldspace) is the behaviour before doors existed.
+/// door crossing (`crate::door_crossing`) or a screenshot pose changes it. The default is the
+/// configured exterior worldspace.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActiveSpace {
     /// `None` means the worldspace the engine was configured with.
@@ -1873,6 +1873,10 @@ fn spawn_cell(
             ));
             if let Some(bounds) = bounds.zip(model_bounds) {
                 entity.insert(bounds);
+            }
+            // Actors, doors and loose objects are never culled by their stored room.
+            if crate::room_culling::exempt_record_type(reference.base_record_type.as_deref()) {
+                entity.insert(crate::room_culling::RoomCullExempt);
             }
             if let Some(plan) = &actor_plan {
                 entity.insert(plan.actor);

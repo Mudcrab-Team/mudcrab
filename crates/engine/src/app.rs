@@ -317,6 +317,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         app.insert_resource(WinitSettings::continuous());
     }
     let render_asset_budget = upload_budget(&config);
+    let room_culling = crate::room_culling::RoomCullingPlugin::from_config(&config);
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
@@ -388,6 +389,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
+        // Registered for every run; with `--room-culling` off it adds no system.
+        .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
