@@ -11535,7 +11535,10 @@ mod tests {
         patch.extend(grass_policy_record(
             b"LTEX",
             4,
-            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
         ));
         fs::write(data.join("Grass.esp"), patch).unwrap();
         let shape = dummy_content::nif::StaticShape {
@@ -11699,7 +11702,10 @@ mod tests {
         patch.extend(grass_policy_record(
             b"LTEX",
             4,
-            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
         ));
         let mut references = Vec::new();
         for (id, name) in [(0x0100_0802u32, "fallback"), (0x0100_0803, "broken")] {
@@ -11946,6 +11952,7 @@ mod tests {
             b"LTEX",
             4,
             &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
                 (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
                 (b"GNAM", 0x0100_0802u32.to_le_bytes().to_vec()),
             ],
@@ -12050,7 +12057,10 @@ mod tests {
         patch.extend(grass_policy_record(
             b"LTEX",
             4,
-            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
         ));
         let mut references = Vec::new();
         for (id, name) in [(0x0100_0802u32, "missing"), (0x0100_0803, "malformed")] {
@@ -13418,7 +13428,10 @@ mod tests {
         patch.extend(grass_policy_record(
             b"LTEX",
             4,
-            &[(b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec())],
+            &[
+                (b"TNAM", 2u32.to_le_bytes().to_vec()),
+                (b"GNAM", 0x0100_0801u32.to_le_bytes().to_vec()),
+            ],
         ));
         fs::write(data.join("Grass.esp"), patch).unwrap();
         let mut config = cpu_lod_config(&data, &output);

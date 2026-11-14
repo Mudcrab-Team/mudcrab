@@ -7,7 +7,7 @@ cache version or the mesh/texture conversion configuration hash.
 
 The format identified by `shared::grass::GRASS_CACHE_VERSION` contains sorted
 grass rules and sorted exterior LAND-bearing
-cells with effective nonzero coverage from at least one resolved grass species.
+cells with a resolved grassy base or nonzero painted grass coverage.
 Grassless cells are omitted. Each stored cell keeps its 33 by 33 height field,
 resolved water height, and
 four quadrants in Creation XY order (southwest, southeast, northwest,
@@ -16,18 +16,27 @@ by the winning LTEX record, in GNAM occurrence order. Duplicate links retain the
 first occurrence; unresolved or deleted species are filtered without reordering
 survivors. A winning override replaces the entire list, including an empty list.
 Runtime species caps can take the first N in this order; the global rule table
-remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores normalized
-overlay weights and the base residual. Existing databases without stored GNAM
+remains sorted by FormID for binary search. Its 17 by 17 row-major blend field stores raw
+painted opacity and the base residual. Base layers are marked explicitly and ordered first. Existing databases without stored GNAM
 ordinals recover order from the winning remapped raw LTEX payloads, including
 during asset repair. An unreadable legacy payload omits that list; an invalid GNAM
 field omits only that field. Both produce a bounded warning while usable entries,
 neighboring lists and cells still publish. Both record readers supply the complete
 `cell_cache_preserved.rkyv` terrain projection to the grass bake, retaining layers
 beyond the runtime terrain material's one base plus five overlays per quadrant.
-The converter normalizes all texture layers before omitting grassless or
-zero-weight layers, so bare textures still reduce grass coverage. Normals are
-derived from heights at runtime rather than duplicated in this cache. No
-instance lists are saved.
+Selection follows spud (MIT, chasmlol/spud): only the first five painted layers
+contribute, ordered by LAND layer index. Their opacity is truncated to byte values (opacity * 255) then divided by 255,
+without normalization; the base residual is max(0, 255 - sum of painted bytes) / 255. Grassless painted textures
+also reduce the base residual. Later painted layers neither select grass nor
+attenuate the base. Grassless and zero-weight painted layers are then omitted; a grassy base is
+retained even with zero residual because it consumes the selection budget. Original
+LAND signed normals and RGB vertex colors are retained (33 by 33 by 3 components);
+empty synthetic fields allow runtime fallbacks. Invalid field lengths skip the
+affected cell with a warning while healthy neighbors publish. No instance lists
+are saved; generation remains deterministic at runtime.
+Version nine adds these sampling fields and base flags and changes selection
+opacity inputs. Version-eight grass artifacts rebuild; other asset cache identities
+are unchanged. Runtime generation-only changes do not require a cache version bump.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
 Version three rebuilds exclusion masks using skinned obstructions in their rest
@@ -217,3 +226,21 @@ Elevated surfaces above that band release their mask samples; grounded parts of
 the same model still block. Tall aquatic grass is outside that measured envelope.
 The dependency discriminator invalidates warm masks. This policy is prepared
 separately pending visual acceptance; it is not a category/model denylist.
+
+The grass-only selection projection also follows spud's importer quadrant step:
+close empty painted slots, merge duplicate-texture byte weights with wrap and
+remove base-equal weights on a copy, while keeping the closed texture bindings.
+Thus a transformed weight can remain paired with an earlier texture binding.
+The sixth slot has no authored weights; only the first five closed bindings
+participate. Terrain rendering continues to use its own preserved-layer policy.
+Repeated GNAM occurrences are recovered from canonical LTEX payloads even when
+the database association projection keeps only one row per species. Older
+packages with unavailable canonical payloads can use their explicit ordinals.
+
+Selection restores original NULL/repeated/clamped ATXT assignments from the
+canonical LAND payload when terrain normalization would lose their slots or
+weights. NULL paint binds the default texture for selection and still covers
+the base; it does not grow a species itself. LTEX binding and merging require
+an available TXST, and that availability participates in incremental keys.
+Malformed recovered selection records warn and skip locally; neighboring cells
+remain publishable. This projection does not alter terrain's NULL policy.

@@ -157,10 +157,22 @@ fn vertex(input: Vertex) -> Varyings {
     if (flags & 2u) != 0u { p *= scale; } else { p.y *= scale; n.y /= max(scale,0.001); t.y *= scale; }
     p = rotate_y(p, rotation); n = rotate_y(n, rotation); t = rotate_y(t, rotation);
     if (flags & 4u) != 0u {
-        let up = normalize(vec3(signed_byte(input.packed.z >> 8u), signed_byte(input.packed.z >> 24u), -signed_byte(input.packed.z >> 16u)));
-        // Quantization can make a steep normal exactly parallel to Z.
-        let axis = select(vec3(0.0,0.0,1.0),vec3(1.0,0.0,0.0),abs(up.z)>0.99);
-        let tangent = normalize(cross(up, axis));
+        let authored_up = vec3(signed_byte(input.packed.z >> 8u), signed_byte(input.packed.z >> 24u), -signed_byte(input.packed.z >> 16u));
+        let up = authored_up / max(length(authored_up),0.000001);
+        // Tangent selection follows spud (MIT, chasmlol/spud); notice: grass/SPUD-MIT.txt.
+        // Work in Creation axes before converting the least-component tangent to runtime axes.
+        let creation_normal = vec3(up.x,-up.z,up.y);
+        let magnitude = abs(creation_normal);
+        var creation_tangent: vec3<f32>;
+        if magnitude.x <= magnitude.y && magnitude.x <= magnitude.z {
+            creation_tangent = vec3(0.0,-creation_normal.z,creation_normal.y);
+        } else if magnitude.y <= magnitude.x && magnitude.y <= magnitude.z {
+            creation_tangent = vec3(-creation_normal.z,0.0,creation_normal.x);
+        } else {
+            creation_tangent = vec3(-creation_normal.y,creation_normal.x,0.0);
+        }
+        let runtime_tangent = vec3(creation_tangent.x,creation_tangent.z,-creation_tangent.y);
+        let tangent = runtime_tangent / max(length(runtime_tangent),0.000001);
         let basis = mat3x3(tangent,up,cross(tangent,up));
         p = basis*p; n = basis*n; t = basis*t;
     }

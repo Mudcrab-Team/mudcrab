@@ -14,7 +14,8 @@ pub struct GrassSettings {
     /// `iMinGrassSize`: MudCrab default 20 Creation units for the candidate-count calculation.
     #[serde(rename = "iMinGrassSize")]
     pub min_grass_size: i32,
-    /// `iMaxGrassTypesPerTexure`: MudCrab default 2 species per texture.
+    /// Checked after adding a species: the default 2 admits up to 3 species.
+    /// `iMaxGrassTypesPerTexure`: MudCrab default post-add limit 2 per texture.
     #[serde(rename = "iMaxGrassTypesPerTexure")]
     pub max_grass_types_per_texture: i32,
     /// `fTexturePctThreshold`: MudCrab default 0.0 minimum texture contribution.

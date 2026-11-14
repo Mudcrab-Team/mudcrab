@@ -643,9 +643,10 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl EngineConfig {
-    /// Admit exactly the configured GNAM prefix length; zero disables species.
+    /// Test the configured GNAM limit after admission (default 2 admits three).
+    /// Selection order follows spud (MIT, chasmlol/spud).
     pub(crate) fn effective_grass_species_cap(&self) -> usize {
-        self.grass_max_types_per_texture
+        self.grass_max_types_per_texture.saturating_add(1)
     }
 
     pub fn streaming_controls_enabled(&self) -> bool {
@@ -4223,5 +4224,22 @@ mod tests {
     /// True when a script spells out a finite number.
     fn is_number_literal(value: &str) -> bool {
         value.parse::<f64>().is_ok_and(f64::is_finite)
+    }
+}
+
+#[cfg(test)]
+mod grass_admission_tests {
+    use super::EngineConfig;
+
+    /// A post-add limit admits N+1 entries and cannot overflow at the API boundary.
+    #[test]
+    fn grass_type_limit_is_checked_after_admission() {
+        for (configured, admitted) in [(2, 3), (0, 1), (1, 2), (3, 4), (usize::MAX, usize::MAX)] {
+            let config = EngineConfig {
+                grass_max_types_per_texture: configured,
+                ..Default::default()
+            };
+            assert_eq!(config.effective_grass_species_cap(), admitted);
+        }
     }
 }

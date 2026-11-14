@@ -38,7 +38,7 @@ pub struct GrassBakeReport {
     pub skipped_rules: usize,
     /// Lowest FormID among the skipped modeled rules, named in the warning.
     pub first_invalid_rule: Option<u32>,
-    /// Legacy lists with omitted fields or unreadable winning LTEX payloads.
+    /// Lists with omitted fields, unavailable TXST, or unreadable winning LTEX payloads.
     pub skipped_texture_lists: usize,
     pub first_invalid_texture: Option<u32>,
     /// Grass types without a model: they draw nothing in game either, so nothing is lost.
@@ -67,7 +67,7 @@ impl GrassBakeReport {
                 .map(|id| format!("; first LTEX {id:08X}"))
                 .unwrap_or_default();
             warnings.push(format!(
-                "grass cache omitted unreadable legacy LTEX grass data from {} lists{first}",
+                "grass cache omitted incomplete or unreadable LTEX grass data from {} lists{first}",
                 self.skipped_texture_lists
             ));
         }
@@ -135,6 +135,7 @@ const GEOMETRY_BUDGET: usize = 64 * 1024 * 1024;
 
 mod enable;
 mod links;
+mod selection;
 mod skinning;
 mod visibility;
 
@@ -535,7 +536,7 @@ fn scene_triangles(glb: &gltf::Gltf, evaluate_skin: bool) -> Result<Vec<Triangle
 }
 
 /// Bake complete source terrain after model-bound finalization. The terrain archive must retain
-/// all normalized layers, without the runtime material's limit. A valid previous grass cache allows
+/// the base and first five painted layers, with original opacity. A valid previous grass cache allows
 /// unchanged cells to be reused.
 pub fn write_grass_cache(
     conn: &Connection,
@@ -550,8 +551,29 @@ pub fn write_grass_cache(
     let (types, skipped_rules, modelless_rules, first_invalid_rule) = read_types(conn)?;
     let valid_types: std::collections::BTreeSet<_> =
         types.iter().map(|rule| rule.form_id).collect();
-    let (links, skipped_texture_lists, first_invalid_texture) =
+    let (links, mut skipped_texture_lists, mut first_invalid_texture) =
         links::read_links(conn, &valid_types)?;
+    let mut texture_bindings = BTreeMap::new();
+    let mut textures = conn.prepare("SELECT l.id, t.id IS NOT NULL FROM landscape_textures l LEFT JOIN texture_sets t ON t.id=l.texture_set_id")?;
+    for row in textures.query_map([], |row| {
+        Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?))
+    })? {
+        match row {
+            Ok((id, valid)) => {
+                texture_bindings.insert(id, valid && id != 0);
+            }
+            Err(_) => {
+                skipped_texture_lists += 1;
+            }
+        }
+    }
+    for &id in links.keys() {
+        if !texture_bindings.get(&id).copied().unwrap_or(false) {
+            skipped_texture_lists += 1;
+            first_invalid_texture.get_or_insert(id);
+        }
+        texture_bindings.entry(id).or_insert(false);
+    }
     let mut statement = conn.prepare("SELECT id,worldspace_id,grid_x,grid_y FROM cells WHERE worldspace_id IS NOT NULL AND grid_x IS NOT NULL AND grid_y IS NOT NULL AND (flags & 1)=0 ORDER BY id")?;
     let coordinates: BTreeMap<u32, (u32, i32, i32)> = statement
         .query_map([], |row| {
@@ -631,6 +653,12 @@ pub fn write_grass_cache(
             rule_inputs.insert(id, bytes);
         }
     }
+    // TXST deletion changes binding/merge behavior even if LTEX bytes remain identical.
+    for (&id, &valid) in &texture_bindings {
+        let input = rule_inputs.entry(id).or_default();
+        input.extend_from_slice(b"grass-texture-binding-validity-v1\0");
+        input.push(u8::from(valid));
+    }
     // Invalid/old caches are recoverable: recompute rather than trusting their masks.
     let old_map = previous.and_then(|path| validate_grass_cache(path).ok());
     let old = old_map
@@ -659,18 +687,29 @@ pub fn write_grass_cache(
         let Some(&(worldspace_id, grid_x, grid_y)) = coordinates.get(&id) else {
             continue;
         };
-        let land: CachedLand = rkyv::deserialize::<CachedLand, Error>(archived_land)?;
+        let mut land: CachedLand = rkyv::deserialize::<CachedLand, Error>(archived_land)?;
         if validate_terrain(&land).is_err() {
             report.skipped_cells += 1;
             report.first_invalid_cell.get_or_insert(id);
             continue;
         }
-        // Normalize every texture before removing grassless layers: bare texture coverage
-        // must continue to attenuate the grass-bearing base/overlays.
+        // Bare painted textures also contribute to base residual before grassless layers drop.
+        if let Some(records) = land_inputs.get(&id)
+            && let Err(error) = selection::restore_layers(&mut land, records)
+        {
+            report.skipped_cells += 1;
+            if report.first_invalid_cell.is_none() {
+                eprintln!("grass selection skipped malformed LAND cell {id:08X}: {error}");
+            }
+            report.first_invalid_cell.get_or_insert(id);
+            continue;
+        }
         let mut quadrants: Vec<_> = (0..4)
             .map(|quadrant| GrassQuadrant {
                 quadrant,
-                layers: blend_layers(&land, quadrant, &links),
+                layers: selection_layers(&land, quadrant, &links, &|id| {
+                    id == u32::MAX || texture_bindings.get(&id).copied().unwrap_or(false)
+                }),
                 exclusion: Vec::new(),
             })
             .collect();
@@ -744,6 +783,8 @@ pub fn write_grass_cache(
             grid_y,
             input_hash: hash,
             heights: land.heights,
+            normals: land.normals,
+            vertex_colors: land.vertex_colors,
             water_height: land.water_height,
             quadrants,
             obstruction_failures: geometry
@@ -836,7 +877,9 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
         })
     })? {
         let Ok(rule) = rule else { continue };
-        if rule.water_comparison <= 7
+        if rule.form_id != 0
+            && rule.position_range >= 0.0
+            && rule.water_comparison <= 7
             && [
                 rule.position_range,
                 rule.height_range,
@@ -1021,7 +1064,9 @@ fn validate_terrain(land: &CachedLand) -> Result<()> {
             && land.height == shared::LAND_SIDE
             && land.heights.len() == side * side
             && land.heights.iter().all(|value| value.is_finite())
-            && land.water_height.is_none_or(f32::is_finite),
+            && land.water_height.is_none_or(f32::is_finite)
+            && (land.normals.is_empty() || land.normals.len() == side * side * 3)
+            && (land.vertex_colors.is_empty() || land.vertex_colors.len() == side * side * 3),
         "invalid terrain height field"
     );
     for layer in &land.layers {
@@ -1037,54 +1082,117 @@ fn validate_terrain(land: &CachedLand) -> Result<()> {
     Ok(())
 }
 
-/// Normalize all terrain layers before retaining nonzero grass-bearing coverage.
+/// Preserve transformed painted opacity and base-first selection, following spud (MIT, chasmlol/spud).
+/// Five closed bindings use separately merged weights, including grassless texture coverage.
+/// See third-party/spud/LICENSE for the ported selection behavior notice.
+#[cfg(test)]
 fn blend_layers(
     land: &CachedLand,
     quadrant: u8,
     links: &BTreeMap<u32, Vec<u32>>,
 ) -> Vec<GrassLayer> {
+    selection_layers(land, quadrant, links, &|id| id != 0)
+}
+
+/// Project bindings only for LTEX records that name an available TXST.
+fn selection_layers(
+    land: &CachedLand,
+    quadrant: u8,
+    links: &BTreeMap<u32, Vec<u32>>,
+    has_texture_set: &impl Fn(u32) -> bool,
+) -> Vec<GrassLayer> {
     let samples = GRASS_BLEND_SIDE * GRASS_BLEND_SIDE;
-    let source: Vec<_> = land
+    let base = land.layers.iter().find(|layer| {
+        layer.quadrant == quadrant && layer.is_base && has_texture_set(layer.texture_form_id)
+    });
+    // Follow spud's importer quadrant transformation (MIT, chasmlol/spud).
+    // Close slots first; bindings retain that order while weights merge on a copy.
+    let mut source: Vec<_> = land
         .layers
         .iter()
-        .filter(|layer| layer.quadrant == quadrant)
+        .filter(|layer| layer.quadrant == quadrant && !layer.is_base)
         .collect();
-    let mut layers: Vec<_> = source
-        .iter()
-        .map(|layer| {
-            let mut weights = vec![0.0; samples];
-            if !layer.is_base {
-                for weight in &layer.weights {
-                    weights[usize::from(weight.vertex)] = weight.opacity;
-                }
+    source.sort_by_key(|layer| layer.layer);
+    source.truncate(6);
+    let mut bound: Vec<_> = source.iter().map(|layer| layer.texture_form_id).collect();
+    bound.resize(6, 0);
+    let mut fields = vec![vec![0u8; samples]; 6];
+    for (slot, layer) in source.iter().enumerate() {
+        // Slot 5 can bind a texture but carries no authored VTXT weights.
+        if layer.layer < 5 {
+            for weight in &layer.weights {
+                fields[slot][usize::from(weight.vertex)] = (weight.opacity * 255.0) as u8;
             }
-            GrassLayer {
-                texture_form_id: layer.texture_form_id,
-                grass_ids: links
-                    .get(&layer.texture_form_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                weights,
-            }
-        })
-        .collect();
-    for vertex in 0..samples {
-        let sum: f32 = source
-            .iter()
-            .zip(&layers)
-            .filter(|(source, _)| !source.is_base)
-            .map(|(_, layer)| layer.weights[vertex])
-            .sum();
-        for (source, layer) in source.iter().zip(&mut layers) {
-            layer.weights[vertex] = if source.is_base {
-                (1.0 - sum).max(0.0)
-            } else {
-                layer.weights[vertex] / sum.max(1.0)
-            };
         }
     }
+    let mut merged = bound.clone();
+    let mut index = 0;
+    while index < 6 {
+        if merged[index] == 0 || !has_texture_set(merged[index]) {
+            index += 1;
+            continue;
+        }
+        let mut later = index + 1;
+        while index < 5 && later < 6 {
+            if merged[later] == merged[index] {
+                let (before, after) = fields.split_at_mut(later);
+                for (target, source) in before[index].iter_mut().zip(&after[0]) {
+                    *target = target.wrapping_add(*source);
+                }
+                merged.remove(later);
+                merged.push(0);
+                fields.remove(later);
+                fields.push(vec![0; samples]);
+            } else {
+                later += 1;
+            }
+        }
+        if base.is_some_and(|base| base.texture_form_id == merged[index]) {
+            merged.remove(index);
+            merged.push(0);
+            fields.remove(index);
+            fields.push(vec![0; samples]);
+        } else {
+            index += 1;
+        }
+    }
+    let mut layers = Vec::new();
+    if let Some(base) = base {
+        let weights = (0..samples)
+            .map(|vertex| {
+                let sum: u32 = fields
+                    .iter()
+                    .take(5)
+                    .map(|field| u32::from(field[vertex]))
+                    .sum();
+                255u32.saturating_sub(sum) as f32 / 255.0
+            })
+            .collect();
+        layers.push(GrassLayer {
+            texture_form_id: base.texture_form_id,
+            is_base: true,
+            grass_ids: links
+                .get(&base.texture_form_id)
+                .cloned()
+                .unwrap_or_default(),
+            weights,
+        });
+    }
+    for (slot, texture) in bound.into_iter().take(5).enumerate() {
+        let texture = if has_texture_set(texture) { texture } else { 0 };
+        layers.push(GrassLayer {
+            texture_form_id: texture,
+            is_base: false,
+            grass_ids: links.get(&texture).cloned().unwrap_or_default(),
+            weights: fields[slot]
+                .iter()
+                .map(|weight| f32::from(*weight) / 255.0)
+                .collect(),
+        });
+    }
     layers.retain(|layer| {
-        !layer.grass_ids.is_empty() && layer.weights.iter().any(|&weight| weight > 0.0)
+        !layer.grass_ids.is_empty()
+            && (layer.is_base || layer.weights.iter().any(|&weight| weight > 0.0))
     });
     layers
 }
@@ -1260,6 +1368,7 @@ fn input_hash(
     let mut hash = Sha256::new();
     hash.update(b"MudCrab grass cell inputs\0");
     hash.update(b"native-ground-contact-band128-v1");
+    hash.update(b"spud-original-slots-bound-and-merged-byte-opacity-land-sampling-v4");
     hash.update(GRASS_CACHE_VERSION.to_le_bytes());
     hash.update(coordinate.0.to_le_bytes());
     hash.update(coordinate.1.to_le_bytes());
@@ -1809,6 +1918,137 @@ mod tests {
         assert!(report.warnings()[0].contains("0000000A"));
     }
 
+    /// Publish healthy neighbors despite malformed LAND sampling fields; hash valid edits locally.
+    #[test]
+    fn land_sampling_fields_roundtrip_invalidate_and_skip_locally() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        let terrain = dir.path().join("terrain.rkyv");
+        let first = dir.path().join("first.rkyv");
+        let next = dir.path().join("next.rkyv");
+        let map = super::super::cell_cache::validate_cell_cache(&terrain).unwrap();
+        let mut cache: shared::CellCache = rkyv::deserialize::<_, Error>(
+            rkyv::access::<shared::ArchivedCellCache, Error>(&map).unwrap(),
+        )
+        .unwrap();
+        drop(map);
+        for land in &mut cache.cells {
+            land.normals = [12, -34, 117].repeat(33 * 33);
+            land.vertex_colors = [43, 89, 173].repeat(33 * 33);
+        }
+        std::fs::write(&terrain, rkyv::to_bytes::<Error>(&cache).unwrap()).unwrap();
+        write_grass_cache(&conn, dir.path(), &terrain, None, &first).unwrap();
+        let output = read(&first);
+        assert_eq!(output.cells[0].normals, [12, -34, 117].repeat(33 * 33));
+        assert_eq!(output.cells[0].vertex_colors, [43, 89, 173].repeat(33 * 33));
+        for colors in [false, true] {
+            let land = cache
+                .cells
+                .iter_mut()
+                .find(|land| land.cell_id == 10)
+                .unwrap();
+            if colors {
+                land.vertex_colors[0] += 1;
+            } else {
+                land.normals[0] += 1;
+            }
+            std::fs::write(&terrain, rkyv::to_bytes::<Error>(&cache).unwrap()).unwrap();
+            let report =
+                write_grass_cache(&conn, dir.path(), &terrain, Some(&first), &next).unwrap();
+            assert_eq!((report.baked_cells, report.reused_cells), (1, 2));
+            std::fs::copy(&next, &first).unwrap();
+        }
+        for colors in [false, true] {
+            let mut bad = cache.clone();
+            let land = bad
+                .cells
+                .iter_mut()
+                .find(|land| land.cell_id == 11)
+                .unwrap();
+            if colors {
+                land.vertex_colors.pop();
+            } else {
+                land.normals.pop();
+            }
+            std::fs::write(&terrain, rkyv::to_bytes::<Error>(&bad).unwrap()).unwrap();
+            let report =
+                write_grass_cache(&conn, dir.path(), &terrain, Some(&first), &next).unwrap();
+            assert_eq!(report.skipped_cells, 1);
+            assert_eq!(report.first_invalid_cell, Some(11));
+            assert!(!report.warnings().is_empty());
+            assert_eq!(
+                read(&next)
+                    .cells
+                    .iter()
+                    .map(|cell| cell.cell_id)
+                    .collect::<Vec<_>>(),
+                [10, 12]
+            );
+        }
+    }
+
+    /// Overlapping paint stays raw; a sixth layer does not suppress base residual.
+    #[test]
+    fn raw_opacity_base_first_and_first_five_painted_layers() {
+        let mut land = CachedLand {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![],
+            normals: vec![],
+            vertex_colors: vec![],
+            water_height: None,
+            water_type_form_id: None,
+            layers: (0..6)
+                .map(|slot| shared::TerrainLayer {
+                    texture_form_id: 31 + u32::from(slot),
+                    quadrant: 0,
+                    layer: slot,
+                    is_base: false,
+                    weights: vec![shared::TerrainWeight {
+                        vertex: 117,
+                        opacity: if slot < 2 { 0.7 } else { 0.1 },
+                    }],
+                })
+                .collect(),
+        };
+        land.layers.push(shared::TerrainLayer {
+            texture_form_id: 30,
+            quadrant: 0,
+            layer: 0,
+            is_base: true,
+            weights: vec![],
+        });
+        let links = (30..=36).map(|id| (id, vec![id + 100])).collect();
+        let layers = blend_layers(&land, 0, &links);
+        assert_eq!(layers.len(), 6);
+        assert!(layers[0].is_base);
+        assert_eq!(layers[0].weights[117], 0.0);
+        assert_eq!(layers[1].weights[117], 178.0 / 255.0);
+        assert_eq!(layers[2].weights[117], 178.0 / 255.0);
+        assert!(layers.iter().all(|layer| layer.texture_form_id != 36));
+        for layer in &mut land.layers {
+            for weight in &mut layer.weights {
+                weight.opacity = 0.1;
+            }
+        }
+        let layers = blend_layers(&land, 0, &links);
+        assert!((layers[0].weights[117] - 130.0 / 255.0).abs() < 1e-6);
+        for layer in &mut land.layers {
+            if !layer.is_base {
+                layer.weights = (0..289)
+                    .map(|vertex| shared::TerrainWeight {
+                        vertex,
+                        opacity: 1.0,
+                    })
+                    .collect();
+            }
+        }
+        let layers = blend_layers(&land, 0, &links);
+        assert!(layers[0].is_base);
+        assert!(layers[0].weights.iter().all(|weight| *weight == 0.0));
+    }
+
     /// Omit malformed terrain heights while publishing healthy neighboring cells.
     #[test]
     fn malformed_terrain_heights_skip_only_the_bad_cell() {
@@ -2034,6 +2274,7 @@ mod tests {
         create_tables(&conn).unwrap();
         conn.execute_batch("INSERT INTO cells(id,worldspace_id,grid_x,grid_y,flags) VALUES(10,1,0,0,0),(11,1,1,0,0),(12,2,1,0,0);
             INSERT INTO grass_types(id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags,load_order) VALUES(21,'meshes/grass.glb',50,0,60,0,0,4,0.2,0.1,1.2,1,0),(22,'meshes/grass2.glb',80,0,80,0,0,2,0.1,0.3,2.1,0,0);
+            INSERT INTO texture_sets(id) VALUES(2); INSERT INTO landscape_textures(id,texture_set_id) VALUES(30,2);
             INSERT INTO landscape_texture_grasses(ltex_id,gras_id) VALUES(30,21),(30,22),(30,999);
             INSERT INTO records(form_id,record_type,load_order,data) VALUES(21,'GRAS',0,x'0102'),(22,'GRAS',0,x'0304'),(30,'LTEX',0,x'0506');
             INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(40,'meshes/blocker.glb',0,-64,-16,-48,64,32,48,1);
@@ -2457,9 +2698,9 @@ mod tests {
         }
     }
 
-    /// Normalize overlays while keeping multiple species and grassless texture attenuation.
+    /// Preserve painted opacity while keeping multiple species and grassless attenuation.
     #[test]
-    fn overlays_preserve_normalized_blends_instead_of_collapsing_species() {
+    fn overlays_preserve_raw_opacity_instead_of_collapsing_species() {
         let base = shared::TerrainLayer {
             texture_form_id: 30,
             quadrant: 0,
@@ -2493,8 +2734,8 @@ mod tests {
             0,
             &BTreeMap::from([(30, vec![21, 22]), (31, vec![23])]),
         );
-        assert!((layers[0].weights[117] - 0.35).abs() < 0.0001);
-        assert!((layers[1].weights[117] - 0.65).abs() < 0.0001);
+        assert!((layers[0].weights[117] - 90.0 / 255.0).abs() < 0.0001);
+        assert!((layers[1].weights[117] - 165.0 / 255.0).abs() < 0.0001);
         assert_eq!(layers[0].grass_ids, [21, 22]);
         assert_eq!(layers[1].grass_ids, [23]);
         assert_eq!(layers[0].weights[118], 1.0);
@@ -2515,6 +2756,16 @@ mod tests {
         )
         .unwrap();
         let original = read(&path);
+        for colors in [false, true] {
+            let mut bad = original.clone();
+            if colors {
+                bad.cells[0].vertex_colors = vec![1];
+            } else {
+                bad.cells[0].normals = vec![1];
+            }
+            std::fs::write(&path, rkyv::to_bytes::<Error>(&bad).unwrap()).unwrap();
+            assert!(validate_grass_cache(&path).is_err());
+        }
         let mut bad = original.clone();
         bad.cells[0].quadrants[0].layers[0].weights.pop();
         std::fs::write(&path, rkyv::to_bytes::<Error>(&bad).unwrap()).unwrap();
@@ -2624,7 +2875,7 @@ mod tests {
         );
 
         let mut obsolete = read(&first);
-        obsolete.version = GRASS_CACHE_VERSION + 1;
+        obsolete.version = 8;
         std::fs::write(&first, rkyv::to_bytes::<Error>(&obsolete).unwrap()).unwrap();
         assert!(validate_grass_cache(&first).is_err());
         let report = write_grass_cache(&conn, dir.path(), &terrain, Some(&first), &next).unwrap();
@@ -2705,9 +2956,9 @@ mod tests {
         );
     }
 
-    /// Omit grassless cells and layers only after normalizing all terrain coverage.
+    /// Omit grassless layers after computing the base residual.
     #[test]
-    fn grassless_cells_and_layers_are_omitted_after_coverage_normalization() {
+    fn grassless_cells_and_layers_are_omitted_after_base_residual() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         let path = dir.path().join("grass.rkyv");
@@ -2763,7 +3014,8 @@ mod tests {
         );
         assert_eq!(layers[0].texture_form_id, 30);
         assert_eq!(
-            layers[0].weights[117], 0.25,
+            layers[0].weights[117],
+            64.0 / 255.0,
             "bare overlay still attenuates grassy base"
         );
     }
@@ -2793,5 +3045,160 @@ mod ground_contact_band_tests {
                 "height {height}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod selection_transform_tests {
+    use super::*;
+
+    /// A null modeled rule is omitted with the same bounded warning as malformed fields.
+    #[test]
+    fn null_rule_identity_keeps_valid_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = tests::fixture(directory.path());
+        connection.execute("INSERT INTO grass_types SELECT 0,editor_id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags,load_order FROM grass_types WHERE id=21",[]).unwrap();
+        let (rules, skipped, modelless, first) = read_types(&connection).unwrap();
+        assert_eq!(
+            rules.iter().map(|rule| rule.form_id).collect::<Vec<_>>(),
+            [21, 22]
+        );
+        assert_eq!((skipped, modelless, first), (1, 0, Some(0)));
+    }
+
+    /// Missing TXST suppresses bindings and duplicate merging without erasing raw paint coverage.
+    #[test]
+    fn texture_set_availability_controls_binding_and_merge() {
+        let land = CachedLand {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![],
+            normals: vec![],
+            vertex_colors: vec![],
+            water_height: None,
+            water_type_form_id: None,
+            layers: vec![
+                shared::TerrainLayer {
+                    texture_form_id: 30,
+                    quadrant: 0,
+                    layer: 0,
+                    is_base: true,
+                    weights: vec![],
+                },
+                shared::TerrainLayer {
+                    texture_form_id: 31,
+                    quadrant: 0,
+                    layer: 0,
+                    is_base: false,
+                    weights: vec![shared::TerrainWeight {
+                        vertex: 0,
+                        opacity: 200.0 / 255.0,
+                    }],
+                },
+                shared::TerrainLayer {
+                    texture_form_id: 31,
+                    quadrant: 0,
+                    layer: 1,
+                    is_base: false,
+                    weights: vec![shared::TerrainWeight {
+                        vertex: 0,
+                        opacity: 200.0 / 255.0,
+                    }],
+                },
+            ],
+        };
+        let links = BTreeMap::from([(30, vec![7]), (31, vec![11])]);
+        let all = selection_layers(&land, 0, &links, &|_| true);
+        assert_eq!(all[0].weights[0], 111.0 / 255.0);
+        let missing = selection_layers(&land, 0, &links, &|id| id == 30);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].weights[0], 0.0);
+        let mut cleared = land.clone();
+        cleared.layers.truncate(2);
+        cleared.layers[1].texture_form_id = 0;
+        cleared.layers[1].weights[0].opacity = 0.75;
+        let recovered = selection_layers(&cleared, 0, &links, &|id| id == 30);
+        assert_eq!(
+            recovered[0].weights[0],
+            64.0 / 255.0,
+            "cleared optional references still carry paint coverage"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let connection = tests::fixture(directory.path());
+        connection.execute("DELETE FROM texture_sets", []).unwrap();
+        let report = write_grass_cache(
+            &connection,
+            directory.path(),
+            &directory.path().join("terrain.rkyv"),
+            None,
+            &directory.path().join("grass.rkyv"),
+        )
+        .unwrap();
+        assert_eq!(report.skipped_texture_lists, 1);
+        assert_eq!(report.first_invalid_texture, Some(30));
+        assert_eq!(
+            tests::read(&directory.path().join("grass.rkyv"))
+                .cells
+                .len(),
+            0
+        );
+    }
+
+    /// Duplicate texture bytes wrap on a copy, while nomination bindings retain closed order.
+    #[test]
+    fn duplicate_and_base_equal_layers_transform_weights_only() {
+        let mut land = CachedLand {
+            cell_id: 1,
+            width: 33,
+            height: 33,
+            heights: vec![],
+            normals: vec![],
+            vertex_colors: vec![],
+            water_height: None,
+            water_type_form_id: None,
+            layers: vec![shared::TerrainLayer {
+                texture_form_id: 30,
+                quadrant: 0,
+                layer: 0,
+                is_base: true,
+                weights: vec![],
+            }],
+        };
+        for (slot, texture, byte) in [(0, 31, 20u8), (2, 31, 20), (3, 32, 240), (4, 32, 32)] {
+            land.layers.push(shared::TerrainLayer {
+                texture_form_id: texture,
+                quadrant: 0,
+                layer: slot,
+                is_base: false,
+                weights: vec![shared::TerrainWeight {
+                    vertex: 0,
+                    opacity: f32::from(byte) / 255.0,
+                }],
+            });
+        }
+        let links = BTreeMap::from([(30, vec![7]), (31, vec![11]), (32, vec![13])]);
+        let layers = blend_layers(&land, 0, &links);
+        assert_eq!(
+            layers
+                .iter()
+                .map(|layer| layer.texture_form_id)
+                .collect::<Vec<_>>(),
+            [30, 31, 31]
+        );
+        assert_eq!(layers[1].weights[0], 40.0 / 255.0);
+        assert_eq!(
+            layers[2].weights[0],
+            16.0 / 255.0,
+            "240+32 wraps as a byte and stays on the second original binding"
+        );
+        assert_eq!(layers[0].weights[0], 199.0 / 255.0);
+        land.layers[1].texture_form_id = 30;
+        let layers = blend_layers(&land, 0, &links);
+        assert_eq!(
+            layers[1].texture_form_id, 30,
+            "base-equal binding remains but its weights shift away"
+        );
+        assert_eq!(layers[1].weights[0], 20.0 / 255.0);
     }
 }

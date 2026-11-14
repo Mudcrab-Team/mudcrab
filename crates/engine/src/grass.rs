@@ -46,9 +46,9 @@ impl GrassTerrain {
         let mut samples = terrain.heights.clone();
         if terrain.vertex_colors.len() == 33 * 33 * 3 {
             samples.extend(terrain.vertex_colors.as_chunks::<3>().0.iter().map(|rgb| {
-                0.299 * (f32::from(rgb[0]) / 255.0)
-                    + 0.587 * (f32::from(rgb[1]) / 255.0)
-                    + 0.114 * (f32::from(rgb[2]) / 255.0)
+                0.31 * (f32::from(rgb[0]) / 255.0)
+                    + 0.37 * (f32::from(rgb[1]) / 255.0)
+                    + 0.32 * (f32::from(rgb[2]) / 255.0)
             }));
         }
         Self::new(samples, terrain.water_height)
@@ -130,16 +130,39 @@ pub struct GrassInstance {
     pub color: u8,
     /// Creation-space unit normal multiplied by 127.
     pub normal: [i8; 3],
-    /// R2 candidate order retained in low 18 bits for deterministic prefix thinning.
+    /// Spatial fade rank retained in low 18 bits for deterministic prefix thinning.
     /// Tuning-only high bits retain 7-bit LAND luminance and signed range factor.
     pub slot: u32,
 }
 
 impl GrassInstance {
-    /// Decode the stable candidate identity independently of optional tuning metadata.
+    /// Decode the stable spatial fade rank independently of optional tuning metadata.
     pub const fn candidate_slot(&self) -> u32 {
         self.slot & 0x3ffff
     }
+}
+
+/// Production draw-prefix count, shared with shot evidence; shader root clipping happens later.
+pub(crate) fn submitted_instance_count(
+    instances: &[GrassInstance],
+    slots: u32,
+    eye_in_cell: Vec3,
+    fade_start: f32,
+    fade_end: f32,
+    enabled: bool,
+) -> usize {
+    if !enabled {
+        return instances.len();
+    }
+    let closest = Vec3::new(
+        eye_in_cell.x.clamp(0.0, 4096.0),
+        eye_in_cell.y,
+        eye_in_cell.z.clamp(-4096.0, 0.0),
+    );
+    let distance = eye_in_cell.distance(closest);
+    let fraction = ((fade_end - distance) / (fade_end - fade_start).max(1.0)).clamp(0.0, 1.0);
+    let limit = (fraction * slots as f32).ceil() as u32;
+    instances.partition_point(|instance| instance.candidate_slot() < limit)
 }
 
 /// One species in one cell. The renderer owns primitive children, never blade entities.
@@ -657,7 +680,7 @@ mod tests {
         app.update();
     }
 
-    /// Create a one-species mapped cache and CPU-only app with one candidate per cell.
+    /// Create a one-species mapped cache and CPU-only app with one candidate per spot.
     fn surface_streaming_app() -> (App, tempfile::TempDir) {
         use shared::grass::{GrassCell, GrassLayer, GrassQuadrant, GrassType};
         AsyncComputeTaskPool::get_or_init(|| {
@@ -692,12 +715,15 @@ mod tests {
                     obstruction_failures: vec![],
                     expanded_sampling: 0,
                     heights: vec![0.0; 33 * 33],
+                    normals: vec![],
+                    vertex_colors: vec![],
                     water_height: None,
                     quadrants: (0..4)
                         .map(|quadrant| GrassQuadrant {
                             quadrant,
                             layers: vec![GrassLayer {
                                 texture_form_id: 9,
+                                is_base: false,
                                 grass_ids: vec![7],
                                 weights: vec![1.0; 17 * 17],
                             }],
@@ -712,7 +738,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(EngineConfig {
             grass: true,
-            grass_min_spacing: 4096.0,
+            grass_min_spacing: 256.0,
             grass_uploads_per_frame: 0,
             ..EngineConfig::default()
         })
@@ -903,6 +929,8 @@ mod tests {
                     obstruction_failures: vec![],
                     expanded_sampling: 0,
                     heights: vec![0.0; 33 * 33],
+                    normals: vec![],
+                    vertex_colors: vec![],
                     water_height: None,
                     quadrants: (0..4)
                         .map(|quadrant| shared::grass::GrassQuadrant {
@@ -1072,6 +1100,57 @@ mod tests {
                 .iter(app.world())
                 .count(),
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod submission_count_tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    /// Equal ranks survive together, and shot evidence shares the renderer's conservative prefix.
+    #[test]
+    fn conservative_prefix_preserves_rank_collisions() {
+        let instances: Vec<_> = [1, 1, 3]
+            .into_iter()
+            .map(|slot| GrassInstance {
+                slot,
+                ..GrassInstance::zeroed()
+            })
+            .collect();
+        assert_eq!(
+            submitted_instance_count(
+                &instances,
+                4,
+                Vec3::new(-7500.0, 0.0, 0.0),
+                7000.0,
+                8000.0,
+                true
+            ),
+            2
+        );
+        assert_eq!(
+            submitted_instance_count(
+                &instances,
+                4,
+                Vec3::new(-9000.0, 0.0, 0.0),
+                7000.0,
+                8000.0,
+                true
+            ),
+            0
+        );
+        assert_eq!(
+            submitted_instance_count(
+                &instances,
+                4,
+                Vec3::new(-9000.0, 0.0, 0.0),
+                7000.0,
+                8000.0,
+                false
+            ),
+            3
         );
     }
 }

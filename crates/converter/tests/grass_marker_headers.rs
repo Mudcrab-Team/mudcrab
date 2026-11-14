@@ -149,7 +149,11 @@ fn fixture(root: &Path, reader: RecordReader) -> PipelineConfig {
         b"LTEX",
         4,
         0,
-        field(b"GNAM", &0x01000801u32.to_le_bytes()),
+        [
+            field(b"TNAM", &2u32.to_le_bytes()),
+            field(b"GNAM", &0x01000801u32.to_le_bytes()),
+        ]
+        .concat(),
     ));
     plugin.extend(base(0x01000840, 0));
     plugin.extend(base(0x01000841, 0x00800000));

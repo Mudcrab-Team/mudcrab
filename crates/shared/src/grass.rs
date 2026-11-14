@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version eight accompanies preserved grass tangent frames and lossless packed normals.
-pub const GRASS_CACHE_VERSION: u32 = 8;
+/// Version nine preserves selection opacity and original LAND sampling fields.
+pub const GRASS_CACHE_VERSION: u32 = 9;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
@@ -29,9 +29,11 @@ pub struct GrassType {
 #[rkyv(bytecheck())]
 pub struct GrassLayer {
     pub texture_form_id: u32,
-    /// Resolved unique species in the winning LTEX's GNAM occurrence order.
+    /// Base residual versus transformed painted opacity; base is selected first.
+    pub is_base: bool,
+    /// Resolved species occurrences in the winning LTEX's GNAM occurrence order.
     pub grass_ids: Vec<u32>,
-    /// Effective blend weights, row-major 17 by 17, including base residual.
+    /// Transformed byte-opacity weights or base residual, row-major 17 by 17.
     pub weights: Vec<f32>,
 }
 
@@ -63,6 +65,10 @@ pub struct GrassCell {
     pub input_hash: [u8; 32],
     /// Absolute Creation Z heights, row-major 33 by 33.
     pub heights: Vec<f32>,
+    /// Original LAND signed normal components, row-major 33 by 33 by 3; empty uses fallback.
+    pub normals: Vec<i8>,
+    /// Original LAND RGB bytes, row-major 33 by 33 by 3; empty uses fallback.
+    pub vertex_colors: Vec<u8>,
     pub water_height: Option<f32>,
     pub quadrants: Vec<GrassQuadrant>,
     /// Sorted unique model paths omitted while baking these masks.
@@ -93,7 +99,8 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
             return Err("grass types must have sorted unique nonzero IDs");
         }
         previous = Some(id);
-        if rule.model_path.is_empty()
+        if rule.position_range < 0.0
+            || rule.model_path.is_empty()
             || rule.water_comparison > 7
             || [
                 rule.position_range,
@@ -130,7 +137,9 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
         {
             return Err("invalid grass sampling admissions");
         }
-        if cell.heights.len() != 33 * 33
+        if (!cell.normals.is_empty() && cell.normals.len() != 33 * 33 * 3)
+            || (!cell.vertex_colors.is_empty() && cell.vertex_colors.len() != 33 * 33 * 3)
+            || cell.heights.len() != 33 * 33
             || cell.quadrants.len() != 4
             || cell
                 .heights
@@ -158,14 +167,12 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
                 {
                     return Err("invalid grass blend field");
                 }
-                let mut seen = std::collections::BTreeSet::new();
                 for grass_id in layer.grass_ids.iter() {
                     let id = grass_id.to_native();
-                    if !seen.insert(id)
-                        || cache
-                            .types
-                            .binary_search_by_key(&id, |rule| rule.form_id.to_native())
-                            .is_err()
+                    if cache
+                        .types
+                        .binary_search_by_key(&id, |rule| rule.form_id.to_native())
+                        .is_err()
                     {
                         return Err("invalid grass layer species");
                     }

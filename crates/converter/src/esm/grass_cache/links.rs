@@ -42,20 +42,22 @@ pub(super) fn read_links(
             }
         }
     }
-    if legacy.is_empty() {
-        return Ok((stored, 0, None));
-    }
 
     let mut raw =
         conn.prepare("SELECT data FROM records WHERE form_id=?1 AND record_type='LTEX'")?;
     let mut skipped = 0;
     let mut first_invalid = None;
-    for texture in legacy {
+    let textures: Vec<_> = stored.keys().copied().collect();
+    for texture in textures {
         let grasses = stored.remove(&texture).unwrap_or_default();
         let data: Option<Vec<u8>> = raw.query_row([texture], |row| row.get(0)).optional()?;
         let Some((order, omitted_field)) = data.as_deref().and_then(legacy_order) else {
-            skipped += 1;
-            first_invalid.get_or_insert(texture);
+            if legacy.contains(&texture) {
+                skipped += 1;
+                first_invalid.get_or_insert(texture);
+            } else {
+                stored.insert(texture, grasses);
+            }
             continue;
         };
         if omitted_field {
@@ -63,12 +65,9 @@ pub(super) fn read_links(
             first_invalid.get_or_insert(texture);
         }
         let stored_ids: BTreeSet<_> = grasses.into_iter().collect();
-        let mut seen = BTreeSet::new();
         let ordered: Vec<_> = order
             .into_iter()
-            .filter(|grass| {
-                stored_ids.contains(grass) && valid_types.contains(grass) && seen.insert(*grass)
-            })
+            .filter(|grass| stored_ids.contains(grass) && valid_types.contains(grass))
             .collect();
         if !ordered.is_empty() {
             stored.insert(texture, ordered);
@@ -77,8 +76,10 @@ pub(super) fn read_links(
     Ok((stored, skipped, first_invalid))
 }
 
-/// Validate the whole payload before trusting any GNAM order; never publish a prefix.
-fn legacy_order(data: &[u8]) -> Option<(Vec<u32>, bool)> {
+type StoredSubrecords = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Decode either supported complete stored-record representation, without trusting a prefix.
+pub(super) fn stored_subrecords(data: &[u8]) -> Option<StoredSubrecords> {
     if data.is_empty() {
         return None;
     }
@@ -96,6 +97,12 @@ fn legacy_order(data: &[u8]) -> Option<(Vec<u32>, bool)> {
         } else {
             extract_subrecords(data).ok()?
         };
+    Some(subs)
+}
+
+/// Validate the whole payload before trusting any GNAM order; never publish a prefix.
+fn legacy_order(data: &[u8]) -> Option<(Vec<u32>, bool)> {
+    let subs = stored_subrecords(data)?;
     let mut order = Vec::new();
     let mut omitted_field = false;
     for (tag, payload) in subs {
@@ -139,7 +146,7 @@ mod tests {
         assert_eq!((skipped, first), (0, None));
     }
 
-    /// Old schemas recover winning source order, intersect links/rules and deduplicate.
+    /// Old schemas recover winning source order, intersect links/rules and preserve repeated occurrences.
     #[test]
     fn legacy_archive_recovers_order_on_read_only_database() {
         let dir = tempfile::tempdir().unwrap();
@@ -151,7 +158,7 @@ mod tests {
         )
         .unwrap();
         let (links, skipped, first) = read_links(&conn, &BTreeSet::from([21, 22, 77])).unwrap();
-        assert_eq!(links, BTreeMap::from([(30, vec![22, 21])]));
+        assert_eq!(links, BTreeMap::from([(30, vec![22, 22, 21])]));
         assert_eq!((skipped, first), (0, None));
     }
 

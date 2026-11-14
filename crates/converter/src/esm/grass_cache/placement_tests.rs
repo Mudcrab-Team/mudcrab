@@ -187,9 +187,11 @@ fn placement_texture_species_keep_authored_order_and_invalidate_reorder() {
             form_id: 30,
             record_type: *b"LTEX",
             flags: 0,
-            subrecords: ids
-                .iter()
-                .map(|id| (b"GNAM".to_vec(), id.to_le_bytes().to_vec()))
+            subrecords: std::iter::once((b"TNAM".to_vec(), 2u32.to_le_bytes().to_vec()))
+                .chain(
+                    ids.iter()
+                        .map(|id| (b"GNAM".to_vec(), id.to_le_bytes().to_vec())),
+                )
                 .collect(),
             cell_form_id: None,
             worldspace_form_id: None,

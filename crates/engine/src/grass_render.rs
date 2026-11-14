@@ -1162,14 +1162,14 @@ fn visible_instance_count(data: &GrassPrimitive, eye_world: Vec3) -> usize {
         .world_from_cell
         .inverse()
         .transform_point3(eye_world);
-    let closest = Vec3::new(eye.x.clamp(0.0, 4096.0), eye.y, eye.z.clamp(-4096.0, 0.0));
-    let distance = eye.distance(closest);
-    let fraction = ((data.uniform.fade.y - distance)
-        / (data.uniform.fade.y - data.uniform.fade.x).max(1.0))
-    .clamp(0.0, 1.0);
-    let limit = (fraction * data.slot_count as f32).ceil() as u32;
-    data.instances
-        .partition_point(|instance| instance.candidate_slot() < limit)
+    crate::grass::submitted_instance_count(
+        &data.instances,
+        data.slot_count,
+        eye,
+        data.uniform.fade.x,
+        data.uniform.fade.y,
+        true,
+    )
 }
 
 struct DrawGrassInstances;

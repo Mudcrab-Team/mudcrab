@@ -6983,12 +6983,15 @@ mod tests {
                     obstruction_failures: vec![],
                     expanded_sampling: 0,
                     heights: arriving.heights.clone(),
+                    normals: vec![],
+                    vertex_colors: vec![],
                     water_height,
                     quadrants: (0..4)
                         .map(|quadrant| GrassQuadrant {
                             quadrant,
                             layers: vec![GrassLayer {
                                 texture_form_id: 9,
+                                is_base: false,
                                 grass_ids: vec![7],
                                 weights: vec![1.0; 17 * 17],
                             }],

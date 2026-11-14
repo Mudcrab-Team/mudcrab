@@ -57,7 +57,7 @@ fn land(cell: u32, texture: u32) -> Vec<u8> {
 
 /// Author an LTEX list, optionally surrounding a broken occurrence with valid GNAMs.
 fn landscape(texture: u32, order: &[u32], malformed: bool) -> Vec<u8> {
-    let mut fields = Vec::new();
+    let mut fields = field(b"TNAM", &2u32.to_le_bytes());
     for (index, grass) in order.iter().enumerate() {
         fields.extend(field(b"GNAM", &grass.to_le_bytes()));
         if malformed && index == 0 {
@@ -65,7 +65,7 @@ fn landscape(texture: u32, order: &[u32], malformed: bool) -> Vec<u8> {
         }
     }
     if malformed {
-        // Duplicates retain their first occurrence and null links add no species.
+        // Duplicates retain their authored occurrences and null links add no species.
         fields.extend(field(b"GNAM", &order[0].to_le_bytes()));
         fields.extend(field(b"GNAM", &0u32.to_le_bytes()));
     }
@@ -211,11 +211,14 @@ async fn check_order(reader: RecordReader, overridden: bool, malformed: bool) {
         .find(|cell| cell.cell_id == 0x10)
         .unwrap();
     assert_eq!(cell.quadrants[0].layers.len(), 1);
-    let expected = if overridden {
-        OVERRIDE_ORDER
+    let mut expected = if overridden {
+        OVERRIDE_ORDER.to_vec()
     } else {
-        BASE_ORDER
+        BASE_ORDER.to_vec()
     };
+    if malformed {
+        expected.push(expected[0]);
+    }
     assert_eq!(
         cell.quadrants[0].layers[0].grass_ids, expected,
         "published species must retain the winning LTEX GNAM order"

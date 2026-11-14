@@ -839,10 +839,25 @@ fn grass_capture_counts(
     let tx = (shot.hfov.to_radians() * 0.5).tan();
     let ty = tx / run.file.aspect();
     let (start, end) = config.effective_grass_fade();
-    let mut species = std::collections::BTreeMap::<u32, [u64; 4]>::new();
+    let mut species = std::collections::BTreeMap::<u32, [u64; 5]>::new();
     for batch in batches {
         let counts = species.entry(batch.grass_id).or_default();
         counts[0] += batch.instances.len() as u64;
+        if !run.grass_draws_off() {
+            let local_eye = Vec3::new(
+                shot.position[0] - batch.grid[0] as f32 * 4096.0,
+                shot.position[2],
+                -(shot.position[1] - batch.grid[1] as f32 * 4096.0),
+            );
+            counts[4] += crate::grass::submitted_instance_count(
+                &batch.instances,
+                batch.slot_count,
+                local_eye,
+                start,
+                end,
+                config.grass_enable_fade,
+            ) as u64;
+        }
         for instance in batch.instances.iter() {
             let p = [
                 batch.grid[0] as f32 * 4096.0 + f32::from(instance.position[0]) * 4096.0 / 65535.0,
@@ -873,7 +888,7 @@ fn grass_capture_counts(
         }
     }
     let value = serde_json::json!({"shot": shot.name, "grass_off": run.grass_draws_off(),
-        "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m"],
+        "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m", "submitted_single_primitive_instances"],
         "visible_after_toggle": !run.grass_draws_off(), "wind_seconds": 1.0, "species": species});
     let path = run.output_dir.join("grass-counts.jsonl");
     let result = fs::OpenOptions::new()

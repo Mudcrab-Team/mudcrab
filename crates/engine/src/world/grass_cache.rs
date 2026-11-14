@@ -109,6 +109,8 @@ mod tests {
             obstruction_failures: vec![],
             expanded_sampling: 0,
             heights: vec![z; 33 * 33],
+            normals: vec![],
+            vertex_colors: vec![],
             water_height: None,
             quadrants: (0..4)
                 .map(|quadrant| GrassQuadrant {

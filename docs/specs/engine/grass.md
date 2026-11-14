@@ -16,11 +16,11 @@ when grass is disabled.
 
 `GrassPlugin` observes committed exterior cell roots in `PostUpdate`; it adds
 no generation work to `collect_cells`. At most four asynchronous placement jobs
-run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow normalized 17x17
+run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow raw painted opacity and base residual 17x17
 blend grids, species rules and 32-unit exclusion bits directly from a validated
 immutable memory mapping. Committed cells retain an immutable shared copy of
-their post-weld 33x33 height field, so grass roots, slope and water decisions use
-the same surface as the rendered terrain. When LAND VCLR is present, the same
+their post-weld 33x33 height field. The selection sampler applies the
+reference LAND triangle rules to that field; authored normals remain cached. When LAND VCLR is present, the same
 allocation also retains 33x33 scalar luminance samples. Heights add 4356 bytes
 per committed exterior root while grass is enabled; colours add another 4356
 bytes. The full retained surface counts toward the generated pool's budget. The mapping is reference-counted so
@@ -30,91 +30,76 @@ the engine is running.
 Both merged terrain and its quadrant fallback supply the selected, welded
 height field to grass; cache heights never replace the surface actually drawn.
 
-Each admitted species owns an R2 stream seeded from cell and species identity.
-The configured cap admits exactly N resolved entries in each LTEX's GNAM order
-(default two, zero none). Repeated nominations sum blend support without dividing
-by species count. Each species independently tests continuous support times authored
-density against one deterministic draw, reused at the final jittered root. Other
-species cannot steal its roots. This is MudCrab's native placement design.
-An admitted rule without a usable model still consumes its prefix place; the cap
-does not backfill from later GNAM entries. Output batches use FormID order.
+Selection follows [spud](https://github.com/chasmlol/spud) (MIT, revision
+`e5f2de4`); its notice is retained in `third-party/spud/LICENSE` and beside the
+runtime sampling modules. This is a source-behavior port, not independently
+proven Skyrim placement parity.
 
-Position range supplies deterministic XY jitter over the total span
-`-range/2..range/2`, matching the earlier precached implementation. Jitter that
-leaves the cell is rejected instead of being clamped into an artificial edge row.
-Exclusion is checked only at the final position. Slope and water
-rules and the selected species' painted texture support are rechecked after
-jitter. Height range supplies variation around unit scale, clamped to 0..2.
-Colour Range and terrain VCLR jointly supply darken-only brightness:
+For each quadrant, the generator visits the odd vertices in X then Y order.
+Each spot covers a 256-unit square and a 3x3 vertex neighborhood. Base entries
+come first, followed by up to five painted layers in LAND layer order. The
+configured GNAM limit is tested after adding a type: default 2 admits 3, and
+0 admits 1. The first 16 entries survive, including zero-support base entries
+and repeated species nominated by different textures. Output batches are
+sorted by species FormID.
 
-```text
-r = clamp(Color Range, 0, 1)
-u = deterministic random channel 9 in [0,1)
-s = 2*u - 1
-L = .299*(R/255) + .587*(G/255) + .114*(B/255)
-b = clamp(L * (1-r+s*r), 0, 1)
-byte = round(255*b)
-```
+A base vertex contributes full density wherever its residual is positive.
+A painted layer participates if any of the nine byte-opacity samples exceeds
+25/255; each positive sample then contributes full density. The imported
+texture threshold can further restrict painted-layer admission. Continuous
+opacity does not multiply density. Support is interpolated at unjittered
+subgrid centers and is not tested again after jitter.
 
-Absent VCLR is white (`L=1`). The same formula applies to every instance,
-including white and near-white terrain, independently of GRAS lighting flags.
-On white/absent VCLR the continuous pre-clamp support is `[1-2r,1)`;
-the lower tail clamps at zero, and byte rounding can reach 255. This replaces
-the former `1-r*u` law with support `[1-r,1]`: white terrain also becomes darker
-for nonzero Colour Range. Zero range is neutral only on white/absent VCLR;
-otherwise it retains terrain luminance. Brightness decodes as `byte/255`, so
-**255 is exactly 1.0** and no instance brightens above 1. Scale keeps its
-separate 0..2 encoding. The formula is independently expressed from
-[FasterNGIO's EmitBlade](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/src/Grass/Internal/PlacementCommon.h#L157-L166),
-with the same pinned author's [GPL v3 reference](https://github.com/panthuncia/FasterNGIO/blob/5a1bff6ad3e44b5b9c4b5acdd0663ae20860ca40/LICENSE).
-MudCrab is GPL-3.0-or-later and can use its GPL v3 option consistently with
-that reference. No C++ scaffolding is copied; RNG and its signed mapping remain
-MudCrab policy, without a claim of exact native distribution.
+Each entry has an n-by-n grid, with
+`n = min(trunc(256 / Position Range), trunc(256 / minimum spacing))`.
+Negative Position Range rules are skipped with a conversion warning.
+Zero Position Range safely uses the minimum-spacing limit. At
+minimum spacing 20 and Position Range <=20, a fully supported entry gets
+36,864 attempts per cell. Position Range 40 gives 9,216. Jitter covers each
+grid square, rather than an authored fixed span.
 
-Luminance interpolates the committed LAND colours using the renderer's fixed
-`[a,b,c,b,d,c]` triangles at the final encoded, post-jitter XY root. This differs
-from the reference's alternating diagonals. There is no gamma conversion or
-direct RGB hue multiplication. The immutable surface retains colours once per
-commit, includes them in equality and pool accounting, and regenerates on a
-colour-only terrain replacement. A speculative cache surface has no colours;
-it cannot attach as a match to a committed coloured surface.
+One cell-local nonstandard random stream is seeded by the wrapping product of
+cell coordinates. Density consumes one low-15-bit roll for nonzero chance;
+two jitter rolls follow only density success, and three appearance rolls
+follow only successful LAND/water/slope tests. Other entries therefore affect
+later rolls. The explicit density multiplier scales chance. Standard MT19937
+and independent per-species streams do not reproduce this sequence.
 
-Slope is evaluated
-in degrees from the rendered terrain triangle's geometric normal. Height uses
-the terrain mesh's anti-diagonal triangles, including after position jitter;
-bilinear height interpolation can bury grass on a nonplanar quad. The spacing option controls the
-candidate count `ceil((4096 / spacing)^2)` per species per cell. It does not impose
-another minimum distance between accepted clumps: that extra rejection thinned
-coverage compared with the precached reference, which permits neighboring clumps
-to overlap. R2 candidates and independent per-species acceptance remain
-deterministic; individual placements are not identical to the old world-aligned
-lattice.
+XY is rounded to binary16 relative to a 12-cell block origin before LAND
+sampling. LAND uses alternating triangle diagonals, 8-unit source heights,
+and the nearest triangle vertex's normalized authored normal. Slope limits
+use a 512-entry cosine sampling rule. Missing authored normals fall back to
+the triangle's geometric normal for synthetic inputs. Runtime committed
+height fields remain lifetime-checked; their non-source welding can differ
+from spud's original LAND. The renderer retains quantized u16 positions,
+byte rotation/scale and signed-byte normals, so this is not bit-identical to
+spud's half-precision orientation matrix.
 
-Water comparison mode names come from [xEdit's GRAS definition](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsTES5.pas).
-With signed distance `d = terrain_height - water_height` and record distance
-`u`, the engine uses the following predicates. A cell without water accepts all
-water comparison modes.
+Water mode 0 accepts `height >= water - distance`. Modes 1..5 use the inclusive
+above-near, below-far, below-near, either-far and either-near intervals.
+Modes 6/7 impose no constraint. Missing water uses `-f32::MAX`; it is not an
+unconditional bypass for modes that require water. These predicates follow
+the inspected reference behavior.
 
-| Mode | Placement predicate |
-| --- | --- |
-| 0 | `d >= u` |
-| 1 | `0 <= d <= u` |
-| 2 | `d <= -u` |
-| 3 | `-u <= d <= 0` |
-| 4 | `abs(d) >= u` |
-| 5 | `abs(d) <= u` |
-| 6 | `d <= u` |
-| 7 | `d >= -u` |
+Brightness uses the nearest LAND vertex's luma
+`.31*R + .37*G + .32*B` (RGB normalized to [0,1]). Missing VCLR is white.
+For the next unsigned random word U, the range factor is
+`1-r + (U * 2^-33 - .25) * r`. Negative brightness clamps to zero;
+brightness >=1 becomes .99. Binary16 intensity is adapted to the existing
+byte brightness encoding. The same law is used with committed colours and
+with baked original colours during speculative/CPU generation. Source
+colours receive no extra gamma conversion or direct RGB hue multiplication.
 
-Modes 6 and 7 constrain the named side and permit the opposite side. These
-predicates are MudCrab policy interpreting the xEdit labels.
-[CommonLibSSE-NG's TESGrass definition](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/main/include/RE/T/TESGrass.h)
-identifies slope degrees and the vertex-lighting, uniform-scaling and
-fit-to-slope flags. The custom shader consumes those flags.
+MudCrab's separately baked obstruction masks remain active. A rejected
+obstruction still consumes the reference's appearance rolls so it does not
+change later placement decisions. Distance thinning uses an independent
+18-bit hash rank, sorted within each species, rather than truncating the
+spatially ordered generation prefix. Rank collisions are valid. These
+renderer adaptations are separate from the reference's selection algorithm.
 
 Workers emit a 16-byte instance: cell-relative quantized XYZ (`u16`), full-turn
 rotation (`u8`), scale (`u8`), brightness (`u8`), Creation-space normal (`i8[3]`)
-and candidate slot (`u32`). A species batch supplies height minimum/span, flags,
+and fade rank plus tuning metadata (`u32`). A species batch supplies height minimum/span, flags,
 wave period, absolute cell grid and the authored converted glTF path. The
 renderer draws each authored primitive with its node hierarchy transform,
 authored texture scale/offset and shared immutable instance buffer. The texture
@@ -292,7 +277,7 @@ that file; every other value is an explicit **MudCrab default**.
 | Section | Key | Default | Default source | Engine use |
 | --- | --- | --- | --- | --- |
 | `[Grass]` | `iMinGrassSize` | `20` | MudCrab default | Candidate spacing/density |
-| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Exact resolved-species cap (zero admits none); INI spelling retained |
+| `[Grass]` | `iMaxGrassTypesPerTexure` | `2` | MudCrab default | Post-add limit (2 admits 3, 0 admits 1); INI spelling retained |
 | `[Grass]` | `fTexturePctThreshold` | `0.0` | MudCrab default | Minimum blended texture weight |
 | `[Grass]` | `iGrassCellRadius` | `2` | MudCrab default | Generated cell radius |
 | `[Grass]` | `fGrassStartFadeDistance` | `7000.0` | Shipped `SkyrimPrefs.ini` | Start of distance thinning |
@@ -397,8 +382,8 @@ The last darkening convention assumes the root lies at authored UV.y=1 and
 leaves meshes without UVs unaffected; arbitrary modded UV layouts may differ.
 Texture transforms do not move this root fraction. Saturation uses
 `max(mix(dot(HDR,vec3(.2126,.7152,.0722)),HDR,saturation),0)` before root
-and brightness multiplication. LAND's existing encoded-input luminance retains
-`.299,.587,.114`; these are separate operations in different color spaces.
+and brightness multiplication. LAND's encoded-input luminance uses
+`.31,.37,.32`; these are separate operations in different color spaces.
 
 Sheen uses the isotropic equations inspected in Bevy 0.19's local
 `pbr_lighting.wgsl`: `D_GGX`, `V_SmithGGXCorrelated`, and `F_Schlick`.
@@ -411,16 +396,16 @@ Dot products clamp to their nonnegative domains; NdotV and visibility's
 denominator have epsilon guards. Strength zero bypasses sheen, as does F mode.
 This is a direct dielectric highlight, without an environment reflection probe.
 
-The old per-instance brightness byte is preserved exactly. With both tint and
-range strengths at one the shader uses that byte directly. Otherwise it uses
+With both tint and range strengths at one the shader uses the generated brightness
+byte directly. Otherwise it uses
 `clamp(mix(1,LAND,tint_strength)*mix(1,R,range_strength),0,1)`, where
-`R=1-2*GRAS_color_range+2*random*GRAS_color_range` includes negative values.
+`R=1-range+(U*2^-33-.25)*range` is the reference variation factor.
 Generation encodes LAND and R in the high 14 bits of the slot word:
-7-bit UNORM LAND (maximum error 1/254) and 7-bit signed-range R (error 1/127).
-The low 18 bits hold every candidate at supported spacing >=8 (maximum
-262144 candidates). `GrassInstance::candidate_slot()` decodes CPU identity;
-both CPU and GPU fading ignore metadata. No sidecar allocation or instance-size
-increase occurs. No-file generation uses the same metadata and original brightness byte.
+7-bit UNORM LAND and 7-bit signed-range R, clamped to [-1,1] for tuning metadata.
+The low 18 bits are a nonunique spatial fade rank, independent of attempt count.
+`GrassInstance::candidate_slot()` decodes that rank; CPU and GPU fading ignore
+metadata. No sidecar allocation or instance-size increase occurs. No-file
+generation uses the same metadata and generated brightness byte.
 
 To tune live, launch the engine with the usual asset/world arguments plus
 `--grass --grass-tuning docs/examples/grass-tuning/flat-b.toml` and edit
@@ -452,3 +437,10 @@ for comparisons. Omitted mode selects `flat`, including an empty TOML file.
 All production startup paths use the tuning uniforms; there is no shading
 experiment environment switch. Authored normal maps use the preserved glTF frame
 and one DirectX Y conversion, consistent with the ordinary native material path.
+
+Shot species evidence includes `submitted_single_primitive_instances`: the
+production renderer's conservative distance-prefix count over actual resident
+batches. It is separate from projected-root/frustum counts and from shader
+surviving pixels. A model with multiple primitives submits that prefix for each
+primitive; readiness and primitive multiplicity must be established before
+comparing this value with captured colour-draw instances.

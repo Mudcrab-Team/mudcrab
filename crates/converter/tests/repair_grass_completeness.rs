@@ -95,6 +95,7 @@ fn fixture(root: &Path, reader: RecordReader, grass_loss: bool) -> PipelineConfi
         b"LTEX",
         4,
         &[
+            field(b"TNAM", &2u32.to_le_bytes()),
             field(b"GNAM", &0x0100_0801u32.to_le_bytes()),
             field(b"GNAM", &0x0100_0802u32.to_le_bytes()),
         ]
@@ -274,6 +275,7 @@ async fn asset_repair_recovers_legacy_database_gnam_order() {
             b"LTEX",
             4,
             &[
+                field(b"TNAM", &2u32.to_le_bytes()),
                 field(b"GNAM", &0x0100_0802u32.to_le_bytes()),
                 field(b"GNAM", &0x0100_0801u32.to_le_bytes()),
             ]
@@ -334,11 +336,9 @@ async fn asset_repair_recovers_legacy_database_gnam_order() {
             repair.warnings
         );
         if corrupt_field {
-            assert!(
-                repair.warnings[0].contains(
-                    "unreadable legacy LTEX grass data from 1 lists; first LTEX 00000004"
-                )
-            );
+            assert!(repair.warnings[0].contains(
+                "incomplete or unreadable LTEX grass data from 1 lists; first LTEX 00000004"
+            ));
         }
         let bytes = fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap();
         let cache =

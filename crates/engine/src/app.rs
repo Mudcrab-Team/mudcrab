@@ -3456,6 +3456,8 @@ mod tests {
             obstruction_failures: vec![],
             expanded_sampling: 0,
             heights: vec![],
+            normals: vec![],
+            vertex_colors: vec![],
             water_height: None,
             quadrants: vec![],
         });
