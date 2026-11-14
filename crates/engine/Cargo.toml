@@ -47,3 +47,6 @@ image_dds.workspace = true
 # No default features: the "glsl" one makes naga_oil write every imported header in GLSL as well,
 # which panics on Bevy's bindless material headers. Bevy turns on what it needs.
 naga_oil = { version = "0.22", default-features = false }
+
+[lints]
+workspace = true

@@ -754,6 +754,9 @@ fn copy_texture_layers(layers: &[TerrainLayer]) -> Vec<TerrainLayer> {
 
 pub fn validate_cell_cache(path: &Path) -> Result<Mmap> {
     let file = File::open(path)?;
+    // SAFETY: read-only mapping of the cell cache this process does not write while it is mapped.
+    // An outside truncation or in-place rewrite would fault reads of the map; that
+    // risk is accepted here (#633).
     let mmap = unsafe { Mmap::map(&file)? };
     let archived =
         rkyv::access::<shared::ArchivedCellCache, Error>(&mmap).wrap_err("invalid cell cache")?;

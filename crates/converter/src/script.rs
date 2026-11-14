@@ -143,6 +143,9 @@ impl ScriptConverter {
         let bytes =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
 
+        // SAFETY: read-only mapping of a script input this process does not write while it is mapped.
+        // An outside truncation or in-place rewrite would fault reads of the map; that
+        // risk is accepted here (#633).
         let mmap = unsafe { Mmap::map(&bytes) }
             .wrap_err_with(|| format!("failed to memory-map {}", input.display()))?;
 

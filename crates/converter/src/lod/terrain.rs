@@ -1277,7 +1277,8 @@ impl TerrainCellCache {
         Ok(Self { bytes, index })
     }
     pub fn cells(&self, cell_ids: &HashMap<u32, (i32, i32)>) -> Result<Vec<TerrainCellInput>> {
-        // Safety: owned immutable aligned bytes were validated in `read`.
+        // SAFETY: `read` validated these exact bytes with `rkyv::access`, and they are owned,
+        // aligned and never mutated afterwards.
         let archived = unsafe { rkyv::access_unchecked::<shared::ArchivedCellCache>(&self.bytes) };
         let mut cells = Vec::new();
         for (&cell_id, &(grid_x, grid_y)) in cell_ids {

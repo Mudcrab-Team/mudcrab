@@ -114,6 +114,8 @@ static BASIS_INIT: Once = Once::new();
 type EncodedVolumeLevels = Vec<Vec<Vec<u8>>>;
 type EncodedVolume = (EncodedVolumeLevels, Vec<u8>);
 
+// SAFETY: each declaration must match the C signature of the same name in the vendored Basis
+// Universal bridge. A mismatch is undefined behaviour at the call site, so change both together.
 unsafe extern "C" {
     fn opensky_basis_compress_ktx2(
         rgba: *const u8,
@@ -201,6 +203,9 @@ impl TextureConverter {
     ) -> Result<Ktx2Metadata> {
         let file =
             File::open(input).wrap_err_with(|| format!("failed to open {}", input.display()))?;
+        // SAFETY: read-only mapping of a texture input this process does not write while it is mapped.
+        // An outside truncation or in-place rewrite would fault reads of the map; that
+        // risk is accepted here (#633).
         let mmap = unsafe { Mmap::map(&file) }
             .wrap_err_with(|| format!("failed to memory-map {}", input.display()))?;
 
