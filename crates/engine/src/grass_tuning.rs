@@ -186,7 +186,8 @@ pub struct GrassTuningState {
 }
 
 impl GrassTuningState {
-    /// Load once at startup. Missing/invalid files retain defaults and remain eligible for reload.
+    /// Begin stability sampling at startup; defaults remain until the second identical read.
+    /// Missing/invalid files remain eligible for reload.
     pub fn new(path: Option<PathBuf>) -> Self {
         let mut state = Self {
             path,
@@ -423,7 +424,7 @@ mod tests {
         );
     }
 
-    /// Empty valid prefixes and partial valid saves never replace the last good state.
+    /// Single-poll empty or valid partial saves retain the last good state.
     #[test]
     fn tuning_requires_two_identical_complete_reads() {
         let dir = tempfile::tempdir().unwrap();
