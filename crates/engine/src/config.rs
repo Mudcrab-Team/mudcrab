@@ -141,6 +141,8 @@ pub struct EngineConfig {
     pub start_shot: Option<PathBuf>,
     /// Accept developer console commands on this process's stdin.
     pub stdin_console: bool,
+    /// Continue world simulation out of focus (Skyrim General.bAlwaysActive).
+    pub always_active: bool,
     /// Disable Bevy's GPU timing and pipeline-statistics query collection.
     pub no_render_diagnostics: bool,
     pub benchmark_only: bool,
@@ -272,6 +274,7 @@ impl Default for EngineConfig {
             image_space_slot: None,
             start_shot: None,
             stdin_console: false,
+            always_active: false,
             no_render_diagnostics: false,
             benchmark_only: false,
             benchmark_frames: None,
@@ -343,6 +346,7 @@ Assets and start position:
   --grid-x <cell>                       starting cell x (default: 0)
   --grid-y <cell>                       starting cell y (default: 0)
   --start-shot <file>                  start the live camera at one exterior shot pose
+  --always-active                     keep simulating when the primary window loses focus
   --stdin-console                     accept developer console commands on stdin
   --no-render-diagnostics             disable GPU timing and pipeline-statistics queries
   --allow-incomplete-assets             run despite a failed manifest or integration-report gate
@@ -1273,6 +1277,7 @@ impl EngineConfig {
                         args.next(),
                     )?);
                 }
+                "--always-active" => config.always_active = true,
                 "--stdin-console" => config.stdin_console = true,
                 "--no-render-diagnostics" => config.no_render_diagnostics = true,
                 "--shots-settle-timeout" => {
@@ -2216,6 +2221,26 @@ mod tests {
             .expect("--help has a --max-model-spawns-per-frame line");
         let default = EngineConfig::default().max_model_spawns_per_frame;
         assert!(line.ends_with(&format!("(default: {default})")), "{line}");
+    }
+
+    /// INI focus policy is default-off, layered, and explicitly overridable by CLI.
+    #[test]
+    fn pause704_always_active_setting_uses_ini_and_cli_precedence() {
+        assert!(!EngineConfig::default().always_active);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("focus.ini");
+        for (raw, expected) in [("1", true), ("0", false), ("oops", false), ("2", false)] {
+            std::fs::write(&path, format!("[General]\nbAlwaysActive={raw}\n")).unwrap();
+            let args = vec!["--ini".to_owned(), path.to_str().unwrap().to_owned()];
+            assert_eq!(
+                EngineConfig::run_from_args(args.clone()).always_active,
+                expected
+            );
+            assert!(
+                EngineConfig::run_from_args(args.into_iter().chain(["--always-active".into()]))
+                    .always_active
+            );
+        }
     }
 
     #[test]
