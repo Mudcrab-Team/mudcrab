@@ -1003,19 +1003,13 @@ fn export_records(
     // their XEMI names, and may run on a database older than `emittance_id`.
     if runtime_views && order.is_some() {
         insert_actor_models(&tx, master)?;
-        let authoring = master
-            .iter()
-            .filter(|(_, row)| &row.record_type == b"RACE" && !row.is_deleted())
-            .filter_map(|(&id, row)| {
-                crate::animation::authoring::read_race_authoring_fields(
-                    row.subrecords
-                        .iter()
-                        .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
-                )
-                .ok()
-                .map(|authoring| (id, authoring))
-            })
-            .collect();
+        let (authoring, unreadable) = race_authoring_rows(master);
+        for (id, error) in unreadable {
+            // The race keeps no animation row, as before; the warning names it.
+            eprintln!(
+                "warning: RACE {id:08X} has unreadable animation authoring and no race_animation_sources row: {error}"
+            );
+        }
         crate::animation::authoring::replace_race_projection(&tx, authoring)?;
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
         insert_emittance_sources(&tx, master, &mut omissions)?;
@@ -1336,6 +1330,36 @@ fn parse_water_dnam(dnam: &[u8]) -> Option<WaterDnam> {
 const LIGHT_DATA_MIN: usize = 20;
 /// The full `LIGH` `DATA` in Skyrim SE.
 const LIGHT_DATA_FULL: usize = 48;
+
+/// Readable RACE authoring rows, and the FormID and message of each RACE that failed.
+type RaceAuthoringRows = (
+    Vec<(u32, crate::animation::authoring::RaceAuthoring)>,
+    Vec<(u32, String)>,
+);
+
+/// Animation authoring of every live RACE, with the FormID and message of each RACE whose
+/// subrecords cannot be read. Both lists are in FormID order.
+fn race_authoring_rows(master: &HashMap<u32, RawRecord>) -> RaceAuthoringRows {
+    let mut ids: Vec<u32> = master
+        .iter()
+        .filter(|(_, row)| &row.record_type == b"RACE" && !row.is_deleted())
+        .map(|(&id, _)| id)
+        .collect();
+    ids.sort_unstable();
+    let mut rows = Vec::new();
+    let mut unreadable = Vec::new();
+    for id in ids {
+        let fields = master[&id]
+            .subrecords
+            .iter()
+            .map(|(tag, data)| (tag.as_slice(), data.as_slice()));
+        match crate::animation::authoring::read_race_authoring_fields(fields) {
+            Ok(authoring) => rows.push((id, authoring)),
+            Err(error) => unreadable.push((id, format!("{error:#}"))),
+        }
+    }
+    (rows, unreadable)
+}
 
 fn insert_light(
     tx: &Transaction<'_>,
@@ -2518,6 +2542,63 @@ mod tests {
             .collect();
         export_to_db_with_load_order(&conn, &repaired, &order).unwrap();
         assert!(omission_ids(&conn).is_empty());
+    }
+
+    /// A RACE whose authoring cannot be read keeps no animation row, as before, but it is
+    /// named in the result instead of vanishing. A deleted RACE is not read at all, and the
+    /// readable race beside it is unchanged.
+    #[test]
+    fn race_authoring_rows_name_each_unreadable_race() {
+        let readable = record(
+            0x30,
+            b"RACE",
+            None,
+            None,
+            vec![
+                (b"MNAM".to_vec(), Vec::new()),
+                (b"ANAM".to_vec(), cstr("rig/male.nif")),
+            ],
+        );
+        // `ANAM` before any `MNAM` or `FNAM` has no sex selector.
+        let no_selector = record(
+            0x20,
+            b"RACE",
+            None,
+            None,
+            vec![(b"ANAM".to_vec(), cstr("rig/male.nif"))],
+        );
+        let bad_utf8 = record(
+            0x10,
+            b"RACE",
+            None,
+            None,
+            vec![
+                (b"MNAM".to_vec(), Vec::new()),
+                (b"ANAM".to_vec(), vec![0xFF, 0xFE, 0]),
+            ],
+        );
+        let mut deleted = no_selector.clone();
+        deleted.form_id = 0x40;
+        deleted.flags = 0x20;
+        let master: HashMap<u32, RawRecord> = [readable, no_selector, bad_utf8, deleted]
+            .into_iter()
+            .map(|record| (record.form_id, record))
+            .collect();
+
+        let (rows, unreadable) = race_authoring_rows(&master);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 0x30);
+        assert_eq!(
+            rows[0].1.male_skeleton.as_deref(),
+            Some("meshes/rig/male.nif")
+        );
+        let ids: Vec<u32> = unreadable.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![0x10, 0x20], "FormID order, deleted RACE skipped");
+        assert!(
+            unreadable[1].1.contains("no sex selector"),
+            "{unreadable:?}"
+        );
     }
 
     /// A reference lit by `source` through `XEMI`.
