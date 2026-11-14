@@ -706,7 +706,6 @@ pub(super) fn convert(
 mod tests {
     use super::*;
     use crate::asset_path::{AssetKind, canonical_asset_path};
-    #[cfg(unix)]
     use rusqlite::OpenFlags;
 
     #[test]
