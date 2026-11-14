@@ -110,7 +110,7 @@ impl SkyrimIni {
                     config.sun_settings_overrides[index] = Some(value)
                 }
                 _ => eprintln!(
-                    "warning: ignoring [Sky] {key}={raw:?}; unusable sun-path value, retaining GMST/fallback"
+                    "warning: ignoring [Sky] {key}={raw:?}; unusable sun-path value, retaining the pack's GMST"
                 ),
             }
         }

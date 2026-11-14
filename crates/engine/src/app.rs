@@ -2344,10 +2344,15 @@ pub(crate) fn sun_shadow_cascades(config: &EngineConfig) -> CascadeShadowConfig 
 }
 
 /// Rotate toward the evaluated sun unless an explicit Creation bearing/elevation overrides it.
-/// Directional lights emit along local -Z, opposite the toward-sun direction.
-fn sun_rotation(config: &EngineConfig, direction: Vec3) -> Quat {
+/// Directional lights emit along local -Z, opposite the toward-sun direction. Without an evaluated
+/// sun (a pack without the five sun GMSTs or a climate timing) the sun keeps the fixed rotation it
+/// had before the clock drove it.
+fn sun_rotation(config: &EngineConfig, direction: Option<Vec3>) -> Quat {
     let Some((azimuth_degrees, elevation_degrees)) = config.sun_position else {
-        return Quat::from_rotation_arc(Vec3::Z, direction);
+        return match direction {
+            Some(direction) => Quat::from_rotation_arc(Vec3::Z, direction),
+            None => Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0),
+        };
     };
     let azimuth = azimuth_degrees.to_radians();
     let elevation = elevation_degrees.to_radians();
@@ -4421,7 +4426,7 @@ mod tests {
                 sun_position: Some((azimuth, elevation)),
                 ..EngineConfig::default()
             };
-            let rays = sun_rotation(&config, Vec3::Y) * Vec3::NEG_Z;
+            let rays = sun_rotation(&config, Some(Vec3::Y)) * Vec3::NEG_Z;
             assert!(
                 rays.distance(expected) < 1.0e-5,
                 "{azimuth},{elevation}: {rays:?}"
@@ -4434,8 +4439,17 @@ mod tests {
     fn absent_sun_position_uses_the_evaluated_direction() {
         let direction = Vec3::new(0.3, 0.8, -0.1).normalize();
         assert!(
-            (sun_rotation(&EngineConfig::default(), direction) * Vec3::Z).distance(direction)
+            (sun_rotation(&EngineConfig::default(), Some(direction)) * Vec3::Z).distance(direction)
                 < 1e-6
+        );
+    }
+
+    /// A pack with no complete sun path keeps the fixed rotation the sun had before the clock.
+    #[test]
+    fn no_evaluated_sun_keeps_the_previous_fixed_rotation() {
+        assert_eq!(
+            sun_rotation(&EngineConfig::default(), None),
+            Quat::from_euler(EulerRot::XYZ, -0.8, -0.5, 0.0)
         );
     }
 

@@ -158,7 +158,8 @@ pub struct EnvironmentCatalog {
     climate_weathers: HashMap<u32, Vec<ClimateWeather>>,
     sun_timings: HashMap<u32, crate::sun::SunTiming>,
     parent_worlds: HashMap<u32, u32>,
-    sun_settings: crate::sun::SunSettings,
+    /// The pack's winning sun GMSTs in `sun::SUN_KEYS` order; `None` where the pack has none.
+    sun_settings: [Option<f32>; 5],
 }
 
 /// A directional ambient block's 22 columns after `prefix`.
@@ -424,9 +425,31 @@ impl EnvironmentCatalog {
         self.sun_timings.get(&climate_id).copied()
     }
 
-    /// Winning optional GMST sun settings with per-key fallback.
-    pub fn sun_settings(&self) -> crate::sun::SunSettings {
+    /// Winning GMST sun settings in `sun::SUN_KEYS` order. A key the pack lacks stays `None`;
+    /// there is no fallback value (RF-SUN-003).
+    pub fn sun_settings(&self) -> [Option<f32>; 5] {
         self.sun_settings
+    }
+
+    /// Test catalog with one worldspace climate, its sun timing and the given GMSTs.
+    #[cfg(test)]
+    pub(crate) fn with_sun_for_tests(
+        worldspace: u32,
+        climate: u32,
+        timing: crate::sun::SunTiming,
+        settings: [Option<f32>; 5],
+    ) -> Self {
+        let mut catalog = Self::default();
+        catalog.worldspaces.insert(
+            worldspace,
+            WorldspaceEnvironment {
+                climate: Some(climate),
+                ..Default::default()
+            },
+        );
+        catalog.sun_timings.insert(climate, timing);
+        catalog.sun_settings = settings;
+        catalog
     }
 
     /// A climate's weather list in authored order; empty when unknown.
@@ -476,9 +499,9 @@ fn read_sun_timings(connection: &Connection) -> HashMap<u32, crate::sun::SunTimi
 }
 
 /// Read winning canonical GMST payloads already published by the converter. A corrupt optional
-/// record must not discard valid neighbors, and missing tables retain the fallback settings.
-fn read_sun_settings(connection: &Connection) -> crate::sun::SunSettings {
-    let mut settings = crate::sun::SunSettings::default();
+/// record must not discard valid neighbors, and a missing table or record leaves its key `None`.
+fn read_sun_settings(connection: &Connection) -> [Option<f32>; 5] {
+    let mut settings = [None; 5];
     let Ok(mut query) = connection
         .prepare("SELECT data FROM records WHERE record_type='GMST' ORDER BY load_order, form_id")
     else {
@@ -523,14 +546,14 @@ fn read_sun_settings(connection: &Connection) -> crate::sun::SunSettings {
             && blocks.next().is_none()
             && let Some(value) = value.filter(|v| crate::sun::SunSettings::valid(index, *v))
         {
-            settings.0[index] = value;
+            settings[index] = Some(value);
         } else {
             invalid += 1;
         }
     }
     if invalid > 0 {
         eprintln!(
-            "warning: environment: ignored {invalid} unusable optional GMST sun inputs; retaining valid settings/fallbacks"
+            "warning: environment: ignored {invalid} unusable optional GMST sun inputs; retaining valid settings"
         );
     }
     settings
@@ -677,7 +700,11 @@ mod tests {
         );
         assert_eq!(catalog.sun_timing(456), None);
         assert_eq!(catalog.sun_timing(789), None);
-        assert_eq!(catalog.sun_settings().0, [400.0, 40.0, -150.0, 200.0, 0.5]);
+        // The invalid fSunXExtreme record (0.0) leaves that key absent; nothing replaces it.
+        assert_eq!(
+            catalog.sun_settings(),
+            [None, Some(40.0), Some(-150.0), Some(200.0), Some(0.5)]
+        );
     }
 
     #[test]
