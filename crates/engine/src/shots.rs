@@ -155,6 +155,9 @@ impl ShotsFile {
 /// One camera pose, rendered to `<out>/<name>.png`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Shot {
+    /// Draw grass for this shot; omitted fields preserve normal rendering.
+    #[serde(default = "grass_enabled_by_default")]
+    pub grass: bool,
     /// Output file stem: the engine writes `<out>/<name>.png`.
     pub name: String,
     /// The worldspace of an exterior shot, or `None` when the file leaves it to `--worldspace`.
@@ -180,6 +183,11 @@ pub struct Shot {
     /// `<out>/<name>.stages.json`.
     #[serde(default)]
     pub probes: Vec<crate::hdr_probe::ProbePoint>,
+}
+
+/// Preserve grass for existing shot files regardless of their names.
+fn grass_enabled_by_default() -> bool {
+    true
 }
 
 impl Shot {
@@ -666,10 +674,7 @@ enum Phase {
 impl ShotsRun {
     /// ON/OFF capture pairs keep placement and suppress only grass draws.
     pub(crate) fn grass_draws_off(&self) -> bool {
-        self.file
-            .shots
-            .get(self.shot)
-            .is_some_and(|s| s.name.ends_with("-off"))
+        self.file.shots.get(self.shot).is_some_and(|s| !s.grass)
     }
 
     pub fn new(file: ShotsFile, output_dir: PathBuf, worldspace_id: u32) -> Self {
@@ -721,6 +726,21 @@ impl ShotsRun {
     fn discard_previous_outputs(&self, shot: &Shot) -> Result<(), String> {
         discard_previous_shot(&self.shot_path(shot))?;
         discard_previous_shot(&self.stages_path(shot))
+    }
+
+    /// Clear run-wide counts before settlement writes; per-capture cleanup never removes them.
+    fn prepare_output_directory(&mut self) -> Result<(), String> {
+        if !self.directory_made {
+            fs::create_dir_all(&self.output_dir).map_err(|error| {
+                format!(
+                    "could not make the output directory {}: {error}",
+                    self.output_dir.display()
+                )
+            })?;
+            discard_previous_shot(&self.output_dir.join("grass-counts.jsonl"))?;
+            self.directory_made = true;
+        }
+        Ok(())
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -832,6 +852,7 @@ fn grass_capture_counts(
     run: &ShotsRun,
     batches: &Query<&crate::grass::GrassBatch>,
     config: &crate::config::EngineConfig,
+    phase: &str,
 ) {
     let shot = &run.file.shots[run.shot];
     let (sy, cy) = shot.yaw.to_radians().sin_cos();
@@ -872,7 +893,7 @@ fn grass_capture_counts(
             }
         }
     }
-    let value = serde_json::json!({"shot": shot.name, "grass_off": run.grass_draws_off(),
+    let value = serde_json::json!({"shot": shot.name, "phase": phase, "grass_off": run.grass_draws_off(),
         "columns": ["spawned_resident", "roots_in_frustum", "fade_kept_roots_in_frustum", "roots_in_first_30m"],
         "visible_after_toggle": !run.grass_draws_off(), "wind_seconds": 1.0, "species": species});
     let path = run.output_dir.join("grass-counts.jsonl");
@@ -930,6 +951,11 @@ fn run_shots(
         });
         return;
     }
+    if let Err(message) = run.prepare_output_directory() {
+        run.fail(message);
+        run.enter(Phase::Done);
+        return;
+    }
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
         run.frames_without_camera = run.frames_without_camera.saturating_add(1);
         if run.frames_without_camera >= MISSING_CAMERA_FRAMES {
@@ -956,18 +982,6 @@ fn run_shots(
                 run.note(line);
                 run.advance();
                 return;
-            }
-            if !run.directory_made {
-                run.directory_made = true;
-                if let Err(error) = fs::create_dir_all(&run.output_dir) {
-                    let message = format!(
-                        "could not make the output directory {}: {error}",
-                        run.output_dir.display()
-                    );
-                    run.fail(message);
-                    run.enter(Phase::Done);
-                    return;
-                }
             }
             place_camera(
                 shot,
@@ -1064,7 +1078,7 @@ fn run_shots(
                 }
                 run.window_size = Some((run.file.width, run.file.height));
                 if controls.as_ref().is_some_and(|c| c.capture) {
-                    grass_capture_counts(run, &grass_batches, &config);
+                    grass_capture_counts(run, &grass_batches, &config, "settled");
                 }
                 let path = run.shot_path(shot);
                 if let Err(message) = discard_previous_shot(&path) {
@@ -1118,7 +1132,7 @@ fn run_shots(
                     None => {}
                 }
                 if controls.as_ref().is_some_and(|c| c.capture) {
-                    grass_capture_counts(run, &grass_batches, &config);
+                    grass_capture_counts(run, &grass_batches, &config, "captured");
                 }
                 let path = run.shot_path(shot);
                 let line = run.log_line(shot, &path);
@@ -1602,6 +1616,44 @@ mod tests {
     fn assert_close(actual: Vec3, expected: Vec3) {
         let difference = (actual - expected).abs().max_element();
         assert!(difference < 1.0e-5, "{actual:?} != {expected:?}");
+    }
+
+    /// Names cannot silently change grass visibility; the explicit field can.
+    #[test]
+    fn grass_visibility_is_explicit_and_counts_are_cleared() {
+        let mut file = reference_file();
+        file.shots[0].name = "fog-off".into();
+        assert!(file.shots[0].grass);
+        let dir = tempfile::tempdir().unwrap();
+        let mut run = ShotsRun::new(file, dir.path().to_owned(), 60);
+        assert!(!run.grass_draws_off());
+        let explicit: Shot = serde_json::from_value(serde_json::json!({
+            "name": "grass-on", "grass": false, "position": [0,0,0],
+            "yaw": 0, "pitch": 0, "hfov": 75
+        }))
+        .unwrap();
+        run.file.shots[0] = explicit;
+        assert!(run.grass_draws_off());
+        let path = dir.path().join("grass-counts.jsonl");
+        fs::write(&path, "stale").unwrap();
+        run.prepare_output_directory().unwrap();
+        assert!(!path.exists());
+        for index in 0..2 {
+            run.shot = index;
+            let mut counts = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"settled\"}}").unwrap();
+            run.discard_previous_outputs(&run.file.shots[0]).unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"captured\"}}").unwrap();
+            run.prepare_output_directory().unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 4);
+        let mut rerun = ShotsRun::new(reference_file(), dir.path().to_owned(), 60);
+        rerun.prepare_output_directory().unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

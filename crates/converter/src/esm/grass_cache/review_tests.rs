@@ -317,6 +317,11 @@ fn obstruction_notice_limit_and_first_example_survive_reuse_and_removal() {
     for index in 0..35u32 {
         let path = format!("meshes/bad{index:02}.glb");
         std::fs::write(dir.path().join(&path), b"malformed GLB").unwrap();
+        conn.execute(
+            "INSERT INTO records(form_id,record_type,load_order,data) VALUES(?1,'STAT',0,x'00')",
+            [100 + index],
+        )
+        .unwrap();
         conn.execute("INSERT INTO statics(id,model_path,flags,bounds_min_x,bounds_min_y,bounds_min_z,bounds_max_x,bounds_max_y,bounds_max_z,bounds_valid) VALUES(?1,?2,0,-64,-16,-48,64,32,48,1)", rusqlite::params![100+index,path]).unwrap();
         conn.execute("INSERT INTO \"references\"(id,cell_id,worldspace_id,base_form_id,is_exterior,pos_x,pos_y,pos_z,rot_x,rot_y,rot_z,scale) VALUES(?1,10,1,?2,1,4090,64,0,0,0,0,2)", rusqlite::params![200+index,100+index]).unwrap();
     }
@@ -596,4 +601,71 @@ fn malformed_enable_parent_is_local_and_healthy_neighbor_survives() {
     );
     assert!(blocked(&next.cells[0]) > 0 && blocked(&next.cells[1]) > 0);
     assert_eq!(cache.cells[2], next.cells[2]);
+}
+
+/// Pick-up clutter never leaves permanent holes; fixed bases still obstruct.
+#[test]
+fn only_static_like_bases_bake_obstructions() {
+    for kind in [
+        "STAT", "MSTT", "ACTI", "FURN", "CONT", "DOOR", "MISC", "ALCH", "WEAP", "INGR", "ARMO",
+        "BOOK", "AMMO", "SLGM", "SCRL", "KEYM", "TREE", "FLOR",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = fixture(dir.path());
+        conn.execute("UPDATE records SET record_type=?1 WHERE form_id=40", [kind])
+            .unwrap();
+        let (_, cache) = bake(&conn, dir.path(), None, "policy.rkyv");
+        let count: u32 = cache.cells.iter().map(blocked).sum();
+        assert_eq!(
+            count > 0,
+            matches!(kind, "STAT" | "MSTT" | "ACTI" | "FURN" | "CONT" | "DOOR"),
+            "{kind}"
+        );
+    }
+}
+
+/// Corrupt containers do not become worldspace-wide skinned candidates.
+#[test]
+fn corrupt_container_is_not_potentially_skinned() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    std::fs::write(dir.path().join("meshes/blocker.glb"), b"corrupt").unwrap();
+    let mut geometry = GeometryCache::new(dir.path()).unwrap();
+    geometry.fingerprint("meshes/blocker.glb");
+    assert!(!geometry.potential_skins["meshes/blocker.glb"]);
+}
+
+/// A replacement between fingerprint and decode cannot publish a mask under stale bytes.
+#[test]
+fn changed_model_rejects_fingerprint_decode_race() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let mut geometry = GeometryCache::new(dir.path()).unwrap();
+    geometry.fingerprint("meshes/blocker.glb");
+    std::fs::write(dir.path().join("meshes/blocker.glb"), b"replacement").unwrap();
+    assert!(geometry.get("meshes/blocker.glb").is_none());
+    assert!(geometry.source_changed);
+}
+
+/// Cancelled bakes leave an existing archive untouched.
+#[test]
+fn cancelled_bake_preserves_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = fixture(dir.path());
+    let output = dir.path().join("cancelled.rkyv");
+    std::fs::write(&output, b"previous").unwrap();
+    let cancellation = crate::pipeline::Cancellation::new();
+    cancellation.cancel();
+    assert!(
+        write_grass_cache_with_cancel(
+            &conn,
+            dir.path(),
+            &dir.path().join("terrain.rkyv"),
+            None,
+            &output,
+            &cancellation
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read(output).unwrap(), b"previous");
 }

@@ -678,6 +678,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
                 "failed to rebuild staged grass cache"
             }
         })?;
+        crate::cache::record_grass_artifact(&mut manifest, &staged)?;
         validate_grass_cache(&grass_path)?;
         report.notices.extend(grass.notices());
         report.warnings.extend(grass.warnings());
@@ -842,6 +843,9 @@ fn attempt(
                 &semantics.get(&output).cloned().unwrap_or_default(),
             )?;
             source_hash.push_str(&format!(":texture-encoding:{encoding:?}"));
+            if crate::texture::packed_normal_contract(&source.path, encoding) {
+                source_hash.push_str(":normal-packed:lossless-rgba8-v1");
+            }
             if let Some(label) = convert_texture(config, gpu, &source.path, &target, encoding)? {
                 source_hash.push_str(&label);
             }

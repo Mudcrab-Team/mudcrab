@@ -110,6 +110,7 @@ impl Plugin for GrassRenderPlugin {
             .add_render_command::<AlphaMask3d, DrawGrass>()
             .init_resource::<GrassInstanceBuffers>()
             .init_resource::<GrassQueuedEntities>()
+            .init_resource::<GrassPrepassDraws>()
             .add_render_command::<AlphaMask3dPrepass, DrawGrass>()
             .init_resource::<SpecializedMeshPipelines<GrassPipeline>>()
             .add_systems(RenderStartup, init_pipeline)
@@ -214,6 +215,8 @@ struct GrassAttachmentProgress(usize);
 struct GrassPrimitive {
     suppress_draw: bool,
     instances: Arc<Vec<GrassInstance>>,
+    /// Maximum displaced blade reach in cell coordinates, including scale and wind.
+    blade_reach: f32,
     mesh: Handle<Mesh>,
     texture: Handle<Image>,
     normal_texture: Handle<Image>,
@@ -477,6 +480,7 @@ fn attach_grass_primitives(
     nodes: Res<Assets<GltfNode>>,
     meshes: Res<Assets<GltfMesh>>,
     materials: Res<Assets<GltfMaterial>>,
+    vertex_meshes: Option<Res<Assets<Mesh>>>,
     wind: Option<Res<WindTexture>>,
     config: Res<crate::config::EngineConfig>,
     server: Res<AssetServer>,
@@ -532,6 +536,23 @@ fn attach_grass_primitives(
             let primitive = GrassPrimitive {
                 suppress_draw: false,
                 instances: batch.instances.clone(),
+                blade_reach: vertex_meshes
+                    .as_ref()
+                    .and_then(|meshes| meshes.get(&template.mesh))
+                    .and_then(|mesh| mesh.attribute(Mesh::ATTRIBUTE_POSITION))
+                    .and_then(|values| values.as_float3())
+                    .map_or(f32::INFINITY, |positions| {
+                        positions
+                            .iter()
+                            .map(|position| {
+                                template
+                                    .model
+                                    .transform_point3(Vec3::from_array(*position))
+                                    .length()
+                                    * 2.3
+                            })
+                            .fold(0.0_f32, f32::max)
+                    }),
                 mesh: template.mesh.clone(),
                 texture: template.texture.clone(),
                 normal_texture: template.normal_texture.clone(),
@@ -591,6 +612,11 @@ fn attach_grass_primitives(
     }
 }
 
+/// Captures pin wind; live sessions never use Bevy's hourly wrapped clock.
+fn grass_wind_time(time: &Time, shots: bool) -> f32 {
+    if shots { 1.0 } else { time.elapsed_secs() }
+}
+
 #[allow(clippy::too_many_arguments)] // Independent ECS queries/resources are scheduled by Bevy.
 /// Update propagated grass uniforms and readiness after deferred batch/primitive admission.
 fn update_grass_uniforms(
@@ -600,6 +626,7 @@ fn update_grass_uniforms(
     time: Res<Time>,
     shots: Option<Res<crate::shots::ShotsRun>>,
     controls: Option<Res<GrassCaptureControls>>,
+    config: Option<Res<crate::config::EngineConfig>>,
     fade: Res<GrassFade>,
     tuning: Option<Res<crate::grass_tuning::GrassTuningState>>,
     ambient: Option<Res<GlobalAmbientLight>>,
@@ -632,11 +659,10 @@ fn update_grass_uniforms(
         primitive.uniform.fade = Vec4::new(
             fade.start,
             fade.end,
-            if capture && shots.is_some() {
-                1.0
-            } else {
-                time.elapsed_secs_wrapped()
-            },
+            grass_wind_time(
+                &time,
+                shots.is_some() || config.as_ref().is_some_and(|config| config.shots.is_some()),
+            ),
             if fade.enabled { 0.0 } else { 1.0 },
         );
         if let Some(ambient) = &ambient {
@@ -1004,6 +1030,12 @@ fn prepare_grass(
             buffer
         };
         let mut value = data.uniform.clone();
+        value.normal_params.z = u32::from(matches!(
+            normal.texture_descriptor.format,
+            TextureFormat::Bc5RgUnorm | TextureFormat::Bc5RgSnorm
+        )) as f32;
+        value.normal_params.w =
+            u32::from(normal.texture_descriptor.format == TextureFormat::Bc5RgSnorm) as f32;
         value.sun_direction = sun_direction;
         value.sun_color = sun_color;
         let mut uniform = UniformBuffer::from(value);
@@ -1055,11 +1087,22 @@ fn queue_grass(
     mut main_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3d>>,
     mut pre_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dPrepass>>,
     mut queued: ResMut<GrassQueuedEntities>,
+    prepass_draws: Res<GrassPrepassDraws>,
 ) {
+    prepass_draws.0.lock().unwrap().clear();
     pipeline.scene = Some(scene.clone());
     clear_queued_grass(&mut queued, &mut main_phases, &mut pre_phases);
     for (view, msaa, camera, tonemapping) in &views {
         for (entity, main_entity, data) in &primitives {
+            if !grass_in_frustum(
+                data,
+                view.clip_from_world.unwrap_or_else(|| {
+                    view.clip_from_view * view.world_from_view.to_matrix().inverse()
+                }),
+            ) {
+                data.drawn.store(true, Ordering::Release);
+                continue;
+            }
             let Some(mesh) = meshes.get(&data.mesh) else {
                 continue;
             };
@@ -1126,6 +1169,39 @@ fn queue_grass(
     }
 }
 
+/// Test the entire cell and its authored blade reach, never a single-blade Mesh3d AABB.
+fn grass_in_frustum(data: &GrassPrimitive, clip_from_world: Mat4) -> bool {
+    let reach = data.blade_reach;
+    if !reach.is_finite() {
+        return true;
+    }
+    let low = Vec3::new(-reach, data.uniform.height_wind.x - reach, -4096.0 - reach);
+    let high = Vec3::new(
+        4096.0 + reach,
+        data.uniform.height_wind.x + data.uniform.height_wind.y + reach,
+        reach,
+    );
+    let clip = clip_from_world * data.uniform.world_from_cell;
+    let corners: [Vec4; 8] = std::array::from_fn(|i| {
+        clip * Vec3::new(
+            if i & 1 == 0 { low.x } else { high.x },
+            if i & 2 == 0 { low.y } else { high.y },
+            if i & 4 == 0 { low.z } else { high.z },
+        )
+        .extend(1.0)
+    });
+    !(0..6).any(|plane| {
+        corners.iter().all(|p| match plane {
+            0 => p.x < -p.w,
+            1 => p.x > p.w,
+            2 => p.y < -p.w,
+            3 => p.y > p.w,
+            4 => p.z < 0.0,
+            _ => p.z > p.w,
+        })
+    })
+}
+
 /// Bevy retains NonMesh bins across frames; custom draws own their cleanup.
 #[derive(Resource, Default)]
 struct GrassQueuedEntities(HashMap<RetainedViewEntity, Vec<MainEntity>>);
@@ -1172,9 +1248,17 @@ fn visible_instance_count(data: &GrassPrimitive, eye_world: Vec3) -> usize {
         .partition_point(|instance| instance.candidate_slot() < limit)
 }
 
+/// Bevy's late prepass repeats NonMesh bins; issue each view/primitive depth draw once.
+#[derive(Resource, Default)]
+struct GrassPrepassDraws(std::sync::Mutex<HashSet<(RetainedViewEntity, Entity)>>);
+
 struct DrawGrassInstances;
 impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
-    type Param = (SRes<RenderAssets<RenderMesh>>, SRes<MeshAllocator>);
+    type Param = (
+        SRes<RenderAssets<RenderMesh>>,
+        SRes<MeshAllocator>,
+        SRes<GrassPrepassDraws>,
+    );
     type ViewQuery = (
         &'static ViewUniformOffset,
         &'static ExtractedView,
@@ -1184,10 +1268,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
     type ItemQuery = (Read<GrassPrimitive>, Read<GrassGpu>);
     /// Bind grass resources and issue an instanced draw for the prepared primitive.
     fn render<'w>(
-        _: &P,
+        phase: &P,
         (offset, view, view_group, scene_group): QueryItem<'w, '_, Self::ViewQuery>,
         item: Option<QueryItem<'w, '_, Self::ItemQuery>>,
-        (meshes, allocator): SystemParamItem<'w, '_, Self::Param>,
+        (meshes, allocator, prepass_draws): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let Some((data, gpu)) = item else {
@@ -1205,6 +1289,15 @@ impl<P: PhaseItem> RenderCommand<P> for DrawGrassInstances {
         };
         let count = visible_instance_count(data, view.world_from_view.translation()) as u32;
         if count == 0 {
+            return RenderCommandResult::Skip;
+        }
+        if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3dPrepass>()
+            && !prepass_draws
+                .0
+                .lock()
+                .unwrap()
+                .insert((view.retained_view_entity, phase.entity()))
+        {
             return RenderCommandResult::Skip;
         }
         if std::any::TypeId::of::<P>() == std::any::TypeId::of::<AlphaMask3d>() {
@@ -1250,6 +1343,178 @@ mod tests {
     use bevy::gltf::GltfPrimitive;
 
     include!("grass_render_alpha_tests.rs");
+
+    #[test]
+    fn wind_capture_clock_is_fixed_and_live_clock_does_not_wrap_hourly() {
+        let mut time = Time::default();
+        time.advance_by(std::time::Duration::from_secs_f32(3599.5));
+        assert_eq!(grass_wind_time(&time, true), 1.0);
+        assert_eq!(grass_wind_time(&time, false), 3599.5);
+        time.advance_by(std::time::Duration::from_secs(1));
+        assert_eq!(grass_wind_time(&time, true), 1.0);
+        assert_eq!(grass_wind_time(&time, false), 3600.5);
+    }
+
+    #[test]
+    fn frustum_uses_whole_cell_blade_reach_and_propagated_transform() {
+        let mut data = primitive();
+        data.blade_reach = 2.0;
+        data.uniform.height_wind = Vec4::new(0.0, 10.0, 1.0, 0.5);
+        // A tiny blade at the cell origin is outside this view; the far cell edge overlaps it.
+        let clip = Mat4::orthographic_rh(4000.0, 4200.0, -20.0, 20.0, 0.1, 5000.0);
+        assert!(grass_in_frustum(&data, clip));
+        data.uniform.world_from_cell = Mat4::from_translation(Vec3::new(-10000.0, 0.0, 0.0));
+        assert!(!grass_in_frustum(&data, clip));
+        data.blade_reach = f32::INFINITY;
+        assert!(
+            grass_in_frustum(&data, clip),
+            "missing geometry must not cull"
+        );
+    }
+
+    /// Validate real scene shader layouts on software Vulkan, plus all MSAA semantic variants.
+    #[test]
+    #[ignore = "requires software Vulkan; run with the renderer smoke tests"]
+    fn production_scene_pipeline_shader_uses_real_mesh_bindings() {
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .build()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+                .disable::<bevy::audio::AudioPlugin>()
+                .disable::<bevy::winit::WinitPlugin>()
+                .set(bevy::window::WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                }),
+        );
+        let shader = app
+            .world_mut()
+            .resource_mut::<Assets<Shader>>()
+            .add(Shader::from_wgsl(
+                include_str!("shaders/grass.wgsl"),
+                "grass.wgsl",
+            ));
+        app.finish();
+        app.cleanup();
+        app.update();
+        let render = app.sub_app(RenderApp);
+        let scene = render.world().resource::<bevy::pbr::MeshPipeline>().clone();
+        let adapter = render
+            .world()
+            .resource::<bevy::render::renderer::RenderAdapter>()
+            .clone();
+        let info = adapter.get_info();
+        assert_eq!(
+            info.backend,
+            wgpu::Backend::Vulkan,
+            "software Vulkan required: {info:?}"
+        );
+        assert_eq!(
+            info.device_type,
+            wgpu::DeviceType::Cpu,
+            "software adapter required: {info:?}"
+        );
+        eprintln!("grass pipeline software adapter: {info:?}");
+        let mut pipeline = GrassPipeline::new(shader);
+        pipeline.scene = Some(scene);
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0_f32; 3]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0_f32; 2]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0_f32; 4]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; 3]);
+        let layout =
+            mesh.get_mesh_vertex_buffer_layout(&mut bevy::mesh::MeshVertexBufferLayouts::default());
+        let mut queued = Vec::new();
+        for samples in [1, 2, 4, 8] {
+            for hdr in [false, true] {
+                let mut key = GrassKey::new(
+                    samples,
+                    TextureFormat::Rgba16Float,
+                    false,
+                    hdr,
+                    Some(Tonemapping::Reinhard),
+                );
+                key.scene = Some(
+                    bevy::pbr::MeshPipelineKey::from_msaa_samples(samples)
+                        | bevy::pbr::MeshPipelineKey::from_target_format(
+                            TextureFormat::Rgba16Float,
+                        )
+                        | if hdr {
+                            bevy::pbr::MeshPipelineKey::empty()
+                        } else {
+                            bevy::pbr::MeshPipelineKey::TONEMAP_IN_SHADER
+                                | bevy::pbr::MeshPipelineKey::TONEMAP_METHOD_REINHARD
+                        },
+                );
+                let descriptor = pipeline.specialize(key, &layout).unwrap();
+                assert_eq!(descriptor.layout.len(), 3);
+                let mut defs = std::collections::HashMap::new();
+                for def in descriptor.vertex.shader_defs.clone() {
+                    let (name, value) = match def {
+                        bevy::shader::ShaderDefVal::Bool(name, value) => {
+                            (name, naga_oil::compose::ShaderDefValue::Bool(value))
+                        }
+                        bevy::shader::ShaderDefVal::UInt(name, value) => {
+                            (name, naga_oil::compose::ShaderDefValue::UInt(value))
+                        }
+                        bevy::shader::ShaderDefVal::Int(name, value) => {
+                            (name, naga_oil::compose::ShaderDefValue::Int(value))
+                        }
+                    };
+                    defs.insert(name, value);
+                }
+                super::grass_shader_tests::compose(include_str!("shaders/grass.wgsl"), defs)
+                    .unwrap();
+                if [TextureFormat::Rgba16Float, TextureFormat::Depth32Float]
+                    .into_iter()
+                    .all(|format| {
+                        adapter
+                            .get_texture_format_features(format)
+                            .flags
+                            .sample_count_supported(samples)
+                    })
+                {
+                    let id = app
+                        .sub_app(RenderApp)
+                        .world()
+                        .resource::<PipelineCache>()
+                        .queue_render_pipeline(descriptor);
+                    queued.push((samples, hdr, id));
+                }
+            }
+        }
+        assert!(
+            queued.len() >= 2,
+            "both single-sample HDR policies must compile"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            app.update();
+            let cache = app.sub_app(RenderApp).world().resource::<PipelineCache>();
+            if queued
+                .iter()
+                .all(|(_, _, id)| cache.get_render_pipeline(*id).is_some())
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                for (samples, hdr, id) in &queued {
+                    assert!(
+                        cache.get_render_pipeline(*id).is_some(),
+                        "grass pipeline samples={samples} hdr={hdr}: {:?}",
+                        cache.get_render_pipeline_state(*id)
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 
     /// Build one authored material through the production primitive-template traversal.
     fn alpha_template(alpha_mode: Option<AlphaMode>, alpha: f32) -> PrimitiveTemplate {
@@ -1361,6 +1626,7 @@ mod tests {
                     B::Subtract => left - right,
                     B::Multiply => left * right,
                     B::Divide => left / right,
+                    B::ShiftLeft => ((left as u32) << (right as u32)) as f32,
                     B::Less => u32::from(left < right) as f32,
                     B::Greater => u32::from(left > right) as f32,
                     B::LessEqual => u32::from(left <= right) as f32,
@@ -1377,6 +1643,11 @@ mod tests {
             } else {
                 reject
             }),
+            E::As {
+                expr,
+                kind: wgpu::naga::ScalarKind::Float,
+                ..
+            } => eval(expr),
             E::As {
                 expr,
                 kind: wgpu::naga::ScalarKind::Uint,
@@ -1472,6 +1743,7 @@ mod tests {
                 _ => {}
             }
         }
+        let source = source.replace("#{SAMPLES}", &samples.to_string());
         let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
@@ -1502,7 +1774,7 @@ mod tests {
     fn g3_opaque_templates_ignore_alpha_coverage() {
         let template = alpha_template(Some(AlphaMode::Opaque), 0.25);
         assert_eq!(template.color.w, 0.25);
-        for samples in [1, 4] {
+        for samples in [1, 2, 4, 8] {
             for alpha in [0.0, template.color.w, 1.0] {
                 assert_eq!(
                     shader_coverage_samples(alpha, template.cutoff, 0.0, samples),
@@ -1536,6 +1808,12 @@ mod tests {
         }
         for (alpha, expected) in [(0.25, 0), (0.4375, 1), (0.5, 2), (0.5625, 3), (0.75, 4)] {
             assert_eq!(shader_coverage_samples(alpha, 0.5, 0.25, 4), expected);
+        }
+        for samples in [2, 4, 8] {
+            assert_eq!(
+                shader_coverage_samples(0.5, 0.5, 0.25, samples),
+                samples as usize / 2
+            );
         }
         assert_eq!(shader_coverage_samples(1.0, 1.0, 0.0, 1), 1);
         assert_eq!(shader_coverage_samples(0.25, 0.5, 0.0, 1), 0);
@@ -1978,6 +2256,7 @@ mod tests {
     fn primitive() -> GrassPrimitive {
         GrassPrimitive {
             suppress_draw: false,
+            blade_reach: f32::INFINITY,
             instances: batch().instances,
             mesh: Handle::default(),
             texture: Handle::default(),
