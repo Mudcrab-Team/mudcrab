@@ -67,8 +67,8 @@ per-frame sampling for any of them.
   fails to open.
 - `graphics` — the effective settings, after `--ini` files and the command line have both been
   applied: `stream_radius`, `unload_radius`, the three terrain LOD block distances and
-  `split_distance_mult`, `max_upload_mib_per_frame`, `lights`, `headless`, and the window's
-  `present_mode`. This engine keeps no separate graphics-settings type; `EngineConfig` is where a
+  `split_distance_mult`, `max_upload_mib_per_frame`, `lights`, `headless`, the window's
+  `present_mode`, and `visual_profile`, since the profiles decode colour textures differently. This engine keeps no separate graphics-settings type; `EngineConfig` is where a
   run's render-affecting settings live.
 
 ### `gpu_passes`

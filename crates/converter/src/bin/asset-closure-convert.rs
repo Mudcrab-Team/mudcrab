@@ -9,7 +9,7 @@ use converter::{
 use rusqlite::Connection;
 use serde::Serialize;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     env, fs,
     path::{Path, PathBuf},
     sync::{
@@ -18,7 +18,7 @@ use std::{
     },
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ConversionResult {
     model_path: String,
     source_path: Option<String>,
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
     models.sort_by_key(|model| model.to_ascii_lowercase());
     models.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     let requested = models.len();
-    let queue = Arc::new(Mutex::new(VecDeque::from(models)));
+    let queue = Arc::new(Mutex::new(VecDeque::from(closure_jobs(models))));
     let results = Arc::new(Mutex::new(Vec::with_capacity(requested)));
     let completed = Arc::new(AtomicUsize::new(0));
     let workers = std::thread::available_parallelism()
@@ -89,13 +89,15 @@ fn main() -> Result<()> {
             let assets_root = &assets_root;
             scope.spawn(move || {
                 loop {
-                    let Some(model_path) = queue.lock().unwrap().pop_front() else {
+                    let Some(job) = queue.lock().unwrap().pop_front() else {
                         break;
                     };
-                    let result = convert_model(model_path, source_root, assets_root);
-                    results.lock().unwrap().push(result);
-                    let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if count.is_multiple_of(100) || count == requested {
+                    let finished = job.len();
+                    let job_results = convert_job(job, source_root, assets_root);
+                    results.lock().unwrap().extend(job_results);
+                    let before = completed.fetch_add(finished, Ordering::Relaxed);
+                    let count = before + finished;
+                    if count == requested || count / 100 > before / 100 {
                         eprintln!("Processed {count}/{requested} reachable NIF files");
                     }
                 }
@@ -146,9 +148,43 @@ fn required(args: &mut impl Iterator<Item = std::ffi::OsString>, name: &str) -> 
         .ok_or_else(|| color_eyre::eyre::eyre!("missing {name}"))
 }
 
+/// Splits the stored model paths into jobs for the workers. One job owns every stored path that
+/// resolves to the same output GLB, so two workers never convert, reuse, or clean up one output.
+fn closure_jobs(models: Vec<String>) -> Vec<Vec<String>> {
+    let mut by_output: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    let mut jobs = Vec::new();
+    for model in models {
+        match relative_model_path(&model) {
+            Ok(relative) => by_output.entry(relative).or_default().push(model),
+            // A refused path writes nothing, so it needs no grouping.
+            Err(_) => jobs.push(vec![model]),
+        }
+    }
+    jobs.extend(by_output.into_values());
+    jobs
+}
+
+/// Runs one job. Every stored path in the job reports the result of the single conversion.
+fn convert_job(job: Vec<String>, source_root: &Path, assets_root: &Path) -> Vec<ConversionResult> {
+    let mut paths = job.into_iter();
+    let Some(first) = paths.next() else {
+        return Vec::new();
+    };
+    let primary = convert_model(first, source_root, assets_root);
+    let mut results = Vec::with_capacity(paths.len() + 1);
+    for alias in paths {
+        let mut copy = primary.clone();
+        copy.model_path = alias;
+        results.push(copy);
+    }
+    results.push(primary);
+    results
+}
+
 /// Converts or reuses one reachable model. A stored path the canonicalizer refuses is reported,
 /// never joined onto the roots: a raw `..` or absolute plugin string would read or write outside
 /// both the source and the assets tree.
+/// Validates current NIF input before converting or reusing a model, recording local failure.
 fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> ConversionResult {
     let relative = match relative_model_path(&model_path) {
         Ok(relative) => relative,
@@ -181,33 +217,41 @@ fn convert_model(model_path: String, source_root: &Path, assets_root: &Path) -> 
             error: Some("source NIF is missing".to_owned()),
         };
     }
-    if output.is_file()
-        && MeshConverter::glb_bounds(&output).is_ok()
-        && MeshConverter::glb_texture_uris(&output).is_ok()
-    {
-        return ConversionResult {
+    // This utility has no manifest settings proof. Validate the current source
+    // even when the old GLB is readable, so it cannot bypass NIF refusal.
+    let result = MeshConverter::validate_nif_for_conversion(&source).and_then(|_| {
+        if output.is_file()
+            && MeshConverter::glb_bounds(&output).is_ok()
+            && MeshConverter::glb_texture_uris(&output).is_ok()
+        {
+            Ok("reused")
+        } else {
+            MeshConverter::convert_nif_to_glb(&source, &output).map(|_| "converted")
+        }
+    });
+    match result {
+        Ok(status) => ConversionResult {
             model_path,
             source_path: Some(source.to_string_lossy().into_owned()),
             output_path: relative_output,
-            status: "reused",
-            error: None,
-        };
-    }
-    match MeshConverter::convert_nif_to_glb(&source, &output) {
-        Ok(()) => ConversionResult {
-            model_path,
-            source_path: Some(source.to_string_lossy().into_owned()),
-            output_path: relative_output,
-            status: "converted",
+            status,
             error: None,
         },
-        Err(error) => ConversionResult {
-            model_path,
-            source_path: Some(source.to_string_lossy().into_owned()),
-            output_path: relative_output,
-            status: "failed",
-            error: Some(format!("{error:#}")),
-        },
+        Err(error) => {
+            let mut message = format!("{error:#}");
+            match fs::remove_file(&output) {
+                Ok(()) => {}
+                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {}
+                Err(cleanup) => message.push_str(&format!("; failed output cleanup: {cleanup}")),
+            }
+            ConversionResult {
+                model_path,
+                source_path: Some(source.to_string_lossy().into_owned()),
+                output_path: relative_output,
+                status: "failed",
+                error: Some(message.chars().take(2048).collect()),
+            }
+        }
     }
 }
 
@@ -238,6 +282,32 @@ mod tests {
             relative_model_path("Meshes\\Architecture\\Wall.NIF").unwrap(),
             Path::new("architecture/wall.nif")
         );
+    }
+
+    #[test]
+    fn stored_paths_for_one_output_share_one_job() {
+        let jobs = closure_jobs(vec![
+            "generated.nif".to_owned(),
+            "meshes/generated.nif".to_owned(),
+            "Meshes\\Generated.nif".to_owned(),
+            "other.nif".to_owned(),
+            "..\\escape.nif".to_owned(),
+            "C:/escape.nif".to_owned(),
+        ]);
+        let mut sizes: Vec<usize> = jobs.iter().map(Vec::len).collect();
+        sizes.sort_unstable();
+        assert_eq!(
+            sizes,
+            [1, 1, 1, 3],
+            "aliases of one output must not reach different workers: {jobs:?}"
+        );
+        let shared = jobs.iter().find(|job| job.len() == 3).unwrap();
+        assert!(
+            shared
+                .iter()
+                .all(|path| path.to_ascii_lowercase().contains("generated"))
+        );
+        assert_eq!(jobs.iter().map(Vec::len).sum::<usize>(), 6);
     }
 
     #[test]

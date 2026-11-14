@@ -225,8 +225,53 @@ fn attach_ready_actor_heads(
         commands.entity(ready.entity).despawn();
         return;
     };
-    let scene_entities: Vec<Entity> = std::iter::once(ready.entity)
-        .chain(children.iter_descendants(ready.entity))
+    let rehosted =
+        match rehost_scene_skins(ready.entity, &skeleton.bones, &names, &children, &skinned) {
+            RehostedSkins::Skinless => {
+                commands
+                    .entity(ready.entity)
+                    .insert(ChildOf(skeleton.head_bone));
+                return;
+            }
+            RehostedSkins::Unresolved { joints } => {
+                report(&ActorHeadDiagnostic::UnresolvedJoints {
+                    base_form_id: instance.base_form_id,
+                    joints,
+                });
+                // Never bind a joint to a wrong bone, and never leave a skinless-looking copy drawing
+                // at the body's origin: the actor stays alive without a head.
+                commands.entity(ready.entity).despawn();
+                return;
+            }
+            RehostedSkins::Ready(rehosted) => rehosted,
+        };
+    for (entity, skin) in rehosted {
+        commands.entity(entity).insert(skin);
+    }
+}
+
+/// What rehosting a scene's skinned meshes onto an actor's body bones found.
+pub(crate) enum RehostedSkins {
+    /// The scene has no skinned mesh, so it has no joints to rehost.
+    Skinless,
+    /// This many joints have no body bone of the same name. Nothing may be bound.
+    Unresolved { joints: usize },
+    /// Each skinned mesh with its joint list rewritten to the body's bone entities.
+    Ready(Vec<(Entity, SkinnedMesh)>),
+}
+
+/// Rewrites every [`SkinnedMesh`] in the scene instance at `scene` so each joint is the body bone
+/// of the same [`Name`]. Both assets were exported against the same skeleton and bind pose, so the
+/// inverse bind poses stay valid. All or nothing: one unmatched joint leaves every mesh unbound.
+pub(crate) fn rehost_scene_skins(
+    scene: Entity,
+    bones: &HashMap<String, Entity>,
+    names: &Query<&Name>,
+    children: &Query<&Children>,
+    skinned: &Query<&SkinnedMesh>,
+) -> RehostedSkins {
+    let scene_entities: Vec<Entity> = std::iter::once(scene)
+        .chain(children.iter_descendants(scene))
         .collect();
     let meshes: Vec<(Entity, SkinnedMesh)> = scene_entities
         .iter()
@@ -238,10 +283,7 @@ fn attach_ready_actor_heads(
         })
         .collect();
     if meshes.is_empty() {
-        commands
-            .entity(ready.entity)
-            .insert(ChildOf(skeleton.head_bone));
-        return;
+        return RehostedSkins::Skinless;
     }
 
     let mut missing = 0usize;
@@ -252,7 +294,7 @@ fn attach_ready_actor_heads(
             match names
                 .get(*joint)
                 .ok()
-                .and_then(|name| skeleton.bones.get(name.as_str()))
+                .and_then(|name| bones.get(name.as_str()))
             {
                 Some(body_bone) => joints.push(*body_bone),
                 None => missing += 1,
@@ -267,18 +309,9 @@ fn attach_ready_actor_heads(
         ));
     }
     if missing > 0 {
-        report(&ActorHeadDiagnostic::UnresolvedJoints {
-            base_form_id: instance.base_form_id,
-            joints: missing,
-        });
-        // Never bind a joint to a wrong bone, and never leave a skinless-looking copy drawing at
-        // the body's origin: the actor stays alive without a head.
-        commands.entity(ready.entity).despawn();
-        return;
+        return RehostedSkins::Unresolved { joints: missing };
     }
-    for (entity, skin) in rehosted {
-        commands.entity(entity).insert(skin);
-    }
+    RehostedSkins::Ready(rehosted)
 }
 
 /// The body's name-to-entity map and its [`HEAD_BONE`] entity, from the same walk the animation
