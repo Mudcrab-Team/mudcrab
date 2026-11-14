@@ -1,9 +1,9 @@
-//! CPU validation of the production grass shader with real Bevy 0.19.0 imports.
+//! CPU validation of the production grass shader with locked Bevy imports.
 //!
 //! Reads downloaded WGSL sources under Cargo's registry in `CARGO_HOME`, or the
 //! standard user `.cargo` directory. No custom environment variable is required.
 //! Missing sources are errors, never skipped tests or mock imports. These tests
-//! require the unpacked `bevy_pbr`, `bevy_render`, and `bevy_core_pipeline` 0.19.0
+//! require the unpacked `bevy_pbr`, `bevy_render`, and `bevy_core_pipeline`
 //! crates that a normal Cargo dependency fetch/build supplies.
 //! This checks WGSL semantics; GPU pipeline layouts and visual fidelity need separate evidence.
 
@@ -80,11 +80,13 @@ fn registry_roots() -> Vec<PathBuf> {
 fn real_sources() -> &'static Sources {
     static SOURCES: OnceLock<Sources> = OnceLock::new();
     SOURCES.get_or_init(|| {
-        let crates = [
-            "bevy_pbr-0.19.0",
-            "bevy_render-0.19.0",
-            "bevy_core_pipeline-0.19.0",
-        ];
+        let lock = include_str!("../../../Cargo.lock");
+        let crates = ["bevy_pbr", "bevy_render", "bevy_core_pipeline"].map(|name| {
+            let marker = format!("name = \"{name}\"\nversion = \"");
+            let start = lock.find(&marker).expect("locked Bevy crate") + marker.len();
+            let version = lock[start..].split('"').next().unwrap();
+            format!("{name}-{version}")
+        });
         let roots = registry_roots();
         for root in &roots {
             let entries = match std::fs::read_dir(root) {
@@ -103,7 +105,7 @@ fn real_sources() -> &'static Sources {
                     .all(|name| registry.join(name).join("src").is_dir())
                 {
                     let mut sources = Sources::new();
-                    for name in crates {
+                    for name in &crates {
                         index_sources(&registry.join(name).join("src"), &mut sources);
                     }
                     return sources;
@@ -361,7 +363,7 @@ fn check_contract(module: &Module, scene: bool) {
 /// Check every optional grass vertex attribute, both coverage paths and HDR/LDR source branches.
 #[test]
 fn production_grass_baseline_and_depth_validate_with_real_bevy() {
-    for samples in [1, 4] {
+    for samples in [1, 2, 4, 8] {
         for attributes in 0..16 {
             for tonemap in [false, true] {
                 let module = compose(SHADER, definitions(false, samples, attributes, tonemap))
@@ -375,7 +377,7 @@ fn production_grass_baseline_and_depth_validate_with_real_bevy() {
 /// Exercise all desktop native shadow filters and real prepared-light/cascade imports.
 #[test]
 fn production_grass_scene_shadows_validate_with_real_bevy() {
-    for samples in [1, 4] {
+    for samples in [1, 2, 4, 8] {
         for attributes in 0..16 {
             for tonemap in [false, true] {
                 for filter in [
@@ -401,7 +403,7 @@ fn production_grass_scene_shadows_validate_with_real_bevy() {
 #[test]
 fn production_grass_lut_tonemapping_validates_with_real_bevy() {
     for scene in [false, true] {
-        for samples in [1, 4] {
+        for samples in [1, 2, 4, 8] {
             for attributes in 0..16 {
                 let mut defs = definitions(scene, samples, attributes, true);
                 defs.remove("TONEMAP_METHOD_ACES_FITTED");

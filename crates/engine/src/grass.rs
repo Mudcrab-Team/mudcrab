@@ -1,11 +1,14 @@
 //! CPU grass streaming observes committed cells after streaming has finished.
 pub mod generation;
 
+#[cfg(test)]
+use bevy::tasks::AsyncComputeTaskPool;
+
 use crate::{
     config::EngineConfig,
     grass_render::GrassRenderPlugin,
     profiling::ProfilingState,
-    streaming::RenderOrigin,
+    streaming::{ActiveSpace, RenderOrigin},
     world::{
         cache::TerrainSnapshot,
         components::{CELL_SIZE, CellRef, ExteriorCellGrid, StreamedCellRoot, StreamingCamera},
@@ -14,7 +17,7 @@ use crate::{
 };
 use bevy::{
     prelude::*,
-    tasks::{AsyncComputeTaskPool, Task, block_on, poll_once},
+    tasks::{Task, block_on, poll_once},
 };
 use generation::GeneratedGrass;
 use std::{
@@ -55,6 +58,7 @@ impl GrassTerrain {
     }
 
     /// Build a worker-owned speculative surface before terrain has committed.
+    #[cfg(test)]
     fn from_cache(cell: &shared::grass::ArchivedGrassCell) -> Self {
         Self::new(
             cell.heights
@@ -229,6 +233,7 @@ struct GrassState {
     bytes: usize,
     tick: u64,
     previous_camera: Option<Vec2>,
+    previous_direction: Vec2,
 }
 
 impl GrassState {
@@ -280,6 +285,17 @@ impl GrassState {
     }
 }
 
+/// Isolate bounded placement work from Bevy's pipeline/readback task pool.
+fn grass_task_pool() -> &'static bevy::tasks::TaskPool {
+    static POOL: std::sync::OnceLock<bevy::tasks::TaskPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        bevy::tasks::TaskPoolBuilder::new()
+            .num_threads(2)
+            .thread_name("grass".into())
+            .build()
+    })
+}
+
 /// Keep the scheduling/main-thread work bounded; masks and blade generation stay on the pool.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn stream_grass(
@@ -287,6 +303,7 @@ fn stream_grass(
     config: Res<EngineConfig>,
     cache: Res<GrassCache>,
     origin: Res<RenderOrigin>,
+    space: Option<Res<ActiveSpace>>,
     camera: Query<&Transform, With<StreamingCamera>>,
     cells: Query<(Entity, &CellRef, &ExteriorCellGrid, &GrassTerrain), With<StreamedCellRoot>>,
     mut state: ResMut<GrassState>,
@@ -313,8 +330,14 @@ fn stream_grass(
     state.tick = state.tick.wrapping_add(1);
     let mut wanted: Vec<_> = cells
         .iter()
-        .filter(|(_, _, grid, _)| {
-            grid.0.x.abs_diff(center.x).max(grid.0.y.abs_diff(center.y)) <= radius as u32
+        .filter(|(_, id, grid, _)| {
+            space.as_ref().is_none_or(|space| {
+                space.interior.is_none()
+                    && cache.cell(id.0).is_some_and(|cell| {
+                        u32::from(cell.worldspace_id)
+                            == space.exterior_worldspace(config.worldspace_id)
+                    })
+            }) && grid.0.x.abs_diff(center.x).max(grid.0.y.abs_diff(center.y)) <= radius as u32
         })
         .map(|(root, id, grid, terrain)| (id.0, root, grid.0, terrain.clone()))
         .collect();
@@ -365,10 +388,13 @@ fn stream_grass(
     }
     // Replace equal-content old Arcs too, making subsequent checks pointer-fast.
     state.previous_desired.clone_from(&desired);
-    // Keep obsolete task handles until completion. Dropping a Task cannot preempt
-    // synchronous CPU work inside an already-polling generation future; retaining
-    // handles ensures fast travel cannot start more than four workers in total.
-    let direction = movement.normalize_or_zero();
+    // Prefetch only committed terrain: archived heights omit welding and VCLR.
+    // Cancel queued obsolete futures; the dedicated pool bounds synchronous work
+    // already running without competing with pipeline compilation/readback.
+    if movement.length_squared() > 0.01 {
+        state.previous_direction = movement.normalize_or_zero();
+    }
+    let direction = state.previous_direction;
     let ahead = IVec2::new(
         center
             .x
@@ -377,17 +403,40 @@ fn stream_grass(
             .y
             .saturating_add(direction.y.round() as i32 * (radius + 1)),
     );
-    let prefetch = (movement.length_squared() > 0.01)
-        .then(|| cache.cell_at(config.worldspace_id, ahead.x, ahead.y))
-        .flatten();
-    let ready: Vec<_> = state
-        .pending
-        .iter_mut()
-        .filter_map(|(&id, pending)| {
-            block_on(poll_once(&mut pending.task))
-                .map(|(data, terrain)| (id, pending.root, data, terrain))
+    let prefetch_source = (direction.length_squared() > 0.0)
+        .then(|| {
+            cells.iter().find(|(_, id, grid, _)| {
+                grid.0 == ahead
+                    && space.as_ref().is_none_or(|space| {
+                        space.interior.is_none()
+                            && cache.cell(id.0).is_some_and(|cell| {
+                                u32::from(cell.worldspace_id)
+                                    == space.exterior_worldspace(config.worldspace_id)
+                            })
+                    })
+            })
         })
-        .collect();
+        .flatten()
+        .map(|(root, id, _, terrain)| (id.0, root, terrain.clone()));
+    let prefetch = prefetch_source.as_ref().map(|(id, _, _)| *id);
+    state.pending.retain(|id, pending| {
+        desired
+            .get(id)
+            .is_some_and(|(root, _)| pending.root.is_none_or(|old| old == *root))
+            || Some(*id) == prefetch
+    });
+    // Admit in distance/id order, waiting for earlier work rather than making
+    // the budget's winners depend on worker completion timing.
+    let mut ready = Vec::new();
+    for id in wanted.iter().map(|(id, _, _, _)| *id).chain(prefetch) {
+        let Some(pending) = state.pending.get_mut(&id) else {
+            continue;
+        };
+        let Some((data, terrain)) = block_on(poll_once(&mut pending.task)) else {
+            break;
+        };
+        ready.push((id, pending.root, data, terrain));
+    }
     let budget = if config.grass_cache_mib == 0 {
         usize::MAX
     } else {
@@ -408,7 +457,7 @@ fn stream_grass(
                 continue;
             }
             current_terrain.clone()
-        } else if root.is_none() && Some(id) == prefetch {
+        } else if Some(id) == prefetch {
             terrain
         } else {
             continue;
@@ -483,18 +532,19 @@ fn stream_grass(
         }
         let mapped = cache.clone();
         let generation_config = config.clone();
-        let source = desired.get(&id).cloned();
+        let source = desired.get(&id).cloned().or_else(|| {
+            prefetch_source
+                .as_ref()
+                .filter(|(prefetch_id, _, _)| *prefetch_id == id)
+                .map(|(_, root, terrain)| (*root, terrain.clone()))
+        });
         let root = source.as_ref().map(|(root, _)| *root);
         state.pending.insert(
             id,
             PendingGrass {
                 root,
-                task: AsyncComputeTaskPool::get().spawn(async move {
-                    let terrain = source.map(|(_, terrain)| terrain).unwrap_or_else(|| {
-                        GrassTerrain::from_cache(
-                            mapped.cell(id).expect("selected cached cell exists"),
-                        )
-                    });
+                task: grass_task_pool().spawn(async move {
+                    let terrain = source.expect("scheduled grass has committed terrain").1;
                     let data =
                         generation::generate_on_terrain(&mapped, id, &generation_config, &terrain);
                     (data, terrain)
@@ -603,6 +653,68 @@ mod tests {
         assert!(original.iter().any(|instance| instance.color != 0));
         assert!(batch.instances.iter().all(|instance| instance.color == 0));
         assert_eq!(app.world().resource::<GrassMetrics>().generated_cells, 2);
+    }
+
+    #[test]
+    fn committed_prefetch_retains_vclr_and_active_space_skips_other_worlds_and_interiors() {
+        let (mut app, _directory) = surface_streaming_app();
+        app.insert_resource(ActiveSpace {
+            worldspace_id: Some(3),
+            interior: None,
+        });
+        app.world_mut().resource_mut::<EngineConfig>().grass_radius = 1;
+        let root = surface_root(&mut app, 0.0, None);
+        let mut samples = vec![0.0; 1089];
+        samples.extend(vec![0.25; 1089]);
+        app.world_mut()
+            .entity_mut(root)
+            .insert(GrassTerrain::new(samples, None));
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<StreamingCamera>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x = -2.0 * CELL_SIZE;
+        app.world_mut().resource_mut::<GrassState>().previous_camera =
+            Some(Vec2::new(-3.0 * CELL_SIZE, 0.0));
+        settle_surface_streaming(&mut app);
+        assert_eq!(
+            app.world().resource::<GrassState>().pool[&42]
+                .terrain
+                .luminance()
+                .unwrap()[0],
+            0.25
+        );
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation
+            .x = 0.0;
+        settle_surface_streaming(&mut app);
+        assert_eq!(
+            app.world().resource::<GrassMetrics>().generated_cells,
+            1,
+            "VCLR prefetch must promote without regenerating"
+        );
+        for space in [
+            ActiveSpace {
+                worldspace_id: Some(4),
+                interior: None,
+            },
+            ActiveSpace {
+                worldspace_id: Some(3),
+                interior: Some(99),
+            },
+        ] {
+            *app.world_mut().resource_mut::<ActiveSpace>() = space;
+            app.update();
+            assert!(app.world().resource::<GrassState>().pending.is_empty());
+            assert!(app.world().resource::<GrassState>().attached.is_empty());
+        }
     }
 
     /// Build an empty generated result with a chosen allocation budget for pool tests.
@@ -820,8 +932,8 @@ mod tests {
         settle_surface_streaming(&mut app);
         assert_eq!(
             app.world().resource::<GrassMetrics>().generated_cells,
-            2,
-            "the old-root result must be discarded and a replacement job completed"
+            1,
+            "the old-root job must be cancelled and a replacement job completed"
         );
         assert_eq!(
             app.world().resource::<GrassState>().attached[&42].root,
@@ -1035,8 +1147,8 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().resource::<GrassState>().pending.len(),
-            4,
-            "obsolete workers must retain their slots until completion, even after a camera jump"
+            0,
+            "obsolete queued jobs are cancelled after a camera jump"
         );
         // A distant mod cell and a rebase at the coordinate boundary must not overflow
         // cell selection or directional prefetch while obsolete workers are still alive.
@@ -1054,7 +1166,7 @@ mod tests {
             Transform::default(),
         ));
         app.update();
-        assert_eq!(app.world().resource::<GrassState>().pending.len(), 4);
+        assert_eq!(app.world().resource::<GrassState>().pending.len(), 0);
         assert_eq!(
             app.world_mut()
                 .query::<&GrassBatch>()

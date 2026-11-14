@@ -16,7 +16,7 @@ when grass is disabled.
 
 `GrassPlugin` observes committed exterior cell roots in `PostUpdate`; it adds
 no generation work to `collect_cells`. At most four asynchronous placement jobs
-run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow normalized 17x17
+run or wait on a dedicated two-thread placement pool, isolated from pipeline compilation. Workers borrow normalized 17x17
 blend grids, species rules and 32-unit exclusion bits directly from a validated
 immutable memory mapping. Committed cells retain an immutable shared copy of
 their post-weld 33x33 height field, so grass roots, slope and water decisions use
@@ -159,7 +159,11 @@ terrain view bindings, cascades, filtering and normal/depth bias. Direct light
 and shadow sampling use the same first prepared directional light for the view,
 respecting Bevy's ordering and render layers. Shadow visibility multiplies only
 the direct sun term, retaining the existing ambient response and exposure:
-`(ambient + sun * Lambert * visibility) * exposure / pi`. With no directional
+`(ambient + sun * Lambert * visibility) * exposure / pi`. Dividing ambient by
+pi is a deliberate calibrated deviation from terrain PBR ambient (which does not
+include that division). The G5 defaults, including ambient strength 1.15, were
+tuned against this response; retaining it preserves that lighting calibration.
+With no directional
 light there is no direct term; disabled shadows use visibility 1. Shadowing never
 changes texture/material alpha, sample coverage or depth-prepass cutouts. Grass
 still does not cast shadows or add local lights; this is not full PBR parity.
@@ -198,7 +202,7 @@ and luminance fields. Resident desired
 cells stay pinned; a result that cannot fit is discarded with a diagnostic
 instead of exceeding the pool budget. Rejections are retried after the desired
 cell set changes. Generation is prefetched one cell ahead in the player's
-direction of travel, while rendering still waits for a committed cell root.
+direction of travel only when that cell already has committed terrain outside the grass radius. This preserves welded heights and VCLR; interiors do not prefetch, and exterior selection follows ActiveSpace.
 Prefetched results are reused only when their surface matches the committed
 field. Reloaded cells with changed welds or colours regenerate grass; pending results from
 retired cell roots cannot be attached to a new root.
@@ -327,3 +331,18 @@ GrassLighting at commit 1ed40cb2fdf6099eeb7068661f632d71f0661b70 (GPL-3.0 with
 project exceptions). Its alpha-weighted wind supports this interpretation; its
 feature normal mapping does not establish vanilla NIF normal-slot usage. Wave
 and lighting formulas here remain native MudCrab choices.
+
+Grass coverage follows the camera's compiled MSAA sample count (1/2/4/8),
+preserving the user's preference. Sample-rate shading remains the AMD Vulkan
+workaround described above. Shots pin wind at 1 second; interactive wind uses
+unwrapped elapsed time. BC5 normal maps reconstruct positive Z from XY.
+Queueing rejects whole-cell bounds expanded by authored geometry, maximum scale,
+and wind. A per-frame view/primitive draw set suppresses the duplicate depth draw when
+Bevy's late prepass repeats NonMesh bins.
+Admission waits in distance/FormID order instead of completion order. Obsolete
+queued futures are cancelled; already executing synchronous jobs finish on the
+bounded dedicated pool. Zero cache MiB continues to mean unlimited retention.
+
+Automatic grass-driven terrain expansion accepts radii up to 32 cells. Larger
+radii require an explicit `--stream-radius` to control terrain coverage; they
+are rejected before automatic expansion or settings application.
