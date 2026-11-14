@@ -1810,6 +1810,8 @@ mod tests {
             excluded: 0,
             published: false,
             record_data_complete: false,
+            warnings: Vec::new(),
+            notices: Vec::new(),
             failures: BTreeMap::new(),
         };
 
