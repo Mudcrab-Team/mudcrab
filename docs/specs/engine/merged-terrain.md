@@ -23,6 +23,41 @@ refuses merged terrain for the whole run, deliberately: the converter transcodes
 into the BC7 class, so a table that still names one is a converter fault, not content to work
 around one cell at a time.
 
+The quadrant path binds the converted pack's configured default for null or absent base
+assignments, including quadrants without stored layers. The converter records the effective
+choice in the optional `terrain_default_texture` database table on every conversion, including
+non-merged and `--no-lod` runs. LOD uses that same recorded diffuse choice (#449/#240).
+`white` binds no images; `skyrim-ini` uses the configured `[Landscape]` diffuse and normal,
+falling back to Skyrim's built-in Dirt02 paths for absent INI keys. An unusable diffuse records
+white without an orphan normal; an unusable normal keeps the diffuse. These recoverable
+converter outcomes are advisory `notices` and do not affect conversion completeness.
+Generated `terrain/default-diffuse.ktx2` and `terrain/default-normal.ktx2` are rebuilt from the
+current source bytes, outside ingestion-cache reuse. Their actual image loads participate in
+streaming resource reservations. Zero overlays keep their unresolved slots and weights without
+requesting images. A missing nonzero LTEX diffuse retains its layer, slot and weights, as in
+#500, without requesting a diffuse image or an orphan normal. Validation warns once per missing
+nonzero diffuse ID per cell; it still rejects malformed terrain geometry and weights.
+
+New conversions default to `skyrim-ini`, including built-in Dirt02 when no INI is supplied.
+Use `--terrain-default-texture white` to retain the previous generated-white policy; this option
+also applies without `--merged-terrain`. Reconvert existing packs, including LOD and merged
+arrays. Default images are rebuilt from current source bytes; LOD source hashes already
+invalidate affected chunks without globally invalidating unrelated ingestion caches.
+
+MO2 conversions with `--no-lod` stage only the winning configured default DDS inputs;
+other MO2 assets retain direct, read-only source access.
+
+When no cached quadrant needs an implicit default, the converter records unused white metadata
+and does not require default images. Texture-only and fully painted packs therefore remain
+complete without otherwise unused Skyrim assets. A used but unusable default produces an
+advisory notice and uses the fallback above.
+
+Old packs without this metadata retain white in the quadrant path. Reconvert to record a
+configured default; regenerate LOD and, when enabled, merged arrays as one compatible pack.
+Merged admission and baked array entry 0 are unchanged: the runtime does not fall back from
+usable merged terrain to the ordinary six-layer cache, which could discard painted layers.
+This addresses the white/null-base portion of #386 without claiming complete material parity.
+
 ## Per cell
 
 1. The streaming code asks `TerrainMerge::lookup` for the cell. A chunk file is opened once

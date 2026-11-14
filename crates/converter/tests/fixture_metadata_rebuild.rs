@@ -14,6 +14,257 @@ const VOLCANIC_GLB: &str = "meshes/landscape/grass/dlc02volcanicashgrass01.glb";
 const VOLCANIC_ORIGINAL: &str = "textures/landscape/grass/volcanicashgrass02_n.dds";
 const VOLCANIC_TARGET: &str = "textures/dlc02/landscape/grass/volcanicashgrass02_n.dds";
 
+/// Reframe the generated plugin with the same valid base in all four quadrants.
+fn paint_every_quadrant(bytes: &[u8]) -> Vec<u8> {
+    use dummy_content::inhouse_magic::subrecord;
+    let mut output = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let header = &bytes[offset..offset + 24];
+        let size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let group = &header[..4] == b"GRUP";
+        let end = offset + if group { size } else { size + 24 };
+        let payload = &bytes[offset + 24..end];
+        let payload = if group {
+            paint_every_quadrant(payload)
+        } else if &header[..4] == b"LAND" {
+            let mut payload = payload.to_vec();
+            // The generated LAND ends in BTXT, naming LTEX 4 in quadrant zero.
+            assert_eq!(&payload[payload.len() - 14..payload.len() - 10], b"BTXT");
+            for quadrant in 1..4 {
+                payload.extend(subrecord(b"BTXT", &[4, 0, 0, 0, quadrant, 0, 0, 0]));
+            }
+            payload
+        } else {
+            payload.to_vec()
+        };
+        let mut header = header.to_vec();
+        header[4..8].copy_from_slice(
+            &u32::try_from(payload.len() + if group { 24 } else { 0 })
+                .unwrap()
+                .to_le_bytes(),
+        );
+        output.extend(header);
+        output.extend(payload);
+        offset = end;
+    }
+    output
+}
+
+/// Verify complete publication, white default metadata, and an intact neighboring record.
+fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, needed: bool) {
+    assert!(report.complete, "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(
+        ConversionManifest::load(&output.join("conversion-manifest.json"))
+            .unwrap()
+            .complete
+    );
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let default: (Option<String>, Option<String>, Option<String>) = database
+        .query_row("SELECT diffuse_path, normal_path, source_diffuse FROM terrain_default_texture WHERE id=0", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap();
+    assert_eq!(default, (None, None, None));
+    let neighbors: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbors, 1);
+    let mapping =
+        converter::esm::cell_cache::validate_cell_cache(&output.join("cell_cache.rkyv")).unwrap();
+    let cache =
+        rkyv::from_bytes::<converter::shared::CellCache, rkyv::rancor::Error>(&mapping).unwrap();
+    assert_eq!(cache.cells.len(), 1);
+    assert_eq!(cache.cells[0].layers.len(), if needed { 1 } else { 4 });
+    let bases: Vec<_> = cache.cells[0]
+        .layers
+        .iter()
+        .map(|layer| (layer.quadrant, layer.texture_form_id))
+        .collect();
+    assert_eq!(
+        bases,
+        if needed {
+            vec![(0, 4)]
+        } else {
+            vec![(0, 4), (1, 4), (2, 4), (3, 4)]
+        }
+    );
+    if needed {
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("falls back to white")),
+            "{:?}",
+            report.notices
+        );
+    } else {
+        assert!(
+            !report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("default land")),
+            "{:?}",
+            report.notices
+        );
+    }
+}
+
+/// Exercise a genuinely unreadable loose default through full metadata publication.
+#[cfg(any(windows, unix))]
+async fn rebuild_with_unreadable_default(needed: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    if !needed {
+        let plugin = data.join("Skyrim.esm");
+        fs::write(&plugin, paint_every_quadrant(&fs::read(&plugin).unwrap())).unwrap();
+    }
+    convert(&data, &source).await;
+    let manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let default = data.join("textures/landscape/dirt02.dds");
+    // A failed winning loose override must not expose a healthy lower-priority archive.
+    fs::write(
+        data.join("Skyrim - Textures.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "textures/landscape/dirt02.dds",
+                data: &fs::read(&default).unwrap(),
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let Some(unreadable) = block_file_reads(&default) else {
+        return;
+    };
+    assert!(
+        fs::read(&default).is_err(),
+        "fixture must actually deny reads"
+    );
+    let result = rebuild(&data, &source, &output).await;
+    drop(unreadable);
+    assert!(
+        result.is_ok(),
+        "unreadable default aborted metadata rebuild (needed={needed}): {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, needed);
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        manifest_hash
+    );
+}
+
+/// An unused default must never be opened when every quadrant has an authored base.
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn metadata_rebuild_default_unused_unreadable_loose_completes() {
+    rebuild_with_unreadable_default(false).await;
+}
+
+/// An unreadable used default falls back to white without losing usable neighboring data.
+#[cfg(any(windows, unix))]
+#[tokio::test]
+async fn metadata_rebuild_default_needed_unreadable_loose_falls_back() {
+    rebuild_with_unreadable_default(true).await;
+}
+
+/// A changed archive-only default fails retained-source validation locally, not globally.
+#[tokio::test]
+async fn metadata_rebuild_default_changed_archive_falls_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let default = data.join("textures/landscape/dirt02.dds");
+    fs::remove_file(default).unwrap();
+    fs::write(
+        data.join("Skyrim - Textures.bsa"),
+        bsa::v105(
+            &[Entry {
+                name: "textures/landscape/dirt02.dds",
+                data: b"damaged replacement DDS",
+            }],
+            bsa::Compression::None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "changed archive default aborted metadata rebuild: {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, true);
+}
+
+/// A corrupt compressed default entry cannot abort extraction of usable neighboring inputs.
+#[tokio::test]
+async fn metadata_rebuild_default_damaged_compressed_archive_falls_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    let default = data.join("textures/landscape/dirt02.dds");
+    let dds = fs::read(&default).unwrap();
+    let mut archive = bsa::v105(
+        &[Entry {
+            name: "textures/landscape/dirt02.dds",
+            data: &dds,
+        }],
+        bsa::Compression::Lz4,
+    )
+    .unwrap();
+    // One SSE folder record (24 bytes), then its length-prefixed NUL-terminated name.
+    let file_record = 36 + 24 + 1 + "textures/landscape".len() + 1;
+    let payload = u32::from_le_bytes(
+        archive[file_record + 12..file_record + 16]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    archive[payload + 4..].fill(0xff);
+    fs::write(data.join("Skyrim - Textures.bsa"), archive).unwrap();
+    fs::remove_file(default).unwrap();
+    let result = rebuild(&data, &source, &output).await;
+    assert!(
+        result.is_ok(),
+        "damaged compressed default aborted metadata rebuild: {result:?}"
+    );
+    assert_white_rebuild(&result.unwrap(), &output, true);
+}
+
+/// Default recovery must not relax source identity checks for an LTEX-required diffuse.
+#[tokio::test]
+async fn metadata_rebuild_default_recovery_keeps_ordinary_sources_strict() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    fs::write(
+        data.join(layout::GENERATED_DIFFUSE_PATH),
+        b"changed ordinary terrain DDS",
+    )
+    .unwrap();
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("retained terrain texture source differs"),
+        "{error:#}"
+    );
+    assert!(!output.exists());
+}
+
 /// Old complete packs can contain optional derived files and strays without output proofs.
 /// Omit only those files while publishing every verified neighboring asset unchanged.
 #[tokio::test]

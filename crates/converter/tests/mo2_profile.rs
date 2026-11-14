@@ -469,6 +469,106 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
+/// Winning loose defaults are converted without LOD, through both record readers.
+#[tokio::test]
+async fn mo2_no_lod_uses_winning_configured_default_images() {
+    use converter::texture::{TextureConverter, TextureEncoding};
+    use dummy_content::{dds, rng::Rng};
+    let (directory, mut config, instance) = fixture();
+    let diffuse = |seed| {
+        dds::generate(
+            &dds::Spec::new(dds::Format::Bc1Unorm, 16, 16),
+            &mut Rng::new(seed),
+        )
+        .unwrap()
+    };
+    let normal = |seed| {
+        dds::generate(
+            &dds::Spec::new(dds::Format::Bc5Unorm, 16, 16),
+            &mut Rng::new(seed),
+        )
+        .unwrap()
+    };
+    let winning = diffuse(29);
+    let winning_normal = normal(31);
+    assert_ne!(winning, diffuse(11));
+    assert_ne!(winning_normal, normal(13));
+    write(
+        &instance,
+        "mods/Low/textures/landscape/custombase.dds",
+        diffuse(11),
+    );
+    write(
+        &instance,
+        "mods/High/textures/landscape/custombase.dds",
+        diffuse(17),
+    );
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &winning,
+    );
+    write(
+        &instance,
+        "mods/Low/textures/landscape/custombase_n.dds",
+        normal(13),
+    );
+    write(
+        &instance,
+        "mods/High/textures/landscape/custombase_n.dds",
+        &winning_normal,
+    );
+    write(
+        &instance,
+        "mods/Disabled/textures/landscape/custombase.dds",
+        b"disabled broken image",
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(&ini,"[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\nsDefaultLandNormalTexture=Textures\\Landscape\\CustomBase_N.dds\n").unwrap();
+    config.no_lod = true;
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    config.terrain_ini = Some(ini);
+    let encode = |bytes: &[u8], encoding| {
+        TextureConverter::convert_with_options(
+            bytes,
+            encoding,
+            config.texture_fallback_quality,
+            config.texture_uastc_level,
+            config.texture_zstd_level,
+        )
+        .unwrap()
+    };
+    let expected = encode(&winning, TextureEncoding::ColorSrgb);
+    let expected_normal = encode(&winning_normal, TextureEncoding::NormalLinear);
+    for reader in [
+        converter::config::RecordReader::Legacy,
+        converter::config::RecordReader::Inhouse,
+    ] {
+        config.record_reader = reader;
+        config.output_dir = directory.path().join(format!("default-{reader:?}"));
+        let report = publish(&config).await;
+        assert!(report.complete, "{:?}", report.warnings);
+        assert_eq!(report.lod_chunks, 0);
+        assert_eq!(
+            fs::read(config.output_dir.join("terrain/default-diffuse.ktx2")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read(config.output_dir.join("terrain/default-normal.ktx2")).unwrap(),
+            expected_normal
+        );
+        let connection = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+        let source: String = connection
+            .query_row(
+                "SELECT source_diffuse FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "textures/landscape/custombase.dds");
+    }
+}
+
 /// Game-folder CCC entries beyond the formerly fixed Creations publish without profile entries.
 #[tokio::test]
 async fn extra_ccc_creation_and_profile_neighbors_publish() {

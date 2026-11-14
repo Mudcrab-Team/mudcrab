@@ -1,5 +1,6 @@
 ---
 source: crates/converter/tests/snapshots.rs
+assertion_line: 221
 expression: manifest
 ---
 {
@@ -66,6 +67,11 @@ expression: manifest
           "hash": "[hash]",
           "path": "textures/landscape/dirt02.dds",
           "size": 2892
+        },
+        {
+          "hash": "[hash]",
+          "path": "textures/landscape/dirt02_n.dds",
+          "size": 5636
         }
       ],
       "recipe": "runtime-english-v2",
@@ -134,11 +140,17 @@ expression: manifest
       "output_hash": "[output_hash]",
       "output_size": 3099,
       "source_hash": "[source_hash]"
+    },
+    "textures/landscape/dirt02_n.dds": {
+      "output": "textures/landscape/dirt02_n.ktx2",
+      "output_hash": "[output_hash]",
+      "output_size": 5859,
+      "source_hash": "[source_hash]"
     }
   },
   "failures": {},
   "inputs_by_kind": {
-    "dds": 6,
+    "dds": 7,
     "nif": 1,
     "pex": 2
   },

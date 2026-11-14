@@ -497,8 +497,9 @@ impl TerrainExtension {
         .map(Handle::id)
     }
 
-    /// Retains slots and weights for zero IDs and unresolved diffuse images without binding
-    /// either a diffuse or a normal image for those layers.
+    /// Binds the pack's configured default for a zero base ID. Zero overlays retain
+    /// their slots and weights without images. Nonzero IDs with a missing diffuse retain
+    /// their slots and weights without requesting either a diffuse or an orphan normal.
     pub fn from_quadrant(
         terrain: &TerrainSnapshot,
         quadrant: u8,
@@ -511,8 +512,12 @@ impl TerrainExtension {
         let mut handles = Vec::with_capacity(layers.len());
         let mut normal_handles = Vec::new();
         for ((target, normal), layer) in textures.iter_mut().zip(normals.iter_mut()).zip(&layers) {
-            if layer.texture_form_id == 0 {
-                // A preserved unresolved layer keeps its slot and weights with no image bound.
+            if layer.texture_form_id == 0 && !layer.is_base {
+                // A preserved unresolved overlay keeps its slot and weights with no image bound.
+                continue;
+            }
+            if layer.texture_form_id == 0 && catalog.landscape_diffuse(0).is_none() {
+                // An explicit white default (or an old pack) needs no image or normal.
                 continue;
             }
             let Some(path) = catalog.landscape_diffuse(layer.texture_form_id) else {
@@ -2044,8 +2049,93 @@ mod tests {
         );
     }
 
-    /// Zero and unresolved nonzero overlays keep material slots and weights without requesting
-    /// a diffuse image or an orphan normal map.
+    /// Configured defaults affect only null bases, including absent bases in all quadrants.
+    #[test]
+    fn terrain_configured_default_land_is_scoped_to_null_bases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+            CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+            INSERT INTO texture_sets VALUES(1,'textures/poison.dds','textures/poison_n.dds');
+            INSERT INTO landscape_textures VALUES(0,1),(10,1);").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let asset_server = app.world().resource::<AssetServer>();
+        let mut terrain = terrain_fixture_with_overlays(91, &[vec![(3, 0.625)]]);
+        for layer in &mut terrain.layers {
+            layer.texture_form_id = 0;
+        }
+        let old = AssetCatalog::open(&path).unwrap();
+        let (material, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(material.layer_0.is_none());
+        connection.execute_batch("CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+            INSERT INTO terrain_default_texture VALUES(0,NULL,NULL);").unwrap();
+        for (diffuse, normal) in [
+            (None, None),
+            (
+                Some("terrain/custom.ktx2"),
+                Some("terrain/custom-normal.ktx2"),
+            ),
+            (Some("terrain/custom.ktx2"), None),
+            (Some("../escape.ktx2"), Some("terrain/orphan.ktx2")),
+        ] {
+            connection
+                .execute(
+                    "UPDATE terrain_default_texture SET diffuse_path=?1,normal_path=?2",
+                    rusqlite::params![diffuse, normal],
+                )
+                .unwrap();
+            let catalog = AssetCatalog::open(&path).unwrap();
+            let expected = diffuse.filter(|path| !path.starts_with(".."));
+            let (material, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+            assert_eq!(images.color.len(), usize::from(expected.is_some()));
+            assert_eq!(
+                images.normal.len(),
+                usize::from(expected.is_some() && normal.is_some())
+            );
+            if let Some(path) = expected {
+                assert_eq!(
+                    material.layer_0.as_ref().unwrap().path().unwrap().path(),
+                    std::path::Path::new(path)
+                );
+            }
+            assert!(
+                material.layer_1.is_none(),
+                "zero overlay never receives the default"
+            );
+            assert_eq!(material.settings.weights[0][3], 0.625);
+            let mut unpainted = terrain.clone();
+            unpainted.layers.clear();
+            for quadrant in 0..4 {
+                let (empty, _) =
+                    TerrainExtension::from_quadrant(&unpainted, quadrant, &catalog, asset_server)
+                        .unwrap();
+                assert_eq!(empty.layer_0, material.layer_0);
+            }
+            let mut painted = terrain.clone();
+            painted
+                .layers
+                .iter_mut()
+                .find(|layer| layer.is_base)
+                .unwrap()
+                .texture_form_id = 10;
+            let (painted, _) =
+                TerrainExtension::from_quadrant(&painted, 0, &catalog, asset_server).unwrap();
+            assert_eq!(
+                painted.layer_0.unwrap().path().unwrap().path(),
+                std::path::Path::new("textures/poison.ktx2")
+            );
+        }
+    }
+
+    /// A null base binds Dirt02 while zero overlays keep slots and weights without requests.
+    /// A missing nonzero diffuse retains its slot and weights without requesting an orphan normal.
     #[test]
     fn terrain_zero_texture_overlay_material_preserves_slots_without_image_requests() {
         let directory = tempfile::tempdir().unwrap();
@@ -2056,16 +2146,19 @@ mod tests {
                 "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
                  CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
                  CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
+                 INSERT INTO terrain_default_texture VALUES(0,'textures/landscape/dirt02.ktx2','textures/landscape/dirt02_n.ktx2');
                  INSERT INTO texture_sets VALUES(1,'textures/zero-must-not-load.dds',NULL);
-                 INSERT INTO texture_sets VALUES(2,NULL,'textures/orphan-normal-must-not-load.dds');
-                 INSERT INTO landscape_textures VALUES(0,1),(2116,2);",
+                 INSERT INTO texture_sets VALUES(2,'textures/painted.dds',NULL);
+                 INSERT INTO texture_sets VALUES(3,NULL,'textures/orphan-normal-must-not-load.dds');
+                 INSERT INTO landscape_textures VALUES(0,1),(2116,3),(2117,2);",
             )
             .unwrap();
         drop(connection);
         let catalog = AssetCatalog::open(&path).unwrap();
         assert!(
             catalog.landscape_diffuse(0).is_some(),
-            "poison null lookup is observable"
+            "the default exists independently of the poison database row"
         );
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -2082,19 +2175,33 @@ mod tests {
         let (extension, images) =
             TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
                 .expect("zero overlays keep material slots and do not request a texture");
-        assert!(images.color.is_empty() && images.normal.is_empty());
-        assert!(
-            extension.layer_0.is_none()
-                && extension.layer_1.is_none()
-                && extension.layer_2.is_none()
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        let diffuse = extension
+            .layer_0
+            .as_ref()
+            .expect("null base must bind diffuse");
+        let normal = extension
+            .normal_0
+            .as_ref()
+            .expect("null base must bind normal");
+        assert_eq!(
+            diffuse.path().unwrap().path(),
+            std::path::Path::new("textures/landscape/dirt02.ktx2")
         );
+        assert_eq!(
+            normal.path().unwrap().path(),
+            std::path::Path::new("textures/landscape/dirt02_n.ktx2")
+        );
+        assert_eq!(extension.sampler_source.as_ref(), Some(diffuse));
+        assert!(extension.layer_1.is_none() && extension.layer_2.is_none());
         assert!(
             extension.layer_3.is_none()
                 && extension.layer_4.is_none()
                 && extension.layer_5.is_none()
         );
         assert_eq!(extension.settings.tiling_and_layer_count.z, 3.0);
-        assert_eq!(extension.settings.normal_layers_0, Vec4::ZERO);
+        assert_eq!(extension.settings.normal_layers_0, Vec4::X);
         assert_eq!(extension.settings.normal_layers_1, Vec4::ZERO);
         let sample = |overlay: usize, vertex: usize| {
             extension.settings.weights[overlay * OVERLAY_WEIGHT_WORDS + vertex / 4][vertex % 4]
@@ -2109,14 +2216,49 @@ mod tests {
         let (fallback, images) =
             TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
                 .expect("a missing diffuse retains the layer without requesting either image");
-        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        assert_eq!(fallback.layer_0, extension.layer_0);
+        assert_eq!(fallback.normal_0, extension.normal_0);
         assert!(fallback.layer_2.is_none() && fallback.normal_2.is_none());
+        assert_eq!(fallback.settings.weights, extension.settings.weights);
+        assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
+        assert_eq!(fallback.settings.normal_layers_0, Vec4::X);
+        assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
+
+        // A white configured default preserves #500's no-image fallback for every layer.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE terrain_default_texture SET diffuse_path=NULL,normal_path=NULL",
+                [],
+            )
+            .unwrap();
+        let white = AssetCatalog::open(&path).unwrap();
+        let (fallback, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &white, asset_server).unwrap();
+        assert!(images.color.is_empty() && images.normal.is_empty());
+        assert!(fallback.image_ids().next().is_none());
         assert_eq!(fallback.settings.weights, extension.settings.weights);
         assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
         assert_eq!(fallback.settings.normal_layers_0, Vec4::ZERO);
         assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
-        terrain.layers[2].texture_form_id = 0;
-        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).is_ok());
+        terrain.layers[2].texture_form_id = 0x845;
+        let (painted, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+        assert_eq!(images.color.len(), 2);
+        assert_eq!(
+            painted.layer_2.as_ref().unwrap().path().unwrap().path(),
+            std::path::Path::new("textures/painted.ktx2")
+        );
+        assert_eq!(painted.settings.weights, extension.settings.weights);
+        terrain.layers.clear();
+        let (unpainted, images) =
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+        assert_eq!(images.color.len(), 1);
+        assert_eq!(images.normal.len(), 1);
+        assert_eq!(unpainted.layer_0, extension.layer_0);
+        assert_eq!(unpainted.normal_0, extension.normal_0);
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order

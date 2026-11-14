@@ -35,6 +35,10 @@ warnings. Usable neighboring records still publish, but data-loss warnings mark
 both the report and conversion manifest incomplete and make the CLI exit with
 code 1. Compatibility notices remain visible without affecting completeness or
 the exit code; a mixed run retains both severities and stays incomplete.
+Recoverable configured-default land texture fallbacks are also `notices`: an unusable
+diffuse uses generated white, while an unusable optional normal leaves a valid diffuse intact.
+These advisories alone do not make the report or manifest incomplete or make the CLI exit 1;
+failures that prevent publishing usable output still fail conversion.
 `--report-json`, the CLI and the launcher show the warnings and notices. Reader
 recovery does not increment the separate skipped-asset counter. Metadata rebuild
 and `--reuse-assets` use the same severity and completeness rules when they
@@ -224,6 +228,8 @@ One shared matcher defines archive ownership, MO2 admission and priority: the no
 MO2 also checks the longest installed owner, using all root plugin identities in the resolved virtual filesystem before recovery. This inventory includes unchecked and recovered-away plugins whose physical source files live in enabled mods or overwrite rather than Data. A shorter surviving prefix cannot activate a more specific rejected owner's companion. Plugins with different extensions may share a stem; any surviving same-stem plugin keeps its companions active. Active plugins' `_` and `-` companions are admitted in MO2 under the shared matcher. MO2 retains its active-companion requirement and rejects unowned archives. Both paths retain plugin load-order sorting and loose-file priority. Each full conversion reconstructs archive inputs and publishes only current assets, so recovery also removes formerly published rejected companions on a warm conversion.
 
 Metadata rebuilds use the source package's checksum-matched plugin order for archive priority. The longest installed direct-Data owner must appear in that order before an archive supplies current LOD settings or terrain diffuse inputs. Verified source assets remain retained.
+
+Default-only terrain sources are collected only when the rebuilt cell cache needs the configured Skyrim land default. Unusable default archive entries, loose overrides or retained-source mismatches are omitted with advisory notices so default publication can fall back to white or omit only the normal. A path also named by an LTEX remains an ordinary required source with strict extraction, overlay and source-identity checks.
 
 Asset repair selects replacement sources with the same installed-owner filters after recovering the selected plugins. It keeps recorded database plugin provenance and existing assets outside the repair targets. It retains non-MO2 standalone admission and MO2 unowned-archive exclusion. Archive sorting uses the same shared matcher and longest matching active stem, keeping the first load-order slot for equal stems.
 
