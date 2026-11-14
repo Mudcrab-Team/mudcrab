@@ -34,8 +34,9 @@ LAND signed normals and RGB vertex colors are retained (33 by 33 by 3 components
 empty synthetic fields allow runtime fallbacks. Invalid field lengths skip the
 affected cell with a warning while healthy neighbors publish. No instance lists
 are saved; generation remains deterministic at runtime.
-Version nine adds these sampling fields and base flags and changes selection
-opacity inputs. Version-eight grass artifacts rebuild; other asset cache identities
+The placement layer adds these sampling fields and base flags and changes selection
+opacity inputs. Producer ten combines them with static-like obstruction filtering;
+both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
 are unchanged. Runtime generation-only changes do not require a cache version bump.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
