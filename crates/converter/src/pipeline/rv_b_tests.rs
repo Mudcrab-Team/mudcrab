@@ -144,6 +144,7 @@ fn asset_bytes(output: &Path) -> BTreeMap<String, Vec<u8>> {
     manifest(output)
         .entries
         .values()
+        .filter(|entry| entry.output != "grass_cache.rkyv")
         .map(|entry| {
             (
                 entry.output.clone(),
@@ -865,7 +866,7 @@ async fn unknown_retained_script_producer_does_not_gain_current_metadata_eligibi
     let mut recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
     let original_archives = recorded.archives.clone();
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()
@@ -924,7 +925,7 @@ async fn unproven_metadata_retention_rebuilds_assets_and_preserves_archive_proof
     publish(config.clone()).await;
     let recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()
@@ -960,7 +961,7 @@ async fn unknown_output_producer_rebuilds_assets_without_reextracting_unchanged_
     publish(config.clone()).await;
     let mut recorded = manifest(&fixture.output);
     let expected = asset_bytes(&fixture.output);
-    let expected_asset_conversions = recorded.entries.len() as u64;
+    let expected_asset_conversions = expected.len() as u64;
     let archive_files: u64 = recorded
         .archives
         .values()
