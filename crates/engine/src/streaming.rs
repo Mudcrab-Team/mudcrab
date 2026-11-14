@@ -13,6 +13,7 @@ use crate::{
     terrain_merge::{
         CellLookup, TerrainMerge, classes::TerrainClasses, material::MergedTerrainMaterial,
     },
+    visual_profile::VisualProfile,
     world::{
         actor_catalog::ActorCatalog,
         cache::{CellCache, TerrainLayerSnapshot, TerrainSnapshot},
@@ -1190,6 +1191,7 @@ fn despawn_subtree(world: &mut World, root: Entity) -> usize {
 fn collect_cells(
     mut commands: Commands,
     config: Res<EngineConfig>,
+    profile: Res<VisualProfile>,
     database: Res<WorldDatabase>,
     cache: Res<CellCache>,
     origin: Res<RenderOrigin>,
@@ -1402,6 +1404,7 @@ fn collect_cells(
                     merged,
                     &mut streaming.next_model_sequence,
                     &mut profiler,
+                    profile.decodes_colour_srgb(),
                 );
                 match root {
                     Ok(root) => {
@@ -1571,6 +1574,7 @@ fn spawn_cell(
     merged: Option<MergedSpawn>,
     model_sequence: &mut u64,
     profiler: &mut ProfilingState,
+    colour_srgb: bool,
 ) -> Result<Entity, String> {
     let spawn_started = Instant::now();
     let reference_count = payload
@@ -1666,9 +1670,14 @@ fn spawn_cell(
                 }
             }
             for (quadrant, mesh, collider) in terrain_quadrants {
-                let (extension, images) =
-                    TerrainExtension::from_quadrant(&terrain, quadrant, catalog, asset_server)
-                        .expect("validated terrain material must build");
+                let (extension, images) = TerrainExtension::from_quadrant(
+                    &terrain,
+                    quadrant,
+                    catalog,
+                    asset_server,
+                    colour_srgb,
+                )
+                .expect("validated terrain material must build");
                 let material = terrain_materials.add(TerrainMaterial {
                     base: StandardMaterial {
                         base_color: Color::WHITE,
@@ -2910,6 +2919,7 @@ type ReadinessExtras<'world, 'state> = (
     ResMut<'world, crate::pacing::PacingTracker>,
     Query<'world, 'state, (), With<crate::physics::DynamicClutter>>,
     EffectPalettePrimitives<'world, 'state>,
+    Res<'world, VisualProfile>,
 );
 
 /// Converted effect surfaces drawn through their palette (`crate::nif_material`): these carry an
@@ -3185,7 +3195,7 @@ fn track_asset_readiness(
     world_assets: Res<Assets<WorldAsset>>,
     mut fallback_assets: ResMut<DiagnosticFallbackAssets>,
     mut static_cache: ResMut<StaticCollisionCache>,
-    (mut meshes, mut materials, camera, mut pacing, clutter, palettes): ReadinessExtras,
+    (mut meshes, mut materials, camera, mut pacing, clutter, palettes, profile): ReadinessExtras,
     (mut metrics, mut runtime): (
         ResMut<StreamingMetrics>,
         Option<ResMut<runtime::StreamingRuntime>>,
@@ -3314,6 +3324,7 @@ fn track_asset_readiness(
                 &materials,
                 (&palettes.0, palettes.1.as_deref()),
                 &images,
+                profile.decodes_colour_srgb(),
             );
             let summary = match validation {
                 Ok(summary) => summary,
@@ -3785,6 +3796,7 @@ fn track_surface_readiness(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     images: Res<Assets<Image>>,
+    profile: Res<VisualProfile>,
     terrain: Query<(
         Entity,
         &PendingTerrainProfile,
@@ -3804,6 +3816,7 @@ fn track_surface_readiness(
             &images,
             &pending.images,
             SurfaceImageKind::Terrain,
+            profile.decodes_colour_srgb(),
         ) {
             SurfaceDependencyState::Ready => {
                 match validate_surface_dependencies(
@@ -3811,6 +3824,7 @@ fn track_surface_readiness(
                     &images,
                     &pending.normals,
                     SurfaceImageKind::TerrainNormal,
+                    profile.decodes_colour_srgb(),
                 ) {
                     // A normal map is optional detail: without it the quadrant is lit by its
                     // geometric normal, as a quadrant whose layers have none is.
@@ -3895,6 +3909,7 @@ fn track_surface_readiness(
             &images,
             &handles,
             SurfaceImageKind::Water,
+            profile.decodes_colour_srgb(),
         ) {
             SurfaceDependencyState::Pending => {}
             SurfaceDependencyState::Ready => {
@@ -3961,7 +3976,9 @@ fn validate_surface_dependencies(
     images: &Assets<Image>,
     handles: &[Handle<Image>],
     kind: SurfaceImageKind,
+    colour_srgb: bool,
 ) -> SurfaceDependencyState {
+    let expects_srgb = matches!(kind, SurfaceImageKind::Terrain) && colour_srgb;
     for handle in handles {
         if let Some((load, _, recursive)) = asset_server.get_load_states(handle.id()) {
             let failed = match (load, recursive) {
@@ -3979,7 +3996,7 @@ fn validate_surface_dependencies(
         let Some(image) = images.get(handle) else {
             return SurfaceDependencyState::Pending;
         };
-        if image.texture_descriptor.format.is_srgb() != matches!(kind, SurfaceImageKind::Terrain) {
+        if image.texture_descriptor.format.is_srgb() != expects_srgb {
             return SurfaceDependencyState::Failed(format!(
                 "image {:?} has wrong color space {:?}",
                 handle.id(),
@@ -4244,6 +4261,7 @@ fn matrix_max_difference(left: Mat4, right: Mat4) -> f32 {
         .fold(0.0, f32::max)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_spawned_asset(
     root: Entity,
     children: &Query<&Children>,
@@ -4255,6 +4273,7 @@ fn validate_spawned_asset(
         Option<&Assets<EffectPaletteMaterial>>,
     ),
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<AssetValidationSummary, String> {
     let mut summary = AssetValidationSummary::default();
     for descendant in children.iter_descendants(root) {
@@ -4282,7 +4301,7 @@ fn validate_spawned_asset(
                         palette_handle.id()
                     )
                 })?;
-            summary.images += validate_effect_palette_material(material, images)?;
+            summary.images += validate_effect_palette_material(material, images, colour_srgb)?;
             summary.materials += 1;
             continue;
         }
@@ -4304,7 +4323,7 @@ fn validate_spawned_asset(
                 material_handle.id()
             )
         })?;
-        summary.images += validate_standard_material(material, images)?;
+        summary.images += validate_standard_material(material, images, colour_srgb)?;
         summary.materials += 1;
     }
     Ok(summary)
@@ -4325,6 +4344,7 @@ fn has_explicit_material_exclusion(extras: &GltfExtras) -> bool {
 pub(crate) fn validate_standard_material(
     material: &StandardMaterial,
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<usize, String> {
     match material.alpha_mode {
         AlphaMode::Opaque | AlphaMode::Blend => {}
@@ -4364,23 +4384,27 @@ pub(crate) fn validate_standard_material(
         ),
     ];
     let mut validated = 0usize;
-    for (slot, handle, expects_srgb) in slots {
+    for (slot, handle, is_colour) in slots {
         let Some(handle) = handle else {
             continue;
         };
-        validate_material_image(slot, handle, expects_srgb, images)?;
+        validate_material_image(slot, handle, is_colour && colour_srgb, images)?;
         validated += 1;
     }
     Ok(validated)
 }
 
-/// Validates the standard half of an effect palette material, then its palette. The palette must
-/// be sampled through an sRGB view: the palette shader takes its colour as decoded on sampling.
+/// Validates the standard half of an effect palette material, then its palette. The standard half
+/// follows the profile's colour space; the palette does not, because the converter publishes it at
+/// a plain path rather than under a `.opensky-srgb` alias, and Bevy keys images by path. Both
+/// profiles therefore sample the palette through an sRGB view until a pack publishes an alias for
+/// it.
 pub(crate) fn validate_effect_palette_material(
     material: &EffectPaletteMaterial,
     images: &Assets<Image>,
+    colour_srgb: bool,
 ) -> Result<usize, String> {
-    let validated = validate_standard_material(&material.base, images)?;
+    let validated = validate_standard_material(&material.base, images, colour_srgb)?;
     validate_material_image("palette", material.extension.palette(), true, images)?;
     Ok(validated + 1)
 }
@@ -7813,38 +7837,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_loaded_material_images_and_rejects_missing_required_texture() {
-        let mut images = Assets::<Image>::default();
-        let base_color = images.add(Image::new_fill(
-            bevy::render::render_resource::Extent3d {
-                width: 2,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-            bevy::render::render_resource::TextureDimension::D2,
-            &[255, 255, 255, 255],
-            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::default(),
-        ));
-        let material = StandardMaterial {
-            base_color_texture: Some(base_color),
-            ..default()
-        };
-        assert_eq!(validate_standard_material(&material, &images), Ok(1));
-
-        let missing = StandardMaterial {
-            normal_map_texture: Some(Handle::default()),
-            ..default()
-        };
-        assert!(
-            validate_standard_material(&missing, &images)
-                .unwrap_err()
-                .contains("normal image")
-        );
-    }
-
-    #[test]
-    fn effect_palette_material_needs_its_palette_loaded_through_an_srgb_view() {
+    fn validates_loaded_material_images_in_the_profile_colour_space() {
         let mut images = Assets::<Image>::default();
         let mut image = |format| {
             images.add(Image::new_fill(
@@ -7861,27 +7854,201 @@ mod tests {
         };
         let srgb = image(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
         let linear = image(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
-        let material = |palette: Handle<Image>| EffectPaletteMaterial {
-            base: StandardMaterial {
-                base_color_texture: Some(srgb.clone()),
-                ..default()
-            },
-            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6),
+        let material = |base_color: Handle<Image>| StandardMaterial {
+            base_color_texture: Some(base_color),
+            ..default()
         };
         assert_eq!(
-            validate_effect_palette_material(&material(srgb.clone()), &images),
+            validate_standard_material(&material(srgb.clone()), &images, true),
+            Ok(1)
+        );
+        assert_eq!(
+            validate_standard_material(&material(linear.clone()), &images, false),
+            Ok(1)
+        );
+        assert!(
+            validate_standard_material(&material(linear), &images, true)
+                .unwrap_err()
+                .contains("base_color image color space mismatch")
+        );
+        assert!(
+            validate_standard_material(&material(srgb), &images, false)
+                .unwrap_err()
+                .contains("base_color image color space mismatch")
+        );
+
+        let missing = StandardMaterial {
+            normal_map_texture: Some(Handle::default()),
+            ..default()
+        };
+        assert!(
+            validate_standard_material(&missing, &images, true)
+                .unwrap_err()
+                .contains("normal image")
+        );
+    }
+
+    #[test]
+    fn reuse_of_a_colour_texture_as_data_stays_linear_under_both_profiles() {
+        let mut images = Assets::<Image>::default();
+        let linear = images.add(Image::new_fill(
+            bevy::render::render_resource::Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        ));
+        let data_slots = |handle: Handle<Image>| StandardMaterial {
+            metallic_roughness_texture: Some(handle.clone()),
+            normal_map_texture: Some(handle.clone()),
+            occlusion_texture: Some(handle.clone()),
+            specular_texture: Some(handle),
+            ..default()
+        };
+        for colour_srgb in [true, false] {
+            assert_eq!(
+                validate_standard_material(&data_slots(linear.clone()), &images, colour_srgb),
+                Ok(4)
+            );
+        }
+    }
+
+    #[test]
+    fn effect_palette_material_follows_the_profile_colour_space() {
+        let mut images = Assets::<Image>::default();
+        let mut image = |format| {
+            images.add(Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[255, 255, 255, 255],
+                format,
+                RenderAssetUsages::default(),
+            ))
+        };
+        let srgb = image(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
+        let linear = image(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        let material = |palette: Handle<Image>, base_color: Handle<Image>| EffectPaletteMaterial {
+            base: StandardMaterial {
+                base_color_texture: Some(base_color),
+                ..default()
+            },
+            extension: crate::nif_material::EffectPalette::new(palette, true, true, 1.6, false),
+        };
+        assert_eq!(
+            validate_effect_palette_material(&material(srgb.clone(), srgb.clone()), &images, true),
+            Ok(2)
+        );
+        assert_eq!(
+            validate_effect_palette_material(
+                &material(srgb.clone(), linear.clone()),
+                &images,
+                false
+            ),
             Ok(2)
         );
         assert!(
-            validate_effect_palette_material(&material(linear), &images)
-                .unwrap_err()
-                .contains("palette image color space mismatch")
+            validate_effect_palette_material(
+                &material(linear.clone(), srgb.clone()),
+                &images,
+                true
+            )
+            .unwrap_err()
+            .contains("palette image color space mismatch")
         );
         assert!(
-            validate_effect_palette_material(&material(Handle::default()), &images)
+            validate_effect_palette_material(
+                &material(linear.clone(), linear.clone()),
+                &images,
+                false
+            )
+            .unwrap_err()
+            .contains("palette image color space mismatch")
+        );
+        assert!(
+            validate_effect_palette_material(&material(Handle::default(), srgb), &images, true)
                 .unwrap_err()
                 .contains("palette image")
         );
+    }
+
+    #[test]
+    fn surface_colour_space_follows_the_profile_while_normals_and_water_stay_linear() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        let server = app.world().resource::<AssetServer>().clone();
+        let surface = |format| {
+            let mut image = Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 2,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[255, 255, 255, 255],
+                format,
+                RenderAssetUsages::default(),
+            );
+            image.sampler = ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..bevy::image::ImageSamplerDescriptor::linear()
+            });
+            server.add(image)
+        };
+        let srgb = surface(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb);
+        let linear = surface(bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        app.update();
+        let images = app.world().resource::<Assets<Image>>();
+        let check = |handles: &[Handle<Image>], kind, colour_srgb| {
+            validate_surface_dependencies(&server, images, handles, kind, colour_srgb)
+        };
+        assert!(matches!(
+            check(std::slice::from_ref(&srgb), SurfaceImageKind::Terrain, true),
+            SurfaceDependencyState::Ready
+        ));
+        assert!(matches!(
+            check(
+                std::slice::from_ref(&linear),
+                SurfaceImageKind::Terrain,
+                false
+            ),
+            SurfaceDependencyState::Ready
+        ));
+        assert!(matches!(
+            check(std::slice::from_ref(&linear), SurfaceImageKind::Terrain, true),
+            SurfaceDependencyState::Failed(reason) if reason.contains("wrong color space")
+        ));
+        assert!(matches!(
+            check(std::slice::from_ref(&srgb), SurfaceImageKind::Terrain, false),
+            SurfaceDependencyState::Failed(reason) if reason.contains("wrong color space")
+        ));
+        for colour_srgb in [true, false] {
+            assert!(matches!(
+                check(
+                    std::slice::from_ref(&linear),
+                    SurfaceImageKind::TerrainNormal,
+                    colour_srgb
+                ),
+                SurfaceDependencyState::Ready
+            ));
+            assert!(matches!(
+                check(
+                    std::slice::from_ref(&linear),
+                    SurfaceImageKind::Water,
+                    colour_srgb
+                ),
+                SurfaceDependencyState::Ready
+            ));
+        }
     }
 
     #[test]
@@ -7893,7 +8060,8 @@ mod tests {
                     alpha_mode: AlphaMode::Mask(f32::NAN),
                     ..default()
                 },
-                &images
+                &images,
+                true
             )
             .is_err()
         );
@@ -7903,7 +8071,8 @@ mod tests {
                     double_sided: true,
                     ..default()
                 },
-                &images
+                &images,
+                true
             )
             .is_err()
         );
@@ -7940,6 +8109,7 @@ mod tests {
         .init_resource::<SceneSpawnBatch>()
         .init_resource::<StaticCollisionCache>()
         .init_resource::<crate::pacing::PacingTracker>()
+        .init_resource::<VisualProfile>()
         // The converted scene holds entities, and the spawner reads each of their components out
         // of the type registry.
         .register_type::<ChildOf>()
@@ -8404,6 +8574,7 @@ mod tests {
             None,
             &mut 0,
             &mut profiler,
+            true,
         )
         .expect("spawn cell");
     }
@@ -9488,6 +9659,7 @@ mod tests {
                 None,
                 &mut 0,
                 &mut profiler,
+                true,
             )
             .expect("spawn cell"),
         );
