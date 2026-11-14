@@ -284,6 +284,103 @@ fn camera_presentation_tracks_production_stair_flight_without_changing_body_moti
     );
 }
 
+/// A fixed slab whose top surface starts at `(0, top_y)` and descends toward +X at `degrees`.
+fn fixed_descending_ramp(app: &mut App, degrees: f32, length: f32, top_y: f32) {
+    let angle = degrees.to_radians();
+    let half_thickness = 20.0;
+    let normal = Vec3::new(angle.sin(), angle.cos(), 0.0);
+    let middle =
+        Vec3::new(0.0, top_y, 850.0) + Vec3::new(angle.cos(), -angle.sin(), 0.0) * (length * 0.5);
+    app.world_mut().spawn((
+        RigidBody::Fixed,
+        Collider::cuboid(length * 0.5, half_thickness, 700.0),
+        world_collision_groups(),
+        Transform::from_translation(middle - normal * half_thickness)
+            .with_rotation(Quat::from_rotation_z(-angle)),
+    ));
+}
+
+/// Walking down a walkable ramp or hill is continuous ground contact. The eye must stay at its
+/// normal height above the body on every frame, not float above it as it would for a stair drop.
+#[test]
+fn camera_follows_the_body_directly_down_walkable_slopes() {
+    for (degrees, speed) in [
+        (10.0_f32, 370.0),
+        (20.0, 370.0),
+        (35.0, 370.0),
+        (20.0, 80.1),
+    ] {
+        let mut app = headless::fixture_app();
+        let length = 1_400.0;
+        fixed_descending_ramp(&mut app, degrees, length, 700.0);
+        let surface = |x: f32| 700.0 - x * degrees.to_radians().tan();
+        let start_x = 40.0;
+        let start = settle(&mut app, Vec3::new(start_x, surface(start_x) + 60.0, 850.0));
+        let tuning = MovementTuning::default();
+        let camera = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, With<StreamingCamera>>();
+            query.single(app.world()).unwrap()
+        };
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = start + Vec3::Y * tuning.eye_height;
+        app.update();
+        app.insert_resource(WalkIntent {
+            wish_dir: Vec3::X,
+            target_speed: speed,
+            jump_pressed: false,
+        });
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+        ));
+        let end_x = length * degrees.to_radians().cos() * 0.8;
+        let mut frames = 0;
+        let mut grounded_frames = 0;
+        let mut lowest = start.y;
+        for _ in 0..2_000 {
+            app.update();
+            frames += 1;
+            let (body, grounded) = headless::player_pose(&mut app);
+            grounded_frames += u32::from(grounded);
+            let camera_y = app.world().get::<Transform>(camera).unwrap().translation.y;
+            let follow = app.world().resource::<WalkCameraFollowState>();
+            let tick = app.world().resource::<WalkCameraTick>();
+            assert_eq!(
+                tick.last_sample_collected_y, 0.0,
+                "{degrees} deg at {speed} u/s: a ramp tick was collected as a stair drop at {body:?}"
+            );
+            assert!(
+                follow.offset_y.abs() < 1.0e-3
+                    && (camera_y - (body.y + tuning.eye_height)).abs() < 1.0e-3,
+                "{degrees} deg at {speed} u/s: the view floats {:.2} u above its eye target at {body:?}",
+                camera_y - (body.y + tuning.eye_height)
+            );
+            lowest = lowest.min(body.y);
+            if body.x >= end_x {
+                break;
+            }
+        }
+        // Controls: the walk really went downhill and reached the far part of the ramp, and the
+        // body spent most frames on the ground (an airborne frame resets the offset by itself).
+        assert!(
+            grounded_frames * 2 > frames,
+            "{degrees} deg at {speed} u/s: only {grounded_frames}/{frames} grounded frames"
+        );
+        let end = headless::player_pose(&mut app).0;
+        assert!(
+            end.x >= end_x,
+            "{degrees} deg at {speed} u/s stalled at {end:?} after {frames}"
+        );
+        assert!(
+            start.y - lowest > 100.0,
+            "{degrees} deg at {speed} u/s: the fixture did not descend ({start:?} -> {lowest})"
+        );
+    }
+}
+
 #[test]
 fn stairs_keep_rise_and_overhead_clearance_limits() {
     for (rise, ceiling) in [(48.0, false), (24.0, true)] {

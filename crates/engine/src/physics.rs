@@ -1948,6 +1948,28 @@ struct WalkCameraFollowState {
     previous_origin: Option<IVec2>,
 }
 
+/// The steepest ground, in degrees, whose per-tick lowering the view follows directly.
+/// Mudcrab presentation tuning, not a native Skyrim value. The controller itself climbs slopes up
+/// to `slope_climb_degrees` (50); this is lower on purpose, because a stair flight descended at a
+/// run slides over each edge and its per-tick lowering looks like a 25 to 45 degree slope.
+const WALK_STEP_CAMERA_SLOPE_DEGREES: f32 = 30.0;
+
+/// Whether one fixed tick's supported downward move is a stair drop rather than ordinary ground.
+///
+/// Walking down a ramp or hill lowers the body by `horizontal travel * tan(slope)` every tick.
+/// That is continuous ground contact, so the eye follows it directly. A tick counts as a stair
+/// drop only when the body lowers by more than that allowance for the tick's horizontal travel,
+/// plus [`WALK_STEP_CAMERA_MIN_TICK_DELTA`] of slack for ground-snap jitter. A drop with no
+/// horizontal travel (a lift or an edge) counts too. Ground steeper than the allowance, which is
+/// rare, is smoothed like stairs.
+fn is_stair_drop(tick_delta: Vec3, tuning: &MovementTuning) -> bool {
+    let slope = WALK_STEP_CAMERA_SLOPE_DEGREES
+        .min(tuning.slope_climb_degrees)
+        .to_radians();
+    let slope_allowance = tick_delta.xz().length() * slope.tan();
+    -tick_delta.y > slope_allowance + WALK_STEP_CAMERA_MIN_TICK_DELTA
+}
+
 fn accumulate_camera_offset(offset: f32, delta_y: f32) -> f32 {
     // Keep the presented height continuous when step direction reverses.
     // Only explicit placement/reset paths discard the residual.
@@ -1964,6 +1986,7 @@ fn exponential_camera_offset(offset: f32, delta_secs: f32) -> f32 {
 /// Runs after Rapier writeback so this records the controller's final physical pose per tick.
 fn sample_walk_camera_tick(
     mode: Res<MoveMode>,
+    tuning: Res<MovementTuning>,
     mut tick: ResMut<WalkCameraTick>,
     player: Query<
         (
@@ -2016,9 +2039,10 @@ fn sample_walk_camera_tick(
             && supported
             && !jumping_or_falling
             && !walk.jump_active
-            && delta.y < -WALK_STEP_CAMERA_MIN_TICK_DELTA
+            && is_stair_drop(delta, &tuning)
         {
-            // Smooth only bounded supported downward snaps. Small slope changes stay direct.
+            // Smooth only bounded supported drops that a walkable slope cannot explain.
+            // Walking down a ramp or hill is continuous contact and stays direct.
             tick.pending_y += delta.y;
             #[cfg(test)]
             {
@@ -2159,6 +2183,46 @@ mod walk_camera_presentation_tests {
             old_target + reverse_step - accumulate_camera_offset(old_offset, reverse_step),
             "step collection must not itself move the presented eye"
         );
+    }
+
+    /// Per-tick classification: ordinary ground is not a stair drop, a riser is.
+    #[test]
+    fn stair_drop_classification_separates_slopes_from_risers() {
+        let tuning = MovementTuning::default();
+        let tick = 1.0 / 60.0;
+        let drop = |horizontal: f32, down: f32| Vec3::new(horizontal, -down, 0.0);
+        for speed in [80.1_f32, 370.0] {
+            let travel = speed * tick;
+            // Ordinary ramps and hills, up to the allowance, at walking and running speed.
+            for degrees in [5.0_f32, 10.0, 20.0, 29.0] {
+                let down = travel * degrees.to_radians().tan();
+                assert!(
+                    !is_stair_drop(drop(travel, down), &tuning),
+                    "{degrees} degree slope at {speed} u/s was read as a stair drop"
+                );
+            }
+            // Stair risers lower the body by far more than the slope allowance for that travel.
+            for riser in [12.0_f32, 24.0] {
+                assert!(
+                    is_stair_drop(drop(travel, riser), &tuning),
+                    "{riser}-unit riser at {speed} u/s was not read as a stair drop"
+                );
+            }
+        }
+        // The slack covers ground-snap jitter; a drop in place beyond it is still a drop.
+        assert!(!is_stair_drop(drop(0.0, 0.9), &tuning));
+        assert!(is_stair_drop(drop(0.0, 1.5), &tuning));
+        // Only lowering matters: a rise or a level move is never a drop.
+        assert!(!is_stair_drop(drop(6.0, -10.0), &tuning));
+        assert!(!is_stair_drop(drop(6.0, 0.0), &tuning));
+        // A controller with a gentler climb limit lowers the allowance with it.
+        let gentle = MovementTuning {
+            slope_climb_degrees: 15.0,
+            ..MovementTuning::default()
+        };
+        let down = 6.17 * 28.0_f32.to_radians().tan();
+        assert!(!is_stair_drop(drop(6.17, down), &tuning));
+        assert!(is_stair_drop(drop(6.17, down), &gentle));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Issue 464 stair camera smoothing follow-up
 
-**Base:** `a9457df85dfa356a7aefc21f25a352078e55106d` (#482). This follow-up is stacked on that head. It leaves #482 and its review state unchanged.
+**Base:** `main`. This follow-up was written on the #482 head `a9457df85dfa356a7aefc21f25a352078e55106d`. #482 has merged (squash commit `7b89d0fb`), so this change applies to `main` directly.
 
 ## Findings
 
@@ -25,7 +25,9 @@ Evidence classes:
 
 ## Behavior and tests
 
-The camera presentation resource receives an explicit marker at the existing successful `walk_step_rise` branch. A fixed schedule sampler runs after `PhysicsSet::Writeback` and records the body's actual net Y change for that tick. It accepts the validated rise even when movement clears `WalkState.grounded`. Downward correction requires controller support on both samples, no active jump, and a bounded per-tick descent. An unsupported sample marks airborne motion and clears the pending offset. Small slope changes and unsupported drops do not enter the camera offset.
+The camera presentation resource receives an explicit marker at the existing successful `walk_step_rise` branch. A fixed schedule sampler runs after `PhysicsSet::Writeback` and records the body's actual net Y change for that tick. It accepts the validated rise even when movement clears `WalkState.grounded`. Downward correction requires controller support on both samples, no active jump, a bounded per-tick descent, and a drop that a walkable slope cannot explain. An unsupported sample marks airborne motion and clears the pending offset. Slope changes and unsupported drops do not enter the camera offset.
+
+**Slope versus stair drop.** Walking down a ramp or hill lowers the body by `horizontal travel * tan(slope)` every tick. That is continuous ground contact, so the view follows it directly. A tick counts as a stair drop only when the body lowers by more than `horizontal travel * tan(30 degrees)` plus 1 unit of slack for ground-snap jitter (the 30 degrees is `WALK_STEP_CAMERA_SLOPE_DEGREES`, Mudcrab tuning, capped by `slope_climb_degrees`). The allowance is below the controller's 50 degree climb limit on purpose. A flight descended at a run slides over each edge, so its per-tick lowering resembles a 25 to 45 degree slope. Measured with the production controller at 370 u/s and 60 Hz: ramps at 10, 20 and 30 degrees lower the body by 1.1, 2.2 and 3.6 units per tick and are not drops. A 24-unit riser lowers it by up to 10 units per tick and is a drop. Without this rule a long descent builds a view offset that floats above the eye height. Limits: ground steeper than 30 degrees is smoothed like stairs, and low risers at running speed (under about 4.6 units per tick) are not smoothed.
 
 The render update drains every accumulated fixed-tick delta. It applies `target_eye_position - offsetY` and decays `offsetY` with the exponential recurrence `offset *= exp(-deltaSeconds / 0.055)`. `0.055 s` is explicit Mudcrab tuning. Each render follows body X/Z, yaw, and pitch immediately. Jump or freefall clears pending stair data and snaps the camera to the physical eye target. The 36-unit bound applies to each physics tick, so multiple fixed ticks before a render do not trigger an accumulated-delta snap.
 
