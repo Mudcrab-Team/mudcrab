@@ -97,6 +97,11 @@ async fn check_warm_packed_normal(combined_proof: bool, broad_contract: bool) {
     config.record_reader = converter::config::RecordReader::Inhouse;
     assert!(publish(&config).await.complete);
     let mut saved = manifest(&output);
+    let mesh_count = saved
+        .entries
+        .values()
+        .filter(|entry| entry.output.ends_with(".glb"))
+        .count();
     let neighbour = saved
         .entries
         .values()
@@ -158,13 +163,11 @@ async fn check_warm_packed_normal(combined_proof: bool, broad_contract: bool) {
     );
     let saved = manifest(&output);
     assert!(saved.failures.contains_key("meshes/bad_optional.nif"));
-    if !combined_proof {
-        assert_eq!(
-            report.converted,
-            old_outputs.len() as u64,
-            "only packed normals rebuild; unaffected textures, scripts and meshes must reuse"
-        );
-    }
+    assert_eq!(
+        report.converted,
+        (old_outputs.len() + if combined_proof { mesh_count } else { 0 }) as u64,
+        "only packed normals and meshes lacking their own contract rebuild; unaffected textures and scripts must reuse"
+    );
     assert_eq!(hash_file(&output.join(neighbour)).unwrap(), neighbour_hash);
     for name in old_outputs {
         let bytes = fs::read(output.join(name)).unwrap();
