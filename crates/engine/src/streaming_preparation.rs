@@ -882,6 +882,7 @@ mod tests {
             }),
             None,
             0,
+            false,
         ));
         let mut scene_world = World::new();
         scene_world.spawn((

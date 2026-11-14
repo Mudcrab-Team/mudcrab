@@ -191,6 +191,9 @@ pub(crate) fn body_compose_inputs(sex: &str) -> [String; 4] {
 /// Versioned default-gait recipe and its canonical raw input contract.
 pub(crate) const DEFAULT_GAIT_RECIPE: &str = "default-gait-v1";
 
+/// Verified cow/chicken idle over the exact standalone body hierarchy.
+pub(crate) const CREATURE_IDLE_RECIPE: &str = "creature-idle-v1";
+
 /// The complete input set shared by gait proof production and reuse validation.
 pub(crate) fn default_gait_inputs(sex: &str, stem: &str) -> [String; 4] {
     let assets = "meshes/actors/character/character assets";
@@ -231,6 +234,24 @@ where
         .into_iter()
         .map(|(key, value)| (key, serde_json::from_value(value).unwrap_or_default()))
         .collect())
+}
+
+fn deserialize_extensions<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<shared::extensions::ExtensionEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let (entries, issues) = shared::extensions::parse_entries(&value);
+    for issue in issues {
+        log::warn!(
+            "ignored optional capability declaration {:?}: {}",
+            issue.id,
+            issue.reason
+        );
+    }
+    Ok(entries)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -393,6 +414,13 @@ pub struct ConversionManifest {
         deserialize_with = "deserialize_derived_outputs"
     )]
     pub derived_outputs: BTreeMap<String, DerivedOutput>,
+    /// Versioned derived output, separate from the upstream core contract.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_extensions"
+    )]
+    pub extensions: Vec<shared::extensions::ExtensionEntry>,
 }
 
 /// Historical producers whose scripts may pass normal reuse eligibility.
@@ -552,12 +580,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
+/// These compatibility pairs are limited to metadata adapters 11, 12 and 13; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -572,7 +600,7 @@ pub(crate) fn inhouse_adapter10_reader_identity(
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12 | 13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -580,6 +608,36 @@ pub(crate) fn inhouse_adapter11_reader_identity(
         schemas,
     );
     identity["adapter_version"] = serde_json::json!(11);
+    Some(identity)
+}
+
+/// Adapter 13 adds placed database rows without changing converted asset bytes.
+pub(crate) fn inhouse_adapter12_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+    language: &str,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 13 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+        language,
+    );
+    identity["adapter_version"] = serde_json::json!(12);
+    Some(identity)
+}
+
+/// Legacy projection 5 changes database placement coverage, not the version-4 asset proof.
+pub(crate) fn legacy_projection4_reader_identity(language: &str) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 5 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_in_language(
+        crate::config::RecordReader::Legacy,
+        language,
+    );
+    identity["projection_version"] = serde_json::json!(4);
     Some(identity)
 }
 
@@ -1253,9 +1311,15 @@ pub(crate) fn retained_configuration_matches_for_reader(
         && [
             inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
             inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
+            inhouse_adapter12_reader_identity(config.schemas()?.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
+    {
+        return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
+    }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && legacy_projection4_reader_identity(&config.language).as_ref() == Some(identity)
     {
         return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
     }
@@ -1271,6 +1335,23 @@ pub fn hash_file(path: &Path) -> Result<String> {
     let file = fs::File::open(path)
         .wrap_err_with(|| format!("failed to open {} for hashing", path.display()))?;
     hash_open_file(&file).wrap_err_with(|| format!("failed to hash {}", path.display()))
+}
+
+/// Hashes `path`, or returns `None` when it does not exist.
+///
+/// A missing file is a normal state on a resumed run. Any other failure, such as a permission
+/// error or an I/O error, is returned with the path, so a caller cannot mistake an unreadable
+/// file for a changed one.
+pub fn hash_file_if_present(path: &Path) -> Result<Option<String>> {
+    match fs::File::open(path) {
+        Ok(file) => hash_open_file(&file)
+            .map(Some)
+            .wrap_err_with(|| format!("failed to hash {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).wrap_err_with(|| format!("failed to open {} for hashing", path.display()))
+        }
+    }
 }
 
 fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
@@ -1295,6 +1376,53 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_capability_parse_is_tolerant_per_entry() {
+        let good = shared::extensions::ExtensionEntry {
+            id: "example.valid".into(),
+            version: 1,
+            owns: Default::default(),
+            sha256: String::new(),
+            built_from: "core".into(),
+            stats: Default::default(),
+        };
+        let mut document = serde_json::to_value(ConversionManifest::default()).unwrap();
+        document["extensions"] = serde_json::json!([
+            {"id": "example.missing_fields"},
+            {"id": "example.float_stat", "version": 1, "sha256": "", "built_from": "core", "stats": {"rows": 1.5}},
+            good,
+        ]);
+        let manifest: ConversionManifest = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(manifest.extensions, vec![good]);
+        document["extensions"] = serde_json::Value::Null;
+        let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
+        assert!(manifest.extensions.is_empty());
+    }
+
+    #[test]
+    fn extensions_are_optional_and_round_trip_without_changing_core_fields() {
+        let mut manifest = ConversionManifest::default();
+        let before = serde_json::to_value(&manifest).unwrap();
+        assert!(before.get("extensions").is_none());
+        let legacy: ConversionManifest = serde_json::from_value(before.clone()).unwrap();
+        assert!(legacy.extensions.is_empty());
+        manifest
+            .extensions
+            .push(shared::extensions::ExtensionEntry {
+                id: "example.payload".to_owned(),
+                version: 1,
+                owns: shared::extensions::ExtensionOwns::default(),
+                sha256: "0".repeat(64),
+                built_from: "core".to_owned(),
+                stats: BTreeMap::new(),
+            });
+        let mut with_extension = serde_json::to_value(&manifest).unwrap();
+        let restored: ConversionManifest = serde_json::from_value(with_extension.clone()).unwrap();
+        assert_eq!(restored, manifest);
+        with_extension.as_object_mut().unwrap().remove("extensions");
+        assert_eq!(with_extension, before);
+    }
 
     /// Legacy absence and malformed optional records do not poison neighboring proofs.
     #[test]
@@ -1373,6 +1501,30 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// An absent file has no hash. An unreadable one is an error that names the path, not an
+    /// empty hash that looks like a changed file.
+    #[test]
+    fn hash_file_if_present_separates_absent_from_unreadable() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("output.glb");
+        assert_eq!(hash_file_if_present(&file).unwrap(), None);
+
+        fs::write(&file, b"bytes").unwrap();
+        assert_eq!(
+            hash_file_if_present(&file).unwrap(),
+            Some(hash_file(&file).unwrap())
+        );
+
+        // A directory cannot be read as a file on any platform.
+        let unreadable = directory.path().join("directory");
+        fs::create_dir(&unreadable).unwrap();
+        let error = hash_file_if_present(&unreadable).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("directory"),
+            "the error names the path: {error:#}"
+        );
     }
 
     #[test]
@@ -1901,12 +2053,91 @@ mod tests {
         }
     }
 
+    /// A metadata-only version change preserves exact legacy asset proofs, including locale.
+    #[test]
+    fn projection4_asset_proofs_keep_their_language_and_exact_settings() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Legacy;
+        config.language = "french".into();
+        let original = legacy_projection4_reader_identity(&config.language).unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+        let mut changed = config.clone();
+        changed.texture_fallback_quality += 1;
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &changed,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        changed = config.clone();
+        changed.language = "english".into();
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &changed,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        let mut unknown = original;
+        unknown["projection_version"] = serde_json::json!(6);
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &unknown
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn adapter12_asset_proof_keeps_non_english_identity() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.language = "french".into();
+        let original =
+            inhouse_adapter12_reader_identity(config.schemas().unwrap().as_ref(), &config.language)
+                .unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_eq!(original["adapter_version"], 12);
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+    }
+
     /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
     #[test]
     fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Inhouse;
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
             original["adapter_version"] = serde_json::json!(adapter);
             let recorded = configuration_hash_with_identity(
@@ -1940,7 +2171,7 @@ mod tests {
                 .unwrap()
             );
             let mut changed = config.clone();
-            changed.script_abi_version = 2;
+            changed.script_abi_version += 1;
             assert!(
                 !retained_configuration_matches_for_reader(
                     &changed,
@@ -2054,9 +2285,11 @@ mod tests {
         );
     }
 
+    /// Reconstructs the original ABI-1 proof independently of the current emitter default.
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.script_abi_version = 1; // Reconstruct the fixed historical ABI-1 proof.
         config.record_reader = crate::config::RecordReader::Legacy;
         // Exact configuration hash in the protected original schema-15
         // manifest and its metadata rebuild's retained producer provenance.
@@ -2072,7 +2305,7 @@ mod tests {
         changed.texture_fallback_quality = 191;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config.clone();
-        changed.script_abi_version = 2;
+        changed.script_abi_version += 1;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config;
         changed.texture_zstd_level = 7;
