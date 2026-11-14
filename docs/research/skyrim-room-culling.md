@@ -20,15 +20,26 @@ Research checked on 2026-11-15:
   visibility walk. `BSPortalGraphEntry::ClearVisibility` and `AddVisibilityToMap` are only **mapped**
   in its [function index](https://github.com/awarebayes/skyrim-research/blob/3c83806196a71329248edd7c00060461dff91a80/reconstruction/INDEX.md).
   Those names identify useful next research targets. They do not establish traversal semantics.
-- [CommonLibSSE-NG's BSPortalGraph declaration](https://github.com/CharmedBaryon/CommonLibSSE-NG/blob/main/include/RE/B/BSPortalGraph.h)
-  records a shared portal node and per-cell storage, but leaves most members unnamed. It does not
-  describe the culling algorithm.
+- [CommonLibSSE-NG's BSPortalGraphEntry declaration](https://github.com/alandtse/CommonLibSSE-NG/blob/786b514953853a9a75bd8fe990d1e6b977d7809d/include/RE/B/BSPortalGraphEntry.h)
+  has an accumulated room list, a root room, a node-to-compound-frustum visibility map, and a
+  `visibleUnboundSpace` flag. Its
+  [BSCompoundFrustum](https://github.com/alandtse/CommonLibSSE-NG/blob/786b514953853a9a75bd8fe990d1e6b977d7809d/include/RE/B/BSCompoundFrustum.h)
+  stores frustum planes and an operator stream with union, intersection, inside and intersection
+  tests. [BSCullingProcess](https://github.com/alandtse/CommonLibSSE-NG/blob/786b514953853a9a75bd8fe990d1e6b977d7809d/include/RE/B/BSCullingProcess.h)
+  connects the portal graph entry, compound frustum and a shared-room object map. These community
+  declarations support a per-view volume-based visibility model with unbounded-space state.
+  They do not reveal how portal paths build those volumes or when individual tests run.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
   explains authored rooms and portal visibility, including a separate unbounded space connected
   through portals. This is related-engine documentation, not proof of Skyrim's exact behavior.
   The Skyrim [optimization tutorial](https://ck.uesp.net/wiki/Bethesda_Tutorial_Optimization) and
   [room basics](https://ck.uesp.net/wiki/Room_Bounds_and_Portal_Basics) returned HTTP 403 to automated
   fetching during this investigation. Their full contents were not verified.
+
+The structural comparison is useful: Skyrim's declared compound frusta can represent unions and
+intersections of plane sets. Our screen rectangles approximate those visible regions and merge
+multiple paths conservatively. We do not implement the original visibility map or unbounded-space
+traversal, which is why unresolved connections draw the whole cell instead of being ignored.
 
 No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
 performed. The evidence supports using authored apertures and explicit room links; the exact
