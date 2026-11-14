@@ -1417,6 +1417,13 @@ mod tests {
     }
 
     #[test]
+    fn g3_explicit_too_small_radius_remains_invalid_after_preferences() {
+        let mut config = launch(&["--grass".into(), "--stream-radius".into(), "1".into()]);
+        let _ = prepare_settings_at(&mut config, None);
+        assert!(config.validate_grass().is_err());
+    }
+
+    #[test]
     fn g3_excessive_automatic_grass_radius_cannot_expand_terrain() {
         let mut config = launch(&["--grass".into(), "--grass-radius".into(), "100000".into()]);
         assert!(config.validate_grass().is_err());

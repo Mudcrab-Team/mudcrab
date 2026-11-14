@@ -74,6 +74,11 @@ impl Options {
             ));
         }
         let world_grass = config.grass && config.loads_world();
+        if world_grass && self.explicit_stream_radius && config.stream_radius < 2 {
+            config.grass_settings_error.get_or_insert_with(|| {
+                "explicit --stream-radius must be at least 2 when grass is enabled".into()
+            });
+        }
         // Bound automatic terrain expansion before settings or the planner sees it.
         // Explicit terrain radii retain the caller's deliberate coverage limit.
         if world_grass && !self.explicit_stream_radius && config.grass_radius > 32 {
