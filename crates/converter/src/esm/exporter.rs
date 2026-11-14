@@ -1497,6 +1497,7 @@ pub fn insert_reference(
 }
 
 /// Extract runtime reference columns from projected fields and preserve the canonical data mirror.
+#[allow(clippy::too_many_arguments)]
 fn insert_reference_with_canonical_data(
     tx: &Transaction<'_>,
     form_id: u32,
