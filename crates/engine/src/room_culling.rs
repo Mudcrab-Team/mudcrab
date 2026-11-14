@@ -50,8 +50,9 @@
 //!   an unreached room still reaches Bevy's light passes. Culling lights is future work.
 //! - **Entities with `NoCpuCulling`** are not in any camera's [`VisibleEntities`] (they are decided
 //!   on the GPU, `check_visibility_gpu_culling`, line 884), so this CPU-side filter cannot hide
-//!   them. The engine does not use `NoCpuCulling` today; room culling needs a GPU-side input first
-//!   if that changes.
+//!   them. The engine uses that marker for empty hierarchy nodes, while rendered meshes normally
+//!   retain CPU visibility checks. Filtering meshes explicitly marked `NoCpuCulling` would need
+//!   a GPU-side input.
 //!
 //! # Rooms whose boxes overlap or touch are one space
 //!
@@ -98,7 +99,7 @@
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`). `Fixed` bodies, which is
 //!   what static collision uses, are culled normally.
 //!
-//! This branch spawns no actors or doors yet; the rule is in place for when it does.
+//! Streamed actors and doors receive the exemption when their reference root is spawned.
 //!
 //! # Views
 //!
@@ -643,7 +644,7 @@ impl RoomGraph {
     }
 }
 
-/// The five tables of section 15 that the reader needs. `room_graph_stats` is a report counter and
+/// The four tables of section 15 that the reader needs. `room_graph_stats` is a report counter and
 /// is not required.
 const REQUIRED_TABLES: [&str; 4] = [
     "room_bounds",
@@ -1726,6 +1727,64 @@ mod tests {
         );
     }
 
+    /// Two resident cells may both contain the camera during a transition. Each graph must
+    /// filter its own references, including when the other cell has a lower FormID.
+    #[test]
+    fn every_resident_interior_is_culled() {
+        let mut scene = scene(true);
+        let root = scene
+            .app
+            .world_mut()
+            .spawn((StreamedCellRoot, CellRef(8), GlobalTransform::IDENTITY))
+            .id();
+        let mut graph = scene.app.world().resource::<RoomCullingState>().graphs[&7]
+            .graph
+            .clone();
+        graph.membership = graph
+            .membership
+            .into_iter()
+            .map(|(id, membership)| (id + 100, membership))
+            .collect();
+        scene
+            .app
+            .world_mut()
+            .resource_mut::<RoomCullingState>()
+            .insert_graph(8, root, graph);
+        let mut meshes = Vec::new();
+        for id in [101, 102] {
+            let reference = scene
+                .app
+                .world_mut()
+                .spawn((FormId(id), ChildOf(root)))
+                .id();
+            meshes.push(scene.app.world_mut().spawn(ChildOf(reference)).id());
+        }
+        scene
+            .app
+            .world_mut()
+            .get_mut::<VisibleEntities>(scene.camera)
+            .unwrap()
+            .get_mut(TypeId::of::<Mesh3d>())
+            .extend_from_slice(&meshes);
+        run_cull(&mut scene.app);
+        assert_eq!(
+            mesh_list(&scene.app, scene.camera),
+            vec![scene.near, scene.loose, meshes[0]],
+            "each cell loses its far mesh and keeps its near mesh"
+        );
+        assert_eq!(
+            scene
+                .app
+                .world()
+                .resource::<RoomCullingState>()
+                .main_view_meshes,
+            Some(MainViewMeshes {
+                listed: 5,
+                drawn: 3
+            })
+        );
+    }
+
     #[test]
     fn with_the_setting_off_nothing_is_culled() {
         let mut scene = scene(false);
@@ -2021,6 +2080,15 @@ mod tests {
         assert!(quiet.with_room_graphs(None).is_quiet());
         let mut state = RoomCullingState::new(true, PathBuf::new());
         assert!(quiet.with_room_graphs(Some(&state)).is_quiet());
+        AsyncComputeTaskPool::get_or_init(Default::default);
+        state.pending.insert(
+            7,
+            AsyncComputeTaskPool::get().spawn(future::pending::<LoadResult>()),
+        );
+        let pending = quiet.with_room_graphs(Some(&state));
+        assert_eq!(pending.pending_room_graphs, 1);
+        assert!(!pending.is_quiet(), "a pending read must hold the capture");
+        state.pending.clear();
         state.failed.insert(7);
         let failed = quiet.with_room_graphs(Some(&state));
         assert_eq!(failed.failed_room_graphs, 1);

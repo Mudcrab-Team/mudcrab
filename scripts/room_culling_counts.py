@@ -7,7 +7,8 @@ Run the engine with `--room-culling --shots <file> --shots-out <dir>` first, for
 `crates/engine/tests/fixtures/room-culling-shots.json`. Each settled capture receipt in
 `shots.log` carries `room_culling: {listed, drawn}`: the streaming camera's `Mesh3d` list after
 Bevy's frustum check and after room culling, in the frame the image was taken from. A run without
-`--room-culling` has no counts, and the script fails rather than printing an empty table.
+`--room-culling` has no counts. Timed-out captures are excluded, and the script fails when
+no successful capture carries counts rather than printing an empty table.
 """
 
 import json
@@ -26,7 +27,7 @@ def read_counts(log_text):
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if entry.get("kind") != "settled":
+        if entry.get("kind") != "settled" or entry.get("timed_out", False):
             continue
         counts = (entry.get("captured_frame") or {}).get("room_culling")
         if counts is None:
@@ -45,7 +46,8 @@ def main(argv):
         path = path / "shots.log"
     rows = read_counts(path.read_text(encoding="utf-8"))
     if not rows:
-        print(f"{path}: no capture carries room-culling counts (was --room-culling given?)", file=sys.stderr)
+        print(f"{path}: no successful capture carries room-culling counts "
+              "(check --room-culling and capture timeouts)", file=sys.stderr)
         return 1
     width = max(len(pose) for pose, _, _ in rows)
     print(f"{'pose':<{width}}  listed   drawn  hidden")

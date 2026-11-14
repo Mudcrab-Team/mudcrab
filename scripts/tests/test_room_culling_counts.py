@@ -36,6 +36,12 @@ class ReadCountsTest(unittest.TestCase):
         log = receipt("settled", "out/pose.png", None)
         self.assertEqual(counts.read_counts(log), [])
 
+    def test_timed_out_capture_is_not_a_measurement(self):
+        entry = json.loads(receipt("settled", "out/pose.png", {"listed": 40, "drawn": 40}))
+        entry["timed_out"] = True
+        entry["captured_frame"]["work"] = {"failed_room_graphs": 1}
+        self.assertEqual(counts.read_counts(json.dumps(entry)), [])
+
 
 if __name__ == "__main__":
     unittest.main()
