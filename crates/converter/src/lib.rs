@@ -10,6 +10,7 @@ pub mod check;
 pub mod collision;
 pub mod compose;
 pub mod config;
+pub mod derive_grass;
 pub mod derive_outfits;
 pub mod esm;
 pub mod extensions;
