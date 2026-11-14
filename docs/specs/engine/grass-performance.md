@@ -84,8 +84,8 @@ per candidate slot plus 64 KiB. This includes Vec growth and scratch, but exclud
 mapped input, native allocations and GPU resources. The library test only checks
 the generator's reported output size (32 bytes per potential instance plus 32 KiB).
 
-Both ignored tests reject debug-assertion builds (including the standard opt-level
-1 test profile). CI runs both with --release. The tighter 6/25/60 ms limits are
+Both ignored tests require the actual Cargo OPT_LEVEL to be 3 (including a
+guard against custom profiles with lower optimization). CI runs both with --release. The tighter 6/25/60 ms limits are
 portable regression policy, not a measured Linux baseline or a guarantee that a
 particular slowdown factor fails; runner measurements must be collected before
 claiming that. Determinism covers same-cache replay and byte-identical caches from two independent conversions at CPU/IO job counts 2 and 1.

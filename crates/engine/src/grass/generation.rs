@@ -774,7 +774,11 @@ mod tests {
     #[ignore = "performance"]
     /// Measure retained VCLR interpolation with eight species under the existing worker ceilings.
     fn performance_coloured_terrain_generation() {
-        assert!(!cfg!(debug_assertions), "run budgets with --release");
+        assert_eq!(
+            env!("MUDCRAB_BUILD_OPT_LEVEL"),
+            "3",
+            "run budgets with --release at opt-level=3"
+        );
         use std::{hint::black_box, time::Duration};
 
         let mut rules: Vec<_> = (7..15).map(species).collect();

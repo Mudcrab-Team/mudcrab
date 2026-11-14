@@ -313,6 +313,10 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
         let retained = LIVE
             .load(std::sync::atomic::Ordering::SeqCst)
             .saturating_sub(baseline);
+        eprintln!(
+            "spacing={spacing} cell={id} peak_heap_bytes={peak} retained_heap_bytes={retained} scratch_heap_bytes={}",
+            peak.saturating_sub(retained)
+        );
         assert!(
             peak <= slots as usize * GRASS_COUNT as usize * 48 + 64 * 1024,
             "generation peak heap budget exceeded: {peak}"
@@ -390,7 +394,11 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
 #[ignore = "performance"]
 /// Convert synthetic grass terrain and enforce CPU generation budgets at three densities.
 async fn performance_grass_generation() {
-    assert!(!cfg!(debug_assertions), "run budgets with --release");
+    assert_eq!(
+        env!("MUDCRAB_BUILD_OPT_LEVEL"),
+        "3",
+        "run budgets with --release at opt-level=3"
+    );
     assert_eq!(
         std::mem::size_of::<GrassInstance>(),
         16,
