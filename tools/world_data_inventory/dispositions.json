@@ -1,0 +1,962 @@
+{
+  "blob_default": {
+    "classification": "opaque",
+    "owner": "store producer",
+    "reason": "BLOB bytes; decoded subfields and behavioral use remain unknown unless individually annotated."
+  },
+  "fields": {
+    "cells.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "emittance.day_b": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_b",
+        "ordinal": 36,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "emittance.day_g": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_g",
+        "ordinal": 35,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "emittance.day_r": {
+      "evidence": [
+        {
+          "anchor": "day_r INTEGER NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let emittance = match row.get::<_, Option<u8>>(34)?",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "e.day_r",
+        "ordinal": 34,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Day color maps through ReferenceEmittance to lit_by; other time slots are not implied.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "entity.insert(crate::emittance::ReferenceEmittance::from_srgb(rgb));",
+          "path": "crates/engine/src/streaming.rs"
+        },
+        {
+          "anchor": "emissive.red * colour.red",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_black_day_colour_darkens_only_the_external_emittance_surface()",
+          "path": "crates/engine/src/emittance.rs"
+        }
+      ]
+    },
+    "inhouse_source_records.payload": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "lights.falloff": {
+      "evidence": [
+        {
+          "anchor": "falloff REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "const LIGHT_COLUMNS: &str = \"l.radius,l.color_r,l.color_g,l.color_b,l.flags\";",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Published LIGH falloff; no mapping in the audited ReferenceQuery light suffix. Other paths remain unknown. Active PR #488 adds a consumer; it is not part of this reviewed head.",
+      "roles": [
+        "result"
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "lights.radius": {
+      "evidence": [
+        {
+          "anchor": "radius REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "let radius: Option<f32> = row.get(19)?;",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "l.radius",
+        "ordinal": 19,
+        "query": "reference"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Source path sets PointLight.range and intensity through radius_of; overrides and caps remain separate policy. No native parity claim.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "range: radius,",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn a_reference_radius_override_replaces_the_record_radius()",
+          "path": "crates/engine/src/lights.rs"
+        }
+      ]
+    },
+    "movement_types.forward_run": {
+      "evidence": [
+        {
+          "anchor": "forward_walk REAL NOT NULL, forward_run REAL NOT NULL",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "run_speed: values[5]",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "m.forward_run",
+        "ordinal": 6,
+        "query": "SELECT m.editor_id, m.left_walk"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Selected NPC_Default_MT speed feeds directional target_speed. Selection and sprint multiplier remain #264 research gaps.",
+      "roles": [
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "let wish = intent.wish_dir * intent.target_speed;",
+          "path": "crates/engine/src/physics.rs"
+        },
+        {
+          "anchor": "let longitudinal = speeds.directions",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn movement_tuning_preserves_spec_speed_ordering()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "race_movement_links.run_movt_id": {
+      "evidence": [
+        {
+          "anchor": "walk_movt_id INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "run_movt_id",
+        "ordinal": 1,
+        "query": "SELECT walk_movt_id, run_movt_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "roles": [
+        "validation"
+      ],
+      "sink": [
+        {
+          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn packaged_movement_profile_resolves_and_legacy_package_falls_back()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "race_movement_links.walk_movt_id": {
+      "evidence": [
+        {
+          "anchor": "walk_movt_id INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "walk_link.is_none() && run_link.is_none()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "walk_movt_id",
+        "ordinal": 0,
+        "query": "SELECT walk_movt_id, run_movt_id"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Read to reject unsupported non-null race selection; not proof that the linked movement profile controls speed. Active PR #246 owns selection changes.",
+      "roles": [
+        "validation"
+      ],
+      "sink": [
+        {
+          "anchor": "first-pass NPC_Default_MT selection supports only unset race links",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn packaged_movement_profile_resolves_and_legacy_package_falls_back()",
+          "path": "crates/engine/src/physics.rs"
+        }
+      ]
+    },
+    "records.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "references.data": {
+      "evidence": [
+        {
+          "anchor": "pub fn create_tables",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "SELECT record_type,load_order,data FROM records WHERE form_id=?1",
+          "path": "crates/engine/src/world/imagespace.rs"
+        }
+      ],
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Opaque archive/payload disposition. Preservation does not establish interpretation of every subrecord. Current image-space reader decodes selected records.data; no blanket unused claim.",
+      "roles": [
+        "provenance"
+      ],
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "waters.deep_color": {
+      "evidence": [
+        {
+          "anchor": "shallow_color INTEGER, deep_color INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "shallow: unpack_color(row.get::<_, u32>(1)?)",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "deep_color",
+        "ordinal": 2,
+        "query": "SELECT id,shallow_color,deep_color"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Value maps to WaterColors.deep and StandardMaterial.base_color. Opacity remains an approximation; native parity unproven.",
+      "roles": [
+        "filter",
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "let [r, g, b] = colors.deep;",
+          "path": "crates/engine/src/streaming.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn catalog_returns_water_colors_and_factors()",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ]
+    },
+    "waters.shallow_color": {
+      "evidence": [
+        {
+          "anchor": "shallow_color INTEGER, deep_color INTEGER",
+          "path": "crates/converter/src/esm/exporter.rs"
+        },
+        {
+          "anchor": "shallow: unpack_color(row.get::<_, u32>(1)?)",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "mapping": {
+        "expression": "shallow_color",
+        "ordinal": 1,
+        "query": "SELECT id,shallow_color,deep_color"
+      },
+      "owner": "Mudcrab maintainers (#298)",
+      "reason": "Non-NULL predicate gates eligibility; value maps to WaterColors.shallow. No shallow-value material sink found in audited setup. Active PR #299 adds shallow color behavior; it is not part of this reviewed head.",
+      "roles": [
+        "filter",
+        "result"
+      ],
+      "sink": [
+        {
+          "anchor": "WHERE shallow_color IS NOT NULL AND deep_color IS NOT NULL",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "source_reference",
+        "semantic_use": "source_sink"
+      },
+      "tests": [
+        {
+          "anchor": "fn catalog_returns_water_colors_and_factors()",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ]
+    }
+  },
+  "format_version": 1,
+  "legacy_shapes": [
+    {
+      "evidence": [
+        {
+          "anchor": "pub fn migrate_room_portals(",
+          "path": "crates/converter/src/esm/rooms.rs"
+        }
+      ],
+      "key": "room_portals pre-pair_index",
+      "reason": "Retained legacy migration; old primary key is not a current emitted shape."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(super) fn ensure_table(",
+          "path": "crates/converter/src/esm/doors.rs"
+        }
+      ],
+      "key": "door_links pre-destination_name",
+      "reason": "Optional legacy column migration; missing door table uses NULL query suffix."
+    },
+    {
+      "evidence": [
+        {
+          "anchor": "pub(super) fn replace_snapshot_tables(",
+          "path": "crates/converter/src/esm/inhouse_terrain_diagnostics.rs"
+        }
+      ],
+      "key": "terrain unresolved_texture_ids JSON",
+      "reason": "Owned legacy snapshot replaced by scalar diagnostic rows, not a second runtime store."
+    }
+  ],
+  "limitations": [
+    "Committed inventory is a source-only view; requested emitted reports add actual schema/query dependencies. Column denominators sum shape-specific declarations, not unique fields or populated rows.",
+    "No inferred table population. Prepare authorizer events are dependencies, including predicates/joins/count-only empty-column table reads; executed and mapped rows stay unknown.",
+    "Lexical candidate scan covers dot-call prepare/prepare_cached/query_row/query_row_and_then/execute/execute_batch, plain strings and same-file string constants. It skips cfg(test) items and *_tests.rs. It is not receiver/type/macro/ORM analysis; other dynamic SQL remains unknown.",
+    "Source fingerprints conservatively guard projection declarations and reader evidence. A changed file requires explicit review even for an unrelated change; no all-fields-consumed gate.",
+    "Mapping annotations check selected SELECT-list ordinal/expression and prepared dependency, not every closure or runtime conversion. Source sinks and named existing tests do not mean those tests ran in this task.",
+    "Python SQLite version, R-tree support and authorizer behavior may differ from bundled rusqlite. Rust prepares composed variants independently; cross-version failures remain visible.",
+    "Schema-driven decoding and reader identities remain authoritative. No second record decoder, live engine instrumentation, conversion campaign or native semantic/parity evidence is provided."
+  ],
+  "reviewed_at_commit": "64108a1c38b0a854d4f82d7031ea50b57c336a5a",
+  "stores": {
+    "cell_cache.rkyv": {
+      "evidence": [
+        {
+          "anchor": "pub fn terrain(&self, cell_id: u32)",
+          "path": "crates/engine/src/world/cache.rs"
+        },
+        {
+          "anchor": "let mut terrain = cache.terrain(payload.cell_id);",
+          "path": "crates/engine/src/streaming.rs"
+        }
+      ],
+      "owner": "terrain/cache maintainers",
+      "reason": "Versioned rkyv store supplies terrain heights, normals, colors, layers, water height/type through CellCache. SQLite absence does not mean terrain is unused. Source path only; native draw evidence pending.",
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "converted glTF/KTX2 assets": {
+      "evidence": [
+        {
+          "anchor": "fn converted_texture_path(",
+          "path": "crates/engine/src/world/database.rs"
+        }
+      ],
+      "owner": "asset/streaming maintainers",
+      "reason": "External model/texture paths are assets, not SQL field payloads. This slice names the store; no asset completeness or shader-use claim.",
+      "states": {
+        "decoded": "unknown",
+        "mapped": "unknown",
+        "preserved": "unknown",
+        "projected": "unknown",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    },
+    "merged-terrain JSON/KTX2/rkyv": {
+      "evidence": [
+        {
+          "anchor": "serde_json::from_str(&text)",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "rkyv::deserialize::<TerrainCellMesh, RkyvError>(cell)",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "pub fn check_ktx2_header(",
+          "path": "crates/engine/src/terrain_merge/mod.rs"
+        },
+        {
+          "anchor": "pub const LAND_TEXTURE_TABLE_PATH: &str = \"terrain/land-textures.json\";",
+          "path": "crates/shared/src/terrain_mesh.rs"
+        }
+      ],
+      "owner": "terrain merge maintainers (#236 merged)",
+      "reason": "terrain/land-textures.json, KTX2 texture arrays and terrain/<worldspace>/chunk_<x>_<y>.rkyv form an alternative terrain path with per-cell fallback. Mapping is not GPU residency or draw confirmation.",
+      "states": {
+        "decoded": "source_decoded",
+        "mapped": "source_mapping",
+        "preserved": "source_preserved",
+        "projected": "source_projected",
+        "query_dependent": "unknown",
+        "semantic_use": "unknown"
+      }
+    }
+  },
+  "tables": {
+    "actor_model_parts": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "actor_models": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "cell_environment": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "cell_lighting": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "cell_regions": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "cells": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "climate_weathers": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "climates": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "conversion_cache": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "door_links": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "emittance": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "exterior_spatial": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "formid_map": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "grass_types": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "image_spaces": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "inhouse_localized_fields": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "inhouse_plugin_masters": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "inhouse_schema_addons": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "inhouse_source_records": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "inhouse_terrain_layers": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "inhouse_terrain_source_order": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "inhouse_unresolved_terrain_textures": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "land": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "landscape_texture_grasses": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "landscape_textures": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lighting_templates": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lights": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lod": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lod_build": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lod_chunks": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "lod_chunks_spatial": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "movement_game_settings": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "movement_types": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "npcs": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "plugins": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "projection_omission_samples": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "projection_omission_stats": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "race_movement_links": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "record_diagnostics": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "record_overrides": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "records": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "reference_activate_parents": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "reference_details": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "reference_linked_refs": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "reference_rooms": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "references": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "region_weathers": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "room_bounds": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "room_graph_stats": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "room_links": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "room_portals": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "schema_info": {
+      "classification": "provenance",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Identity, preservation or diagnostic metadata; not a gameplay-consumption requirement."
+    },
+    "script_properties": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "script_property_values": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "scripts": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "statics": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "texture_sets": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "waters": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "weather_colors": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "weather_directional_ambient": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "weathers": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "worldspace_environment": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    },
+    "worldspaces": {
+      "classification": "deferred",
+      "owner": "Mudcrab maintainers (#298; publication #269)",
+      "reason": "Declared projection; field-level semantics not yet traced. Query dependencies remain independent; no unused verdict."
+    }
+  }
+}
