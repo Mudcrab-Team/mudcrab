@@ -17,7 +17,9 @@ use bevy::{
 };
 use bytemuck::Zeroable;
 use cull_reuse::{CullInputs, CullReuse};
-use gpu_contract::{CullParams, DRAW_INDEXED_INDIRECT_BYTES, SELECTED_CLUSTER_BYTES, STAGES};
+use gpu_contract::{
+    CullParams, DRAW_INDEXED_INDIRECT_BYTES, GROUP_ARGS_BYTES, SELECTED_CLUSTER_BYTES, STAGES,
+};
 use std::{borrow::Cow, sync::mpsc, time::Duration};
 use wgpu::{util::DeviceExt, *};
 
@@ -36,8 +38,13 @@ const NO_GROUP: u32 = 0xffff;
 
 const INDEXED_ARG_WORDS: usize = (DRAW_INDEXED_INDIRECT_BYTES / 4) as usize;
 const LEGACY_ARG_WORDS: usize = 4;
+const GROUP_ARG_WORDS: usize = (GROUP_ARGS_BYTES / 4) as usize;
+/// The scene's largest cluster in these tests, above every cluster the scenes build, so a group's
+/// vertex count says where it came from.
+const TRIANGLE_LIMIT: u32 = 9;
 
-/// A selected draw: (instance, mesh, cluster, 0) and all five indexed argument words.
+/// A selected draw: its `visible` record and all five indexed argument words. The record is
+/// (instance, mesh, cluster | triangle count << 24, first index).
 /// The signed base_vertex word is compared by its exact bits (zero for pooled indices).
 type Draw = ([u32; 4], [u32; 5]);
 /// The common selection semantics of indexed production and non-indexed legacy draws.
@@ -405,6 +412,7 @@ fn view_params(n: u32, mask_base: u32, epoch: u32, orthographic: bool) -> CullPa
     params.instance_count = n;
     params.orthographic = u32::from(orthographic);
     params.instance_mask_base = mask_base;
+    params.triangle_limit = TRIANGLE_LIMIT;
     params.epoch = epoch;
     params
 }
@@ -527,11 +535,18 @@ fn lod_scene(cases: &[LodCase]) -> Scene {
 }
 
 /// Expected indexed arguments from the fixture's pooled element and triangle offsets.
+/// `tuple` is (instance, mesh, cluster, _); the record the cull writes is derived from it.
 fn expected_indexed_draw(scene: &Scene, tuple: [u32; 4], indices: u32, slot: u32) -> Draw {
     let mesh = tuple[1] as usize * 16;
     let cluster = (scene.meshes[mesh + 1] + tuple[2]) as usize * 12;
     let first_index = scene.meshes[mesh + 3] + scene.clusters[cluster + 7] * 3;
-    (tuple, [indices, 1, first_index, 0, slot])
+    let record = [
+        tuple[0],
+        tuple[1],
+        tuple[2] | ((indices / 3) << 24),
+        first_index,
+    ];
+    (record, [indices, 1, first_index, 0, slot])
 }
 
 /// Expected LOD draws per group. Instance 2 remains a perspective survivor,
@@ -582,7 +597,9 @@ struct Shared {
 struct ViewBuffers {
     params: Buffer,
     args: Buffer,
-    counts: Buffer,
+    /// The stable shader's per-group `DrawIndirectArgs` records (the legacy shader's one count word
+    /// per group in the same slot).
+    group_args: Buffer,
     visible: Buffer,
     list: Buffer,
     dispatch: Buffer,
@@ -603,7 +620,7 @@ impl ViewBuffers {
             2 => &shared.groups,
             3 => &shared.instances,
             4 => &self.args,
-            5 => &self.counts,
+            5 => &self.group_args,
             6 => &shared.meshes,
             7 => &self.visible,
             8 => &self.list,
@@ -629,9 +646,10 @@ struct Job {
     table: Vec<u32>,
     /// Unused by the legacy shader.
     order: Vec<u32>,
-    /// Count mode leaves unused arguments alone; fixed mode clears them first.
+    /// The legacy frame is the fixed-count one and clears its arguments; the stable frame never
+    /// does, in either mode, as in production.
     count_mode: bool,
-    /// Fill scratch and visible (and in count mode the arguments) with a pattern first,
+    /// Fill scratch, visible and the arguments with a pattern first,
     /// so stale reads and writes outside the expected slots are visible.
     poison: bool,
 }
@@ -640,7 +658,10 @@ struct Job {
 /// `instance_count` words for the stable shader, one vec4 per survivor for the legacy one.
 #[derive(Debug, PartialEq, Eq)]
 struct Output {
+    /// Draws per group: word 1 of each `group_args` record, or the legacy shader's count.
     counts: Vec<u32>,
+    /// The stable shader's whole `group_args` records, four words per group; empty for the legacy.
+    group_args: Vec<u32>,
     args: Vec<u32>,
     args_words: usize,
     visible: Vec<u32>,
@@ -718,7 +739,7 @@ fn assert_exact(
     out: &Output,
     bases: &[u32],
     expected: &[Vec<Draw>],
-    count_mode: bool,
+    _count_mode: bool,
     poisoned: bool,
 ) {
     assert_eq!(
@@ -732,6 +753,15 @@ fn assert_exact(
     );
     let slots = out.args.len() / INDEXED_ARG_WORDS;
     assert_eq!(out.counts.len(), expected.len(), "{label}: group count");
+    // Every group's whole record is rewritten each recompute, including empty groups: the vertex
+    // count of the pulled draw, the count, no first vertex and the group's first slot.
+    for (group, draws) in expected.iter().enumerate() {
+        assert_eq!(
+            &out.group_args[group * GROUP_ARG_WORDS..(group + 1) * GROUP_ARG_WORDS],
+            &[TRIANGLE_LIMIT * 3, draws.len() as u32, 0, bases[group]],
+            "{label} group {group}: draw record"
+        );
+    }
     let mut used = vec![false; slots];
     for (group, draws) in expected.iter().enumerate() {
         assert_eq!(
@@ -756,9 +786,8 @@ fn assert_exact(
     }
     for slot in (0..slots).filter(|&slot| !used[slot]) {
         let args = &out.args[slot * INDEXED_ARG_WORDS..(slot + 1) * INDEXED_ARG_WORDS];
-        if !count_mode {
-            assert_eq!(args, &[0; 5], "{label}: unused argument slot {slot}");
-        } else if poisoned {
+        // Production clears no argument list: only slots the cull wrote are ever drawn.
+        if poisoned {
             assert_eq!(args, &[POISON; 5], "{label}: stray argument at slot {slot}");
         }
         if poisoned {
@@ -791,15 +820,19 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
     }
     let first = expected_indexed_draw(&scene, [7, 1, 1, 0], 6, 1);
     let second = expected_indexed_draw(&scene, [9, 0, 0, 0], 0, 3);
-    assert_eq!(first, ([7, 1, 1, 0], [6, 1, 1066, 0, 1]));
-    assert_eq!(second, ([9, 0, 0, 0], [0, 1, 122, 0, 3]));
+    assert_eq!(first, ([7, 1, 1 | (2 << 24), 1066], [6, 1, 1066, 0, 1]));
+    assert_eq!(second, ([9, 0, 0, 122], [0, 1, 122, 0, 3]));
     let bases = [1, 3];
     let expected = vec![vec![first], vec![second]];
     let slots = 5;
     for count_mode in [false, true] {
         let mut out = Output {
             counts: vec![1, 1],
-            args: vec![if count_mode { POISON } else { 0 }; slots * INDEXED_ARG_WORDS],
+            group_args: bases
+                .iter()
+                .flat_map(|&base| [TRIANGLE_LIMIT * 3, 1, 0, base])
+                .collect(),
+            args: vec![POISON; slots * INDEXED_ARG_WORDS],
             args_words: INDEXED_ARG_WORDS,
             visible: vec![POISON; (slots + 1) * 4],
             list: Vec::new(),
@@ -823,6 +856,7 @@ fn indexed_readback_keeps_five_argument_words_and_four_visible_words() {
 
         let mut legacy = Output {
             counts: out.counts.clone(),
+            group_args: Vec::new(),
             args: vec![0; slots * LEGACY_ARG_WORDS],
             args_words: LEGACY_ARG_WORDS,
             visible: out.visible.clone(),
@@ -924,7 +958,8 @@ fn pipelines(
 impl Gpu {
     fn new() -> Self {
         let instance = Instance::new(InstanceDescriptor {
-            backends: Backends::VULKAN,
+            // CI runs these on Vulkan; WGPU_BACKEND=metal runs them on a Mac.
+            backends: Backends::from_env().unwrap_or(Backends::VULKAN),
             ..InstanceDescriptor::new_without_display_handle()
         });
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
@@ -1045,7 +1080,15 @@ impl Gpu {
                 u64::from(slots.max(1)) * args_words as u64 * 4,
                 storage | BufferUsages::INDIRECT,
             ),
-            counts: make(groups as u64 * 4, storage | BufferUsages::INDIRECT),
+            group_args: make(
+                groups as u64
+                    * if args_words == INDEXED_ARG_WORDS {
+                        GROUP_ARGS_BYTES
+                    } else {
+                        4
+                    },
+                storage | BufferUsages::INDIRECT,
+            ),
             // The terrain tail sentinel follows the last draw slot.
             visible: make((u64::from(slots) + 1) * 16, storage),
             list: make(u64::from(instances) * 16, storage),
@@ -1116,7 +1159,7 @@ impl Gpu {
                 &view.prefixes,
                 &view.selected,
                 &view.dispatch,
-                &view.counts,
+                &view.group_args,
             ] {
                 let words = vec![POISON; (buffer.size() / 4) as usize];
                 self.queue
@@ -1127,11 +1170,9 @@ impl Gpu {
             let poison = vec![POISON; view.slots as usize * 4];
             self.queue
                 .write_buffer(&view.visible, 0, bytemuck::cast_slice(&poison));
-            if job.count_mode {
-                let poison = vec![POISON; view.slots as usize * view.args_words];
-                self.queue
-                    .write_buffer(&view.args, 0, bytemuck::cast_slice(&poison));
-            }
+            let poison = vec![POISON; view.slots as usize * view.args_words];
+            self.queue
+                .write_buffer(&view.args, 0, bytemuck::cast_slice(&poison));
         }
         self.queue.write_buffer(
             &view.visible,
@@ -1166,9 +1207,6 @@ impl Gpu {
             .create_command_encoder(&CommandEncoderDescriptor::default());
         for &(bound, job) in runs {
             self.upload(bound, job);
-            if !job.count_mode {
-                encoder.clear_buffer(&bound.view.args, 0, None);
-            }
         }
         for stage in 0..STAGES.len() {
             for &(bound, job) in runs {
@@ -1199,7 +1237,7 @@ impl Gpu {
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         encoder.clear_buffer(&view.args, 0, None);
-        encoder.clear_buffer(&view.counts, 0, None);
+        encoder.clear_buffer(&view.group_args, 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
             pass.set_pipeline(&self.legacy[0]);
@@ -1222,15 +1260,20 @@ impl Gpu {
             let view = &bound.view;
             let slots = view.slots as usize;
             let n = job.params.instance_count as usize;
+            let group_words = if view.args_words == INDEXED_ARG_WORDS {
+                view.groups * GROUP_ARG_WORDS
+            } else {
+                view.groups
+            };
             let words = [
-                view.groups,
+                group_words,
                 slots * view.args_words,
                 (slots + 1) * 4,
                 n * 4,
                 4,
             ];
             parts.extend([
-                (&view.counts, words[0] as u64 * 4),
+                (&view.group_args, words[0] as u64 * 4),
                 (&view.args, words[1] as u64 * 4),
                 (&view.visible, words[2] as u64 * 4),
                 (&view.list, words[3] as u64 * 4),
@@ -1251,9 +1294,20 @@ impl Gpu {
             let list = std::mem::take(&mut take[3]);
             let visible = std::mem::take(&mut take[2]);
             let args = std::mem::take(&mut take[1]);
-            let counts = std::mem::take(&mut take[0]);
+            let raw = std::mem::take(&mut take[0]);
+            let (counts, group_args) = if args_words == INDEXED_ARG_WORDS {
+                (
+                    raw.chunks(GROUP_ARG_WORDS)
+                        .map(|record| record[1])
+                        .collect(),
+                    raw,
+                )
+            } else {
+                (raw, Vec::new())
+            };
             outputs.push(Output {
                 counts,
+                group_args,
                 args,
                 args_words,
                 visible,
@@ -1758,11 +1812,7 @@ impl Gpu {
                 if needed || force {
                     self.upload(&view.bound, job);
                     view.uniform = Some(job.params);
-                    if !job.count_mode {
-                        encoder.clear_buffer(&view.bound.view.args, 0, None);
-                        work[index].clears += 1;
-                    }
-                    encoder.clear_buffer(&view.bound.view.counts, 0, None);
+                    encoder.clear_buffer(&view.bound.view.group_args, 0, None);
                     work[index].clears += 1;
                 }
                 needed || force
@@ -1802,6 +1852,10 @@ impl Gpu {
 /// miss a clear performed on the reuse path or stale indirect dispatch arguments.
 fn assert_reuse_output(label: &str, retained: &Output, forced: &Output) {
     assert_eq!(retained.counts, forced.counts, "{label}: counts");
+    assert_eq!(
+        retained.group_args, forced.group_args,
+        "{label}: group arguments"
+    );
     assert_eq!(retained.args_words, forced.args_words, "{label}: stride");
     assert_eq!(retained.args, forced.args, "{label}: all arguments");
     assert_eq!(
@@ -1815,15 +1869,12 @@ fn assert_reuse_output(label: &str, retained: &Output, forced: &Output) {
     );
 }
 
-fn assert_reuse_work(label: &str, work: &EncodedWork, job: &Job, recompute: bool) {
+fn assert_reuse_work(label: &str, work: &EncodedWork, _job: &Job, recompute: bool) {
     for (stage, &(name, _)) in STAGES.iter().enumerate() {
         assert_eq!(work.stages[stage], u32::from(recompute), "{label}: {name}");
     }
-    let clears = if recompute {
-        1 + u32::from(!job.count_mode)
-    } else {
-        0
-    };
+    // Only the group records are cleared; the argument list is never cleared.
+    let clears = u32::from(recompute);
     assert_eq!(work.clears, clears, "{label}: output clears");
 }
 
@@ -2038,6 +2089,122 @@ fn stable_cull_reuse_matches_forced_recompute_after_mutations() {
                     "{label}: retained bytes changed"
                 );
             }
+        }
+    }
+}
+
+/// The vertex-pulled draw of a group reads slots `first_instance .. first_instance + instance_count`
+/// of `visible` and nothing else. Over a poisoned `visible`, that range must hold exactly the
+/// records this frame's cull wrote for the group (its own instances, none outside the range), and
+/// no record may be written anywhere else.
+fn assert_group_args_cover_visible(label: &str, out: &Output, scene: &Scene, plan: &Plan) {
+    let slots = out.args.len() / INDEXED_ARG_WORDS;
+    let written = |slot: usize| out.visible[slot * 4..slot * 4 + 4] != [POISON; 4];
+    let mut covered = 0;
+    for (group, ids) in plan.group_ids.iter().enumerate() {
+        let record = &out.group_args[group * GROUP_ARG_WORDS..(group + 1) * GROUP_ARG_WORDS];
+        let (count, first) = (record[1] as usize, record[3] as usize);
+        assert_eq!(
+            first, plan.bases[group] as usize,
+            "{label} group {group}: first_instance"
+        );
+        let capacity: usize = ids
+            .iter()
+            .map(|&id| scene.counts[id as usize] as usize)
+            .sum();
+        assert!(
+            count <= capacity,
+            "{label} group {group}: {count} of {capacity}"
+        );
+        for slot in first..first + capacity {
+            assert_eq!(
+                written(slot),
+                slot < first + count,
+                "{label} group {group} slot {slot}: record written exactly where instance_count says"
+            );
+        }
+        for slot in first..first + count {
+            assert!(
+                ids.contains(&out.visible[slot * 4]),
+                "{label} group {group} slot {slot}: record of another group's instance"
+            );
+        }
+        covered += count;
+    }
+    let stray = (0..slots).filter(|&slot| written(slot)).count();
+    assert_eq!(
+        stray, covered,
+        "{label}: records written outside every group's range"
+    );
+}
+
+/// One frame of the test below: its name, the batch to group mapping, the instance mask, and
+/// whether the frame must recompute.
+type Step = (&'static str, [u32; 4], fn(u32) -> bool, bool);
+
+/// `group_args[g]` describes exactly what the cull wrote for group `g`, in a recompute frame, in
+/// reuse frames that run nothing, and across a plan change that moves the groups' bases.
+#[test]
+#[ignore = "hardware GPU proof: cargo nextest run -p engine --test cluster_stable_compaction --run-ignored only"]
+fn group_args_cover_exactly_the_visible_records_across_recompute_reuse_and_plan_change() {
+    let gpu = Gpu::new();
+    let capacity = 66;
+    let groups = 4;
+    let scene = boundary_scene(capacity, false, 3);
+    let shared = gpu.shared(&scene);
+    for count_mode in [false, true] {
+        let mut retained = gpu.reuse_view(&shared, &scene, groups);
+        let mut inputs = CullInputs::default();
+        // (batch to group mapping, instances the mask hides)
+        let steps: [Step; 6] = [
+            ("recompute", [0, 1, 2, 3], |_| true, true),
+            ("reuse", [0, 1, 2, 3], |_| true, false),
+            ("plan change", [2, 0, 3, 1], |_| true, true),
+            ("reuse after plan change", [2, 0, 3, 1], |_| true, false),
+            ("mask", [2, 0, 3, 1], |id| id % 3 != 1, true),
+            ("reuse after mask", [2, 0, 3, 1], |id| id % 3 != 1, false),
+        ];
+        let mut previous: Option<Output> = None;
+        for (change, mapping, mask, recompute) in steps {
+            let plan = scene.plan(capacity, groups, |id| mapping[scene.batch(id) as usize]);
+            let entries: Vec<[u32; 4]> = mapping
+                .iter()
+                .map(|&group| [1, group, plan.bases[group as usize], 0])
+                .collect();
+            let job = Job {
+                params: view_params(capacity, groups as u32, 1, true),
+                table: batch_table(&entries, capacity, mask),
+                order: plan.order(capacity),
+                count_mode,
+                // A recompute frame starts from poisoned scratch, so a record counts as written
+                // only if this frame's cull wrote it.
+                poison: recompute,
+            };
+            if recompute {
+                inputs.plan += 1;
+            }
+            let label = format!("{change}, count_mode={count_mode}");
+            let (out, work) = gpu.run_reused_views(&mut [(&mut retained, &job, inputs)], false);
+            assert_reuse_work(&label, &work[0], &job, recompute);
+            let out = out.into_iter().next().unwrap();
+            assert_exact(
+                &label,
+                &out,
+                &plan.bases,
+                &boundary_expected(&scene, &plan, mask),
+                count_mode,
+                true,
+            );
+            assert_group_args_cover_visible(&label, &out, &scene, &plan);
+            assert!(out.counts.iter().sum::<u32>() > 0, "{label}: vacuous");
+            if !recompute {
+                assert_eq!(
+                    Some(&out),
+                    previous.as_ref(),
+                    "{label}: retained records changed"
+                );
+            }
+            previous = Some(out);
         }
     }
 }

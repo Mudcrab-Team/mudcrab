@@ -101,7 +101,11 @@ fn check_material<M: Material>(app: &App, name: &str) -> Vec<String> {
     let prepass = app.world().resource::<PrepassPipeline>();
     let (draw, shadow) = data_layouts();
     let mut layouts = MeshVertexBufferLayouts::default();
-    for tangents in [false, true] {
+    // The pulled entry changes the shader, never the bindings: both modes must fit the same budget.
+    for (tangents, vertex_pull) in [false, true]
+        .into_iter()
+        .flat_map(|tangents| [false, true].map(|pull| (tangents, pull)))
+    {
         let mesh = dummy_mesh_with_tangents(tangents);
         let layout = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         for force_no_bindless in [false, true] {
@@ -124,6 +128,7 @@ fn check_material<M: Material>(app: &App, name: &str) -> Vec<String> {
                     material_key: material.properties.material_key.clone(),
                 },
                 tangents,
+                vertex_pull,
             };
             let camera = MeshPipelineKey::from_msaa_samples(1)
                 | MeshPipelineKey::VIEW_PROJECTION_PERSPECTIVE;
@@ -154,7 +159,13 @@ fn check_material<M: Material>(app: &App, name: &str) -> Vec<String> {
                 );
             }
             for unclipped in [false, true] {
-                descriptors.push(build_shadow_descriptor(prepass, &shadow, unclipped, server));
+                descriptors.push(build_shadow_descriptor(
+                    prepass,
+                    &shadow,
+                    unclipped,
+                    vertex_pull,
+                    server,
+                ));
                 descriptors.push(
                     build_shadow_mask_descriptor(
                         prepass,
@@ -170,6 +181,14 @@ fn check_material<M: Material>(app: &App, name: &str) -> Vec<String> {
             for descriptor in descriptors {
                 let count = vertex_stage_buffer_count(&descriptor);
                 let label = descriptor.label.as_deref().unwrap();
+                assert_eq!(
+                    descriptor.vertex.shader_defs.iter().any(|def| matches!(
+                        def,
+                        ShaderDefVal::Bool(name, true) if name == VERTEX_PULL_DEF
+                    )),
+                    vertex_pull,
+                    "{name} {label}: vertex pulling is the vertex stage's def"
+                );
                 let groups: Vec<_> = descriptor
                     .layout
                     .iter()
@@ -181,13 +200,13 @@ fn check_material<M: Material>(app: &App, name: &str) -> Vec<String> {
                     })
                     .collect();
                 println!(
-                    "{name}, tangents={tangents}, bindless={}: {label}: {count} (groups {groups:?}, sizes 1, vertex {})",
+                    "{name}, tangents={tangents}, pulled={vertex_pull}, bindless={}: {label}: {count} (groups {groups:?}, sizes 1, vertex {})",
                     material.properties.bindless,
                     descriptor.vertex.buffers.len()
                 );
                 if count > METAL_VERTEX_STAGE_BUFFER_LIMIT {
                     violations.push(format!(
-                        "{name} {label} needs {count} vertex-stage buffers (groups {groups:?})"
+                        "{name} {label} (pulled={vertex_pull}) needs {count} vertex-stage buffers (groups {groups:?})"
                     ));
                 }
             }

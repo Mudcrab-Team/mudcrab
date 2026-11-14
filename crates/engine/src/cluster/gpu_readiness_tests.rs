@@ -67,7 +67,7 @@ fn renderer_preserves_main_settings_and_propagates_quality_to_gpu_uniforms() {
         }
         extract.run(&mut render);
         let settings = render.resource::<ClusterSettings>();
-        let params = cull_params(&view, settings, 1, 0, 1);
+        let params = cull_params(&view, settings, (1, 0, 0), 1);
         assert_eq!(params.error_pixels, object);
         assert_eq!(params.terrain_error_pixels, terrain);
         let bytes = bytemuck::bytes_of(&params);

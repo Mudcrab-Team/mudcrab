@@ -108,6 +108,17 @@ fn source_colours(bytes: &[u8], count: usize) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// The most triangles a cluster record can hold: its count is one byte, the shared validator accepts
+/// the whole range, and the draw record's top byte, the cull pass's selection word and the index
+/// packing all carry it. The converter currently builds at most 128, but the renderer must not
+/// assume that: a valid cluster of any size draws, and a pulled draw covers the largest one.
+#[cfg(test)]
+pub(crate) const MAX_CLUSTER_TRIANGLES: u32 = u8::MAX as u32;
+
+/// Cluster ids and the triangle count share one word of a draw record: the triangle count takes the
+/// top byte, which leaves this many cluster ids per mesh.
+pub(crate) const MAX_PULLED_CLUSTERS: u32 = 1 << 24;
+
 /// A validated per-mesh cluster payload (`.mcl`).
 #[derive(Asset, TypePath, Clone)]
 pub struct ClusterMeshAsset {
@@ -122,6 +133,9 @@ pub struct ClusterMeshAsset {
     pub flags: u32,
     pub vertex_count: u32,
     pub cluster_count: u32,
+    /// The triangle count of the largest cluster, read from the cluster records at load: the payload
+    /// bytes are released after upload, and the vertex-pulled draw sizes its draws from this.
+    pub max_cluster_triangles: u32,
     pub group_count: u32,
     pub bvh_node_count: u32,
     pub root_error: f32,
@@ -141,6 +155,15 @@ impl ClusterMeshAsset {
 
     pub(crate) fn from_shared_bytes(bytes: Arc<[u8]>) -> Result<Self, ClusterFormatError> {
         let view = read_mcl(&bytes)?;
+        if view.cluster_count >= MAX_PULLED_CLUSTERS {
+            return Err(ClusterFormatError::TooManyClusters(
+                view.cluster_count as usize,
+            ));
+        }
+        let max_cluster_triangles = (0..view.cluster_count as usize)
+            .map(|index| u32::from(view.cluster(index).triangle_count))
+            .max()
+            .unwrap_or(0);
         let asset = Self {
             builder_identity: view.builder_identity,
             mesh_hash: view.mesh_hash,
@@ -148,6 +171,7 @@ impl ClusterMeshAsset {
             flags: view.flags,
             vertex_count: view.vertex_count,
             cluster_count: view.cluster_count,
+            max_cluster_triangles,
             group_count: view.group_count,
             bvh_node_count: view.bvh_node_count,
             root_error: view.root_error,
@@ -638,6 +662,100 @@ mod tests {
 
     const MCL: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mcl");
     const MCI: &[u8] = include_bytes!("../../../shared/tests/data/cluster/fixture.mci");
+
+    /// The fixture with its first cluster replaced by one of `triangles` degenerate triangles.
+    fn fixture_with_first_cluster_of(
+        triangles: usize,
+    ) -> Result<ClusterMeshAsset, ClusterFormatError> {
+        use shared::cluster::{MclContents, write_mcl};
+        let source = ClusterMeshAsset::from_bytes(MCL.to_vec()).unwrap();
+        let snapshot = source.snapshot().unwrap();
+        let view = read_mcl_validated(&snapshot).unwrap();
+        let count = source.vertex_count as usize;
+        let positions: Vec<_> = (0..count).map(|i| view.position(i)).collect();
+        let normals: Vec<_> = (0..count).map(|i| view.normal(i)).collect();
+        let uvs: Vec<_> = (0..count).map(|i| view.uv(i)).collect();
+        let mut clusters: Vec<_> = (0..source.cluster_count as usize)
+            .map(|i| view.cluster(i))
+            .collect();
+        let groups: Vec<_> = (0..source.group_count as usize)
+            .map(|i| view.group(i))
+            .collect();
+        let bvh: Vec<_> = (0..source.bvh_node_count as usize)
+            .map(|i| view.bvh_node(i))
+            .collect();
+        let vertices: Vec<_> = (0..view.section(MclSection::ClusterVertices).len() / 4)
+            .map(|i| view.cluster_vertex(i))
+            .collect();
+        let mut cluster_triangles: Vec<[u8; 3]> = view
+            .section(MclSection::ClusterTriangles)
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|v| [v[0], v[1], v[2]])
+            .collect();
+        clusters[0].triangle_offset = cluster_triangles.len() as u32;
+        clusters[0].triangle_count = triangles as u8;
+        cluster_triangles.extend(std::iter::repeat_n([0, 0, 0], triangles));
+        let bytes = write_mcl(&MclContents {
+            builder_identity: view.builder_identity,
+            mesh_hash: view.mesh_hash,
+            primitive_index: view.primitive_index,
+            root_error: view.root_error,
+            bounds: view.bounds,
+            uv_min: view.uv_min,
+            uv_scale: view.uv_scale,
+            positions: &positions,
+            normals: &normals,
+            uvs: &uvs,
+            tangents: None,
+            colours: None,
+            clusters: &clusters,
+            cluster_vertices: &vertices,
+            cluster_triangles: &cluster_triangles,
+            groups: &groups,
+            bvh: &bvh,
+        })
+        .unwrap();
+        ClusterMeshAsset::from_bytes(bytes)
+    }
+
+    #[test]
+    fn the_largest_cluster_is_measured_at_load_and_survives_the_payload_release() {
+        let mesh = ClusterMeshAsset::from_bytes(MCL.to_vec()).unwrap();
+        let snapshot = mesh.snapshot().unwrap();
+        let view = read_mcl_validated(&snapshot).unwrap();
+        let largest = (0..mesh.cluster_count as usize)
+            .map(|index| u32::from(view.cluster(index).triangle_count))
+            .max()
+            .unwrap();
+        assert!(largest > 0 && largest <= MAX_CLUSTER_TRIANGLES);
+        assert_eq!(mesh.max_cluster_triangles, largest);
+        let widest = fixture_with_first_cluster_of(MAX_CLUSTER_TRIANGLES as usize).unwrap();
+        assert_eq!(widest.max_cluster_triangles, MAX_CLUSTER_TRIANGLES);
+        // Production loads share their bytes and drop them at upload.
+        let widest = ClusterMeshAsset::from_shared_bytes(widest.snapshot().unwrap()).unwrap();
+        widest.prepare_tangents().unwrap();
+        widest.with_upload(|_, _| ()).unwrap().unwrap();
+        assert!(widest.snapshot().is_err(), "payload released after upload");
+        assert_eq!(widest.max_cluster_triangles, MAX_CLUSTER_TRIANGLES);
+    }
+
+    #[test]
+    fn clusters_above_the_converters_current_cap_load_up_to_the_record_limit() {
+        // 129 is past what the converter builds today; 255 is the most a record can say.
+        for triangles in [129, 200, 255] {
+            let mesh = fixture_with_first_cluster_of(triangles).expect("a valid cluster loads");
+            assert_eq!(mesh.max_cluster_triangles, triangles as u32);
+        }
+    }
+
+    #[test]
+    fn the_renderer_accepts_every_cluster_the_converter_can_build() {
+        assert!(
+            converter::cluster::builder::MAX_CLUSTER_TRIANGLES <= MAX_CLUSTER_TRIANGLES as usize
+        );
+    }
 
     #[test]
     fn stock_source_preserves_alpha_and_colour_used_by_cutout_materials() {

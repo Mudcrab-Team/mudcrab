@@ -27,6 +27,8 @@ struct CullParams {
     // The threshold for meshes only terrain draws (MeshInfo.terrain), in place of error_pixels.
     terrain_error_pixels: f32,
     instance_mask_base: u32,
+    // Triangles of the scene's largest cluster; every group's vertex-pulled draw covers this many.
+    triangle_limit: u32,
     // Host run stamp (retained in the shared cull parameter ABI).
     epoch: u32,
 }
@@ -69,10 +71,13 @@ const NO_GROUP: u32 = 0xffffu;
 @group(0) @binding(2) var<storage, read> groups: array<u32>;
 @group(0) @binding(3) var<storage, read> instances: array<Instance>;
 @group(0) @binding(4) var<storage, read_write> args: array<DrawArgs>;
-// One draw count per draw group.
-@group(0) @binding(5) var<storage, read_write> counts: array<u32>;
+// One four-word indirect draw record per draw group: vertex_count, instance_count, first_vertex,
+// first_instance. `prefix_draw_groups` writes all four, so the vertex-pulled draw and the count
+// path's draw count (word 1) always come from the same record.
+@group(0) @binding(5) var<storage, read_write> group_args: array<u32>;
 @group(0) @binding(6) var<storage, read> meshes: array<MeshInfo>;
-// Per draw: instance, mesh, cluster within the mesh.
+// Per draw: instance, mesh, the cluster within the mesh with its triangle count in the top byte,
+// and the cluster's first index in the merged vertex buffer.
 @group(0) @binding(7) var<storage, read_write> visible: array<vec4<u32>>;
 // Four tightly packed N-word planes: selected counts, local ranks / draw prefixes,
 // draw tiles, stable surviving source IDs. Counts and local ranks are rewritten for
@@ -341,7 +346,16 @@ fn prefix_draw_groups(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invoc
         if local_tile < tiles { prefixes[1u + tile].y = carry + scan.x; }
         carry += scan.y;
     }
-    if lane == 0u { counts[group] = carry; }
+    if lane == 0u {
+        let out = group * 4u;
+        // The vertex-pulled draw covers the scene's largest cluster; smaller clusters pad.
+        group_args[out] = params.triangle_limit * 3u;
+        group_args[out + 1u] = carry;
+        group_args[out + 2u] = 0u;
+        // The group's first slot, the base `draw_base` adds: the scatter stages write slots
+        // first_instance .. first_instance + instance_count of `visible`.
+        group_args[out + 3u] = source_order[base + 2u];
+    }
 }
 
 fn draw_base(instance_id: u32) -> u32 {
@@ -370,7 +384,7 @@ fn scatter_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
         if selection != 0u {
             let slot = base + written;
             args[slot] = DrawArgs((selection - 1u) * 3u, 1u, selected.y, 0, slot);
-            visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster, 0u);
+            visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster | ((selection - 1u) << 24u), selected.y);
             written += 1u;
         }
     }
@@ -411,7 +425,7 @@ fn scatter_large_clusters(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_i
                 let cluster = first_cluster + lane * 4u + i;
                 let first_index = selected_clusters[instance.region_start + cluster].y;
                 args[slot] = DrawArgs((selection - 1u) * 3u, 1u, first_index, 0, slot);
-                visible[slot] = vec4<u32>(instance_id, instance.mesh, first_cluster + lane * 4u + i, 0u);
+                visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster | ((selection - 1u) << 24u), first_index);
                 prefix += 1u;
             }
         }

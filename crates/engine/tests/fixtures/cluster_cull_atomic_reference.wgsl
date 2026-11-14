@@ -88,7 +88,7 @@ const NO_GROUP: u32 = 0xffffu;
 // One draw count per draw group.
 @group(0) @binding(5) var<storage, read_write> counts: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read> meshes: array<MeshInfo>;
-// Per draw: instance, mesh, cluster within the mesh.
+// Per draw: instance, mesh, cluster within the mesh (triangle count in the top byte), first index.
 @group(0) @binding(7) var<storage, read_write> visible: array<vec4<u32>>;
 // The instances that are in view, written by pass 1 and read by pass 2.
 // Per surviving instance: x the instance, y its draw group, z where the group's slice of `args`
@@ -231,6 +231,13 @@ fn cull(
         }
         let slot = entry.z + atomicAdd(&counts[entry.y], 1u);
         args[slot] = DrawArgs(triangle_count * 3u, 1u, 0u, slot);
-        visible[slot] = vec4<u32>(instance_id, instance.mesh, cluster_id, 0u);
+        // The record the vertex-pulled draw reads: the triangle count rides in the cluster word's top
+        // byte and the fourth word is the cluster's first index. The frozen selection is unchanged.
+        visible[slot] = vec4<u32>(
+            instance_id,
+            instance.mesh,
+            cluster_id | (triangle_count << 24u),
+            mesh.triangle_base + clusters[base + 7u] * 3u,
+        );
     }
 }

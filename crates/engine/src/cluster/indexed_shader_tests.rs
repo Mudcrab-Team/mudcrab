@@ -213,29 +213,45 @@ fn indexed_cluster_vertex_entries_validate_for_camera_and_shadow_variants() {
             include_str!("shaders/cluster_shadow.wgsl"),
         ),
     ] {
-        for emulated_depth in [false, true] {
-            let mut defs = definitions();
-            if emulated_depth {
-                defs.insert(
-                    "UNCLIPPED_DEPTH_ORTHO_EMULATION".into(),
-                    ShaderDefValue::Bool(true),
+        // The indexed entry (a count-capable adapter) and the vertex-pulled one (no GPU draw count).
+        for pulled in [false, true] {
+            for emulated_depth in [false, true] {
+                let mut defs = definitions();
+                if emulated_depth {
+                    defs.insert(
+                        "UNCLIPPED_DEPTH_ORTHO_EMULATION".into(),
+                        ShaderDefValue::Bool(true),
+                    );
+                }
+                if pulled {
+                    defs.insert("CLUSTER_VERTEX_PULL".into(), ShaderDefValue::Bool(true));
+                }
+                let label = format!("{path}, pulled={pulled}, emulated_depth={emulated_depth}");
+                let module = compose(source, path, &sources, defs);
+                assert!(
+                    module
+                        .entry_points
+                        .iter()
+                        .any(|entry| entry.stage == naga::ShaderStage::Vertex),
+                    "{label}: missing vertex entry"
+                );
+                assert!(
+                    module
+                        .global_variables
+                        .iter()
+                        .all(|(_, global)| global.name.as_deref() != Some("cluster_triangles")),
+                    "{label}: obsolete triangle storage"
+                );
+                // Only the pulled entry carries the padding vertex; the indexed one is unchanged.
+                assert_eq!(
+                    module
+                        .functions
+                        .iter()
+                        .any(|(_, function)| function.name.as_deref() == Some("dummy_vertex")),
+                    pulled,
+                    "{label}: padding vertex"
                 );
             }
-            let module = compose(source, path, &sources, defs);
-            assert!(
-                module
-                    .entry_points
-                    .iter()
-                    .any(|entry| entry.stage == naga::ShaderStage::Vertex),
-                "{path}, emulated_depth={emulated_depth}: missing vertex entry"
-            );
-            assert!(
-                module
-                    .global_variables
-                    .iter()
-                    .all(|(_, global)| global.name.as_deref() != Some("cluster_triangles")),
-                "{path}, emulated_depth={emulated_depth}: obsolete triangle storage"
-            );
         }
     }
 }

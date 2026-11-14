@@ -335,7 +335,8 @@ mod tests {
                     GroupDraw {
                         representative: 1,
                         args_offset: 0,
-                        count_offset: 0,
+                        count_offset: 4,
+                        group_args_offset: 0,
                         max_count: 2,
                     },
                 )]),

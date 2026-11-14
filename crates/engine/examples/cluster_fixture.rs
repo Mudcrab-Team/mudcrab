@@ -5,6 +5,9 @@
 //! simplification produced) and places it at the block's instances. `--mode cluster` draws the
 //! same payload through GPU cluster selection. `--distance` is the camera distance in units of
 //! the mesh's bounding radius, `--error-pixels` the selection threshold.
+//!
+//! `--fixed-count` draws by vertex pulling (one instanced `draw_indirect` per draw group), the path
+//! an adapter without a GPU draw count such as Metal takes, on a GPU that has one.
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
