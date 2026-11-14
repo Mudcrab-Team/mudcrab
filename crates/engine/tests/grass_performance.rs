@@ -14,6 +14,29 @@ use std::{
     time::{Duration, Instant},
 };
 
+// This binary contains one test; only synchronous generation is measured, after
+// conversion tasks have joined. Counts Rust heap allocations, not mmap or GPU memory.
+struct CountingAllocator;
+static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            let live = LIVE.fetch_add(layout.size(), std::sync::atomic::Ordering::SeqCst) + layout.size();
+            PEAK.fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+        }
+        ptr
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) };
+        LIVE.fetch_sub(layout.size(), std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 const GRASS_COUNT: u32 = 8;
 const PATCH_GRASS_BASE: u32 = 0x0102_0000;
 const PATCH_TEXTURE: u32 = 0x0102_0010;
@@ -280,7 +303,15 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
     let mut durations = Vec::new();
     let mut total_instances = 0usize;
     for &id in ids {
+        let baseline = LIVE.load(std::sync::atomic::Ordering::SeqCst);
+        PEAK.store(baseline, std::sync::atomic::Ordering::SeqCst);
         let warm = generate(cache, id, &config);
+        let peak = PEAK.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(baseline);
+        let retained = LIVE.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(baseline);
+        assert!(peak <= slots as usize * GRASS_COUNT as usize * 48 + 64 * 1024,
+            "generation peak heap budget exceeded: {peak}");
+        assert!(peak.saturating_sub(retained) <= slots as usize * 16 + 64 * 1024,
+            "generation scratch heap budget exceeded: peak={peak}, retained={retained}");
         assert_eq!(
             warm.batches.len(),
             GRASS_COUNT as usize,
@@ -350,6 +381,7 @@ fn measured(cache: &GrassCache, ids: &[u32], spacing: f32, slots: u32, ceiling: 
 #[ignore = "performance"]
 /// Convert synthetic grass terrain and enforce CPU generation budgets at three densities.
 async fn performance_grass_generation() {
+    assert!(!cfg!(debug_assertions), "run budgets with --release");
     assert_eq!(
         std::mem::size_of::<GrassInstance>(),
         16,
@@ -400,6 +432,18 @@ async fn performance_grass_generation() {
     assert!(report.complete, "synthetic conversion must complete");
     assert!(output.join("meshes/grass/bench.glb").is_file());
     assert_grass_material(&output);
+    let second_output = temporary.path().join("modern-single-job");
+    let mut second_config = converter::PipelineConfig::new(&data, &second_output);
+    second_config.cpu_jobs = 1;
+    second_config.io_jobs = 1;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let second_report = converter::AssetPipeline::run_async(second_config, tx).await.unwrap();
+    drain.await.unwrap();
+    assert!(second_report.complete);
+    assert_eq!(fs::read(output.join("grass_cache.rkyv")).unwrap(),
+        fs::read(second_output.join("grass_cache.rkyv")).unwrap(),
+        "independent conversions at different job counts must produce identical grass caches");
     let cache = GrassCache::open(&output.join("grass_cache.rkyv")).unwrap();
     for cell in &terrain_cells {
         assert!(
@@ -436,9 +480,9 @@ async fn performance_grass_generation() {
     // These are worker-latency regression ceilings, with headroom for shared CI
     // runners. The printed measurements, not these ceilings, describe a machine's
     // observed performance; generation never runs in the frame's cell commit.
-    measured(&cache, &cells, 64.0, 4096, Duration::from_millis(10));
-    measured(&cache, &cells, 32.0, 16384, Duration::from_millis(50));
-    measured(&cache, &cells, 20.0, 41944, Duration::from_millis(100));
+    measured(&cache, &cells, 64.0, 4096, Duration::from_millis(6));
+    measured(&cache, &cells, 32.0, 16384, Duration::from_millis(25));
+    measured(&cache, &cells, 20.0, 41944, Duration::from_millis(60));
     if std::env::var_os("MUDCRAB_GRASS_FIXTURE_OUTPUT").is_some() {
         eprintln!(
             "retained synthetic grass runtime pack: {}",

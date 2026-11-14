@@ -774,6 +774,7 @@ mod tests {
     #[ignore = "performance"]
     /// Measure retained VCLR interpolation with eight species under the existing worker ceilings.
     fn performance_coloured_terrain_generation() {
+        assert!(!cfg!(debug_assertions), "run budgets with --release");
         use std::{hint::black_box, time::Duration};
 
         let mut rules: Vec<_> = (7..15).map(species).collect();
@@ -804,7 +805,7 @@ mod tests {
             4356
         );
         for (spacing, slots, milliseconds) in
-            [(64.0, 4096, 10), (32.0, 16384, 50), (20.0, 41944, 100)]
+            [(64.0, 4096, 6), (32.0, 16384, 25), (20.0, 41944, 60)]
         {
             let config = EngineConfig {
                 grass_min_spacing: spacing,
@@ -954,7 +955,7 @@ mod tests {
             &cache,
             42,
             &EngineConfig {
-                grass_max_types_per_texture: 4,
+                grass_max_types_per_texture: 3,
                 ..config.clone()
             },
         );

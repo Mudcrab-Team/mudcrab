@@ -367,6 +367,11 @@ jobs:
         with:
           clean: false
 
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev pkg-config
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -378,6 +383,11 @@ jobs:
           # Fixture generation syncs every file. Keep runner disk-flush latency
           # out of the generator budgets without relaxing their thresholds.
           TMPDIR: /dev/shm
+
+      - name: Run release grass budgets
+        run: |
+          cargo test --locked --release -p engine --test grass_performance -- --ignored --nocapture --test-threads=1
+          cargo test --locked --release -p engine --lib grass::generation::tests::performance_coloured_terrain_generation -- --ignored --exact --nocapture --test-threads=1
 
   tests_pass:
     needs:
