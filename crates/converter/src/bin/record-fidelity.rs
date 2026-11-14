@@ -106,7 +106,13 @@ fn audit_before_final_check(
         reader["mode"] == "inhouse",
         "source-payload audit requires an in-house pack; legacy coverage is unavailable"
     );
-    let schemas = retained_schemas(&conn, schema_bytes, &reader)?;
+    ensure!(
+        has_table(&conn, "inhouse_source_records")?,
+        "pack predates retained source payloads (no inhouse_source_records table); source-payload audit is unavailable"
+    );
+    // Older packs have no add-on table. That is a pack with no add-ons, like `stored_schemas`.
+    let has_addons = has_table(&conn, "inhouse_schema_addons")?;
+    let schemas = retained_schemas(&conn, schema_bytes, &reader, has_addons)?;
     let addon_declarations = fidelity::addon_declarations(schema, &schemas)?;
     let manifest = std::fs::read(pack.join("conversion-manifest.json"))?;
     let manifest_value: serde_json::Value = serde_json::from_slice(&manifest)?;
@@ -145,6 +151,7 @@ fn audit_before_final_check(
         "schema_sha256": schemas.schema_sha256(),
         "builtin_schema_sha256": hash_bytes(schema_bytes),
         "schema_addons": schemas.identities(),
+        "schema_addons_table": if has_addons { "present" } else { "absent_older_pack" },
         "addon_declarations": addon_declarations,
         "conversion_manifest_sha256": hash_bytes(&manifest),
         "converter_schema_version": manifest_value["schema_version"],
@@ -157,51 +164,67 @@ fn audit_before_final_check(
     }))
 }
 
+fn has_table(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [name],
+        |row| row.get(0),
+    )?)
+}
+
 /// Rebuild only from the pack's exact ordered documents, never configured add-on paths.
+/// `has_addons` is false for an older pack without the table: it retained no add-ons.
 fn retained_schemas(
     conn: &Connection,
     base: &[u8],
     reader: &serde_json::Value,
+    has_addons: bool,
 ) -> Result<RuntimeSchemas> {
-    let count: u64 = conn.query_row("SELECT count(*) FROM inhouse_schema_addons", [], |row| {
-        row.get(0)
-    })?;
+    let count: u64 = if has_addons {
+        conn.query_row("SELECT count(*) FROM inhouse_schema_addons", [], |row| {
+            row.get(0)
+        })?
+    } else {
+        0
+    };
     ensure!(
         count <= MAX_SCHEMA_ADDONS as u64,
         "retained schema add-ons exceed the file limit"
     );
-    let mut statement = conn.prepare("SELECT ordinal,name,sha256,length(schema_json),schema_json FROM inhouse_schema_addons ORDER BY ordinal")?;
-    let mut rows = statement.query([])?;
     let mut documents = Vec::new();
     let mut identities = Vec::new();
     let mut total = 0usize;
-    while let Some(row) = rows.next()? {
-        let ordinal: u64 = row.get(0)?;
-        ensure!(
-            ordinal == documents.len() as u64,
-            "retained schema add-on ordinals must be contiguous from zero"
-        );
-        let name: String = row.get(1)?;
-        let sha256: String = row.get(2)?;
-        let size: usize = row.get(3)?;
-        ensure!(
-            size <= MAX_SCHEMA_ADDON_BYTES,
-            "retained schema add-on {name} exceeds the byte limit"
-        );
-        total = total
-            .checked_add(size)
-            .ok_or_else(|| color_eyre::eyre::eyre!("retained schema add-on size overflow"))?;
-        ensure!(
-            total <= MAX_SCHEMA_ADDON_TOTAL_BYTES,
-            "retained schema add-ons exceed the batch byte limit"
-        );
-        let bytes: Vec<u8> = row.get(4)?;
-        ensure!(
-            hash_bytes(&bytes) == sha256,
-            "retained schema add-on {name} hash mismatch"
-        );
-        documents.push(bytes);
-        identities.push(SchemaAddonIdentity { name, sha256 });
+    if has_addons {
+        let mut statement = conn.prepare("SELECT ordinal,name,sha256,length(schema_json),schema_json FROM inhouse_schema_addons ORDER BY ordinal")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let ordinal: u64 = row.get(0)?;
+            ensure!(
+                ordinal == documents.len() as u64,
+                "retained schema add-on ordinals must be contiguous from zero"
+            );
+            let name: String = row.get(1)?;
+            let sha256: String = row.get(2)?;
+            let size: usize = row.get(3)?;
+            ensure!(
+                size <= MAX_SCHEMA_ADDON_BYTES,
+                "retained schema add-on {name} exceeds the byte limit"
+            );
+            total = total
+                .checked_add(size)
+                .ok_or_else(|| color_eyre::eyre::eyre!("retained schema add-on size overflow"))?;
+            ensure!(
+                total <= MAX_SCHEMA_ADDON_TOTAL_BYTES,
+                "retained schema add-ons exceed the batch byte limit"
+            );
+            let bytes: Vec<u8> = row.get(4)?;
+            ensure!(
+                hash_bytes(&bytes) == sha256,
+                "retained schema add-on {name} hash mismatch"
+            );
+            documents.push(bytes);
+            identities.push(SchemaAddonIdentity { name, sha256 });
+        }
     }
     let bytes: Vec<_> = documents.iter().map(Vec::as_slice).collect();
     let schemas = RuntimeSchemas::from_base_and_addon_bytes(base, &bytes)
@@ -293,6 +316,45 @@ mod tests {
             before, after,
             "audit must create no journal/SHM or change any pack file"
         );
+    }
+
+    #[test]
+    fn older_pack_without_the_addon_table_audits_as_having_no_addons() {
+        let root = tempfile::tempdir().unwrap();
+        let schema = Schema::parse(SCHEMA_BYTES).unwrap();
+        let path = pack(root.path(), SCHEMA_BYTES);
+        let conn = Connection::open(path.join("skyrim_world.db")).unwrap();
+        conn.execute_batch("DROP TABLE inhouse_schema_addons")
+            .unwrap();
+        drop(conn);
+        let before = hash_file(&path.join("skyrim_world.db")).unwrap();
+        let report = audit(&path, &schema, SCHEMA_BYTES).unwrap();
+        assert_eq!(report["schema_addons_table"], "absent_older_pack");
+        assert_eq!(report["schema_addons"], json!([]));
+        assert_eq!(report["coverage"]["status"], "empty");
+        assert_eq!(hash_file(&path.join("skyrim_world.db")).unwrap(), before);
+        // The built-in schema fingerprint must still match the recorded reader.
+        let mut other = SCHEMA_BYTES.to_vec();
+        other.push(b' ');
+        let error = audit(&path, &Schema::parse(&other).unwrap(), &other).unwrap_err();
+        assert!(error.to_string().contains("pack schema differs"), "{error}");
+    }
+
+    #[test]
+    fn pack_without_retained_source_payloads_reports_that_state() {
+        let root = tempfile::tempdir().unwrap();
+        let schema = Schema::parse(SCHEMA_BYTES).unwrap();
+        let path = pack(root.path(), SCHEMA_BYTES);
+        let conn = Connection::open(path.join("skyrim_world.db")).unwrap();
+        conn.execute_batch("DROP TABLE inhouse_source_records; DROP TABLE inhouse_schema_addons")
+            .unwrap();
+        drop(conn);
+        let error = audit(&path, &schema, SCHEMA_BYTES).unwrap_err().to_string();
+        assert!(
+            error.contains("pack predates retained source payloads"),
+            "{error}"
+        );
+        assert!(!error.contains("no such table"), "{error}");
     }
 
     #[test]

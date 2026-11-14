@@ -90,7 +90,10 @@ Storage report versions 2 and 3 reconstruct the pack's add-on declarations from 
 from zero; names, exact-byte hashes, count/size limits and document validation must agree. The
 ordered identities and the selected built-in bytes must reproduce `record-reader.json`'s complete
 bundle fingerprint. Missing, changed or reordered evidence fails instead of falling back to the
-current schema or treating an add-on as unknown data.
+current schema or treating an add-on as unknown data. An older pack with no `inhouse_schema_addons`
+table retained no add-ons: the audit reports `schema_addons_table: "absent_older_pack"` and checks
+the built-in schema fingerprint alone. A pack with no `inhouse_source_records` table predates
+retained source payloads, and the audit stops with a message that says so.
 
 `builtin_schema_sha256` identifies the selected base; `schema_sha256` identifies the original
 complete bundle, with `schema_addons` retaining its ordered document identities. `addon_declarations`
