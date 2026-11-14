@@ -31,7 +31,9 @@ pub mod papyrus_runtime;
 pub mod physics;
 pub mod prepass_vertex_alpha;
 pub mod profiling;
+pub mod raw_texel;
 pub mod render;
+mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
 pub mod route;
@@ -51,6 +53,8 @@ pub mod sun;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
+#[cfg(test)]
+mod test_support;
 pub mod tone_mapping;
 pub mod visibility_optimization;
 pub mod visual_profile;

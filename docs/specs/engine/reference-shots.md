@@ -111,9 +111,9 @@ hour regardless of timescale, so streaming duration cannot move shadows between 
 The directional light follows the active worldspace's climate TNAM sunrise/sunset midpoints
 (including PNAM-requested parent climate inheritance),
 expanded by half `fSunAlphaTransTime`. A parameter sweeps from +1 to -1 across this day window
-and returns overnight. The normalized Creation-space toward-sun vector is
-`(parameter * fSunDirXExtreme, fSunYExtreme * fSunDirXExtreme / fSunXExtreme, -fSunZExtreme)`;
-engine axes map it to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4);
+and returns overnight. The Creation-space toward-sun vector is
+`v = (parameter * fSunDirXExtreme, fSunYExtreme * fSunDirXExtreme / fSunXExtreme, -fSunZExtreme)`,
+normalized as `v / |v|` so it has unit length; engine axes map the result to `(x,z,-y)`. This geometry follows spud (MIT, chasmlol/spud, e5f2de4);
 it is distinct from the visible sun-disc path.
 
 Winning canonical GMST records supply those five values. Optional `[Sky]` keys of the same names

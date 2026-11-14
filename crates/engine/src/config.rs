@@ -442,6 +442,12 @@ Diagnostics:
 Help:
   -h, --help                            print this message and exit
 
+Exit codes:
+  0  success
+  1  the run failed
+  2  the command line could not be used
+  3  the GPU device was lost (retry the run; repeated losses can still be an engine fault)
+
 Example (the dummy-content fixture's worldspace is 1):
   engine --assets modern_assets --worldspace 1
 ";
@@ -1724,6 +1730,16 @@ mod tests {
         ("install.sh", "--progress-bar"), // curl
         ("stage-release.sh", "--dest"),
         ("stage-release.sh", "--target"),
+        // footprint_guard.py owns its own CLI and its test drives that CLI. The
+        // guard watches a process the caller started and is not an engine
+        // launcher. `--pid` is already in NON_ENGINE_FLAGS.
+        ("footprint_guard.py", "--limit-gib"),
+        ("footprint_guard.py", "--interval-ms"),
+        ("footprint_guard.py", "--deadline-s"),
+        ("footprint_guard.py", "--no-children"),
+        ("footprint_guard.py", "--log"),
+        ("test_footprint_guard.py", "--limit-gib"),
+        ("test_footprint_guard.py", "--log"),
     ];
 
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
@@ -1867,6 +1883,7 @@ mod tests {
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
         "--stage3-relative", // compare_stage_receipts.py
+        "--stage3-absolute", // compare_stage_receipts.py
         "--stage4-bytes", // compare_stage_receipts.py
     ];
 
