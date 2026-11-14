@@ -122,7 +122,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
       - name: Test reviewer gate decisions
-        run: python3 -B -m unittest discover -s scripts/tests -p test_reviewer_gate.py -v
+        run: python3 -B -m unittest discover -s .github/scripts -p test_reviewer_gate.py -v
 
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
@@ -406,7 +406,9 @@ jobs:
   # "CodeRabbit" that the CodeRabbit app (id 347564, the id the ruleset also
   # pins) owns. Commit statuses are not read: anyone with Write access can post
   # one under any name. The decision logic and its fixture tests are in
-  # scripts/reviewer_gate.py and scripts/tests/test_reviewer_gate.py.
+  # .github/scripts/reviewer_gate.py and .github/scripts/test_reviewer_gate.py.
+  # They live outside scripts/ on purpose: the engine's config tests scan every
+  # file under scripts/ for engine command-line options.
   #
   # A rate-limited or skipped CodeRabbit run (neutral) is not a review, so the
   # job waits and then fails. To recover, comment "@coderabbitai review" on
@@ -429,7 +431,7 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 -B scripts/reviewer_gate.py \
+          python3 -B .github/scripts/reviewer_gate.py \
             --repo "$REPO" \
             --sha "$SHA" \
             --timeout-seconds 1500 \

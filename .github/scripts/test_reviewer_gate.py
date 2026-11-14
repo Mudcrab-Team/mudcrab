@@ -1,4 +1,4 @@
-"""Fixture tests for scripts/reviewer_gate.py, the `reviewers_pass` decision.
+"""Fixture tests for .github/scripts/reviewer_gate.py, the `reviewers_pass` decision.
 
 Every payload here is fake. The tests aim at the ways a gate like this can be
 fooled: a status or check run posted by someone else under the CodeRabbit name,
@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "reviewer_gate.py"
+SCRIPT = Path(__file__).resolve().parent / "reviewer_gate.py"
 SPEC = importlib.util.spec_from_file_location("reviewer_gate", SCRIPT)
 GATE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
