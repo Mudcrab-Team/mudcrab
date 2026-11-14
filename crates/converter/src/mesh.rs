@@ -3398,7 +3398,8 @@ mod tests {
             "dlc02volcanicashgrass02",
             "control",
         ] {
-            for suffix in ["", ".opensky-wrap0", ".opensky-wrap1", ".opensky-wrap2"] {
+            for suffix in std::iter::once("").chain(shared::texture_aliases::WRAP_TEXTURE_SUFFIXES)
+            {
                 for (original, target, original_source) in [
                     (false, true, false),
                     (true, true, true),

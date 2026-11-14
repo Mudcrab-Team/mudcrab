@@ -282,7 +282,7 @@ mod tests {
                 .unwrap();
             let catalog = AssetCatalog::open(&path).unwrap();
             let (_, images) =
-                TerrainExtension::from_quadrant(&terrain, 0, &catalog, server).unwrap();
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, server, true).unwrap();
             let mut loaded: Vec<_> = images
                 .color
                 .iter()

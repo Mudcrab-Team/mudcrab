@@ -431,6 +431,12 @@ Diagnostics:
 Help:
   -h, --help                            print this message and exit
 
+Exit codes:
+  0  success
+  1  the run failed
+  2  the command line could not be used
+  3  the GPU device was lost (retry the run; repeated losses can still be an engine fault)
+
 Example (the dummy-content fixture's worldspace is 1):
   engine --assets modern_assets --worldspace 1
 ";
@@ -1677,6 +1683,15 @@ mod tests {
     /// it instead of keeping a second list of option names in step by hand.
     const CONFIG_SOURCE: &str = include_str!("config.rs");
 
+    /// Flags owned by one release script: (file name, flag). Scoped like the
+    /// observation tool's `--verify`, so any other script passing one of them
+    /// to the engine still fails the audit.
+    const SCRIPT_SCOPED_FLAGS: &[(&str, &str)] = &[
+        ("install.sh", "--progress-bar"), // curl
+        ("stage-release.sh", "--dest"),
+        ("stage-release.sh", "--target"),
+    ];
+
     /// Flags consumed by Cargo, Git, `world-inspect`, the dynamic loader,
     /// audit tools and launch wrappers. Wrappers also contain engine invocations,
     /// so every other scanned `--flag` must be accepted by the engine parser.
@@ -1818,6 +1833,7 @@ mod tests {
         "--shader-id", // sample_skyrim_tonemap_gpu.py
         "--source-shader", // sample_skyrim_tonemap_gpu.py
         "--stage3-relative", // compare_stage_receipts.py
+        "--stage3-absolute", // compare_stage_receipts.py
         "--stage4-bytes", // compare_stage_receipts.py
     ];
 
@@ -3582,7 +3598,12 @@ mod tests {
             let observation_option = path.file_name().is_some_and(|name| {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
-            if NON_ENGINE_FLAGS.contains(&flag) || observation_option {
+            let release_option = path.file_name().is_some_and(|name| {
+                SCRIPT_SCOPED_FLAGS
+                    .iter()
+                    .any(|&(script, scoped)| name == script && flag == scoped)
+            });
+            if NON_ENGINE_FLAGS.contains(&flag) || observation_option || release_option {
                 continue;
             }
             assert!(
@@ -3624,6 +3645,21 @@ mod tests {
             })
             .is_err()
         );
+        for (script, flag) in SCRIPT_SCOPED_FLAGS {
+            let line = format!("{flag} value");
+            assert_eq!(
+                checked_script_engine_flags(&line, std::path::Path::new(script)),
+                0,
+                "{flag} must be exempt in {script}"
+            );
+            assert!(
+                std::panic::catch_unwind(|| {
+                    checked_script_engine_flags(&line, std::path::Path::new("launch.sh"))
+                })
+                .is_err(),
+                "{flag} must still be rejected in other scripts"
+            );
+        }
     }
 
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories

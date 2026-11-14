@@ -39,6 +39,7 @@ use bevy::{
     math::DVec3,
     prelude::*,
     render::diagnostic::RenderDiagnosticsPlugin,
+    render::error_handler::{ErrorType, RenderError, RenderErrorHandler, RenderErrorPolicy},
     render::occlusion_culling::OcclusionCulling,
     render::render_asset::RenderAssetBytesPerFrame,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -119,10 +120,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| crate::settings::prepare_settings(&mut config));
     // A saved profile can disagree with an explicit launch option the parser already accepted.
     config.check_visual_profile()?;
-    info!(
-        profile = config.visual_profile.name(),
-        "visual profile active; changing it requires a restart"
-    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     let shots = prepare_shots(&mut config)?;
@@ -323,6 +320,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
@@ -350,6 +348,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     ..default()
                 }),
         )
+        .add_plugins(crate::raw_texel::RawTexelPlugin {
+            profile: visual_profile,
+        })
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin {
@@ -404,6 +405,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }
+    info!(
+        profile = visual_profile.name(),
+        colour_textures = if visual_profile.decodes_colour_srgb() {
+            "sRGB"
+        } else {
+            "raw UNORM"
+        },
+        "visual profile active; changing it requires a restart"
+    );
     if app
         .world()
         .resource::<EngineConfig>()
@@ -488,6 +498,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if app.world().resource::<EngineConfig>().stdin_console && !shots_active {
         app.add_plugins(crate::capture_frame::CaptureFramePlugin);
     }
+    crate::render_teardown::install(&mut app);
     if let Some(run) = shots {
         info!(
             shots = run.file.shots.len(),
@@ -500,20 +511,80 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             ShotsPlugin { run },
         ));
     }
+    // `RenderPlugin` only `init_resource`s its default handler, so this one wins wherever it is
+    // inserted.
+    app.insert_resource(RenderErrorHandler(handle_render_error));
     let exit = app.run();
     drop(app);
     drop(streaming_fixture_dir);
     finished(&exit)
 }
 
+/// Process exit code for a run that ended because the GPU device was lost.
+///
+/// Distinct from 1 (any other failed run) and 2 (an unusable command line), so a benchmark or
+/// acceptance script can record a lost device apart from other failures. It does not clear the
+/// engine: a GPU fault or a command buffer the driver times out also loses the device.
+pub const EXIT_DEVICE_LOST: u8 = 3;
+
+/// The run ended because the GPU device was lost.
+///
+/// Returned from [`run`] so `main` can turn it into [`EXIT_DEVICE_LOST`] instead of the generic
+/// failure code.
+#[derive(Debug)]
+pub struct DeviceLost;
+
+impl std::fmt::Display for DeviceLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the GPU device was lost, the engine is exiting (exit code {EXIT_DEVICE_LOST}); the log \
+             above has the driver's reason. Retry the run; if it keeps happening, the engine may \
+             be the cause"
+        )
+    }
+}
+
+impl std::error::Error for DeviceLost {}
+
+/// The exit a render error asks for: device loss gets its own code, everything else the generic
+/// failure Bevy's default handler used.
+fn exit_for_render_error(error: &RenderError) -> AppExit {
+    match error.ty {
+        ErrorType::DeviceLost => AppExit::from_code(EXIT_DEVICE_LOST),
+        _ => AppExit::error(),
+    }
+}
+
+/// Same policy as Bevy's default handler (quit and stop rendering, since carrying on after a
+/// render error risks rapid flashing), but with an exit code that names device loss.
+fn handle_render_error(
+    error: &RenderError,
+    main_world: &mut World,
+    _render_world: &mut World,
+) -> RenderErrorPolicy {
+    if matches!(error.ty, ErrorType::DeviceLost) {
+        error!(
+            description = %error.description,
+            "the GPU device was lost; quitting"
+        );
+    } else {
+        error!("Quitting the application due to {:?} RenderError", error.ty);
+    }
+    main_world.write_message(exit_for_render_error(error));
+    RenderErrorPolicy::StopRendering
+}
+
 /// What the process reports after an [`App`] has run.
 ///
 /// A shots run that could not write an image, and an acceptance run whose gates did not pass, end
 /// with [`AppExit::Error`]; dropping that would report success to whatever ran the process - the
-/// acceptance script reads the exit code - so the error is handed back to `main` instead.
+/// acceptance script reads the exit code - so the error is handed back to `main` instead. A lost
+/// device comes back as [`DeviceLost`], which `main` maps to [`EXIT_DEVICE_LOST`].
 fn finished(exit: &AppExit) -> Result<()> {
     match exit {
         AppExit::Success => Ok(()),
+        AppExit::Error(code) if code.get() == EXIT_DEVICE_LOST => Err(DeviceLost.into()),
         AppExit::Error(code) => Err(color_eyre::eyre::eyre!(
             "the run failed (exit code {code:?})"
         )),
@@ -1152,6 +1223,7 @@ fn setup_material_fixture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
 ) {
     commands.init_resource::<CanonicalMaterialFixtureState>();
     let checker = images.add(fixture_image(
@@ -1161,7 +1233,7 @@ fn setup_material_fixture(
                 [78, 166, 88, alpha]
             })
             .collect(),
-        true,
+        profile.decodes_colour_srgb(),
     ));
     let normal = images.add(fixture_image(
         (0..16).flat_map(|_| [128, 128, 255, 255]).collect(),
@@ -1258,6 +1330,7 @@ fn validate_material_fixture(
     query: Query<(&CanonicalMaterialKind, &MeshMaterial3d<StandardMaterial>)>,
     materials: Res<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
     mut state: ResMut<CanonicalMaterialFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
@@ -1298,7 +1371,7 @@ fn validate_material_fixture(
                     }
                     _ => Ok(()),
                 }?;
-                validate_standard_material(material, &images)
+                validate_standard_material(material, &images, profile.decodes_colour_srgb())
             });
         match result {
             Ok(count) => validated_images += count,
@@ -3359,6 +3432,39 @@ mod tests {
         assert!(error.contains("at most 64 threads"), "{error}");
     }
 
+    /// Uses the real startup system, so the texture it adds is the one the validator will see.
+    #[test]
+    fn the_material_fixture_builds_its_colour_checker_in_the_profile_space() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for (profile, expected) in [
+            (
+                crate::visual_profile::VisualProfile::Mudcrab,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            ),
+            (
+                crate::visual_profile::VisualProfile::Skyrim,
+                bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.init_resource::<Assets<Image>>()
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .insert_resource(profile);
+            app.world_mut()
+                .run_system_once(setup_material_fixture)
+                .unwrap();
+            let images = app.world().resource::<Assets<Image>>();
+            assert!(
+                images
+                    .iter()
+                    .any(|(_, image)| image.texture_descriptor.format == expected),
+                "no {expected:?} image under {profile:?}"
+            );
+        }
+    }
+
     /// Uses real loaders with a generated external normal image, without game assets or a GPU.
     fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
         use bevy::{
@@ -3611,6 +3717,73 @@ mod tests {
         assert!(message.contains("exit code"), "{message}");
     }
 
+    fn render_error(ty: ErrorType) -> RenderError {
+        RenderError {
+            ty,
+            description: String::new(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn device_loss_exits_with_its_own_code() {
+        assert_eq!(
+            exit_for_render_error(&render_error(ErrorType::DeviceLost)),
+            AppExit::from_code(EXIT_DEVICE_LOST)
+        );
+    }
+
+    #[test]
+    fn other_render_errors_keep_the_generic_failure_code() {
+        for ty in [
+            ErrorType::OutOfMemory,
+            ErrorType::Validation,
+            ErrorType::Internal,
+        ] {
+            assert_eq!(exit_for_render_error(&render_error(ty)), AppExit::error());
+        }
+    }
+
+    /// Calls the handler the way Bevy's render state machine does and returns its policy and the
+    /// exits it wrote to the main world.
+    fn handle(ty: ErrorType) -> (RenderErrorPolicy, Vec<AppExit>) {
+        let mut main_world = World::new();
+        main_world.init_resource::<Messages<AppExit>>();
+        let mut render_world = World::new();
+        let policy = handle_render_error(&render_error(ty), &mut main_world, &mut render_world);
+        let exits = main_world
+            .resource_mut::<Messages<AppExit>>()
+            .drain()
+            .collect();
+        (policy, exits)
+    }
+
+    #[test]
+    fn the_handler_quits_with_the_device_loss_code_and_stops_rendering() {
+        let (policy, exits) = handle(ErrorType::DeviceLost);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        assert_eq!(exits, vec![AppExit::from_code(EXIT_DEVICE_LOST)]);
+    }
+
+    /// Bevy's default handler quits with the generic failure and stops rendering for every error;
+    /// any other error must still do exactly that.
+    #[test]
+    fn the_handler_keeps_bevys_default_for_other_render_errors() {
+        let (policy, exits) = handle(ErrorType::Validation);
+        assert!(matches!(policy, RenderErrorPolicy::StopRendering));
+        assert_eq!(exits, vec![AppExit::error()]);
+    }
+
+    #[test]
+    fn a_lost_device_run_is_reported_as_device_loss() {
+        let error = finished(&AppExit::from_code(EXIT_DEVICE_LOST))
+            .expect_err("a lost device must not report success");
+        assert!(error.downcast_ref::<DeviceLost>().is_some());
+        assert!(error.to_string().contains("GPU device was lost"), "{error}");
+        let other = finished(&AppExit::error()).expect_err("a failed run is an error");
+        assert!(other.downcast_ref::<DeviceLost>().is_none());
+    }
+
     /// The streaming fixture's own systems over its own fixture database, with no window, GPU or
     /// game data: the camera crosses exteriors, the fixture loads its interior by id, and the
     /// camera finishes on a fully streamed exterior ring around the grid it started on.
@@ -3647,6 +3820,7 @@ mod tests {
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
         .init_resource::<ProfilingState>()
         .init_resource::<StreamingFixtureState>()
+        .init_resource::<crate::visual_profile::VisualProfile>()
         .add_plugins(StreamingPlugin)
         .add_systems(
             PreUpdate,
@@ -4339,6 +4513,7 @@ mod tests {
     fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
         let mut app = App::new();
         app.insert_resource(EngineConfig::default())
+            .init_resource::<crate::visual_profile::VisualProfile>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<Assets<StandardMaterial>>()

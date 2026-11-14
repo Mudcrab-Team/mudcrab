@@ -505,6 +505,7 @@ impl TerrainExtension {
         quadrant: u8,
         catalog: &AssetCatalog,
         asset_server: &AssetServer,
+        colour_srgb: bool,
     ) -> Result<(Self, TerrainImages), String> {
         let mut textures: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
         let mut normals: [Option<Handle<Image>>; 6] = std::array::from_fn(|_| None);
@@ -538,8 +539,9 @@ impl TerrainExtension {
             }
             let handle = asset_server
                 .load_builder()
-                .with_settings(|settings: &mut ImageLoaderSettings| {
+                .with_settings(move |settings: &mut ImageLoaderSettings| {
                     settings.sampler = ImageSampler::Descriptor(terrain_layer_sampler());
+                    settings.is_srgb = colour_srgb;
                 })
                 .load(path.to_owned());
             *target = Some(handle.clone());
@@ -2070,7 +2072,7 @@ mod tests {
         }
         let old = AssetCatalog::open(&path).unwrap();
         let (material, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server).unwrap();
+            TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server, true).unwrap();
         assert!(images.color.is_empty() && images.normal.is_empty());
         assert!(material.layer_0.is_none());
         connection.execute_batch("CREATE TABLE terrain_default_texture(id INTEGER PRIMARY KEY,diffuse_path TEXT,normal_path TEXT);
@@ -2093,7 +2095,7 @@ mod tests {
             let catalog = AssetCatalog::open(&path).unwrap();
             let expected = diffuse.filter(|path| !path.starts_with(".."));
             let (material, images) =
-                TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
             assert_eq!(images.color.len(), usize::from(expected.is_some()));
             assert_eq!(
                 images.normal.len(),
@@ -2113,9 +2115,14 @@ mod tests {
             let mut unpainted = terrain.clone();
             unpainted.layers.clear();
             for quadrant in 0..4 {
-                let (empty, _) =
-                    TerrainExtension::from_quadrant(&unpainted, quadrant, &catalog, asset_server)
-                        .unwrap();
+                let (empty, _) = TerrainExtension::from_quadrant(
+                    &unpainted,
+                    quadrant,
+                    &catalog,
+                    asset_server,
+                    true,
+                )
+                .unwrap();
                 assert_eq!(empty.layer_0, material.layer_0);
             }
             let mut painted = terrain.clone();
@@ -2126,10 +2133,122 @@ mod tests {
                 .unwrap()
                 .texture_form_id = 10;
             let (painted, _) =
-                TerrainExtension::from_quadrant(&painted, 0, &catalog, asset_server).unwrap();
+                TerrainExtension::from_quadrant(&painted, 0, &catalog, asset_server, true).unwrap();
             assert_eq!(
                 painted.layer_0.unwrap().path().unwrap().path(),
                 std::path::Path::new("textures/poison.ktx2")
+            );
+        }
+    }
+
+    fn bc1_ktx2() -> Vec<u8> {
+        use ddsfile::{AlphaMode, D3D10ResourceDimension, Dds, DxgiFormat, NewDxgiParams};
+
+        let mut dds = Dds::new_dxgi(NewDxgiParams {
+            height: 8,
+            width: 8,
+            depth: None,
+            format: DxgiFormat::BC1_UNorm,
+            mipmap_levels: Some(1),
+            array_layers: None,
+            caps2: None,
+            is_cubemap: false,
+            resource_dimension: D3D10ResourceDimension::Texture2D,
+            alpha_mode: AlphaMode::Straight,
+        })
+        .unwrap();
+        for (index, byte) in dds.data.iter_mut().enumerate() {
+            *byte = (index * 7 + 3) as u8;
+        }
+        let mut bytes = Vec::new();
+        dds.write(&mut bytes).unwrap();
+        converter::texture::TextureConverter::convert_uncompressed(
+            &bytes,
+            converter::texture::TextureEncoding::ColorSrgb,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn terrain_diffuse_loads_in_the_profile_colour_space() {
+        use bevy::asset::{AssetPlugin, LoadState};
+        use bevy::image::{CompressedImageFormats, ImageLoader, ImagePlugin};
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("textures")).unwrap();
+        std::fs::write(directory.path().join("textures/diffuse.ktx2"), bc1_ktx2()).unwrap();
+        let database = directory.path().join("catalogue.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE texture_sets(id INTEGER PRIMARY KEY,diffuse_path TEXT);
+                 CREATE TABLE landscape_textures(id INTEGER PRIMARY KEY,texture_set_id INTEGER);
+                 CREATE TABLE waters(id INTEGER PRIMARY KEY,flow_normal_path TEXT);
+                 INSERT INTO texture_sets VALUES(1,'textures/diffuse.ktx2');
+                 INSERT INTO landscape_textures VALUES(1,1);",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = AssetCatalog::open(&database).unwrap();
+        for (colour_srgb, expected) in [
+            (
+                true,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnormSrgb,
+            ),
+            (
+                false,
+                bevy::render::render_resource::TextureFormat::Bc1RgbaUnorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                AssetPlugin {
+                    file_path: directory.path().to_string_lossy().into_owned(),
+                    ..default()
+                },
+                ImagePlugin::default(),
+            ))
+            .init_asset::<Image>()
+            .register_asset_loader(ImageLoader::new(CompressedImageFormats::all()));
+            app.finish();
+            app.cleanup();
+            let server = app.world().resource::<AssetServer>().clone();
+            let terrain = terrain_fixture_with_overlays(7, &[]);
+            let (_extension, images) =
+                TerrainExtension::from_quadrant(&terrain, 0, &catalog, &server, colour_srgb)
+                    .unwrap();
+            assert_eq!(images.color.len(), 1);
+            let handle = images.color[0].clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                app.update();
+                let server = app.world().resource::<AssetServer>();
+                if let LoadState::Failed(error) = server.load_state(handle.id()) {
+                    panic!("diffuse load failed: {error}");
+                }
+                if app
+                    .world()
+                    .resource::<Assets<Image>>()
+                    .get(&handle)
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "diffuse load timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(&handle)
+                .unwrap();
+            assert_eq!(
+                image.texture_descriptor.format, expected,
+                "colour_srgb={colour_srgb}"
             );
         }
     }
@@ -2173,7 +2292,7 @@ mod tests {
             }
         }
         let (extension, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
                 .expect("zero overlays keep material slots and do not request a texture");
         assert_eq!(images.color.len(), 1);
         assert_eq!(images.normal.len(), 1);
@@ -2214,7 +2333,7 @@ mod tests {
         terrain.layers[2].texture_form_id = 0x844;
         assert!(catalog.landscape_normal(0x844).is_some());
         let (fallback, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server)
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true)
                 .expect("a missing diffuse retains the layer without requesting either image");
         assert_eq!(images.color.len(), 1);
         assert_eq!(images.normal.len(), 1);
@@ -2236,7 +2355,7 @@ mod tests {
             .unwrap();
         let white = AssetCatalog::open(&path).unwrap();
         let (fallback, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &white, asset_server).unwrap();
+            TerrainExtension::from_quadrant(&terrain, 0, &white, asset_server, true).unwrap();
         assert!(images.color.is_empty() && images.normal.is_empty());
         assert!(fallback.image_ids().next().is_none());
         assert_eq!(fallback.settings.weights, extension.settings.weights);
@@ -2245,7 +2364,7 @@ mod tests {
         assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
         terrain.layers[2].texture_form_id = 0x845;
         let (painted, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
         assert_eq!(images.color.len(), 2);
         assert_eq!(
             painted.layer_2.as_ref().unwrap().path().unwrap().path(),
@@ -2254,11 +2373,13 @@ mod tests {
         assert_eq!(painted.settings.weights, extension.settings.weights);
         terrain.layers.clear();
         let (unpainted, images) =
-            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server).unwrap();
+            TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
         assert_eq!(images.color.len(), 1);
         assert_eq!(images.normal.len(), 1);
         assert_eq!(unpainted.layer_0, extension.layer_0);
         assert_eq!(unpainted.normal_0, extension.normal_0);
+        terrain.layers[2].texture_form_id = 0;
+        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).is_ok());
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order
