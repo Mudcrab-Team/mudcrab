@@ -192,6 +192,11 @@ impl ActorHead {
     }
 }
 
+/// The armor and clothing the actor's default outfit puts on it: converted scenes that share the
+/// humanoid skeleton, each with the biped slots it covers.
+#[derive(Debug, Clone, PartialEq, Eq, Component)]
+pub struct ActorOutfit(pub Vec<shared::actor_outfits::OutfitPart>);
+
 /// A referenced `NPC_` placed in the world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Component)]
 pub struct Actor {
