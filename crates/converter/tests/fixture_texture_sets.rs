@@ -276,7 +276,14 @@ async fn texture_semantic_migration_still_requires_matching_configuration() {
         .sum::<u64>();
     let report = run_pipeline(changed).await;
     assert_eq!(report.cache_hits, raw_entries);
-    assert_eq!(report.converted, legacy.entries.len() as u64);
+    assert_eq!(
+        report.converted,
+        legacy
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+    );
     let current = manifest(&output);
     assert_eq!(current.configuration_hash, expected_configuration);
     assert_eq!(

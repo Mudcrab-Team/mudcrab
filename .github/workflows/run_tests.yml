@@ -9,9 +9,9 @@ env:
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'release/**' ]
   workflow_dispatch:
 
 permissions:
@@ -135,6 +135,9 @@ jobs:
       - name: Test recorded comparison value matching
         run: python3 -B -m unittest discover -s tools/record_comparison -p 'test_*.py' -v
 
+      - name: Test Windows installer checksum handling
+        run: pwsh -NoProfile -File scripts/tests/test_install_checksum.ps1
+
       - name: PowerShell scripts with non-ASCII text keep a UTF-8 BOM
         run: |
           set -euo pipefail
@@ -153,6 +156,9 @@ jobs:
 
       - name: Verify stage receipt comparison
         run: python3 -m unittest discover -s scripts/tests -p test_compare_stage_receipts.py -v
+
+      - name: Verify cluster timing receipt validation
+        run: python3 -B -m unittest discover -s scripts/tests -p test_cluster_timing_receipt.py -v
 
       - name: Verify terrain LOD helper commands
         run: python3 -m unittest discover -s scripts/lod-performance -p test_helpers.py -v
