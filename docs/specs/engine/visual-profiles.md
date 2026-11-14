@@ -1,8 +1,9 @@
 # Visual profiles
 
 Tracks [visual profiles #358](https://github.com/Mudcrab-Team/mudcrab/issues/358). This page covers
-[P0 #359](https://github.com/Mudcrab-Team/mudcrab/issues/359): the profile setting, its receipts and
-the stage receipt format. Later packages extend it.
+[P0 #359](https://github.com/Mudcrab-Team/mudcrab/issues/359), the profile setting, its receipts and
+the stage receipt format, and [P1a #360](https://github.com/Mudcrab-Team/mudcrab/issues/360), raw
+colour texels. Later packages extend it.
 
 ## The setting
 
@@ -11,13 +12,14 @@ A visual profile selects a whole color pipeline: inputs, shading, fog, post-proc
 | Profile | Pipeline |
 |---|---|
 | `mudcrab` (default) | The approved look: Bevy PBR, TonyMcMapface, EV100 9.7 and the snapshot grade. See [color-pipeline.md](color-pipeline.md). |
-| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Until P1 lands it renders the same as `mudcrab`; only its receipts and option checks differ. |
+| `skyrim` | Retail Skyrim SE's color pipeline on raw authored values. Colour textures decode as raw UNORM texels (P1a); shading and output still follow the `mudcrab` pipeline until P1c. |
 
 - Select it with `--visual-profile <mudcrab|skyrim>`, or with *Visual profile (restart)* in the
   interactive settings menu, which saves it. An explicit flag wins over the saved value.
 - The profile is read once at startup. Changing it requires a restart, as Community Shaders requires
   for Linear Lighting; nothing in the engine rebuilds a running pipeline for another profile.
-- Startup logs `visual profile active` with the profile name.
+- Startup logs `visual profile active` with the profile name and the colour-texture decode
+  (`sRGB` for `mudcrab`, `raw UNORM` for `skyrim`).
 
 ## Options that belong to one profile
 
@@ -45,10 +47,48 @@ Every receipt names the profile it describes:
 - `SceneState` (live console) and `SceneShot` receipts: `visual_profile`.
 - Bug-report snapshots: `configured_rendering.visual_profile`.
 
-The benchmark run fingerprint (`fingerprint.rs`) does not carry the profile yet. While both profiles
-draw the same pixels it does not need to; once P1 makes `skyrim` render differently, the profile
-belongs in the fingerprint's graphics section so two benchmark runs of different profiles are never
-compared as one.
+The benchmark run fingerprint (`fingerprint.rs`) carries the profile in its graphics section.
+`scripts/analyze-streaming-comparison.py` does not check this field when it pairs runs. The operator
+must check that both runs use the same profile, unless the comparison tool enforces it.
+
+## Raw colour texels (P1a #360)
+
+`mudcrab` samples every colour texture through an sRGB view: the converter publishes the texture's
+bytes under a `.opensky-srgb` alias and Bevy decodes it. `skyrim` evaluates the authored bytes, so it
+loads that same alias as the UNORM twin of the format `mudcrab` gets, chosen once at load.
+
+- The choice is `VisualProfile::decodes_colour_srgb`, the single place that answers the question.
+  Every `is_srgb` load and every colour-space validator asks it.
+- A dedicated asset loader claims only the alias extensions, so `.ktx2` and `.png` files keep Bevy's
+  own loader. Under `mudcrab` it registers nothing. Bytes on disk, packs and the converter do not
+  change.
+- The colour-space validators are the enforcement: under `skyrim` a colour slot that still arrives
+  as sRGB (or as UNORM under `mudcrab`) fails its surface instead of drawing with the wrong values.
+- Terrain diffuse images and merged terrain arrays follow the same helper. Their files still store
+  the sRGB block format; only the load's decode changes.
+- The shaders learn the choice too. The skin and effect-palette fragment shaders specialise on a
+  `RAW_COLOUR_TEXELS` define: their sRGB re-encode/decode round-trips exist to undo Bevy's sRGB
+  sampling, and with raw texels they are skipped. Without it, a raw palette index is encoded again
+  and every effect picks an entry that is too bright, and skin, FaceGen and hair tints blend in the
+  wrong space.
+- Terrain LOD chunks embed their albedo in the GLB, so no asset loader reaches it. A glTF
+  extension handler replaces that one image with its UNORM twin while the chunk's GLB is still
+  loading (paths under `lod/` only), so it enters `Assets<Image>` already raw and is uploaded once;
+  its bytes are colour-space-agnostic. Without it, distant terrain is a brightness step away from
+  near terrain. A chunk whose albedo is still sRGB when it becomes ready is retagged then, with a
+  warning, at the cost of a second upload.
+- Effect palettes are the exception for their own colour, not their index. A palette is published
+  at a plain linear path, not under an `.opensky-srgb` alias, and Bevy keys images by path, so both
+  profiles sample the palette texture through an sRGB view. `skyrim` still picks the right entry:
+  the source texture's grey level arrives raw and the shader no longer re-encodes it. A pack that
+  publishes a palette alias would let the palette's own colours be read raw too.
+
+One limit is known and accepted for this package. An image embedded in a mod glTF (`bufferView` or
+a `data:` URI) is decoded by `bevy_gltf` itself, which no `AssetLoader` wraps and the engine does
+not own, so under `skyrim` it arrives as sRGB and its surface fails validation loudly. NIF
+conversion writes external KTX2 URIs, so this reaches mod glTFs only. A texture used through both
+its colour alias and its linear twin uploads the same bytes twice; that costs no extra memory over
+`mudcrab` and merging the two is a follow-up.
 
 ## Stage receipts
 
@@ -57,7 +97,7 @@ Retail and Mudcrab captures of the same pose write the same format, so they comp
 
 | # | Stage | Retail source | Mudcrab source |
 |---|---|---|---|
-| 1 | raw sampled albedo | shader-replacement probe on the lighting draws | lands with P1a #360 |
+| 1 | raw sampled albedo | shader-replacement probe on the lighting draws | `material_texel_probe` (format, no scene); a scene probe lands with P1c (#362) |
 | 2 | pre-fog lighting sum, albedo × (direct + directional ambient) | shader-replacement probe on the lighting draws | lands with P1c #362 |
 | 3 | post-fog, pre-tonemap HDR color | tone-map group 26 scene input `t1` | stage-output hook before tone mapping |
 | 4 | final output byte | tone-map group 26 output | the captured frame |
@@ -81,7 +121,7 @@ earlier capture) or a sub-pixel offset does not move the result.
       "world_position": [0, 0, 0],
       "patch_px": 5,
       "stages": { "raw_albedo": null, "lit_pre_fog": null, "hdr_pre_tonemap": [0, 0, 0], "output": [0, 0, 0] },
-      "unavailable": { "raw_albedo": "lands with P1a", "lit_pre_fog": "lands with P1c" }
+      "unavailable": { "raw_albedo": "lands with P1c (#362); format proven by material_texel_probe", "lit_pre_fog": "lands with P1c" }
     }
   ]
 }
@@ -173,5 +213,6 @@ bit-identical stage 3 and stage 4 values at every probe, and the V2 reference bu
 gives the same stage 4 values.
 
 V1 tolerance, so the noise floor does not set it: registration does. A probe passes when each
-channel is within **2 % relative at stage 3** and **2 bytes at stage 4**, which covers a 3 px
+channel is within **2 % relative at stage 3** and within **2 bytes at stage 4**. Stage 3 (`stage3_ok`)
+accepts a per-channel error of at most `max(0.02 * abs(reference), 1/255)`. This covers a 3 px
 misregistration at every probe in the set. The tolerance is frozen in #358 before any P1 result.

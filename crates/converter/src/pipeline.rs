@@ -1,3 +1,6 @@
+pub(crate) mod authored_actor_idle;
+mod creature_idle;
+
 use crate::{
     animation,
     archive::{
@@ -353,6 +356,10 @@ impl AssetPipeline {
         progress_tx: Sender<ProgressEvent>,
         cancellation: Cancellation,
     ) -> Result<PipelineReport, PipelineFailure> {
+        // Saved configurations cannot make current emitted bytes reuse an older script ABI.
+        config.script_abi_version = config
+            .script_abi_version
+            .max(crate::script::SCRIPT_ABI_VERSION);
         config.validate()?;
         config.freeze_schema_addons()?;
         reject_symlink_output(&config.output_dir)?;
@@ -1396,6 +1403,20 @@ impl AssetPipeline {
             &mut report,
             &mut manifest,
         )?;
+        authored_actor_idle::convert(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
+        creature_idle::convert(
+            staging,
+            &source_paths,
+            config.fail_fast,
+            &mut report,
+            &mut manifest,
+        )?;
         for sex in ["male", "female"] {
             for (_, stem) in DEFAULT_ANIMATION_CLIPS {
                 let relative = default_animation_output(sex, stem);
@@ -1786,6 +1807,10 @@ fn reusable_manifest(
                         crate::cache::inhouse_adapter11_reader_identity(
                             settings.schemas()?.as_ref(),
                         ),
+                        crate::cache::inhouse_adapter12_reader_identity(
+                            settings.schemas()?.as_ref(),
+                            &settings.language,
+                        ),
                     ]
                     .into_iter()
                     .flatten()
@@ -1796,6 +1821,13 @@ fn reusable_manifest(
                     }
                 }
                 if reader == crate::config::RecordReader::Legacy {
+                    if let Some(identity) =
+                        crate::cache::legacy_projection4_reader_identity(&settings.language)
+                    {
+                        matched |= crate::cache::retained_configuration_matches_for_reader(
+                            &settings, producer, recorded, &identity,
+                        )?;
+                    }
                     matched |= recorded
                         == crate::cache::legacy_projection_v1_configuration_hash(
                             &settings, producer,
@@ -3427,7 +3459,7 @@ pub(crate) fn publish_texture_aliases(staging: &Path) -> Result<Vec<PathBuf>> {
                 // companion path as well, retaining `.opensky-wrapN` so clamp/repeat images keep
                 // distinct AssetServer identities and sampler settings.
                 if let Some(linear) = runtime_key.strip_suffix(".ktx2") {
-                    let linear = linear.replace(".opensky-srgb", "");
+                    let linear = linear.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     let linear = format!("{linear}.ktx2");
                     // The canonical source is already the default linear path. Never republish
                     // it over itself; only sampler-specific companion aliases need a file.
@@ -6745,6 +6777,114 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prior_language_bound_combined_proofs_reuse_only_proven_asset_kinds() {
+        for reader in [
+            crate::config::RecordReader::Inhouse,
+            crate::config::RecordReader::Legacy,
+        ] {
+            for language in ["english", "french"] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut config = PipelineConfig::new(
+                    directory.path().join("Data"),
+                    directory.path().join("output"),
+                );
+                config.record_reader = reader;
+                config.language = language.into();
+                // Construct the historical writer's payload independently of the compatibility helpers.
+                let mut identity =
+                    crate::esm::inhouse::reader_identity_in_language(reader, language);
+                if reader == crate::config::RecordReader::Inhouse {
+                    identity["adapter_version"] = serde_json::json!(12);
+                } else {
+                    identity["projection_version"] = serde_json::json!(4);
+                }
+                let historical = serde_json::json!({
+                    "schema": CONVERTER_SCHEMA_VERSION,
+                    "texture_etc1s_quality": config.texture_fallback_quality,
+                    "texture_uastc_level": config.texture_uastc_level,
+                    "texture_zstd_level": config.texture_zstd_level,
+                    "texture_encoder": {"mode": "cpu"},
+                    "script_abi_version": config.script_abi_version,
+                    "record_reader": identity,
+                });
+                let recorded = hash_bytes(&serde_json::to_vec(&historical).unwrap());
+                let entries = [
+                    ("meshes/prior.nif", "meshes/prior.glb"),
+                    ("textures/prior.dds", "textures/prior.ktx2"),
+                    ("scripts/prior.pex", "scripts/prior.luau"),
+                ]
+                .into_iter()
+                .map(|(source, output)| {
+                    (
+                        source.into(),
+                        CacheEntry {
+                            source_hash: "source-proof".into(),
+                            output: output.into(),
+                            output_hash: "byte-proof".into(),
+                            output_size: 137,
+                        },
+                    )
+                })
+                .collect();
+                let manifest = ConversionManifest {
+                    schema_version: CONVERTER_SCHEMA_VERSION,
+                    configuration_hash: recorded.clone(),
+                    entries,
+                    complete: true,
+                    ..Default::default()
+                };
+                let reused = reusable_manifest(&config, manifest.clone()).unwrap();
+                assert_eq!(reused.entries.len(), 2, "{reader:?}/{language}");
+                assert_eq!(
+                    reused.entries["textures/prior.dds"],
+                    manifest.entries["textures/prior.dds"]
+                );
+                assert_eq!(
+                    reused.entries["scripts/prior.pex"],
+                    manifest.entries["scripts/prior.pex"]
+                );
+                assert!(!reused.entries.contains_key("meshes/prior.nif"));
+                assert_eq!(reused.configuration_hash, recorded);
+                let mut changed = config.clone();
+                changed.texture_fallback_quality += 1;
+                assert!(
+                    reusable_manifest(&changed, manifest.clone())
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+                changed = config.clone();
+                changed.language = if language == "english" {
+                    "french"
+                } else {
+                    "english"
+                }
+                .into();
+                assert!(
+                    reusable_manifest(&changed, manifest.clone())
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+                let mut unknown = historical;
+                if reader == crate::config::RecordReader::Inhouse {
+                    unknown["record_reader"]["adapter_version"] = serde_json::json!(99);
+                } else {
+                    unknown["record_reader"]["projection_version"] = serde_json::json!(99);
+                }
+                let mut unproven = manifest;
+                unproven.configuration_hash = hash_bytes(&serde_json::to_vec(&unknown).unwrap());
+                assert!(
+                    reusable_manifest(&config, unproven)
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+            }
+        }
+    }
+
     /// Meshes an earlier converter of the same producer wrote, before a mesh output contract,
     /// rebuild from the published pack and from staging alike; textures and scripts stay reusable.
     #[test]
@@ -7383,13 +7523,9 @@ mod tests {
 
     #[test]
     fn v15_wrap_aliases_resolve_to_sources_for_publication_and_restoration() {
-        for mode in 0..=3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let sampler = if mode == 3 {
-                    String::new()
-                } else {
-                    format!(".opensky-wrap{mode}")
-                };
+        for mode in 0..=shared::texture_aliases::WRAP_TEXTURE_SUFFIX_NONE {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let sampler = shared::texture_aliases::wrap_texture_suffix(mode).unwrap_or("");
                 let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 assert_eq!(source_texture_key(&alias).unwrap(), "textures/shared.ktx2");
                 assert_eq!(
@@ -7413,12 +7549,12 @@ mod tests {
                 glb.extend_from_slice(b"JSON");
                 glb.extend_from_slice(&json);
                 fs::write(root.join("meshes/alias.glb"), glb).unwrap();
-                let expected = if transfer.is_empty() && mode == 3 {
+                let expected = if transfer.is_empty() && sampler.is_empty() {
                     vec![]
-                } else if transfer.is_empty() || mode == 3 {
+                } else if transfer.is_empty() || sampler.is_empty() {
                     vec![PathBuf::from(&alias)]
                 } else {
-                    let linear = alias.replace(".opensky-srgb", "");
+                    let linear = alias.replace(shared::texture_aliases::SRGB_TEXTURE_SUFFIX, "");
                     vec![PathBuf::from(&alias), PathBuf::from(linear)]
                 };
                 let published = publish_texture_aliases(root).unwrap();
@@ -8803,6 +8939,7 @@ mod tests {
                 );
                 assert_eq!(inputs, expected);
                 let mut clip = animation::AnimationClip {
+                    blend_hint: 0,
                     name: String::new(),
                     original_skeleton_name: "synthetic".into(),
                     duration_seconds: 1.0 / 30.0,
@@ -10699,7 +10836,7 @@ mod tests {
             b"skeleton"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }
@@ -10733,7 +10870,7 @@ mod tests {
             b"clip"
         );
         assert!(
-            !vfs.join("meshes/actors/character/behaviors/0_master.hkx")
+            vfs.join("meshes/actors/character/behaviors/0_master.hkx")
                 .exists()
         );
     }
