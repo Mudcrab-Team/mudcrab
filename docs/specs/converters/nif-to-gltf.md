@@ -32,6 +32,25 @@ floated about 170 units away from the forge.
 There is no converter schema bump: conversions made before this change keep their cached GLBs
 until they are reconverted.
 
+Inspection uses an iterative, memoized walk over every scene-node component. It reports the
+longest finite chain even beyond the conversion limit, along with declared-block parse failures
+and bounded conversion-refusal reasons. A cycle has no finite depth: its reported depth is zero
+and its refusal reason identifies the loop. `nif-audit` retains these measurements and lists
+refused files separately from unreadable files, including when conversion is not requested.
+If material inspection also fails for an already refused scene/skin input, its structural
+diagnostics remain available. A bounded refusal reason marks the material counters unavailable
+(zero). Material-only failures retain the existing inspection error result.
+
+Mesh export, skeleton loading and collision entry points enforce one shared limit of 256 parsed
+scene nodes and refuse cycles or undecodable declared skin instances. Geometry and other
+non-node blocks contribute zero to depth. The bound protects recursive model validation,
+collision parent transforms and GLB bounds. Tests actually export and bound geometry below
+256 nodes and walk the deepest collision target on default worker stacks; Windows measurements
+also exercise the executable main and default std/Rayon stacks with the geometry leaf and
+export wrapper. This is an engineering policy: deeper modded assets are recorded as failed
+models while the normal pipeline continues publishing usable neighbors. Block order and the
+collision block-to-glTF-node mapping are preserved throughout the accepted scene.
+
 **Root transform.** A placed reference replaces its model root's local transform with its own, so
 the root block's authored translation, rotation and scale never apply in game. The static scene
 writes the root node (block 0) with an identity transform, and collision shapes start from an
@@ -294,7 +313,7 @@ and world data, so no cached GLB keeps the older collision extras.
 
 ### 7.3 Skin recovery and failure contract
 
-Standalone mesh conversion keeps usable geometry when its legacy skin is unusable. A zero total
+Standalone mesh conversion keeps usable geometry when a parsed legacy skin cannot bind. A zero total
 weight, invalid influence or unresolved skin joint makes only that shape rigid, at the same node
 transform and ancestor transforms as an ordinary static export. Good sibling skins remain skinned.
 One warning per affected shape names the NIF, shape name/block and the first skin failure; it is
@@ -314,7 +333,24 @@ matches or relabel it self-contained: its skin-bearing shapes export as rigid ge
 coverage warning per shape. Explicitly supplied skeletons likewise fall back per shape when they
 cannot resolve that shape's joints. Repair uses the same recovery path as normal conversion.
 
-Parsing failures, unusable geometry/scene data, ambiguous bound skeleton names (§7.1), and declared
+Skin declaration comes from the header's per-block types, including instances the parser could
+not decode. An unparsable `NiSkinInstance`, `BSDismemberSkinInstance` or `BSSkin::Instance`
+refuses the whole model before export. Its binding references cannot establish a usable rig;
+this conservative asset-level policy also drops usable sibling shapes in that NIF, including
+when the bad instance is unreferenced. Inspection keeps the parse diagnostics for that file. Parsed-skin
+binding recovery above remains per shape. The refusal names the source, type and count, up to
+eight failure offsets and the omitted count. A normal conversion that builds
+the model omits the refused model, retains other usable assets and records the failure in the
+report and manifest with incomplete status.
+
+The auxiliary tools follow the same per-model validation boundary. `collision-annotate`
+processes usable neighbors, removes each failed output copy, and writes
+`collision-annotation-report.json` in its new output root before returning an incomplete exit
+status. `asset-closure-convert` validates the current NIF before reusing an old GLB, removes a
+refused output and records its failed result in the requested report. Output cleanup failures
+are reported explicitly; collision annotation stops if it cannot remove an invalid output copy.
+
+Other parsing failures, unusable geometry/scene data, ambiguous bound skeleton names (§7.1), and declared
 skins without any usable geometry still fail; recovery does not invent vertices or an empty skin.
 Strict animated actor composition continues to require bindable skin data and uses no rigid
 substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
@@ -324,6 +360,14 @@ The mesh settings contract appends `skin-static-fallback` after the existing con
 `MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
 rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
 until normal conversion regenerates it. Texture/script producer identities are unchanged.
+
+The scene-depth bound, the cycle check and the unparsable-skin refusal append no contract name,
+so the `nif` proof is unchanged. Vanilla and Creation Club output is unchanged by them. A GLB
+already published from a third-party NIF deeper than 64 nodes, or with an undecodable skin
+instance, stays in its pack. A normal conversion with an unchanged source hash and settings
+reuses it from the cache, so it stays until a forced rebuild or a change to the source or
+settings.
+
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
 skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.
 

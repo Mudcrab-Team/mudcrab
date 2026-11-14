@@ -236,6 +236,24 @@ where
         .collect())
 }
 
+fn deserialize_extensions<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<shared::extensions::ExtensionEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let (entries, issues) = shared::extensions::parse_entries(&value);
+    for issue in issues {
+        log::warn!(
+            "ignored optional capability declaration {:?}: {}",
+            issue.id,
+            issue.reason
+        );
+    }
+    Ok(entries)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestedFile {
     pub path: String,
@@ -396,6 +414,13 @@ pub struct ConversionManifest {
         deserialize_with = "deserialize_derived_outputs"
     )]
     pub derived_outputs: BTreeMap<String, DerivedOutput>,
+    /// Versioned derived output, separate from the upstream core contract.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_extensions"
+    )]
+    pub extensions: Vec<shared::extensions::ExtensionEntry>,
 }
 
 /// Historical producers whose scripts may pass normal reuse eligibility.
@@ -1312,6 +1337,23 @@ pub fn hash_file(path: &Path) -> Result<String> {
     hash_open_file(&file).wrap_err_with(|| format!("failed to hash {}", path.display()))
 }
 
+/// Hashes `path`, or returns `None` when it does not exist.
+///
+/// A missing file is a normal state on a resumed run. Any other failure, such as a permission
+/// error or an I/O error, is returned with the path, so a caller cannot mistake an unreadable
+/// file for a changed one.
+pub fn hash_file_if_present(path: &Path) -> Result<Option<String>> {
+    match fs::File::open(path) {
+        Ok(file) => hash_open_file(&file)
+            .map(Some)
+            .wrap_err_with(|| format!("failed to hash {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).wrap_err_with(|| format!("failed to open {} for hashing", path.display()))
+        }
+    }
+}
+
 fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
     file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::with_capacity(1024 * 1024, file);
@@ -1334,6 +1376,53 @@ fn hash_open_file(mut file: &fs::File) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_capability_parse_is_tolerant_per_entry() {
+        let good = shared::extensions::ExtensionEntry {
+            id: "example.valid".into(),
+            version: 1,
+            owns: Default::default(),
+            sha256: String::new(),
+            built_from: "core".into(),
+            stats: Default::default(),
+        };
+        let mut document = serde_json::to_value(ConversionManifest::default()).unwrap();
+        document["extensions"] = serde_json::json!([
+            {"id": "example.missing_fields"},
+            {"id": "example.float_stat", "version": 1, "sha256": "", "built_from": "core", "stats": {"rows": 1.5}},
+            good,
+        ]);
+        let manifest: ConversionManifest = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(manifest.extensions, vec![good]);
+        document["extensions"] = serde_json::Value::Null;
+        let manifest: ConversionManifest = serde_json::from_value(document).unwrap();
+        assert!(manifest.extensions.is_empty());
+    }
+
+    #[test]
+    fn extensions_are_optional_and_round_trip_without_changing_core_fields() {
+        let mut manifest = ConversionManifest::default();
+        let before = serde_json::to_value(&manifest).unwrap();
+        assert!(before.get("extensions").is_none());
+        let legacy: ConversionManifest = serde_json::from_value(before.clone()).unwrap();
+        assert!(legacy.extensions.is_empty());
+        manifest
+            .extensions
+            .push(shared::extensions::ExtensionEntry {
+                id: "example.payload".to_owned(),
+                version: 1,
+                owns: shared::extensions::ExtensionOwns::default(),
+                sha256: "0".repeat(64),
+                built_from: "core".to_owned(),
+                stats: BTreeMap::new(),
+            });
+        let mut with_extension = serde_json::to_value(&manifest).unwrap();
+        let restored: ConversionManifest = serde_json::from_value(with_extension.clone()).unwrap();
+        assert_eq!(restored, manifest);
+        with_extension.as_object_mut().unwrap().remove("extensions");
+        assert_eq!(with_extension, before);
+    }
 
     /// Legacy absence and malformed optional records do not poison neighboring proofs.
     #[test]
@@ -1412,6 +1501,30 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// An absent file has no hash. An unreadable one is an error that names the path, not an
+    /// empty hash that looks like a changed file.
+    #[test]
+    fn hash_file_if_present_separates_absent_from_unreadable() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("output.glb");
+        assert_eq!(hash_file_if_present(&file).unwrap(), None);
+
+        fs::write(&file, b"bytes").unwrap();
+        assert_eq!(
+            hash_file_if_present(&file).unwrap(),
+            Some(hash_file(&file).unwrap())
+        );
+
+        // A directory cannot be read as a file on any platform.
+        let unreadable = directory.path().join("directory");
+        fs::create_dir(&unreadable).unwrap();
+        let error = hash_file_if_present(&unreadable).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("directory"),
+            "the error names the path: {error:#}"
+        );
     }
 
     #[test]

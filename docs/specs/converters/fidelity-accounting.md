@@ -109,8 +109,8 @@ lie outside the canonical built-in usage matrix's denominator.
 
 ## NIF unread-byte accounting
 
-`nif-audit` report versions 3 and 4 include exact unparsed-region/byte totals and at most eight samples per
-file. Each sample names the block, source file offset, length and SHA-256. Known-block tails,
+`nif-audit` report versions 4 and 5 include exact unparsed-region/byte totals and at most eight samples per
+file. Version 5 also lists each file's `conversion_refusals` and counts `refused_files` in the summary. Each sample names the block, source file offset, length and SHA-256. Known-block tails,
 whole unhandled blocks, parse failures, parser panics and unread file trailers remain separate
 reasons. A trailer can contain legitimate native footer data; unread does not mean malformed.
 The containing file hash binds every sample to recoverable source bytes. The source NIF remains
