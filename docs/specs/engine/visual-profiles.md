@@ -47,8 +47,9 @@ Every receipt names the profile it describes:
 - `SceneState` (live console) and `SceneShot` receipts: `visual_profile`.
 - Bug-report snapshots: `configured_rendering.visual_profile`.
 
-The benchmark run fingerprint (`fingerprint.rs`) carries the profile in its graphics section, so two
-benchmark runs of different profiles are never compared as one.
+The benchmark run fingerprint (`fingerprint.rs`) carries the profile in its graphics section.
+`scripts/analyze-streaming-comparison.py` does not check this field when it pairs runs. The operator
+must check that both runs use the same profile, unless the comparison tool enforces it.
 
 ## Raw colour texels (P1a #360)
 
@@ -212,6 +213,6 @@ bit-identical stage 3 and stage 4 values at every probe, and the V2 reference bu
 gives the same stage 4 values.
 
 V1 tolerance, so the noise floor does not set it: registration does. A probe passes when each
-channel is within **2 % relative at stage 3**, or within one 8-bit step where the reference is at
-or near zero, and within **2 bytes at stage 4**, which covers a 3 px
+channel is within **2 % relative at stage 3** and within **2 bytes at stage 4**. Stage 3 (`stage3_ok`)
+accepts a per-channel error of at most `max(0.02 * abs(reference), 1/255)`. This covers a 3 px
 misregistration at every probe in the set. The tolerance is frozen in #358 before any P1 result.
