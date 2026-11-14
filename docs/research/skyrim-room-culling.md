@@ -40,11 +40,21 @@ Research checked on 2026-11-15:
   multibound override for references that must remain visible across rooms. It warns that gaps and
   overlaps can cause missing geometry. It does **not** say that overlapping boxes automatically
   connect rooms.
+- Bethesda's [Skyrim room-basics page, revision 15028](https://ck.uesp.net/w/index.php?title=Room_Bounds_and_Portal_Basics&oldid=15028)
+  was verified from the user-supplied saved HTML, **Room Bounds and Portal Basics - the CreationKit
+  Wiki.html**, last edited 2011-12-02. The saved HTML SHA-256 is
+  `90a438d8f064ded2fb9efc653998ca0ab95b402d43830f05ecfc773d42612278`.
+  It documents that a viewpoint outside room bounds can see their contents only through a portal.
+  Walking into an adjacent room does not make that room visible before entry if no working portal
+  connects it. It also warns about disappearing dropped objects, misplaced object pivots, and
+  overlapping or separated room bounds. Its performance section attributes overhead to many
+  visible portals and their frustum operations. The page recommends `MBC` to toggle multibound
+  culling and `TCL` to inspect geometry, but those commands were not exercised in Skyrim here.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
-  describes a separate unbounded space connected through portals. The supplied Skyrim tutorial
-  does not describe that rule. Unbounded-space evidence for Skyrim therefore still comes from the
-  community declarations above, rather than this tutorial. The separate Skyrim
-  [room basics page](https://ck.uesp.net/wiki/Room_Bounds_and_Portal_Basics) remains unverified.
+  additionally names a separate unbounded space connected through portals. That terminology and
+  its exact traversal rules are not established by the supplied Skyrim pages. Skyrim's outside-
+  bounds portal rule is now documented directly above; the explicit unbounded-space state remains
+  supported by the community declarations.
 
 The structural comparison is useful: Skyrim's declared compound frusta can represent unions and
 intersections of plane sets. Our screen rectangles approximate those visible regions and merge
@@ -53,8 +63,9 @@ traversal, which is why unresolved connections draw the whole cell instead of be
 
 No reconstruction source was copied into the engine. No original Skyrim runtime comparison was
 performed. The evidence supports using authored apertures and explicit room links; the exact
-handling of overlapping bounds, unbounded-space traversal, dynamic membership, lights and shadows
-still needs controlled Skyrim experiments or reconstructed traversal functions.
+clipping at overlapping bounds, construction of unbounded-space visibility, dynamic membership
+updates, lights and shadows still needs controlled Skyrim experiments or reconstructed traversal
+functions.
 
 ## Differences established by the Skyrim tutorial
 
@@ -71,6 +82,16 @@ pivot in exactly one room. The tutorial does not identify the serialized field/v
 The schema names `XMBR` as a multibound field and also retains `XMBP`, but that alone does not prove
 how the editor encodes the override. Confirm that representation with xEdit definitions or a
 controlled CK edit before implementing it. Existing converted data would need correction too.
+
+The room-basics page establishes that Skyrim restricts views from outside room bounds to portals.
+Our camera-outside-all-rooms fallback instead draws the whole cell. Likewise, drawing references
+with no geometric membership is deliberately more permissive than the documented pivot rule.
+These choices preserve geometry when our graph lacks the original renderer's connectivity and
+assignment information; they are not replicas of the documented visibility policy.
+
+Its dropped-object warning also shows why a reference's original placement is insufficient for
+moving objects. Our actor and movable-object exemptions deliberately avoid culling by stale
+membership. The page does not establish how Skyrim updates membership as objects move or settle.
 
 The tutorial recommends measuring performance and limiting long chains of visible portals. Its
 3–5-portal guidance is an authoring recommendation, not permission to truncate the renderer's walk.

@@ -185,7 +185,10 @@ require them, and would then go in the same change that raises the engine's maxi
 
 1. The pivot rule is verified in the supplied Skyrim tutorial. The documented `NONE` multibound
    override remains unimplemented; its serialized representation needs verification before the
-   converter can preserve it.
+   converter can preserve it. The supplied [Skyrim room-basics page, revision 15028](https://ck.uesp.net/w/index.php?title=Room_Bounds_and_Portal_Basics&oldid=15028)
+   also verifies that views from outside room bounds require portals, and warns about pivot-edge,
+   dropped-object and room-gap rendering failures. Our outside-room draw-all fallback is therefore
+   a deliberately more permissive engine policy.
 2. (Answered: the `contained = 0` overlap rows, written after integration from `statics.bounds_*`.)
    Large objects whose pivot sits in one room but whose mesh reaches into another can vanish too
    early. The tutorial's authored `NONE` override addresses references that need cross-room
