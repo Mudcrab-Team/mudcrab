@@ -1,5 +1,6 @@
 //! CPU grass streaming observes committed cells after streaming has finished.
 pub mod generation;
+pub mod wind;
 
 use crate::{
     config::EngineConfig,

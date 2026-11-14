@@ -119,7 +119,8 @@ impl EngineConfig {
             self.map_grass_settings(&report);
         }
         self.grass_settings_diagnostics.push(
-            "imported grass wind magnitude settings are reported only: grass wind is not implemented".into(),
+            "imported grass wind magnitude settings are reported only: grass wind is not rendered"
+                .into(),
         );
         self.grass_settings_diagnostics.push(
             "bAllowCreateGrass, bAllowLoadGrass and bGenerateGrassDataFiles are reported; Skyrim legacy grass-cache behavior is not implemented".into(),

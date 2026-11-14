@@ -42,10 +42,10 @@ pub struct GrassSettings {
     /// `fGrassMaxStartFadeDistance`: retail default 7000.0 (`Setting` at 0x1420793c8), also shipped in `Skyrim_Default.ini`; reported only.
     #[serde(rename = "fGrassMaxStartFadeDistance")]
     pub max_start_fade_distance: f64,
-    /// `fGrassWindMagnitudeMin`: retail default 5.0 (`Setting` at 0x142079458); reported only.
+    /// `fGrassWindMagnitudeMin`: retail default 5.0 (`Setting` at 0x142079458, RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMin")]
     pub wind_magnitude_min: f64,
-    /// `fGrassWindMagnitudeMax`: retail default 125.0 (`Setting` at 0x142079440); reported only.
+    /// `fGrassWindMagnitudeMax`: retail default 125.0 (`Setting` at 0x142079440, RF-GRASS-001); reported only.
     #[serde(rename = "fGrassWindMagnitudeMax")]
     pub wind_magnitude_max: f64,
     /// `bDrawShaderGrass`: retail default true (`Setting` at 0x142079398); grass still requires --grass.

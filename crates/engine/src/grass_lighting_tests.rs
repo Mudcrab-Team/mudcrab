@@ -537,8 +537,8 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
 
 #[test]
 fn grass_shader_has_no_unsourced_wind_displacement() {
-    // Skyrim's wind formula is not yet reverse engineered, so blades stay at their placed
-    // positions. Placement, fade and GRAS height/slope handling do not depend on wind.
+    // The engine has no blended WTHR wind speed or wind direction yet, so blades stay at their
+    // placed positions. Placement, fade and GRAS height/slope handling do not depend on wind.
     let shader = include_str!("shaders/grass.wgsl");
     for removed in [
         "gust",
