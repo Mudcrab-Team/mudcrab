@@ -43,6 +43,22 @@ fn text(value: &str) -> Vec<u8> {
 /// One base record per newly covered type, each with `EDID` and `MODL`, and an interior cell
 /// placing each of them once.
 fn plugin(bases: &[([u8; 4], u32, Option<&str>)]) -> Vec<u8> {
+    plugin_with_placements(bases, &vec![*b"REFR"; bases.len()])
+}
+
+fn plugin_with_placements(
+    bases: &[([u8; 4], u32, Option<&str>)],
+    placements: &[[u8; 4]],
+) -> Vec<u8> {
+    plugin_with_extra_fields(bases, placements, &[])
+}
+
+fn plugin_with_extra_fields(
+    bases: &[([u8; 4], u32, Option<&str>)],
+    placements: &[[u8; 4]],
+    extra_fields: &[Vec<u8>],
+) -> Vec<u8> {
+    assert_eq!(bases.len(), placements.len());
     let hedr = [
         1.7f32.to_le_bytes(),
         0u32.to_le_bytes(),
@@ -56,10 +72,13 @@ fn plugin(bases: &[([u8; 4], u32, Option<&str>)]) -> Vec<u8> {
         if let Some(model) = model {
             fields.push(sub(b"MODL", &text(model)));
         }
+        if let Some(extra) = extra_fields.get(index) {
+            fields.push(extra.clone());
+        }
         let base = record(tag, *id, &fields.concat());
         bytes.extend(group(0, u32::from_le_bytes(*tag), &base));
         references.extend(record(
-            b"REFR",
+            &placements[index],
             0x0A00 + index as u32,
             &[sub(b"NAME", &id.to_le_bytes()), sub(b"DATA", &[0; 24])].concat(),
         ));
@@ -76,6 +95,89 @@ fn plugin(bases: &[([u8; 4], u32, Option<&str>)]) -> Vec<u8> {
         &group(2, 0, &group(3, 0, &[cell, children].concat())),
     ));
     bytes
+}
+
+#[test]
+fn both_readers_keep_female_armor_model_when_male_model_is_empty() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("Skyrim.esm");
+    for (male, female, expected) in [
+        (None, Some("Armor\\Female.nif"), Some("Armor\\Female.nif")),
+        (
+            Some(""),
+            Some("Armor\\Female.nif"),
+            Some("Armor\\Female.nif"),
+        ),
+        (
+            Some("Armor\\Male.nif"),
+            Some("Armor\\Female.nif"),
+            Some("Armor\\Male.nif"),
+        ),
+        (Some("Armor\\Male.nif"), None, Some("Armor\\Male.nif")),
+        (Some(""), Some(""), None),
+        (None, None, None),
+    ] {
+        let mut extra = Vec::new();
+        if let Some(male) = male {
+            extra.extend(sub(b"MOD2", &text(male)));
+        }
+        if let Some(female) = female {
+            extra.extend(sub(b"MOD4", &text(female)));
+        }
+        fs::write(
+            &path,
+            plugin_with_extra_fields(&[(*b"ARMO", 0x0800, None)], &[*b"REFR"], &[extra]),
+        )
+        .unwrap();
+        let rows = placed(RecordReader::Inhouse, &path, root.path());
+        assert_eq!(rows, placed(RecordReader::Legacy, &path, root.path()));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].3.as_deref(),
+            expected,
+            "male={male:?}, female={female:?}"
+        );
+    }
+}
+
+/// Every schema-declared projectile/hazard placement must reach the engine's model join.
+/// Varying one source model changes only that placement's projected model path.
+#[test]
+fn both_readers_publish_all_projectile_and_hazard_placements() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("Skyrim.esm");
+    let placements = [
+        *b"PGRE", *b"PHZD", *b"PMIS", *b"PARW", *b"PBAR", *b"PBEA", *b"PCON", *b"PFLA",
+    ];
+    let mut bases: Vec<_> = placements
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| {
+            (
+                if tag == b"PHZD" { *b"HAZD" } else { *b"PROJ" },
+                0x0800 + index as u32,
+                Some("Effects\\Synthetic.nif"),
+            )
+        })
+        .collect();
+    fs::write(&path, plugin_with_placements(&bases, &placements)).unwrap();
+    let before = placed(RecordReader::Inhouse, &path, root.path());
+    assert_eq!(before, placed(RecordReader::Legacy, &path, root.path()));
+    assert_eq!(before.len(), placements.len());
+    for (index, row) in before.iter().enumerate() {
+        assert_eq!(row.0, 0x0A00 + index as u32);
+        assert_eq!(row.1, 0x0800 + index as u32);
+        assert_eq!(row.3.as_deref(), Some("Effects\\Synthetic.nif"));
+    }
+
+    bases[1].2 = Some("Effects\\ChangedHazard.nif");
+    fs::write(&path, plugin_with_placements(&bases, &placements)).unwrap();
+    let after = placed(RecordReader::Inhouse, &path, root.path());
+    assert_eq!(after, placed(RecordReader::Legacy, &path, root.path()));
+    assert_eq!(after[1].3.as_deref(), Some("Effects\\ChangedHazard.nif"));
+    for index in (0..placements.len()).filter(|&index| index != 1) {
+        assert_eq!(after[index], before[index]);
+    }
 }
 
 type Placed = (u32, u32, Option<String>, Option<String>);
