@@ -82,12 +82,20 @@ fn linear_rgb(rgb: [u8; 3]) -> Vec4 {
     Vec4::new(linear.red, linear.green, linear.blue, 0.0)
 }
 
+/// The fog far distance the shader may divide by: at least one world unit, and at least one unit
+/// past `near`. Retail has records that need it: `LavaSettingsDUPLICATE001` has near 0 and far 0,
+/// and `DLC2ApocryphaWater` has near -10000 and far -9200. Such a water reads as opaque once the
+/// view travels a unit through it, which is what its opacity of 100 asks for.
+fn usable_fog_far(near: f32, far: f32) -> f32 {
+    far.max((near + 1.0).max(1.0))
+}
+
 /// x = opacity 0..1, y/z = above-water fog near and far in world units, w = fog amount.
 fn water_body(opacity: u8, fog: WaterFog) -> Vec4 {
     Vec4::new(
         f32::from(opacity.min(100)) / 100.0,
         fog.near,
-        fog.far,
+        usable_fog_far(fog.near, fog.far),
         fog.amount,
     )
 }
@@ -2225,6 +2233,43 @@ mod tests {
             app.world().resource::<Time>().wrap_period(),
             SHADER_CLOCK_WRAP
         );
+    }
+
+    #[test]
+    fn a_degenerate_fog_far_never_reaches_the_shader_as_a_divisor_of_zero() {
+        let far_of = |near, far| {
+            water_body(
+                100,
+                WaterFog {
+                    near,
+                    far,
+                    amount: 0.7,
+                },
+            )
+            .z
+        };
+        // Far 0 with near at -1 or below: the shader's `max(far, near + 1)` alone would give 0.
+        assert_eq!(far_of(-5.0, 0.0), 1.0);
+        assert_eq!(far_of(-1.0, 0.0), 1.0);
+        // The two retail records: lava (near 0, far 0) and Apocrypha water (-10000, -9200).
+        assert_eq!(far_of(0.0, 0.0), 1.0);
+        assert_eq!(far_of(-10000.0, -9200.0), 1.0);
+        // Far at or below near stays one unit past near; a sane record is unchanged.
+        assert_eq!(far_of(20.0, 10.0), 21.0);
+        assert_eq!(far_of(-10.0, 150.0), 150.0);
+        assert_eq!(far_of(-290.0, 720.0), 720.0);
+        let default = WaterFog::default();
+        assert_eq!(far_of(default.near, default.far), default.far);
+        // Whatever the record says, far - near is at least one and far is at least one.
+        for near in [-10000.0, -50.0, -1.0, 0.0, 3.0, 500.0] {
+            for far in [-9200.0, -1.0, 0.0, 0.5, 2.0, 1000.0] {
+                let usable = far_of(near, far);
+                assert!(
+                    usable >= 1.0 && usable - near >= 1.0,
+                    "near {near}, far {far}"
+                );
+            }
+        }
     }
 
     #[test]

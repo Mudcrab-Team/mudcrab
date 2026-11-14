@@ -104,7 +104,9 @@ fn water_body(path: f32, vertical_depth: f32) -> vec2<f32> {
         return vec2<f32>(1.0, water.body.x);
     }
     let near = water.body.y;
-    let far = max(water.body.z, near + 1.0);
+    // The CPU already keeps far at least one unit past near and at least one (`usable_fog_far`);
+    // the shader keeps the same bound so no uniform can make the divisions below divide by zero.
+    let far = max(water.body.z, max(near + 1.0, 1.0));
     let colour = clamp(vertical_depth / far, 0.0, 1.0);
     let amount = water.body.w;
     if amount <= 0.0 {
