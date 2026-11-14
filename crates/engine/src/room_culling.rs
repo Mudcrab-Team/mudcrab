@@ -2612,15 +2612,12 @@ mod tests {
         assert!(graph.overlaps.contains(&(1, 2)));
         let reached = graph.reached_rooms(Vec3::ZERO, clip_from_local()).unwrap();
         assert_eq!(&reached[..3], [true, true, false]);
-        // Take the pair's portals away and the same boxes are one space: every edge past the
-        // portal-less rooms is open, and the neighbour is drawn whatever the region was. The
-        // camera's own room keeps a parked portal so the walk still runs - a start with none draws
-        // the whole cell now.
+        // Removing those portals makes the reached corridor incomplete. Even though the camera
+        // keeps its own portal, the whole cell must stay drawn.
         let mut open = graph.clone();
         open.portals.clear();
         park_portals(&mut open.rooms, &mut open.portals, &[0]);
-        let reached = open.reached_rooms(Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(&reached[..3], [true, true, true]);
+        assert!(open.reached_rooms(Vec3::ZERO, clip_from_local()).is_none());
     }
 
     /// A touching pair that a doorway joins keeps the doorway's narrowing: no overlap edge is added.
