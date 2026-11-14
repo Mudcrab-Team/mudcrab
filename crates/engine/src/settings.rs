@@ -465,7 +465,7 @@ impl RenderingSettings {
     /// Keep automatically sized grass inside terrain while retaining wider saved preferences.
     /// Explicit terrain limits and programmatic configurations retain their clamped grass ring.
     fn retain_grass_coverage(&mut self, config: &EngineConfig) {
-        if !config.grass || !config.loads_world() {
+        if !config.grass || !config.loads_world() || config.grass_settings_error.is_some() {
             return;
         }
         let automatic = config
@@ -1068,13 +1068,7 @@ pub(crate) fn apply_render_settings(
         if tone.mode == crate::tone_mapping::SceneToneMapMode::Tony {
             *tone_map = TONE_MAPS[settings.tone_map];
         }
-        // The grass coverage shader has a four-sample contract. Reflections below keep the
-        // selected preference, which also remains saved for runs without grass.
-        *msaa = if config.grass && config.loads_world() {
-            Msaa::Sample4
-        } else {
-            MSAA_MODES[settings.msaa]
-        };
+        *msaa = MSAA_MODES[settings.msaa];
         if let Projection::Perspective(p) = &mut *projection {
             p.fov = settings.fov_degrees.to_radians();
         }
@@ -1395,6 +1389,42 @@ mod tests {
         assert_eq!(reloaded.exposure_ev100, 8.5);
     }
 
+    #[test]
+    fn g3_missing_cache_preserves_wider_saved_radii() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_settings(
+            &path,
+            &RenderingSettings {
+                stream_radius: 11,
+                unload_radius: 15,
+                ..default()
+            },
+        )
+        .unwrap();
+        let mut config = launch(&["--grass".into(), "--grass-radius".into(), "7".into()]);
+        config.assets_dir = directory.path().to_path_buf();
+        let mut preferences = prepare_settings_at(&mut config, Some(path));
+        assert!(
+            crate::app::load_optional_grass_cache(&mut config, true, Some(&mut preferences))
+                .is_none()
+        );
+        assert_eq!((config.stream_radius, config.unload_radius), (11, 15));
+        assert_eq!(
+            (preferences.0.stream_radius, preferences.0.unload_radius),
+            (11, 15)
+        );
+    }
+
+    #[test]
+    fn g3_excessive_automatic_grass_radius_cannot_expand_terrain() {
+        let mut config = launch(&["--grass".into(), "--grass-radius".into(), "100000".into()]);
+        assert!(config.validate_grass().is_err());
+        assert_eq!((config.stream_radius, config.unload_radius), (2, 3));
+        let (settings, _) = prepare_settings_at(&mut config, None);
+        assert_eq!((settings.stream_radius, settings.unload_radius), (2, 3));
+    }
+
     /// A missing cache disables grass, warns once and restores both saved terrain radii.
     #[test]
     fn g3_cache_startup_missing_restores_saved_radii_and_warns_once() {
@@ -1706,7 +1736,7 @@ mod tests {
         }
     }
 
-    /// Grass world cameras retain alpha-to-coverage MSAA while reflections and the file retain
+    /// Grass world cameras, reflections and the file retain
     /// the selected preference, including after an unrelated exposure change.
     #[test]
     fn g3_grass_world_msaa_survives_preferences_and_later_updates() {
@@ -1727,7 +1757,7 @@ mod tests {
 
             app.update();
             assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
-            assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
             assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
 
             app.world_mut()
@@ -1735,7 +1765,7 @@ mod tests {
                 .exposure_ev100 = 8.5;
             app.update();
             assert_eq!(app.world().get::<Exposure>(camera).unwrap().ev100, 8.5);
-            assert_eq!(app.world().get::<Msaa>(camera), Some(&Msaa::Sample4));
+            assert_eq!(app.world().get::<Msaa>(camera), Some(&selected));
             assert_eq!(app.world().get::<Msaa>(reflection), Some(&selected));
             assert_eq!(app.world().resource::<RenderingSettings>().msaa, index);
             save_app_settings(&mut app);

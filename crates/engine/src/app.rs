@@ -2406,11 +2406,7 @@ fn setup_world(
         FogCamera,
         // The sky draws a dome around this camera and clears it to the weather's fog colour.
         SkyCamera,
-        if config.grass {
-            Msaa::Sample4
-        } else {
-            Msaa::Off
-        },
+        Msaa::Off,
         DepthPrepass,
         OcclusionCulling,
         RenderLayers::from_layers(MAIN_VIEW_LAYERS),

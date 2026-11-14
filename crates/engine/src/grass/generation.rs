@@ -380,7 +380,8 @@ fn generate_field(
             });
         }
     }
-    for (id, instances) in instances {
+    for (id, mut instances) in instances {
+        instances.shrink_to_fit();
         let species = cache
             .species(id)
             .expect("generated species exists in immutable mapping");

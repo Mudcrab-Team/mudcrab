@@ -74,6 +74,13 @@ impl Options {
             ));
         }
         let world_grass = config.grass && config.loads_world();
+        // Bound automatic terrain expansion before settings or the planner sees it.
+        // Explicit terrain radii retain the caller's deliberate coverage limit.
+        if world_grass && !self.explicit_stream_radius && config.grass_radius > 32 {
+            config.grass_settings_error.get_or_insert_with(||
+                "automatic grass radius exceeds 32 cells; supply an explicit --stream-radius to control terrain coverage".into());
+            return;
+        }
         if world_grass && !self.explicit_stream_radius && config.grass_radius != i32::MAX {
             config.grass_terrain_radii = Some((config.stream_radius, config.unload_radius));
             config.stream_radius = config
