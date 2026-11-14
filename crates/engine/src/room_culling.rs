@@ -87,7 +87,9 @@
 //!
 //! - a reference carrying [`RoomCullExempt`], which `streaming::spawn_cell` inserts when the base
 //!   record type is an actor, a door, an activator or a movable inventory item
-//!   ([`exempt_record_type`]). **Future actor spawning hooks in here:** whatever spawns an actor
+//!   ([`exempt_record_type`]), or the placed reference carries the authored Multibound header flag.
+//!   This preserves `NONE` even when an older conversion assigned it geometric room membership.
+//!   Named overrides are conservatively kept visible too. **Future actor spawning hooks in here:** whatever spawns an actor
 //!   or an animated door outside `spawn_cell` inserts `RoomCullExempt` on the reference entity;
 //! - a mesh whose own entity, or whose reference, has a `RigidBody` that moves
 //!   (`Dynamic`, `KinematicPositionBased` or `KinematicVelocityBased`). `Fixed` bodies, which is
@@ -133,8 +135,8 @@ use std::{
     path::PathBuf,
 };
 
-/// Marks a placed reference that room culling must never hide: an actor, a door, or anything that
-/// can move. See the module documentation.
+/// Marks a placed reference that room culling must never hide: an authored multibound override,
+/// an actor, a door, or anything that can move. See the module documentation.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RoomCullExempt;
 

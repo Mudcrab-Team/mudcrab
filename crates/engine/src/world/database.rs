@@ -208,6 +208,26 @@ impl std::fmt::Display for LodQueryFailure {
     }
 }
 
+/// Which door-link contract the worker may read. Core packs discover the optional table;
+/// legacy extension packs require a valid declaration and may explicitly disable the reader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DoorLinksAccess {
+    /// Upstream core output; older core packs may have no door table.
+    #[default]
+    Core,
+    /// A validated legacy extension declaration requires a complete door table.
+    LegacyExtension,
+    /// A stale or unsupported legacy declaration must not be read as core data.
+    Disabled,
+}
+
+/// Dataset capabilities used by the world database worker (`crate::extensions`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldDatabaseFeatures {
+    /// Ownership and validation policy for the promoted `door_links` table.
+    pub door_links: DoorLinksAccess,
+}
+
 #[derive(Resource)]
 pub struct WorldDatabase {
     requests: Sender<DatabaseRequest>,
@@ -399,8 +419,23 @@ impl WorldDatabase {
         )
     }
 
+    /// Opens available core doors, including legacy packages with no door table.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, WorldDatabaseFeatures::default())
+    }
+
+    /// Opens the ordinary database with a validated door capability policy.
+    pub fn open_with(path: &Path, features: WorldDatabaseFeatures) -> Result<Self> {
         validate(path)?;
+        if features.door_links == DoorLinksAccess::LegacyExtension {
+            require_table(path, "door_links", crate::extensions::Feature::DoorLinks)?;
+            let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            color_eyre::eyre::ensure!(
+                has_door_links(&connection)?,
+                "extension {} is listed but its door_links table lacks columns",
+                shared::extensions::DOOR_LINKS
+            );
+        }
         let path = path.to_owned();
         let (request_tx, request_rx) = bounded(128);
         // Responses must not block shutdown if the main world stops polling.
@@ -411,7 +446,7 @@ impl WorldDatabase {
         let worker = thread::Builder::new()
             .name("mudcrab-world-db".into())
             .spawn(move || {
-                worker(path, request_rx, response_tx, lod_response_tx);
+                worker(path, features, request_rx, response_tx, lod_response_tx);
                 stopped.store(true, Ordering::Release);
             })
             .wrap_err("failed to start world database worker")?;
@@ -490,6 +525,23 @@ impl Drop for WorldDatabase {
     }
 }
 
+fn require_table(path: &Path, table: &str, feature: crate::extensions::Feature) -> Result<()> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let found: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE",
+        [table],
+        |row| row.get(0),
+    )?;
+    color_eyre::eyre::ensure!(
+        found > 0,
+        "extension {} is listed but {} has no `{table}` table",
+        feature.extension(),
+        path.display()
+    );
+    Ok(())
+}
+
 fn validate(path: &Path) -> Result<()> {
     shared::world_assets::validate_world_database(path).map(|_| ())
 }
@@ -498,6 +550,7 @@ pub(crate) use shared::world_assets::validate_lod_build_contract;
 
 fn worker(
     path: std::path::PathBuf,
+    features: WorldDatabaseFeatures,
     requests: Receiver<DatabaseRequest>,
     responses: Sender<DatabaseResponse>,
     lod_responses: Sender<LodChunkResponse>,
@@ -512,7 +565,7 @@ fn worker(
     )
     .map_err(color_eyre::eyre::Report::from)
     .and_then(|connection| {
-        let query = ReferenceQuery::for_connection(&connection)?;
+        let query = ReferenceQuery::for_connection(&connection, features)?;
         Ok((connection, query))
     })
     .map_err(|error| format!("world database {} is unusable: {error:#}", path.display()));
@@ -908,7 +961,7 @@ const DOOR_LINK_COLUMN_NAMES: [&str; 10] = [
 /// It is optional: a database converted before doors were exported still loads, and no reference
 /// in it is a load door. A table of another shape is treated the same way (and logged) rather than
 /// failing every cell's query, like [`has_radius_override`] checks its column.
-fn has_door_links(connection: &Connection) -> Result<bool> {
+pub(crate) fn has_door_links(connection: &Connection) -> Result<bool> {
     let mut statement =
         connection.prepare_cached("SELECT name FROM pragma_table_info('door_links')")?;
     let columns: BTreeSet<String> = statement
@@ -967,7 +1020,7 @@ struct ReferenceQuery {
 }
 
 impl ReferenceQuery {
-    fn for_connection(connection: &Connection) -> Result<Self> {
+    fn for_connection(connection: &Connection, features: WorldDatabaseFeatures) -> Result<Self> {
         let has_records = has_records(connection)?;
         let record_column = if has_records { "b.record_type" } else { "NULL" };
         let has_lights = has_lights(connection)?;
@@ -981,7 +1034,8 @@ impl ReferenceQuery {
         } else {
             ABSENT_RADIUS_OVERRIDE_COLUMN
         };
-        let has_door_links = has_door_links(connection)?;
+        let has_door_links =
+            features.door_links != DoorLinksAccess::Disabled && has_door_links(connection)?;
         let door_columns = if has_door_links {
             DOOR_COLUMNS
         } else {
@@ -1246,7 +1300,7 @@ mod tests {
     fn load_cell(connection: &Connection, generation: u64, key: CellKey) -> Result<CellPayload> {
         super::load_cell(
             connection,
-            &mut ReferenceQuery::for_connection(connection)?,
+            &mut ReferenceQuery::for_connection(connection, WorldDatabaseFeatures::default())?,
             generation,
             key,
         )
@@ -1283,6 +1337,44 @@ mod tests {
     }
 
     #[test]
+    fn disabled_legacy_doors_preserve_query_layout_without_reading_core_doors() {
+        let connection = Connection::open_in_memory().unwrap();
+        fixture(&connection);
+        add_door_links(&connection);
+        let core =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
+        assert!(core.joins.contains("door_links"));
+        let mut denied = ReferenceQuery::for_connection(
+            &connection,
+            WorldDatabaseFeatures {
+                door_links: DoorLinksAccess::Disabled,
+            },
+        )
+        .unwrap();
+        assert!(!denied.joins.contains("door_links"));
+        assert!(denied.columns.contains(ABSENT_DOOR_COLUMNS));
+        let sql = format!(
+            "SELECT {} FROM \"references\" r{} WHERE r.id=30",
+            denied.columns, denied.joins
+        );
+        connection
+            .query_row(&sql, [], |row| {
+                for index in 25..34 {
+                    assert_eq!(row.get::<_, Option<i64>>(index)?, None);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let payload = super::load_cell(&connection, &mut denied, 1, CellKey::Interior(99)).unwrap();
+        assert!(
+            payload
+                .references
+                .iter()
+                .all(|reference| reference.door.is_none())
+        );
+    }
+
+    #[test]
     fn enable_metadata_does_not_decode_reserved_door_slots() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
@@ -1292,7 +1384,8 @@ mod tests {
                 "UPDATE \"references\" SET header_flags=2048,enable_parent_id=20,enable_parent_flags=1 WHERE id=30;",
             )
             .unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         let sql = format!(
             "SELECT {} FROM \"references\" r{} WHERE r.id=30",
             query.columns, query.joins
@@ -1356,7 +1449,8 @@ mod tests {
     fn starts_dead_comes_from_the_reference_header_and_defaults_off() {
         let connection = Connection::open_in_memory().unwrap();
         fixture(&connection);
-        let mut legacy = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut legacy =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         let payload = super::load_cell(&connection, &mut legacy, 1, CellKey::Interior(10)).unwrap();
         assert!(!payload.references.is_empty());
         assert!(payload.references.iter().all(|row| !row.starts_dead));
@@ -1368,7 +1462,8 @@ mod tests {
                  UPDATE \"references\" SET header_flags=2048 WHERE id<>30;",
             )
             .unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         let payload = super::load_cell(&connection, &mut query, 1, CellKey::Interior(10)).unwrap();
         for row in &payload.references {
             assert_eq!(row.starts_dead, row.form_id == 30, "{:08X}", row.form_id);
@@ -1388,7 +1483,8 @@ mod tests {
              UPDATE \"references\" SET header_flags=2048,enable_parent_id=200,enable_parent_flags=952044802 WHERE id=30;
              UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
         ).unwrap();
-        let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+        let mut query =
+            ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default()).unwrap();
         for _ in 0..2 {
             let interior =
                 super::load_cell(&connection, &mut query, 1, CellKey::Interior(99)).unwrap();
@@ -1443,7 +1539,9 @@ mod tests {
             connection.execute_batch(
                 "UPDATE \"references\" SET enable_parent_id=30,enable_parent_flags=1 WHERE id=31;"
             ).unwrap();
-            let mut query = ReferenceQuery::for_connection(&connection).unwrap();
+            let mut query =
+                ReferenceQuery::for_connection(&connection, WorldDatabaseFeatures::default())
+                    .unwrap();
             for _ in 0..2 {
                 let payload = super::load_cell(
                     &connection,
@@ -2340,7 +2438,13 @@ mod tests {
         }
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            response_tx,
+            lod_response_tx,
+        );
 
         let responses: Vec<DatabaseResponse> = response_rx.try_iter().collect();
         assert_eq!(responses.len(), 2, "every request is answered");
@@ -2372,7 +2476,13 @@ mod tests {
             .unwrap();
         request_tx.send(DatabaseRequest::Shutdown).unwrap();
 
-        worker(path, request_rx, cell_response_tx, lod_response_tx);
+        worker(
+            path,
+            WorldDatabaseFeatures::default(),
+            request_rx,
+            cell_response_tx,
+            lod_response_tx,
+        );
 
         let response = lod_response_rx.try_recv().unwrap();
         assert_eq!(response.generation, 7);
