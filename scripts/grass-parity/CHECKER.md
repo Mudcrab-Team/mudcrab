@@ -43,8 +43,9 @@ python -B scripts/grass-parity/run.py --ours-bin "$oursBin" --grass-cache "$gras
 
 `--grass-cache` is our converted grass-cache file. `--world` is spud's world
 file; `--cache` is spud's explicit cache root. The wrapper passes `--cache` to
-spud on every run. The wrapper currently requires Windows `LOCALAPPDATA` and
-refuses to run if its default `spud` directory exists. It checks again after
+spud on every run. The wrapper uses `LOCALAPPDATA` as its default-cache guard
+root, or requires explicit `--local-appdata` when that environment variable is
+unset, and refuses to run if its default `spud` directory exists. It checks again after
 each completed command and records the final presence check. It does not
 delete that directory. These checks detect an accidental default-cache write;
 they are not a filesystem sandbox.
@@ -88,7 +89,8 @@ python -B scripts/grass-parity/compare.py --ours OUR_DUMP_DIRECTORY --spud SPUD_
 The comparator reads only `cell_<x>_<y>.csv` instance dumps. Aggregate files
 such as `cell-form-counts.csv` are not instance inputs. Optional headerless
 `requested-cells.csv` manifests make a cell absent from both sides visible.
-Missing cells and malformed records mark the result incomplete. Malformed
+Missing cells, missing or incomplete CSV headers, and malformed records mark
+the result incomplete. A complete header with no rows is a valid empty cell. Malformed
 records are skipped with bounded detailed warnings and a total skipped count;
 valid neighbouring records remain available for comparison. Exit status is
 `0` for complete input, `1` for an incomplete comparison, and `2` for a fatal

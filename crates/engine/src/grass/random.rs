@@ -22,6 +22,7 @@ impl CellRandom {
     /// Advance one word, with the ascending in-place twist and reference tempering.
     pub(super) fn next(&mut self) -> u32 {
         if self.index == 0 {
+            // Reproduce the reference generator's exact twist, pinned by the literal test vectors below.
             self.words[624] = 0;
             for i in 0..624 {
                 let mixed = self.words[i + 1] % 624 + (self.words[i] & 1);

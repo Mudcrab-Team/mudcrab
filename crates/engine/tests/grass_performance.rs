@@ -1,6 +1,6 @@
 //! Authored synthetic plugins through the converter, then the real mapped CPU generator.
 //! Retain a GPU smoke pack by setting MUDCRAB_GRASS_FIXTURE_OUTPUT to a new output folder.
-use converter::esm::EsmParser;
+use converter::{config::TextureEncoder, esm::EsmParser};
 use dummy_content::{esm, layout, nif};
 use engine::{
     config::EngineConfig,
@@ -443,6 +443,9 @@ async fn performance_grass_generation() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("modern"));
     let mut config = converter::PipelineConfig::new(&data, &output);
+    // This CPU budget fixture must not initialize the default GPU LOD encoder.
+    config.texture_encoder = TextureEncoder::Cpu;
+    config.lod_texture_encoder = TextureEncoder::Cpu;
     config.cpu_jobs = 2;
     config.io_jobs = 2;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
@@ -456,6 +459,8 @@ async fn performance_grass_generation() {
     assert_grass_material(&output);
     let second_output = temporary.path().join("modern-single-job");
     let mut second_config = converter::PipelineConfig::new(&data, &second_output);
+    second_config.texture_encoder = TextureEncoder::Cpu;
+    second_config.lod_texture_encoder = TextureEncoder::Cpu;
     second_config.cpu_jobs = 1;
     second_config.io_jobs = 1;
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);

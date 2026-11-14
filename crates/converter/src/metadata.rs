@@ -336,6 +336,7 @@ fn settings_for_source_reader(
                 && [
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
+                    crate::cache::inhouse_adapter12_reader_identity(&schemas),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
@@ -346,7 +347,9 @@ fn settings_for_source_reader(
                     || identity
                         == &serde_json::json!({"mode": "legacy", "projection_version": 2})
                     || identity
-                        == &serde_json::json!({"mode": "legacy", "projection_version": 3}))
+                        == &serde_json::json!({"mode": "legacy", "projection_version": 3})
+                    || crate::cache::legacy_projection_v4_reader_identity(&language).as_ref()
+                        == Some(identity))
                 && schemas.identities().is_empty()),
         "unsupported source reader producer identity; use normal conversion to regenerate assets before metadata-only migration"
     );
@@ -1611,7 +1614,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1636,7 +1639,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 12);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1724,6 +1727,7 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
+            serde_json::json!({"mode": "legacy", "projection_version": 4, "language": "english", "text_encoding": "windows-1252"}),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1747,6 +1751,45 @@ mod metadata_schema_controls {
                 )
                 .is_err()
             );
+        }
+    }
+
+    /// Projection-four source assets retain exact language and encoding identities.
+    #[test]
+    fn legacy_projection_four_source_settings_preserve_language_and_reject_unproven_variants() {
+        for language in ["english", "french"] {
+            let config = PipelineConfig::new("Data", "output");
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": 4, "language": language,
+                "text_encoding": "windows-1252",
+            });
+            if language == "french" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let settings = settings_for_source_reader(
+                &config,
+                &identity,
+                RuntimeSchemas::from_addon_bytes(&[]).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(settings.record_reader, RecordReader::Legacy);
+            assert_eq!(settings.language, language);
+            for (field, value) in [
+                ("projection_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    settings_for_source_reader(
+                        &config,
+                        &altered,
+                        RuntimeSchemas::from_addon_bytes(&[]).unwrap(),
+                    )
+                    .is_err()
+                );
+            }
         }
     }
 

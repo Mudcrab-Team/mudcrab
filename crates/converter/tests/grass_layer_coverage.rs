@@ -450,7 +450,7 @@ async fn legacy_broken_rule_keeps_neighbor_cells() {
     check_broken_rule_publication(RecordReader::Legacy).await;
 }
 
-/// A malformed NULL-paint field must not abort publication or remove the healthy neighboring cell.
+/// Malformed weights and assignments drop individually, preserving valid paint in the same cell.
 async fn check_broken_null_paint(reader: RecordReader) {
     let directory = tempfile::tempdir().unwrap();
     let config = fixture(directory.path(), reader);
@@ -464,10 +464,25 @@ async fn check_broken_null_paint(reader: RecordReader) {
             &[
                 (SAMPLE as u16).to_le_bytes().as_slice(),
                 &[0; 2],
+                &0.25f32.to_le_bytes(),
+                118u16.to_le_bytes().as_slice(),
+                &[0; 2],
                 &f32::NAN.to_le_bytes(),
+                119u16.to_le_bytes().as_slice(),
+                &[0; 2],
+                &1.02f32.to_le_bytes(),
+                400u16.to_le_bytes().as_slice(),
+                &[0; 2],
+                &0.5f32.to_le_bytes(),
+                &[0x12, 0x34, 0x56],
             ]
             .concat(),
         ),
+        field(
+            b"ATXT",
+            &[BARE_TEXTURE.to_le_bytes().as_slice(), &[4, 0, 1, 0]].concat(),
+        ),
+        field(b"BTXT", &[1, 2, 3]),
     ]
     .concat();
     bytes.extend(group(1, 1, &group(8, 0x30, &record(b"LAND", 0x31, fields))));
@@ -478,10 +493,6 @@ async fn check_broken_null_paint(reader: RecordReader) {
         .await
         .unwrap();
     drain.await.unwrap();
-    assert!(
-        !report.warnings.is_empty(),
-        "malformed field must be diagnosed"
-    );
     let cache = rkyv::from_bytes::<GrassCache, rkyv::rancor::Error>(
         &fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap(),
     )
@@ -489,6 +500,34 @@ async fn check_broken_null_paint(reader: RecordReader) {
     assert!(
         cache.cells.iter().any(|cell| cell.cell_id == 0x20),
         "healthy neighbor must publish"
+    );
+    let affected = cache
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == 0x30)
+        .expect("malformed item must not remove its cell");
+    let base = affected.quadrants[0]
+        .layers
+        .iter()
+        .find(|layer| layer.is_base)
+        .unwrap();
+    assert_eq!(base.grass_ids, [GRASS]);
+    assert!(
+        (base.weights[SAMPLE] - 192.0 / 255.0).abs() < 0.00001,
+        "valid neighboring weight must survive"
+    );
+    assert_eq!(base.weights[118], 1.0, "bad opacity alone must drop");
+    assert_eq!(
+        base.weights[119], 1.0,
+        "out-of-range opacity alone must drop"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("LAND selection") && w.contains("6")),
+        "{:?}",
+        report.warnings
     );
     assert!(
         cache
@@ -512,4 +551,16 @@ async fn inhouse_broken_null_paint_keeps_neighbor() {
 #[tokio::test]
 async fn legacy_broken_null_paint_keeps_neighbor() {
     check_broken_null_paint(RecordReader::Legacy).await;
+}
+
+/// Producer-ten masks must rebuild after selection recovery changes.
+#[tokio::test]
+async fn inhouse_metadata_rebuilds_version_ten_grass() {
+    check_old_version_migration(RecordReader::Inhouse, 10).await;
+}
+
+/// Legacy warm metadata follows the same producer-ten invalidation.
+#[tokio::test]
+async fn legacy_metadata_rebuilds_version_ten_grass() {
+    check_old_version_migration(RecordReader::Legacy, 10).await;
 }

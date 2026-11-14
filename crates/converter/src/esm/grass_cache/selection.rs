@@ -1,15 +1,12 @@
-//! Recover selection slots that terrain's separate NULL policy intentionally removes.
+//! Recover original selection slots independently of terrain normalization.
 //! Behavior follows spud (MIT, chasmlol/spud); see third-party/spud/LICENSE.
 use super::links;
-use color_eyre::{
-    Result,
-    eyre::{ensure, eyre},
-};
+use color_eyre::{Result, eyre::eyre};
 use shared::{CachedLand, TerrainLayer, TerrainWeight};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-/// Restore original slots only when normalization loses NULL, repeated or clamped assignments.
-pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Result<bool> {
+/// Restore original assignments while dropping only malformed layers, weights and trailing bytes.
+pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Result<(bool, usize)> {
     let decoded: Vec<_> = records
         .iter()
         .map(|bytes| {
@@ -17,19 +14,16 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                 .ok_or_else(|| eyre!("unreadable LAND selection payload"))
         })
         .collect::<Result<_>>()?;
-    let mut slots = BTreeSet::new();
-    let mut needed = false;
-    for subs in &decoded {
-        for (tag, data) in subs {
-            if tag == b"ATXT" && data.len() >= 8 {
-                let slot = u16::from_le_bytes([data[6], data[7]]);
-                needed |= data[..4] == [0; 4] || slot > 5 || !slots.insert((data[4], slot.min(5)));
-            }
-        }
+    // Inspect every raw assignment, even if terrain normalization did not lose a slot.
+    // This gives identical recovery for ordinary and NULL/repeated/clamped layers.
+    if !decoded
+        .iter()
+        .flatten()
+        .any(|(tag, _)| tag == b"BTXT" || tag == b"ATXT")
+    {
+        return Ok((false, 0));
     }
-    if !needed {
-        return Ok(false);
-    }
+    let mut omitted = 0;
     let mut layers = BTreeMap::new();
     for subs in decoded {
         for (index, (tag, data)) in subs.iter().enumerate() {
@@ -37,12 +31,15 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                 continue;
             }
             let base = tag == b"BTXT";
-            ensure!(
-                data.len() >= if base { 6 } else { 8 },
-                "short LAND texture assignment"
-            );
+            if data.len() < if base { 6 } else { 8 } {
+                omitted += 1;
+                continue;
+            }
             let quadrant = data[4];
-            ensure!(quadrant < 4, "invalid LAND selection quadrant");
+            if quadrant >= 4 {
+                omitted += 1;
+                continue;
+            }
             let texture = u32::from_le_bytes(data[..4].try_into().expect("checked length"));
             let slot = if base {
                 0
@@ -69,10 +66,7 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                 && let Some((next_tag, weights)) = subs.get(index + 1)
                 && next_tag == b"VTXT"
             {
-                ensure!(
-                    weights.len().is_multiple_of(8),
-                    "partial LAND selection weight"
-                );
+                omitted += usize::from(!weights.len().is_multiple_of(8));
                 let mut values: BTreeMap<_, _> = entry
                     .weights
                     .iter()
@@ -81,10 +75,10 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
                 for bytes in weights.as_chunks::<8>().0 {
                     let vertex = u16::from_le_bytes([bytes[0], bytes[1]]);
                     let opacity = f32::from_le_bytes(bytes[4..8].try_into().expect("fixed chunk"));
-                    ensure!(
-                        vertex < 289 && opacity.is_finite() && (0.0..=1.0).contains(&opacity),
-                        "invalid LAND selection weight"
-                    );
+                    if vertex >= 289 || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+                        omitted += 1;
+                        continue;
+                    }
                     values.insert(vertex, opacity);
                 }
                 entry.weights = values
@@ -95,7 +89,7 @@ pub(super) fn restore_layers(land: &mut CachedLand, records: &[Vec<u8>]) -> Resu
         }
     }
     land.layers = layers.into_values().collect();
-    Ok(true)
+    Ok((true, omitted))
 }
 
 #[cfg(test)]
@@ -130,7 +124,7 @@ mod tests {
             water_type_form_id: None,
             layers: vec![],
         };
-        assert!(restore_layers(&mut land, &[raw]).unwrap());
+        assert_eq!(restore_layers(&mut land, &[raw]).unwrap(), (true, 0));
         assert_eq!(land.layers.len(), 2);
         assert_eq!(land.layers[1].texture_form_id, u32::MAX);
         assert_eq!(land.layers[1].weights[0].opacity, 0.75);

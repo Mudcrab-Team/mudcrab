@@ -387,6 +387,11 @@ fn generate_field<const OBSERVE: bool>(
                             }
                             height_min = height_min.min(rounded_height);
                             height_max = height_max.max(rounded_height);
+                            // A missing/unusable model still occupies its nomination slot and
+                            // consumes all reference draws, then contributes no visible plants.
+                            if rule.model_path.is_empty() {
+                                continue;
+                            }
                             let qx = ((px / 2048.0) as usize).min(1);
                             let qy = ((py / 2048.0) as usize).min(1);
                             let mask = &cell.quadrants[qx + 2 * qy];

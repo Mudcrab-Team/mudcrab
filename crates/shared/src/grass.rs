@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version ten combines original LAND selection with static-like obstruction filtering.
-pub const GRASS_CACHE_VERSION: u32 = 10;
+/// Version eleven retains non-emitting species slots and locally recovers malformed LAND items.
+pub const GRASS_CACHE_VERSION: u32 = 11;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
@@ -12,6 +12,7 @@ pub const GRASS_CELL_SIZE: f32 = 4096.0;
 #[rkyv(bytecheck())]
 pub struct GrassType {
     pub form_id: u32,
+    /// Empty for a non-emitting species that still takes a selection slot and random draws.
     pub model_path: String,
     pub density: u8,
     pub min_slope: u8,
@@ -99,8 +100,7 @@ pub fn validate_archived_cache(cache: &ArchivedGrassCache) -> Result<(), &'stati
             return Err("grass types must have sorted unique nonzero IDs");
         }
         previous = Some(id);
-        if rule.position_range < 0.0
-            || rule.model_path.is_empty()
+        if (rule.position_range < 0.0 && !rule.model_path.is_empty())
             || rule.water_comparison > 7
             || [
                 rule.position_range,

@@ -599,3 +599,52 @@ fn performance_coloured_terrain_generation() {
         );
     }
 }
+
+/// A modelless first nomination keeps its cap slot and every conditional reference draw.
+#[test]
+fn modelless_species_preserves_following_reference_positions() {
+    let source = cell(vec![layer(vec![1, 2, 3, 4], 1.0, true)]);
+    for water_mode in [0, 2] {
+        let mut rules: Vec<_> = (1..=4)
+            .map(|id| rule(id, if id == 1 { 128.0 } else { 85.0 }))
+            .collect();
+        rules[0].density = 63;
+        rules[0].water_comparison = water_mode;
+        let reference = mapped(rules.clone(), source.clone());
+        let mut placeholders = rules;
+        placeholders[0].model_path.clear();
+        let actual = mapped(placeholders, source.clone());
+        let config = EngineConfig::default();
+        let collect = |cache: &GrassCache| {
+            let mut positions = Vec::new();
+            let generated = generate_observed(cache, 42, &config, |p| {
+                positions.push((p.form_id, p.position, p.appearance));
+            });
+            (generated, positions)
+        };
+        let (expected, mut reference_positions) = collect(&reference);
+        reference_positions.retain(|p| p.0 != 1);
+        let (actual, positions) = collect(&actual);
+        assert_eq!(
+            positions, reference_positions,
+            "valid species keep their exact reference draws and positions"
+        );
+        assert_eq!(
+            actual
+                .batches
+                .iter()
+                .map(|b| b.grass_id)
+                .collect::<Vec<_>>(),
+            [2, 3],
+            "modelless species emit nothing; fourth nomination remains outside the cap"
+        );
+        for batch in &actual.batches {
+            let expected = expected
+                .batches
+                .iter()
+                .find(|b| b.grass_id == batch.grass_id)
+                .unwrap();
+            assert_eq!(batch.instances, expected.instances);
+        }
+    }
+}

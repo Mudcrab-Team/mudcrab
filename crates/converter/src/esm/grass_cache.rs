@@ -41,10 +41,13 @@ pub struct GrassBakeReport {
     /// Lists with omitted fields, unavailable TXST, or unreadable winning LTEX payloads.
     pub skipped_texture_lists: usize,
     pub first_invalid_texture: Option<u32>,
-    /// Grass types without a model: they draw nothing in game either, so nothing is lost.
+    /// Model-less types retain selection slots and draws, but emit no instances.
     pub modelless_rules: usize,
     pub skipped_cells: usize,
     pub first_invalid_cell: Option<u32>,
+    /// Bad assignments, individual weights, and undecodable weight tails dropped locally.
+    pub omitted_selection_items: usize,
+    pub first_invalid_selection_cell: Option<u32>,
 }
 
 impl GrassBakeReport {
@@ -71,6 +74,12 @@ impl GrassBakeReport {
                 self.skipped_texture_lists
             ));
         }
+        if let Some(cell) = self.first_invalid_selection_cell {
+            warnings.push(format!(
+                "grass cache omitted {} malformed LAND selection items; first cell {cell:08X}",
+                self.omitted_selection_items
+            ));
+        }
         if let Some(cell) = self.first_invalid_cell {
             warnings.push(format!(
                 "grass cache skipped {} invalid terrain cells; first cell {cell:08X}",
@@ -92,7 +101,7 @@ impl GrassBakeReport {
         }
         if self.modelless_rules > 0 {
             notices.push(format!(
-                "grass cache ignored {} grass types without a model",
+                "grass cache retained {} non-emitting grass types without a model",
                 self.modelless_rules
             ));
         }
@@ -669,27 +678,49 @@ pub fn write_grass_cache_with_cancel(
             }
         }
     }
-    let mut statement = conn.prepare("SELECT form_id,record_type,cell_id,data FROM records WHERE record_type IN ('LAND','LTEX','GRAS') ORDER BY form_id")?;
+    let has_source_order: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='inhouse_terrain_source_order')",
+        [],
+        |row| row.get(0),
+    )?;
+    let source_sql = if has_source_order {
+        "SELECT r.form_id,r.record_type,r.cell_id,r.data,r.load_order,COALESCE(s.source_record_offset,0) FROM records r LEFT JOIN inhouse_terrain_source_order s ON s.form_id=r.form_id WHERE r.record_type IN ('LAND','LTEX','GRAS') ORDER BY r.form_id"
+    } else {
+        "SELECT form_id,record_type,cell_id,data,load_order,0 FROM records WHERE record_type IN ('LAND','LTEX','GRAS') ORDER BY form_id"
+    };
+    let mut statement = conn.prepare(source_sql)?;
     let mut rule_inputs = BTreeMap::<u32, Vec<u8>>::new();
-    let mut land_inputs = BTreeMap::<u32, Vec<Vec<u8>>>::new();
+    let mut selected_lands = BTreeMap::new();
     for row in statement.query_map([], |row| {
         Ok((
             row.get::<_, u32>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<u32>>(2)?,
             row.get::<_, Vec<u8>>(3)?,
+            row.get::<_, u32>(4)?,
+            row.get::<_, u64>(5)?,
         ))
     })? {
-        let (id, kind, cell, bytes) = row?;
+        let (id, kind, cell, bytes, load_order, source_offset) = row?;
         if kind == "LAND" {
-            land_inputs
-                .entry(cell.unwrap_or(id))
-                .or_default()
-                .push(bytes);
+            // Canonical SQL retains every live LAND. Match land_winners_by_cell's
+            // whole-record priority; losing slots must never mix into the winner.
+            let priority = (load_order, source_offset, id);
+            let cell = cell.unwrap_or(id);
+            if selected_lands
+                .get(&cell)
+                .is_none_or(|(selected, _)| priority > *selected)
+            {
+                selected_lands.insert(cell, (priority, bytes));
+            }
         } else {
             rule_inputs.insert(id, bytes);
         }
     }
+    let land_inputs: BTreeMap<_, _> = selected_lands
+        .into_iter()
+        .map(|(cell, (_, bytes))| (cell, vec![bytes]))
+        .collect();
     // TXST deletion changes binding/merge behavior even if LTEX bytes remain identical.
     for (&id, &valid) in &texture_bindings {
         let input = rule_inputs.entry(id).or_default();
@@ -726,19 +757,27 @@ pub fn write_grass_cache_with_cancel(
             continue;
         };
         let mut land: CachedLand = rkyv::deserialize::<CachedLand, Error>(archived_land)?;
+        // Restore before validation: malformed paint must not discard healthy layers.
+        if let Some(records) = land_inputs.get(&id) {
+            match selection::restore_layers(&mut land, records) {
+                Ok((_, omitted)) => {
+                    report.omitted_selection_items += omitted;
+                    if omitted != 0 {
+                        report.first_invalid_selection_cell.get_or_insert(id);
+                    }
+                }
+                Err(error) => {
+                    report.skipped_cells += 1;
+                    if report.first_invalid_cell.is_none() {
+                        eprintln!("grass selection skipped malformed LAND cell {id:08X}: {error}");
+                    }
+                    report.first_invalid_cell.get_or_insert(id);
+                    continue;
+                }
+            }
+        }
         if validate_terrain(&land).is_err() {
             report.skipped_cells += 1;
-            report.first_invalid_cell.get_or_insert(id);
-            continue;
-        }
-        // Bare painted textures also contribute to base residual before grassless layers drop.
-        if let Some(records) = land_inputs.get(&id)
-            && let Err(error) = selection::restore_layers(&mut land, records)
-        {
-            report.skipped_cells += 1;
-            if report.first_invalid_cell.is_none() {
-                eprintln!("grass selection skipped malformed LAND cell {id:08X}: {error}");
-            }
             report.first_invalid_cell.get_or_insert(id);
             continue;
         }
@@ -892,36 +931,56 @@ pub fn validate_grass_cache(path: &Path) -> Result<Mmap> {
     Ok(map)
 }
 
-/// Read complete valid grass rules, skipping unusable optional definitions.
-/// Returns the rules, the count of modeled rules lost to incomplete or invalid data, the
-/// model-less types (nothing to draw, counted separately) and the lowest lost rule's FormID.
+/// Keep resolved GRAS slots even when their optional model or rule is unusable.
+/// Empty model paths mark non-emitting placeholders; decodable sampling fields remain intact.
 fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option<u32>)> {
-    let total: usize = conn.query_row("SELECT count(*) FROM grass_types", [], |row| row.get(0))?;
-    let modelless: usize = conn.query_row(
-        "SELECT count(*) FROM grass_types WHERE model_path IS NULL OR model_path = ''",
-        [],
-        |row| row.get(0),
-    )?;
-    let mut statement = conn.prepare("SELECT id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags FROM grass_types WHERE model_path IS NOT NULL AND model_path <> '' AND density IS NOT NULL AND min_slope IS NOT NULL AND max_slope IS NOT NULL AND units_from_water IS NOT NULL AND water_comparison IS NOT NULL AND position_range IS NOT NULL AND height_range IS NOT NULL AND color_range IS NOT NULL AND wave_period IS NOT NULL AND flags IS NOT NULL ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT id,model_path,density,min_slope,max_slope,units_from_water,water_comparison,position_range,height_range,color_range,wave_period,flags FROM grass_types ORDER BY id")?;
+    let mut rows = statement.query([])?;
     let mut types = Vec::new();
-    for rule in statement.query_map([], |row| {
-        Ok(GrassType {
-            form_id: row.get(0)?,
-            model_path: row.get(1)?,
-            density: row.get(2)?,
-            min_slope: row.get(3)?,
-            max_slope: row.get(4)?,
-            units_from_water: row.get(5)?,
-            water_comparison: row.get(6)?,
-            position_range: row.get(7)?,
-            height_range: row.get(8)?,
-            color_range: row.get(9)?,
-            wave_period: row.get(10)?,
-            flags: row.get(11)?,
-        })
-    })? {
-        let Ok(rule) = rule else { continue };
-        if rule.form_id != 0
+    let mut skipped = 0;
+    let mut modelless = 0;
+    let mut first_invalid = None;
+    while let Some(row) = rows.next()? {
+        let mut complete = true;
+        // The reference zero-initializes absent DATA. Retain every decodable field,
+        // including model-less species' water/slope filters and conditional draws.
+        macro_rules! field {
+            ($index:expr, $default:expr) => {
+                match row.get($index) {
+                    Ok(Some(value)) => value,
+                    _ => {
+                        complete = false;
+                        $default
+                    }
+                }
+            };
+        }
+        let Ok(id) = row.get::<_, u32>(0) else {
+            skipped += 1;
+            continue;
+        };
+        let model_path: String = row
+            .get::<_, Option<String>>(1)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let without_model = model_path.is_empty();
+        let mut rule = GrassType {
+            form_id: id,
+            model_path,
+            density: field!(2, 0u8),
+            min_slope: field!(3, 0u8),
+            max_slope: field!(4, 0u8),
+            units_from_water: field!(5, 0u16),
+            water_comparison: field!(6, 0u32),
+            position_range: field!(7, 0.0f32),
+            height_range: field!(8, 0.0f32),
+            color_range: field!(9, 0.0f32),
+            wave_period: field!(10, 0.0f32),
+            flags: field!(11, 0u8),
+        };
+        let valid = complete
+            && id != 0
             && rule.position_range >= 0.0
             && rule.water_comparison <= 7
             && [
@@ -931,30 +990,34 @@ fn read_types(conn: &Connection) -> Result<(Vec<GrassType>, usize, usize, Option
                 rule.wave_period,
             ]
             .iter()
-            .all(|value| value.is_finite())
-        {
-            types.push(rule);
+            .all(|value| value.is_finite());
+        if without_model {
+            modelless += 1;
+        } else if !valid {
+            skipped += 1;
+            first_invalid.get_or_insert(id);
         }
-    }
-    let skipped = total - types.len() - modelless;
-    let first_invalid = if skipped == 0 {
-        None
-    } else {
-        let valid: std::collections::HashSet<u32> = types.iter().map(|rule| rule.form_id).collect();
-        let mut statement = conn.prepare(
-            "SELECT id FROM grass_types WHERE model_path IS NOT NULL AND model_path <> '' ORDER BY id",
-        )?;
-        let ids = statement.query_map([], |row| row.get::<_, u32>(0))?;
-        let mut first = None;
-        for id in ids {
-            let id = id?;
-            if !valid.contains(&id) {
-                first = Some(id);
-                break;
+        if id == 0 {
+            continue;
+        }
+        if !valid || without_model {
+            rule.model_path.clear();
+            // Invalid scalars cannot be sampled safely. Negative spacing already
+            // yields no grid; water modes above five are unconstrained in spud.
+            rule.water_comparison = rule.water_comparison.min(7);
+            for value in [
+                &mut rule.position_range,
+                &mut rule.height_range,
+                &mut rule.color_range,
+                &mut rule.wave_period,
+            ] {
+                if !value.is_finite() {
+                    *value = 0.0;
+                }
             }
         }
-        first
-    };
+        types.push(rule);
+    }
     Ok((types, skipped, modelless, first_invalid))
 }
 
@@ -1415,7 +1478,7 @@ fn input_hash(
     let mut hash = Sha256::new();
     hash.update(b"MudCrab grass cell inputs\0");
     hash.update(b"native-ground-contact-band128-v1");
-    hash.update(b"spud-original-slots-bound-and-merged-byte-opacity-land-sampling-v4");
+    hash.update(b"spud-original-slots-placeholder-rules-local-item-recovery-v5");
     hash.update(GRASS_CACHE_VERSION.to_le_bytes());
     hash.update(coordinate.0.to_le_bytes());
     hash.update(coordinate.1.to_le_bytes());
@@ -2610,9 +2673,9 @@ mod tests {
         assert!(read(&previous).cells.is_empty());
     }
 
-    /// Skip incomplete grass definitions while preserving valid neighboring rules.
+    /// Keep incomplete definitions as non-emitting slots beside valid neighboring rules.
     #[test]
-    fn partial_grass_rules_are_skipped_without_aborting_the_cache() {
+    fn partial_grass_rules_retain_slots_without_aborting_the_cache() {
         let dir = tempfile::tempdir().unwrap();
         let conn = fixture(dir.path());
         conn.execute("INSERT INTO grass_types(id,model_path,density,load_order) VALUES(23,'meshes/partial.glb',40,0)",[]).unwrap();
@@ -2630,7 +2693,7 @@ mod tests {
             &output,
         )
         .unwrap();
-        assert_eq!(read(&output).types.len(), 2);
+        assert_eq!(read(&output).types.len(), 3);
     }
 
     /// A model-less grass type is a notice; a modeled type with incomplete data still warns.
@@ -2655,9 +2718,9 @@ mod tests {
         assert_eq!((report.skipped_rules, report.modelless_rules), (0, 1));
         assert!(report.warnings().is_empty(), "{:?}", report.warnings());
         assert!(
-            report
-                .notices()
-                .contains(&"grass cache ignored 1 grass types without a model".to_owned()),
+            report.notices().contains(
+                &"grass cache retained 1 non-emitting grass types without a model".to_owned()
+            ),
             "{:?}",
             report.notices()
         );
@@ -2680,7 +2743,7 @@ mod tests {
             report.warnings(),
             ["grass cache skipped 1 incomplete or invalid grass rules; first GRAS 00000019"]
         );
-        assert_eq!(read(&output).types.len(), 2);
+        assert_eq!(read(&output).types.len(), 4);
     }
 
     /// Count only eligible modeled obstructions that lack validated bounds.

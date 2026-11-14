@@ -52,7 +52,7 @@ subgrid centers and is not tested again after jitter.
 
 Each entry has an n-by-n grid, with
 `n = min(trunc(256 / Position Range), trunc(256 / minimum spacing))`.
-Negative Position Range rules are skipped with a conversion warning.
+Negative Position Range rules retain a non-emitting nomination slot with a conversion warning.
 Zero Position Range safely uses the minimum-spacing limit. At
 minimum spacing 20 and Position Range <=20, a fully supported entry gets
 36,864 attempts per cell. Position Range 40 gives 9,216. Jitter covers each
@@ -248,6 +248,11 @@ and retain its grass minimum. An explicit terrain radius still clamps grass.
 Interactive terrain-radius changes recompute the same fade bound before the
 next grass draw. Capture receipts record grass readiness and current failures
 at extraction time, as the multi-shot settle gate does before requesting a frame.
+
+Resolved species without a usable model or rule retain their nomination slots.
+Model-less rules consume the same conditional density, jitter and appearance
+draws as the reference, but emit no instances. Missing rule fields use the
+reference zero defaults; malformed scalars are made safe and reported.
 
 ## Skyrim INI settings
 

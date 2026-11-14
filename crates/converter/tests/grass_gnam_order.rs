@@ -260,3 +260,172 @@ async fn inhouse_publication_recovers_malformed_gnam_with_valid_neighbors() {
 async fn legacy_publication_recovers_malformed_gnam_with_valid_neighbors() {
     check_order(RecordReader::Legacy, true, true).await;
 }
+
+/// Modelless and incomplete rules retain their authored positions through full publication.
+async fn check_placeholder_publication(reader: RecordReader) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture(directory.path(), reader, false, false);
+    let path = config.data_dir.join("Order.esp");
+    let mut bytes = fs::read(&path).unwrap();
+    let mut data = vec![0u8; 32];
+    data[0] = 63;
+    data[2] = 90;
+    data[12..16].copy_from_slice(&73.0f32.to_le_bytes());
+    // The first species loses only its model; the next loses DATA entirely.
+    bytes.extend(record(b"GRAS", HIGH, field(b"DATA", &data)));
+    bytes.extend(record(
+        b"GRAS",
+        LOW,
+        field(b"MODL", b"grass/incomplete.nif\0"),
+    ));
+    fs::write(path, bytes).unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config.clone(), sender)
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("invalid grass rules")),
+        "{:?}",
+        report.warnings
+    );
+    let cache = rkyv::from_bytes::<GrassCache, rkyv::rancor::Error>(
+        &fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        cache.types.len(),
+        3,
+        "resolved unusable species must retain their slots"
+    );
+    let placeholder = cache.types.iter().find(|r| r.form_id == HIGH).unwrap();
+    assert!(placeholder.model_path.is_empty());
+    assert_eq!(
+        (placeholder.density, placeholder.position_range),
+        (63, 73.0)
+    );
+    assert!(
+        cache
+            .types
+            .iter()
+            .find(|r| r.form_id == LOW)
+            .unwrap()
+            .model_path
+            .is_empty()
+    );
+    let affected = cache.cells.iter().find(|c| c.cell_id == 0x10).unwrap();
+    assert_eq!(affected.quadrants[0].layers[0].grass_ids, BASE_ORDER);
+    assert!(cache.cells.iter().any(|c| c.cell_id == 0x20));
+    assert!(config.output_dir.join("conversion-manifest.json").exists());
+}
+
+/// In-house publication retains unusable species and healthy neighbors.
+#[tokio::test]
+async fn inhouse_publication_retains_placeholder_species() {
+    check_placeholder_publication(RecordReader::Inhouse).await;
+}
+
+/// Legacy publication retains the same unusable-species slots.
+#[tokio::test]
+async fn legacy_publication_retains_placeholder_species() {
+    check_placeholder_publication(RecordReader::Legacy).await;
+}
+
+/// A lower-FormID LAND from a later plugin must own the whole restored selection.
+async fn check_land_source_winner(reader: RecordReader) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture(directory.path(), reader, false, false);
+    let path = config.data_dir.join("Order.esp");
+    let bytes = fs::read(&path).unwrap();
+    let old = land(0x10, TEXTURE);
+    let loser = group(
+        8,
+        0x10,
+        &record(
+            b"LAND",
+            0x0100_08f0,
+            field(b"BTXT", &[NEIGHBOR_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+        ),
+    );
+    let offset = bytes
+        .windows(old.len())
+        .position(|part| part == old)
+        .unwrap();
+    let mut replaced = bytes[..offset].to_vec();
+    replaced.extend(&loser);
+    replaced.extend(&bytes[offset + old.len()..]);
+    // Framing lengths are unchanged because both LAND assignments have equal size.
+    assert_eq!(replaced.len(), bytes.len());
+    fs::write(path, replaced).unwrap();
+    let patch = [
+        record(
+            b"TES4",
+            0,
+            [
+                field(b"MAST", b"Skyrim.esm\0"),
+                field(b"DATA", &[0; 8]),
+                field(b"MAST", b"Order.esp\0"),
+                field(b"DATA", &[0; 8]),
+            ]
+            .concat(),
+        ),
+        group(
+            1,
+            1,
+            &group(
+                8,
+                0x10,
+                &record(
+                    b"LAND",
+                    0x0100_0820,
+                    field(b"BTXT", &[TEXTURE.to_le_bytes(), [0; 4]].concat()),
+                ),
+            ),
+        ),
+    ]
+    .concat();
+    fs::write(config.data_dir.join("LandWinner.esp"), patch).unwrap();
+    fs::write(
+        config.plugins_file.as_ref().unwrap(),
+        "*Skyrim.esm\n*Order.esp\n*LandWinner.esp\n",
+    )
+    .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config.clone(), sender)
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    let cache = rkyv::from_bytes::<GrassCache, rkyv::rancor::Error>(
+        &fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap(),
+    )
+    .unwrap();
+    let winner = cache
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == 0x10)
+        .unwrap();
+    assert_eq!(
+        winner.quadrants[0].layers[0].grass_ids, BASE_ORDER,
+        "restoration must use the winning lower-ID later-plugin LAND, never the higher-ID loser"
+    );
+    assert!(cache.cells.iter().any(|cell| cell.cell_id == 0x20));
+    assert!(config.output_dir.join("conversion-manifest.json").is_file());
+}
+
+/// In-house publication restores precisely the selected LAND source.
+#[tokio::test]
+async fn inhouse_publication_uses_winning_land_source() {
+    check_land_source_winner(RecordReader::Inhouse).await;
+}
+
+/// Legacy publication selects the same whole LAND by supplying plugin priority.
+#[tokio::test]
+async fn legacy_publication_uses_winning_land_source() {
+    check_land_source_winner(RecordReader::Legacy).await;
+}

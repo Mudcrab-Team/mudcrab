@@ -25,7 +25,11 @@ def main():
     for name in ('ours-bin', 'grass-cache', 'skytool', 'cache', 'world', 'cells', 'out'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--ours-cells', type=Path, help='optional cell list with explicit source-world IDs; same XY scope')
+    parser.add_argument('--local-appdata', type=Path, default=os.environ.get('LOCALAPPDATA'),
+                        help='default-cache guard root; defaults to LOCALAPPDATA, required when unset')
     args = parser.parse_args()
+    if args.local_appdata is None:
+        parser.error('LOCALAPPDATA is unset; pass --local-appdata explicitly for the default-cache guard')
     ours_cells = args.ours_cells or args.cells
     def coordinates(path):
         """Input alignment may change world IDs, never the requested coordinate scope."""
@@ -34,7 +38,7 @@ def main():
         parser.error('--ours-cells must contain the same cell coordinates as --cells')
     if args.out.exists():
         parser.error('--out must be a new directory to preserve previous comparisons')
-    local = Path(os.environ['LOCALAPPDATA']) / 'spud'
+    local = args.local_appdata / 'spud'
     if local.exists():
         parser.error('default spud cache already exists; no executable was run')
     args.out.mkdir(parents=True)

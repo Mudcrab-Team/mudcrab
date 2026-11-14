@@ -16,7 +16,7 @@ import math
 import re
 import struct
 import sys
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,7 +66,21 @@ def read_cell(path, cell, ours, warnings):
     ordinals = set()
     skipped = 0
     with path.open(newline="", encoding="utf-8-sig") as source:
-        for line, row in enumerate(csv.DictReader(source), 2):
+        reader = csv.DictReader(source)
+        header = set(reader.fieldnames or ())
+        duplicates = sorted(name for name, count in Counter(reader.fieldnames or ()).items() if count > 1)
+        if duplicates:
+            warnings.append(f"{'ours' if ours else 'spud'}/{path.name}: invalid CSV header; duplicate columns: {', '.join(duplicates)}")
+            return [], 0
+        required = ["cell_x", "cell_y", "ordinal", "form_id"]
+        for prefix in ("", "packed_") if ours else ("",):
+            required.extend(prefix + field for field in FIELDS
+                            if field not in POSITION or prefix + "world_" + field[0] not in header)
+        missing = sorted(set(required) - header)
+        if missing:
+            warnings.append(f"{'ours' if ours else 'spud'}/{path.name}: invalid CSV header; missing: {', '.join(missing)}")
+            return [], 0
+        for line, row in enumerate(reader, 2):
             try:
                 if (int(row["cell_x"]), int(row["cell_y"])) != cell:
                     raise ValueError("cell coordinates disagree with filename")

@@ -26,12 +26,14 @@ use std::{
 };
 
 /// Decoder/adapter behavior version for output changes outside the authored schema.
-pub const ADAPTER_VERSION: u32 = 12;
+/// Version 13 recovers malformed LAND texture items without discarding valid neighbors.
+pub const ADAPTER_VERSION: u32 = 13;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
+/// Version 5 recovers individual malformed LAND paint items before candidate admission.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 4;
+pub const LEGACY_PROJECTION_VERSION: u32 = 5;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]
@@ -897,15 +899,37 @@ fn convert_plugins_with_text_sources_report_impl(
         )
     };
     let mut preserved_layers = HashMap::new();
+    let mut land_sources = HashMap::new();
     let preserve = |accepted: &records::ReadResult| {
         for record in accepted
             .records
             .values()
             .filter(|record| record.record_type == *b"LAND")
         {
-            match crate::esm::cell_cache::preserved_texture_layers(&record.to_raw_record()) {
-                Ok(layers) => {
+            match original_land_record(record, &order).and_then(|raw| {
+                let layers = crate::esm::cell_cache::preserved_texture_layers(&raw)?;
+                Ok((raw, layers))
+            }) {
+                Ok((raw, layers)) => {
+                    let omitted = crate::esm::cell_cache::malformed_texture_items(&raw.subrecords);
+                    if omitted != 0 {
+                        warnings.skipped(
+                            &order.names[record.load_order as usize],
+                            adapter_context(record, "terrain_recovery", Some("texture_layers".into()), "omitted"),
+                            format!("{:08X} omitted {omitted} malformed LAND texture items; usable layers retained", record.form_id),
+                            false,
+                        );
+                    }
                     preserved_layers.insert(record.form_id, layers);
+                    // Only rejected paint needs a second runtime projection. Ordinary
+                    // LAND keeps the canonical path without retaining another raw copy.
+                    if record
+                        .rejected_fields
+                        .iter()
+                        .any(|tag| matches!(tag, b"BTXT" | b"ATXT" | b"VTXT"))
+                    {
+                        land_sources.insert(record.form_id, raw);
+                    }
                 }
                 Err(error) => warnings.skipped(
                     &order.names[record.load_order as usize],
@@ -964,6 +988,12 @@ fn convert_plugins_with_text_sources_report_impl(
         .transpose()?;
     let projection_stage = records::profile::ProfileStage::start("typed_export_runtime_projection");
     let mut master = HashMap::with_capacity(decoded.records.len());
+    let landscape_textures = decoded
+        .records
+        .values()
+        .filter(|record| record.record_type == *b"LTEX" && record.flags & 0x20 == 0)
+        .map(|record| record.form_id)
+        .collect::<BTreeSet<_>>();
     let mut opaque_fields = HashMap::new();
     // Sort compact keys, leaving record payloads in place and streaming one JSON line at a time.
     // The same traversal fixes localized provenance rowids when no typed dump is requested.
@@ -1112,8 +1142,63 @@ fn convert_plugins_with_text_sources_report_impl(
         }
         // Typed fields and the source digest have been written before ownership moves.
         let mut raw = take_canonical_record(record);
+        // These indices still refer to the decoded field vector; apply translations
+        // before paint recovery can change the canonical occurrence positions.
         for (index, text) in runtime_text_updates {
             raw.subrecords[index].1 = text;
+        }
+        if let Some(mut source) = land_sources.remove(&raw.form_id) {
+            source
+                .subrecords
+                .retain(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"));
+            for (tag, data) in &mut source.subrecords {
+                if matches!(tag.as_slice(), b"BTXT" | b"ATXT") && data.len() >= 4 {
+                    let id = u32::from_le_bytes(data[..4].try_into().expect("checked identity"));
+                    if id != 0 && !landscape_textures.contains(&id) {
+                        data[..4].fill(0);
+                    }
+                }
+            }
+            let current_paint: Vec<_> = raw
+                .subrecords
+                .iter()
+                .filter(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"))
+                .cloned()
+                .collect();
+            if current_paint != source.subrecords {
+                // Recover only paint. Other fields keep the decoder's final canonical
+                // bytes, including missing-target clearing in VTEX and opaque policy.
+                let previous_omitted = opaque_fields.remove(&raw.form_id).unwrap_or_default();
+                let mut omitted = BTreeSet::new();
+                let mut reindexed = HashMap::new();
+                let mut retained = Vec::new();
+                for (index, field) in raw.subrecords.into_iter().enumerate() {
+                    if !matches!(field.0.as_slice(), b"BTXT" | b"ATXT" | b"VTXT") {
+                        reindexed.insert(index, retained.len());
+                        if previous_omitted.contains(&index) {
+                            omitted.insert(retained.len());
+                        }
+                        retained.push(field);
+                    }
+                }
+                retained.extend(source.subrecords);
+                raw.subrecords = retained;
+                unresolved = unresolved
+                    .iter()
+                    .filter_map(|index| reindexed.get(index).copied())
+                    .collect();
+                localized.retain_mut(|field| {
+                    if let Some(index) = reindexed.get(&field.field_index) {
+                        field.field_index = *index;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if !omitted.is_empty() {
+                    opaque_fields.insert(raw.form_id, omitted);
+                }
+            }
         }
         let omitted = opaque_fields.get(&raw.form_id);
         // Admission already validated these shared text/opaque transformations.
@@ -1359,7 +1444,7 @@ fn validate_candidate_with_string_sources(
             .rejected_fields
             .iter()
             .copied()
-            .find(|signature| matches!(signature, b"VHGT" | b"BTXT" | b"ATXT" | b"VTXT"))
+            .find(|signature| signature == b"VHGT")
         {
             return Err(format!(
                 "rejected authored terrain field {}",
@@ -1403,6 +1488,43 @@ fn validate_candidate_with_string_sources(
         });
     }
     validate_runtime_record(&raw)
+}
+
+/// Recover original LAND framing without losing a valid weight beside a malformed one.
+/// The typed decoder keeps its rejection diagnostics; this narrow projection remaps the
+/// same file-relative FormIDs through the established legacy remapper before publication.
+fn original_land_record(record: &records::DecodedRecord, order: &LoadOrder) -> Result<RawRecord> {
+    if !record
+        .rejected_fields
+        .iter()
+        .any(|tag| matches!(tag, b"BTXT" | b"ATXT" | b"VTXT"))
+    {
+        return Ok(record.to_raw_record());
+    }
+    let priority = record.load_order as usize;
+    let mut raw = RawRecord {
+        form_id: record.source_form_id,
+        record_type: record.record_type,
+        flags: record.flags,
+        subrecords: crate::esm::extractors::extract_subrecords(&record.raw_payload)?
+            .into_iter()
+            .filter(|(tag, _)| matches!(tag.as_slice(), b"BTXT" | b"ATXT" | b"VTXT"))
+            .collect(),
+        cell_form_id: None,
+        worldspace_form_id: None,
+        load_order: record.load_order,
+    };
+    super::remap_record_form_ids(
+        &mut raw,
+        &order.names[priority],
+        &order.metadata[priority].masters,
+        &order.normal,
+        &order.light,
+        &super::RemapWarnings::default(),
+    )?;
+    // Only selection fields are reconstructed. Callers retain their independently
+    // decoded non-paint fields and use this projection solely for source layers.
+    Ok(raw)
 }
 
 /// Keep candidate admission and the final defensive check on one validator contract.

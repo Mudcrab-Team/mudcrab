@@ -35,8 +35,8 @@ empty synthetic fields allow runtime fallbacks. Invalid field lengths skip the
 affected cell with a warning while healthy neighbors publish. No instance lists
 are saved; generation remains deterministic at runtime.
 The placement layer adds these sampling fields and base flags and changes selection
-opacity inputs. Producer ten combines them with static-like obstruction filtering;
-both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
+opacity inputs. Producer eleven also retains non-emitting species slots and recovers malformed LAND items locally;
+producer ten, both prior producer-nine variants and older grass artifacts rebuild. Other asset cache identities
 are unchanged. Runtime generation-only changes do not require a cache version bump.
 Grass cache version two invalidates version-one coverage derived from the capped
 runtime terrain cache; terrain, mesh and texture cache identities stay unchanged.
@@ -64,8 +64,12 @@ and texture settings proofs invalidate earlier converted bytes; the grass cache
 rebuilds under the new producer version, including its 128-unit contact band.
 Vertex RGBA remains intact. Degenerate optional UV frames warn and are omitted;
 geometry remains usable and runtime can fall back to position/UV derivatives.
-Incomplete grass rules and missing model paths are skipped; unresolved/deleted
-species links are silently filtered. Raw database records remain available for diagnostics.
+Incomplete grass rules and missing model paths retain non-emitting species slots;
+unresolved/deleted species links are silently filtered. Empty model paths mark these
+placeholders. Decodable rule fields retain the reference's conditional random draws;
+missing DATA fields use zero defaults, and nonfinite fields are cleared safely.
+Negative spacing produces no grid. Placeholders count toward the per-texture and
+per-spot limits and never publish instances. Raw database records remain available for diagnostics.
 Incomplete or invalid rules that have a model, and invalid terrain cells, produce
 bounded report warnings and mark the published run incomplete. Healthy neighboring
 cells still bake. A grass type without a model draws nothing in game either, so it
@@ -243,13 +247,14 @@ canonical LAND payload when terrain normalization would lose their slots or
 weights. NULL paint binds the default texture for selection and still covers
 the base; it does not grow a species itself. LTEX binding and merging require
 an available TXST, and that availability participates in incremental keys.
-Malformed recovered selection records warn and skip locally; neighboring cells
-remain publishable. This projection does not alter terrain's NULL policy.
+Malformed assignments, individual weights and trailing weight bytes are omitted
+with a bounded report warning; usable layers and weights in the same cell and
+neighboring cells remain publishable. Only unreadable record framing skips a whole cell. This projection does not alter terrain's NULL policy.
 
 Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
 bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
 G2 producer 9 introduced static-like obstruction filtering; this combined selection
-producer advances to 10 so neither earlier producer-9 variant can reuse its masks. Older masks
+producer advances through 10 to 11 so earlier selection producers cannot reuse their masks. Older masks
 are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
 Model changes between fingerprinting and decoding abort publication with retry
 advice, rather than publishing a mask under a stale content key. Full conversion
@@ -260,3 +265,13 @@ its size and SHA-256, so quick/full checks detect removal and full checks detect
 byte changes. Metadata rebuild regenerates this entry after baking. Packed
 NormalLinear DDS sources carry `lossless-rgba8-v1` in their individual source
 proofs; other texture source and kind proofs remain unchanged.
+
+Malformed LAND paint is recovered before either reader admits the winning record.
+Height, normal, colour dimensions and complete record framing retain their existing
+validation. The in-house projection recovers original BTXT/ATXT/VTXT occurrences
+when typed array rejection would otherwise erase valid neighboring weights, remaps
+their identities through the same load-order mapping, and retains the existing
+opaque-field policy for other fields. Adapter 13 and legacy projection 5 invalidate
+older metadata projections; converted mesh/texture bytes remain independently proven.
+Grass selection restores only the single LAND chosen by terrain's supplying-plugin,
+native-source-order and FormID precedence, never a merge of losing source records.

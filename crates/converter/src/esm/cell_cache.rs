@@ -508,7 +508,44 @@ pub(crate) struct DroppedLayer {
     pub(crate) texture_form_id: u32,
 }
 
-/// Validate every LAND payload and return retained layers plus discarded duplicate assignments.
+/// Count texture items omitted by the tolerant projection, even for records-only exports.
+/// Reader diagnostics aggregate the count and first LAND without depending on grass baking.
+pub(crate) fn malformed_texture_items(subrecords: &[(Vec<u8>, Vec<u8>)]) -> usize {
+    let mut omitted = 0;
+    let mut active = false;
+    for (tag, data) in subrecords {
+        match tag.as_slice() {
+            b"BTXT" | b"ATXT" => {
+                let minimum = if tag.as_slice() == b"BTXT" { 6 } else { 8 };
+                if data.len() < minimum || data[4] >= 4 {
+                    omitted += 1;
+                    active = false;
+                } else {
+                    active = tag.as_slice() == b"ATXT";
+                }
+            }
+            b"VTXT" => {
+                if !active {
+                    omitted += 1;
+                    continue;
+                }
+                omitted += usize::from(!data.len().is_multiple_of(8));
+                for item in data.as_chunks::<8>().0 {
+                    let vertex = u16::from_le_bytes([item[0], item[1]]);
+                    let opacity = f32::from_le_bytes(item[4..8].try_into().expect("fixed chunk"));
+                    omitted += usize::from(
+                        vertex >= 289 || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity),
+                    );
+                }
+            }
+            _ => active = false,
+        }
+    }
+    omitted
+}
+
+/// Recover individual malformed texture assignments/weights while retaining valid LAND neighbors.
+/// The grass bake reports omitted raw items; duplicate-slot provenance is returned separately.
 pub(crate) fn extract_texture_layers(
     subrecords: &[(Vec<u8>, Vec<u8>)],
 ) -> Result<(Vec<TerrainLayer>, Vec<DroppedLayer>)> {
@@ -517,17 +554,17 @@ pub(crate) fn extract_texture_layers(
     for (tag, data) in subrecords {
         match tag.as_slice() {
             b"BTXT" | b"ATXT" => {
-                color_eyre::eyre::ensure!(
-                    data.len() >= 8,
-                    "{} subrecord is truncated",
-                    String::from_utf8_lossy(tag)
-                );
+                let minimum = if tag.as_slice() == b"BTXT" { 6 } else { 8 };
+                if data.len() < minimum {
+                    active = None;
+                    continue;
+                }
                 let texture_form_id = u32::from_le_bytes(data[..4].try_into().unwrap());
                 let quadrant = data[4];
-                color_eyre::eyre::ensure!(
-                    quadrant < 4,
-                    "terrain quadrant {quadrant} is outside 0..=3"
-                );
+                if quadrant >= 4 {
+                    active = None;
+                    continue;
+                }
                 let is_base = tag.as_slice() == b"BTXT";
                 let layer = if is_base {
                     0
@@ -544,20 +581,17 @@ pub(crate) fn extract_texture_layers(
                 active = (!is_base).then_some(layers.len() - 1);
             }
             b"VTXT" => {
-                color_eyre::eyre::ensure!(data.len() % 8 == 0, "VTXT payload is truncated");
-                let index =
-                    active.ok_or_else(|| color_eyre::eyre::eyre!("VTXT has no preceding ATXT"))?;
+                let Some(index) = active else {
+                    continue;
+                };
+                // Whole entries remain safe even when the payload has a truncated tail.
                 for entry in data.as_chunks::<8>().0 {
                     let vertex = u16::from_le_bytes(entry[..2].try_into().unwrap());
                     let opacity = f32::from_le_bytes(entry[4..8].try_into().unwrap());
-                    color_eyre::eyre::ensure!(
-                        vertex < 17 * 17,
-                        "VTXT vertex {vertex} is outside a LAND quadrant"
-                    );
-                    color_eyre::eyre::ensure!(
-                        opacity.is_finite() && (0.0..=1.0).contains(&opacity),
-                        "VTXT opacity {opacity} is invalid"
-                    );
+                    if vertex >= 17 * 17 || !opacity.is_finite() || !(0.0..=1.0).contains(&opacity)
+                    {
+                        continue;
+                    }
                     layers[index]
                         .weights
                         .push(TerrainWeight { vertex, opacity });
@@ -623,8 +657,8 @@ pub(crate) fn extract_texture_layers(
 fn normalize_texture_layers(layers: &mut Vec<TerrainLayer>) {
     // Official plugins contain null BTXT/ATXT references. They mean that no
     // texture is assigned, not that form 00000000 must resolve at runtime.
-    // Keep parsing their VTXT payloads for structural validation, then remove
-    // the null layers before synthesizing the implicit base used by overlays.
+    // Recover usable VTXT entries first, then remove null layers before
+    // synthesizing the implicit base used by overlays.
     layers.retain(|layer| layer.texture_form_id != 0);
     for quadrant in 0..4 {
         let has_layers = layers.iter().any(|layer| layer.quadrant == quadrant);
@@ -1344,17 +1378,16 @@ mod tests {
             assert_eq!(layers[1].texture_form_id, 1);
             assert_eq!(layers[1].layer, 2);
         }
+        // Truncated null weight tails drop locally; duplicate authored vertices
+        // retain their separate ambiguity validation.
+        let mut recovered = record(0x1234, b"LAND", None, &[]);
+        recovered.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])];
+        write_cell_cache(&HashMap::from([(recovered.form_id, recovered)]), &path).unwrap();
         let original = std::fs::read(&path).unwrap();
-        // Malformed null assignments remain fatal even though normalization drops them.
-        for subrecords in [
-            vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])],
-            vec![overlay(0), (b"VTXT".to_vec(), vec![0; 16])],
-        ] {
-            let mut land = record(0x1234, b"LAND", None, &[]);
-            land.subrecords = subrecords;
-            assert!(write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-        }
+        let mut land = record(0x1234, b"LAND", None, &[]);
+        land.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 16])];
+        assert!(write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     /// Repair individual invalid normals without overwriting neighboring authored values.
@@ -1786,11 +1819,37 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_land_layer_payloads() {
-        assert!(extract_texture_layers(&[(b"BTXT".to_vec(), vec![0; 7])]).is_err());
+    /// Invalid texture assignments omit themselves rather than their whole LAND.
+    fn drops_invalid_land_layer_payloads() {
+        assert!(
+            extract_texture_layers(&[(b"BTXT".to_vec(), vec![0; 5])])
+                .unwrap()
+                .0
+                .is_empty()
+        );
         let mut alpha = 1u32.to_le_bytes().to_vec();
         alpha.extend([4, 0, 0, 0]);
-        assert!(extract_texture_layers(&[(b"ATXT".to_vec(), alpha)]).is_err());
+        assert!(
+            extract_texture_layers(&[(b"ATXT".to_vec(), alpha)])
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
+
+    /// The reference reads base identity/quadrant from six bytes; paint still needs eight.
+    #[test]
+    fn reference_sized_base_assignments_are_valid() {
+        for size in [6, 7, 8] {
+            let mut base = vec![0; size];
+            base[..4].copy_from_slice(&30u32.to_le_bytes());
+            base[4] = 2;
+            let fields = vec![(b"BTXT".to_vec(), base)];
+            assert_eq!(malformed_texture_items(&fields), 0);
+            let (layers, _) = extract_texture_layers(&fields).unwrap();
+            assert_eq!(layers.len(), 1);
+            assert_eq!((layers[0].texture_form_id, layers[0].quadrant), (30, 2));
+        }
     }
 
     /// Source normalization keeps the implicit base and every authored nonnull overlay.

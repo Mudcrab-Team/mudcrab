@@ -556,12 +556,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
+/// These compatibility pairs are limited to metadata adapters 11 through 13; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -572,11 +572,11 @@ pub(crate) fn inhouse_adapter10_reader_identity(
     Some(identity)
 }
 
-/// Adapter 12 corrects metadata identities while retaining adapter-11 asset bytes.
+/// Adapters 12 and 13 change metadata while retaining adapter-11 asset bytes.
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12 | 13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -584,6 +584,34 @@ pub(crate) fn inhouse_adapter11_reader_identity(
         schemas,
     );
     identity["adapter_version"] = serde_json::json!(11);
+    Some(identity)
+}
+
+/// Adapter 13 recovers LAND items without changing adapter-12 model, texture or script bytes.
+pub(crate) fn inhouse_adapter12_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 13 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+    );
+    identity["adapter_version"] = serde_json::json!(12);
+    Some(identity)
+}
+
+/// Projection 5 recovers LAND items while preserving projection-4 assets and language proofs.
+pub(crate) fn legacy_projection_v4_reader_identity(language: &str) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 5 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_in_language(
+        crate::config::RecordReader::Legacy,
+        language,
+    );
+    identity["projection_version"] = serde_json::json!(4);
     Some(identity)
 }
 
@@ -1286,10 +1314,16 @@ pub(crate) fn retained_configuration_matches_for_reader(
     if identity == &current {
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
     }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && legacy_projection_v4_reader_identity(&config.language).as_ref() == Some(identity)
+    {
+        return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
+    }
     if config.record_reader == crate::config::RecordReader::Inhouse
         && [
             inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
             inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
+            inhouse_adapter12_reader_identity(config.schemas()?.as_ref()),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
@@ -1958,7 +1992,7 @@ mod tests {
     fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Inhouse;
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
             original["adapter_version"] = serde_json::json!(adapter);
             let recorded = configuration_hash_with_identity(
@@ -2038,6 +2072,70 @@ mod tests {
                         .unwrap(),
                     asset_configuration_hash_for_schema(&legacy, CONVERTER_SCHEMA_VERSION, kind)
                         .unwrap()
+                );
+            }
+        }
+    }
+
+    /// The metadata-only LAND recovery accepts exact projection-four proofs in each language.
+    #[test]
+    fn legacy_projection_four_retained_assets_require_exact_settings_and_identity() {
+        for language in ["english", "french"] {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Legacy;
+            config.language = language.to_owned();
+            let mut identity = serde_json::json!({
+                "mode": "legacy", "projection_version": 4, "language": language,
+                "text_encoding": "windows-1252",
+            });
+            if language == "french" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let recorded = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&identity),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            assert_ne!(
+                recorded,
+                current_configuration_hash_for_schema(&config, CONVERTER_SCHEMA_VERSION).unwrap()
+            );
+            let mut changed = config.clone();
+            changed.texture_fallback_quality = 191;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &recorded,
+                    &identity,
+                )
+                .unwrap()
+            );
+            for (field, value) in [
+                ("projection_version", serde_json::json!(99)),
+                ("text_encoding", serde_json::json!("utf-8")),
+                ("extra", serde_json::json!(true)),
+            ] {
+                let mut altered = identity.clone();
+                altered[field] = value;
+                assert!(
+                    !retained_configuration_matches_for_reader(
+                        &config,
+                        CONVERTER_SCHEMA_VERSION,
+                        &recorded,
+                        &altered,
+                    )
+                    .unwrap()
                 );
             }
         }

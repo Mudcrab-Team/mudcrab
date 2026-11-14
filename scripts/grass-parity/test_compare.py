@@ -3,6 +3,7 @@
 import csv
 import json
 import math
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,82 @@ def write_dump(directory, plants, ours=True, bad=False):
 
 class MatchingTests(unittest.TestCase):
     """Pin cases that reusable nearest-neighbour or XY-only checks get wrong."""
+
+    def test_invalid_headers_mark_comparison_incomplete(self):
+        """Damaged empty dumps cannot masquerade as valid empty cells on either side."""
+        for ours in (False, True):
+            for header in ("", "not,a,grass,header\n", "cell_x,cell_y,ordinal,form_id\n"):
+                with self.subTest(ours=ours, header=header), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_dump(root / "ours", [plant(0, (3, 5, 7))])
+                    write_dump(root / "spud", [plant(0, (3, 5, 7))], ours=False)
+                    (root / ("ours" if ours else "spud") / "cell_0_0.csv").write_text(header, encoding="utf-8")
+                    result = compare.run(root / "ours", root / "spud", root / "out")
+                    self.assertFalse(result["complete"])
+                    self.assertEqual(len(result["warnings"]), 1)
+                    self.assertIn("invalid CSV header", result["warnings"][0])
+                    self.assertEqual(result["totals"][0]["spud_count" if ours else "ours_count"], 1)
+
+    def test_header_contract_accepts_aliases_and_valid_empty_cells(self):
+        """Each required field matters; aliases may replace each position independently."""
+        for ours in (False, True):
+            fields = ["cell_x", "cell_y", "ordinal", "form_id", *compare.FIELDS]
+            if ours:
+                fields += ["packed_" + field for field in compare.FIELDS]
+            variants = [fields, [field.replace("x_su", "world_x").replace("y_su", "world_y").replace("z_su", "world_z")
+                                 for field in fields], ["world_x" if field == "x_su" else field for field in fields]]
+            for header in variants:
+                warnings = []
+                with patch.object(Path, "open", return_value=io.StringIO(",".join(header) + "\n")):
+                    self.assertEqual(compare.read_cell(Path("cell_0_0.csv"), (0, 0), ours, warnings), ([], 0))
+                self.assertEqual(warnings, [])
+            for omitted in fields:
+                warnings = []
+                with self.subTest(ours=ours, omitted=omitted), patch.object(Path, "open", return_value=io.StringIO(
+                        ",".join(field for field in fields if field != omitted) + "\n")):
+                    compare.read_cell(Path("cell_0_0.csv"), (0, 0), ours, warnings)
+                    self.assertEqual(len(warnings), 1)
+                    self.assertIn("invalid CSV header", warnings[0])
+
+    def test_valid_header_only_comparison_is_complete(self):
+        """Legitimate empty cells remain complete with explicit zero counts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_dump(root / "ours", [])
+            write_dump(root / "spud", [], ours=False)
+            result = compare.run(root / "ours", root / "spud", root / "out")
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["totals"][0]["ours_count"], 0)
+
+    def test_duplicate_header_is_invalid_but_unique_extra_columns_are_allowed(self):
+        """Ambiguous columns cannot hide in an empty dump; unique extensions remain valid."""
+        fields = ["cell_x", "cell_y", "ordinal", "form_id", *compare.FIELDS]
+        for ours in (False, True):
+            required = fields + (["packed_" + field for field in compare.FIELDS] if ours else [])
+            for extra, valid in ((["form_id"], False), (["extension", "extension"], False), (["extension"], True)):
+                warnings = []
+                with self.subTest(ours=ours, extra=extra), patch.object(Path, "open", return_value=io.StringIO(
+                        ",".join(required + extra) + "\n")):
+                    compare.read_cell(Path("cell_0_0.csv"), (0, 0), ours, warnings)
+                    self.assertEqual(not warnings, valid)
+                    if not valid:
+                        self.assertIn("duplicate columns", warnings[0])
+
+    def test_position_aliases_read_populated_dumps(self):
+        """Source and packed aliases retain numeric values through the complete pipeline."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_dump(root / "ours", [plant(0, (3, 5, 7))])
+            write_dump(root / "spud", [plant(0, (3, 5, 7))], ours=False)
+            for side in ("ours", "spud"):
+                path = root / side / "cell_0_0.csv"
+                contents = path.read_text(encoding="utf-8")
+                for axis in "xyz":
+                    contents = contents.replace(axis + "_su", "world_" + axis)
+                path.write_text(contents, encoding="utf-8")
+            result = compare.run(root / "ours", root / "spud", root / "out")
+            self.assertTrue(result["complete"])
+            self.assertTrue(all(row["within_0_matches"] == 1 for row in result["totals"]))
 
     def test_same_neighbour_cannot_be_reused(self):
         """Two nearby ours candidates cannot claim the same spud reference."""
@@ -94,7 +171,8 @@ class MatchingTests(unittest.TestCase):
             write_dump(root / "ours", [plant(0, (0, 0, 0)), plant(1, (1, 0, 0), obstructed=True), plant(2, (2, 0, 0), form="00000002")], bad=True)
             write_dump(root / "spud", [plant(0, (0, 0, 0)), plant(1, (1, 0, 0)), plant(2, (2, 0, 0))], ours=False)
             for side in ("ours", "spud"):
-                (root / side / "cell_1_1.csv").write_text("cell_x,cell_y,ordinal,form_id\n", encoding="utf-8")
+                header = (root / side / "cell_0_0.csv").read_text(encoding="utf-8").splitlines()[0]
+                (root / side / "cell_1_1.csv").write_text(header + "\n", encoding="utf-8")
             result = compare.run(root / "ours", root / "spud", root / "out")
             self.assertFalse(result["complete"])
             self.assertEqual(len(result["cell_diagnostics"]), 2)
