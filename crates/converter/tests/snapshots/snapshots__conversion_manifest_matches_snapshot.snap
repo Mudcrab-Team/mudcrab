@@ -13,7 +13,7 @@ expression: manifest
         }
       ],
       "reader_version": 1,
-      "recipe": "runtime-english-v2",
+      "recipe": "runtime-english-v4",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -31,7 +31,7 @@ expression: manifest
         }
       ],
       "reader_version": 1,
-      "recipe": "runtime-english-v2",
+      "recipe": "runtime-english-v4",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     },
@@ -68,7 +68,7 @@ expression: manifest
           "size": 2892
         }
       ],
-      "recipe": "runtime-english-v2",
+      "recipe": "runtime-english-v4",
       "selection": "runtime_english_v1",
       "source_hash": "[source_hash]"
     }
@@ -76,10 +76,10 @@ expression: manifest
   "asset_configuration_hashes": {
     "dds": "1495cf3ec0f02a297c0bf31210e650b2c41df7f8b5e2bdda71f0a65f84b9db65",
     "nif": "b3762b1907d7f6687f7634fd0d9f9781fe452f5cc9201e7c4ebc42144b08aa43",
-    "pex": "0d16fa82d1877173478e8277d014f2642b4dab09f7b916b370dff6681b7c3275"
+    "pex": "36a71880028a9c1d6bcd8b3c1cf149805dbe384a48a765bab57df47a3cbea565"
   },
   "complete": true,
-  "configuration_hash": "0d3ca0db305f56a5179f9aaf7937cec60cce81b1b259c0e543bf0b41373bb808",
+  "configuration_hash": "101deff2afbfbcd4112e9f85a46e67f3c48f40f45740f3d35761c2776b94d180",
   "entries": {
     "meshes/generated.nif": {
       "output": "meshes/generated.glb",
@@ -90,13 +90,13 @@ expression: manifest
     "scripts/generated.pex": {
       "output": "scripts/generated.luau",
       "output_hash": "[output_hash]",
-      "output_size": 1110,
+      "output_size": 1299,
       "source_hash": "[source_hash]"
     },
     "scripts/second.pex": {
       "output": "scripts/second.luau",
       "output_hash": "[output_hash]",
-      "output_size": 1107,
+      "output_size": 1296,
       "source_hash": "[source_hash]"
     },
     "textures/generated_color.dds": {

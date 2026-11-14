@@ -327,6 +327,16 @@ fn settings_for_source_reader(
                 && [
                     crate::cache::inhouse_adapter10_reader_identity(&schemas),
                     crate::cache::inhouse_adapter11_reader_identity(&schemas),
+                    crate::cache::inhouse_adapter12_reader_identity(&schemas, &language),
+                    crate::cache::inhouse_adapter13_reader_identity(&schemas, &language),
+                ]
+                .iter()
+                .any(|prior| prior.as_ref() == Some(identity)))
+            || (reader == crate::config::RecordReader::Legacy
+                && schemas.identities().is_empty()
+                && [
+                    crate::cache::legacy_projection4_reader_identity(&language),
+                    crate::cache::legacy_projection5_reader_identity(&language),
                 ]
                 .iter()
                 .any(|prior| prior.as_ref() == Some(identity)))
@@ -863,6 +873,14 @@ fn publish_derived_output(
 /// Cleanup subtree recognition is intentionally broader and cannot establish provenance.
 pub(crate) fn supported_derived_proof(path: &str, proof: &crate::cache::DerivedOutput) -> bool {
     let mut inputs = BTreeSet::new();
+    if crate::pipeline::authored_actor_idle::supported_proof(path, proof) {
+        inputs.extend(proof.inputs.keys().cloned());
+    }
+    for profile in shared::creature_idle::CREATURE_IDLES {
+        if path == profile.clip_scene && proof.recipe == crate::cache::CREATURE_IDLE_RECIPE {
+            inputs.extend(profile.inputs().map(str::to_owned));
+        }
+    }
     for sex in ["male", "female"] {
         if path == format!("meshes/actors/character/composed/default/{sex}/body.glb")
             && matches!(
@@ -1411,9 +1429,9 @@ mod tests {
             },
         );
         let mut aliases = Vec::new();
-        for mode in 0..3 {
-            for transfer in ["", ".opensky-srgb"] {
-                let alias = format!("textures/shared{transfer}.opensky-wrap{mode}.ktx2");
+        for sampler in shared::texture_aliases::WRAP_TEXTURE_SUFFIXES {
+            for transfer in ["", shared::texture_aliases::SRGB_TEXTURE_SUFFIX] {
+                let alias = format!("textures/shared{transfer}{sampler}.ktx2");
                 fs::write(source.join(&alias), b"verified texture").unwrap();
                 aliases.push(alias);
             }
@@ -1560,7 +1578,7 @@ mod metadata_schema_controls {
     /// Known prior adapters retain the exact original schema and reject unproven variants.
     #[test]
     fn adapter10_source_settings_require_original_saved_schema_and_identity() {
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12, 13] {
             let original = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
             let mut identity =
                 crate::esm::inhouse::reader_identity_with_schemas(RecordReader::Inhouse, &original);
@@ -1585,7 +1603,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 14);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1595,10 +1613,11 @@ mod metadata_schema_controls {
                 .is_err()
             );
             for (key, value) in [
+                // Rule: a metadata-only migration to adapter 14 accepts retained-asset sources
+                // of adapters 10 to 13 (the loop above) and nothing else. Adapter 8 and any
+                // adapter newer than the producer are unproven and must regenerate assets.
                 ("adapter_version", serde_json::json!(8)),
-                // Cache migration is not a retained-asset producer proof: this helper
-                // reconstructs only the explicitly supported adapter-10/11 identities.
-                ("adapter_version", serde_json::json!(12)),
+                ("adapter_version", serde_json::json!(15)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),
@@ -1617,6 +1636,32 @@ mod metadata_schema_controls {
                 );
             }
         }
+    }
+
+    #[test]
+    fn adapter12_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter12_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(
+            recovered.schemas().unwrap().addon_bytes().next().unwrap(),
+            ORIGINAL
+        );
+        assert_eq!(identity["adapter_version"], 12);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
+    }
+
+    #[test]
+    fn adapter13_retains_exact_non_english_source_settings() {
+        let schemas = RuntimeSchemas::from_addon_bytes(&[ORIGINAL]).unwrap();
+        let identity = crate::cache::inhouse_adapter13_reader_identity(&schemas, "french").unwrap();
+        let config = PipelineConfig::new("Data", "output");
+        let recovered = settings_for_source_reader(&config, &identity, schemas).unwrap();
+        assert_eq!(recovered.language, "french");
+        assert_eq!(identity["adapter_version"], 13);
+        assert_eq!(identity["string_table_encoding"], "utf-8-or-windows-1252");
     }
 
     /// Missing old stamps remain unversioned; later metadata cannot infer a newer asset reader.
@@ -1676,6 +1721,8 @@ mod metadata_schema_controls {
             serde_json::json!({"mode": "legacy", "projection_version": 1}),
             serde_json::json!({"mode": "legacy", "projection_version": 2}),
             serde_json::json!({"mode": "legacy", "projection_version": 3}),
+            crate::cache::legacy_projection4_reader_identity("english").unwrap(),
+            crate::cache::legacy_projection5_reader_identity("english").unwrap(),
             crate::esm::inhouse::reader_identity(RecordReader::Legacy),
         ] {
             let settings = settings_for_source_reader(
@@ -1688,7 +1735,7 @@ mod metadata_schema_controls {
         }
         for identity in [
             serde_json::json!({"mode": "legacy", "projection_version": 0}),
-            serde_json::json!({"mode": "legacy", "projection_version": 5}),
+            serde_json::json!({"mode": "legacy", "projection_version": 7}),
             serde_json::json!({"mode": "legacy", "unproven": true}),
         ] {
             assert!(

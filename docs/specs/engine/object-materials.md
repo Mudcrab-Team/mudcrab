@@ -63,7 +63,7 @@ hot reload are not supported by this slice; load a newly converted dataset on re
 
 ## Rebuild and verification
 
-The table is additive; world schema stays unchanged. In-house adapter 13 and legacy projection 5
+The table is additive; world schema stays unchanged. In-house adapter 14 and legacy projection 6
 identify the metadata change. `single-shape-object-diffuse-v1` enters the mesh output contract,
 so normal conversion invalidates old GLB reuse. Metadata-only rebuilding requires a retained
 mesh configuration proof that matches this contract; a proof from before this contract is
