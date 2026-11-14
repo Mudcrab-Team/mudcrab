@@ -4344,8 +4344,16 @@ mod tests {
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
         let cases = [
-            ("static", static_nif(), "32055a7cc2a3a7a4dd45eb11cd69ad893349f2e853eb82cffe72fd7efebcffe7"),
-            ("chain-40", static_scene_chain_nif(40), "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496"),
+            (
+                "static",
+                static_nif(),
+                "32055a7cc2a3a7a4dd45eb11cd69ad893349f2e853eb82cffe72fd7efebcffe7",
+            ),
+            (
+                "chain-40",
+                static_scene_chain_nif(40),
+                "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496",
+            ),
         ];
         for (name, source, expected) in cases {
             let input = directory.path().join(format!("{name}.nif"));
