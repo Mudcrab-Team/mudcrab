@@ -3659,6 +3659,24 @@ mod tests {
                 name == "reference-enable-observations.py" && flag == "--verify"
             });
             let harness_option = harness_tool && PERF_HARNESS_TOOL_FLAGS.contains(&flag);
+            // This standalone example owns these arguments; do not admit them for engine.
+            let inspector_option = path.ends_with("scripts/model_inspector/runtime.py")
+                && [
+                    "--model",
+                    "--record",
+                    "--catalog",
+                    "--build-only",
+                    "--needed-gib",
+                    "--isolated",
+                    "--inside",
+                    "--run-dir",
+                    "--profile",
+                    "--example",
+                    "--message-format",
+                    "--path-format",
+                    "--git-common-dir",
+                ]
+                .contains(&flag);
             let release_option = path.file_name().is_some_and(|name| {
                 SCRIPT_SCOPED_FLAGS
                     .iter()
@@ -3668,6 +3686,7 @@ mod tests {
                 || observation_option
                 || harness_option
                 || release_option
+                || inspector_option
             {
                 continue;
             }
@@ -3836,6 +3855,30 @@ mod tests {
                 "{flag} must still be rejected in other scripts"
             );
         }
+    }
+
+    /// Standalone inspector flags must not become general engine CLI options.
+    #[test]
+    fn inspector_options_are_scoped_to_the_standalone_example_launcher() {
+        let tool = std::path::Path::new("scripts/model_inspector/runtime.py");
+        assert_eq!(
+            checked_script_engine_flags("--record 1 --model meshes/a.glb --build-only", tool),
+            0
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags(
+                "--record 1",
+                std::path::Path::new("scripts/other.py")
+            ))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags(
+                "--unknown-inspector-option",
+                tool
+            ))
+            .is_err()
+        );
     }
 
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
