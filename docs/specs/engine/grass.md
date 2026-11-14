@@ -127,7 +127,7 @@ control opacity: [grass authoring accounts](https://stepmodifications.org/forum/
 identify it as an animation/wind weight, while the
 [NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
 describe its storage without prescribing a grass opacity equation. The converted
-alpha attribute remains intact but is unused, because grass wind is not implemented;
+alpha attribute remains intact but is unused, because grass wind is not rendered;
 an exact Skyrim wind equation or ambient-alpha interpretation is not established.
 Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
@@ -152,7 +152,7 @@ The existing shader byte decode remains `byte/255`; 128 is approximately half
 brightness. LAND VCLR was already decoded for terrain and remains absent from
 the serialized grass cache. Grass now consumes the committed terrain snapshot,
 so no converter, shader, cache schema or pack rebuild is needed. Wave Period stays in the grass uniform,
-but nothing reads it: grass wind is not implemented until Skyrim's wind formula is reverse engineered.
+but nothing reads it: grass wind is not rendered until the engine has a blended weather wind speed and wind direction.
 
 The color pass receives the existing directional shadows using Bevy's prepared
 terrain view bindings, cascades, filtering and normal/depth bias. Direct light
@@ -299,7 +299,7 @@ establish defaults or file precedence. Menu min/max fade settings are metadata,
 not a second clamp on the selected start distance. Disabling fade keeps full
 density up to cell unloading, so the zero-density cell-crossing guarantee no
 longer applies. Legacy cache switches and imported wind magnitudes do not
-control MudCrab's cache, and grass wind is not implemented. Imported spacing below eight is outside
+control MudCrab's cache, and grass wind is not rendered. Imported spacing below eight is outside
 the bounded CPU generator's supported range and is rejected. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
@@ -319,8 +319,9 @@ degenerate frames or absent maps keep the geometric normal. The frame follows Be
 flip Y once, matching the native material contract. Node reflection/nonuniform
 scale, instance yaw, slope and authored UV transforms move the frame with the mesh.
 The fragment re-orthogonalizes it against the interpolated normal. Both raster
-sides retain authored orientation. Grass wind is not implemented: Skyrim's wind
-formula is not yet reverse engineered, so blades keep their placed positions.
+sides retain authored orientation. Grass wind is not rendered. The retail amplitude and
+phase (RF-GRASS-001 to 003) are in `grass/wind.rs`, but they need the blended `WTHR` wind speed
+and the wind direction, which the engine does not have yet; blades keep their placed positions.
 
 Vertex alpha is an authored wind weight, but nothing reads it while wind is absent;
 alpha does not control opacity. Coverage uses texture and material alpha. Public study: Community Shaders contributors, RunGrass and

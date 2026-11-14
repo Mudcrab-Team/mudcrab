@@ -99,7 +99,8 @@ fn vertex(input: Vertex) -> Varyings {
         let basis = mat3x3(tangent,up,cross(tangent,up));
         p = basis*p; n = basis*n; t = basis*t;
     }
-    // No wind displacement: Skyrim's grass wind formula is not yet reverse engineered.
+    // No wind displacement: retail wind needs the blended WTHR wind speed and wind direction,
+    // which the engine does not have yet (see grass/wind.rs for the sourced amplitude and phase).
     let root = (grass.world_from_cell * vec4(xy.x,height,-xy.y,1.0)).xyz;
     let world = grass.world_from_cell * vec4(p + vec3(xy.x,height,-xy.y),1.0);
     out.position = view.clip_from_world * world;
