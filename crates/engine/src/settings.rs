@@ -813,8 +813,6 @@ impl SettingsFile {
                 self.metal_drawing_auto_unowned,
             ) {
                 Ok(()) => "Settings saved. Grass, radius and IO threads apply next start.".into(),
-
-
                 Err(error) => format!("Could not save settings: {error}"),
             },
             None => "Saving is unavailable for this session.".into(),
