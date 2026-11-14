@@ -84,7 +84,81 @@ pub struct ActorClips {
     pub run: Handle<Gltf>,
 }
 
+/// Body identity for an actor whose converter-authenticated idle library is available.
+#[derive(Component, Clone, Debug)]
+pub struct ActorIdleLibrary {
+    pub body_scene: String,
+}
+
+/// Select a canonical source HKX key from this creature's authored idle library.
+/// This is a playback request, independent of behavior-graph events or AI policy.
+#[derive(Component, Clone, Debug)]
+pub struct AuthoredIdleRequest {
+    pub source: String,
+    pub repeat: bool,
+}
+
+#[derive(Component)]
+struct IdlePlayback {
+    repeat: bool,
+}
+
+type PendingIdleRequests<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Actor,
+        &'static ActorIdleLibrary,
+        &'static AuthoredIdleRequest,
+    ),
+    Changed<AuthoredIdleRequest>,
+>;
+
+fn select_authored_idle(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    catalog: Option<Res<crate::world::actor_catalog::ActorCatalog>>,
+    requests: PendingIdleRequests,
+) {
+    let Some(catalog) = catalog else { return };
+    for (entity, actor, library, request) in &requests {
+        let Some(scene) = catalog.authored_idle_scene(actor, &library.body_scene, &request.source)
+        else {
+            warn!(base_form_id = actor.base_form_id, source = %request.source,
+                "authored idle request has no compatible published clip");
+            continue;
+        };
+        commands
+            .entity(entity)
+            .remove::<(
+                AnimationPlayer,
+                AnimationGraphHandle,
+                AnimationTransitions,
+                ActorGaitNodes,
+                ActorGait,
+            )>()
+            .insert((
+                ActorClips::load_idle(&asset_server, scene),
+                IdlePlayback {
+                    repeat: request.repeat,
+                },
+            ));
+    }
+}
+
 impl ActorClips {
+    /// Loads one verified creature idle. All gait slots use that clip; spawning does not give
+    /// these actors an ActorDrive, so this introduces no creature locomotion policy.
+    pub fn load_idle(asset_server: &AssetServer, scene: &str) -> Self {
+        let idle = asset_server.load(scene.to_owned());
+        Self {
+            idle: idle.clone(),
+            walk: idle.clone(),
+            run: idle,
+        }
+    }
+
     /// Loads `sex`'s three gait clips through the asset server.
     pub fn load(asset_server: &AssetServer, sex: ActorSex) -> Self {
         Self {
@@ -202,7 +276,12 @@ fn mark_actor_body_ready(
 type PendingActorAnimations<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static ActorClips, &'static Actor),
+    (
+        Entity,
+        &'static ActorClips,
+        &'static Actor,
+        Option<&'static IdlePlayback>,
+    ),
     (With<ActorBodyReady>, Without<AnimationPlayer>),
 >;
 
@@ -219,7 +298,8 @@ fn clip_animation(gltf: Option<&Gltf>, gait: Gait) -> Option<Handle<AnimationCli
 /// Installs every bone's target id and starts the idle clip once the body scene and the clips are
 /// available.
 ///
-/// An unusable idle clip is reported once and removes the request, leaving the actor in bind pose.
+/// An unusable idle clip is reported once and removes the request. Bone transforms keep
+/// their last evaluated pose; switching a request does not restore the bind pose.
 /// An unusable walk or run clip is reported once and falls back to the nearest loaded gait.
 fn start_actor_animations(
     mut commands: Commands,
@@ -230,7 +310,7 @@ fn start_actor_animations(
     pending: PendingActorAnimations,
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    for (actor, clips, actor_data) in &pending {
+    for (actor, clips, actor_data, playback) in &pending {
         let form_id = format_args!("{:08X}", actor_data.base_form_id);
         let [idle_state, walk_state, run_state] =
             Gait::ALL.map(|gait| asset_server.load_state(clips.handle(gait).id()));
@@ -253,7 +333,7 @@ fn start_actor_animations(
         if let LoadState::Failed(error) = idle_state {
             warn!(
                 form_id,
-                %error, "actor idle clip failed to load; the actor stays in bind pose"
+                %error, "actor idle clip failed to load; the actor keeps its current pose"
             );
             commands.entity(actor).remove::<ActorClips>();
             continue;
@@ -261,7 +341,7 @@ fn start_actor_animations(
         let Some(idle_clip) = clip_animation(idle_gltf, Gait::Idle) else {
             warn!(
                 form_id,
-                "actor idle clip has no animation; the actor stays in bind pose"
+                "actor idle clip has no animation; the actor keeps its current pose"
             );
             commands.entity(actor).remove::<ActorClips>();
             continue;
@@ -272,7 +352,7 @@ fn start_actor_animations(
                 warn!(
                     form_id,
                     reason = error.as_str(),
-                    "actor idle animation skipped; the actor stays in bind pose"
+                    "actor idle animation skipped; the actor keeps its current pose"
                 );
                 commands.entity(actor).remove::<ActorClips>();
                 continue;
@@ -295,9 +375,10 @@ fn start_actor_animations(
         let graph = graphs.add(graph);
         let mut player = AnimationPlayer::default();
         let mut transitions = AnimationTransitions::new();
-        transitions
-            .play(&mut player, idle_node, Duration::ZERO)
-            .repeat();
+        let active = transitions.play(&mut player, idle_node, Duration::ZERO);
+        if playback.is_none_or(|playback| playback.repeat) {
+            active.repeat();
+        }
         commands
             .entity(actor)
             .insert((
@@ -342,8 +423,10 @@ pub struct ActorAnimationPlugin;
 
 impl Plugin for ActorAnimationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(mark_actor_body_ready)
-            .add_systems(Update, start_actor_animations);
+        app.add_observer(mark_actor_body_ready).add_systems(
+            Update,
+            (select_authored_idle, start_actor_animations).chain(),
+        );
     }
 }
 
@@ -553,6 +636,56 @@ mod tests {
         assert_eq!(
             error.as_str(),
             "the body scene has no `Creation-to-glTF basis` node"
+        );
+    }
+
+    #[test]
+    fn creature_bone_names_bind_to_the_actor_player() {
+        let (_directory, mut app) = fixture_app();
+        let clip = app
+            .world_mut()
+            .resource_mut::<Assets<AnimationClip>>()
+            .add(AnimationClip::default());
+        let clip_gltf = app
+            .world()
+            .resource::<AssetServer>()
+            .add(gltf_with_animation(IDLE_ANIMATION, clip));
+        app.update();
+        let mut world = World::new();
+        let basis = world
+            .spawn((Name::new(ANIMATION_ROOT_NODE), Transform::default()))
+            .id();
+        let pelvis = world
+            .spawn((Name::new("Pelvis"), Transform::default(), ChildOf(basis)))
+            .id();
+        world.spawn((Name::new("HEAD"), Transform::default(), ChildOf(pelvis)));
+        let scene = app
+            .world()
+            .resource::<AssetServer>()
+            .add(WorldAsset::new(world));
+        app.update();
+        let actor = spawn_actor(&mut app, scene, clips_from_one(clip_gltf));
+        for _ in 0..8 {
+            app.update();
+        }
+        let player = app
+            .world()
+            .get::<AnimationPlayer>(actor)
+            .expect("idle player installed");
+        assert!(player.playing_animations().next().is_some());
+        let mut query = app
+            .world_mut()
+            .query::<(&Name, &AnimationTargetId, &AnimatedBy)>();
+        let (_, id, owner) = query
+            .iter(app.world())
+            .find(|(name, _, _)| name.as_str() == "HEAD")
+            .unwrap();
+        assert_eq!(*id, expected_id(&[ANIMATION_ROOT_NODE, "Pelvis", "HEAD"]));
+        assert_eq!(owner.0, actor);
+        assert!(
+            app.world()
+                .get::<crate::actor_drive::ActorDrive>(actor)
+                .is_none()
         );
     }
 
@@ -790,6 +923,250 @@ mod tests {
             let _ = copy_node(nodes, child, world, Some(entity));
         }
         Some(entity)
+    }
+
+    fn body_world_from_glb(path: &Path) -> World {
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..4], b"glTF");
+        let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + length]).unwrap();
+        let nodes = json["nodes"].as_array().unwrap();
+        let scene = json["scene"].as_u64().unwrap_or(0) as usize;
+        let root = json["scenes"][scene]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node.as_u64().unwrap() as usize)
+            .find(|&node| nodes[node]["name"] == ANIMATION_ROOT_NODE)
+            .unwrap();
+        let mut world = World::new();
+        let mut pending = vec![(root, None)];
+        let mut visited = HashSet::new();
+        while let Some((index, parent)) = pending.pop() {
+            assert!(visited.insert(index));
+            let node = &nodes[index];
+            let floats = |key: &str, default: Vec<f32>| {
+                node[key]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|value| value.as_f64().unwrap() as f32)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or(default)
+            };
+            let transform = if node["matrix"].is_array() {
+                Transform::from_matrix(Mat4::from_cols_array(
+                    &floats("matrix", Vec::new()).try_into().unwrap(),
+                ))
+            } else {
+                Transform {
+                    translation: Vec3::from_slice(&floats("translation", vec![0.; 3])),
+                    rotation: Quat::from_array(
+                        floats("rotation", vec![0., 0., 0., 1.]).try_into().unwrap(),
+                    ),
+                    scale: Vec3::from_slice(&floats("scale", vec![1.; 3])),
+                }
+            };
+            let mut entity = world.spawn((
+                Name::new(node["name"].as_str().unwrap().to_owned()),
+                transform,
+            ));
+            if let Some(parent) = parent {
+                entity.insert(ChildOf(parent));
+            }
+            let entity = entity.id();
+            if let Some(children) = node["children"].as_array() {
+                pending.extend(
+                    children
+                        .iter()
+                        .map(|child| (child.as_u64().unwrap() as usize, Some(entity))),
+                );
+            }
+        }
+        world
+    }
+
+    #[test]
+    #[ignore = "requires scoped MUDCRAB_IDLE_LIBRARY_ASSETS and new MUDCRAB_IDLE_PLAYBACK_RECEIPT"]
+    fn retail_authored_idle_library_binds_and_plays() {
+        use shared::actor_idle_catalog::{ActorIdleCatalog, PATH};
+        let assets =
+            std::path::PathBuf::from(std::env::var_os("MUDCRAB_IDLE_LIBRARY_ASSETS").unwrap());
+        let receipt =
+            std::path::PathBuf::from(std::env::var_os("MUDCRAB_IDLE_PLAYBACK_RECEIPT").unwrap());
+        let catalog: ActorIdleCatalog =
+            serde_json::from_slice(&std::fs::read(assets.join(PATH)).unwrap()).unwrap();
+        catalog.validate().unwrap();
+        let mut app = retail_app(&assets);
+        app.insert_resource(crate::world::actor_catalog::ActorCatalog::open(
+            &assets.join("skyrim_world.db"),
+        ));
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            Duration::ZERO,
+        ));
+        app.insert_resource(Time::<Fixed>::from_seconds(10000.0));
+        app.world_mut()
+            .resource_mut::<Time<Virtual>>()
+            .set_max_delta(Duration::from_secs(3600));
+        let mut motion_sources = HashSet::new();
+        let mut played = 0;
+        let mut static_clips = 0;
+        let mut one_shot_checked = false;
+        let mut records = Vec::new();
+        for (index, row) in catalog.bindings.iter().enumerate() {
+            let scene =
+                app.world()
+                    .resource::<AssetServer>()
+                    .add(WorldAsset::new(body_world_from_glb(
+                        &assets.join(&row.body_scene),
+                    )));
+            let clips = ActorClips::load_idle(app.world().resource::<AssetServer>(), &row.scene);
+            let actor = spawn_actor(&mut app, scene, clips);
+            app.world_mut().entity_mut(actor).insert((
+                Actor::new(
+                    index as u32 + 1,
+                    row.race_id,
+                    ActorSex::parse(&row.sex).unwrap(),
+                    crate::actors::ActorResolution::Body,
+                ),
+                ActorIdleLibrary {
+                    body_scene: row.body_scene.clone(),
+                },
+            ));
+            for (source, expected) in &row.clips {
+                app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                    Duration::ZERO,
+                ));
+                app.world_mut()
+                    .entity_mut(actor)
+                    .insert(AuthoredIdleRequest {
+                        source: source.clone(),
+                        repeat: true,
+                    });
+                app.update();
+                wait_until(&mut app, "the authored idle player", |app| {
+                    app.world().get::<AnimationPlayer>(actor).is_some()
+                });
+                // A newly installed graph is threaded after its asset event reaches
+                // the next frame. Evaluate time zero before capturing the baseline;
+                // otherwise equal clips (for example storm atronach rootb/rootf)
+                // can compare the previous clip's sampled pose with the same pose.
+                app.update();
+                let targets: HashSet<_> = {
+                    // Startup consumes ActorClips. Inspect the clip installed on the
+                    // actual player rather than the completed loading request.
+                    let world = app.world();
+                    let player = world.get::<AnimationPlayer>(actor).unwrap();
+                    let (node, _) = player.playing_animations().next().unwrap();
+                    let graph = world
+                        .resource::<Assets<AnimationGraph>>()
+                        .get(&world.get::<AnimationGraphHandle>(actor).unwrap().0)
+                        .unwrap();
+                    let bevy::animation::graph::AnimationNodeType::Clip(handle) =
+                        &graph.graph[*node].node_type
+                    else {
+                        panic!("idle player must select a clip node");
+                    };
+                    world
+                        .resource::<Assets<AnimationClip>>()
+                        .get(handle)
+                        .unwrap()
+                        .curves()
+                        .keys()
+                        .copied()
+                        .collect()
+                };
+                let mut query =
+                    app.world_mut()
+                        .query::<(Entity, &AnimatedBy, &AnimationTargetId, &Transform)>();
+                let initial: Vec<_> = query
+                    .iter(app.world())
+                    .filter(|(_, owner, _, _)| owner.0 == actor)
+                    .map(|(entity, _, id, transform)| (entity, *id, *transform))
+                    .collect();
+                let bound: HashSet<_> = initial.iter().map(|(_, id, _)| *id).collect();
+                assert!(
+                    targets.is_subset(&bound),
+                    "unbound targets: {} {source}",
+                    row.body_scene
+                );
+                let mut moved = false;
+                if let Some(frame) = expected.motion_frame {
+                    // Sample inside the first moving source interval. Sampling the
+                    // final key exactly would wrap a repeating clip back to zero.
+                    if motion_sources.insert((row.skeleton.clone(), source.clone())) {
+                        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                            Duration::from_secs_f64(
+                                (f64::from(frame) - 0.25) / f64::from(expected.frames_per_second),
+                            ),
+                        ));
+                        app.update();
+                        moved = initial.iter().any(|(entity, _, before)| {
+                            app.world()
+                                .get::<Transform>(*entity)
+                                .is_some_and(|after| after != before)
+                        });
+                        assert!(
+                            moved,
+                            "idle did not move at its source motion frame: {} {source}",
+                            row.body_scene
+                        );
+                    }
+                } else {
+                    static_clips += 1;
+                }
+                if !one_shot_checked {
+                    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                        Duration::ZERO,
+                    ));
+                    app.world_mut()
+                        .entity_mut(actor)
+                        .insert(AuthoredIdleRequest {
+                            source: source.clone(),
+                            repeat: false,
+                        });
+                    app.update();
+                    wait_until(&mut app, "one-shot idle player", |app| {
+                        app.world().get::<AnimationPlayer>(actor).is_some()
+                    });
+                    app.update();
+                    let duration = f64::from(expected.frame_count.max(2))
+                        / f64::from(expected.frames_per_second);
+                    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                        Duration::from_secs_f64(duration * 2.0),
+                    ));
+                    app.update();
+                    assert!(
+                        app.world()
+                            .get::<AnimationPlayer>(actor)
+                            .unwrap()
+                            .all_finished(),
+                        "one-shot idle must finish"
+                    );
+                    one_shot_checked = true;
+                }
+                played += 1;
+                records.push(serde_json::json!({"race":row.race_id,"sex":row.sex,"body":row.body_scene,"source":source,"scene":expected.scene,"targets":targets.len(),"motion_checked":moved,"authored_static":expected.motion_frame.is_none()}));
+            }
+            app.world_mut().entity_mut(actor).despawn();
+            if index % 20 == 0 {
+                println!("{} bodies, {played} idle clips played", index + 1);
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(receipt)
+            .unwrap();
+        serde_json::to_writer_pretty(file,&serde_json::json!({"bodies":catalog.bindings.len(),"clips_played":played,"distinct_moving_sources":motion_sources.len(),"static_clip_bindings":static_clips,"one_shot_checked":one_shot_checked,"records":records})).unwrap();
+        println!(
+            "{} bodies; {played} idle clips bound/played; {} distinct moving sources; {static_clips} static bindings",
+            catalog.bindings.len(),
+            motion_sources.len()
+        );
+        assert!(played > 0 && one_shot_checked);
     }
 
     #[test]

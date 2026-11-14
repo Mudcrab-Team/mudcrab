@@ -113,6 +113,316 @@ async fn publish(config: &PipelineConfig) -> converter::pipeline::PipelineReport
     result.unwrap()
 }
 
+/// Corrupt a declared skin's bone count while preserving its block and all neighboring bytes.
+fn unparsable_skin() -> Vec<u8> {
+    let mut bytes = body_fixture();
+    let skin = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "NiSkinInstance")
+        .unwrap()
+        .1;
+    bytes[skin + 12..skin + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes
+}
+
+/// Build an independent raw node-only NIF for the audit's above-limit measurement.
+fn audit_scene_chain(depth: u32) -> Vec<u8> {
+    let mut blocks = Vec::new();
+    for index in 0..depth {
+        let mut words = vec![u32::MAX, u32::MAX, u32::MAX, 0, 0, 0, 0];
+        words.extend([
+            1.0_f32.to_bits(),
+            0,
+            0,
+            0,
+            1.0_f32.to_bits(),
+            0,
+            0,
+            0,
+            1.0_f32.to_bits(),
+        ]);
+        words.extend([1.0_f32.to_bits(), u32::MAX]);
+        if index + 1 < depth {
+            words.extend([1, index + 1]);
+        } else {
+            words.push(0);
+        }
+        words.push(0); // effects
+        blocks.push(
+            words
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let mut bytes = b"Gamebryo File Format, Version 20.2.0.7\n".to_vec();
+    bytes.extend(0x1402_0007_u32.to_le_bytes());
+    bytes.push(1);
+    for value in [12, depth, 100] {
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes.extend([0, 0, 0]); // author/process/export script
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(6_u32.to_le_bytes());
+    bytes.extend(b"NiNode");
+    for _ in 0..depth {
+        bytes.extend(0_u16.to_le_bytes());
+    }
+    for block in &blocks {
+        bytes.extend((block.len() as u32).to_le_bytes());
+    }
+    bytes.extend([0; 12]); // string count, max string length, group count
+    for block in blocks {
+        bytes.extend(block);
+    }
+    bytes
+}
+
+/// The audit keeps measurements for deep scenes and malformed skins without exporting them.
+#[test]
+fn nif_audit_retains_refused_scene_and_skin_diagnostics() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("input");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("broken.nif"), unparsable_skin()).unwrap();
+    fs::write(input.join("healthy.nif"), body_fixture()).unwrap();
+    fs::write(input.join("deep.nif"), audit_scene_chain(257)).unwrap();
+    let report_path = root.path().join("audit.json");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_nif-audit"))
+        .arg(&input)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["summary"]["total_files"], 3);
+    assert_eq!(report["summary"]["refused_files"], 2);
+    assert_eq!(report["summary"]["max_scene_depth"], 257);
+    let broken = &report["files"][0];
+    assert_eq!(broken["path"], "broken.nif");
+    assert_eq!(broken["fallback_blocks"]["NiSkinInstance"], 1);
+    assert_eq!(
+        broken["fallback_offsets"]["NiSkinInstance"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(broken["max_scene_depth"].as_u64().unwrap() > 0);
+    assert!(
+        broken["conversion_refusals"][0]
+            .as_str()
+            .unwrap()
+            .contains("NiSkinInstance")
+    );
+    assert!(broken["parse_error"].is_null());
+    assert_eq!(report["summary"]["conversion_attempts"], 0);
+    let deep = &report["files"][1];
+    assert_eq!(deep["path"], "deep.nif");
+    assert_eq!(deep["max_scene_depth"], 257);
+    assert!(
+        deep["conversion_refusals"][0]
+            .as_str()
+            .unwrap()
+            .contains("257 scene nodes")
+    );
+    assert!(
+        report["files"][2]["conversion_refusals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A malformed skin fails only its model; valid assets and plugin records still publish.
+#[tokio::test]
+async fn malformed_skin_refusal_publishes_valid_neighbors_and_records_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("Data");
+    prepare_data(&data);
+    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
+    // Resolver failure is a neutral answer, never permission to publish static geometry.
+    assert_eq!(
+        find_skeleton(&data.join(BODY_KEY)),
+        SkeletonResolution::SelfContained
+    );
+    let direct = root.path().join("refused-direct.glb");
+    assert!(MeshConverter::convert_nif_to_glb(data.join(BODY_KEY), direct.clone()).is_err());
+    assert!(!direct.exists());
+    let output = root.path().join("modern");
+    assert_refused_model(&publish(&config(&data, &output)).await, &output);
+}
+
+/// Check the saved failure, diagnostic, omitted bytes and neighboring records after publication.
+fn assert_refused_model(report: &converter::pipeline::PipelineReport, output: &Path) {
+    assert!(!report.complete, "malformed skin was reused: {report:?}");
+    assert_eq!(report.skipped, 1, "{report:?}");
+    let saved = manifest(output);
+    assert_eq!(saved.failures.len(), 1, "{:?}", saved.failures);
+    let failure = &saved.failures[BODY_KEY];
+    assert!(failure.contains("NiSkinInstance"), "{failure}");
+    assert!(failure.contains("offset"), "{failure}");
+    assert!(failure.len() < 2048, "asset diagnostic must stay bounded");
+    assert_eq!(
+        report
+            .warnings
+            .iter()
+            .filter(|warning| *warning == failure)
+            .count(),
+        1
+    );
+    assert!(!saved.entries.contains_key(BODY_KEY));
+    assert!(!output.join(BODY_OUTPUT).exists());
+    assert!(output.join("meshes/generated.glb").is_file());
+    assert!(saved.entries.contains_key("meshes/generated.nif"));
+    let database = rusqlite::Connection::open_with_flags(
+        output.join("skyrim_world.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let records: u64 = database
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .unwrap();
+    assert!(records > 0, "usable plugin records did not survive");
+}
+
+/// Seed tool inputs with a valid neighboring GLB and an old static success for a malformed NIF.
+fn tool_inputs(root: &Path) -> (PathBuf, PathBuf) {
+    let data = root.join("Data");
+    prepare_data(&data);
+    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
+    let assets = root.join("old-assets");
+    fs::create_dir_all(assets.join(BODY_OUTPUT).parent().unwrap()).unwrap();
+    MeshConverter::convert_nif_to_glb(
+        data.join("meshes/generated.nif"),
+        assets.join("meshes/generated.glb"),
+    )
+    .unwrap();
+    fs::copy(
+        assets.join("meshes/generated.glb"),
+        assets.join(BODY_OUTPUT),
+    )
+    .unwrap();
+    (data.join("meshes"), assets)
+}
+
+/// A batch annotation tool must process good neighbors and record a failed model after refusal.
+#[test]
+fn collision_annotation_tool_refusal_preserves_neighbors_and_reports_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let (sources, assets) = tool_inputs(root.path());
+    let output = root.path().join("annotated");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_collision-annotate"))
+        .arg(&sources)
+        .arg(assets.join("meshes"))
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "incomplete annotation needs a failing exit status"
+    );
+    let report = output.join("collision-annotation-report.json");
+    assert!(
+        report.is_file(),
+        "a bad model aborted the batch before its failure report"
+    );
+    let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["complete"], false);
+    assert_eq!(report["annotated"], 1);
+    let failures = report["failures"].as_object().unwrap();
+    assert_eq!(failures.len(), 1);
+    let message = failures["actors/test/body.glb"].as_str().unwrap();
+    assert!(message.contains("NiSkinInstance"), "{message}");
+    assert!(message.len() < 4096);
+    assert!(output.join("generated.glb").is_file());
+    assert!(!output.join("actors/test/body.glb").exists());
+    assert!(
+        assets.join(BODY_OUTPUT).is_file(),
+        "input pack must stay intact"
+    );
+}
+
+/// Closure conversion must validate current NIF input before reusing an old static GLB.
+#[test]
+fn asset_closure_tool_refusal_rejects_old_success_and_preserves_neighbor() {
+    let root = tempfile::tempdir().unwrap();
+    let (sources, assets) = tool_inputs(root.path());
+    let neighbor = fs::read(assets.join("meshes/generated.glb")).unwrap();
+    let database = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    database.execute_batch("CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT); CREATE TABLE \"references\"(base_form_id INTEGER); INSERT INTO statics VALUES(1,'generated.nif'),(2,'actors/test/body.nif'); INSERT INTO \"references\" VALUES(1),(2);").unwrap();
+    drop(database);
+    let report = root.path().join("closure-report.json");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_asset-closure-convert"))
+        .arg(&sources)
+        .arg(&assets)
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "closure reused a refused NIF's old GLB"
+    );
+    let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["passed"], false);
+    assert_eq!(report["failures"], 1);
+    assert_eq!(report["reused"], 1);
+    let failed = report["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["status"] == "failed")
+        .unwrap();
+    assert_eq!(failed["model_path"], "actors/test/body.nif");
+    let message = failed["error"].as_str().unwrap();
+    assert!(message.contains("NiSkinInstance"), "{message}");
+    assert!(message.len() < 4096);
+    assert!(!assets.join(BODY_OUTPUT).exists());
+    assert_eq!(
+        fs::read(assets.join("meshes/generated.glb")).unwrap(),
+        neighbor
+    );
+}
+
+/// Stored paths that name one output must report one outcome and never delete a sibling's GLB.
+#[test]
+fn asset_closure_tool_reports_every_alias_of_one_output() {
+    let root = tempfile::tempdir().unwrap();
+    let (sources, assets) = tool_inputs(root.path());
+    let neighbor = fs::read(assets.join("meshes/generated.glb")).unwrap();
+    let database = rusqlite::Connection::open(assets.join("skyrim_world.db")).unwrap();
+    database.execute_batch("CREATE TABLE statics(id INTEGER PRIMARY KEY, model_path TEXT); CREATE TABLE \"references\"(base_form_id INTEGER); INSERT INTO statics VALUES(1,'generated.nif'),(2,'meshes/generated.nif'),(3,'actors/test/body.nif'),(4,'Meshes\\Actors\\Test\\Body.nif'); INSERT INTO \"references\" VALUES(1),(2),(3),(4);").unwrap();
+    drop(database);
+    let report = root.path().join("closure-report.json");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_asset-closure-convert"))
+        .arg(&sources)
+        .arg(&assets)
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert!(!run.status.success());
+    let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(report["requested"], 4);
+    assert_eq!(report["reused"], 2);
+    assert_eq!(report["failures"], 2);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 4, "every stored path needs one result");
+    for row in results {
+        let expected = if row["output_path"] == "meshes/generated.glb" {
+            "reused"
+        } else {
+            "failed"
+        };
+        assert_eq!(row["status"], expected, "{row}");
+    }
+    assert!(!assets.join(BODY_OUTPUT).exists());
+    assert_eq!(
+        fs::read(assets.join("meshes/generated.glb")).unwrap(),
+        neighbor,
+        "a failing alias deleted its sibling's published GLB"
+    );
+}
+
 /// Read the actual saved proof, including failures and per-kind settings.
 fn manifest(output: &Path) -> ConversionManifest {
     serde_json::from_slice(&fs::read(output.join("conversion-manifest.json")).unwrap()).unwrap()
@@ -641,4 +951,66 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
+}
+
+/// Preserve block boundaries while making the first shape's shader reference out of range.
+fn invalid_material_reference(mut bytes: Vec<u8>) -> Vec<u8> {
+    let shape = blocks(&bytes)
+        .into_iter()
+        .find(|(kind, _)| kind == "BSTriShape")
+        .unwrap()
+        .1;
+    // NiAVObject (72), bounds (16), skin reference (4), then shader reference.
+    bytes[shape + 92..shape + 96].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+    bytes
+}
+
+/// A second material error must preserve a scene/skin refusal's already measured diagnostics.
+#[test]
+fn nif_audit_retains_policy_diagnostics_when_material_inspection_fails() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("input");
+    fs::create_dir(&input).unwrap();
+    let combined = input.join("combined.nif");
+    fs::write(&combined, invalid_material_reference(unparsable_skin())).unwrap();
+    fs::write(input.join("healthy.nif"), body_fixture()).unwrap();
+    let diagnostics = MeshConverter::inspect_nif(&combined)
+        .expect("a material failure must retain the skin and scene measurements");
+    assert_eq!(diagnostics.fallback_blocks["NiSkinInstance"], 1);
+    assert!(diagnostics.max_scene_depth > 0);
+    let material_reason = diagnostics
+        .conversion_refusals
+        .iter()
+        .find(|reason| reason.starts_with("material inspection unavailable: "))
+        .unwrap();
+    assert!(material_reason.chars().count() <= 512);
+    assert_eq!(diagnostics.material_shape_count, 0);
+    assert!(MeshConverter::validate_nif_for_conversion(&combined).is_err());
+    let output = root.path().join("refused.glb");
+    assert!(MeshConverter::convert_nif_to_glb(&combined, &output).is_err());
+    assert!(!output.exists());
+    assert!(MeshConverter::extract_collision(&combined).is_err());
+    let report_path = root.path().join("audit.json");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_nif-audit"))
+        .arg(&input)
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["summary"]["total_files"], 2);
+    assert_eq!(report["summary"]["parsed_files"], 2);
+    assert_eq!(report["summary"]["refused_files"], 1);
+    assert_eq!(report["summary"]["material_failures"], 0);
+    let file = &report["files"][0];
+    assert_eq!(file["path"], "combined.nif");
+    assert_eq!(file["fallback_blocks"]["NiSkinInstance"], 1);
+    assert_eq!(file["max_scene_depth"], diagnostics.max_scene_depth);
+    assert!(file["parse_error"].is_null());
+    assert_eq!(file["conversion_refusals"].as_array().unwrap().len(), 2);
+    // A material-only failure keeps the existing inspection error contract.
+    let material_only = root.path().join("material-only.nif");
+    fs::write(&material_only, invalid_material_reference(body_fixture())).unwrap();
+    let error = MeshConverter::inspect_nif(&material_only).unwrap_err();
+    assert!(format!("{error:#}").contains("invalid NIF material"));
 }
