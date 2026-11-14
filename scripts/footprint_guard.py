@@ -151,18 +151,37 @@ def gib_to_bytes(value: float) -> int:
     return int(value * GIB)
 
 
-def ancestors_of(pid: int, parent_of: Callable[[int], Optional[int]]) -> List[int]:
-    """The parent chain of `pid`, nearest first, without `pid` itself. Cycle-safe."""
+MAX_ANCESTORS = 64
+
+
+def ancestry(
+    parent: int, parent_of: Callable[[int], Optional[int]], limit: int = MAX_ANCESTORS
+) -> List[int]:
+    """The strict parent chain, nearest first, starting at the known parent `parent`.
+
+    Seed `parent` from `os.getppid()`, which cannot fail. The chain ends at init (PID 1)
+    or at a parent of 0. If any link cannot be read, the chain is longer than `limit`, or
+    it loops, the guard cannot prove which processes it runs under, so this raises
+    Refused. Failing closed here means no kill can ever end the guard by mistake.
+    """
     chain: List[int] = []
-    seen = {pid}
-    current = pid
-    while True:
-        parent = parent_of(current)
-        if parent is None or parent <= 0 or parent in seen:
+    current = parent
+    for _ in range(limit):
+        if current <= 0:
             return chain
-        chain.append(parent)
-        seen.add(parent)
-        current = parent
+        if current in chain:
+            raise Refused(f"the parent chain of the guard loops at PID {current}")
+        chain.append(current)
+        if current == 1:
+            return chain
+        above = parent_of(current)
+        if above is None:
+            raise Refused(
+                f"cannot read the parent of PID {current}, so the guard cannot prove it is "
+                "not an ancestor of the target"
+            )
+        current = above
+    raise Refused(f"the parent chain of the guard is longer than {limit} processes")
 
 
 def descendants(rows: Iterable[Tuple[int, int]], root: int) -> List[int]:
@@ -195,7 +214,11 @@ class Result:
 
 
 def _stderr(message: str) -> None:
-    print("footprint_guard: " + message, file=sys.stderr, flush=True)
+    """Write to stderr. A dead pipe or closed stream must never stop a kill, so it is ignored."""
+    try:
+        print("footprint_guard: " + message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 def watch(
@@ -421,11 +444,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             deadline_s=args.deadline_s,
         ).validate()
         own_pid = os.getpid()
-        ancestors = ancestors_of(own_pid, _darwin_parent)
+        ancestors = ancestry(os.getppid(), _darwin_parent)
         _refuse_pid(args.pid, own_pid, ancestors)
         sampler = DarwinSampler(include_children=not args.no_children)
     except Refused as exc:
-        print(f"footprint_guard: refused: {exc}", file=sys.stderr)
+        _stderr(f"refused: {exc}")
         return EXIT_REFUSED
 
     log_file = None
@@ -433,7 +456,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             log_file = open(args.log, "a", buffering=1)
         except OSError as exc:
-            print(f"footprint_guard: refused: cannot open the log {args.log}: {exc}", file=sys.stderr)
+            _stderr(f"refused: cannot open the log {args.log}: {exc}")
             return EXIT_REFUSED
     log = (lambda row: log_file.write(json.dumps(row) + "\n")) if log_file else None
     try:
@@ -462,7 +485,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "killed_pids": result.killed,
         "kill_errors": result.kill_errors,
     }
-    print("footprint_guard: " + json.dumps(summary), file=sys.stderr)
+    _stderr(json.dumps(summary))
     if result.kill_errors:
         return EXIT_KILL_FAILED
     return result.verdict.exit_code
