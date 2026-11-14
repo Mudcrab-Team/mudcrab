@@ -136,12 +136,13 @@ fn g6_user_appearance_file_and_explicit_override() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("settings.json");
     let tuning = directory.path().join("grass.toml");
-    std::fs::write(&tuning, "brightness = 1.1\n").unwrap();
+    std::fs::write(&tuning, "brightness = 1.3\n").unwrap();
     let mut launch = config(&[]);
     prepare_settings_at(&mut launch, Some(path.clone()));
     assert_eq!(launch.grass_tuning, Some(tuning));
-    let state = crate::grass_tuning::GrassTuningState::new(launch.grass_tuning.clone());
-    assert_eq!(state.effective.brightness, 1.1);
+    let mut state = crate::grass_tuning::GrassTuningState::new(launch.grass_tuning.clone());
+    assert!(state.poll_at(std::time::Duration::from_secs(1)));
+    assert_eq!(state.effective.brightness, 1.3);
     let mut explicit = config(&["--grass-tuning", "developer.toml"]);
     prepare_settings_at(&mut explicit, Some(path));
     assert_eq!(explicit.grass_tuning, Some(PathBuf::from("developer.toml")));
