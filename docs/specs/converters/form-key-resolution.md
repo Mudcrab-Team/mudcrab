@@ -8,8 +8,10 @@ retain their signatures and widths.
 
 For a MAST list of length N, selectors below N name that master and selectors
 at or above N name self, for every record, field and link type, including VMAD.
-Occurrences above N produce counted warning summaries rather than individual
-log lines. This matches xEdit's reference lookup, which clamps the selector to
+Successful non-null projections above N produce counted summaries rather than individual
+log lines (notices in the handwritten and native merges). Immediate absent-target
+clears retain diagnostics without counting as self projections.
+This matches xEdit's reference lookup, which clamps the selector to
 the self entry ([public implementation](https://github.com/TES5Edit/TES5Edit/blob/f5c00f3fa3ee39511185515802647246c807f759/Core/wbImplementation.pas#L3276-L3291)).
 Mutagen also falls back to its current mod for indices beyond the appended
 self entry ([public implementation](https://github.com/Mutagen-Modding/Mutagen/blob/b55de3715229bca562f99baa3dcae5c001f812d7/Mutagen.Bethesda.Core/Plugins/Masters/SeparatedMasterPackage.cs#L130-L166)).
@@ -23,24 +25,35 @@ for optional NAVM ONAM words past the master list. Its scope is the record signa
 and physical field path, with no plugin or record-ID allowlist. The official data
 contains float-looking ONAM words (for example `3F00003F`);
 [xEdit still defines ONAM as FormIDs](https://github.com/TES5Edit/TES5Edit/blob/xedit-4.1.5f/Core/wbDefinitionsTES5.pas#L7794-L7806),
-so a different layout is unproven. This publication adapter keeps
-official output logically identical pending separate layout work. Native ownership
+so a different layout is unproven. This publication adapter preserves the old
+typed NAVM NULL output pending separate layout work. Native ownership
 remains self. Other optional links resolve self in both readers before their existing
 target checks. Both readers build
-a source-header catalogue so forward self links survive, while absent optional
-self targets with no observed source header retain NULL and their prior source-context
-diagnostic. Deferred replay and lazy history use the same observed-header authority,
+a source-header catalogue so forward self links survive, while absent past-master
+field targets with no observed source header publish NULL and retain their prior
+source-context diagnostic. This includes primary VMAD objects, GRAS MODS, LAND BTXT/ATXT/VTEX
+and placed-reference NAME in both readers. NAME follows typed field recovery: the
+record survives an absent target; malformed NAME framing or unrepresentable required
+packing still rejects the handwritten candidate. Header identities and group labels
+do not require a target header. Deferred replay and lazy history use the same
+observed-header authority,
 including rejected/deleted source versions. XLOC keys and history runtime IDs also
 resolve to self. Source provenance still records unproven original ownership.
-Checked optional packing failures clear locally; required failures reject one candidate.
+Table-driven optional packing failures clear locally. Required and special-layout
+packing/framing failures retain their existing per-candidate recovery, including
+the handwritten record-kind light-width truncation policy for primary VMAD.
 
 Malformed mods intentionally change relative to the old writer: past-master CELL
 XOWN/XCWT survive when their targets have source headers, and required REFR NAME
-uses self ownership; typed enable-parent and
-other optional links also keep self when their targets are usable. Signatures and
+uses self ownership when its target has a source header (otherwise NULL). Typed
+enable-parent and other optional links also keep self when their targets are usable. Signatures and
 stored widths remain stable. Explicit plugin paths with invalid identity names
 are skipped during selection with warnings, together with their dependents, before
 hashes, archive priorities and terrain master tables; usable neighbours continue.
+Discovery recognizes a plugin extension before trailing Unicode whitespace, then
+reports that invalid filename as a skipped plugin with its dependents; it was
+previously ignored as a non-plugin file. Names containing `/`, `\` or `:`
+remain outside discovery candidates.
 Direct reader recovery returns the accepted names in `ReadResult::load_order`,
 which every returned supplier index addresses. Immediate absent-target cleanup and
 NAVM adaptations do not count as resolved-to-self projections.

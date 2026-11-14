@@ -30,8 +30,9 @@ pub const ADAPTER_VERSION: u32 = 12;
 
 /// Legacy metadata projection contract: preserve WRLD payloads and record-aware VMAD links.
 /// Version 4 resolves localized string fields to the in-house reader's text (`legacy_text`).
+/// Version 5 clears absent past-master field targets in every handwritten link layout.
 /// This identity does not change the independent converted-asset producer/settings proofs.
-pub const LEGACY_PROJECTION_VERSION: u32 = 4;
+pub const LEGACY_PROJECTION_VERSION: u32 = 5;
 
 /// Where localized plugins' string tables are found, and in which language.
 #[derive(Clone, Copy)]

@@ -192,7 +192,7 @@ fn torn_payloads_preserve_earlier_winners_neighbors_and_authoritative_deletions(
 }
 
 #[test]
-/// Absent past-master optional links clear; required links and valid neighbours survive.
+/// Absent past-master field links clear, including NAME; valid neighbours survive.
 fn absent_optional_self_links_clear_while_required_links_and_neighbors_survive() {
     let dir = tempfile::tempdir().unwrap();
     let paths = vec![
@@ -254,7 +254,7 @@ fn absent_optional_self_links_clear_while_required_links_and_neighbors_survive()
     );
     assert_eq!(
         fields(&conn, 0x0200_0802, b"NAME"),
-        [0x0200_0904u32.to_le_bytes().to_vec()]
+        [0u32.to_le_bytes().to_vec()]
     );
     assert!(fields(&conn, 0x0200_0800, b"XLCN").is_empty());
     assert_eq!(

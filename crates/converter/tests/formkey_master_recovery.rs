@@ -257,7 +257,8 @@ fn typed_light_width_projection_retains_old_diagnostics_and_neighbors() {
     assert_eq!(count, 4);
     let paths = [data.join("Base.esm"), data.join("Light.esl")];
     let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
-    converter::records::read_plugins(&paths, &order).unwrap();
+    let read = converter::records::read_plugins(&paths, &order).unwrap();
+    assert!(read.records.contains_key(&0x811));
     let identities = order.form_key_context().unwrap();
     assert!(
         identities
@@ -477,8 +478,6 @@ fn absent_optional_self_target_keeps_old_diagnostic() {
         .unwrap();
     assert_eq!(reasons, ["optional FormID 02001234 exceeds master list"]);
     let paths = [data.join("Base.esm")];
-    let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
-    converter::records::read_plugins(&paths, &order).unwrap();
     let legacy = root.path().join("legacy.db");
     EsmParser::convert_plugins(&paths, &legacy).unwrap();
     for db in [legacy, output.join("skyrim_world.db")] {

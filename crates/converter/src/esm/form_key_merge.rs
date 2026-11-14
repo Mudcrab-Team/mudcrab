@@ -116,12 +116,14 @@ impl EsmParser {
                     name,
                     &warnings,
                     |word, strict| {
-                        order.note_projection(priority, word);
                         let resolved = if !strict && source.record_type == *b"GMST" {
                             order.gmst_header_key(priority, word)?
                         } else {
                             order.resolve(priority, word, ZeroPolicy::Null)?
                         };
+                        if resolved.is_some() {
+                            order.note_projection(priority, word);
+                        }
                         if !first_word.replace(false) {
                             links.borrow_mut().push(ResolvedLink {
                                 source_word: word,
@@ -236,7 +238,12 @@ impl EsmParser {
         }
         let (remap_warnings, mut notices) = warnings.report();
         summaries.extend(remap_warnings);
-        summaries.extend(order.projection_warnings());
+        notices.extend(
+            order
+                .projection_warnings()
+                .into_iter()
+                .map(|line| line.replacen("warning: ", "notice: ", 1)),
+        );
         if let Some(notice) = order.notice() {
             notices.push(notice);
         }

@@ -63,39 +63,41 @@ fn write_distinct(root: &Path, name: &str, bytes: &[u8]) {
 /// Discovery reports the same rejected set that the database producer receives.
 #[tokio::test]
 async fn whitespace_filename_discovery_reports_drops_before_publication() {
-    let directory = tempfile::tempdir().unwrap();
-    let data = directory.path().join("Data");
-    layout::prepare_directory(&data, false).unwrap();
-    layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
-    fs::write(directory.path().join("Skyrim.ccc"), "").unwrap();
-    for (name, masters, editor) in [
-        (" Middle.esp", vec!["Skyrim.esm"], "fBad"),
-        ("Child.esp", vec![" Middle.esp"], "fChild"),
-        ("Later.esp", vec!["Skyrim.esm"], "fJumpHeightMin"),
-    ] {
-        fs::write(data.join(name), plugin(0, &masters, editor, 67.0)).unwrap();
+    for invalid in [" Middle.esp", "Middle.esp\u{2003}"] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        layout::prepare_directory(&data, false).unwrap();
+        layout::generate(&data, layout::DEFAULT_SEED, layout::Formats::all()).unwrap();
+        fs::write(directory.path().join("Skyrim.ccc"), "").unwrap();
+        for (name, masters, editor) in [
+            (invalid, vec!["Skyrim.esm"], "fBad"),
+            ("Child.esp", vec![invalid], "fChild"),
+            ("Later.esp", vec!["Skyrim.esm"], "fJumpHeightMin"),
+        ] {
+            fs::write(data.join(name), plugin(0, &masters, editor, 67.0)).unwrap();
+        }
+        let output = directory.path().join("pack");
+        let mut config = PipelineConfig::new(&data, &output);
+        config.no_lod = true;
+        config.cpu_jobs = 2;
+        config.io_jobs = 1;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let report = AssetPipeline::run_async(config, tx).await.unwrap();
+        drain.await.unwrap();
+        assert_eq!(report.load_order, ["Skyrim.esm", "Later.esp"]);
+        assert!(report.skipped_plugins.contains(&invalid.to_owned()));
+        assert!(report.skipped_plugins.contains(&"Child.esp".to_owned()));
+        let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
+        let names: Vec<String> = db
+            .prepare("SELECT name FROM plugins ORDER BY priority")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, report.load_order);
     }
-    let output = directory.path().join("pack");
-    let mut config = PipelineConfig::new(&data, &output);
-    config.no_lod = true;
-    config.cpu_jobs = 2;
-    config.io_jobs = 1;
-    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
-    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let report = AssetPipeline::run_async(config, tx).await.unwrap();
-    drain.await.unwrap();
-    assert_eq!(report.load_order, ["Skyrim.esm", "Later.esp"]);
-    assert!(report.skipped_plugins.contains(&" Middle.esp".to_owned()));
-    assert!(report.skipped_plugins.contains(&"Child.esp".to_owned()));
-    let db = rusqlite::Connection::open(output.join("skyrim_world.db")).unwrap();
-    let names: Vec<String> = db
-        .prepare("SELECT name FROM plugins ORDER BY priority")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert_eq!(names, report.load_order);
 }
 
 /// Verify missing-master, unusable-header and ambiguous recovery in player selection.

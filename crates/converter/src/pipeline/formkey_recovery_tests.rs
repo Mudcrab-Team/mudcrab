@@ -38,7 +38,7 @@ fn plugin(path: &Path, masters: &[&str], id: u32) {
 }
 
 #[test]
-fn whitespace_name_selection_aligns_report_archives_and_terrain_slots() {
+fn whitespace_name_selection_aligns_archives_and_terrain_slots() {
     // Unicode trailing whitespace survives Windows filename handling and has an .esp extension.
     for invalid in [" Middle.esp", "Middle.esp\u{2003}"] {
         let root = tempfile::tempdir().unwrap();
@@ -75,21 +75,17 @@ fn whitespace_name_selection_aligns_report_archives_and_terrain_slots() {
                 )
                 .unwrap()
             };
-            let report = PipelineReport {
-                skipped_plugins: skipped,
-                load_order: accepted
-                    .iter()
-                    .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-                    .collect(),
-                ..Default::default()
-            };
+            let accepted_names: Vec<_> = accepted
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
             assert_eq!(
-                report.load_order,
+                accepted_names,
                 ["Base.esm", "Later.esp", "Last.esp"],
                 "{notices:?}"
             );
-            assert!(report.skipped_plugins.contains(&invalid.to_owned()));
-            assert!(report.skipped_plugins.contains(&"Child.esp".to_owned()));
+            assert!(skipped.contains(&invalid.to_owned()));
+            assert!(skipped.contains(&"Child.esp".to_owned()));
             let order = crate::esm::load_order::LoadOrder::read(&accepted).unwrap();
             let masters = crate::terrain_pipeline::load_order_masters(&order);
             let merged = crate::esm::EsmParser::merge_plugins(&accepted).unwrap();

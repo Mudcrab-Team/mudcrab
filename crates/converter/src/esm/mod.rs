@@ -307,7 +307,7 @@ impl EsmParser {
                     }
                 };
                 let kind = record.record_type;
-                let remap_word = |raw: u32, strict: bool| -> Result<u32> {
+                let remap_word = |raw: u32, strict: bool, field: bool| -> Result<u32> {
                     let key = if !strict && kind == *b"GMST" {
                         identities.gmst_header_key(priority, raw)?
                     } else {
@@ -317,7 +317,7 @@ impl EsmParser {
                             shared::source_form_id::ZeroPolicy::Null,
                         )?
                     };
-                    match legacy.to_nullable_legacy_u32(key) {
+                    let value: Result<u32> = match legacy.to_nullable_legacy_u32(key) {
                         Ok(value) => Ok(value),
                         Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
                             if !strict =>
@@ -335,28 +335,28 @@ impl EsmParser {
                             )?)?)
                         }
                         Err(error) => Err(error.into()),
+                    };
+                    let value = value?;
+                    let past_master = (raw >> 24) as usize > order.metadata[priority].masters.len();
+                    // Every field layout (including NAME and VMAD) uses this decision.
+                    // Headers/group labels retain identity admission without a target lookup.
+                    if field && past_master && value >= 0x800 && !source_ids.contains(&value) {
+                        warnings.skipped_optional(
+                            &order.names[priority],
+                            format!(
+                                "{} record source {source_id:08X}: optional FormID {raw:08X} exceeds master list",
+                                String::from_utf8_lossy(&kind)
+                            ),
+                        );
+                        return Ok(0);
                     }
-                };
-                let remap = |raw, strict| {
-                    let value = remap_word(raw, strict)?;
-                    if value != 0 && (raw >> 24) as usize > order.metadata[priority].masters.len() {
+                    if value != 0 && past_master {
                         warnings.out_of_range(&order.names[priority], raw, kind);
                     }
                     Ok(value)
                 };
-                let optional = |raw| {
-                    let value = remap_word(raw, true)?;
-                    if (raw >> 24) as usize > order.metadata[priority].masters.len()
-                        && value >= 0x800
-                        && !source_ids.contains(&value)
-                    {
-                        color_eyre::eyre::bail!("optional FormID {raw:08X} exceeds master list");
-                    }
-                    if value != 0 && (raw >> 24) as usize > order.metadata[priority].masters.len() {
-                        warnings.out_of_range(&order.names[priority], raw, kind);
-                    }
-                    Ok(value)
-                };
+                let remap = |raw, strict| remap_word(raw, strict, false);
+                let optional = |raw, strict| remap_word(raw, strict, true);
                 let admission = remap_record_using_optional(
                     &mut record,
                     &order.names[priority],
@@ -653,7 +653,7 @@ impl GameSettingIdentities {
     }
 }
 
-/// Required placed base links cannot use the optional field's null/drop policy.
+/// Placed NAME requires valid framing/packing; absent targets still clear like typed fields.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
     tag == b"NAME"
         && matches!(
@@ -875,23 +875,24 @@ fn remap_record_using(
         plugin_name,
         warnings,
         &remap_with_validation,
-        |word| remap_with_validation(word, true),
+        &remap_with_validation,
         strict,
     )
 }
 
-/// Keep required identities/group labels separate from optional field-target recovery.
+/// Apply one field-target policy to all layouts, separate from header/group identities.
 fn remap_record_using_optional(
     record: &mut RawRecord,
     plugin_name: &str,
     warnings: &RemapWarnings,
     remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
-    remap_optional: impl Fn(u32) -> Result<u32>,
+    remap_optional: impl Fn(u32, bool) -> Result<u32>,
     strict: bool,
 ) -> Result<()> {
     let record_type = record.record_type;
     let remap = |form_id| remap_with_validation(form_id, strict);
-    let remap_link = |form_id| remap_with_validation(form_id, true);
+    let remap_group = |form_id| remap_with_validation(form_id, true);
+    let remap_link = |form_id| remap_optional(form_id, true);
     let source_id = record.form_id;
     record.form_id = remap(record.form_id)?;
     if record.is_deleted() {
@@ -901,8 +902,8 @@ fn remap_record_using_optional(
         record.worldspace_form_id = None;
         return Ok(());
     }
-    record.cell_form_id = record.cell_form_id.map(&remap_link).transpose()?;
-    record.worldspace_form_id = record.worldspace_form_id.map(&remap_link).transpose()?;
+    record.cell_form_id = record.cell_form_id.map(&remap_group).transpose()?;
+    record.worldspace_form_id = record.worldspace_form_id.map(&remap_group).transpose()?;
     let mut malformed_subrecords = Vec::new();
     for (index, (tag, data)) in record.subrecords.iter_mut().enumerate() {
         if record.record_type == *b"GRAS" && tag.as_slice() == b"MODS" {
@@ -948,8 +949,10 @@ fn remap_record_using_optional(
         if tag.as_slice() == b"VMAD" {
             // Object links use the same supplier-self selector rule as every field.
             // The existing record-kind light-width policy and framing recovery are retained.
-            records::record_type::vmad::remap_primary_form_ids(data, &remap)
-                .wrap_err("VMAD references")?;
+            records::record_type::vmad::remap_primary_form_ids(data, |id| {
+                remap_optional(id, strict)
+            })
+            .wrap_err("VMAD references")?;
             continue;
         }
         // Legacy faction remapping recognizes only the exact eight-byte layout.
@@ -1009,7 +1012,7 @@ fn remap_record_using_optional(
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
                 // Keep valid payload bytes, but publish null for an invalid FormID rather
                 // than retaining a plugin-local value or guessing its owner.
-                let resolved = match remap_optional(value) {
+                let resolved = match remap_link(value) {
                     Ok(resolved) => resolved,
                     Err(error) => {
                         warnings.skipped_optional(

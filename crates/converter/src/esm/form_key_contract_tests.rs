@@ -453,7 +453,7 @@ fn real_old_record_oracle_names_required_refr_name_difference() {
     let (_dir, paths, old) = record_oracle_fixture();
     let new = super::EsmParser::merge_plugins(&paths).unwrap();
     assert!(!old.contains_key(&0x0200_0802));
-    assert_eq!(oracle_word(&new[&0x0200_0802], b"NAME"), 0x0200_0904);
+    assert_eq!(oracle_word(&new[&0x0200_0802], b"NAME"), 0);
 }
 
 /// Compare production publication with the retained old record remapper.
@@ -520,7 +520,7 @@ fn real_old_record_oracle_sol3_publication_clears_absent_links_and_keeps_referen
         .iter()
         .find(|f| f.tag == *b"NAME")
         .unwrap();
-    assert_eq!(name.data, 0x0200_0904u32.to_le_bytes());
+    assert_eq!(name.data, 0u32.to_le_bytes());
 }
 
 /// Handwritten remaps emit one counted projection notice rather than two summaries.
@@ -672,4 +672,78 @@ fn typed_publication_skips_invalid_name_before_identity_construction() {
         .query_row("SELECT COUNT(*) FROM plugins", [], |r| r.get(0))
         .unwrap();
     assert_eq!(plugins, 2);
+}
+
+/// Every special field clears locally and reports the same bounded absent-target diagnostic.
+#[test]
+fn handwritten_special_layouts_clear_and_warn_without_self_notices() {
+    let mut vmad = [
+        5u16.to_le_bytes(),
+        2u16.to_le_bytes(),
+        1u16.to_le_bytes(),
+        1u16.to_le_bytes(),
+    ]
+    .concat();
+    vmad.extend(b"S");
+    vmad.extend([0, 1, 0, 1, 0, b'P', 1, 1, 0xa1, 0xb2, 0x56, 0x34]);
+    vmad.extend(0x0200_1234u32.to_le_bytes());
+    let mods = [
+        1u32.to_le_bytes().as_slice(),
+        &1u32.to_le_bytes(),
+        b"S",
+        &0x0200_1234u32.to_le_bytes(),
+        &17u32.to_le_bytes(),
+    ]
+    .concat();
+    for (kind, tag, payload) in [
+        (b"ACTI", b"VMAD", vmad),
+        (b"GRAS", b"MODS", mods),
+        (
+            b"LAND",
+            b"BTXT",
+            [0x0200_1234u32.to_le_bytes(), [2, 0, 0, 0]].concat(),
+        ),
+        (
+            b"LAND",
+            b"ATXT",
+            [0x0200_1234u32.to_le_bytes(), [2, 0, 3, 0]].concat(),
+        ),
+        (b"LAND", b"VTEX", 0x0200_1234u32.to_le_bytes().to_vec()),
+        (b"REFR", b"NAME", 0x0200_1234u32.to_le_bytes().to_vec()),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Base.esm");
+        let mut fields = oracle_field(b"EDID", b"Special\0");
+        if kind == b"GRAS" {
+            fields.extend(oracle_field(b"DATA", &[0; 32]));
+        }
+        if tag == b"ATXT" {
+            fields.extend(oracle_field(b"BTXT", &[0, 0, 0, 0, 2, 0, 0, 0]));
+        }
+        fields.extend(oracle_field(tag, &payload));
+        std::fs::write(
+            &path,
+            [
+                oracle_record(b"TES4", 0, &[]),
+                oracle_record(kind, 0x811, &fields),
+                oracle_record(b"STAT", 0x812, &oracle_field(b"EDID", b"Neighbor\0")),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let paths = [path];
+        let order = LoadOrder::read(&paths).unwrap();
+        let result = super::EsmParser::merge_plugins_with_load_order(&paths, &order).unwrap();
+        assert!(
+            result.records.contains_key(&0x811),
+            "{kind:?}/{tag:?}: {result:?}"
+        );
+        assert!(result.records.contains_key(&0x812));
+        assert_eq!(result.warnings.len(), 1, "{kind:?}/{tag:?}: {result:?}");
+        assert!(result.warnings[0].contains("optional FormID 02001234 exceeds master list"));
+        assert!(
+            result.notices.is_empty(),
+            "cleared fields do not count as self: {result:?}"
+        );
+    }
 }
