@@ -473,3 +473,31 @@ fn g6_unsupported_effective_ini_fade_interval_is_ignored() {
         );
     }
 }
+
+/// An unsupported imported range must not discard a supported neighboring start or CLI end.
+#[test]
+fn g6_bad_ini_fade_range_keeps_valid_neighbor_and_cli_precedence() {
+    let directory = tempfile::tempdir().unwrap();
+    let ini = directory.path().join("grass.ini");
+    std::fs::write(
+        &ini,
+        "[Grass]\nfGrassStartFadeDistance=0\nfGrassFadeRange=0\n",
+    )
+    .unwrap();
+    for (extra, end) in [
+        (vec![], 1000.0),
+        (vec!["--grass-fade-end", "10000"], 10000.0),
+    ] {
+        let mut args = vec!["--ini", ini.to_str().unwrap()];
+        args.extend(extra);
+        let launch = config(&args);
+        assert!(launch.validate_grass().is_ok());
+        assert_eq!((launch.grass_fade_start, launch.grass_fade_end), (0.0, end));
+        assert!(
+            launch
+                .grass_settings_diagnostics
+                .iter()
+                .any(|message| message.contains("fGrassFadeRange") && message.contains("ignored"))
+        );
+    }
+}
