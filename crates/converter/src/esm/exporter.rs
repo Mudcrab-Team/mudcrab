@@ -306,6 +306,9 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     // here, and an older-shaped `room_portals` (no `pair_index`) is migrated in place.
     crate::esm::rooms::migrate_room_portals(conn)?;
     conn.execute_batch(crate::esm::rooms::ROOM_TABLES_SQL)?;
+    // Typed race animation identity (db-schema.md, actor models). Archive-only snapshots keep
+    // the same schema and defer its rows like the other runtime views.
+    conn.execute_batch(crate::animation::authoring::RACE_ANIMATION_SOURCES_SQL)?;
     // Optional projection omission counters (db-schema.md section 18, #297).
     conn.execute_batch(crate::esm::projection_omissions::PROJECTION_OMISSION_TABLES_SQL)?;
     // `CREATE TABLE IF NOT EXISTS` leaves a reused older table as it was; give it the optional
@@ -531,6 +534,7 @@ fn replace_complete_snapshot(tx: &Transaction<'_>) -> Result<()> {
         DROP TABLE IF EXISTS waters;
         DROP TABLE IF EXISTS movement_game_settings;
         DROP TABLE IF EXISTS race_movement_links;
+        DROP TABLE IF EXISTS race_animation_sources;
         DROP TABLE IF EXISTS movement_types;
         DROP TABLE IF EXISTS npcs;
         DROP TABLE IF EXISTS actor_model_parts;
@@ -814,7 +818,7 @@ fn export_records(
                     &view,
                 )?;
             }
-            "REFR" | "ACHR" | "ACRE" | "PGRE" | "PMIS" => {
+            _ if super::is_placed_record_type(&record.record_type) => {
                 let cell_id = record.cell_form_id.unwrap_or(0);
                 insert_reference_with_canonical_data(
                     &tx,
@@ -868,13 +872,14 @@ fn export_records(
             // with a model too (`REFR.NAME` targets in xEdit's TES5 definitions).
             "STAT" | "MSTT" | "FURN" | "TREE" | "FLOR" | "CONT" | "DOOR" | "ACTI" | "TACT"
             | "WEAP" | "MISC" | "BOOK" | "AMMO" | "ALCH" | "INGR" | "SLGM" | "KEYM" | "SCRL"
-            | "ARMO" | "APPA" | "ADDN" | "ARTO" => {
+            | "ARMO" | "APPA" | "ADDN" | "ARTO" | "PROJ" | "HAZD" => {
                 let view = SubrecordView::new(&record.subrecords);
                 // ARMO has no MODL path; its world models live in the
                 // gendered world-model slots (male first, female fallback).
                 // Both frontends use MOD4 for the female world model.
                 let model = if type_str == "ARMO" {
                     view.get_string(b"MOD2")
+                        .filter(|path| !path.is_empty())
                         .or_else(|| view.get_string(b"MOD4"))
                 } else {
                     view.get_string(b"MODL")
@@ -998,6 +1003,20 @@ fn export_records(
     // their XEMI names, and may run on a database older than `emittance_id`.
     if runtime_views && order.is_some() {
         insert_actor_models(&tx, master)?;
+        let authoring = master
+            .iter()
+            .filter(|(_, row)| &row.record_type == b"RACE" && !row.is_deleted())
+            .filter_map(|(&id, row)| {
+                crate::animation::authoring::read_race_authoring_fields(
+                    row.subrecords
+                        .iter()
+                        .map(|(tag, data)| (tag.as_slice(), data.as_slice())),
+                )
+                .ok()
+                .map(|authoring| (id, authoring))
+            })
+            .collect();
+        crate::animation::authoring::replace_race_projection(&tx, authoring)?;
         crate::esm::rooms::export_room_graph(&tx, master, &interior_cells)?;
         insert_emittance_sources(&tx, master, &mut omissions)?;
         omissions.write(&tx)?;
@@ -2280,7 +2299,10 @@ mod tests {
         let mut expected = Vec::new();
         let parent = 0x1234_5678u32;
         let mut id = 0x1000;
-        for record_type in [*b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS"] {
+        for record_type in [
+            *b"REFR", *b"ACHR", *b"ACRE", *b"PGRE", *b"PMIS", *b"PHZD", *b"PARW", *b"PBAR",
+            *b"PBEA", *b"PCON", *b"PFLA",
+        ] {
             for flags in [0u8, 1, 2, 3, 0x80, 0xFF] {
                 for padding in [[0; 3], [0x0D, 0xBF, 0x38]] {
                     let mut record = reference(id, 0x100, 0x900, [0.0; 3], [0.0; 3]);

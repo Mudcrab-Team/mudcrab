@@ -44,6 +44,7 @@ fn fixture(enabled: bool) -> (App, tempfile::TempDir) {
     .init_resource::<StaticCollisionCache>()
     .init_resource::<ProfilingState>()
     .init_resource::<requests::SceneSchedulingState>()
+    .init_resource::<crate::visual_profile::VisualProfile>()
     .init_resource::<StreamingRuntime>();
     (app, directory)
 }

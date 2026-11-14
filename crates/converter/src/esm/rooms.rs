@@ -412,7 +412,7 @@ fn transform_of(view: &SubrecordView<'_>) -> ([f32; 3], [f32; 3]) {
 }
 
 fn is_placed(record_type: &[u8; 4]) -> bool {
-    matches!(record_type, b"REFR" | b"ACHR" | b"ACRE" | b"PGRE" | b"PMIS")
+    super::is_placed_record_type(record_type)
 }
 
 /// Rebuilds the room tables from the merged records. `interior_cells` are the CELL records
