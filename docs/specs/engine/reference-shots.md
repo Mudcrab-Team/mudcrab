@@ -64,8 +64,8 @@ names the file and the problem.
 
 ## What a run does
 
-Streaming starts at the first exterior shot: its worldspace (when it names one) and the grid square
-its camera stands over. The run streams that one worldspace; a shot in another worldspace is
+The first exterior shot selects this run's exterior worldspace and initial grid square. Without
+exterior poses, the configured worldspace is retained. A shot in another exterior worldspace is
 skipped and logged, so a file that mixes exterior worldspaces is rendered one worldspace per run.
 Interior poses load their named cell and can be mixed with exterior poses. Switching spaces
 unloads the previous space before loading the next one.

@@ -1,11 +1,11 @@
 # Interior room graph: converter design (#188, converter half)
 
 Status: implemented in the converter (2026-10-06); this note is the design it follows. The engine
-half (culling) is a later PR and is only sketched here where the table shape depends on it.
+reads these tables with `--room-culling`, which is off by default.
 
 ## Summary
 
-The converter decodes Skyrim's room markers and portal markers into four small optional tables
+The converter decodes Skyrim's room markers and portal markers into five small optional tables
 in `skyrim_world.db`, and assigns every placed object in a roomed interior to the rooms whose box
 contains its pivot. The tables only record facts. Which objects to draw is the engine's policy:
 objects in no room or in several rooms stay drawn. A database without the tables behaves as today,
@@ -152,7 +152,7 @@ membership pass (inside, outside, two rooms, rotated room); `plugin_references.r
 
 ## Fallbacks (conservative)
 
-| Case | Converter writes | Engine (the engine half, a later PR) |
+| Case | Converter writes | Engine (`--room-culling`) |
 |---|---|---|
 | Interior without room markers | no rows | draw everything, as today |
 | Old database, tables absent | n/a | feature off, no error |
