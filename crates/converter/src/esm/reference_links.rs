@@ -1,6 +1,6 @@
 //! Placed-reference links, activate parents, ownership, locks and map markers (#269 gap 3).
 //!
-//! Projected from the canonical winning `REFR`/`ACHR`/`ACRE`/`PGRE`/`PMIS` records, so the legacy
+//! Projected from all canonical winning placed records, so the legacy
 //! and in-house readers publish the same rows (db-schema.md, "Reference Links and Details").
 //! Layouts follow xEdit 4.1.5f `Core/wbDefinitionsTES5.pas` and the in-house schema.
 
