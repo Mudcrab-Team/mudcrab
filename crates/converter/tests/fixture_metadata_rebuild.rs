@@ -114,9 +114,13 @@ async fn dangling_base_publication(reader: converter::config::RecordReader, expe
     assert_eq!(neighbor, 1);
     if reader == converter::config::RecordReader::Inhouse {
         assert!(
-            !report.warnings.is_empty(),
-            "a cleared dangling link must be reported"
+            report
+                .notices
+                .iter()
+                .any(|notice| notice.contains("cleared 1 links") && notice.contains("00000899")),
+            "the existing optional-link recovery must be reported: {report:?}"
         );
+        assert!(report.complete && report.warnings.is_empty(), "{report:?}");
     }
 }
 
