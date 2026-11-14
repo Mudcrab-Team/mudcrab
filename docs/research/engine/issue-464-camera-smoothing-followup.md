@@ -1,46 +1,75 @@
-# Issue 464 stair camera smoothing follow-up
+# Issue 464 first-person camera follow spring
 
-**Base:** `main`. This follow-up was written on the #482 head `a9457df85dfa356a7aefc21f25a352078e55106d`. #482 has merged (squash commit `7b89d0fb`), so this change applies to `main` directly.
+**Base:** `main`. This follow-up implements the retail first-person camera follow spring in the WALK camera. The retail facts come from the retail-facts registry, entries RF-CAM-001 to RF-CAM-007. They were traced in `SkyrimSE.exe` 1.7.104.0 at `0x1408f47a0` (first person) and `0x1408fe3c0` (third person).
 
-## Findings
+## Finding
 
-- Taylor's tower playtest is the direct observation: the player climbs the authored stairs, but the view jumps at each rise. #482 fixes capsule traversal; its tests do not measure camera height per frame.
-- At the base, `crates/engine/src/physics.rs` assigns the WALK camera to `body.translation + Y * eye_height` in the per-frame `Update` chain. `MovementTuning::eye_height` is declared as `89.6`; the #482 controller retains a `36.0` unit step budget. These are Mudcrab values, not Skyrim camera response measurements.
-- The existing closed issue #468 and PR #481 concern a WALK door-arrival twitch. The inspected #481 commit `fc0aa155` pauses input through landing load, settles the WALK capsule behind the fade until it is supported and motionless, then keeps that pose at fade-in instead of re-teleporting it. PR #487's inspected commit `eddcdfb0` seeds the camera pose, FOV, and window size from an interactive start shot and keeps later settings changes from replacing or persisting those launch values. This patch leaves both commit bodies unchanged. It resets follow state on `TeleportPlayer`, `CameraSpace` and move-mode changes, `RenderOrigin` changes, and large body discontinuities.
-- The camera-comparison specification describes still-shot camera inputs. It does not establish locomotion smoothing. The movement record map documents `MOVT` speed data and provisional gravity/jump values. It does not supply camera-height response evidence.
+Taylor's tower playtest showed that the view jumped at each stair rise. Skyrim does not hold the first-person camera rigidly on its node. It keeps a smoothed tracked point and offsets the camera by a lag. The lag comes from a second-order spring that runs once per rendered frame.
 
-## Research scope and limits
+The earlier version of this change used a 55 ms first-order time constant, a 30 degree walkable-slope rule, a 1 unit slack, a 36 unit per-tick bound, a vertical-speed gate and a 256 unit discontinuity limit. None of these numbers exists in Skyrim's code. They are removed.
 
-The graph store was opened with SQLite `mode=ro`. Exact phrase searches over its `records.json` field returned zero rows for `camera height`, `eye height`, `camera smoothing`, `camera step`, `step camera`, `stair camera`, and `jump camera`. FTS searches returned 30 rows for `camera AND height`, 8 for `eye_height`, 0 for `stair`, 2 for `step AND camera`, 0 for `jump AND camera`, and 0 for `smooth AND camera`. The returned camera/height rows include Mudcrab declarations and code; they do not establish Skyrim camera behavior. These are corpus search results, not proof that no relevant material exists elsewhere.
+## The spring
 
-The corpus export/run search scanned 179 Markdown/text files. Its only exact phrase hit was `kg-runs/lighting-corpus-20261010-03/export/artifacts/docs/research/skyrim-render-map/research-notes/note-0004/supplied-package/engineering/validation_protocol.md:111`, where “camera step” means a dark-to-bright image-space test. It contains no stair-camera claim. The other six exact phrases had no hits in those files. The research Nexus directory contained `session.json`; its contents were not read. The saved Ghidra project is present at `rea-20261008/ghidra-projects/SkyrimMovement17104.gpr` with a `.rep` project directory. No `analyzeHeadless` or `ghidraRun` executable is installed in this environment, and no native instruction export was available. The executable was not imported or opened. Skyrim's local `SkyrimPrefs.ini` was searched for `camera`, `fov`, `firstperson`, `thirdperson`, and `fCamera`; it had no matching settings. Therefore, this work makes no claim about native Skyrim camera behavior.
+For each axis, once per rendered frame, with `T` the camera clock in seconds and `P` the feet position:
 
-Evidence classes:
+```text
+d = S_prev - P_now
+e = W * (d * K^T + c * T * V_prev)
+V = (e - d) / T
+S = P_now + e
+camera = camera_node + e
+```
 
-- **Verified Mudcrab behavior:** the base source directly follows the capsule at eye height. The #482 implementation provides supported up/forward/down sweeps and preserves its `36.0` unit step budget.
-- **Local declarations:** `eye_height = 89.6`, `gravity = 900.0`, and `jump_launch = 340.0` are current Mudcrab tuning. `docs/player-movement-record-map.md` explicitly treats gravity and jump launch as provisional. They do not set camera response.
-- **Community/research claims:** none was used to infer stair camera behavior or choose response time.
-- **Inference:** only the existing successful `walk_step_rise` branch is a valid ascent signal. A bounded descent needs controller support in the previous and current fixed samples and no jump or fall.
-- **Chosen tuning:** `0.055 s` exponential response is a Mudcrab presentation choice. It is not a Skyrim value.
+`S` is the smoothed tracked point, `V` its velocity and `W` the weight. The vertical axis is Y. The horizontal axes are X and Z.
 
-## Behavior and tests
+| Value | Constant | Registry entry |
+|---|---|---|
+| Vertical spring constant K | 0.001 | RF-CAM-001 |
+| Vertical velocity damping c | 0.6 | RF-CAM-001 |
+| Horizontal spring constant K | 0.0001 | RF-CAM-001 |
+| Horizontal velocity damping c | 0.4 | RF-CAM-001 |
+| Snap distance (3D, `S_prev` to `P_now`) | 300 units | RF-CAM-002 |
+| Weight ramp rate, inside [0, 1] | 1.5 per second | RF-CAM-003 |
+| Weight fade-out speed (3D speed of `S`) | 500 units per second | RF-CAM-003 |
+| Controls-driven gate | the spring fades out when not controls-driven | RF-CAM-003, RF-CAM-004 |
+| Camera clock clamp | 0.1667 s (166.67 ms) | RF-CAM-007 |
+| No slope threshold, no slack, no per-tick clamp, no vertical-only speed gate | absent | RF-CAM-005 |
+| Third person: no vertical spring | absent | RF-CAM-006 |
 
-The camera presentation resource receives an explicit marker at the existing successful `walk_step_rise` branch. A fixed schedule sampler runs after `PhysicsSet::Writeback` and records the body's actual net Y change for that tick. It accepts the validated rise even when movement clears `WalkState.grounded`. Downward correction requires controller support on both samples, no active jump, a bounded per-tick descent, and a drop that a walkable slope cannot explain. An unsupported sample marks airborne motion and clears the pending offset. Slope changes and unsupported drops do not enter the camera offset.
+When `|S_prev - P_now|` is above 300 units, `e` and `V` are 0 for that frame. The weight ramps up by `1.5 * T` per frame. It ramps down by the same amount when the speed of `S` is above 500 units per second or when the player is not controls-driven.
 
-**Slope versus stair drop.** Walking down a ramp or hill lowers the body by `horizontal travel * tan(slope)` every tick. That is continuous ground contact, so the view follows it directly. A tick counts as a stair drop only when the body lowers by more than `horizontal travel * tan(30 degrees)` plus 1 unit of slack for ground-snap jitter (the 30 degrees is `WALK_STEP_CAMERA_SLOPE_DEGREES`, Mudcrab tuning, capped by `slope_climb_degrees`). The allowance is below the controller's 50 degree climb limit on purpose. A flight descended at a run slides over each edge, so its per-tick lowering resembles a 25 to 45 degree slope. Measured with the production controller at 370 u/s and 60 Hz: ramps at 10, 20 and 30 degrees lower the body by 1.1, 2.2 and 3.6 units per tick and are not drops. A 24-unit riser lowers it by up to 10 units per tick and is a drop. Without this rule a long descent builds a view offset that floats above the eye height. Limits: ground steeper than 30 degrees is smoothed like stairs, and low risers at running speed (under about 4.6 units per tick) are not smoothed.
+## Where it lives
 
-The render update drains every accumulated fixed-tick delta. It applies `target_eye_position - offsetY` and decays `offsetY` with the exponential recurrence `offset *= exp(-deltaSeconds / 0.055)`. `0.055 s` is explicit Mudcrab tuning. Each render follows body X/Z, yaw, and pitch immediately. Jump or freefall clears pending stair data and snaps the camera to the physical eye target. The 36-unit bound applies to each physics tick, so multiple fixed ticks before a render do not trigger an accumulated-delta snap.
+- `crates/engine/src/physics/camera_follow.rs` holds the pure function `follow_spring_step`. Its input is the feet position now, the previous smoothed point, the previous velocity, the previous weight, the frame delta and the view kind. It owns no state, so a later change that interpolates the view between physics ticks can feed it its own feet position.
+- `walk_camera_follow_system` in `crates/engine/src/physics.rs` calls it from `Update`. That schedule runs once per rendered frame. The spring does not run per fixed physics tick, and it needs no record of physics steps.
+- The engine has no third-person camera. The pure function returns no lag for `FollowView::ThirdPerson`, and the WALK system always passes `FollowView::FirstPerson`.
 
-Startup preserves the authored camera pose. Teleport messages are fully drained. Teleport, move-mode change, `CameraSpace` change, detected large body discontinuity, and `RenderOrigin` change clear pending data and residual offset, then apply the full XYZ eye target. The `RenderOrigin` check observes the next update after the streaming rebase; body and camera are rebased together before that reset. This reset contract complements #481's door-arrival placement/settling order and #487's authored start-shot preservation. Neither implementation body was copied or changed.
+## Engine resets
 
-The production-controller flight test uses thirty-two 12-unit steps. It checks ascent at 60 Hz, descent with three fixed ticks per 20 Hz rendered frame, actual validated-rise markers, camera overshoot, at least one smoothed supported downward snap, and matching body endpoints. The supported-descent fixture is deliberately within the controller's ground-snap reach. It does not establish smooth camera motion over every unsupported drop on the authored 24-unit tower stairs.
+A teleport, a `CameraSpace` change, a `RenderOrigin` rebase, a move-mode change, a door crossing and the safe-placement hold place the body and the view in a new coordinate frame. The old smoothed point has no meaning there, so the system reseeds the spring at the new feet position and keeps the weight. During a door crossing or the placement hold the view follows the body directly. This is an engine coordinate-frame rule. It is not a retail value. For a teleport, retail reaches the same result through the 300 unit snap (RF-CAM-002). The authored startup view stays authoritative for the first WALK frame.
 
-The prior descent assertion compared camera displacement with only the current frame's body displacement. That is not a valid bound during catch-up: the camera can close an older gap while the current body moves less. The retained failure measured body delta `-6.8349915` and camera delta `-8.080719`. The corrected checks prohibit overshoot and require a supported downward snap to retain a nonzero visual response. Step direction reversal now adds to the remaining offset, so collecting the step itself preserves the current presented eye height.
+## Not implemented
 
-All three affected camera tests passed: the production flight, analytic recurrence and reversal continuity, and explicit full-position resets for teleport, camera space, move mode, render origin and jump. The earlier production traversal, teleport placement and authored-startup checks remain useful within their recorded source scope. The original failed assertions and attempts remain in local task evidence. Final strict Clippy and the runnable native build are recorded separately in the delivery receipt.
+- RF-CAM-003 names three more flags that fade the weight out and that are unresolved in the registry: the state byte at `+0x88`, the reference handle at player `+0x1F0` and the `0x1401573e0(player+0x70, 0xA9)` check. They are left out until the registry resolves them.
+- The optional running average of the camera clock over N frames (RF-CAM-007) is left out. Its filter length is unverified.
+- The initial value of the weight is not known. The spring starts with a weight of 0 and ramps up at 1.5 per second. This is unverified.
+- The order of the weight update and the lag evaluation inside one frame is an assumption. The registry does not state it.
+- Horizontal lag follows the registry formula. Its effect on running camera feel is not measured here.
 
-No native Skyrim camera instruction trace or exact response measurement was obtained. These CPU checks do not establish native gameplay feel, performance or Skyrim parity. The next acceptance step is Taylor's tower test of the separate follow-up build.
+## Tests
+
+The pure unit tests in `camera_follow.rs` reproduce the numbers from the reverse-engineering notes for a 24 unit rise with `W = 1`:
+
+| Frame rate | Camera rise in the first frame | 95% settled | Overshoot |
+|---|---|---|---|
+| 30 fps | 4.9 | 0.100 s | 4.1 units |
+| 60 fps | 2.6 | 0.117 s | 1.3 units |
+| 144 fps | 1.1 | 0.139 s | 0.0 |
+
+The "95% settled" time counts the index of the first frame whose camera is within 5 percent of the target, divided by the frame rate. The first frame has index 0.
+
+More tests cover the snap above 300 units, the weight ramp up and down at 1.5 per second, the fade-out above 500 units per second, the absence of a slope threshold or slack, no vertical spring in third person, the horizontal constants and the 0.1667 s clock clamp. The engine test `camera_follows_the_retail_spring_on_a_production_stair_flight` runs a stair flight through the production WALK controller. It checks, on every rendered frame at 60 and at 20 frames per second, that the view equals the eye node plus the spring lag. It also checks that the physical stair endpoints do not change.
 
 ## Evidence limits
 
-The existing SQLite `mode=ro` corpus search, 179-file text export search, render-map notes, and earlier local preference search remain limited negative evidence. A bounded current search of local Mudcrab research/specification notes found no stair-camera formula. It does not establish that Skyrim has no such behavior. No claim about native Skyrim camera response is made. No cold import, native app launch, or long research campaign was run.
+These are source and CPU test checks. They do not establish native gameplay feel, performance or Skyrim parity. Taylor's earlier in-game test of the 55 ms version does not apply to this spring. A new in-game test is required, and it must include running down stairs.
