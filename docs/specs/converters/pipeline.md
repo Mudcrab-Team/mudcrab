@@ -92,8 +92,9 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
-with matching original schema/add-on bytes, reader fields and combined settings
+Adapter-13 metadata recognizes the exact adapter-10, adapter-11 and adapter-12 retained-asset contracts
+(adapter 13 adds placed database rows only), and legacy projection 5 recognizes the exact projection-4
+contract, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
 metadata rebuilds. The string-table language changes database text only, so a pack
 read in one language is a valid source for a rebuild in another; its proof is
