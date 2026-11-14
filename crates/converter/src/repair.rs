@@ -44,6 +44,9 @@ pub struct RepairReport {
     /// False also covers historical manifests without that proof.
     pub record_data_complete: bool,
     pub failures: BTreeMap<String, String>,
+    /// Optional capability declarations dropped because their payload is no longer valid.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -209,6 +212,7 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
         published: false,
         record_data_complete: manifest.record_data_complete == Some(true),
         failures: BTreeMap::new(),
+        warnings: Vec::new(),
     };
 
     let mut selection_notices = Vec::new();
@@ -804,6 +808,12 @@ pub fn repair_failed(config: &PipelineConfig, apply: bool) -> Result<RepairRepor
     }
     report.failures = manifest.failures.clone();
     manifest.complete = false;
+    report
+        .warnings
+        .extend(crate::extensions::refresh_manifest_with_notices(
+            &mut manifest,
+            &staged,
+        )?);
     manifest.save(&staged.join("conversion-manifest.json"))?;
     fs::write(
         directory.join("repair-report.json"),
@@ -1090,7 +1100,8 @@ fn attempt(
             .get(key)
             .ok_or_else(|| color_eyre::eyre::eyre!("winning source is missing: {key}"))?;
         let mut source_hash = verified_source_hash(source, key, verified)?;
-        let (asset_kind, ext, target_ext) = kind(key).unwrap();
+        let (asset_kind, ext, target_ext) =
+            kind(key).ok_or_else(|| color_eyre::eyre::eyre!("unsupported repair target: {key}"))?;
         let output = canonical_asset_path(key, asset_kind, target_ext)?;
         let target = checked_destination(staged, &output)?;
         if ext == "nif" {
@@ -1705,6 +1716,7 @@ mod tests {
                 published: false,
                 record_data_complete: false,
                 failures: BTreeMap::new(),
+                warnings: Vec::new(),
             };
             attempt(
                 &config,
@@ -1731,6 +1743,61 @@ mod tests {
             );
             assert_eq!(report.converted, 1);
         }
+    }
+
+    /// A source key with no repair kind is recorded as a failure of that key. It must not
+    /// panic the repair pass.
+    #[test]
+    fn attempt_records_a_failure_for_an_unsupported_source_key() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("Data");
+        fs::create_dir(&data).unwrap();
+        let file = data.join("notes.txt");
+        fs::write(&file, "not an asset").unwrap();
+        let key = "meshes/notes.txt";
+        let sources = BTreeMap::from([(
+            key.to_owned(),
+            Source {
+                path: file,
+                archive: None,
+                expected_hash: None,
+            },
+        )]);
+        let staged = root.path().join("staged");
+        fs::create_dir(&staged).unwrap();
+        let config = PipelineConfig::new(&data, root.path().join("output"));
+        let mut manifest = ConversionManifest::default();
+        let mut report = RepairReport {
+            directory: staged.clone(),
+            converted: 0,
+            excluded: 0,
+            published: false,
+            record_data_complete: false,
+            failures: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+
+        attempt(
+            &config,
+            None,
+            &staged,
+            key,
+            &sources,
+            &BTreeMap::new(),
+            &OnceCell::new(),
+            &mut BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut manifest,
+            &mut BTreeSet::new(),
+            &mut report,
+        );
+
+        assert!(
+            manifest.failures[key].contains("unsupported repair target"),
+            "{:?}",
+            manifest.failures
+        );
+        assert_eq!(report.converted, 0);
     }
 
     #[test]

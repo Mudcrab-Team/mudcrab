@@ -6,6 +6,7 @@ pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
 pub mod creature_idle;
+pub mod extensions;
 pub mod lod;
 pub mod plugin_selection;
 pub mod records;
