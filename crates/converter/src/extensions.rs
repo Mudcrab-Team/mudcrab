@@ -82,6 +82,8 @@ const MAIN_CORE_TABLES: &[&str] = &[
     "plugins",
     "projection_omission_samples",
     "projection_omission_stats",
+    // #513: race animation sources projection.
+    "race_animation_sources",
     "race_movement_links",
     "record_diagnostics",
     "record_overrides",
