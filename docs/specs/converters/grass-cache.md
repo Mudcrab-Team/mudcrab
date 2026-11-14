@@ -275,3 +275,8 @@ opaque-field policy for other fields. Adapter 13 and legacy projection 5 invalid
 older metadata projections; converted mesh/texture bytes remain independently proven.
 Grass selection restores only the single LAND chosen by terrain's supplying-plugin,
 native-source-order and FormID precedence, never a merge of losing source records.
+
+Repeated valid BTXT assignments and VTXT vertex writes follow source order: the
+last valid base per quadrant and last valid opacity per vertex win, matching the
+reference importer. This defined precedence does not count as malformed data loss.
+Earlier assignments do not reject the LAND or remove healthy neighboring items.

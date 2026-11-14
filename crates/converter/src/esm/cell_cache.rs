@@ -600,28 +600,27 @@ pub(crate) fn extract_texture_layers(
             _ => active = None,
         }
     }
-    for layer in layers.iter().filter(|layer| !layer.is_base) {
+    // Source order defines repeated writes: the reference overwrites each vertex
+    // and base assignment, so keep the last valid occurrence rather than a whole LAND error.
+    for layer in layers.iter_mut().filter(|layer| !layer.is_base) {
         let mut vertices = std::collections::HashSet::new();
-        color_eyre::eyre::ensure!(
-            layer
-                .weights
-                .iter()
-                .all(|weight| vertices.insert(weight.vertex)),
-            "quadrant {} layer {} repeats a VTXT vertex",
-            layer.quadrant,
-            layer.layer
-        );
+        layer.weights.reverse();
+        layer
+            .weights
+            .retain(|weight| vertices.insert(weight.vertex));
+        layer.weights.reverse();
     }
-    // Validate even discarded payloads above. Resolve slots in reverse record order before
-    // sorting, so the later non-null assignment (including its weights) always wins.
+    // Resolve slots in reverse record order before sorting. Existing NULL overlay
+    // normalization remains separate; a later NULL base still replaces an earlier base.
     let mut slots = std::collections::HashSet::new();
+    let mut bases = std::collections::HashSet::new();
     let mut dropped_layers = Vec::new();
     layers.reverse();
     layers.retain(|layer| {
-        if layer.is_base
-            || layer.texture_form_id == 0
-            || slots.insert((layer.quadrant, layer.layer))
-        {
+        if layer.is_base {
+            return bases.insert(layer.quadrant);
+        }
+        if layer.texture_form_id == 0 || slots.insert((layer.quadrant, layer.layer)) {
             return true;
         }
         dropped_layers.push(DroppedLayer {
@@ -640,16 +639,6 @@ pub(crate) fn extract_texture_layers(
             layer.texture_form_id,
         )
     });
-    for quadrant in 0..4 {
-        let bases = layers
-            .iter()
-            .filter(|layer| layer.quadrant == quadrant && layer.is_base)
-            .count();
-        color_eyre::eyre::ensure!(
-            bases <= 1,
-            "quadrant {quadrant} has {bases} BTXT base layers"
-        );
-    }
     Ok((layers, dropped_layers))
 }
 
@@ -1339,22 +1328,26 @@ mod tests {
         }
     }
 
-    /// Dropping a duplicate must not hide a malformed payload on the earlier assignment.
+    /// Repeated vertices on a losing overlay follow source precedence without rejecting LAND.
     #[test]
-    fn discarded_duplicate_overlay_payloads_still_fail_validation() {
+    fn discarded_duplicate_overlay_payloads_follow_source_precedence() {
         let overlay = (b"ATXT".to_vec(), vec![1, 0, 0, 0, 0, 0, 2, 0]);
         let weight = [0u8; 8];
+        let (layers, dropped) = extract_texture_layers(&[
+            overlay.clone(),
+            (b"VTXT".to_vec(), [weight, weight].concat()),
+            overlay,
+        ])
+        .unwrap();
+        assert_eq!(layers.len(), 1);
         assert!(
-            extract_texture_layers(&[
-                overlay.clone(),
-                (b"VTXT".to_vec(), [weight, weight].concat()),
-                overlay,
-            ])
-            .is_err()
+            layers[0].weights.is_empty(),
+            "the later overlay replaces the earlier one"
         );
+        assert_eq!(dropped.len(), 1);
     }
 
-    /// Null overlays may reuse an assigned layer index, but their payloads must still be valid.
+    /// NULL overlays retain their separate normalization while repeated weights use last-write precedence.
     #[test]
     fn null_overlay_indices_are_ignored_when_publishing_the_cache() {
         let overlay = |texture: u32| {
@@ -1378,16 +1371,13 @@ mod tests {
             assert_eq!(layers[1].texture_form_id, 1);
             assert_eq!(layers[1].layer, 2);
         }
-        // Truncated null weight tails drop locally; duplicate authored vertices
-        // retain their separate ambiguity validation.
+        // Truncated tails drop locally; repeated authored vertices keep the final value.
         let mut recovered = record(0x1234, b"LAND", None, &[]);
         recovered.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 7])];
         write_cell_cache(&HashMap::from([(recovered.form_id, recovered)]), &path).unwrap();
-        let original = std::fs::read(&path).unwrap();
         let mut land = record(0x1234, b"LAND", None, &[]);
         land.subrecords = vec![overlay(0), (b"VTXT".to_vec(), vec![0; 16])];
-        assert!(write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), original);
+        write_cell_cache(&HashMap::from([(land.form_id, land)]), &path).unwrap();
     }
 
     /// Repair individual invalid normals without overwriting neighboring authored values.
@@ -1849,6 +1839,56 @@ mod tests {
             let (layers, _) = extract_texture_layers(&fields).unwrap();
             assert_eq!(layers.len(), 1);
             assert_eq!((layers[0].texture_form_id, layers[0].quadrant), (30, 2));
+        }
+    }
+
+    /// Repeated bases and weights have a defined source order, including a NULL final base.
+    #[test]
+    fn duplicate_base_and_vertex_assignments_keep_last_valid_values() {
+        let base = |id: u32| (b"BTXT".to_vec(), [id.to_le_bytes(), [0; 4]].concat());
+        let overlay = (b"ATXT".to_vec(), [30u32.to_le_bytes(), [0; 4]].concat());
+        let weight = |vertex: u16, opacity: f32| {
+            [
+                vertex.to_le_bytes().as_slice(),
+                &[0; 2],
+                &opacity.to_le_bytes(),
+            ]
+            .concat()
+        };
+        for final_base in [41, 0] {
+            let fields = vec![
+                base(40),
+                base(final_base),
+                overlay.clone(),
+                (
+                    b"VTXT".to_vec(),
+                    [weight(7, 0.2), weight(8, 0.35), weight(7, 0.65)].concat(),
+                ),
+            ];
+            assert_eq!(malformed_texture_items(&fields), 0);
+            let (layers, dropped) = extract_texture_layers(&fields).unwrap();
+            assert!(dropped.is_empty());
+            assert_eq!(layers.len(), 2);
+            assert_eq!(layers[0].texture_form_id, final_base);
+            assert_eq!(layers[1].weights.len(), 2);
+            assert_eq!(
+                layers[1]
+                    .weights
+                    .iter()
+                    .find(|weight| weight.vertex == 7)
+                    .unwrap()
+                    .opacity,
+                0.65
+            );
+            assert_eq!(
+                layers[1]
+                    .weights
+                    .iter()
+                    .find(|weight| weight.vertex == 8)
+                    .unwrap()
+                    .opacity,
+                0.35
+            );
         }
     }
 

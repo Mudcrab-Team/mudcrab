@@ -564,3 +564,139 @@ async fn inhouse_metadata_rebuilds_version_ten_grass() {
 async fn legacy_metadata_rebuilds_version_ten_grass() {
     check_old_version_migration(RecordReader::Legacy, 10).await;
 }
+
+/// Duplicate base/vertex writes have reference-defined last-valid precedence.
+async fn check_duplicate_land_precedence(reader: RecordReader) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture(directory.path(), reader);
+    let path = config.data_dir.join("Layers.esp");
+    let mut bytes = fs::read(&path).unwrap();
+    let weight = |vertex: u16, opacity: f32| {
+        [
+            vertex.to_le_bytes().as_slice(),
+            &[0; 2],
+            &opacity.to_le_bytes(),
+        ]
+        .concat()
+    };
+    let fields = [
+        field(b"BTXT", &[BARE_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+        field(b"BTXT", &[GRASS_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+        field(b"ATXT", &[BARE_TEXTURE.to_le_bytes(), [0; 4]].concat()),
+        field(
+            b"VTXT",
+            &[
+                weight(SAMPLE as u16, 0.20),
+                weight(118, 0.15),
+                weight(SAMPLE as u16, 0.65),
+            ]
+            .concat(),
+        ),
+    ]
+    .concat();
+    bytes.extend(group(1, 1, &group(8, 0x30, &record(b"LAND", 0x31, fields))));
+    fs::write(path, bytes).unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config.clone(), sender)
+        .await
+        .unwrap();
+    drain.await.unwrap();
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("malformed LAND")
+                || warning.contains("malformed texture items")),
+        "duplicates are defined precedence, not malformed loss: {:?}",
+        report.warnings
+    );
+    let cache = rkyv::from_bytes::<GrassCache, rkyv::rancor::Error>(
+        &fs::read(config.output_dir.join("grass_cache.rkyv")).unwrap(),
+    )
+    .unwrap();
+    let affected = cache
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == 0x30)
+        .expect("duplicate writes must retain their cell");
+    let base = affected.quadrants[0]
+        .layers
+        .iter()
+        .find(|layer| layer.is_base)
+        .unwrap();
+    assert_eq!(base.grass_ids, [GRASS]);
+    assert!(
+        (base.weights[SAMPLE] - 90.0 / 255.0).abs() < 0.00001,
+        "duplicate assignments must retain the last valid base and weight"
+    );
+    assert!(
+        (base.weights[118] - 217.0 / 255.0).abs() < 0.00001,
+        "unrelated weight must survive"
+    );
+    assert!(
+        cache.cells.iter().any(|cell| cell.cell_id == 0x20),
+        "healthy neighbor must publish"
+    );
+    let terrain = rkyv::from_bytes::<shared::CellCache, rkyv::rancor::Error>(
+        &fs::read(config.output_dir.join("cell_cache_preserved.rkyv")).unwrap(),
+    )
+    .unwrap();
+    let layers = &terrain
+        .cells
+        .iter()
+        .find(|cell| cell.cell_id == 0x30)
+        .unwrap()
+        .layers;
+    assert_eq!(
+        layers
+            .iter()
+            .filter(|layer| layer.is_base && layer.quadrant == 0)
+            .count(),
+        1
+    );
+    assert_eq!(
+        layers
+            .iter()
+            .find(|layer| layer.is_base && layer.quadrant == 0)
+            .unwrap()
+            .texture_form_id,
+        GRASS_TEXTURE
+    );
+    let paint = layers
+        .iter()
+        .find(|layer| !layer.is_base && layer.quadrant == 0)
+        .unwrap();
+    assert_eq!(
+        paint
+            .weights
+            .iter()
+            .find(|weight| weight.vertex == SAMPLE as u16)
+            .unwrap()
+            .opacity,
+        0.65
+    );
+    assert_eq!(
+        paint
+            .weights
+            .iter()
+            .find(|weight| weight.vertex == 118)
+            .unwrap()
+            .opacity,
+        0.15
+    );
+    assert_eq!(paint.weights.len(), 2);
+    assert!(config.output_dir.join("conversion-manifest.json").is_file());
+}
+
+/// In-house publication keeps last duplicate values and healthy neighboring grass.
+#[tokio::test]
+async fn inhouse_duplicate_land_items_keep_last_valid_values() {
+    check_duplicate_land_precedence(RecordReader::Inhouse).await;
+}
+
+/// Legacy publication applies the same reference-defined duplicate precedence.
+#[tokio::test]
+async fn legacy_duplicate_land_items_keep_last_valid_values() {
+    check_duplicate_land_precedence(RecordReader::Legacy).await;
+}
