@@ -121,6 +121,9 @@ jobs:
       - name: Test repeated terrain startup runner
         run: python3 -m unittest discover -s scripts/tests -p test_repeat_terrain_startup.py -v
 
+      - name: Test reviewer gate decisions
+        run: python3 -B -m unittest discover -s scripts/tests -p test_reviewer_gate.py -v
+
       - name: Test Riverwood LOD capture gates
         run: python3 -m unittest discover -s scripts/tests -p test_capture_riverwood_lod.py -v
 
@@ -394,9 +397,21 @@ jobs:
 
   # CodeRabbit and Greptile review a pull request's head commit and never
   # report on a merge queue commit. The ruleset therefore requires only
-  # tests_pass, and this job makes tests_pass wait for the bot reviews on the
-  # PR. A PR cannot enter the queue until tests_pass is green, so the queue run
+  # tests_pass, and this job makes tests_pass wait for CodeRabbit on the PR.
+  # A PR cannot enter the queue until tests_pass is green, so the queue run
   # (event merge_group) skips this job.
+  #
+  # CodeRabbit reports as a check run, not as a commit status. Only a GitHub
+  # App can create a check run, so the job trusts the newest check run named
+  # "CodeRabbit" that the CodeRabbit app (id 347564, the id the ruleset also
+  # pins) owns. Commit statuses are not read: anyone with Write access can post
+  # one under any name. The decision logic and its fixture tests are in
+  # scripts/reviewer_gate.py and scripts/tests/test_reviewer_gate.py.
+  #
+  # A rate-limited or skipped CodeRabbit run (neutral) is not a review, so the
+  # job waits and then fails. To recover, comment "@coderabbitai review" on
+  # the PR, wait for the CodeRabbit check to finish, and re-run this job.
+  # Greptile is logged and never blocks.
   reviewers_pass:
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
@@ -404,71 +419,21 @@ jobs:
     permissions:
       contents: read
       checks: read
-      statuses: read
     steps:
-      - name: Wait for AI reviewers on the PR head
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for CodeRabbit on the PR head
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
-          # One name per line. Commit statuses that must be "success". Anyone
-          # with Write access, and any workflow, can post a status under any
-          # name; CodeRabbit's own statuses show no creator, while a status
-          # posted by a person or by github-actions names its creator. Only
-          # statuses without a creator are trusted.
-          REQUIRED_STATUSES: |
-            CodeRabbit
-          # Check runs (only the Greptile app's are read) that must finish
-          # "success" or "neutral". Greptile is
-          # advisory today; move "Greptile Review" here to make it blocking.
-          REQUIRED_CHECKS: ""
-          ADVISORY_CHECKS: |
-            Greptile Review
         run: |
-          set -euo pipefail
-          deadline=$((SECONDS + 25 * 60))
-
-          while true; do
-            pending=0
-            statuses="$(gh api "repos/${REPO}/commits/${SHA}/status" --jq '.statuses | map(select(.creator == null) | {(.context): .state}) | add // {}')"
-            checks="$(gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" --jq '.check_runs | map(select(.app.slug == "greptile-apps") | {(.name): (if .status == "completed" then .conclusion else "pending" end)}) | add // {}')"
-
-            while IFS= read -r name; do
-              [ -n "$name" ] || continue
-              state="$(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$statuses")"
-              echo "status ${name}: ${state}"
-              case "$state" in
-                success) ;;
-                failure|error) echo "::error::${name} reported ${state} on ${SHA}"; exit 1 ;;
-                *) pending=1 ;;
-              esac
-            done <<<"$REQUIRED_STATUSES"
-
-            while IFS= read -r name; do
-              [ -n "$name" ] || continue
-              state="$(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$checks")"
-              echo "check ${name}: ${state}"
-              case "$state" in
-                success|neutral) ;;
-                pending|missing) pending=1 ;;
-                *) echo "::error::${name} finished ${state} on ${SHA}"; exit 1 ;;
-              esac
-            done <<<"$REQUIRED_CHECKS"
-
-            if [ "$pending" -eq 0 ]; then
-              while IFS= read -r name; do
-                [ -n "$name" ] || continue
-                echo "advisory check ${name}: $(jq -r --arg n "$name" '.[$n] // "missing"' <<<"$checks")"
-              done <<<"$ADVISORY_CHECKS"
-              exit 0
-            fi
-
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for AI reviewers on ${SHA}"
-              exit 1
-            fi
-            sleep 30
-          done
+          python3 -B scripts/reviewer_gate.py \
+            --repo "$REPO" \
+            --sha "$SHA" \
+            --timeout-seconds 1500 \
+            --interval-seconds 30
 
   tests_pass:
     needs:

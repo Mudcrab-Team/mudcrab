@@ -48,7 +48,7 @@ If someone is assigned to an issue, has claimed it in a comment, or has an open 
 
 ## 6. Merge (maintainers)
 
-The `main_protection` ruleset requires at least one approving review, approval from a human code owner, a passing `tests_pass` check, and every review thread resolved. `tests_pass` includes a `reviewers_pass` job that waits for CodeRabbit to report success on the PR's latest commit (Greptile's result is logged but does not block). The branch does not have to be up to date with `main`; CI also runs on every push to `main`. It dismisses stale approvals when new commits are pushed. Only Owners (organization owners) can bypass the ruleset. The bypass was added on purpose, to work through a backlog of pull requests. `main` accepts squash or rebase merges through a merge queue (see below).
+The `main_protection` ruleset requires at least one approving review, approval from a human code owner, a passing `tests_pass` check, and every review thread resolved. `tests_pass` includes a `reviewers_pass` job that waits for a successful CodeRabbit check run on the PR's latest commit (Greptile's result is logged but does not block). Only the CodeRabbit app's own check run counts, never a commit status. The branch does not have to be up to date with `main`; CI also runs on every push to `main`. It dismisses stale approvals when new commits are pushed. Only Owners (organization owners) can bypass the ruleset. The bypass was added on purpose, to work through a backlog of pull requests. `main` accepts squash or rebase merges. A merge queue is planned but not enabled yet (see below).
 
 Anyone with Write access (Maintainers and Core) may merge once a Core member has approved and all checks pass, including the PR author. [CODEOWNERS](../../.github/CODEOWNERS) lists the Core team, so promoting someone to Core is a team change, not an edit to that file. Its catch-all rule also covers changes to CODEOWNERS itself. Only Owners can edit repository settings, so changing or disabling these requirements is a separate policy change.
 
@@ -58,12 +58,15 @@ Anyone with Write access (Maintainers and Core) may merge once a Core member has
 
 ### The merge queue and auto-merge
 
+**Pending rollout.** The ruleset has no `merge_queue` rule yet and auto-merge is off. Until an Owner turns them on, use **Squash and merge** on the pull request page once the requirements above are met. This section describes how merging works after the rollout.
+
 Merging means adding the PR to the merge queue, not merging it directly. GitHub builds a temporary commit of the latest `main`, the PRs ahead in the queue, and your PR, runs CI on it (the `merge_group` event), and moves `main` to that exact commit if it passes. Nobody rebases or updates branches for this: your PR branch is not rewritten, so its approval stays valid. If your PR conflicts with one ahead of it, it drops out of the queue, and you resolve the conflict and get a fresh Core approval.
 
 - **Merge when ready** (or `gh pr merge --auto`) arms auto-merge on a PR: it enters the queue as soon as `tests_pass` is green, a Core member has approved, and every thread is resolved. The author or any Maintainer can arm it, ideally when the PR is opened.
 - **A Core approval on a PR with auto-merge armed ships it.** Core reviewers who still have concerns use "Request changes" or a comment, not "Approve".
 - A push after approval dismisses the approval, so the PR waits for a fresh one.
-- CodeRabbit and Greptile review the PR's head commit and never report on the queue's temporary commit. The `reviewers_pass` job in `tests_pass` waits for them on the PR, and is skipped in the queue run.
+- CodeRabbit and Greptile review the PR's head commit and never report on the queue's temporary commit. The `reviewers_pass` job in `tests_pass` waits for CodeRabbit on the PR, and is skipped in the queue run.
+- **If `reviewers_pass` fails** because CodeRabbit is rate limited, paused, or skipped the commit (its check run is neutral, for example "Review rate limited"), the job waits 25 minutes and then fails. Comment `@coderabbitai review` on the pull request, wait for the CodeRabbit check to finish, then re-run the failed `reviewers_pass` job from the Actions tab. A `main` merge commit pushed by "Update branch" counts as a new head and needs a new CodeRabbit run.
 
 ### Updating a branch, and stacks
 
