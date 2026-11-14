@@ -182,7 +182,7 @@ fn vertex(input: Vertex) -> Varyings {
     if f32(input.packed.w & 262143u) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
     out.root_fraction = 0.0;
 #else
-    if f32(input.packed.w) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
+    if f32(input.packed.w & 262143u) >= fraction * grass.absolute_grid.w { out.position = vec4(2.0,2.0,2.0,1.0); }
 #endif
     out.uv = vec2(0.0);
 #ifdef UV

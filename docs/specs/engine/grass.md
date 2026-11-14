@@ -367,7 +367,7 @@ terrain shadow filtering and display tone mapping retain the production paths.
 | backlight | 0 | 0..1 | Add response from away-facing authored normals |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
-| saturation | .75 | 0..4 | Linear HDR saturation around Rec.709 luminance |
+| saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
 | vclr_tint_strength | 1 | 0..1 | LAND luminance strength |
 | color_range_strength | 1 | 0..1 | GRAS color-range variation strength |
 | root_darkening | 0 | 0..1 | Multiply by `1-root_darkening*clamp(original_uv.y,0,1)` |
@@ -412,7 +412,7 @@ scene differences and local shadows prevent it from proving a Skyrim match.
 ## Default appearance and tuning
 
 Without a file, grass uses flat-b: sun angle weight 0, sun strength 0.1,
-shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.15.
+shadow strength 0.3, ambient strength 1.15, saturation 1.0 and brightness 1.15.
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
@@ -422,7 +422,7 @@ to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before ap
 or GPU creation. Captures freeze the accepted hash and effective settings with
 the actual frame; they do not reread the file in the callback.
 
-Explicit `--shots` runs freeze wind time and allow `-on`/`-off` shot-name pairs
+Explicit `--shots` runs freeze wind time and use the per-shot `"grass": false` field
 to suppress grass draws while retaining placement and readiness accounting.
 No experimental gamma or alternate placement switches are included.
 
@@ -431,3 +431,13 @@ for comparisons. Omitted mode selects `flat`, including an empty TOML file.
 All production startup paths use the tuning uniforms; there is no shading
 experiment environment switch. Authored normal maps use the preserved glTF frame
 and one DirectX Y conversion, consistent with the ordinary native material path.
+
+Shot grass visibility is explicit: set `"grass": false` on a shot to suppress
+only grass draws. Omission defaults to true, including names ending in `-off`.
+Counts include a `phase` (`settled` or `captured`); compare the same phase and
+never sum both. The first shot removes the previous run's counts file.
+Tuning edits, including startup files, require two identical reads one second
+apart. Until then the last accepted settings (or defaults at startup) remain.
+The default appearance changes every grass-enabled visual profile relative to G3:
+sun strength 0.1, sun angle weight 0, shadow strength 0.3, ambient strength 1.15,
+brightness 1.15 and saturation 1.0. The calibrated ambient /pi remains unchanged.

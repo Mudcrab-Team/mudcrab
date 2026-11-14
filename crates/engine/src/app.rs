@@ -5243,6 +5243,7 @@ mod tests {
             ..default()
         };
         let shot = crate::shots::Shot {
+            grass: true,
             name: "elevated".to_owned(),
             worldspace_id: Some(7),
             interior_cell_id: None,

@@ -175,6 +175,9 @@ impl Plugin for GrassPlugin {
     fn build(&self, app: &mut App) {
         let config = app.world().resource::<EngineConfig>();
         if !config.grass {
+            if config.grass_tuning.is_some() {
+                warn!("Grass tuning selected without --grass; appearance settings are inactive");
+            }
             return;
         }
         let (start, end) = config.effective_grass_fade();
