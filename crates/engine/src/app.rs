@@ -388,6 +388,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_animation::ActorAnimationPlugin)
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
+        .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_systems(Update, crate::sun::update_sun)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
@@ -399,6 +400,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     }
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
+    } else {
+        app.add_plugins(crate::settings::RenderSettingsPlugin);
     }
     add_camera_and_capture_systems(&mut app);
     if let Some(terrain_merge) = terrain_merge {

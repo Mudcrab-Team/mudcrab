@@ -12,8 +12,8 @@
 
 use crate::actor_skin_tone::ActorSkinTone;
 use crate::actors::{
-    Actor, ActorHead, ActorHeadSource, ActorPart, ActorParts, ActorResolution, ActorSex, ActorSlot,
-    ActorSpawnDiagnostic, ActorSpawnSkip, composed_body_scene,
+    Actor, ActorHead, ActorHeadSource, ActorOutfit, ActorPart, ActorParts, ActorResolution,
+    ActorSex, ActorSlot, ActorSpawnDiagnostic, ActorSpawnSkip, composed_body_scene,
 };
 use bevy::prelude::*;
 use rusqlite::{Connection, OpenFlags};
@@ -87,6 +87,9 @@ pub struct ActorSpawnPlan {
     pub weight: Option<f32>,
     /// The composed body when it exists, otherwise the catalog's `body` part, converted.
     pub scene_path: String,
+    /// The worn default outfit. Only an actor drawn with the shared composed humanoid body has
+    /// one: its parts are skinned to that skeleton and hide its body regions by name.
+    pub outfit: Option<ActorOutfit>,
 }
 
 impl ActorSpawnPlan {
@@ -102,6 +105,7 @@ pub struct ActorCatalog {
     models: HashMap<u32, ActorModel>,
     assets_root: Option<PathBuf>,
     idle_catalog: shared::actor_idle_catalog::ActorIdleCatalog,
+    outfits: shared::actor_outfits::ActorOutfitCatalog,
 }
 
 impl ActorCatalog {
@@ -162,6 +166,10 @@ impl ActorCatalog {
                     }
                 }
             })
+            .unwrap_or_default();
+        let outfits = assets_root
+            .as_deref()
+            .map(Self::read_outfits)
             .unwrap_or_default();
         let mut race_sources = HashMap::new();
         if let Ok(mut statement) = connection
@@ -299,6 +307,7 @@ impl ActorCatalog {
                         models: HashMap::new(),
                         assets_root,
                         idle_catalog,
+                        outfits,
                     };
                 }
             },
@@ -308,6 +317,7 @@ impl ActorCatalog {
                     models: HashMap::new(),
                     assets_root,
                     idle_catalog,
+                    outfits,
                 };
             }
         }
@@ -320,6 +330,36 @@ impl ActorCatalog {
             models,
             assets_root,
             idle_catalog,
+            outfits,
+        }
+    }
+
+    /// The optional worn-outfit sidecar. A pack without it, or with an unreadable or invalid one,
+    /// spawns actors in their skin exactly as before.
+    fn read_outfits(root: &Path) -> shared::actor_outfits::ActorOutfitCatalog {
+        let path = root.join(shared::actor_outfits::PATH);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Default::default();
+            }
+            Err(error) => {
+                warn!("actors: cannot read outfit catalog: {error}");
+                return Default::default();
+            }
+        };
+        match serde_json::from_slice::<shared::actor_outfits::ActorOutfitCatalog>(&bytes) {
+            Ok(catalog) => match catalog.validate() {
+                Ok(()) => catalog,
+                Err(error) => {
+                    warn!("actors: invalid outfit catalog: {error}");
+                    Default::default()
+                }
+            },
+            Err(error) => {
+                warn!("actors: invalid outfit catalog: {error}");
+                Default::default()
+            }
         }
     }
 
@@ -431,7 +471,7 @@ impl ActorCatalog {
             .as_deref()
             .zip(model.head_source)
             .and_then(|(path, source)| ActorHead::new(path, source));
-        Ok(ActorSpawnPlan {
+        let mut plan = ActorSpawnPlan {
             actor: Actor::new(
                 model.base_form_id,
                 model.race_id,
@@ -443,7 +483,15 @@ impl ActorCatalog {
             skin_tone: model.skin_tone,
             weight: model.weight,
             scene_path,
-        })
+            outfit: None,
+        };
+        if plan.uses_composed_body() {
+            plan.outfit = self
+                .outfits
+                .find(model.base_form_id)
+                .map(|outfit| ActorOutfit(outfit.parts.clone()));
+        }
+        Ok(plan)
     }
 }
 
@@ -953,6 +1001,109 @@ mod tests {
         assert_eq!(
             plan.head.as_ref().map(|head| head.source),
             Some(ActorHeadSource::Facegen)
+        );
+    }
+
+    fn write_outfit_catalog(directory: &Path, catalog: &shared::actor_outfits::ActorOutfitCatalog) {
+        std::fs::write(
+            directory.join(shared::actor_outfits::PATH),
+            serde_json::to_vec(catalog).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn blacksmith_outfit(npc: u32) -> shared::actor_outfits::ActorOutfitCatalog {
+        shared::actor_outfits::ActorOutfitCatalog {
+            version: shared::actor_outfits::VERSION,
+            outfits: vec![shared::actor_outfits::ActorOutfit {
+                npc_id: npc,
+                outfit_id: 0x57c4c,
+                parts: vec![shared::actor_outfits::OutfitPart {
+                    armo_id: 0x5b69f,
+                    armature_id: 0x5b6a2,
+                    biped_mask: shared::actor_outfits::BIPED_BODY,
+                    armature_race_id: 25,
+                    scene: "meshes/clothes/blacksmith/m/torso_1.glb".into(),
+                }],
+            }],
+            skipped: Default::default(),
+        }
+    }
+
+    fn composed_male_body(directory: &Path) {
+        let composed = directory.join("meshes/actors/character/composed/default/male/body.glb");
+        std::fs::create_dir_all(composed.parent().unwrap()).unwrap();
+        std::fs::write(&composed, b"glTF").unwrap();
+    }
+
+    #[test]
+    fn a_composed_body_actor_carries_its_worn_outfit() {
+        let connection = connection();
+        alvor(&connection);
+        let directory = tempfile::tempdir().unwrap();
+        composed_male_body(directory.path());
+        write_outfit_catalog(directory.path(), &blacksmith_outfit(0x13475));
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+
+        let plan = catalog.spawn_plan(catalog.get(0x13475).unwrap()).unwrap();
+        let outfit = plan.outfit.expect("the worn outfit");
+        assert_eq!(outfit.0.len(), 1);
+        assert_eq!(outfit.0[0].scene, "meshes/clothes/blacksmith/m/torso_1.glb");
+    }
+
+    #[test]
+    fn an_actor_without_an_outfit_row_or_a_composed_body_wears_nothing() {
+        let connection = connection();
+        alvor(&connection);
+        let directory = tempfile::tempdir().unwrap();
+        write_outfit_catalog(directory.path(), &blacksmith_outfit(0x13475));
+        // No composed body: the actor draws its catalog body part, which the outfit does not fit.
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let plan = catalog.spawn_plan(catalog.get(0x13475).unwrap()).unwrap();
+        assert!(plan.outfit.is_none());
+
+        // A composed body but a different actor in the catalog: no row, no outfit.
+        composed_male_body(directory.path());
+        write_outfit_catalog(directory.path(), &blacksmith_outfit(0x999));
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let plan = catalog.spawn_plan(catalog.get(0x13475).unwrap()).unwrap();
+        assert!(plan.outfit.is_none());
+    }
+
+    #[test]
+    fn a_missing_or_invalid_outfit_catalog_leaves_actors_in_their_skin() {
+        let connection = connection();
+        alvor(&connection);
+        let directory = tempfile::tempdir().unwrap();
+        composed_male_body(directory.path());
+        let plan_outfit = |directory: &Path| {
+            let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory);
+            catalog
+                .spawn_plan(catalog.get(0x13475).unwrap())
+                .unwrap()
+                .outfit
+        };
+        assert!(
+            plan_outfit(directory.path()).is_none(),
+            "older pack: no file"
+        );
+
+        std::fs::write(
+            directory.path().join(shared::actor_outfits::PATH),
+            b"not json",
+        )
+        .unwrap();
+        assert!(
+            plan_outfit(directory.path()).is_none(),
+            "unreadable catalog"
+        );
+
+        let mut invalid = blacksmith_outfit(0x13475);
+        invalid.outfits[0].parts[0].scene = "Meshes/../escape.glb".into();
+        write_outfit_catalog(directory.path(), &invalid);
+        assert!(
+            plan_outfit(directory.path()).is_none(),
+            "invalid catalog is rejected whole"
         );
     }
 
