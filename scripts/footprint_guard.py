@@ -15,15 +15,28 @@ gap between samples. This is not a hard quota. The limit is capped at 20 GiB and
 guard refuses a higher value.
 
 Exit codes: 0 the target exited by itself, 3 killed at the limit, 4 killed because
-sampling failed, 5 killed at the wall deadline, 2 refused (bad arguments).
+sampling failed, 5 killed at the wall deadline, 2 refused (bad arguments), 6 the kill
+was ordered but at least one process could not be killed (check stderr: the target may
+still be running).
+
+The guard never kills itself or any process it runs under. It refuses a PID that is the
+guard, or any ancestor of the guard.
+
+When the guard is not running, nothing is guarded. If the guard process dies, or is
+killed, the target keeps running without a limit. If the root process exits and leaves
+children, those children are re-parented and are not watched any more, because the guard
+follows the root PID. Start the guard before the target grows, and check that it is
+alive.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
 import json
+import math
 import os
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -40,6 +53,7 @@ EXIT_REFUSED = 2
 EXIT_OVER_LIMIT = 3
 EXIT_SAMPLE_FAILURE = 4
 EXIT_DEADLINE = 5
+EXIT_KILL_FAILED = 6
 
 
 class Refused(ValueError):
@@ -68,12 +82,16 @@ class Config:
                 f"limit must be above 0 and at most {MAX_LIMIT_BYTES // GIB} GiB, "
                 f"got {self.limit_bytes} bytes"
             )
-        if not MIN_INTERVAL_S <= self.interval_s <= MAX_INTERVAL_S:
+        if not (
+            math.isfinite(self.interval_s) and MIN_INTERVAL_S <= self.interval_s <= MAX_INTERVAL_S
+        ):
             raise Refused(
                 f"interval must be {MIN_INTERVAL_S} to {MAX_INTERVAL_S} s, got {self.interval_s}"
             )
-        if self.deadline_s is not None and self.deadline_s <= 0:
-            raise Refused("deadline must be above 0 seconds")
+        if self.deadline_s is not None and not (
+            math.isfinite(self.deadline_s) and self.deadline_s > 0
+        ):
+            raise Refused("deadline must be a finite number above 0 seconds")
         if self.max_sample_failures < 1:
             raise Refused("max_sample_failures must be at least 1")
         return self
@@ -126,6 +144,27 @@ def decide(
     return CONTINUE
 
 
+def gib_to_bytes(value: float) -> int:
+    """Convert a command-line GiB value. Refuses nan, infinity, zero and negative values."""
+    if not math.isfinite(value) or value <= 0:
+        raise Refused(f"limit must be a finite number above 0 GiB, got {value}")
+    return int(value * GIB)
+
+
+def ancestors_of(pid: int, parent_of: Callable[[int], Optional[int]]) -> List[int]:
+    """The parent chain of `pid`, nearest first, without `pid` itself. Cycle-safe."""
+    chain: List[int] = []
+    seen = {pid}
+    current = pid
+    while True:
+        parent = parent_of(current)
+        if parent is None or parent <= 0 or parent in seen:
+            return chain
+        chain.append(parent)
+        seen.add(parent)
+        current = parent
+
+
 def descendants(rows: Iterable[Tuple[int, int]], root: int) -> List[int]:
     """`root` and every process below it. `rows` are (pid, ppid). Cycle-safe, root first."""
     children: Dict[int, List[int]] = {}
@@ -152,6 +191,11 @@ class Result:
     max_gap_s: float
     elapsed_s: float
     killed: List[int]
+    kill_errors: List[str]
+
+
+def _stderr(message: str) -> None:
+    print("footprint_guard: " + message, file=sys.stderr, flush=True)
 
 
 def watch(
@@ -162,8 +206,15 @@ def watch(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     log: Optional[Callable[[dict], None]] = None,
+    protected: frozenset = frozenset(),
+    report: Callable[[str], None] = _stderr,
 ) -> Result:
-    """Sample until the target exits or the policy says kill. Launches nothing."""
+    """Sample until the target exits or the policy says kill. Launches nothing.
+
+    `protected` PIDs (the guard itself and its ancestors) are never signalled. A failed log
+    write switches logging off and is reported once. A failed kill is reported and the
+    remaining PIDs are still killed. Neither stops the guard.
+    """
     config.validate()
     started = clock()
     last_sample_time: Optional[float] = None
@@ -197,30 +248,43 @@ def watch(
             failures += 1
         verdict = decide(config, now - started, sample, failures, gone)
         if log is not None:
-            log(
-                {
-                    "t": round(now - started, 4),
-                    "footprint": sample.footprint if sample else None,
-                    "rss": sample.rss if sample else None,
-                    "pids": list(sample.pids) if sample else None,
-                    "error": error or None,
-                    "action": verdict.action,
-                    "reason": verdict.reason,
-                }
-            )
+            try:
+                log(
+                    {
+                        "t": round(now - started, 4),
+                        "footprint": sample.footprint if sample else None,
+                        "rss": sample.rss if sample else None,
+                        "pids": list(sample.pids) if sample else None,
+                        "error": error or None,
+                        "action": verdict.action,
+                        "reason": verdict.reason,
+                    }
+                )
+            except OSError as exc:
+                report(f"log write failed ({exc}); logging is off, still guarding")
+                log = None
         if verdict.action != "continue":
             killed: List[int] = []
+            kill_errors: List[str] = []
             if verdict.action == "kill":
                 # Kill the root first so it cannot respawn children, then its descendants.
                 # On a failed read, fall back to the last tree seen, then to the root alone.
                 targets = list(sample.pids) if sample else (last_pids or [root])
                 for pid in targets:
+                    if pid in protected:
+                        continue
                     try:
                         kill_fn(pid)
                         killed.append(pid)
                     except ProcessLookupError:
-                        pass
-            return Result(verdict, count, peak, last_footprint, max_gap, now - started, killed)
+                        pass  # already gone
+                    except OSError as exc:
+                        message = f"could not kill {pid}: {exc}"
+                        kill_errors.append(message)
+                        report(message + " (the process may still be running)")
+            return Result(
+                verdict, count, peak, last_footprint, max_gap, now - started, killed, kill_errors
+            )
         sleep(config.interval_s)
 
 
@@ -315,9 +379,25 @@ class DarwinSampler:
         return Sample(footprint, rss, tuple(pids))
 
 
-def _refuse_pid(pid: int) -> None:
-    if pid <= 1 or pid == os.getpid() or pid == os.getppid():
-        raise Refused(f"refusing to watch PID {pid}: it is the guard, its parent or init")
+def _darwin_parent(pid: int) -> Optional[int]:
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        return int(out) if out else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _refuse_pid(pid: int, own_pid: int, ancestors: List[int]) -> None:
+    """Refuse the guard, init, and any ancestor of the guard (a kill would end the guard)."""
+    if pid <= 1 or pid == own_pid:
+        raise Refused(f"refusing to watch PID {pid}: it is the guard or init")
+    if pid in ancestors:
+        raise Refused(f"refusing to watch PID {pid}: it is an ancestor of the guard")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -336,23 +416,41 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = Config(
-            limit_bytes=int(args.limit_gib * GIB),
+            limit_bytes=gib_to_bytes(args.limit_gib),
             interval_s=args.interval_ms / 1000.0,
             deadline_s=args.deadline_s,
         ).validate()
-        _refuse_pid(args.pid)
+        own_pid = os.getpid()
+        ancestors = ancestors_of(own_pid, _darwin_parent)
+        _refuse_pid(args.pid, own_pid, ancestors)
         sampler = DarwinSampler(include_children=not args.no_children)
     except Refused as exc:
         print(f"footprint_guard: refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
 
-    log_file = open(args.log, "a", buffering=1) if args.log else None
+    log_file = None
+    if args.log:
+        try:
+            log_file = open(args.log, "a", buffering=1)
+        except OSError as exc:
+            print(f"footprint_guard: refused: cannot open the log {args.log}: {exc}", file=sys.stderr)
+            return EXIT_REFUSED
     log = (lambda row: log_file.write(json.dumps(row) + "\n")) if log_file else None
     try:
-        result = watch(args.pid, config, sampler, lambda pid: os.kill(pid, signal.SIGKILL), log=log)
+        result = watch(
+            args.pid,
+            config,
+            sampler,
+            lambda pid: os.kill(pid, signal.SIGKILL),
+            log=log,
+            protected=frozenset([own_pid, *ancestors]),
+        )
     finally:
         if log_file:
-            log_file.close()
+            try:
+                log_file.close()
+            except OSError as exc:
+                _stderr(f"log close failed ({exc})")
     summary = {
         "verdict": result.verdict.action,
         "reason": result.verdict.reason,
@@ -362,8 +460,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "max_sample_gap_s": round(result.max_gap_s, 4),
         "elapsed_s": round(result.elapsed_s, 3),
         "killed_pids": result.killed,
+        "kill_errors": result.kill_errors,
     }
     print("footprint_guard: " + json.dumps(summary), file=sys.stderr)
+    if result.kill_errors:
+        return EXIT_KILL_FAILED
     return result.verdict.exit_code
 
 

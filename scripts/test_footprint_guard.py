@@ -236,9 +236,11 @@ class RefusePidTests(unittest.TestCase):
     def test_refuses_init_and_the_guard_itself(self):
         import os
 
-        for pid in (0, 1, os.getpid(), os.getppid()):
+        for pid in (0, 1, os.getpid()):
             with self.assertRaises(guard.Refused):
-                guard._refuse_pid(pid)
+                guard._refuse_pid(pid, os.getpid(), [os.getppid()])
+        with self.assertRaises(guard.Refused):
+            guard._refuse_pid(os.getppid(), os.getpid(), [os.getppid()])
 
 
 @unittest.skipUnless(sys.platform == "darwin", "needs macOS proc_pid_rusage")
@@ -292,3 +294,161 @@ class DarwinIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AncestorTests(unittest.TestCase):
+    """The guard must never kill itself or a process it runs under."""
+
+    CHAIN = {100: 50, 50: 10, 10: 1, 1: 0}
+
+    def test_ancestor_chain_walks_up_to_init(self):
+        self.assertEqual(guard.ancestors_of(100, self.CHAIN.get), [50, 10, 1])
+
+    def test_ancestor_chain_stops_on_a_cycle_or_a_missing_parent(self):
+        self.assertEqual(guard.ancestors_of(1, {1: 2, 2: 1}.get), [2])
+        self.assertEqual(guard.ancestors_of(5, {}.get), [])
+
+    def test_a_grandparent_is_refused_as_root(self):
+        ancestors = guard.ancestors_of(100, self.CHAIN.get)
+        for pid in (50, 10, 1, 100):
+            with self.assertRaises(guard.Refused, msg=str(pid)):
+                guard._refuse_pid(pid, 100, ancestors)
+        guard._refuse_pid(777, 100, ancestors)  # an unrelated process is allowed
+
+    def test_the_guards_own_pid_is_never_killed_even_if_it_is_in_the_tree(self):
+        killed = []
+        clock = FakeClock()
+        guard.watch(
+            100,
+            guard.Config(),
+            lambda root: sample(30, pids=(100, 555, 101)),
+            killed.append,
+            clock=clock,
+            sleep=clock.sleep,
+            protected=frozenset({555}),
+        )
+        self.assertEqual(killed, [100, 101])
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs macOS")
+    def test_cli_refuses_a_real_grandparent(self):
+        import os
+
+        # sh is the guard's parent. This test process is its grandparent.
+        result = subprocess.run(
+            ["sh", "-c", f'"{sys.executable}" -I "{SCRIPT}" --pid {os.getpid()}; exit $?'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, guard.EXIT_REFUSED, result.stderr)
+        self.assertIn("ancestor", result.stderr)
+
+
+class FailureHandlingTests(unittest.TestCase):
+    """A failed log write or a failed kill must not stop the guard from killing."""
+
+    def run_over_limit(self, kill, log=None, pids=(100, 101, 102)):
+        clock = FakeClock()
+        messages = []
+        result = guard.watch(
+            100,
+            guard.Config(),
+            lambda root: sample(30, pids=pids),
+            kill,
+            clock=clock,
+            sleep=clock.sleep,
+            log=log,
+            report=messages.append,
+        )
+        return result, messages
+
+    def test_a_permission_error_on_one_pid_does_not_stop_the_others(self):
+        killed = []
+
+        def kill(pid):
+            if pid == 100:
+                raise PermissionError(1, "Operation not permitted")
+            killed.append(pid)
+
+        result, messages = self.run_over_limit(kill)
+        self.assertEqual(killed, [101, 102])
+        self.assertEqual(result.killed, [101, 102])
+        self.assertEqual(len(result.kill_errors), 1)
+        self.assertIn("100", result.kill_errors[0])
+        self.assertTrue(any("could not kill 100" in message for message in messages))
+
+    def test_a_log_write_error_does_not_stop_the_kill(self):
+        killed = []
+
+        def full_disk(row):
+            raise OSError(28, "No space left on device")
+
+        result, messages = self.run_over_limit(killed.append, log=full_disk)
+        self.assertEqual(killed, [100, 101, 102])
+        self.assertEqual(result.verdict.exit_code, guard.EXIT_OVER_LIMIT)
+        self.assertTrue(any("log write failed" in message for message in messages))
+
+    def test_a_log_error_is_reported_once_and_watching_continues(self):
+        clock = FakeClock()
+        steps = iter([sample(1), sample(2), sample(3), guard.ProcessGone(100)])
+        calls = []
+
+        def sample_fn(root):
+            step = next(steps)
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        def bad_log(row):
+            calls.append(row)
+            raise OSError(5, "I/O error")
+
+        messages = []
+        result = guard.watch(
+            100, guard.Config(), sample_fn, lambda pid: None,
+            clock=clock, sleep=clock.sleep, log=bad_log, report=messages.append,
+        )
+        self.assertEqual(result.samples, 3)
+        self.assertEqual(len(calls), 1)  # logging is switched off after the first failure
+        self.assertEqual(len([m for m in messages if "log write failed" in m]), 1)
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs macOS")
+    def test_cli_exits_6_when_a_process_could_not_be_killed(self):
+        from unittest import mock
+
+        verdict = guard.Verdict("kill", "footprint over", guard.EXIT_OVER_LIMIT)
+        result = guard.Result(verdict, 1, 0, 0, 0.0, 0.0, [], ["could not kill 4242: denied"])
+        with mock.patch.object(guard, "watch", return_value=result):
+            self.assertEqual(guard.main(["--pid", "99999"]), guard.EXIT_KILL_FAILED)
+
+    def test_cli_refuses_a_log_path_that_cannot_be_opened(self):
+        code = guard.main(["--pid", "99999", "--log", "/nonexistent-dir-for-guard-test/guard.jsonl"])
+        self.assertEqual(code, guard.EXIT_REFUSED)
+
+
+class NonFiniteInputTests(unittest.TestCase):
+    def test_non_finite_or_non_positive_limits_are_refused_with_a_message(self):
+        for text in ("nan", "inf", "-inf", "0", "-1"):
+            with self.assertRaises(guard.Refused, msg=text):
+                guard.gib_to_bytes(float(text))
+
+    def test_cli_refuses_nan_without_a_traceback(self):
+        result = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--pid", "99999", "--limit-gib", "nan"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, guard.EXIT_REFUSED)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("refused", result.stderr)
+
+    def test_a_nan_deadline_is_refused(self):
+        with self.assertRaises(guard.Refused):
+            guard.Config(deadline_s=float("nan")).validate()
+        with self.assertRaises(guard.Refused):
+            guard.Config(deadline_s=float("inf")).validate()
+
+    def test_nan_interval_is_refused(self):
+        with self.assertRaises(guard.Refused):
+            guard.Config(interval_s=float("nan")).validate()
