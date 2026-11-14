@@ -12,6 +12,7 @@ pub mod compose;
 pub mod config;
 pub mod derive_outfits;
 pub mod esm;
+pub mod extensions;
 pub mod integration;
 pub mod lip;
 pub mod lod;
