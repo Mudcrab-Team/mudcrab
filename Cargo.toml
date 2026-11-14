@@ -30,7 +30,7 @@ bevy = { version = "0.19.0", default-features = false, features = [
 
 # Scripting & Database
 mlua = { version = "0.10", features = ["luau", "luau-jit", "vendored"] }
-rusqlite = { version = "0.32", features = ["bundled-full"] }
+rusqlite = { version = "0.41", features = ["bundled-full", "fallible_uint"] }
 rkyv = { version = "0.8.18" }
 memmap2 = "0.9"
 crossbeam-channel = "0.5.16"
@@ -54,6 +54,13 @@ image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile"
 ktx2 = "0.5"
 project-wormhole-nif = { path = "vendor/project-wormhole-nif" }
 project-wormhole-esm = "0.1.0"
+
+# bevy_image 0.19.0 requires zstd ^0.13.3, which carries four RustSec advisories.
+# The vendored copy changes only that requirement to 0.14, so the engine's KTX2
+# decoder shares the fixed zstd with the converter. The advisories and the removal
+# criteria are in vendor/bevy_image/README.mudcrab.md.
+[patch.crates-io]
+bevy_image = { path = "vendor/bevy_image" }
 
 # Workspace profile optimization
 [profile.dev]

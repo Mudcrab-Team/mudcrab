@@ -191,6 +191,9 @@ pub(crate) fn body_compose_inputs(sex: &str) -> [String; 4] {
 /// Versioned default-gait recipe and its canonical raw input contract.
 pub(crate) const DEFAULT_GAIT_RECIPE: &str = "default-gait-v1";
 
+/// Verified cow/chicken idle over the exact standalone body hierarchy.
+pub(crate) const CREATURE_IDLE_RECIPE: &str = "creature-idle-v1";
+
 /// The complete input set shared by gait proof production and reuse validation.
 pub(crate) fn default_gait_inputs(sex: &str, stem: &str) -> [String; 4] {
     let assets = "meshes/actors/character/character assets";
@@ -435,6 +438,9 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "facegen-tint-slot",
     "lighting-type-data",
     "msn-specular-default",
+    "hidden-niavobject-excluded",
+    "nif-root-transform-ignored",
+    "skin-static-fallback",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -549,12 +555,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
+/// These compatibility pairs are limited to metadata adapters 11, 12 and 13; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -569,7 +575,7 @@ pub(crate) fn inhouse_adapter10_reader_identity(
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12 | 13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -577,6 +583,36 @@ pub(crate) fn inhouse_adapter11_reader_identity(
         schemas,
     );
     identity["adapter_version"] = serde_json::json!(11);
+    Some(identity)
+}
+
+/// Adapter 13 adds placed database rows without changing converted asset bytes.
+pub(crate) fn inhouse_adapter12_reader_identity(
+    schemas: &crate::records::addons::RuntimeSchemas,
+    language: &str,
+) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::ADAPTER_VERSION != 13 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_with_schemas_in_language(
+        crate::config::RecordReader::Inhouse,
+        schemas,
+        language,
+    );
+    identity["adapter_version"] = serde_json::json!(12);
+    Some(identity)
+}
+
+/// Legacy projection 5 changes database placement coverage, not the version-4 asset proof.
+pub(crate) fn legacy_projection4_reader_identity(language: &str) -> Option<serde_json::Value> {
+    if crate::esm::inhouse::LEGACY_PROJECTION_VERSION != 5 {
+        return None;
+    }
+    let mut identity = crate::esm::inhouse::reader_identity_in_language(
+        crate::config::RecordReader::Legacy,
+        language,
+    );
+    identity["projection_version"] = serde_json::json!(4);
     Some(identity)
 }
 
@@ -1250,9 +1286,15 @@ pub(crate) fn retained_configuration_matches_for_reader(
         && [
             inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
             inhouse_adapter11_reader_identity(config.schemas()?.as_ref()),
+            inhouse_adapter12_reader_identity(config.schemas()?.as_ref(), &config.language),
         ]
         .iter()
         .any(|prior| prior.as_ref() == Some(identity))
+    {
+        return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
+    }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && legacy_projection4_reader_identity(&config.language).as_ref() == Some(identity)
     {
         return Ok(recorded == configuration_hash_with_identity(config, schema, Some(identity))?);
     }
@@ -1898,12 +1940,91 @@ mod tests {
         }
     }
 
+    /// A metadata-only version change preserves exact legacy asset proofs, including locale.
+    #[test]
+    fn projection4_asset_proofs_keep_their_language_and_exact_settings() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Legacy;
+        config.language = "french".into();
+        let original = legacy_projection4_reader_identity(&config.language).unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+        let mut changed = config.clone();
+        changed.texture_fallback_quality += 1;
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &changed,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        changed = config.clone();
+        changed.language = "english".into();
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &changed,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        let mut unknown = original;
+        unknown["projection_version"] = serde_json::json!(6);
+        assert!(
+            !retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &unknown
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn adapter12_asset_proof_keeps_non_english_identity() {
+        let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.record_reader = crate::config::RecordReader::Inhouse;
+        config.language = "french".into();
+        let original =
+            inhouse_adapter12_reader_identity(config.schemas().unwrap().as_ref(), &config.language)
+                .unwrap();
+        let recorded =
+            configuration_hash_with_identity(&config, CONVERTER_SCHEMA_VERSION, Some(&original))
+                .unwrap();
+        assert!(
+            retained_configuration_matches_for_reader(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                &recorded,
+                &original
+            )
+            .unwrap()
+        );
+        assert_eq!(original["adapter_version"], 12);
+        assert_ne!(recorded, configuration_hash(&config).unwrap());
+    }
+
     /// Known prior adapter proofs retain asset bytes without accepting unknown readers.
     #[test]
     fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Inhouse;
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
             original["adapter_version"] = serde_json::json!(adapter);
             let recorded = configuration_hash_with_identity(
@@ -1937,7 +2058,7 @@ mod tests {
                 .unwrap()
             );
             let mut changed = config.clone();
-            changed.script_abi_version = 2;
+            changed.script_abi_version += 1;
             assert!(
                 !retained_configuration_matches_for_reader(
                     &changed,
@@ -2051,9 +2172,11 @@ mod tests {
         );
     }
 
+    /// Reconstructs the original ABI-1 proof independently of the current emitter default.
     #[test]
     fn retained_schema15_fixed_zstd_proof_preserves_quality_abi_and_cache_identity() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
+        config.script_abi_version = 1; // Reconstruct the fixed historical ABI-1 proof.
         config.record_reader = crate::config::RecordReader::Legacy;
         // Exact configuration hash in the protected original schema-15
         // manifest and its metadata rebuild's retained producer provenance.
@@ -2069,7 +2192,7 @@ mod tests {
         changed.texture_fallback_quality = 191;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config.clone();
-        changed.script_abi_version = 2;
+        changed.script_abi_version += 1;
         assert!(!retained_configuration_matches(&changed, 15, recorded).unwrap());
         let mut changed = config;
         changed.texture_zstd_level = 7;

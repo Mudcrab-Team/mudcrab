@@ -28,6 +28,7 @@ pub mod load_order;
 pub mod lodsettings;
 pub mod mmap_reader;
 pub mod plugins_txt;
+pub mod projection_omissions;
 pub mod records;
 mod reference_links;
 pub mod rooms;
@@ -207,20 +208,22 @@ impl EsmParser {
     ) -> Result<RecordConversion> {
         let order = load_order::LoadOrder::read(plugin_paths)?;
         let mut master = Self::merge_plugins_with_load_order(plugin_paths, &order)?;
-        let (unresolved, localization_warnings) = legacy_text::resolve_localized_fields(
-            &mut master.records,
-            plugin_paths,
-            &order,
-            string_sources,
-        );
+        let (unresolved, localization_warnings, localization_notices) =
+            legacy_text::resolve_localized_fields(
+                &mut master.records,
+                plugin_paths,
+                &order,
+                string_sources,
+            );
         let conn = Connection::open(db_path)?;
         create_tables(&conn)?;
         exporter::export_plugins_to_db(&conn, &master.records, &order, plugin_paths, &unresolved)?;
 
-        for warning in &localization_warnings {
-            eprintln!("{warning}");
+        for diagnostic in localization_warnings.iter().chain(&localization_notices) {
+            eprintln!("{diagnostic}");
         }
         master.warnings.extend(localization_warnings);
+        master.notices.extend(localization_notices);
         Ok(master)
     }
 
@@ -499,21 +502,26 @@ impl GameSettingIdentities {
 
 /// Required placed base links cannot use the optional field's null/drop policy.
 fn is_required_form_id_subrecord(record_type: &[u8; 4], tag: &[u8]) -> bool {
-    tag == b"NAME"
-        && matches!(
-            record_type,
-            b"REFR"
-                | b"ACHR"
-                | b"ACRE"
-                | b"PGRE"
-                | b"PMIS"
-                | b"PHZD"
-                | b"PARW"
-                | b"PBAR"
-                | b"PBEA"
-                | b"PCON"
-                | b"PFLA"
-        )
+    tag == b"NAME" && is_placed_record_type(record_type)
+}
+
+/// Native records with a placed base and transform. Keep publication, required-link
+/// validation and room membership on the same set; schema coverage is checked in tests.
+pub(crate) fn is_placed_record_type(record_type: &[u8; 4]) -> bool {
+    matches!(
+        record_type,
+        b"REFR"
+            | b"ACHR"
+            | b"ACRE"
+            | b"PGRE"
+            | b"PMIS"
+            | b"PHZD"
+            | b"PARW"
+            | b"PBAR"
+            | b"PBEA"
+            | b"PCON"
+            | b"PFLA"
+    )
 }
 
 /// Explicit offsets for optional scalar, structure and array FormID fields.
@@ -535,20 +543,7 @@ fn form_id_layout(record_type: &[u8; 4], tag: &[u8]) -> Option<FormIdLayout> {
         return None;
     }
     let tag: &[u8; 4] = tag.try_into().ok()?;
-    let placed = matches!(
-        record_type,
-        b"REFR"
-            | b"ACHR"
-            | b"ACRE"
-            | b"PGRE"
-            | b"PMIS"
-            | b"PHZD"
-            | b"PARW"
-            | b"PBAR"
-            | b"PBEA"
-            | b"PCON"
-            | b"PFLA"
-    );
+    let placed = is_placed_record_type(record_type);
     const SINGLE: &[(usize, &[usize])] = &[(4, &[0])];
     Some(match tag {
         // Faction membership: FormID, signed rank byte, then three unused bytes.

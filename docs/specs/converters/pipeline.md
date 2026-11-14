@@ -24,10 +24,11 @@ Both readers retain their terminal diagnostics and return bounded per-plugin
 summaries by severity. `PipelineReport.warnings` contains data-loss summaries:
 malformed records/frames, unusable candidates, cleared optional links, truncated
 light IDs, and in-house decoder/adapter issues such as omitted fields or missing
-localized text. `PipelineReport.notices` contains successful compatibility
-remaps: master indices past a plugin's list treated as the plugin's own, and the
-in-house reader's supplier-self compatibility lines. Counts and first examples
-remain bounded per plugin and kind.
+localized banks or referenced malformed entries. `PipelineReport.notices` contains
+successful compatibility remaps: master indices past a plugin's list treated as
+the plugin's own, and the in-house reader's supplier-self compatibility lines.
+Absent localized keys in readable banks also produce notices. Counts and first
+examples remain bounded per plugin and kind.
 
 The existing completeness rule requires zero skipped asset inputs and no
 warnings. Usable neighboring records still publish, but data-loss warnings mark
@@ -70,7 +71,9 @@ missing IDs yield empty canonical text and retain their original ID, bank,
 winning plugin and status in `inhouse_localized_fields`; nullable runtime name
 columns remain NULL. Missing nonzero keys in readable tables produce counted
 notices; missing or unreadable tables and referenced malformed entries produce
-warnings. A null ID does not require its declared bank. Explicitly resolved
+warnings. Both readers apply this severity policy; the legacy reader resolves
+subrecords whose schema occurrences unambiguously agree on localized type and bank.
+A null ID does not require its declared bank. Explicitly resolved
 empty text remains distinguishable from unresolved text. A selected union or definition leaf's explicit
 bank overrides its parent's bank; an unspecified leaf inherits the parent bank,
 then defaults to STRINGS.
@@ -89,8 +92,9 @@ their original recorded reader configuration. Older unstamped packs and the exac
 they are not identified as a versioned projection. Exact version-1 and version-2
 legacy stamps and full hashes remain recognized as their original retained-asset
 contracts and are not upgraded to the current projection.
-Adapter-12 metadata recognizes the exact adapter-10 and adapter-11 retained-asset contracts
-with matching original schema/add-on bytes, reader fields and combined settings
+Adapter-13 metadata recognizes the exact adapter-10, adapter-11 and adapter-12 retained-asset contracts
+(adapter 13 adds placed database rows only), and legacy projection 5 recognizes the exact projection-4
+contract, with matching original schema/add-on bytes, reader fields and combined settings
 hash. The original reader and asset producer remain recorded across repeated
 metadata rebuilds. The string-table language changes database text only, so a pack
 read in one language is a valid source for a rebuild in another; its proof is
@@ -264,7 +268,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 | :---------------------------- | :------------------------------------------- | :----------------------------------------------------------------- | :------------------------------------- |
 | **`.bsa` / `.ba2`**           | Directory Hierarchy / VFS                    | Extracted compressed virtual filesystem                            | Rust (`flate2`, `lz4_flex`)            |
 | **`.nif`**                    | **`glTF 2.0` (`.glb`)**                      | Standard 3D geometry, mesh hierarchies, PBR materials, skinning    | `nif-parser` ➔ `gltf` crate            |
-| **`.dds` (BC1-BC7)**          | **`KTX2` / Supercompressed Basis Universal** | Fast GPU texture streaming & compressed VRAM footprints            | `image` crate / `basis-universal`      |
+| **`.dds` (BC1-BC7)**          | **`KTX2` / native formats or UASTC**         | Native preservation, BC7 encoding or UASTC fallback                  | `ddsfile` / `intel_tex_2` / `basis-universal` |
 | **`.hkx` (Havok)**            | **glTF Animations & Rapier 3D Colliders**    | Skeletal animation clips & physics collision meshes                | Havok XML exporter / custom parser     |
 | **`.esm` / `.esp`**           | **`SQLite3` / Binary (Bincode / rkyv)**      | High-performance spatial indexing, memory-mapped zero-copy queries | `rusqlite` / `rkyv` / `zerocopy`       |
 | **`.pex` / `.psc` (Papyrus)** | **`Luau` Scripts**                           | High-performance, sandboxed scripting engine                       | `mlua` / Papyrus-to-Luau AST Transpiler |
@@ -288,7 +292,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
 
 ### B. Texture Transcoder (`.dds` ➔ `.ktx2`)
 
-- Converts DirectDraw Surface files into supercompressed **Basis Universal KTX2** textures.
+- Converts DirectDraw Surface files into KTX2 with native payloads, CPU-encoded BC7 or UASTC fallback.
 - Derives sRGB, linear-normal, or linear-data encoding from the texture slot recorded by the
   published GLB/world database; filenames and extensions do not determine color space.
 - Preserves source alpha and authored mip levels, validates the published KTX2 metadata/hash, and
@@ -301,7 +305,7 @@ Creation fallback warnings are typed entries in the report's `selection_warnings
   follow attached ones. This deterministic tie policy has not been established as equivalent
   to every mod manager's archive insertion order. BSA header file-type categories are advisory;
   unknown category bits do not relax layout, count, offset or compression validation.
-- Supports runtime transcoding into WebGPU/Vulkan native compressed formats (BC1/BC7 for Desktop, ASTC/ETC2 for Mobile/Web).
+- Runtime transcoding applies to UASTC outputs only. Native BC and newly encoded BC7 require compatible BC GPU support. GPU encoder selection does not make a pack portable. The [proposed desktop texture contract](../../adr/0014-phase1-desktop-texture-contract.md) records the pending mobile/web scope decision and validation work in [#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 ### C. World & Scene Database (`.esm` ➔ `SQLite3` + `rkyv` Zero-Copy Cache)
 
@@ -343,7 +347,7 @@ that affect that kind's bytes:
 
 | Kind | Settings proof | Source proof |
 | :--- | :--- | :--- |
-| NIF -> GLB | Mesh producer contract | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
+| NIF -> GLB | Mesh producer contract and current mesh output contracts | NIF and available skeleton bytes, plus scoped material-repair revision and source-texture presence |
 | DDS -> KTX2 | Texture producer, fallback quality, UASTC level, Zstd level and CPU/GPU encoder quality | DDS bytes, resolved `TextureEncoding` from the freshly rebuilt database and accepted GLBs, plus the applicable GPU encoding label |
 | PEX -> Luau | Script ABI | PEX bytes; known producer eligibility is checked separately |
 
@@ -364,7 +368,16 @@ physical source paths and unrelated database rows are excluded. Historical v1
 proofs remain eligible for package-snapshot retention.
 `default-gait-v1` consumes the body NIF,
 skeleton NIF, skeleton HKX and the sex-specific gait HKX; it builds its bone tree
-from the NIF inputs. Original asset producer/settings provenance remains on the
+from the NIF inputs. `creature-idle-v1` records the explicit cow and chicken body
+NIF, skeleton NIF, skeleton HKX and `mt_idle.hkx` inputs. `authored-actor-idle-v2`
+records one converted body GLB, the project rig HKX, the source clip HKX and
+`recipes/authored-actor-idle-v2/tree/<sha256>.json`, the digest of that body's
+complete bone tree. Its output path is derived from those inputs without the body
+GLB, so bodies with an identical tree share one clip. `actor-idle-catalog-v1`
+records `recipes/actor-idle-catalog-v1/context.json` for
+`meshes/actor-idles/catalog.json`; the context digest covers every binding's
+inputs, unresolved and excluded bodies, clip issues and discovery issues. See
+[animal idle investigation](../../research/animal-idle-471.md). Original asset producer/settings provenance remains on the
 manifest. Material repair and texture pruning refresh the derived output hash
 to describe the published bytes.
 
@@ -382,6 +395,21 @@ the published output to exist with its recorded size and SHA-256.
 Staging journal entries carry the same per-kind settings proof and also require
 the current producer contract and matching source/output bytes; older journal
 entries carrying a full configuration hash do not acquire a new proof implicitly.
+
+A converter change to mesh bytes that does not advance the producer appends a
+name to `MESH_OUTPUT_CONTRACTS` (`crates/converter/src/cache.rs`). The current
+producer's mesh settings proof includes the list, so a normal conversion and a
+resumed staging run rebuild meshes an earlier converter of the same producer
+wrote, while textures and scripts stay reusable. Every producer-27 manifest
+records per-kind proofs, which arrived with producer 26, so the combined fallback
+below never decides current-producer meshes. The list is cleared when the
+producer advances. `--reuse-assets` retains the source package's mesh bytes
+only when its recorded `nif` proof equals the current list's proof
+(`crates/converter/src/metadata.rs`). A source written before a name was
+appended is rejected with "retained mesh settings predate the current mesh
+output contract", and a normal conversion rebuilds its meshes. The NIF scene-depth
+bound and the unparsable-skin refusal append no name, so the `nif` proof is unchanged
+and `--reuse-assets` behaves as before.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

@@ -334,7 +334,8 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   as `lstring` in every occurrence for that record type, using the same table lookup
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
-  projection, so its reader identity is `projection_version` 4 and includes language/encoding.
+  projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
+  projectile/hazard placement and its base model (#498). The in-house adapter is version 13.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -555,7 +556,8 @@ unchanged.
 
 ### 5. Placed World References (`references`)
 
-Stores 3D positions, rotations, scales, and cell parentage for all placed world objects (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`).
+Stores 3D positions, rotations, scales, and cell parentage for placed world objects (`REFR`,
+`ACHR`, `ACRE`, `PGRE`, `PMIS`, `PHZD`, `PARW`, `PBAR`, `PBEA`, `PCON`, `PFLA`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS "references" (
@@ -625,12 +627,13 @@ CREATE TABLE IF NOT EXISTS statics (
 
 Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
 `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
-`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+skips models under `effects/`, `sky/` or `markers/`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
-models; that is render policy, not data the table lacks. They are additive
+models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
+the base record's `Is Marker` flag controls editor-marker admission. They are additive
 rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
 simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
 table, so their models were already converted. Both record readers produce the same rows.
@@ -640,7 +643,7 @@ table, so their models were already converted. Both record readers produce the s
 What a placed reference is linked to, what activates it, who owns it, how it is locked and
 whether it is a map marker (#269 gap 3). Patrols, idle markers, traps, levers, pressure plates,
 stealing and locked doors need these; before they were only in `references.data`. Written for
-every exported placed reference (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`). Layouts follow xEdit
+every exported placed reference (the eleven source types listed above). Layouts follow xEdit
 4.1.5f (`Core/wbDefinitionsTES5.pas`, `REFR`).
 
 ```sql
@@ -680,8 +683,8 @@ CREATE TABLE IF NOT EXISTS reference_details (           -- one row per referenc
 
 Rules:
 
-- These detail rows are projected from winning source references of types `REFR`, `ACHR`, `ACRE`,
-  `PGRE` and `PMIS`. Target types are field-specific and are not the same set as source types:
+- These detail rows are projected from every winning placed source type listed in §5.
+  Target types are field-specific and are not the same set as source types:
   `XLKR.keyword_id` accepts `KYWD`, `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`,
   `PBAR`, `PBEA`, `PCON` and `PFLA`; `XLKR.linked_ref_id` and `XAPR.parent_ref_id` accept
   `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`, `PBAR`, `PBEA`, `PCON` and `PFLA`.
@@ -1498,10 +1501,40 @@ armor -> every `ARMO/MODL` armature in authored order -> each `ARMA`:
 5. The slot is the armature's biped bit: bit 2 = body, bit 3 = hands, bit 7 = feet (slot number
    minus 30). The resolver reads `ARMA/BOD2` when present and falls back to `ARMA/BODT`, which is
    the field retail Skyrim's `ARMA` records actually carry (the same `u32` slot word at offset 0;
-   `ARMO` is the record with `BOD2`). An armature with neither recognized bit is rejected loudly
+   `ARMO` is the record with `BOD2`). Outside the creature whole-skin exception below, an armature with neither recognized bit is rejected loudly
    with an `unrecognized_slot` diagnostic; a slot is never inferred from the filename.
 6. Paths are deduplicated case-insensitively, and a slot already filled keeps the higher-priority
    armature.
+
+**Creature whole skins.** A non-FaceGen race with an authored project outside the shared
+character project family may store its whole skin in biped slot 30 (`BODT`/`BOD2` bit 0).
+When no ordinary body resolved, exactly one compatible head-slot model becomes the body.
+An ordinary body wins regardless of armature order; multiple distinct candidates remain
+unresolved with `ambiguous_creature_body`. Missing race flags or project metadata do not
+establish this exception. This preserves humanoid and child body selection.
+
+**Authored idle identity.** Every export creates the typed projection below with the other
+runtime tables. Full runtime exports replace its rows in the record transaction; archive-only
+record bundles keep the same empty table, like the other deferred runtime views. Metadata
+rebuilds therefore invalidate retained idle bindings when their race project or skeleton
+changes. The runtime accepts a catalog binding only when this table has a matching row. Older
+databases need no migration to render actors; they have no authenticated generic idle library
+until normal conversion produces one.
+
+```sql
+CREATE TABLE IF NOT EXISTS race_animation_sources (
+    race_id INTEGER NOT NULL,
+    sex TEXT NOT NULL,
+    skeleton_nif TEXT,
+    project_hkx TEXT,
+    PRIMARY KEY (race_id, sex)
+);
+```
+
+The converter follows project/character HKX metadata and publishes pose clips plus
+`meshes/actor-idles/catalog.json`. Runtime lookup requires race, sex, full body path, project,
+and race skeleton identity to agree. See [animal idle investigation](../../research/animal-idle-471.md)
+for discovery, supported playback, provenance, and validation limits.
 
 **Head.** The `RACE/DATA` `facegen_head` flag (bit 1 of the flags word at offset 32) selects the
 FaceGen geometry `meshes/actors/character/facegendata/facegeom/<plugin>/<formid>.nif`, lowercased,
@@ -1530,7 +1563,8 @@ export path has no asset index, so PR-6 validates the path before loading.
 resolution and skin overrides add nine codes: `missing_traits_template`, `deleted_traits_template`,
 `wrong_type_traits_template`, `traits_template_cycle`, `leveled_traits_template`,
 `zero_npc_skin_override`, `missing_npc_skin_override`, `deleted_npc_skin_override`, and
-`wrong_type_npc_skin_override`. A base that reaches head resolution but has no head path also
+`wrong_type_npc_skin_override`. A creature base with more than one slot-30 whole-skin candidate
+and no normal body records `ambiguous_creature_body`. A base that reaches head resolution but has no head path also
 records `no_facegen_and_no_default`; early returns for unresolved Traits, missing race links, or
 missing race records do not. The reasons are not mutually exclusive, and a report that counts
 them counts a base once per reason.
@@ -1553,3 +1587,52 @@ tables empty. `NPC_` bases are never written into `statics`.
 **These tables are optional and do not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`** (still 9):
 they only add tables, and consumers must check that they exist before reading them. No mandatory
 join is added to `REFERENCE_JOIN`; a database without them still opens and renders statics.
+### 19. Projection Omissions (`projection_omission_stats`, `projection_omission_samples`)
+
+The light and emittance projections write no row for a record whose data cannot supply one. Each
+skip is counted under a stable category, so the conversion report can account for it instead of
+a terminal message alone (#297). The categories come from `insert_light` and
+`insert_emittance_sources` in `crates/converter/src/esm/exporter.rs`; the code is
+`crates/converter/src/esm/projection_omissions.rs`.
+
+```sql
+CREATE TABLE IF NOT EXISTS projection_omission_stats (   -- one row per category with omissions
+    category TEXT PRIMARY KEY,     -- stable name, see the table below
+    severity TEXT NOT NULL,        -- 'data_loss' or 'fallback'
+    count INTEGER NOT NULL         -- exact number of records left out
+);
+CREATE TABLE IF NOT EXISTS projection_omission_samples ( -- the lowest FormIDs, at most 8 per category
+    category TEXT NOT NULL,
+    form_id INTEGER NOT NULL,      -- the LIGH, or the XEMI target
+    reason TEXT NOT NULL,          -- human-readable detail, e.g. the DATA length
+    PRIMARY KEY (category, form_id)
+) WITHOUT ROWID;
+```
+
+| Category | Record left out | Severity |
+|---|---|---|
+| `light_missing_data` | `LIGH` without `DATA`: no `lights` row | data loss |
+| `light_short_data` | `LIGH` whose `DATA` is shorter than the 20 bytes the row needs: no `lights` row | data loss |
+| `emittance_target_absent` | `XEMI` target not in the load order, or deleted: no `emittance` row | fallback |
+| `emittance_light_unusable_data` | `XEMI` target `LIGH` without a usable `DATA`: no `emittance` row | fallback |
+| `emittance_region_no_weather` | `XEMI` target `REGN` whose `RDWT` names no weather: no `emittance` row | fallback |
+| `emittance_weather_no_lighting` | `XEMI` target `REGN` whose weather has no Effect Lighting colours: no `emittance` row | fallback |
+| `emittance_target_wrong_type` | `XEMI` target that is neither a `LIGH` nor a `REGN`: no `emittance` row | fallback |
+
+**Severity.** A light without a `lights` row loses a light the runtime would draw, so a
+`data_loss` category adds one line to the conversion's `warnings` and makes the output
+incomplete. A reference whose emittance target does not resolve keeps the model's own emission
+(section 16), the documented fallback, so a `fallback` category adds one line to `notices` and the
+output stays complete. A severity the reader does not know is read as `data_loss`, so a category
+added by a newer converter cannot pass as success.
+
+A full load-order export clears and rewrites both tables inside its transaction, so a re-export
+replaces the counts instead of adding to them, and a repaired load order leaves the tables empty.
+The movement-annotation subset export leaves them alone, and a diagnostic archive leaves them
+empty. `finalize_world_database` reads them into `projection_omissions` in
+`integration-report.json`, so a metadata rebuild or a reused database reports the same
+omissions. A database without the tables reports none.
+
+**These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
+add tables, `create_tables` adds them to an older reused database, and the engine does not read
+them.

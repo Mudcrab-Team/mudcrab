@@ -140,6 +140,17 @@ pub struct LegacySkin<'a> {
     pub joint_override: Option<[u8; 4]>,
 }
 
+/// The root `BSFadeNode`'s own local transform. Retail meshes such as
+/// `clutter/counterset/countercornerin01.nif` author one; Skyrim replaces it with the placing
+/// reference's transform.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RootTransform {
+    pub translation: [f32; 3],
+    /// Row-major, as the file stores it.
+    pub rotation: [f32; 9],
+    pub scale: f32,
+}
+
 /// Generates a minimal static NIF containing one triangle mesh.
 pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
     static_shape_with_colors(shape, &[])
@@ -147,7 +158,7 @@ pub fn static_shape(shape: &StaticShape<'_>) -> Result<Vec<u8>> {
 
 /// Generates a static NIF with authored RGBA vertex data and both color flags enabled.
 pub fn static_shape_with_colors(shape: &StaticShape<'_>, colors: &[[u8; 4]]) -> Result<Vec<u8>> {
-    build_static_shape(shape, colors, &[])
+    build_static_shape(shape, colors, &[], None)
 }
 
 /// Like [`static_shape`], plus one collision body per entry. Each body hangs off its own
@@ -157,7 +168,16 @@ pub fn static_shape_with_bodies(
     shape: &StaticShape<'_>,
     bodies: &[BoxBody<'_>],
 ) -> Result<Vec<u8>> {
-    build_static_shape(shape, &[], bodies)
+    build_static_shape(shape, &[], bodies, None)
+}
+
+/// Like [`static_shape_with_bodies`], with `root` as the root node's local transform.
+pub fn static_shape_with_root_transform(
+    shape: &StaticShape<'_>,
+    bodies: &[BoxBody<'_>],
+    root: RootTransform,
+) -> Result<Vec<u8>> {
+    build_static_shape(shape, &[], bodies, Some(root))
 }
 
 /// How a legacy skin fixture supplies its shading normals.
@@ -972,6 +992,7 @@ fn build_static_shape(
     shape: &StaticShape<'_>,
     colors: &[[u8; 4]],
     bodies: &[BoxBody<'_>],
+    root: Option<RootTransform>,
 ) -> Result<Vec<u8>> {
     validate(shape)?;
     ensure!(
@@ -986,8 +1007,12 @@ fn build_static_shape(
     let first_body_block = 4_u32;
     let mut children = vec![1_u32];
     children.extend((0..bodies.len()).map(|i| first_body_block + 4 * i as u32));
+    let mut root_node = fade_node(&children);
+    if let Some(root) = root {
+        set_av_transform(&mut root_node, root);
+    }
     let mut blocks = vec![
-        fade_node(&children),
+        root_node,
         triangle_shape(shape, colors)?,
         lighting_shader_property(!colors.is_empty(), 3),
         texture_set(shape)?,
@@ -1394,6 +1419,20 @@ fn push_av_object_with(out: &mut Vec<u8>, name: u32, collision_object: u32) {
     }
     out.extend_from_slice(&1.0f32.to_le_bytes());
     push_u32(out, collision_object);
+}
+
+/// Overwrites the transform [`push_av_object_with`] wrote at the start of `block`: translation,
+/// rotation and scale follow the name, extra data, controller and flags words.
+fn set_av_transform(block: &mut [u8], transform: RootTransform) {
+    let values = transform
+        .translation
+        .into_iter()
+        .chain(transform.rotation)
+        .chain([transform.scale]);
+    for (index, value) in values.enumerate() {
+        let offset = 16 + 4 * index;
+        block[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
 }
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {

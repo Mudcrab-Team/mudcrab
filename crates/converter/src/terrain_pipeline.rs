@@ -46,6 +46,9 @@
 //! converted leaves entry 0 the generated white texture, and the report names that fallback
 //! instead of a texture the run did not use. Entry 0's LTEX label is the lowest LTEX FormID whose
 //! texture set names the resolved diffuse, or 0 when no LTEX names it.
+//!
+//! [`TerrainDefaultDiffuse`] resolves the same default for the LOD bake, so the ground keeps its
+//! colour across the LOD switch distance.
 
 use crate::{
     asset_path::{AssetKind, canonical_asset_path},
@@ -144,6 +147,48 @@ impl TerrainOptions {
             allow_downscale: config.terrain_allow_downscale,
         }
     }
+}
+
+/// Where entry 0's diffuse comes from, for the LOD bake (`crate::pipeline::compile_lod_chunks`).
+/// It reads the same setting and the same [`landscape_defaults`] as the merged-terrain arrays
+/// ([`run_merged_terrain_stage`]), so a quadrant with no `BTXT` (or a null one) is painted the
+/// same texture on both sides of the LOD switch distance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerrainDefaultDiffuse {
+    /// The generated white diffuse: `TerrainDefaultTexture::White`, the default.
+    GeneratedWhite,
+    /// The DDS a `skyrim-ini` conversion selected, as a canonical Bethesda path relative to the
+    /// converted output root: `vfs/<path>` holds the source.
+    Image(String),
+}
+
+impl TerrainDefaultDiffuse {
+    /// The default `options` select. `Err` is a configured Skyrim.ini that cannot be read (named
+    /// in the error, as the merged stage reports it). A selected diffuse that cannot be a texture
+    /// path falls back to the generated white one with its reason, which entry 0 does too.
+    pub(crate) fn resolve(options: &TerrainOptions) -> Result<(Self, Option<String>)> {
+        if options.default_texture == TerrainDefaultTexture::White {
+            return Ok((Self::GeneratedWhite, None));
+        }
+        let defaults = landscape_defaults(options.terrain_ini.as_deref())?;
+        Ok(
+            match canonical_asset_path(&defaults.diffuse, AssetKind::Texture, "dds") {
+                Ok(diffuse) => (Self::Image(diffuse), None),
+                Err(error) => (
+                    Self::GeneratedWhite,
+                    Some(format!(
+                        "the default land texture cannot be resolved: {error:#}"
+                    )),
+                ),
+            },
+        )
+    }
+}
+
+/// The built-in `[Landscape]` default diffuse of Skyrim: what a `skyrim-ini` conversion names when
+/// it has no Skyrim.ini, or the ini names no diffuse.
+pub(crate) fn builtin_default_diffuse() -> Result<String> {
+    canonical_asset_path(DIRT02_DIFFUSE, AssetKind::Texture, "dds")
 }
 
 /// The master lists of a load order, by priority slot (`LoadOrder::metadata[slot].masters`).
@@ -1455,6 +1500,72 @@ mod tests {
             settings.terrain_ini_sha256.as_deref(),
             Some(recorded.as_str())
         );
+    }
+
+    /// The default both painters read: entry 0 under `white` is the generated texture (no file to
+    /// read), under `skyrim-ini` it is the DDS the ini names — or the built-in Dirt02 when it names
+    /// none — and a diffuse that cannot be a texture path falls back to the generated white one
+    /// with its reason instead of stopping the run.
+    #[test]
+    fn the_default_diffuse_is_resolved_from_the_conversion_settings() {
+        let white = TerrainOptions {
+            default_texture: TerrainDefaultTexture::White,
+            ..TerrainOptions::default()
+        };
+        assert_eq!(
+            TerrainDefaultDiffuse::resolve(&white).unwrap(),
+            (TerrainDefaultDiffuse::GeneratedWhite, None)
+        );
+
+        let built_in = TerrainOptions {
+            default_texture: TerrainDefaultTexture::SkyrimIni,
+            ..TerrainOptions::default()
+        };
+        assert_eq!(
+            TerrainDefaultDiffuse::resolve(&built_in).unwrap(),
+            (
+                TerrainDefaultDiffuse::Image(builtin_default_diffuse().unwrap()),
+                None
+            )
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Skyrim.ini");
+        fs::write(
+            &ini,
+            b"[Landscape]\nsDefaultLandDiffuseTexture=textures\\landscape\\Rock.dds\n\
+              sDefaultLandNormalTexture=textures\\landscape\\Rock_N.dds\n",
+        )
+        .unwrap();
+        let configured = TerrainOptions {
+            default_texture: TerrainDefaultTexture::SkyrimIni,
+            terrain_ini: Some(ini.clone()),
+            ..TerrainOptions::default()
+        };
+        assert_eq!(
+            TerrainDefaultDiffuse::resolve(&configured).unwrap(),
+            (
+                TerrainDefaultDiffuse::Image("textures/landscape/rock.dds".into()),
+                None
+            )
+        );
+
+        // A path that cannot be a texture path leaves entry 0 the generated white texture.
+        fs::write(
+            &ini,
+            "[Landscape]\nsDefaultLandDiffuseTexture=../outside.dds\n",
+        )
+        .unwrap();
+        let (resolved, reason) = TerrainDefaultDiffuse::resolve(&configured).unwrap();
+        assert_eq!(resolved, TerrainDefaultDiffuse::GeneratedWhite);
+        let reason = reason.expect("the fallback is named");
+        assert!(reason.contains("../outside.dds"), "{reason}");
+
+        // A configured ini that cannot be read is a configuration error, not a silent fallback.
+        fs::remove_file(&ini).unwrap();
+        let error =
+            TerrainDefaultDiffuse::resolve(&configured).expect_err("an unreadable ini is an error");
+        assert!(format!("{error:#}").contains("Skyrim.ini"), "{error:#}");
     }
 
     /// A skipped default normal map does not turn the default albedo into the white texture in the

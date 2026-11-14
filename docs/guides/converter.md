@@ -22,6 +22,13 @@ cargo run --release -p converter --bin converter -- "<Skyrim Data>" "<output dir
 ```
 
 The output directory defaults to `modern_assets`, which is also where the engine looks by default.
+Conversion continues past inaccessible source subfolders and failed loose inputs, recording skipped
+inputs in the manifest and leaving the pack incomplete. `--fail-fast` stops at the first such error.
+If an inaccessible source subfolder would replace a complete pack with an incomplete one, the run
+stops before any conversion work. It names the unreadable paths and leaves the previous pack as it
+is. Fix the permissions and run again, or convert to a different output folder.
+An unusable previous manifest triggers a rebuild without reusing that pack's assets; successful
+publication preserves the original pack in a sibling backup directory named in the run's notices.
 Check an existing pack with:
 
 ```bash
@@ -79,6 +86,11 @@ Measured by the encoder's author on a full Skyrim SE conversion (Ryzen 5 5600G, 
 The CPU timings were measured before the CPU path wrote native BC for uncompressed textures (as of #119); they describe UASTC encoding on the CPU.
 
 On the author's 20 sample textures, quality was about 0.3–0.5 dB PSNR below the CPU encoder's UASTC level 2, both after BC7 transcoding (desktop) and as ASTC (mobile). The comparison tool is not part of this repository, so treat these figures as indicative.
+
+Those samples do not demonstrate mobile/browser pack loading. Native BC still bypasses GPU
+encoding, and CPU fallback can emit BC7. See the [desktop texture contract and proposed
+portable-output deferral](../adr/0014-phase1-desktop-texture-contract.md), pending approval in
+[#274](https://github.com/Mudcrab-Team/mudcrab/issues/274).
 
 - `--gpu-quality N` — endpoint refinement passes, 0–8 (default 2).
 - `--gpu-batch-mb N` — source megabytes packed into one GPU dispatch (default 256).
