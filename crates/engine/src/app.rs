@@ -2,6 +2,7 @@ use crate::{
     color_pipeline::{SceneGradeSource, SkyrimCinematicPostPlugin},
     config::{EngineConfig, MAX_IO_THREADS},
     console::{ConsolePlugin, console_closed},
+    extensions::{open_features, read_data_extensions},
     metrics::AcceptanceMetricsPlugin,
     physics::{MovementTuning, PhysicsFixturePlugin, WorldPlayerPlugin},
     profiling::{ProfilingPlugin, ProfilingState},
@@ -162,10 +163,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| crate::settings::prepare_settings(&mut config));
     // A saved profile can disagree with an explicit launch option the parser already accepted.
     config.check_visual_profile()?;
-    info!(
-        profile = config.visual_profile.name(),
-        "visual profile active; changing it requires a restart"
-    );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
     config
@@ -257,18 +254,26 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let mut route_ground = None;
     let runtime_data = if config.streaming_fixture {
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
-            InitialCameraGroundHeight(0.0),
-            None,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?,
+                InitialCameraGroundHeight(0.0),
+                None,
+            ),
+            extensions,
+            notices,
         ))
     } else if !config.loads_world() {
         None
     } else {
         validate_runtime_assets(&config)?;
         let database_path = config.assets_dir.join("skyrim_world.db");
+        let (extensions, notices, database_features) =
+            open_features(read_data_extensions(&config.assets_dir)?);
         let cache = CellCache::open(&config.assets_dir.join("cell_cache.rkyv"))?;
         let ground_height = initial_camera_ground_height(&config, &database_path, &cache)?;
         let spawn_ground_height = if interactive_world_physics {
@@ -290,11 +295,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             )?);
         }
         Some((
-            WorldDatabase::open(&database_path)?,
-            AssetCatalog::open(&database_path)?,
-            cache,
-            InitialCameraGroundHeight(ground_height),
-            spawn_ground_height,
+            (
+                WorldDatabase::open_with(&database_path, database_features)?,
+                AssetCatalog::open(&database_path)?,
+                cache,
+                InitialCameraGroundHeight(ground_height),
+                spawn_ground_height,
+            ),
+            extensions,
+            notices,
         ))
     };
     // Authored lighting, weather, climate and image space, when the database has them (#269).
@@ -377,6 +386,11 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    // Capability state must exist before any renderer plugin builds.
+    let runtime_data = runtime_data.map(|(runtime_data, extensions, notices)| {
+        app.insert_resource(extensions).insert_resource(notices);
+        runtime_data
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -404,6 +418,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     // The run fingerprint is measurement data: an ordinary play session neither builds one nor
     // pays for the startup system that reads it.
     let records_measurements = crate::fingerprint::records_measurements(&config);
+    let visual_profile = config.visual_profile;
     app.insert_resource(config.visual_profile)
         .insert_resource(config.color_grade)
         .insert_resource(config.visual_preset)
@@ -431,6 +446,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
                     ..default()
                 }),
         )
+        .add_plugins(crate::raw_texel::RawTexelPlugin {
+            profile: visual_profile,
+        })
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             LogDiagnosticsPlugin {
@@ -467,6 +485,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_animation::ActorAnimationPlugin)
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
+        .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
@@ -477,6 +496,8 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     }
     if interactive_world_physics {
         app.add_plugins(crate::settings_ui::SettingsPlugin);
+    } else {
+        app.add_plugins(crate::settings::RenderSettingsPlugin);
     }
     add_camera_and_capture_systems(&mut app);
     if let Some(terrain_merge) = terrain_merge {
@@ -485,6 +506,15 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if records_measurements {
         app.add_plugins(crate::fingerprint::RunFingerprintPlugin);
     }
+    info!(
+        profile = visual_profile.name(),
+        colour_textures = if visual_profile.decodes_colour_srgb() {
+            "sRGB"
+        } else {
+            "raw UNORM"
+        },
+        "visual profile active; changing it requires a restart"
+    );
     if app
         .world()
         .resource::<EngineConfig>()
@@ -1298,6 +1328,7 @@ fn setup_material_fixture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
 ) {
     commands.init_resource::<CanonicalMaterialFixtureState>();
     let checker = images.add(fixture_image(
@@ -1307,7 +1338,7 @@ fn setup_material_fixture(
                 [78, 166, 88, alpha]
             })
             .collect(),
-        true,
+        profile.decodes_colour_srgb(),
     ));
     let normal = images.add(fixture_image(
         (0..16).flat_map(|_| [128, 128, 255, 255]).collect(),
@@ -1404,6 +1435,7 @@ fn validate_material_fixture(
     query: Query<(&CanonicalMaterialKind, &MeshMaterial3d<StandardMaterial>)>,
     materials: Res<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
+    profile: Res<crate::visual_profile::VisualProfile>,
     mut state: ResMut<CanonicalMaterialFixtureState>,
     mut metrics: ResMut<StreamingMetrics>,
     mut profiler: ResMut<ProfilingState>,
@@ -1444,7 +1476,7 @@ fn validate_material_fixture(
                     }
                     _ => Ok(()),
                 }?;
-                validate_standard_material(material, &images)
+                validate_standard_material(material, &images, profile.decodes_colour_srgb())
             });
         match result {
             Ok(count) => validated_images += count,
@@ -3660,6 +3692,39 @@ mod tests {
         assert!(error.contains("at most 64 threads"), "{error}");
     }
 
+    /// Uses the real startup system, so the texture it adds is the one the validator will see.
+    #[test]
+    fn the_material_fixture_builds_its_colour_checker_in_the_profile_space() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for (profile, expected) in [
+            (
+                crate::visual_profile::VisualProfile::Mudcrab,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            ),
+            (
+                crate::visual_profile::VisualProfile::Skyrim,
+                bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+            ),
+        ] {
+            let mut app = App::new();
+            app.init_resource::<Assets<Image>>()
+                .init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .insert_resource(profile);
+            app.world_mut()
+                .run_system_once(setup_material_fixture)
+                .unwrap();
+            let images = app.world().resource::<Assets<Image>>();
+            assert!(
+                images
+                    .iter()
+                    .any(|(_, image)| image.texture_descriptor.format == expected),
+                "no {expected:?} image under {profile:?}"
+            );
+        }
+    }
+
     /// Uses real loaders with a generated external normal image, without game assets or a GPU.
     fn world_normal_loader_fixture(wrap_s: u32, wrap_t: u32) -> (tempfile::TempDir, App) {
         use bevy::{
@@ -4015,6 +4080,7 @@ mod tests {
         .insert_resource(WaterReflectionTexture(Handle::<Image>::default()))
         .init_resource::<ProfilingState>()
         .init_resource::<StreamingFixtureState>()
+        .init_resource::<crate::visual_profile::VisualProfile>()
         .add_plugins(StreamingPlugin)
         .add_systems(
             PreUpdate,
@@ -4746,6 +4812,7 @@ mod tests {
     fn v1_world_and_visual_fixture_cameras_have_explicit_hdr_output() {
         let mut app = App::new();
         app.insert_resource(EngineConfig::default())
+            .init_resource::<crate::visual_profile::VisualProfile>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<Image>>()
             .init_resource::<Assets<StandardMaterial>>()

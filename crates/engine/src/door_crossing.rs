@@ -1752,6 +1752,7 @@ mod tests {
                     true,
                     true,
                     1.0,
+                    false,
                 ),
             });
         let mesh = app
