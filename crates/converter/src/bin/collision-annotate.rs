@@ -5,11 +5,13 @@ use color_eyre::{
 };
 use converter::mesh::MeshConverter;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 
+/// Annotates usable models and records per-model failures before returning incomplete status.
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
@@ -31,6 +33,7 @@ fn main() -> Result<()> {
     let mut authored = 0usize;
     let mut absent = 0usize;
     let mut unsupported = 0usize;
+    let mut failures = BTreeMap::new();
     for entry in WalkDir::new(&glb_root).follow_links(false) {
         let entry = entry?;
         if !entry.file_type().is_file() || entry.path().extension().is_none_or(|ext| ext != "glb") {
@@ -38,17 +41,25 @@ fn main() -> Result<()> {
         }
         let relative = entry.path().strip_prefix(&glb_root)?;
         let source = nif_root.join(relative).with_extension("nif");
-        ensure!(
-            source.is_file(),
-            "NIF source missing for {}",
-            relative.display()
-        );
+        if !source.is_file() {
+            record_failure(&mut failures, relative, "NIF source missing");
+            continue;
+        }
         let output = output_root.join(relative);
         fs::create_dir_all(output.parent().unwrap_or(Path::new(".")))?;
         fs::copy(entry.path(), &output)
             .wrap_err_with(|| format!("copying {}", relative.display()))?;
-        let collision = MeshConverter::annotate_glb_collision(&source, &output)
-            .wrap_err_with(|| format!("extracting collision from {}", relative.display()))?;
+        let collision = match MeshConverter::annotate_glb_collision(&source, &output) {
+            Ok(collision) => collision,
+            Err(error) => {
+                // This copy has no valid annotation. Cleanup failure is an output
+                // integrity error; a bad source model is a recorded asset failure.
+                fs::remove_file(&output)
+                    .wrap_err_with(|| format!("removing failed annotation {}", output.display()))?;
+                record_failure(&mut failures, relative, &format!("{error:#}"));
+                continue;
+            }
+        };
         models += 1;
         if !collision.shapes.is_empty() {
             authored += 1;
@@ -61,8 +72,34 @@ fn main() -> Result<()> {
             eprintln!("{}: {}", relative.display(), collision.skipped.join("; "));
         }
     }
+    fs::create_dir_all(&output_root)?;
+    let report_path = output_root.join("collision-annotation-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "complete": failures.is_empty(), "annotated": models,
+            "authored": authored, "absent": absent, "unsupported": unsupported,
+            "failures": failures,
+        }))?,
+    )?;
     println!(
-        "annotated {models} GLBs: {authored} with collision, {absent} authored absent, {unsupported} unsupported"
+        "annotated {models} GLBs: {authored} with collision, {absent} authored absent, {unsupported} unsupported; {} failed models",
+        failures.len()
+    );
+    // Signal incomplete output after every usable neighbor has been processed.
+    ensure!(
+        failures.is_empty(),
+        "{} model(s) failed; see {}",
+        failures.len(),
+        report_path.display()
     );
     Ok(())
+}
+
+/// Keeps one bounded diagnostic per model in both stderr and the machine-readable report.
+fn record_failure(failures: &mut BTreeMap<String, String>, relative: &Path, error: &str) {
+    let key = relative.to_string_lossy().replace('\\', "/");
+    let message: String = error.chars().take(2048).collect();
+    eprintln!("warning: {key}: {message}");
+    failures.insert(key, message);
 }

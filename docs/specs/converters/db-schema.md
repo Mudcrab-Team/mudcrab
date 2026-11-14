@@ -334,7 +334,8 @@ text uses Windows-1252. Both record readers publish the same UTF-8 text:
   as `lstring` in every occurrence for that record type, using the same table lookup
   (`crates/converter/src/esm/legacy_text.rs`). That covers `FULL` on every record type, and
   `DESC`, `RNAM` and others where the subrecord is unambiguous. This changed the legacy
-  projection, so its reader identity is `projection_version` 4 and includes language/encoding.
+  projection; version 4 introduced language/encoding. Version 5 also publishes every schema-declared
+  projectile/hazard placement and its base model (#498). The in-house adapter is version 13.
   Version-3 retained proofs are accepted only for their historical English setting; all older
   metadata rebuilds use the configured language. Retained assets keep their independent proof.
 
@@ -555,7 +556,8 @@ unchanged.
 
 ### 5. Placed World References (`references`)
 
-Stores 3D positions, rotations, scales, and cell parentage for all placed world objects (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`).
+Stores 3D positions, rotations, scales, and cell parentage for placed world objects (`REFR`,
+`ACHR`, `ACRE`, `PGRE`, `PMIS`, `PHZD`, `PARW`, `PBAR`, `PBEA`, `PCON`, `PFLA`).
 
 ```sql
 CREATE TABLE IF NOT EXISTS "references" (
@@ -625,12 +627,13 @@ CREATE TABLE IF NOT EXISTS statics (
 
 Rows come from every placeable base type with a world model: `STAT`, `MSTT`, `FURN`, `TREE`,
 `FLOR`, `CONT`, `DOOR`, `ACTI`, `TACT`, `WEAP`, `MISC`, `BOOK`, `AMMO`, `ALCH`, `INGR`, `SLGM`,
-`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, and `LIGH` when it has a model. `TACT`
+`KEYM`, `SCRL`, `ARMO`, `APPA`, `ADDN`, `ARTO`, `PROJ`, `HAZD`, and `LIGH` when it has a model. `TACT`
 (talking activators), `APPA` (apparatus), `ADDN` (addon nodes) and `ARTO` (art objects) were
 added for #269; before that their references had no row and did not render. The engine still
-skips models under `effects/`, `sky/` or `markers/` and files named `*marker*`
+skips models under `effects/`, `sky/` or `markers/`
 (`converted_model_path` in `crates/engine/src/streaming.rs`), which covers many `ADDN` and `ARTO`
-models; that is render policy, not data the table lacks. They are additive
+models; that is render policy, not data the table lacks. Marker filenames alone are not excluded:
+the base record's `Is Marker` flag controls editor-marker admission. They are additive
 rows, so no `shared::WORLD_DATABASE_SCHEMA_VERSION` bump: an older database keeps loading and
 simply lacks them until reconverted. Mesh conversion discovers NIF inputs independently of this
 table, so their models were already converted. Both record readers produce the same rows.
@@ -640,7 +643,7 @@ table, so their models were already converted. Both record readers produce the s
 What a placed reference is linked to, what activates it, who owns it, how it is locked and
 whether it is a map marker (#269 gap 3). Patrols, idle markers, traps, levers, pressure plates,
 stealing and locked doors need these; before they were only in `references.data`. Written for
-every exported placed reference (`REFR`, `ACHR`, `ACRE`, `PGRE`, `PMIS`). Layouts follow xEdit
+every exported placed reference (the eleven source types listed above). Layouts follow xEdit
 4.1.5f (`Core/wbDefinitionsTES5.pas`, `REFR`).
 
 ```sql
@@ -680,8 +683,8 @@ CREATE TABLE IF NOT EXISTS reference_details (           -- one row per referenc
 
 Rules:
 
-- These detail rows are projected from winning source references of types `REFR`, `ACHR`, `ACRE`,
-  `PGRE` and `PMIS`. Target types are field-specific and are not the same set as source types:
+- These detail rows are projected from every winning placed source type listed in §5.
+  Target types are field-specific and are not the same set as source types:
   `XLKR.keyword_id` accepts `KYWD`, `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`,
   `PBAR`, `PBEA`, `PCON` and `PFLA`; `XLKR.linked_ref_id` and `XAPR.parent_ref_id` accept
   `PLYR`, `ACHR`, `REFR`, `PGRE`, `PHZD`, `PMIS`, `PARW`, `PBAR`, `PBEA`, `PCON` and `PFLA`.
