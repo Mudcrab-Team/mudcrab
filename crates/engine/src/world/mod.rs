@@ -6,3 +6,4 @@ mod enable_state;
 pub mod environment;
 pub mod grass_cache;
 pub mod imagespace;
+pub mod water;

@@ -217,3 +217,17 @@ Elevated surfaces above that band release their mask samples; grounded parts of
 the same model still block. Tall aquatic grass is outside that measured envelope.
 The dependency discriminator invalidates warm masks. This policy is prepared
 separately pending visual acceptance; it is not a category/model denylist.
+
+Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
+bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
+The producer version advances from 8 to 9 for this placement policy; older masks
+are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
+Model changes between fingerprinting and decoding abort publication with retry
+advice, rather than publishing a mask under a stale content key. Full conversion
+checks cancellation between references, cells and quadrants.
+
+The grass archive is recorded as `derived/grass-cache` in manifest entries, with
+its size and SHA-256, so quick/full checks detect removal and full checks detect
+byte changes. Metadata rebuild regenerates this entry after baking. Packed
+NormalLinear DDS sources carry `lossless-rgba8-v1` in their individual source
+proofs; other texture source and kind proofs remain unchanged.

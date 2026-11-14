@@ -997,7 +997,8 @@ async fn native_pre_producer_28_configuration_is_rejected_not_relabeled() {
     let output = directory.path().join("derived");
     generate(&data);
     convert(&data, &source).await;
-    let config = common::cpu_lod_config(&data, &output);
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.script_abi_version = 1; // The literal schema-16 producer proof predates ABI 2.
     let producer_hash = native_configuration_hash(&config, 6);
     assert_eq!(
         producer_hash,
@@ -1184,7 +1185,14 @@ async fn metadata_rebuild_of_current_source_keeps_meshes_as_cache_hits() {
         .map(|archive| archive.files.len())
         .sum::<usize>();
     assert_eq!(report.converted, extracted as u64);
-    assert_eq!(report.cache_hits, retained.entries.len() as u64);
+    assert_eq!(
+        report.cache_hits,
+        retained
+            .entries
+            .values()
+            .filter(|entry| entry.output != "grass_cache.rkyv")
+            .count() as u64
+    );
     assert_eq!(current.retained_mesh_schema_version, None);
 }
 
@@ -1278,7 +1286,12 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
         } else {
             let manifest =
                 ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
-            let asset = &manifest.entries.values().next().unwrap().output;
+            let asset = &manifest
+                .entries
+                .values()
+                .find(|entry| entry.output.starts_with("meshes/"))
+                .unwrap()
+                .output;
             fs::write(source.join(asset), b"corrupt asset").unwrap();
         }
         let error = rebuild(&data, &source, &output)

@@ -218,14 +218,14 @@ fn coverage(alpha:f32,sample_index:u32) -> u32 {
 #else
     // Evaluate derivatives before branching; opaque materials ignore all alpha inputs.
     let width = fwidth(alpha);
-    if grass.height_wind.w < 0.0 { return 15u; }
+    if grass.height_wind.w < 0.0 { return (1u << #{SAMPLES}u) - 1u; }
     let edge = clamp((alpha-grass.height_wind.w)/max(width,0.0001)+0.5,0.0,1.0);
     // Accepted constant interiors, including alpha == cutoff == 1, stay fully covered.
     let interior = select(0.0,1.0,alpha >= grass.height_wind.w);
     let coverage = select(interior,edge,width > 0.0);
-    let count = u32(round(coverage*4.0));
+    let count = u32(round(coverage*f32(#{SAMPLES})));
     if sample_index >= count { discard; }
-    return 15u;
+    return (1u << #{SAMPLES}u) - 1u;
 #endif
 }
 struct Fragment { @location(0) color:vec4<f32>, @builtin(sample_mask) mask:u32 }
@@ -258,11 +258,13 @@ fn directional_shadow(input:Varyings) -> f32 {
 // Native UV-frame decode; normal textures are linear data. The Bevy-compatible
 // frame uses B opposite increasing V; DirectX-tagged maps flip Y once.
 fn tangent_normal(sampled:vec3<f32>, n:vec3<f32>, t:vec3<f32>, b:vec3<f32>) -> vec3<f32> {
-    let v = sampled * 2.0 - vec3(1.0);
+    var v = sampled * 2.0 - vec3(1.0);
+    if grass.normal_params.z != 0.0 { v.z = sqrt(max(0.0,1.0-dot(v.xy,v.xy))); }
     return normalize(t*v.x + b*v.y + n*v.z);
 }
 fn mapped_normal(input:Varyings) -> vec3<f32> {
     var sampled = textureSample(normal_map,normal_sampler,input.uv).rgb;
+    if grass.normal_params.w != 0.0 { sampled = sampled*0.5+vec3(0.5); }
     sampled.y = 0.5 + (sampled.y-0.5)*grass.normal_params.y;
     let n = normalize(input.normal);
     var t = input.tangent.xyz - n*dot(n,input.tangent.xyz);

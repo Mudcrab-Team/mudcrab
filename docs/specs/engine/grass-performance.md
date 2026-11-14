@@ -13,7 +13,7 @@ two blended texture layers, texture alpha cutouts and placed-reference exclusion
 The converted GLB's attached material must use `MASK` with the authored cutoff
 `96 / 255`; the test asserts both before measuring generation.
 The test checks deterministic output, participation of all species, slot ordering,
-16-byte instance layout and bounded output allocation. It reports the median of
+16-byte instance layout and measured peak and scratch Rust heap allocation. It reports the median of
 three generation samples per cell at spacings 64, 32 and the MudCrab default 20
 (4,096, 16,384 and 41,944 candidates). The stress fixture explicitly allows four
 resolved species per texture with configured cap four, exercising the boundary beyond the default cap two.
@@ -29,12 +29,12 @@ with a nonuniform LAND colour ramp, encoded post-jitter sampling and eight speci
 cargo test --locked --release -p engine --lib grass::generation::tests::performance_coloured_terrain_generation -- --ignored --test-threads=1 --nocapture
 ```
 
-It uses the same candidate counts, latency ceilings and allocation bound, and
+It uses the same candidate counts and latency ceilings, checks output size only, and
 charges its retained colour plane separately. It is a synthetic worker test;
 the converted-fixture test above remains the converter integration check.
 Neither test requires a GPU.
 
-The respective 10 ms, 50 ms and 100 ms per-cell ceilings have headroom for shared CI
+The respective 6 ms, 25 ms and 60 ms per-cell ceilings have headroom for shared CI
 runners. They are worker-latency regression limits, not frame-time guarantees.
 Inspect the printed measurements and the runtime profiler on the target machine.
 The fixture does not establish performance for every authored mesh or grass mod.
@@ -76,8 +76,16 @@ outside the source repository. Report backend, GPU/driver, source state, asset
 provenance and remaining limitations alongside measurements. A static capture
 does not establish movement behavior or visual parity with retail Skyrim.
 
-Independent species each have the listed candidate count. The eight-species
-fixture's total output bound is eight times that per-species count; allocation
-remains bounded by 32 bytes per potential instance plus 32 KiB of cell overhead.
-The existing 10/50/100 ms worker ceilings are unchanged. Measured times must come
-from the current release tests, not the earlier shared-population implementation.
+Independent species each have the listed candidate count. The integration binary
+uses a counting global allocator around synchronous generation after conversion
+has completed: peak incremental live heap is limited to 48 bytes per potential
+instance plus 64 KiB; transient heap above retained output is limited to 16 bytes
+per candidate slot plus 64 KiB. This includes Vec growth and scratch, but excludes
+mapped input, native allocations and GPU resources. The library test only checks
+the generator's reported output size (32 bytes per potential instance plus 32 KiB).
+
+Both ignored tests require the actual Cargo OPT_LEVEL to be 3 (including a
+guard against custom profiles with lower optimization). CI runs both with --release. The tighter 6/25/60 ms limits are
+portable regression policy, not a measured Linux baseline or a guarantee that a
+particular slowdown factor fails; runner measurements must be collected before
+claiming that. Determinism covers same-cache replay and byte-identical caches from two independent conversions at CPU/IO job counts 2 and 1.

@@ -755,6 +755,7 @@ async fn rebuild_into(
     manifest.archives.clear();
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
+    crate::cache::record_grass_artifact(&mut manifest, &staging)?;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),
@@ -901,6 +902,14 @@ fn publish_derived_output(
 /// Cleanup subtree recognition is intentionally broader and cannot establish provenance.
 pub(crate) fn supported_derived_proof(path: &str, proof: &crate::cache::DerivedOutput) -> bool {
     let mut inputs = BTreeSet::new();
+    if crate::pipeline::authored_actor_idle::supported_proof(path, proof) {
+        inputs.extend(proof.inputs.keys().cloned());
+    }
+    for profile in shared::creature_idle::CREATURE_IDLES {
+        if path == profile.clip_scene && proof.recipe == crate::cache::CREATURE_IDLE_RECIPE {
+            inputs.extend(profile.inputs().map(str::to_owned));
+        }
+    }
     for sex in ["male", "female"] {
         if path == format!("meshes/actors/character/composed/default/{sex}/body.glb")
             && matches!(
@@ -954,6 +963,10 @@ fn copy_verified_assets(
         .collect();
     let mut expected = BTreeMap::new();
     for entry in manifest.entries.values() {
+        // Grass is regenerated from preserved terrain after model finalization.
+        if entry.output == "grass_cache.rkyv" {
+            continue;
+        }
         let kind = if entry.output.starts_with("meshes/") {
             AssetKind::Mesh
         } else if entry.output.starts_with("textures/") {

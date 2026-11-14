@@ -26,28 +26,37 @@ fn manifest(output: &Path) -> ConversionManifest {
 }
 
 /// Recreate the previous DDS recipe independently, before the lossless normal contract.
-fn previous_texture_proof(config: &PipelineConfig) -> String {
-    let recipe = serde_json::json!({
+fn previous_texture_proof(config: &PipelineConfig, broad_contract: bool) -> String {
+    let mut recipe = serde_json::json!({
         "texture_producer": CONVERTER_SCHEMA_VERSION,
         "texture_etc1s_quality": config.texture_fallback_quality,
         "texture_uastc_level": config.texture_uastc_level,
         "texture_zstd_level": config.texture_zstd_level,
         "texture_encoder": {"mode":"cpu"},
     });
+    if broad_contract {
+        recipe["normal_packed_contract"] = serde_json::json!("lossless-rgba8-v1");
+    }
     hash_bytes(&serde_json::to_vec(&recipe).unwrap())
 }
 
 #[tokio::test]
 async fn warm_packed_normal_rebuilds_old_bc7_and_skips_bad_model() {
-    check_warm_packed_normal(false).await;
+    check_warm_packed_normal(false, false).await;
 }
 
 #[tokio::test]
 async fn combined_proof_rebuilds_old_bc7_and_skips_bad_model() {
-    check_warm_packed_normal(true).await;
+    check_warm_packed_normal(true, false).await;
 }
 
-async fn check_warm_packed_normal(combined_proof: bool) {
+/// Previous G2 packs retain unaffected DDS outputs while packed-normal source recipes migrate.
+#[tokio::test]
+async fn broad_kind_proof_migrates_only_packed_normal_sources() {
+    check_warm_packed_normal(false, true).await;
+}
+
+async fn check_warm_packed_normal(combined_proof: bool, broad_contract: bool) {
     let root = tempfile::tempdir().unwrap();
     let data = root.path().join("Data");
     layout::prepare_directory(&data, false).unwrap();
@@ -104,6 +113,9 @@ async fn check_warm_packed_normal(combined_proof: bool) {
     let mut old_outputs = Vec::new();
     for (key, entry) in &mut saved.entries {
         if key.starts_with(layout::GENERATED_NORMAL_PATH) {
+            entry.source_hash = entry
+                .source_hash
+                .replace(":normal-packed:lossless-rgba8-v1", "");
             fs::write(output.join(&entry.output), &old).unwrap();
             entry.output_size = old.len() as u64;
             entry.output_hash = hash_bytes(&old);
@@ -114,9 +126,10 @@ async fn check_warm_packed_normal(combined_proof: bool) {
         !old_outputs.is_empty(),
         "fixture must carry a normal texture entry"
     );
-    saved
-        .asset_configuration_hashes
-        .insert("dds".into(), previous_texture_proof(&config));
+    saved.asset_configuration_hashes.insert(
+        "dds".into(),
+        previous_texture_proof(&config, broad_contract),
+    );
     if combined_proof {
         // Literal historical recipe: a combined reader proof predates per-kind contracts.
         let mut identity = converter::esm::inhouse::reader_identity(config.record_reader);
@@ -145,6 +158,13 @@ async fn check_warm_packed_normal(combined_proof: bool) {
     );
     let saved = manifest(&output);
     assert!(saved.failures.contains_key("meshes/bad_optional.nif"));
+    if !combined_proof {
+        assert_eq!(
+            report.converted,
+            old_outputs.len() as u64,
+            "only packed normals rebuild; unaffected textures, scripts and meshes must reuse"
+        );
+    }
     assert_eq!(hash_file(&output.join(neighbour)).unwrap(), neighbour_hash);
     for name in old_outputs {
         let bytes = fs::read(output.join(name)).unwrap();

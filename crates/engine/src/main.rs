@@ -23,7 +23,13 @@ fn main() -> color_eyre::Result<()> {
                 println!("{}", serde_json::to_string(&receipt)?);
                 return Ok(());
             }
-            engine::run(*config)
+            match engine::run(*config) {
+                Err(error) if error.downcast_ref::<engine::app::DeviceLost>().is_some() => {
+                    eprintln!("error: {error}");
+                    std::process::exit(i32::from(engine::app::EXIT_DEVICE_LOST));
+                }
+                result => result,
+            }
         }
         Ok(ConfigAction::Help) => {
             print!("{HELP_TEXT}");

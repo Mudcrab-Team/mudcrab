@@ -1964,6 +1964,15 @@ fn validate_ktx2(bytes: &[u8], encoding: TextureEncoding) -> Result<()> {
     Ok(())
 }
 
+/// Narrow output recipe for packed normal sources; other DDS proofs stay compatible.
+pub(crate) fn packed_normal_contract(source: &std::path::Path, encoding: TextureEncoding) -> bool {
+    encoding == TextureEncoding::NormalLinear
+        && std::fs::File::open(source)
+            .ok()
+            .and_then(|file| Dds::read(&mut std::io::BufReader::new(file)).ok())
+            .is_some_and(|dds| packed_rgba8_layout(&dds).is_some())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -3435,6 +3444,24 @@ pub(crate) mod tests {
                 assert_packed_converts(format, (16, 16, 5), encoding, expected, false);
             }
         }
+    }
+
+    /// Only packed normal layouts need the new lossless recipe in their source proof.
+    #[test]
+    fn packed_normal_recipe_is_per_source_and_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("packed.dds");
+        let dds = packed_dds(D3DFormat::A8R8G8B8, 4, 4, 1, noise);
+        dds.write(&mut std::fs::File::create(&path).unwrap())
+            .unwrap();
+        assert!(packed_normal_contract(&path, TextureEncoding::NormalLinear));
+        assert!(!packed_normal_contract(&path, TextureEncoding::ColorSrgb));
+        assert!(!packed_normal_contract(&path, TextureEncoding::DataLinear));
+        std::fs::write(&path, b"invalid DDS").unwrap();
+        assert!(!packed_normal_contract(
+            &path,
+            TextureEncoding::NormalLinear
+        ));
     }
 
     fn noise(width: u32, height: u32) -> Vec<u8> {
