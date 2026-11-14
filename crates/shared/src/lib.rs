@@ -1,10 +1,12 @@
 //! Stable data contracts shared by the offline converter and the runtime.
 
 pub mod actor_idle_catalog;
+pub mod actor_outfits;
 pub mod asset_lock;
 pub mod collision;
 pub mod coordinates;
 pub mod creature_idle;
+pub mod extensions;
 pub mod grass;
 pub mod initial_enable;
 pub mod lod;
@@ -13,6 +15,7 @@ pub mod plugin_selection;
 pub mod records;
 pub mod streaming_costs;
 pub mod terrain_mesh;
+pub mod texture_aliases;
 pub mod world_assets;
 
 use rkyv::{Archive, Deserialize, Serialize};
