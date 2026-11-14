@@ -1742,7 +1742,7 @@ fn reusable_manifest(
             _ => unreachable!(),
         };
         let settings_match = if let Some(recorded) = manifest.asset_configuration_hashes.get(kind) {
-            recorded == &asset_configuration_hash_for_schema(config, producer, kind)?
+            crate::cache::compatible_asset_configuration_hash(config, producer, kind, recorded)?
         } else {
             // Older manifests have one combined proof. Require an exact known
             // historical settings hash; an opaque stale schema cannot prove it.
