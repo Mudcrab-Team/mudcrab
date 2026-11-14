@@ -24,6 +24,7 @@ pub struct GeneratedGrass {
 
 struct Entry {
     id: u32,
+    is_base: bool,
     weights: [f32; 9],
 }
 
@@ -66,6 +67,7 @@ fn entries(
             }
             result.push(Entry {
                 id: (*id).into(),
+                is_base: layer.is_base,
                 weights: support.map(|weight| if weight > 0.0 { 1.0 } else { 0.0 }),
             });
         }
@@ -165,6 +167,44 @@ pub fn generate(cache: &GrassCache, cell_id: u32, config: &EngineConfig) -> Gene
         |i| cell.heights[i].into(),
         cell.water_height.as_ref().map(|h| (*h).into()),
         None,
+        &mut |_| {},
+    )
+}
+
+/// A production selection event, before the optional obstruction rejection and renderer packing.
+/// Appearance words are retained so CPU diagnostics can decode the reference frame exactly.
+pub struct Placement {
+    pub form_id: u32,
+    pub is_base: bool,
+    pub obstructed: bool,
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub luma: f32,
+    pub appearance: [u32; 3],
+    pub instance: GrassInstance,
+    pub height_min: f32,
+    pub height_span: f32,
+}
+
+/// Observe the same baked-LAND production generator without starting Bevy or a renderer.
+pub fn generate_observed(
+    cache: &GrassCache,
+    cell_id: u32,
+    config: &EngineConfig,
+    mut observe: impl FnMut(Placement),
+) -> GeneratedGrass {
+    let Some(cell) = cache.cell(cell_id) else {
+        return empty();
+    };
+    generate_field(
+        cache,
+        cell_id,
+        config,
+        cell.heights.len(),
+        |i| cell.heights[i].into(),
+        cell.water_height.as_ref().map(|h| (*h).into()),
+        None,
+        &mut observe,
     )
 }
 
@@ -184,6 +224,7 @@ pub(super) fn generate_on_terrain(
         |i| terrain.heights()[i],
         terrain.0.water_height,
         Some(terrain.luminance().unwrap_or(&white)),
+        &mut |_| {},
     )
 }
 
@@ -197,6 +238,10 @@ fn empty() -> GeneratedGrass {
 }
 
 /// Roll entries in quadrant / odd-X / odd-Y / entry / grid-X / grid-Y order.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "observer extends the existing surface sampling inputs without changing their behavior"
+)]
 fn generate_field(
     cache: &GrassCache,
     cell_id: u32,
@@ -205,6 +250,7 @@ fn generate_field(
     height_at: impl Fn(usize) -> f32,
     water: Option<f32>,
     luminance: Option<&[f32]>,
+    observe: &mut impl FnMut(Placement),
 ) -> GeneratedGrass {
     let start = Instant::now();
     let mut result = empty();
@@ -318,9 +364,7 @@ fn generate_field(
                             let bit_x = (((px - qx as f32 * 2048.0) / 32.0) as usize).min(63);
                             let bit_y = (((py - qy as f32 * 2048.0) / 32.0) as usize).min(63);
                             let bit = bit_y * GRASS_EXCLUSION_SIDE + bit_x;
-                            if mask.exclusion[bit / 8] & (1 << (bit % 8)) != 0 {
-                                continue;
-                            }
+                            let obstructed = mask.exclusion[bit / 8] & (1 << (bit % 8)) != 0;
                             let luma = luminance
                                 .filter(|field| field.len() == 1089)
                                 .map(|field| field[sample.nearest])
@@ -340,7 +384,7 @@ fn generate_field(
                                 });
                             let (color, factor) = brightness(luma, rule.color_range.into(), u3);
                             let range: f32 = rule.height_range.into();
-                            instances.entry(entry.id).or_default().push(GrassInstance {
+                            let instance = GrassInstance {
                                 position: [
                                     quantize(px, GRASS_CELL_SIZE),
                                     quantize(py, GRASS_CELL_SIZE),
@@ -358,7 +402,26 @@ fn generate_field(
                                     | ((luma.clamp(0.0, 1.0) * 127.0).round() as u32) << 18
                                     | ((((factor.clamp(-1.0, 1.0) + 1.0) * 63.5).round() as u32)
                                         << 25),
+                            };
+                            observe(Placement {
+                                form_id: entry.id,
+                                is_base: entry.is_base,
+                                obstructed,
+                                position: [
+                                    cell_origin[0] + px,
+                                    cell_origin[1] + py,
+                                    sampling::half_round(sample.height),
+                                ],
+                                normal: sample.normal,
+                                luma,
+                                appearance: [u3, u4, u5],
+                                instance,
+                                height_min,
+                                height_span,
                             });
+                            if !obstructed {
+                                instances.entry(entry.id).or_default().push(instance);
+                            }
                         }
                     }
                 }

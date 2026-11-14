@@ -3895,7 +3895,7 @@ mod tests {
     }
 
     /// Utility `.ps1`, `.sh` and `.py` files under `root`, subdirectories included,
-    /// in a stable order. Hidden directories and script tests are excluded.
+    /// in a stable order. Hidden directories and `tests/` directories are excluded.
     /// Converter-only profiling tools stay in the scan; their flags are checked
     /// only on lines that invoke the engine (see `checked_script_engine_flags`).
     fn script_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -3927,20 +3927,20 @@ mod tests {
         paths
     }
 
+    /// Check engine flags while allowing known offline tools to own separate CLI arguments.
     fn checked_script_engine_flags(script: &str, path: &std::path::Path) -> usize {
         let options = parser_options();
         let mut checked = 0;
-        // lod-performance tools parse converter options and lod-experiment
-        // tools parse their own offline options. Only their lines that name the
-        // engine are engine invocations; the rest is not checked.
-        let converter_tool = path.components().any(|part| {
+        // These converter/analysis tools own offline options. Only their lines
+        // naming the engine are engine invocations; the rest is not checked.
+        let offline_tool = path.components().any(|part| {
             matches!(
                 part.as_os_str().to_str(),
-                Some("lod-performance" | "lod-experiment")
+                Some("lod-performance" | "lod-experiment" | "grass-parity")
             )
         });
         let engine_lines: String;
-        let scanned = if converter_tool {
+        let scanned = if offline_tool {
             engine_lines = script
                 .lines()
                 .filter(|line| {
@@ -4003,8 +4003,26 @@ mod tests {
         );
     }
 
+    /// Offline checker arguments are local to that tool; actual engine invocations stay audited.
+    #[test]
+    fn the_script_audit_scopes_grass_checker_arguments() {
+        let path = std::path::Path::new("grass-parity/run.py");
+        assert_eq!(
+            checked_script_engine_flags("--ours source --spud reference", path),
+            0
+        );
+        assert_eq!(
+            checked_script_engine_flags("--ours source\nengine --headless --assets pack", path),
+            2
+        );
+        assert!(
+            std::panic::catch_unwind(|| checked_script_engine_flags("engine --ours source", path))
+                .is_err()
+        );
+    }
+
     /// Every utility `.ps1`, `.sh` and `.py` file in `scripts/`, subdirectories
-    /// included, is read from disk, so a script added later cannot pass an
+    /// included, is read from disk, so a new engine invocation cannot pass an
     /// option the parser refuses without failing this test. The scan is skipped
     /// when the repository's `scripts/` is not next to this crate.
     #[test]

@@ -1,6 +1,28 @@
 use super::*;
 use shared::grass::{GRASS_CACHE_VERSION, GrassCell, GrassLayer, GrassQuadrant, GrassType};
 
+/// Diagnostics observe all selections and leave the production stream and batches unchanged.
+#[test]
+fn observer_accounts_for_mask_without_changing_production() {
+    let mut source = cell(vec![layer(vec![7], 1.0, true)]);
+    source.quadrants[0].exclusion.fill(255);
+    let cache = mapped(vec![rule(7, 128.0)], source);
+    let config = EngineConfig::default();
+    let plain = generate(&cache, 42, &config);
+    let mut selected = 0;
+    let mut blocked = 0;
+    let observed = generate_observed(&cache, 42, &config, |p| {
+        selected += 1;
+        blocked += usize::from(p.obstructed);
+        assert!(p.is_base);
+        assert_eq!(p.form_id, 7);
+    });
+    assert_eq!(selected, 1024);
+    assert_eq!(blocked, 256);
+    assert_eq!(plain.batches[0].instances, observed.batches[0].instances);
+    assert_eq!(plain.batches[0].instances.len(), selected - blocked);
+}
+
 /// One flat synthetic cell with no proprietary records or assets.
 fn cell(layers: Vec<GrassLayer>) -> GrassCell {
     GrassCell {
