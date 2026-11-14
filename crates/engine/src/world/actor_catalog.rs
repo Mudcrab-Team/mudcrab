@@ -101,6 +101,7 @@ impl ActorSpawnPlan {
 pub struct ActorCatalog {
     models: HashMap<u32, ActorModel>,
     assets_root: Option<PathBuf>,
+    idle_catalog: shared::actor_idle_catalog::ActorIdleCatalog,
 }
 
 impl ActorCatalog {
@@ -133,6 +134,57 @@ impl ActorCatalog {
     }
 
     fn read(connection: &Connection, assets_root: Option<PathBuf>) -> Self {
+        let mut idle_catalog = assets_root
+            .as_ref()
+            .and_then(|root| {
+                let path = root.join(shared::actor_idle_catalog::PATH);
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                    Err(error) => {
+                        warn!("actors: cannot read idle catalog: {error}");
+                        return None;
+                    }
+                };
+                let parsed =
+                    serde_json::from_slice::<shared::actor_idle_catalog::ActorIdleCatalog>(&bytes);
+                match parsed {
+                    Ok(catalog) => match catalog.validate() {
+                        Ok(()) => Some(catalog),
+                        Err(error) => {
+                            warn!("actors: invalid idle catalog: {error}");
+                            None
+                        }
+                    },
+                    Err(error) => {
+                        warn!("actors: invalid idle catalog: {error}");
+                        None
+                    }
+                }
+            })
+            .unwrap_or_default();
+        let mut race_sources = HashMap::new();
+        if let Ok(mut statement) = connection
+            .prepare("SELECT race_id,sex,skeleton_nif,project_hkx FROM race_animation_sources")
+            && let Ok(rows) = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+        {
+            for (race, sex, skeleton, project) in rows.flatten() {
+                race_sources.insert((race, sex), (skeleton, project));
+            }
+        }
+        idle_catalog.bindings.retain(|row| {
+            let valid = race_sources.get(&(row.race_id,row.sex.clone()))
+                .is_some_and(|(skeleton,project)| skeleton == &row.race_skeleton_nif && project == &row.project);
+            if !valid { warn!(race_id=row.race_id, body=%row.body_scene, "actors: idle catalog disagrees with current race authoring; binding omitted"); }
+            valid
+        });
         let mut models = HashMap::new();
         // The skin tone and weight columns arrived after the table, without a schema bump: a
         // database converted before them is read without those values.
@@ -246,6 +298,7 @@ impl ActorCatalog {
                     return Self {
                         models: HashMap::new(),
                         assets_root,
+                        idle_catalog,
                     };
                 }
             },
@@ -254,6 +307,7 @@ impl ActorCatalog {
                 return Self {
                     models: HashMap::new(),
                     assets_root,
+                    idle_catalog,
                 };
             }
         }
@@ -265,7 +319,55 @@ impl ActorCatalog {
         Self {
             models,
             assets_root,
+            idle_catalog,
         }
+    }
+
+    /// Full race, sex, and converted-body identity must agree with the producer's binding.
+    pub fn idle_scene(&self, plan: &ActorSpawnPlan) -> Option<&str> {
+        let row = self.idle_catalog.find(
+            plan.actor.race_id,
+            plan.actor.sex.as_str(),
+            &plan.scene_path,
+        )?;
+        self.assets_root
+            .as_ref()?
+            .join(&row.scene)
+            .is_file()
+            .then_some(row.scene.as_str())
+    }
+
+    /// The explicit cow/chicken contract for packs without a generic idle catalog binding.
+    /// Like [`Self::idle_scene`], it requires the published clip, so an older pack stays silent.
+    pub fn legacy_creature_idle_scene(&self, plan: &ActorSpawnPlan) -> Option<&'static str> {
+        let profile = shared::creature_idle::for_body_scene(&plan.scene_path)?;
+        self.assets_root
+            .as_ref()?
+            .join(profile.clip_scene)
+            .is_file()
+            .then_some(profile.clip_scene)
+    }
+
+    /// Resolve an authored idle source only inside this exact race/sex/body library.
+    pub fn authored_idle_scene(
+        &self,
+        actor: &Actor,
+        body_scene: &str,
+        source: &str,
+    ) -> Option<&str> {
+        let row = self
+            .idle_catalog
+            .find(actor.race_id, actor.sex.as_str(), body_scene)?;
+        let scene = if row.source == source {
+            &row.scene
+        } else {
+            &row.clips.get(source)?.scene
+        };
+        self.assets_root
+            .as_ref()?
+            .join(scene)
+            .is_file()
+            .then_some(scene.as_str())
     }
 
     /// The catalog row for a base `NPC_` FormID, if this world has one.
@@ -313,7 +415,11 @@ impl ActorCatalog {
             .map(str::to_owned)
             .or_else(|| {
                 model.part(ActorSlot::Body).and_then(|part| {
-                    crate::streaming::converted_model_path(part.model_path.clone())
+                    let canonical =
+                        shared::actor_idle_catalog::canonical_body_path(&part.model_path, "glb")
+                            .ok()?;
+                    // Preserve the existing sky/marker/effect exclusions after normalization.
+                    crate::streaming::converted_model_path(canonical)
                 })
             })
             .ok_or(ActorSpawnDiagnostic {
@@ -399,6 +505,110 @@ mod tests {
                 params![npc, slot, path],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn idle_catalog_requires_current_typed_race_identity_and_complete_body_key() {
+        use shared::actor_idle_catalog::{ActorIdleBinding, ActorIdleCatalog, PATH, VERSION};
+        let connection = connection();
+        insert_actor(&connection, 77, 13, "female", "body", None, None);
+        insert_part(&connection, 77, "body", "Actors/Custom/body.nif");
+        connection.execute_batch("CREATE TABLE race_animation_sources(race_id INTEGER,sex TEXT,skeleton_nif TEXT,project_hkx TEXT); INSERT INTO race_animation_sources VALUES (13,'female','meshes/custom/skeleton.nif','meshes/custom/project.hkx');").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let clip = "meshes/actor-idles/clips/idle.glb";
+        std::fs::create_dir_all(directory.path().join("meshes/actor-idles/clips")).unwrap();
+        std::fs::write(directory.path().join(clip), b"clip").unwrap();
+        let variant = "meshes/actor-idles/clips/variant.glb";
+        std::fs::write(directory.path().join(variant), b"clip").unwrap();
+        let row = ActorIdleBinding {
+            race_id: 13,
+            sex: "female".into(),
+            body_scene: "meshes/actors/custom/body.glb".into(),
+            project: "meshes/custom/project.hkx".into(),
+            skeleton: "meshes/custom/rig.hkx".into(),
+            race_skeleton_nif: "meshes/custom/skeleton.nif".into(),
+            source: "meshes/custom/unusually_named_idle.hkx".into(),
+            scene: clip.into(),
+            bound_tracks: 5,
+            moving_bound_tracks: 2,
+            skipped_tracks: Vec::new(),
+            clips: std::collections::BTreeMap::from([(
+                "meshes/custom/breathe.hkx".into(),
+                shared::actor_idle_catalog::ActorIdleClip {
+                    scene: variant.into(),
+                    frame_count: 2,
+                    frames_per_second: 30.0,
+                    motion_frame: Some(1),
+                    bound_tracks: 5,
+                    moving_bound_tracks: 2,
+                    skipped_tracks: Vec::new(),
+                },
+            )]),
+        };
+        let catalog = ActorIdleCatalog {
+            version: VERSION,
+            bindings: vec![row],
+            unresolved: Vec::new(),
+            ..Default::default()
+        };
+        std::fs::write(
+            directory.path().join(PATH),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        let read = || ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let loaded = read();
+        let plan = loaded.spawn_plan(loaded.get(77).unwrap()).unwrap();
+        assert_eq!(loaded.idle_scene(&plan), Some(clip));
+        for authored in [
+            r"Actors\\Custom\Body.nif",
+            " ./Actors//Custom/./Body.NIF ",
+            "Data/Meshes/Data/Meshes/Actors/Custom/Body.nif",
+            "Actors/%43ustom/Body.nif",
+        ] {
+            connection
+                .execute(
+                    "UPDATE actor_model_parts SET model_path=?1 WHERE npc_id=77 AND slot='body'",
+                    [authored],
+                )
+                .unwrap();
+            let normalized = read();
+            let normalized_plan = normalized.spawn_plan(normalized.get(77).unwrap()).unwrap();
+            assert_eq!(
+                normalized_plan.scene_path, "meshes/actors/custom/body.glb",
+                "{authored}"
+            );
+            assert_eq!(
+                normalized.idle_scene(&normalized_plan),
+                Some(clip),
+                "{authored}"
+            );
+        }
+        assert_eq!(
+            loaded.authored_idle_scene(&plan.actor, &plan.scene_path, "meshes/custom/breathe.hkx"),
+            Some(variant)
+        );
+        assert!(
+            loaded
+                .authored_idle_scene(&plan.actor, &plan.scene_path, "meshes/other/breathe.hkx")
+                .is_none()
+        );
+        let mut wrong = plan.clone();
+        wrong.actor.race_id = 14;
+        assert!(loaded.idle_scene(&wrong).is_none());
+        wrong = plan.clone();
+        wrong.scene_path = "meshes/actors/different/body.glb".into();
+        assert!(loaded.idle_scene(&wrong).is_none());
+        connection
+            .execute(
+                "UPDATE race_animation_sources SET project_hkx='meshes/custom/replaced.hkx'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            read().idle_scene(&plan).is_none(),
+            "metadata-only RACE changes must reject the old binding"
+        );
     }
 
     fn alvor(connection: &Connection) {

@@ -801,6 +801,10 @@ pub fn write_grass_cache(
 pub fn validate_grass_cache(path: &Path) -> Result<Mmap> {
     let file = File::open(path)?;
     ensure!(file.metadata()?.len() > 0, "empty grass cache");
+    // SAFETY: the file is opened read-only and the mapping is only read, through the validated
+    // archive access below. The converter writes a new cache to a separate staging path and
+    // publishes it whole, so it does not truncate a cache file it has mapped. As with any
+    // mapping, another process that truncates the file in place is outside this contract.
     let map = unsafe { Mmap::map(&file)? };
     let cache = rkyv::access::<ArchivedGrassCache, Error>(&map).wrap_err("invalid grass cache")?;
     validate_archived_cache(cache).map_err(|message| color_eyre::eyre::eyre!(message))?;
