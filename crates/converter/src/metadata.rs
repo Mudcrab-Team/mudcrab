@@ -755,7 +755,7 @@ async fn rebuild_into(
     manifest.archives.clear();
     report.complete = conversion_is_complete(&report);
     manifest.complete = report.complete;
-    crate::cache::record_grass_artifact(manifest, &staging)?;
+    crate::cache::record_grass_artifact(manifest, staging)?;
     manifest.save(&staging.join("conversion-manifest.json"))?;
     fs::write(
         staging.join("metadata-source-conversion-manifest.json"),
