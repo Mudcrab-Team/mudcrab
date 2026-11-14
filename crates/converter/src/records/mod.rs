@@ -4,6 +4,7 @@ pub mod compact_array;
 pub mod deciders;
 mod decoder;
 pub mod diagnostics;
+pub mod fidelity;
 pub mod history;
 pub mod history_source;
 pub(crate) mod profile;

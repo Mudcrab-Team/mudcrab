@@ -8,6 +8,150 @@ use rusqlite::Connection;
 use serde_json::json;
 use std::{fs, io::Write, path::Path};
 
+/// Exercise the shipped read-only auditor on a real procedural publication after its
+/// configured add-on disappears. Changing one source occurrence changes only its receipt.
+#[tokio::test]
+async fn fidelity_audit_replays_retained_addons_without_configured_files() {
+    fn audit(output: &Path) -> serde_json::Value {
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_record-fidelity"))
+            .args(["audit", output.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice(&result.stdout).unwrap()
+    }
+    fn pack_hashes(output: &Path) -> std::collections::BTreeMap<std::path::PathBuf, String> {
+        walkdir::WalkDir::new(output)
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| {
+                (
+                    entry.path().strip_prefix(output).unwrap().to_path_buf(),
+                    converter::cache::hash_file(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("Data");
+    let output = temp.path().join("pack");
+    generate(&data);
+    let original = fs::read(data.join("Skyrim.esm")).unwrap();
+    let addon = temp.path().join("retained-only.json");
+    let authored = serde_json::to_vec(&json!({"version":1,"name":"retained-audit","records":[
+        {"signature":"KYWD","extends":true,"fields":[{"signature":"XVAL","name":"mod_value","kind":"u32","repeat":true}]},
+        {"signature":"ZNEW","fields":[{"signature":"ZBYT","name":"empty_payload","kind":"bytes"}]}
+    ]})).unwrap();
+    let mut previous = None;
+    for value in [7u32, 13u32] {
+        let keyword = record(
+            b"KYWD",
+            0x1800,
+            &[
+                (*b"XVAL", 0u32.to_le_bytes().to_vec()),
+                (*b"EDID", b"RetainedAuditControl\0".to_vec()),
+                (*b"CNAM", vec![3, 7, 11, 0]),
+                (*b"XVAL", value.to_le_bytes().to_vec()),
+            ],
+        );
+        let custom = record(b"ZNEW", 0x1801, &[(*b"ZBYT", Vec::new())]);
+        fs::write(
+            data.join("Skyrim.esm"),
+            [original.as_slice(), &keyword, &custom].concat(),
+        )
+        .unwrap();
+        fs::write(&addon, &authored).unwrap();
+        let mut config = PipelineConfig::new(&data, &output);
+        config.schema_addons = vec![addon.clone()];
+        config.no_lod = true;
+        config.cpu_jobs = 2;
+        config.lod_texture_encoder = converter::TextureEncoder::Cpu;
+        publish_config(config, false).await;
+        fs::remove_file(&addon).unwrap();
+        let before = pack_hashes(&output);
+        let report = audit(&output);
+        assert_eq!(report["format_version"], 3);
+        assert_eq!(report["coverage"]["canonical_only_records"], 0);
+        assert_ne!(report["coverage"]["status"], "empty");
+        assert_eq!(
+            before,
+            pack_hashes(&output),
+            "auditing must preserve the entire published pack"
+        );
+        let values = &report["storage"]["occurrences"]["4B595744/5856414C"];
+        assert_eq!(values["source_occurrences"], 2);
+        assert_eq!(values["canonical_occurrences"], 2);
+        assert_eq!(values["exact_byte_matches"], 2);
+        assert_eq!(values["canonical_occurrence_deficit"], 0);
+        assert_eq!(values["declared_signature"], true);
+        assert_eq!(
+            values["samples"][0]["sha256"],
+            converter::cache::hash_bytes(&0u32.to_le_bytes())
+        );
+        assert_eq!(
+            values["samples"][1]["sha256"],
+            converter::cache::hash_bytes(&value.to_le_bytes())
+        );
+        let empty = &report["storage"]["occurrences"]["5A4E4557/5A425954"];
+        assert_eq!(empty["source_occurrences"], 1);
+        assert_eq!(empty["source_bytes"], 0);
+        assert_eq!(empty["declared_signature"], true);
+        assert_eq!(
+            report["schema_addons"][0]["sha256"],
+            converter::cache::hash_bytes(&authored)
+        );
+        assert!(
+            report["addon_declarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field["id"] == "extension/KYWD/0:XVAL:mod_value")
+        );
+        if let Some(previous) = previous {
+            let previous: serde_json::Value = previous;
+            assert_ne!(
+                values["samples"][1]["sha256"],
+                previous["storage"]["occurrences"]["4B595744/5856414C"]["samples"][1]["sha256"]
+            );
+            assert_eq!(
+                report["storage"]["occurrences"]["4B595744/45444944"],
+                previous["storage"]["occurrences"]["4B595744/45444944"]
+            );
+            assert_eq!(
+                empty,
+                &previous["storage"]["occurrences"]["5A4E4557/5A425954"]
+            );
+            assert_eq!(report["schema_sha256"], previous["schema_sha256"]);
+        }
+        previous = Some(report);
+    }
+    // Remove one real published source row while leaving its canonical record intact.
+    let conn = Connection::open(output.join("skyrim_world.db")).unwrap();
+    assert_eq!(
+        conn.execute("DELETE FROM inhouse_source_records WHERE form_id=6144", [])
+            .unwrap(),
+        1
+    );
+    drop(conn);
+    let before = pack_hashes(&output);
+    let rejected = std::process::Command::new(env!("CARGO_BIN_EXE_record-fidelity"))
+        .args(["audit", output.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        rejected.stdout.is_empty(),
+        "missing evidence must not produce a success report"
+    );
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("incomplete source evidence"));
+    assert_eq!(pack_hashes(&output), before);
+}
+
 /// Independently frame a native record with fields kept in the supplied file order.
 fn record(signature: &[u8; 4], form_id: u32, fields: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
     let mut payload = Vec::new();
@@ -1485,7 +1629,7 @@ async fn adapter10_metadata_rebuild_preserves_original_assets_and_saved_addons_a
     rebuild_config(mod_config(&data, &second, &[]), &first, false).await;
     for output in [&first, &second] {
         let reader = json_artifact(output, "record-reader.json");
-        assert_eq!(reader["adapter_version"], 12);
+        assert_eq!(reader["adapter_version"], 13);
         let manifest = json_artifact(output, "conversion-manifest.json");
         let provenance = json_artifact(output, "metadata-rebuild.json");
         assert_ne!(
