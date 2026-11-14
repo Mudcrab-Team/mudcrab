@@ -16,7 +16,7 @@ when grass is disabled.
 
 `GrassPlugin` observes committed exterior cell roots in `PostUpdate`; it adds
 no generation work to `collect_cells`. At most four asynchronous placement jobs
-run or wait on Bevy's `AsyncComputeTaskPool`. Workers borrow transformed byte-opacity weights and base residual 17x17
+run or wait on a dedicated two-thread placement pool, isolated from pipeline compilation. Workers borrow transformed byte-opacity weights and base residual 17x17
 blend grids, species rules and 32-unit exclusion bits directly from a validated
 immutable memory mapping. Committed cells retain an immutable shared copy of
 their post-weld 33x33 height field. The selection sampler applies the
@@ -123,7 +123,7 @@ control opacity: [grass authoring accounts](https://stepmodifications.org/forum/
 identify it as an animation/wind weight, while the
 [NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
 describe its storage without prescribing a grass opacity equation. The converted
-alpha attribute remains intact but is unused by the current grass wind model;
+alpha attribute remains intact and linearly weights the current grass wind displacement;
 an exact Skyrim wind equation or ambient-alpha interpretation is not established.
 Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
@@ -156,7 +156,11 @@ terrain view bindings, cascades, filtering and normal/depth bias. Direct light
 and shadow sampling use the same first prepared directional light for the view,
 respecting Bevy's ordering and render layers. Shadow visibility multiplies only
 the direct sun term, retaining the existing ambient response and exposure:
-`(ambient + sun * Lambert * visibility) * exposure / pi`. With no directional
+`(ambient + sun * Lambert * visibility) * exposure / pi`. Dividing ambient by
+pi is a deliberate calibrated deviation from terrain PBR ambient (which does not
+include that division). The G5 defaults, including ambient strength 1.15, were
+tuned against this response; retaining it preserves that lighting calibration.
+With no directional
 light there is no direct term; disabled shadows use visibility 1. Shadowing never
 changes texture/material alpha, sample coverage or depth-prepass cutouts. Grass
 still does not cast shadows or add local lights; this is not full PBR parity.
@@ -195,7 +199,7 @@ and luminance fields. Resident desired
 cells stay pinned; a result that cannot fit is discarded with a diagnostic
 instead of exceeding the pool budget. Rejections are retried after the desired
 cell set changes. Generation is prefetched one cell ahead in the player's
-direction of travel, while rendering still waits for a committed cell root.
+direction of travel only when that cell already has committed terrain outside the grass radius. This preserves welded heights and VCLR; interiors do not prefetch, and exterior selection follows ActiveSpace.
 Prefetched results are reused only when their surface matches the committed
 field. Reloaded cells with changed welds or colours regenerate grass; pending results from
 retired cell roots cannot be attached to a new root.
@@ -386,7 +390,7 @@ terrain shadow filtering and display tone mapping retain the production paths.
 | backlight | 0 | 0..1 | Add response from away-facing authored normals |
 | specular_strength | 0 | 0..1 | Dielectric GGX sun sheen multiplier (D/E) |
 | specular_roughness | .5 | .089..1 | Perceptual roughness, squared to GGX alpha |
-| saturation | .75 | 0..4 | Linear HDR saturation around Rec.709 luminance |
+| saturation | 1 | 0..4 | Linear HDR saturation around Rec.709 luminance |
 | vclr_tint_strength | 1 | 0..1 | LAND luminance strength |
 | color_range_strength | 1 | 0..1 | GRAS color-range variation strength |
 | root_darkening | 0 | 0..1 | Multiply by `1-root_darkening*clamp(original_uv.y,0,1)` |
@@ -431,7 +435,7 @@ scene differences and local shadows prevent it from proving a Skyrim match.
 ## Default appearance and tuning
 
 Without a file, grass uses flat-b: sun angle weight 0, sun strength 0.1,
-shadow strength 0.3, ambient strength 1.15, saturation 0.75 and brightness 1.15.
+shadow strength 0.3, ambient strength 1.15, saturation 1.0 and brightness 1.15.
 Authored vertex RGB, Color Range and terrain VCLR tint stay enabled. The appearance
 pipeline and packed tint metadata are active with or without a tuning file.
 `--grass-tuning <toml>` overrides `MUDCRAB_GRASS_TUNING`; edits hot reload at most
@@ -441,7 +445,7 @@ to 64 KiB. `--grass-tuning-info <toml>` validates and reports settings before ap
 or GPU creation. Captures freeze the accepted hash and effective settings with
 the actual frame; they do not reread the file in the callback.
 
-Explicit `--shots` runs freeze wind time and allow `-on`/`-off` shot-name pairs
+Explicit `--shots` runs freeze wind time and use the per-shot `"grass": false` field
 to suppress grass draws while retaining placement and readiness accounting.
 No experimental gamma or alternate placement switches are included.
 
@@ -457,3 +461,28 @@ batches. It is separate from projected-root/frustum counts and from shader
 surviving pixels. A model with multiple primitives submits that prefix for each
 primitive; readiness and primitive multiplicity must be established before
 comparing this value with captured colour-draw instances.
+
+Shot grass visibility is explicit: set `"grass": false` on a shot to suppress
+only grass draws. Omission defaults to true, including names ending in `-off`.
+Counts include a `phase` (`settled` or `captured`); compare the same phase and
+never sum both. Run initialization removes the previous run's counts file.
+Tuning edits, including startup files, require two identical reads one second
+apart in live sessions; info mode validates two immediate whole reads. Until then the last accepted settings (or defaults at startup) remain.
+The default appearance changes every grass-enabled visual profile relative to G3:
+sun strength 0.1, sun angle weight 0, shadow strength 0.3, ambient strength 1.15,
+brightness 1.15 and saturation 1.0. The calibrated ambient /pi remains unchanged.
+
+Grass coverage follows the camera's compiled MSAA sample count (1/2/4/8),
+preserving the user's preference. Sample-rate shading remains the AMD Vulkan
+workaround described above. Shots pin wind at 1 second; interactive wind uses
+unwrapped elapsed time. BC5 normal maps reconstruct positive Z from XY.
+Queueing rejects whole-cell bounds expanded by authored geometry, maximum scale,
+and wind. A per-frame view/primitive draw set suppresses the duplicate depth draw when
+Bevy's late prepass repeats NonMesh bins.
+Admission waits in distance/FormID order instead of completion order. Obsolete
+queued futures are cancelled; already executing synchronous jobs finish on the
+bounded dedicated pool. Zero cache MiB continues to mean unlimited retention.
+
+Automatic grass-driven terrain expansion accepts radii up to 32 cells. Larger
+radii require an explicit `--stream-radius` to control terrain coverage; they
+are rejected before automatic expansion or settings application.

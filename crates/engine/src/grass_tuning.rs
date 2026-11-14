@@ -53,7 +53,7 @@ impl Default for GrassTuning {
             backlight: 0.0,
             specular_strength: 0.0,
             specular_roughness: 0.5,
-            saturation: 0.75,
+            saturation: 1.0,
             vclr_tint_strength: 1.0,
             color_range_strength: 1.0,
             root_darkening: 0.0,
@@ -179,19 +179,22 @@ pub struct GrassTuningState {
     pub effective: GrassTuning,
     sha256: Option<String>,
     last_attempt: Option<String>,
+    pending: Option<String>,
     next_poll: Duration,
     warnings: Vec<String>,
     revision: u64,
 }
 
 impl GrassTuningState {
-    /// Load once at startup. Missing/invalid files retain defaults and remain eligible for reload.
+    /// Begin stability sampling at startup; defaults remain until the second identical read.
+    /// Missing/invalid files remain eligible for reload.
     pub fn new(path: Option<PathBuf>) -> Self {
         let mut state = Self {
             path,
             effective: GrassTuning::default(),
             sha256: None,
             last_attempt: None,
+            pending: None,
             next_poll: Duration::ZERO,
             warnings: Vec::new(),
             revision: 0,
@@ -203,6 +206,14 @@ impl GrassTuningState {
     /// The appearance pipeline is active even without a selected file.
     pub fn enabled(&self) -> bool {
         true
+    }
+
+    /// Validate info-mode input with two immediate whole reads, without waiting for app time.
+    /// Changing or invalid files remain unaccepted in the returned receipt.
+    pub fn for_info(path: Option<PathBuf>) -> Self {
+        let mut state = Self::new(path);
+        state.poll_at(Duration::from_secs(1));
+        state
     }
 
     /// Provenance for the actual accepted bytes, including the last good state after bad edits.
@@ -250,8 +261,16 @@ impl GrassTuningState {
             Err(error) => (format!("read error: {error}"), Err(error)),
         };
         if self.last_attempt.as_ref() == Some(&fingerprint) {
+            self.pending = None;
             return false;
         }
+        // A valid prefix (including empty TOML) may be an editor mid-save.
+        // Accept only identical complete reads on two consecutive eligible polls.
+        if parsed.is_ok() && self.pending.as_ref() != Some(&fingerprint) {
+            self.pending = Some(fingerprint);
+            return false;
+        }
+        self.pending = None;
         self.last_attempt = Some(fingerprint.clone());
         match parsed {
             Ok((effective, warnings)) => {
@@ -294,7 +313,7 @@ mod tests {
             [
                 Vec4::new(1.15, 1.15, 0.1, 0.),
                 Vec4::new(0., 0.3, 0., 0.),
-                Vec4::new(0.75, 1., 1., 0.),
+                Vec4::new(1., 1., 1., 0.),
                 Vec4::new(0., 0.5, 0., 0.)
             ]
         );
@@ -378,6 +397,10 @@ mod tests {
             .resource_mut::<Time>()
             .advance_by(Duration::from_secs(1));
         app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
         let state = app.world().resource::<GrassTuningState>();
         assert_eq!(state.effective.brightness, 0.3);
         let hash = state.receipt()["sha256"].clone();
@@ -386,11 +409,19 @@ mod tests {
             .resource_mut::<Time>()
             .advance_by(Duration::from_secs(1));
         app.update();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
         let state = app.world().resource::<GrassTuningState>();
         assert_eq!(state.effective.brightness, 0.3);
         assert_eq!(state.receipt()["sha256"], hash);
-        assert_eq!(state.receipt()["revision"], 2);
+        assert_eq!(state.receipt()["revision"], 1);
         std::fs::write(&path, "mode='f'").unwrap();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs(1));
+        app.update();
         app.world_mut()
             .resource_mut::<Time>()
             .advance_by(Duration::from_secs(1));
@@ -398,6 +429,40 @@ mod tests {
         assert_eq!(
             app.world().resource::<GrassTuningState>().effective.mode,
             GrassMode::F
+        );
+    }
+
+    /// Single-poll empty or valid partial saves retain the last good state.
+    #[test]
+    fn tuning_requires_two_identical_complete_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuning.toml");
+        std::fs::write(&path, "brightness=0.8").unwrap();
+        let mut state = GrassTuningState::new(Some(path.clone()));
+        assert_eq!(state.effective.brightness, 1.15);
+        assert!(state.poll_at(Duration::from_secs(1)));
+        std::fs::write(&path, "").unwrap();
+        assert!(!state.poll_at(Duration::from_secs(2)));
+        assert_eq!(state.effective.brightness, 0.8);
+        std::fs::write(&path, "brightness=0.4").unwrap();
+        assert!(!state.poll_at(Duration::from_secs(3)));
+        assert!(state.poll_at(Duration::from_secs(4)));
+        assert_eq!(state.effective.brightness, 0.4);
+    }
+
+    /// The windowless info command reports accepted file values and their exact content hash.
+    #[test]
+    fn tuning_info_accepts_nondefault_file_without_app_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("info.toml");
+        let source = b"brightness=0.4";
+        std::fs::write(&path, source).unwrap();
+        let state = GrassTuningState::for_info(Some(path));
+        assert_eq!(state.effective.brightness, 0.4);
+        assert_eq!(state.receipt()["accepted"], true);
+        assert_eq!(
+            state.receipt()["sha256"],
+            format!("{:x}", Sha256::digest(source))
         );
     }
 
@@ -410,12 +475,14 @@ mod tests {
         assert_eq!(state.effective.brightness, 1.15);
         std::fs::write(&path, "brightness=0.6").unwrap();
         assert!(!state.poll_at(Duration::from_millis(999)));
-        assert!(state.poll_at(Duration::from_secs(1)));
+        assert!(!state.poll_at(Duration::from_secs(1)));
+        assert!(state.poll_at(Duration::from_secs(2)));
         std::fs::write(&path, vec![b' '; MAX_FILE_BYTES as usize + 1]).unwrap();
-        assert!(!state.poll_at(Duration::from_secs(2)));
+        assert!(!state.poll_at(Duration::from_secs(3)));
         assert_eq!(state.effective.brightness, 0.6);
         std::fs::write(&path, "brightness=0.4").unwrap();
-        assert!(state.poll_at(Duration::from_secs(3)));
+        assert!(!state.poll_at(Duration::from_secs(4)));
+        assert!(state.poll_at(Duration::from_secs(5)));
         assert_eq!(state.effective.brightness, 0.4);
     }
 }

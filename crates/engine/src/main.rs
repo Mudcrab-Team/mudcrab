@@ -9,7 +9,7 @@ fn main() -> color_eyre::Result<()> {
         Ok(ConfigAction::Run(config)) => {
             if config.grass_tuning_info {
                 let state =
-                    engine::grass_tuning::GrassTuningState::new(config.grass_tuning.clone());
+                    engine::grass_tuning::GrassTuningState::for_info(config.grass_tuning.clone());
                 let mut receipt = state.receipt();
                 receipt["grass_snow_gate"] =
                     serde_json::json!(engine::grass::generation::MAJORITY_GRASS_SUPPORT);
@@ -23,7 +23,13 @@ fn main() -> color_eyre::Result<()> {
                 println!("{}", serde_json::to_string(&receipt)?);
                 return Ok(());
             }
-            engine::run(*config)
+            match engine::run(*config) {
+                Err(error) if error.downcast_ref::<engine::app::DeviceLost>().is_some() => {
+                    eprintln!("error: {error}");
+                    std::process::exit(i32::from(engine::app::EXIT_DEVICE_LOST));
+                }
+                result => result,
+            }
         }
         Ok(ConfigAction::Help) => {
             print!("{HELP_TEXT}");

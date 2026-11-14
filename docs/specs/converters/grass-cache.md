@@ -244,3 +244,18 @@ the base; it does not grow a species itself. LTEX binding and merging require
 an available TXST, and that availability participates in incremental keys.
 Malformed recovered selection records warn and skip locally; neighboring cells
 remain publishable. This projection does not alter terrain's NULL policy.
+
+Permanent obstruction masks include only STAT, MSTT, ACTI, FURN, CONT and DOOR
+bases. Pick-up clutter, vegetation and unknown base types do not obstruct grass.
+G2 producer 9 introduced static-like obstruction filtering; this combined selection
+producer advances to 10 so neither earlier producer-9 variant can reuse its masks. Older masks
+are rebuilt. Corrupt GLB containers remain limited to their projected bounds.
+Model changes between fingerprinting and decoding abort publication with retry
+advice, rather than publishing a mask under a stale content key. Full conversion
+checks cancellation between references, cells and quadrants.
+
+The grass archive is recorded as `derived/grass-cache` in manifest entries, with
+its size and SHA-256, so quick/full checks detect removal and full checks detect
+byte changes. Metadata rebuild regenerates this entry after baking. Packed
+NormalLinear DDS sources carry `lossless-rgba8-v1` in their individual source
+proofs; other texture source and kind proofs remain unchanged.

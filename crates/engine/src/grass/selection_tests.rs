@@ -533,3 +533,69 @@ fn selected_height_bounds_include_extrapolated_masked_roots() {
         assert_eq!(p.height_span, generated.batches[0].height_span);
     }
 }
+
+/// Exercise cached authored VCLR with committed terrain at the release worker ceilings.
+#[test]
+#[ignore = "performance"]
+fn performance_coloured_terrain_generation() {
+    use std::{hint::black_box, time::Duration};
+    assert_eq!(
+        env!("MUDCRAB_BUILD_OPT_LEVEL"),
+        "3",
+        "run budgets with --release at opt-level=3"
+    );
+    let mut source = cell(vec![
+        layer(vec![1, 2, 3, 4], 0.5, true),
+        layer(vec![5, 6, 7, 8], 0.5, false),
+    ]);
+    source.vertex_colors = (0..1089).flat_map(|i| [(i % 33 * 7) as u8; 3]).collect();
+    let cache = mapped((1..=8).map(|id| rule(id, 20.0)).collect(), source);
+    let mut surface = vec![120.0; 1089];
+    surface.extend((0..1089).map(|i| (i % 33) as f32 / 32.0));
+    let terrain = GrassTerrain::new(surface, None);
+    for (spacing, slots, millis) in [(64.0, 4096, 6), (32.0, 16384, 25), (20.0, 36864, 60)] {
+        let config = EngineConfig {
+            grass_min_spacing: spacing,
+            grass_max_types_per_texture: 4,
+            ..EngineConfig::default()
+        };
+        let warm = generate_on_terrain(&cache, 42, &config, &terrain);
+        assert_eq!(warm.batches.len(), 8);
+        let count: usize = warm.batches.iter().map(|b| b.instances.len()).sum();
+        assert!(count > 500 && count <= slots * 8);
+        assert!(warm.bytes + terrain.bytes() <= slots * 8 * 32 + 32 * 1024);
+        assert!(
+            warm.batches
+                .iter()
+                .flat_map(|b| b.instances.iter())
+                .any(|i| i.color < 100)
+        );
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let start = Instant::now();
+            let next = black_box(generate_on_terrain(
+                &cache,
+                42,
+                black_box(&config),
+                black_box(&terrain),
+            ));
+            times.push(start.elapsed());
+            assert_eq!(next.batches.len(), warm.batches.len());
+            for (a, b) in warm.batches.iter().zip(&next.batches) {
+                assert_eq!(a.grass_id, b.grass_id);
+                assert_eq!(a.instances, b.instances);
+            }
+        }
+        times.sort_unstable();
+        let ceiling = Duration::from_millis(millis);
+        assert!(
+            times[1] < ceiling,
+            "spacing={spacing}: {:?} exceeds {ceiling:?}",
+            times[1]
+        );
+        eprintln!(
+            "coloured grass: spacing={spacing} instances={count} median={:?} budget={ceiling:?}",
+            times[1]
+        );
+    }
+}

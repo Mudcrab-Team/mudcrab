@@ -2,8 +2,8 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Version nine preserves selection opacity and original LAND sampling fields.
-pub const GRASS_CACHE_VERSION: u32 = 9;
+/// Version ten combines original LAND selection with static-like obstruction filtering.
+pub const GRASS_CACHE_VERSION: u32 = 10;
 pub const GRASS_BLEND_SIDE: usize = 17;
 pub const GRASS_EXCLUSION_SIDE: usize = 64;
 pub const GRASS_CELL_SIZE: f32 = 4096.0;
