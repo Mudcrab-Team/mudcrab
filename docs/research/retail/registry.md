@@ -1,0 +1,73 @@
+# Retail-facts registry
+
+Build for every entry unless stated: `SkyrimSE.exe` 1.7.104.0, SHA-256 `846efccf0c1374d71f892907f46549560f2fcb0a75cb87a3eed438baa0f1402f`, image base `0x140000000`. Addresses are VAs. Data: Skyrim.esm / Update.esm / DLC masters in `~/SkyrimSE/Data`, INI files in `~/SkyrimSE`.
+Methods: **trace** = static instruction/decompiler trace; **data** = record or setting bytes; **xcheck** = agreement with another source. Confidence: high / medium-high / medium / low.
+Detail for each entry: the `qN-*.md` file named in the entry.
+
+| ID | Fact (own words) | Address(es) | Method | Conf. | Cross-checked | Used by |
+|---|---|---|---|---|---|---|
+| RF-WATER-001 | WATR DNAM is copied (max 0xE8 bytes) to TESWaterForm +0xD0. Noise wind direction[i] at form +0x134+4i, wind speed[i] at +0x140+4i. | `0x1403065e0`, `0x1403068c1`, `0x140306970` | trace | high | xEdit / CommonLib DNAM layout (#299 water.md) | #299 |
+| RF-WATER-002 | Per layer: u = frac(sin(dir deg->rad) * speed * T), v = frac(cos(dir) * speed * T). Wrap = fmodf(x,1), +1 if negative. Layers 1,2 -> NormalsScroll0.xyzw, layer 3 -> NormalsScroll1.xy. | `0x1405290ac`–`0x140529356`, sincos `0x1415a8050`, fmodf thunk `0x1415a988e` | trace | high | spud water.cpp:117-127 (same) | #299 |
+| RF-WATER-003 | Water clock T: double at `0x143204040`, += per-frame delta slot 1 (`0x1420d68d4`, seconds) once per frame. | `0x140529ab8`–`0x140529acf`, `0x1402c65e6` | trace | medium-high | — | #299 |
+| RF-WATER-004 | Noise UV = world_xy / uv_scale[i] + scroll[i] (offset added). | not traced in retail DXBC | xcheck | medium | Community Shaders Water.hlsl 201-244; spud water.vert:66-68 | #299 |
+| RF-WATER-005 | Wind direction is a compass bearing (0 = +Y north, 90 = +X east). The pattern travels toward dir+180 (dir = where the wind comes from). RiverWaterFlowNE/NW/SE and CreekWaterFlowSW/SE then match their names. | from 002 + 004 + data | trace+data+xcheck | medium-high | 5 directional records | #299 |
+| RF-WATER-006 | noise_wind_speed unit = noise-tile repeats per second. World speed = speed * uv_scale. | from 002 + 004 | derived | medium-high | — | #299 |
+| RF-GRASS-001 | Grass wind amplitude A = fGrassWindMagnitudeMin + (Max - Min) * w, w = blended weather wind speed 0..1 (initial 0.2). Defaults 5 and 125. | `0x140206b21`, `0x14150c2d2`, `0x1404122d5`–`0x140412358` | trace+data | high | spud renderer.cpp:876-878 | #539 #541 #611 |
+| RF-GRASS-002 | Grass shader wind constant = min(A, 60) * fWindGrassMultiplier:Display (1.0). | `0x141522b79`–`0x141522ba9`, 60 at `0x141b5bec8` | trace | high | spud (same) | #539 #541 #611 |
+| RF-GRASS-003 | Grass wind phase = TotalTime * (1/600) * 2pi * prop[+0x184]; +0x184 is probably GRAS DATA wave period. | `0x141522b5f`–`0x141522cdb` | trace (+0x184 via xcheck) | high (formula), medium (+0x184) | spud grass.vert:42 | #539 #541 #611 |
+| RF-GRASS-004 | Grass light inputs are the sun light's direction, diffuse colour and ambient colour, passed unscaled. No brightness/saturation/strength multipliers. Fallback when no sun: dir colour 0, ambient 1. | `0x141522870` (fills `0x1433d4c50` block) | trace | high | CS RunGrass.hlsl cbuffer layout | #539 #541 |
+| RF-GRASS-005 | Grass ShadowClampValue = fShadowClampValue:Display 0.3 (shadow floor). | `0x141522d44`, setting `0x1420d6d40` | trace (CPU), xcheck (shader use) | high (value), medium (use) | spud grass.frag:26; OpenSky GrassShaders.metal:212 | #541 |
+| RF-GRASS-006 | Grass VS wind displacement and lighting on the instance normal (CS reconstruction formula). | retail DXBC not disassembled | xcheck | medium | CS RunGrass.hlsl 106-118, 232-247; spud grass.vert | #539 |
+| RF-CAM-001 | 1st-person lag spring per axis: e = W*(d*K^T + c*T*V), d = S_prev - P_now, camera = node + e, V = (e-d)/T. Vert K=0.001 c=0.6; horz K=0.0001 c=0.4. Pure-spring time constants 0.145 s / 0.109 s. | `0x1408f47a0`; settings `0x1420ba090`, `0x1420ba0a8`, `0x1420ba0c0`, `0x1420ba0d8` | trace | high | spud (same numbers); #520 | #511 #619 |
+| RF-CAM-002 | Discontinuity: if |S - P| > 300 units, e = 0 and V = 0 that frame. | `0x1408f47a0`, 300 at `0x1420ba1e0` | trace | high | #520 (300 found earlier) | #511 #619 |
+| RF-CAM-003 | Weight W ramps +-1.5/s in [0,1]. It ramps down when |V| > 500 u/s, when movement is not controls-driven, or on three other unresolved flags. | `0x1408f47a0`, 500 at `0x1420ba1e4`, 1.5 at `0x141b5be2c`, gate `0x140796ac0` | trace | high (500/1.5), medium (other flags) | — | #511 #619 |
+| RF-CAM-004 | Controller byte +0x1C5 = "controls-driven" (ToggleControlsDriven). The spring runs in normal player-controlled play. | `0x14037b3a0`, `0x1407969f0`, `0x140796940` | trace | medium-high | — | #511 #619 |
+| RF-CAM-005 | No slope threshold, no slack, no per-tick clamp, no vertical-only speed gate in first-person follow. | `0x1408f47a0` | trace (absence in a fully decompiled function) | high | — | #511 #619 |
+| RF-CAM-006 | Third-person follow has no vertical spring; only collision recovery (min dist^2 4000, speed 3.0*T). | `0x1408fe3c0` | trace | high | #520 | #511 |
+| RF-CAM-007 | Camera clock T = ms delta * 0.001, clamped at 166.67 ms -> 0.1667 s, optional N-frame average. | `0x140ce36b0` | trace | medium-high | #520 | #511 |
+| RF-GMST-001 | Skyrim.esm overrides fZKeyMaxForce = 100 (exe 250) and fZKeyMaxForceWeightHigh = 150 (exe 300). | GMST 0x108B7B, 0x108B7C | data | high | — | #689 |
+| RF-CARRY-001 | Activate: tap = activate; hold > fZKeyDelay (0.2 s) = grab; the release ending that hold does nothing; next release drops. | `0x1407b2660` | trace | high | spud app_internal.hpp:774 | #689 |
+| RF-CARRY-002 | Grab refused above fGrabMaxWeightWalking 100 kg (body mass). fGrabMaxWeightRunning has no code reference. | `0x140751974` | trace | high | spud | #689 |
+| RF-CARRY-003 | Spring = bhkMouseSpringAction(damping 0.5, elasticity 0.2*E, objectDamping 0.75, maxForce 100*S); S = lerp 1.0 (0 kg) to 0.2 (>=150 kg). | `0x140752ffc`–`0x140753185` | trace+data | high | spud (no S) | #689 |
+| RF-CARRY-004 | Special cases: layer 14 -> S 0.5, E 0.1; all constraints type 0xB -> S*0.2, E 0.1. | `0x140753159` region | trace | medium | spud (x0.1, x0.5) | #689 |
+| RF-CARRY-005 | Drop when lag > 96 units (hard-coded), or lag > 10 and contact mass ratio > 4. | `0x140753580`, 96 at `0x14181ab88` | trace | high | spud | #689 |
+| RF-CARRY-006 | Holding mass > fZKeyHeavyWeight 75 blocks a movement mode (spud: running). | `0x140674390` | trace | medium | spud movement.hpp:104 | #689 |
+| RF-CARRY-007 | No Z-key throw/impulse on release; no throw GMST. | `0x140751a30` | trace (absence) | medium | — | #689 |
+| RF-UNIT-001 | Havok metre = 69.99125 game units (constant 0x1417f423c); inverse 0.0142875 (0x1417fde5c). | — | data | high | spud k_skyrim_unit_m 0.0142875 | all |
+| RF-CAM-008 | First-person eye = Camera1st [Cam1] node translation + lag spring; no eye-height constant, no procedural head bob. | `0x1408f5310`, `0x1408f47a0` | trace | high | #520 | #511 #619 |
+| RF-CAM-009 | FOV: world fDefaultWorldFOV, first person fDefault1stPersonFOV (exe 80/80). No sprint FOV change found. | `0x1408f79f0`, `0x1408fb1e0` | trace | high (medium for sprint absence) | — | camera |
+| RF-CAM-010 | Mouse yaw = counts * 0.0125 * 0.02 * MOVT rotate speed (pi walk/run, pi/2 sprint) = 0.000785 rad/count. | `0x1407aeba0`, `0x1407a3fd0`; MOVT 0x3580D | trace+data | high (formula), medium (factor source) | spud player.cpp:327 | controller feel |
+| RF-CAM-011 | Mouse pitch = counts * 0.0125 * 0.85 * fLookingSpeed 0.1 * zoomRatio = 0.0010625 rad/count; not time-scaled. | `0x1408fb2e0`, `0x140693050` | trace | high | spud | controller feel |
+| RF-CAM-012 | Pitch limit +-pi/2; sitting down 40 deg; mounted down 40 / up 25; flying down 70 / up 45. | `0x140693050` | trace | high | spud (+-pi/2) | camera |
+| RF-CAM-013 | Third-person distance = 155 + 445*zoom, zoom in [-0.2, 1]; wheel step 0.075; zoom speed fMouseWheelZoomSpeed per s; below -0.2 -> first person. | `0x1408fe3c0`, `0x1408fdd20`, `0x1408fe830` | trace | high | — | camera |
+| RF-CAM-014 | Shoulder offset (30, -, -10), combat (0, -100, 20), moves at 3.0*T*diff; chase yaw speed 10, max lag 30 deg. | `0x1408fd970`, `0x1408fe830` | trace | high | — | camera |
+| RF-CAM-015 | Camera collision sphere radius 15 (bleedout 5), target check 20 at +124. | `0x1408fa5d0` | trace | high (values) | — | camera |
+| RF-CAM-016 | POV key: tap (<0.25 s) toggles view; hold >= 0.25 s enters third-person orbit. Transitions: t = elapsed/duration with optional smoothstep; horse 500 ms, bleedout 500, animated 1000. | `0x1408f54b0`, `0x1408fcd50` | trace | medium-high | — | camera |
+| RF-CAM-017 | Auto vanity after 120 s idle; orbit 0.01 rad per frame at distance 300; any input exits. | `0x1408f8680`, `0x1408f3810`, `0x1408f3a10` | trace | high | — | camera |
+| RF-CAM-018 | No camera-side interpolation between physics ticks; camera runs per rendered frame on current positions. | `0x1408f8680` | trace (absence) | medium | — | #619 |
+| RF-CAM-019 | ForceFirstPerson switches only when the camera target is the player; ForceThirdPerson resets and enters ThirdPerson unless in horse/bleedout/dragon-type states. | `0x1408f8de0`, `0x1408f8f40` | trace | high | — | scripts |
+| RF-CAM-020 | DisablePlayerControls flag map: movement 0x401 + stop, fighting 0x40, looking 0x02, sneaking 0x80, menu 0x100 + close menus, camswitch per-POV-type byte, activate gate, journal tabs global. It does not touch the controls-driven byte. | `0x140a23ee0`, `0x140a23fc0` | trace | high (flag names from CommonLib) | CommonLib UserEvents | scripts |
+| RF-CAM-021 | SetPlayerAIDriven(true) clears controls-driven (first-person spring fades out); false sets it. | `0x1407559f0` | trace | high | — | #511 scripts |
+| RF-CAM-022 | ShakeCamera: s=clamp(strength,0,1); fade start max(2000s,300); range + 2500s; linear falloff; time = duration or 1.25 s. | `0x1405584a0` | trace | high | — | scripts |
+| RF-PHYS-001 | Physics budget per frame: sim = min(debt + T, 3 * (1/60) * timeMult); sim < 1 ms -> no simulation; leftover beyond the cap carries. Complex mode: 1/30 step, 1 max. | `0x14104ab70` | trace | high | — | #619 |
+| RF-PHYS-002 | Rigid bodies step in fixed 1/60 s steps toward a frame time marker (async stepping). | `0x14104ac30` | trace | medium | — | #619 |
+| RF-PHYS-003 | The character controller integrates once per rendered frame with that frame's sim time; the player moves every frame; no interpolation needed. | `0x141064d20` from `0x140689370` | trace | medium-high | spud differs (fixed tick) | #619 |
+| RF-SUN-001 | Sun path: A = riseMid - T/2, B = setMid + T/2 (T = fSunAlphaTransTime); day x = (1-2u)*fSunXExtreme, night x = (2u-1)*X; node = (x, fSunYExtreme, |X| - |x|). | `0x14041bd90` | trace | high | spud weather.cpp:1043 | #588 |
+| RF-SUN-002 | Sun light direction = normalize(-(DirX/X)*x, -(DirX/X)*Y, fSunZExtreme) = normalize(-0.5x, -20, -150) with ESM GMSTs; elevation 36.7-82.4 deg, also at night. | `0x14041c49d`–`0x14041c540` | trace | high | — | #588 #653 |
+| RF-SUN-003 | GMSTs X 400, Y 40, Z -150, DirX 200, AlphaTrans 0.5 (Skyrim.esm) define the path; they are not fallbacks. | GMST 0x12FC9/0x12FCB/0x12FCA/0x93FA8/0x10FDC3 | data+trace | high | — | #588 |
+| RF-SUN-004 | Sun alpha: 0 outside [A,B], linear ramps over riseMid+-T/2 and setMid+-T/2; glare x WTHR byte +0x668/255 x transition. | `0x14041bd90` | trace | high | — | #588 |
+| RF-SUN-005 | Time-of-day colour weights with fDaytimeColorExtension 0.5 h: sunrise peak at mid of [riseBegin-0.5, riseEnd], sunset peak at mid of [setBegin, setEnd+0.5]; blended with transition t. No separate intensity scalar. | `0x140416760` | trace | high | OpenSky (shape, no extension) | #653 |
+| RF-LIGHT-CPU-001 | XCLL inherit bits: 0x1 ambient+DALC, 0x2 directional colour, 0x4 fog colours, 0x20 rotation, 0x40 directional fade, 0x400 light fade; template data at LGTM +0x20. | `0x1402bbe40`–`0x1402bc790` | trace | high | xEdit layout | #480 |
+| RF-LIGHT-CPU-002 | Ambient cube from DALC: mean of 6 colours + n . (c[odd]-c[even])/2 per axis; specular passthrough; scale max(s,1). Sign vs labels unverified. | `0x1414ec3b0`, `0x1414ec730` | trace | high (form), medium (sign) | — | #480 |
+| RF-LIGHT-CPU-003 | Point-light distance fade in squared distance between XCLL fade begin^2 and end^2; off beyond. | `0x141575d20`, `0x140412df0` | trace | high | — | #480 |
+| RF-LIGHT-CPU-004 | Interior directional light rotation = Rz(rotXY deg) x Ry(rotZ deg), light along local X. | `0x14041be6e`–`0x14041bf8x` | trace | medium | — | #480 |
+| RF-LIGHT-CPU-005 | No caller found for the directional-fade getter (XCLL +0x1C). | `0x1402bc0c0` | trace (absence) | medium | — | #480 |
+| RF-LIGHT-CPU-006 | No-cell fallback: directional (0.95,0.85,0.85), ambient (0.35,0.35,0.43), point-light ambient 0.1. | `0x140412df0` | trace | high | — | #480 |
+| RF-TEX-001 | MODS applied at ref 3D load: map keyed by 3D Index (index -1 skipped, later duplicate wins), one depth-first traversal applies all entries. | `0x1402e9ee0` -> `0x1401ed800` | trace | high | — | #508 |
+| RF-TEX-002 | Match = 3D Index = pre-order depth-first count of geometry leaves in child order (every geometry counted). 3D Name (":N") not read by the apply path. | `0x1401ee0e0` | trace | high (apply path) | Desk data: 1,504 suffix != index | #508 |
+| RF-TEX-003 | Swap only on BSLightingShaderProperty / BSGrassShaderProperty shapes; others skipped but counted. | `0x1401ee201`, `0x1401ee216` | trace | high | — | #508 |
+| RF-TEX-004 | New 9-slot BSShaderTextureSet from the TXST; empty TXST slots stay empty (model's slot not kept); replaces the whole material texture set (shared material cloned). | `0x14032d720`, `0x1401ee0e0` | trace | high | — | #508 |
+| RF-TEX-005 | An entry pointing at NullTextureSet hides the shape (flags +0xF4 bit 0). | `0x14032dc60`, `0x1401ee0e0` | trace | high (hide), medium (FormID 0x28) | — | #508 |
+| RF-LIGHT-CPU-007 | Point-light fade flag = BSLight +0x63, set from create params byte 5 = NOT (REFR flag 0x10000 on LIGH refs, "Never Fades"); default 1. Supplements RF-LIGHT-CPU-003. | `0x141575a3f`, `0x14150ca3f`, `0x140274390`, `0x1402e3bf0` | trace (+ UESP flag name) | high | UESP REFR flags | #480 |
+| RF-LIGHT-CPU-008 | Directional fade (XCLL +0x1C): stored only; no runtime reader found (getter unreferenced; 13-site inline scan). Supersedes RF-LIGHT-CPU-005. | `0x1402bc0c0`, scan | trace (absence) | medium-high | — | #480 |
+| RF-LIGHT-CPU-009 | Inherit 0x80 = clip distance (+0x20, caps interior far distance when > 0); 0x100 = fog power (+0x24); 0x200 = fog max (+0x4C). | `0x1402bc4d0`, `0x140665740`, `0x1402bc3f0`, `0x1402bc460` | trace | high | xEdit names | #480 |
