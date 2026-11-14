@@ -1568,13 +1568,21 @@ impl AssetPipeline {
                     .collect();
                 for (relative, source) in &resolved_files {
                     if extension(source, &["dds"])
-                        && canonical_asset_path(relative, AssetKind::Texture, "dds")
-                            .is_ok_and(|path| defaults.contains(Path::new(&path)))
+                        && let Ok(canonical) =
+                            canonical_asset_path(relative, AssetKind::Texture, "dds")
+                        && defaults.contains(Path::new(&canonical))
                     {
                         let selected = BTreeMap::from([(relative.clone(), source.clone())]);
                         if let Err(error) = stage_mo2_lod_inputs(&staging.join("vfs"), &selected) {
+                            // Never publish a lower-priority archive copy after its winner fails.
+                            // An unremovable staging file is a publication failure, not bad mod data.
+                            match fs::remove_file(staging.join("vfs").join(&canonical)) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                                Err(error) => return Err(error.into()),
+                            }
                             report
-                                .warnings
+                                .notices
                                 .push(format!("default land input omitted: {relative}: {error:#}"));
                         }
                     }

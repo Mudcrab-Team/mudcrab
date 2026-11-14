@@ -344,6 +344,7 @@ mod tests {
             0,
             &catalog,
             app.world().resource::<AssetServer>(),
+            true,
         )
         .unwrap();
         assert_eq!(images.color.len(), 1);

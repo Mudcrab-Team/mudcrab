@@ -292,7 +292,7 @@ async fn metadata_rebuild_default_changed_archive_falls_back() {
 async fn metadata_rebuild_defaults_use_current_bytes() {
     use converter::texture::{TextureConverter, TextureEncoding};
     use dummy_content::{dds, rng::Rng};
-    for archived in [false, true] {
+    for (archived, change_diffuse) in [(false, false), (false, true), (true, false), (true, true)] {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("Data");
         let source = directory.path().join("source");
@@ -317,9 +317,15 @@ async fn metadata_rebuild_defaults_use_current_bytes() {
             ),
         ] {
             let relative = format!("textures/landscape/{name}.dds");
-            let bytes =
-                dds::generate(&dds::Spec::new(format, 16, 16), &mut Rng::new(seed)).unwrap();
-            assert_ne!(bytes, fs::read(data.join(&relative)).unwrap());
+            let original = fs::read(data.join(&relative)).unwrap();
+            let bytes = if name == "dirt02" && !change_diffuse {
+                original.clone()
+            } else {
+                let bytes =
+                    dds::generate(&dds::Spec::new(format, 16, 16), &mut Rng::new(seed)).unwrap();
+                assert_ne!(bytes, original);
+                bytes
+            };
             let config = common::cpu_lod_config(&data, &output);
             expected.push(
                 TextureConverter::convert_with_options(

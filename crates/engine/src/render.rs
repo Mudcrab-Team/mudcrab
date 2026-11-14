@@ -2071,6 +2071,10 @@ mod tests {
             layer.texture_form_id = 0;
         }
         let old = AssetCatalog::open(&path).unwrap();
+        assert!(
+            old.landscape_diffuse(0).is_none(),
+            "legacy packs without default metadata keep a white null base"
+        );
         let (material, images) =
             TerrainExtension::from_quadrant(&terrain, 0, &old, asset_server, true).unwrap();
         assert!(images.color.is_empty() && images.normal.is_empty());
@@ -2362,6 +2366,8 @@ mod tests {
         assert_eq!(fallback.settings.tiling_and_layer_count.z, 3.0);
         assert_eq!(fallback.settings.normal_layers_0, Vec4::ZERO);
         assert_eq!(fallback.settings.normal_layers_1, Vec4::ZERO);
+        terrain.layers[2].texture_form_id = 0;
+        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).is_ok());
         terrain.layers[2].texture_form_id = 0x845;
         let (painted, images) =
             TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).unwrap();
@@ -2378,8 +2384,6 @@ mod tests {
         assert_eq!(images.normal.len(), 1);
         assert_eq!(unpainted.layer_0, extension.layer_0);
         assert_eq!(unpainted.normal_0, extension.normal_0);
-        terrain.layers[2].texture_form_id = 0;
-        assert!(TerrainExtension::from_quadrant(&terrain, 0, &catalog, asset_server, true).is_ok());
     }
 
     /// The weight field is the quadrant's own `17x17` grids, one per overlay, in the order

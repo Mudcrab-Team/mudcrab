@@ -419,7 +419,6 @@ fn matched_plugins(source: &Path, data: &Path) -> Result<(Vec<PathBuf>, Vec<Stri
 }
 
 /// Enforce retained source identity for every ordinary LTEX diffuse.
-/// Optional defaults use the same check but recover locally from its errors.
 fn verify_retained_terrain_source(
     vfs: &Path,
     relative: &Path,
@@ -471,7 +470,6 @@ fn stage_optional_default_source(
     relative: &Path,
     archives: &[PathBuf],
     files: &[PathBuf],
-    manifest: &ConversionManifest,
     report: &mut PipelineReport,
 ) -> Result<()> {
     let paths = BTreeSet::from([relative.to_owned()]);
@@ -502,9 +500,8 @@ fn stage_optional_default_source(
         // A failed winning loose override must not expose a lower-priority archive copy.
         discard_default_source(vfs, relative, &error, report)?;
     }
-    if let Err(error) = verify_retained_terrain_source(vfs, relative, manifest) {
-        discard_default_source(vfs, relative, &error, report)?;
-    }
+    // Generated default images are never retained: publication consumes current DDS bytes.
+    // Only ordinary LTEX inputs must match the retained package's texture proofs.
     Ok(())
 }
 
@@ -731,15 +728,7 @@ async fn rebuild_into(
         verify_retained_terrain_source(&vfs, relative, manifest)?;
     }
     for relative in &default_paths {
-        stage_optional_default_source(
-            config,
-            &vfs,
-            relative,
-            &archives,
-            &files,
-            manifest,
-            &mut report,
-        )?;
+        stage_optional_default_source(config, &vfs, relative, &archives, &files, &mut report)?;
     }
     report.artifacts.extend([
         PathBuf::from("skyrim_world.db"),

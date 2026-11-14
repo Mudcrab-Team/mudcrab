@@ -31,6 +31,11 @@ non-merged and `--no-lod` runs. LOD uses that same recorded diffuse choice (#449
 falling back to Skyrim's built-in Dirt02 paths for absent INI keys. An unusable diffuse records
 white without an orphan normal; an unusable normal keeps the diffuse. These recoverable
 converter outcomes are advisory `notices` and do not affect conversion completeness.
+A dangling BTXT is reader-dependent under the existing compatibility contracts: the in-house
+reader clears a missing, deleted or wrong-kind LTEX target to zero, so that base selects the
+configured default; the legacy reader preserves the nonzero unresolved identity, so that base
+binds no images. This change preserves legacy reference identities rather than changing its
+general unresolved-link policy. Both readers retain usable neighboring terrain.
 Generated `terrain/default-diffuse.ktx2` and `terrain/default-normal.ktx2` are rebuilt from the
 current source bytes, outside ingestion-cache reuse. Their actual image loads participate in
 streaming resource reservations. Zero overlays keep their unresolved slots and weights without
