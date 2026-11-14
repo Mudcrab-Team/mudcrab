@@ -1895,6 +1895,38 @@ fn spawn_cell(
                         crate::actor_animation::ActorClips::load(asset_server, plan.actor.sex),
                         crate::actor_drive::ActorDrive::default(),
                     ));
+                } else if reference.starts_dead {
+                    // No death pose or ragdoll exists yet. A placed corpse keeps its bind
+                    // pose; a standing idle loop would make it look alive.
+                    debug!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                        body_model = %plan.scene_path,
+                        reason = "starts_dead",
+                        "actor spawned without idle playback"
+                    );
+                } else if let Some(scene) = actor_catalog.idle_scene(plan) {
+                    entity.insert((
+                        crate::actor_animation::ActorClips::load_idle(asset_server, scene),
+                        crate::actor_animation::ActorIdleLibrary {
+                            body_scene: plan.scene_path.clone(),
+                        },
+                    ));
+                } else if let Some(scene) = actor_catalog.legacy_creature_idle_scene(plan) {
+                    entity.insert(crate::actor_animation::ActorClips::load_idle(
+                        asset_server,
+                        scene,
+                    ));
+                } else {
+                    debug!(
+                        reference_form_id = format_args!("{:08X}", reference.form_id),
+                        base_form_id = format_args!("{:08X}", plan.actor.base_form_id),
+                        race_id = format_args!("{:08X}", plan.actor.race_id),
+                        sex = plan.actor.sex.as_str(),
+                        body_model = %plan.scene_path,
+                        reason = "no_supported_gait_mapping",
+                        "actor spawned without gait setup"
+                    );
                 }
             }
             // The colour the reference's `XEMI` source lends its model's `External_Emittance`
@@ -8553,6 +8585,7 @@ mod tests {
                 references: vec![ReferenceRow {
                     form_id: 0x00F9907,
                     initially_enabled: true,
+                    starts_dead: false,
                     cell_id: 0x02D4E0,
                     base_form_id: 0x00EF957,
                     base_record_type: None,
@@ -9595,6 +9628,7 @@ mod tests {
         ReferenceRow {
             form_id,
             initially_enabled: true,
+            starts_dead: false,
             cell_id: 99,
             base_form_id: 0x200 + form_id,
             base_record_type: None,
@@ -10796,6 +10830,164 @@ mod tests {
             .get::<crate::actor_body_weight::ActorBodyWeight>()
             .expect("the body weight component");
         assert!((weight.0 - 0.8).abs() < 1e-6, "{weight:?}");
+    }
+
+    /// One creature `NPC_` row (base 0x2000, race 0x1000) with `body` as its body part.
+    fn creature_catalog_connection(body: &str) -> rusqlite::Connection {
+        let connection = actor_catalog_connection();
+        connection
+            .execute(
+                "INSERT INTO actor_models(id,race_id,sex,resolution) VALUES(0x2000,0x1000,'male','body')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO actor_model_parts(npc_id,slot,model_path) VALUES(0x2000,'body',?1)",
+                [body],
+            )
+            .unwrap();
+        connection
+    }
+
+    fn creature_reference(starts_dead: bool) -> ReferenceRow {
+        let mut reference = lit_reference(0x2001, None, None);
+        reference.base_form_id = 0x2000;
+        reference.base_record_type = Some("NPC_".to_owned());
+        reference.starts_dead = starts_dead;
+        reference
+    }
+
+    fn write_asset(root: &std::path::Path, relative: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"clip").unwrap();
+    }
+
+    /// Verified creature bodies select their own idle and retain their standalone geometry.
+    #[test]
+    fn verified_creature_bodies_request_their_own_idle_without_locomotion() {
+        for profile in shared::creature_idle::CREATURE_IDLES {
+            let directory = tempfile::tempdir().unwrap();
+            write_asset(directory.path(), profile.clip_scene);
+            let connection = creature_catalog_connection(profile.body_source);
+            let catalog =
+                ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+            let app = spawn_reference_cell_app_with_catalog(
+                vec![creature_reference(false)],
+                false,
+                catalog,
+            );
+            let entity = app.world().entity(reference_entity(&app, 0x2001));
+            assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+            let clips = entity.get::<crate::actor_animation::ActorClips>().unwrap();
+            assert_eq!(
+                clips.idle.path().unwrap().path().to_str().unwrap(),
+                profile.clip_scene
+            );
+            assert_eq!(clips.idle, clips.walk);
+            assert_eq!(clips.idle, clips.run);
+            assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
+            assert_eq!(entity.get::<Actor>().unwrap().base_form_id, 0x2000);
+        }
+    }
+
+    /// A pack converted before the explicit creature clips existed requests no missing asset.
+    #[test]
+    fn verified_creature_bodies_without_their_published_clip_stay_static() {
+        let profile = shared::creature_idle::CREATURE_IDLES[0];
+        let directory = tempfile::tempdir().unwrap();
+        let connection = creature_catalog_connection(profile.body_source);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let app =
+            spawn_reference_cell_app_with_catalog(vec![creature_reference(false)], false, catalog);
+        let entity = app.world().entity(reference_entity(&app, 0x2001));
+        assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+        assert!(entity.get::<crate::actor_animation::ActorClips>().is_none());
+    }
+
+    /// The generic catalog branch binds by race, sex and full body key, and only then installs
+    /// the published default clip and the authored idle library.
+    #[test]
+    fn catalog_creature_bodies_play_their_published_default_idle() {
+        use shared::actor_idle_catalog::{ActorIdleBinding, ActorIdleCatalog, PATH, VERSION};
+        let directory = tempfile::tempdir().unwrap();
+        let clip = "meshes/actor-idles/clips/idle.glb";
+        write_asset(directory.path(), clip);
+        let body = "meshes/actors/custom/body.glb";
+        let catalog = ActorIdleCatalog {
+            version: VERSION,
+            bindings: vec![ActorIdleBinding {
+                race_id: 0x1000,
+                sex: "male".into(),
+                body_scene: body.into(),
+                project: "meshes/actors/custom/project.hkx".into(),
+                skeleton: "meshes/actors/custom/character assets/skeleton.hkx".into(),
+                race_skeleton_nif: "meshes/actors/custom/character assets/skeleton.nif".into(),
+                bound_tracks: 2,
+                moving_bound_tracks: 1,
+                skipped_tracks: Vec::new(),
+                source: "meshes/actors/custom/animations/idle.hkx".into(),
+                scene: clip.into(),
+                clips: Default::default(),
+            }],
+            ..Default::default()
+        };
+        std::fs::write(
+            directory.path().join(PATH),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+        for starts_dead in [false, true] {
+            let connection = creature_catalog_connection("Actors\\Custom\\Body.nif");
+            connection
+                .execute_batch(
+                    "CREATE TABLE race_animation_sources(race_id INTEGER,sex TEXT,skeleton_nif TEXT,project_hkx TEXT);
+                     INSERT INTO race_animation_sources VALUES (4096,'male','meshes/actors/custom/character assets/skeleton.nif','meshes/actors/custom/project.hkx');",
+                )
+                .unwrap();
+            let actor_catalog =
+                ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+            let app = spawn_reference_cell_app_with_catalog(
+                vec![creature_reference(starts_dead)],
+                false,
+                actor_catalog,
+            );
+            let entity = app.world().entity(reference_entity(&app, 0x2001));
+            assert_eq!(entity.get::<MeshHandle>().unwrap().0, body);
+            assert!(entity.get::<crate::actor_drive::ActorDrive>().is_none());
+            let clips = entity.get::<crate::actor_animation::ActorClips>();
+            let library = entity.get::<crate::actor_animation::ActorIdleLibrary>();
+            if starts_dead {
+                assert!(
+                    clips.is_none(),
+                    "a placed corpse must not play a standing idle"
+                );
+                assert!(library.is_none());
+            } else {
+                assert_eq!(
+                    clips.unwrap().idle.path().unwrap().path().to_str().unwrap(),
+                    clip
+                );
+                assert_eq!(library.unwrap().body_scene, body);
+            }
+        }
+    }
+
+    /// The legacy cow/chicken branch also leaves a Starts Dead corpse without idle playback.
+    #[test]
+    fn starts_dead_verified_creatures_receive_no_idle() {
+        let profile = shared::creature_idle::CREATURE_IDLES[1];
+        let directory = tempfile::tempdir().unwrap();
+        write_asset(directory.path(), profile.clip_scene);
+        let connection = creature_catalog_connection(profile.body_source);
+        let catalog = ActorCatalog::from_connection_with_assets_root(&connection, directory.path());
+        let app =
+            spawn_reference_cell_app_with_catalog(vec![creature_reference(true)], false, catalog);
+        let entity = app.world().entity(reference_entity(&app, 0x2001));
+        assert_eq!(entity.get::<MeshHandle>().unwrap().0, profile.body_scene);
+        assert!(entity.get::<crate::actor_animation::ActorClips>().is_none());
+        assert_eq!(entity.get::<Actor>().unwrap().base_form_id, 0x2000);
     }
 
     /// A race with its own body keeps that body and receives no shared human gait, even when the
