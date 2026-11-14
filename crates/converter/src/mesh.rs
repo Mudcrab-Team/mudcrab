@@ -1794,6 +1794,13 @@ pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
 /// wrapper is exercised on default worker stacks; Windows main/std/Rayon stack
 /// measurements also cover those walks. Geometry leaves do not count. This is
 /// a conversion policy rather than a NIF format maximum, including for skeletons.
+///
+/// This bound and the unparsable-skin refusal add no `MESH_OUTPUT_CONTRACTS` name, so the `nif`
+/// settings proof is unchanged. Vanilla and Creation Club output is unchanged: 0 of 25,388
+/// shared NIFs nest deeper than 64 scene nodes (the deepest is 26) and 0 of 8,954 skinned NIFs
+/// have an unparsable skin (see the pull request text for #445). The only exposure is an old
+/// GLB of a third-party NIF deeper than 64 or with a bad skin, which stays in its pack until the
+/// next normal rebuild of that asset.
 pub(crate) const MAX_SCENE_DEPTH: usize = 256;
 
 /// Deepest chain of scene nodes in the NIF's block graph.
@@ -4328,6 +4335,28 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// Scenes well under the old 64-node collision limit convert to the same GLB bytes as before
+    /// the shared 256-node bound. The pinned hashes come from the converter before that bound.
+    #[test]
+    fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let cases = [
+            ("static", static_nif(), "32055a7cc2a3a7a4dd45eb11cd69ad893349f2e853eb82cffe72fd7efebcffe7"),
+            ("chain-40", static_scene_chain_nif(40), "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496"),
+        ];
+        for (name, source, expected) in cases {
+            let input = directory.path().join(format!("{name}.nif"));
+            let output = input.with_extension("glb");
+            fs::write(&input, source).unwrap();
+            MeshConverter::convert_nif_to_glb_with_skeleton(&input, &output, None).unwrap();
+            assert_eq!(
+                crate::cache::hash_bytes(&fs::read(&output).unwrap()),
+                expected,
+                "{name}: GLB bytes changed"
+            );
+        }
     }
 
     /// Inspection measures deep skeletons while every consuming entry point refuses them.

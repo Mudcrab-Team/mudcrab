@@ -420,7 +420,7 @@ pub(crate) fn can_reuse_meshes(schema: u32) -> bool {
 /// Check the explicit producer pair so later contracts cannot inherit old mesh reuse.
 /// Each pair names a byte-identical GLB contract; `(24, 26)` must never be read as
 /// transitive, so `(24, 28)` and `(26, 28)` are deliberately absent. A named
-/// [`MESH_OUTPUT_CONTRACTS`] entry changes output or input eligibility at a fixed producer, which
+/// [`MESH_OUTPUT_CONTRACTS`] entry changes GLB bytes without advancing the producer, which
 /// a historical producer's settings proof cannot name, so cross-producer reuse is suspended
 /// while any entry is active.
 pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
@@ -428,7 +428,7 @@ pub(crate) fn can_reuse_meshes_for_producer(schema: u32, current: u32) -> bool {
         || (MESH_OUTPUT_CONTRACTS.is_empty() && matches!((schema, current), (24, 26) | (27, 28)))
 }
 
-/// Named mesh output or input-eligibility changes at a fixed `CONVERTER_SCHEMA_VERSION`.
+/// Named changes to converted mesh bytes made without advancing `CONVERTER_SCHEMA_VERSION`.
 /// Each name enters the current producer's mesh settings proof, so a normal conversion rebuilds
 /// meshes an earlier converter of the same producer wrote. Append a name per change, never
 /// rename or reorder one, and clear the list when the producer advances.
@@ -441,8 +441,6 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
-    "nif-scene-and-skin-parse",
-    "nif-scene-depth-256",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical

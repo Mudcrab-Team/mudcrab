@@ -234,21 +234,6 @@ fn nif_audit_retains_refused_scene_and_skin_diagnostics() {
     );
 }
 
-/// Pin the actual pre-refusal proof independently of the current contract list.
-fn pre_refusal_mesh_proof() -> String {
-    hash_bytes(
-        &serde_json::to_vec(&serde_json::json!({
-            "mesh_producer": 28,
-            "mesh_contracts": [
-                "legacy-skin-export", "msn-vertex-normals", "facegen-tint-slot",
-                "lighting-type-data", "msn-specular-default", "hidden-niavobject-excluded",
-                "nif-root-transform-ignored", "skin-static-fallback"
-            ]
-        }))
-        .unwrap(),
-    )
-}
-
 /// A malformed skin fails only its model; valid assets and plugin records still publish.
 #[tokio::test]
 async fn malformed_skin_refusal_publishes_valid_neighbors_and_records_failure() {
@@ -436,84 +421,6 @@ fn asset_closure_tool_reports_every_alias_of_one_output() {
         neighbor,
         "a failing alias deleted its sibling's published GLB"
     );
-}
-
-/// A published old static success for the same malformed source must be rebuilt and refused.
-#[tokio::test]
-async fn warm_cache_refuses_pre_refusal_static_success() {
-    assert_old_skin_success_is_refused(0).await;
-}
-
-/// A resumed journal must also reject the old same-producer mesh settings proof.
-#[tokio::test]
-async fn resumed_cache_refuses_pre_refusal_static_success() {
-    assert_old_skin_success_is_refused(1).await;
-}
-
-/// A staging copy without a journal must not recover old proof from the published manifest.
-#[tokio::test]
-async fn resumed_manifest_cache_refuses_pre_refusal_static_success() {
-    assert_old_skin_success_is_refused(2).await;
-}
-
-/// Seed genuine valid output bytes with an independently pinned old proof and unchanged bad input.
-async fn assert_old_skin_success_is_refused(mode: u8) {
-    use converter::cache::{StagedOutput, StagingJournal};
-
-    let root = tempfile::tempdir().unwrap();
-    let data = root.path().join("Data");
-    prepare_data(&data);
-    fs::write(data.join(BODY_KEY), body_fixture()).unwrap();
-    let output = root.path().join("modern");
-    let mut config = config(&data, &output);
-    assert!(publish(&config).await.complete);
-    let mut saved = manifest(&output);
-    let texture_proof = saved.asset_configuration_hashes["dds"].clone();
-    let script_proof = saved.asset_configuration_hashes["pex"].clone();
-    let neighbor = fs::read(output.join("meshes/generated.glb")).unwrap();
-    fs::write(data.join(BODY_KEY), unparsable_skin()).unwrap();
-    // A valid static GLB is what the old parser's Unhandled skin could publish.
-    fs::write(output.join(BODY_OUTPUT), &neighbor).unwrap();
-    let entry = saved.entries.get_mut(BODY_KEY).unwrap();
-    entry.source_hash = hash_file(&data.join(BODY_KEY)).unwrap();
-    entry.output_hash = hash_bytes(&neighbor);
-    entry.output_size = neighbor.len() as u64;
-    let record = StagedOutput {
-        schema_version: saved.schema_version,
-        configuration_hash: pre_refusal_mesh_proof(),
-        source_hash: entry.source_hash.clone(),
-        output_size: entry.output_size,
-        output_hash: entry.output_hash.clone(),
-    };
-    saved
-        .asset_configuration_hashes
-        .insert("nif".into(), pre_refusal_mesh_proof());
-    saved
-        .save(&output.join("conversion-manifest.json"))
-        .unwrap();
-    if mode != 0 {
-        let staging = root.path().join("modern.staging-old-skin");
-        fs::create_dir_all(staging.join(BODY_OUTPUT).parent().unwrap()).unwrap();
-        fs::write(staging.join(BODY_OUTPUT), &neighbor).unwrap();
-        if mode == 1 {
-            StagingJournal::open(&staging)
-                .unwrap()
-                .record(BODY_KEY, &record)
-                .unwrap();
-            // Exercise the journal alone, independently of manifest reuse.
-            fs::rename(&output, root.path().join("retained-old-pack")).unwrap();
-        }
-        config.resume_staging = Some(staging);
-    }
-    let report = publish(&config).await;
-    assert_refused_model(&report, &output);
-    assert_eq!(
-        fs::read(output.join("meshes/generated.glb")).unwrap(),
-        neighbor
-    );
-    let current = manifest(&output);
-    assert_eq!(current.asset_configuration_hashes["dds"], texture_proof);
-    assert_eq!(current.asset_configuration_hashes["pex"], script_proof);
 }
 
 /// Read the actual saved proof, including failures and per-kind settings.
@@ -1044,58 +951,6 @@ async fn repair_current_contract_unresolved_mesh_preserves_geometry_and_warm_pro
         manifest(&output).entries[BODY_KEY].source_hash,
         expected_hash
     );
-}
-
-/// Pin the mesh proof before raising the shared scene/collision traversal budget.
-fn pre_depth_expansion_mesh_proof() -> String {
-    hash_bytes(
-        &serde_json::to_vec(&serde_json::json!({
-            "mesh_producer": 28,
-            "mesh_contracts": [
-                "legacy-skin-export", "msn-vertex-normals", "facegen-tint-slot",
-                "lighting-type-data", "msn-specular-default", "hidden-niavobject-excluded",
-                "nif-root-transform-ignored", "skin-static-fallback", "nif-scene-and-skin-parse"
-            ]
-        }))
-        .unwrap(),
-    )
-}
-
-/// A warm pack carrying the old collision traversal proof must rebuild its meshes only.
-#[tokio::test]
-async fn warm_cache_rebuilds_pre_depth_expansion_mesh_proof() {
-    let root = tempfile::tempdir().unwrap();
-    let data = root.path().join("Data");
-    prepare_data(&data);
-    let output = root.path().join("modern");
-    let config = config(&data, &output);
-    assert!(publish(&config).await.complete);
-    let mut saved = manifest(&output);
-    let texture_proof = saved.asset_configuration_hashes["dds"].clone();
-    let script_proof = saved.asset_configuration_hashes["pex"].clone();
-    let old_proof = pre_depth_expansion_mesh_proof();
-    assert_eq!(
-        old_proof,
-        "b62ec72de284a86f9352426adeda91c0c400cf922ffd931c6be9d3c040031036"
-    );
-    saved
-        .asset_configuration_hashes
-        .insert("nif".into(), old_proof.clone());
-    fs::write(
-        output.join("conversion-manifest.json"),
-        serde_json::to_vec_pretty(&saved).unwrap(),
-    )
-    .unwrap();
-    let report = publish(&config).await;
-    assert!(report.complete, "{report:?}");
-    assert!(
-        report.converted >= 1,
-        "old traversal proof was reused: {report:?}"
-    );
-    let current = manifest(&output);
-    assert_ne!(current.asset_configuration_hashes["nif"], old_proof);
-    assert_eq!(current.asset_configuration_hashes["dds"], texture_proof);
-    assert_eq!(current.asset_configuration_hashes["pex"], script_proof);
 }
 
 /// Preserve block boundaries while making the first shape's shader reference out of range.

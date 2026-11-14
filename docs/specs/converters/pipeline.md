@@ -406,7 +406,9 @@ producer advances. `--reuse-assets` retains the source package's mesh bytes
 only when its recorded `nif` proof equals the current list's proof
 (`crates/converter/src/metadata.rs`). A source written before a name was
 appended is rejected with "retained mesh settings predate the current mesh
-output contract", and a normal conversion rebuilds its meshes.
+output contract", and a normal conversion rebuilds its meshes. The NIF scene-depth
+bound and the unparsable-skin refusal append no name, so the `nif` proof is unchanged
+and `--reuse-assets` behaves as before.
 
 Normal producer eligibility remains independent of explicit metadata retention.
 The only cross-producer mesh allowance is producer 24 -> 26; a future producer

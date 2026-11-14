@@ -29,8 +29,8 @@ extra fields are read but not exported. A billboard keeps its authored orientati
 turning to face the camera. Before these node types were parsed, shapes under them lost every
 parent transform and sat at the scene root (#288): a forge's glow, flames and quench water
 floated about 170 units away from the forge.
-Node-wrapper support predates the scene-validation guard below. The current mesh output
-contract makes normal conversion rebuild older same-producer GLBs.
+There is no converter schema bump: conversions made before this change keep their cached GLBs
+until they are reconverted.
 
 Inspection uses an iterative, memoized walk over every scene-node component. It reports the
 longest finite chain even beyond the conversion limit, along with declared-block parse failures
@@ -356,13 +356,15 @@ Strict animated actor composition continues to require bindable skin data and us
 substitute; its shared weight normalizer uses the same rounding tolerance. Every actual skin-bound GLB primitive still requires valid skin indices, `JOINTS_0`
 and `WEIGHTS_0`.
 
-The existing `skin-static-fallback` mesh settings contract covers parsed-skin recovery. The
-appended `nif-scene-and-skin-parse` contract covers scene-depth/cycle and malformed-instance
-validation. The appended `nif-scene-depth-256` contract covers the raised scene/collision budget:
-additional collision parent visits can change output even for previously accepted files.
-Normal caches rebuild older same-producer meshes, and metadata retention rejects an
-older or missing mesh proof until normal conversion regenerates it. Texture/script and archive
-producer identities are unchanged.
+The mesh settings contract appends `skin-static-fallback` after the existing contracts in
+`MESH_OUTPUT_CONTRACTS` (last: `nif-root-transform-ignored`). Normal caches
+rebuild older same-producer meshes, and metadata retention rejects an older or missing mesh proof
+until normal conversion regenerates it. Texture/script producer identities are unchanged.
+
+The scene-depth bound, the cycle check and the unparsable-skin refusal append no contract name,
+so the `nif` proof is unchanged. Vanilla and Creation Club output is unchanged by them. A GLB
+already published from a third-party NIF deeper than 64 nodes, or with an undecodable skin
+instance, stays in its pack until the next normal rebuild of that asset.
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
 skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.
 
