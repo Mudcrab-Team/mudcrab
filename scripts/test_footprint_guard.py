@@ -302,14 +302,10 @@ class AncestorTests(unittest.TestCase):
     CHAIN = {100: 50, 50: 10, 10: 1, 1: 0}
 
     def test_ancestor_chain_walks_up_to_init(self):
-        self.assertEqual(guard.ancestors_of(100, self.CHAIN.get), [50, 10, 1])
-
-    def test_ancestor_chain_stops_on_a_cycle_or_a_missing_parent(self):
-        self.assertEqual(guard.ancestors_of(1, {1: 2, 2: 1}.get), [2])
-        self.assertEqual(guard.ancestors_of(5, {}.get), [])
+        self.assertEqual(guard.ancestry(50, self.CHAIN.get), [50, 10, 1])
 
     def test_a_grandparent_is_refused_as_root(self):
-        ancestors = guard.ancestors_of(100, self.CHAIN.get)
+        ancestors = guard.ancestry(50, self.CHAIN.get)
         for pid in (50, 10, 1, 100):
             with self.assertRaises(guard.Refused, msg=str(pid)):
                 guard._refuse_pid(pid, 100, ancestors)
@@ -452,3 +448,106 @@ class NonFiniteInputTests(unittest.TestCase):
     def test_nan_interval_is_refused(self):
         with self.assertRaises(guard.Refused):
             guard.Config(interval_s=float("nan")).validate()
+
+
+class AncestryFailClosedTests(unittest.TestCase):
+    """N1: when the parent chain cannot be read, the guard refuses to run."""
+
+    def test_the_chain_starts_at_the_known_parent_even_if_ps_fails_after_it(self):
+        self.assertEqual(guard.ancestry(10, {10: 1}.get), [10, 1])
+
+    def test_a_chain_that_cannot_be_built_is_refused(self):
+        # ps fails for every PID: the parent is known, its parent is not.
+        with self.assertRaises(guard.Refused) as caught:
+            guard.ancestry(50, {}.get)
+        self.assertIn("cannot read the parent of PID 50", str(caught.exception))
+
+    def test_a_chain_that_ends_in_the_middle_is_refused(self):
+        with self.assertRaises(guard.Refused):
+            guard.ancestry(50, {50: 10}.get)  # 10 has no known parent and is not init
+
+    def test_a_chain_that_never_ends_is_refused_by_the_bound(self):
+        with self.assertRaises(guard.Refused) as caught:
+            guard.ancestry(2, lambda pid: pid + 1)
+        self.assertIn("longer than", str(caught.exception))
+
+    def test_a_cycle_is_refused(self):
+        with self.assertRaises(guard.Refused):
+            guard.ancestry(2, {2: 3, 3: 2}.get)
+
+    def test_a_parent_of_init_or_zero_ends_the_chain(self):
+        self.assertEqual(guard.ancestry(1, {}.get), [1])
+        self.assertEqual(guard.ancestry(10, {10: 0}.get), [10])
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs macOS")
+    def test_cli_refuses_and_says_so_when_ps_fails(self):
+        from unittest import mock
+
+        with mock.patch.object(guard, "_darwin_parent", return_value=None):
+            with mock.patch.object(sys, "stderr", new_callable=__import__("io").StringIO) as err:
+                code = guard.main(["--pid", "99999"])
+        self.assertEqual(code, guard.EXIT_REFUSED)
+        self.assertIn("cannot read the parent", err.getvalue())
+
+
+class DeadStderrTests(unittest.TestCase):
+    """N2: a dead stderr pipe must not abort the kill loop."""
+
+    class DeadPipe:
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    def test_a_dead_stderr_does_not_stop_the_remaining_kills(self):
+        from unittest import mock
+
+        killed = []
+
+        def kill(pid):
+            if pid == 100:
+                raise PermissionError(1, "Operation not permitted")  # this one is reported
+            killed.append(pid)
+
+        clock = FakeClock()
+        with mock.patch.object(sys, "stderr", self.DeadPipe()):
+            result = guard.watch(
+                100,
+                guard.Config(),
+                lambda root: sample(30, pids=(100, 101, 102)),
+                kill,
+                clock=clock,
+                sleep=clock.sleep,
+            )
+        self.assertEqual(killed, [101, 102])
+        self.assertEqual(len(result.kill_errors), 1)
+
+    def test_a_dead_stderr_does_not_stop_the_log_failure_path(self):
+        from unittest import mock
+
+        killed = []
+
+        def bad_log(row):
+            raise OSError(28, "No space left on device")
+
+        clock = FakeClock()
+        with mock.patch.object(sys, "stderr", self.DeadPipe()):
+            guard.watch(
+                100,
+                guard.Config(),
+                lambda root: sample(30, pids=(100, 101)),
+                killed.append,
+                clock=clock,
+                sleep=clock.sleep,
+                log=bad_log,
+            )
+        self.assertEqual(killed, [100, 101])
+
+    def test_the_stderr_helper_swallows_a_closed_stream(self):
+        from unittest import mock
+
+        closed = __import__("io").StringIO()
+        closed.close()
+        with mock.patch.object(sys, "stderr", closed):
+            guard._stderr("still alive")  # must not raise ValueError or OSError
