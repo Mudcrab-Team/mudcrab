@@ -3,7 +3,7 @@
 > Written with an AI assistant; research notes, not checked line by line by a human. Read-only source review of [spud](https://github.com/chasmlol/spud) (MIT) at commit [`8c990420`](https://github.com/chasmlol/spud/commit/8c9904207a5c573a0193fb903fb5c433f127f102), 2026-11-13. Nothing was built or run. See the [README](../README.md) for evidence levels and the licence note.
 > **Topic:** Wave 2, topic 12: combat, inventory and magic in spud
 
-Nothing was built, run, or captured. Every claim below cites a line I read. Licence: spud is MIT, Mudcrab is GPL-3.0; this report records ideas and algorithms, no code is copied.
+Nothing was built, run, or captured. Every claim below cites a line I read. Licence: spud is MIT, Mudcrab is GPL-3.0-or-later; this report records ideas and algorithms, no code is copied.
 
 Feeds #558 (C3 combat and projectiles), #563 (C1 items, inventory, activation) and C4 (magic, effects, shouts).
 

@@ -3,7 +3,7 @@
 > Written with an AI assistant; research notes, not checked line by line by a human. Read-only source review of [spud](https://github.com/chasmlol/spud) (MIT) at commit [`8c990420`](https://github.com/chasmlol/spud/commit/8c9904207a5c573a0193fb903fb5c433f127f102), 2026-11-13. Nothing was built or run. See the [README](../README.md) for evidence levels and the licence note.
 > **Topic:** Ranked gaps where Mudcrab is behind spud.
 
-Spud is MIT licensed and Mudcrab is GPL-3.0. Read Spud for ideas, data layouts, and test ideas; do not paste code. Third-party HRTF data has its own license.
+Spud is MIT licensed and Mudcrab is GPL-3.0-or-later. Read Spud for ideas, data layouts, and test ideas; do not paste code. Third-party HRTF data has its own license.
 
 Rank reflects estimated value for a playable Skyrim port on Mac/Metal and Windows, not a measured return. All effort classes are estimates: S means a small scoped change, M a subsystem increment, L a substantial subsystem, and XL a multi-system effort. Source references are file paths in the spud repository at the pinned commit. Implemented source does not establish vanilla or runtime parity.
 

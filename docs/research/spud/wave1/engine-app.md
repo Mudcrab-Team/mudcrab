@@ -13,7 +13,7 @@
 - Doors combine activation, portal geometry, cell/world travel, destination placement, and room visibility.
 - Combat, dialogue, mounts/carts, item transactions, and journal/map UI are wired into game state and actors.
 - Largest liberties: custom `.ost` save format instead of Skyrim save files; implementation-defined cart and dragon mount behavior; camera/combat/death paths are not demonstrated as vanilla-equivalent.
-- License caveat: Spud is MIT and Mudcrab is GPL-3.0. Borrow techniques and ideas, not code.
+- License caveat: Spud is MIT and Mudcrab is GPL-3.0-or-later. Borrow techniques and ideas, not code.
 
 ## Feature map
 

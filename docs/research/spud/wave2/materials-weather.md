@@ -4,7 +4,7 @@
 > **Topic:** Wave 2: materials, lighting and weather in spud
 
 Topic 9 of [the wave-2 plan](../master/wave2.md), function-level. Read-only survey of `chasmlol/spud` at commit
-`8c990420` (`Merge branch 'main' into claude/player-db97be`). Mudcrab baseline: `main` as of 2026-11-13. No build, no run, no capture. spud is MIT; Mudcrab is GPL-3.0. This report records technique and data flow only, with
+`8c990420` (`Merge branch 'main' into claude/player-db97be`). Mudcrab baseline: `main` as of 2026-11-13. No build, no run, no capture. spud is MIT; Mudcrab is GPL-3.0-or-later. This report records technique and data flow only, with
 short quotes; no code is copied. Licence caveat stated once here.
 
 Headline: spud carries **authored weather data and authored material data all the way to the shader**, and

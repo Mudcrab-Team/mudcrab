@@ -4,7 +4,7 @@
 > **Topic:** Wave 2: audio ingestion and platform-neutral interface (spud)
 
 Spud reference: commit 8c990420, read-only. All line numbers are from that commit. Spud is MIT; Mudcrab is
-GPL-3.0. This report records ideas and measured behaviour only; no code was copied.
+GPL-3.0-or-later. This report records ideas and measured behaviour only; no code was copied.
 
 ## Scope read
 

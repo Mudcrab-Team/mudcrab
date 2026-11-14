@@ -3,7 +3,7 @@
 > Written with an AI assistant; research notes, not checked line by line by a human. Read-only source review of [spud](https://github.com/chasmlol/spud) (MIT) at commit [`8c990420`](https://github.com/chasmlol/spud/commit/8c9904207a5c573a0193fb903fb5c433f127f102), 2026-11-13. Nothing was built or run. See the [README](../README.md) for evidence levels and the licence note.
 > **Topic:** Wave 2, topic 8: actor assembly and rendering (spud)
 
-Licence note: spud is MIT, Mudcrab is GPL-3.0. Everything below is a description of technique and data layout, not a code source. Snippets are short and quoted for evidence.
+Licence note: spud is MIT, Mudcrab is GPL-3.0-or-later. Everything below is a description of technique and data layout, not a code source. Snippets are short and quoted for evidence.
 
 ## Scope read
 

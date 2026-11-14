@@ -14,7 +14,7 @@
 - Largest liberty: the runtime consumes Spud's own converted formats instead of Skyrim's source formats.
 - Other major gaps: some data is reduced to runtime-specific representations; native endian assumptions limit portability.
 - Format documents are not always synchronized with header constants, including `.osm`, `.osr`, `.osw`, and `.osv`.
-- Spud is MIT and Mudcrab is GPL-3.0; borrow techniques and concepts, not code.
+- Spud is MIT and Mudcrab is GPL-3.0-or-later; borrow techniques and concepts, not code.
 
 ## Feature map
 

@@ -8,7 +8,7 @@
 | Fidelity policy | impl | shipped specs and evidence rules | different approach | [meta](../wave1/meta.md) |
 | Roadmap and stages | impl | shipped phase roadmaps | parity | [meta](../wave1/meta.md) |
 | Build targets and platform | impl | shipped Mac and Windows targets; runtime qualification varies | Mudcrab ahead | [meta](../wave1/meta.md) |
-| Dependencies and licenses | impl | shipped GPL-3.0 project and policy | different approach | [meta](../wave1/meta.md) |
+| Dependencies and licenses | impl | shipped GPL-3.0-or-later project and policy | different approach | [meta](../wave1/meta.md) |
 | Module boundaries | impl | shipped Rust crates and Bevy integration | different approach | [meta](../wave1/meta.md) |
 | Bring-your-own-game policy | impl | shipped local conversion | parity | [meta](../wave1/meta.md) |
 | Native runtime data | impl | shipped converted packs | different approach | [meta](../wave1/meta.md) |

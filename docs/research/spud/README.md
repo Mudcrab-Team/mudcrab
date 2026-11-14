@@ -6,7 +6,7 @@ These are Mudcrab's read-only notes on [spud](https://github.com/chasmlol/spud),
 
 **Spud is a map, not an oracle.** It is a one-contributor, days-old, AI-assisted project, with no conventional tests or CI found by these audits. Nobody has compared its behaviour with Skyrim. Use the reports to see what a subsystem has to handle. Do not treat spud's numbers or quirks as the truth about Skyrim.
 
-**Mudcrab code is written by a human owner from the written description, with attribution to spud, per [AI_POLICY.md](../../AI_POLICY.md). Never copy spud code.** Spud's code is MIT and Mudcrab is GPL-3.0; the licences are compatible only while spud's notice stays with any copied code. Re-implementing from the description avoids the question.
+**Spud is MIT-licensed and Mudcrab is GPL-3.0-or-later; never copy spud code.** The repository's AI policy ([AI_POLICY.md](../../AI_POLICY.md), still marked "Proposal") says: "A human owns every line. The contributor reads, tests and answers for everything they submit." Separately, this repository's practice is to port from written descriptions, not from code, and to credit spud when a Mudcrab change uses an idea from it. The licences are compatible only while spud's notice stays with any copied code; re-implementing from the description avoids the question.
 
 ## Contents
 

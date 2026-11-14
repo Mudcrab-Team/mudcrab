@@ -33,7 +33,7 @@ Read in full or in the ranges cited. Line counts are `wc -l`, measured.
 | Mudcrab `crates/engine/src/actor_animation.rs` | 979 | gait clip playback today |
 | Mudcrab `crates/shared/src/{actor_idle_catalog,creature_idle}.rs` | 287, 80 | idle binding catalog and the two creature idles |
 | Mudcrab `docs/roadmap/04-gameplay-and-physics.md` | 40+ | the only written animation plan found |
-| Issues #470, #471, #399 and #400 | — | context issues |
+| Issues #470, #471 and #400 | — | context issues |
 
 Not read, and why:
 - `src/anim/generators.cpp` lines 570-1000 (clip sampling internals) and `modifiers.cpp` 340-968 (foot-IK leg solve and
@@ -393,8 +393,7 @@ Issue context:
   retargeting", with two bodies (cow, chicken) at `:28-40`. Spud's evidence says creatures work only when their own
   behaviour's classes are all registered and their own skeleton/clip names line up (no retargeting anywhere in
   `src/anim`). So per-species discovery, not a shared humanoid path, is the correct shape — which is what Mudcrab chose.
-- **#399** recommends trialling "decode-only HKX with bone-binding fixtures first". That is exactly the first slice
-  below: decode + bind + one transition, no simulation.
+- The smallest useful first slice is below: decode + bind + one transition, no simulation.
 - **#400** supplies the ragdoll lane and the warning that a parsed class is not execution. Keep the four ragdoll
   modifiers out of scope until physics owns them.
 - **#557** had not been read when this report was written, so its requirements are not covered here.
@@ -417,7 +416,7 @@ Pitfalls, in the order they will bite:
    ([`state_machine.cpp:287-289`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/state_machine.cpp#L287-L289)). A stock Pratt parser gives different results on `a == 1 && b == 2`.
 7. **Event dedupe is by (id, payload pointer) within one round** ([`graph.cpp:1362-1368`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/graph.cpp#L1362-L1368)); the 5-round cap is spud's own
    invention, not vanilla. Decide deliberately.
-8. **Constants worth copying**: 8 clip sync points / 16 sync slots ([`generators.cpp:26`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/generators.cpp#L26), [`node.hpp:43`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/node.hpp#L43)), 2 echoes
+8. **Constants to compare**: 8 clip sync points / 16 sync slots ([`generators.cpp:26`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/generators.cpp#L26), [`node.hpp:43`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/node.hpp#L43)), 2 echoes
    ([`generators.cpp:27`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/generators.cpp#L27)), 32 simultaneous transitions ([`state_machine.hpp:210`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/state_machine.hpp#L210)), limb-IK layer 43 and
    `k_scale = 69.991249` ([`modifiers.cpp:2340-2341`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/modifiers.cpp#L2340-L2341)), "left early" below 0.2 of the clip ([`generators.cpp:2261`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/generators.cpp#L2261)).
 9. **A zero playback speed is coerced to ±0.001** ([`generators.cpp:394`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/src/anim/generators.cpp#L394)), so the pose creeps instead of holding; whether

@@ -28,7 +28,7 @@ Spud source, line counts from `wc -l`:
 
 Spud docs read: [`docs/ARCHITECTURE.md:104`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/ARCHITECTURE.md#L104), [`docs/AUTOMATION.md:157-164`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/AUTOMATION.md#L157-L164), [`docs/PERF_CHANGES.md:86`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/PERF_CHANGES.md#L86), [`:127`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/PERF_CHANGES.md#L127), [`:153`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/PERF_CHANGES.md#L153), [`docs/formats/forms.md:165`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/formats/forms.md#L165), [`docs/ROADMAP.md:12`](https://github.com/chasmlol/spud/blob/8c9904207a5c573a0193fb903fb5c433f127f102/docs/ROADMAP.md#L12).
 Mudcrab: `crates/converter/src/records/deciders/world_extras.rs` (322, all), `crates/converter/tests/inhouse_world_extras.rs` (528, grep + 160-300), `crates/converter/src/esm/doors.rs` (1-80), `crates/engine/src/doors.rs` (118, 1-40), `crates/engine/src/door_crossing.rs` (2069, 1-30), `crates/engine/src/actors.rs` (376, 1-12), `crates/engine/src/actor_drive.rs` (614, 1-8), `docs/roadmap/04-gameplay-and-physics.md` (28, all), `SPEC.md` (grep), `docs/specs/converters/db-schema.md:850-896`, `crates/converter/src/records/families/ai.json` (1461, PACK block 420-1269), `crates/converter/src/records/families/world_extras.json`.
-Tracker text read: PR #385 (all) and excerpts of issues #269, #320, #326, #355, #399 and #498.
+Tracker text read: PR #385 (all) and excerpts of issues #269, #320, #326 and #498.
 
 Not read, and why:
 - `#556` was created after the tracker text for this report was read. Nothing in this report depends on it.
@@ -298,7 +298,7 @@ Deterministic hooks already in spud:
 | Detection | none; the converter has condition/AV data only | whole subsystem | not in this slice; it consumes actor values and LOS, so it should follow packages and physics, not precede them |
 | Actor roster | `ActorSet`-like spawning exists per cell (`crates/engine/src/actors.rs:1-12`) with `ActorDrive` | no per-space roster reconciliation, no high/low split | Bevy equivalent of `apply_roster`: one system that reconciles despawn/spawn on cell set change; `high` = the loaded cell set |
 
-Already decided, and it matters here: Mudcrab's data model keeps immutable converted records apart from runtime state; the converter's navmesh payload is therefore the right input, and a runtime navmesh table is new state, not a new decode. `#399` proposes a navmesh graph over Mudcrab's existing NVNM/NAVI projection, with "two linked cells and a door" as the acceptance probe. #399 is the closest existing design note; it is not a decision.
+Already decided, and it matters here: Mudcrab's data model keeps immutable converted records apart from runtime state; the converter's navmesh payload is therefore the right input, and a runtime navmesh table is new state, not a new decode. A navmesh graph over Mudcrab's existing NVNM/NAVI projection, with "two linked cells and a door" as the acceptance probe, is the natural design; no decision has been made.
 
 ## Port notes
 
@@ -327,7 +327,7 @@ Minimal vertical slice that proves the subsystem: one interior cell whose navmes
 Deterministic, headless, fixture-first:
 
 1. **Two-triangle funnel.** Synthetic NAVM: 4 vertices, 2 triangles sharing an edge, no edge links. Path from a point in A to a point in B must be `start, end` when the shared edge is not a corner, and include the shared portal endpoint when the geometry makes it one. Assert point count and each coordinate to 1e-3. No randomness, no clock.
-2. **Portal crossing with a link.** Two NAVMs in adjacent exterior grid squares, `edge_links` both ways, triangles at the shared boundary. Assert the path has points in both meshes, and that `walk` moves the spot's `mesh` id across. This is the two-cell probe from Mudcrab issue #399.
+2. **Portal crossing with a link.** Two NAVMs in adjacent exterior grid squares, `edge_links` both ways, triangles at the shared boundary. Assert the path has points in both meshes, and that `walk` moves the spot's `mesh` id across. This is the "two linked cells and a door" probe.
 3. **Link-type fixture.** Same geometry, `type = enable_disable_portal` and, separately, a `deleted` flag on the only middle triangle. Record spud's answer as the deviation baseline; then decide Mudcrab's rule explicitly (block, or match spud) and assert the decision. Do not silently inherit the liberty.
 4. **Door leg.** Two interior cells joined by an `XTEL` pair. A Travel package whose location is the far cell must produce exactly one leg, and the final position must equal the `XTEL` arrival, not the destination door's position. Assert no path point lies in the far space.
 5. **No door.** Two interior cells with no `XTEL`. Assert the explicit policy: one-tick placement (spud) or a queued load request (probably Mudcrab).

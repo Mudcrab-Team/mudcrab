@@ -7,7 +7,7 @@ Spud source: commit `8c990420`.
 Mudcrab source: `main` as of 2026-11-12 (`3ce1fb42`), plus an unmerged cluster-rendering branch read with `git show`/`git grep` only.
 Question: which submission and image-history methods transfer to Bevy and Metal without copying Vulkan assumptions? Feeds milestones E2 (cluster path on Apple Silicon) and G1/G2, and issues #333, #332, #441, #533, #524.
 
-License: spud is MIT, Mudcrab is GPL-3.0. This report records ideas and at most short quoted comments. No spud code is copied.
+License: spud is MIT, Mudcrab is GPL-3.0-or-later. This report records ideas and at most short quoted comments. No spud code is copied.
 
 ## Scope read
 

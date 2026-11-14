@@ -15,7 +15,7 @@
 - Far views bake terrain maps, tree impostors, and region proxies from the converted cache.
 - Largest liberties: unsupported references are removed from exported worlds; audio/DDS can be copied unchanged; far trees and proxies are baked approximations.
 - Important gaps: navmesh conversion is not visible in the importer; grass is represented as world metadata but no grass mesh extraction stage was established.
-- License caveat: Spud is MIT and Mudcrab is GPL-3.0, so borrow techniques and designs rather than code.
+- License caveat: Spud is MIT and Mudcrab is GPL-3.0-or-later, so borrow techniques and designs rather than code.
 
 ## Feature map
 

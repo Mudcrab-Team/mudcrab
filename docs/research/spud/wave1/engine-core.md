@@ -17,7 +17,7 @@
 - Largest liberties: Papyrus tasklets run serially; calendar rollover advances at most one day/month boundary per call; movement and camera use reconstructed simplified rules rather than Skyrim's original engine.
 - Other core areas include weather evaluation, interior lighting, water state, world simulation, space streaming, side-by-side comparison, test-cache generation, and world-map cameras.
 - Worth borrowing: explicit fixed-step deterministic replay, per-feature modular systems, and first-class benchmark receipts with frame and GPU-pass measurements.
-- License note: spud is MIT and Mudcrab is GPL-3.0; borrow ideas and techniques, not code.
+- License note: spud is MIT and Mudcrab is GPL-3.0-or-later; borrow ideas and techniques, not code.
 
 ## Feature map
 

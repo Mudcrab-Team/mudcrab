@@ -16,7 +16,7 @@
 - Quests parse aliases, objectives, targets, stages, story events, fragments, and serialized progress.
 - Largest liberties: records often depend on host callbacks; detection is a compact visibility/sound model; many Skyrim engine systems remain outside this library.
 - Mudcrab comparison: this checkout has no `src/game`. Its current SPEC excludes actor-value/effect stacking, sneak, combat, and Papyrus bindings in the first milestone.
-- License note: Spud is MIT and Mudcrab is GPL-3.0. Borrow ideas and techniques, not copied code.
+- License note: Spud is MIT and Mudcrab is GPL-3.0-or-later. Borrow ideas and techniques, not copied code.
 
 ## Feature map
 

@@ -590,7 +590,7 @@ What already decided in Mudcrab that constrains this:
 7. **Ordering constraints when converting**: shapes before glyphs (shared vertex/index buffers), fonts before
    text fields that name them, control map before any input routing, and translations before any `$KEY` text
    is laid out.
-8. **Do not copy the code.** Spud is MIT and Mudcrab is GPL-3.0, so the licence permits reading, but the
+8. **Do not copy the code.** Spud is MIT and Mudcrab is GPL-3.0-or-later, so the licence permits reading, but the
    audited artefacts here are constants and orderings. Re-derive them from the movies or from measured
    captures, and cite the measured value rather than the file.
 

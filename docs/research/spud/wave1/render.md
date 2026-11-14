@@ -17,7 +17,7 @@
 - The stated image policy excludes TAA, temporal upscaling, frame generation, full-frame history resolves, and jitter. It uses 4x MSAA by default and allows effect-local temporal state.
 - The 2026-11-13 rendering documentation describes deterministic current-view LOD and clean settled poses. That is a project requirement and design claim, not independent runtime proof.
 - Largest liberties or gaps: parity is not proven by code inspection; shadow caching is not evident despite documentation's general example; performance documentation says its measurements were headless and need real-window checks.
-- License caveat: Spud is MIT and Mudcrab is GPL-3.0. Borrow techniques and independently implement them; do not copy Spud code.
+- License caveat: Spud is MIT and Mudcrab is GPL-3.0-or-later. Borrow techniques and independently implement them; do not copy Spud code.
 
 ## Feature map
 
