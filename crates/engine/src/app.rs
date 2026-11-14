@@ -45,7 +45,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     render::view::screenshot::{Screenshot, save_to_disk},
     tasks::{IoTaskPool, TaskPoolBuilder},
-    window::{MonitorSelection, PresentMode, WindowPlugin, WindowPosition},
+    window::{MonitorSelection, PresentMode, WindowLevel, WindowPlugin, WindowPosition},
     winit::WinitSettings,
 };
 use color_eyre::Result;
@@ -271,6 +271,16 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     let window = (!config.headless || shots_active || config.hidden_window).then(|| Window {
         title: config.window_title(),
         visible: !config.hidden_window,
+        // A background window sits under every ordinary window and opens without key focus, so a
+        // capture run never covers or interrupts whatever is on screen. On macOS
+        // `background_window` also keeps the window on every Space and gives focus back to the
+        // app that had it (`crate::background_window`).
+        focused: !config.background_window,
+        window_level: if config.background_window {
+            WindowLevel::AlwaysOnBottom
+        } else {
+            WindowLevel::Normal
+        },
         // Start the window at the reference size; shots use an independent exact-size image target.
         resolution: match &shots {
             Some(run) => run.file.window_resolution(),
@@ -293,6 +303,13 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     });
     let origin = RenderOrigin(IVec2::new(config.start_grid.0, config.start_grid.1));
     let mut app = App::new();
+    // Read before the event loop starts: winit activates the app while it launches, and a background
+    // run gives focus back to whatever app was in front until then.
+    app.insert_resource(if config.background_window {
+        crate::background_window::BackgroundFocus::capture()
+    } else {
+        crate::background_window::BackgroundFocus::default()
+    });
     if let Some((settings, file)) = preferences {
         app.insert_resource(settings).insert_resource(file);
     }
@@ -308,7 +325,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     if let Some(asset_lock) = asset_lock {
         app.insert_resource(AssetDirectoryReadLock { _guard: asset_lock });
     }
-    if benchmark_active || shots_active || config.hidden_window {
+    if benchmark_active || shots_active || config.hidden_window || config.background_window {
         // Acceptance runs are commonly left unfocused while the campaign driver
         // advances through its scenarios. Bevy's game default throttles an
         // unfocused window to 60 Hz, which makes a 16.67 ms P95 gate measure the
@@ -389,6 +406,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
         .add_systems(PostUpdate, keep_windows_hidden)
+        .add_systems(Update, crate::background_window::hold_focus_with_the_user)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(
             terrain_merge.as_ref(),
         ));
