@@ -14,7 +14,7 @@ The converted GLB's attached material must use `MASK` with the authored cutoff
 `96 / 255`; the test asserts both before measuring generation.
 The test checks deterministic output, participation of all species, slot ordering,
 16-byte instance layout and bounded output allocation. It reports the median of
-three generation samples per cell at spacings 64, 32 and the MudCrab default 20
+three generation samples per cell at spacings 64, 32 and the retail default 20 (`iMinGrassSize`)
 (4,096, 16,384 and 41,944 candidates). The stress fixture explicitly allows four
 resolved species per texture with configured cap four, exercising the boundary beyond the default cap two.
 Exact species IDs and replay batch counts are asserted, so a truncated `zip`

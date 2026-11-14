@@ -39,10 +39,8 @@ struct Grass {
 @group(#{GRASS_GROUP}) @binding(0) var<uniform> grass: Grass;
 @group(#{GRASS_GROUP}) @binding(1) var albedo: texture_2d<f32>;
 @group(#{GRASS_GROUP}) @binding(2) var albedo_sampler: sampler;
-@group(#{GRASS_GROUP}) @binding(3) var wind: texture_2d<f32>;
-@group(#{GRASS_GROUP}) @binding(4) var wind_sampler: sampler;
-@group(#{GRASS_GROUP}) @binding(5) var normal_map: texture_2d<f32>;
-@group(#{GRASS_GROUP}) @binding(6) var normal_sampler: sampler;
+@group(#{GRASS_GROUP}) @binding(3) var normal_map: texture_2d<f32>;
+@group(#{GRASS_GROUP}) @binding(4) var normal_sampler: sampler;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
@@ -72,7 +70,6 @@ struct Varyings {
     @location(5) root_fraction: f32,
 #endif
 }
-fn wind_weight(alpha:f32) -> f32 { return clamp(alpha,0.0,1.0); }
 fn signed_byte(value: u32) -> f32 {
     return f32(i32((value & 255u) ^ 128u) - 128) / 127.0;
 }
@@ -164,14 +161,8 @@ fn vertex(input: Vertex) -> Varyings {
         let basis = mat3x3(tangent,up,cross(tangent,up));
         p = basis*p; n = basis*n; t = basis*t;
     }
-    let absolute_xy = grass.absolute_grid.xy + xy;
-    let phase = grass.fade.z / max(grass.height_wind.z,0.01);
-    let gust = textureSampleLevel(wind,wind_sampler,absolute_xy / 8192.0 + vec2(phase*0.035,phase*0.02),0.0).r * 2.0 - 1.0;
-    var sway = 1.0;
-#ifdef COLOR
-    sway = wind_weight(input.color.a);
-#endif
-    if grass.height_wind.z > 0.0 { p.x += gust * max(p.y,0.0) * 0.10 * sway; p.z += gust * max(p.y,0.0) * 0.035 * sway; }
+    // No wind displacement: retail wind needs the blended WTHR wind speed and wind direction,
+    // which the engine does not have yet (see grass/wind.rs for the sourced amplitude and phase).
     let root = (grass.world_from_cell * vec4(xy.x,height,-xy.y,1.0)).xyz;
     let world = grass.world_from_cell * vec4(p + vec3(xy.x,height,-xy.y),1.0);
     out.position = view.clip_from_world * world;
