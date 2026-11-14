@@ -51,6 +51,87 @@ fn paint_every_quadrant(bytes: &[u8]) -> Vec<u8> {
     output
 }
 
+/// Pin each reader's established dangling-base projection through real publication.
+async fn dangling_base_publication(reader: converter::config::RecordReader, expected: u32) {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let output = directory.path().join("published");
+    generate(&data);
+    let plugin = data.join("Skyrim.esm");
+    let mut bytes = paint_every_quadrant(&fs::read(&plugin).unwrap());
+    let base = bytes.windows(4).position(|tag| tag == b"BTXT").unwrap();
+    assert_eq!(&bytes[base + 4..base + 6], &8u16.to_le_bytes());
+    bytes[base + 6..base + 10].copy_from_slice(&0x899u32.to_le_bytes());
+    fs::write(plugin, bytes).unwrap();
+    let mut config = common::cpu_lod_config(&data, &output);
+    config.record_reader = reader;
+    config.no_lod = true;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = AssetPipeline::run_async(config, tx).await.unwrap();
+    drain.await.unwrap();
+    let mapping =
+        converter::esm::cell_cache::validate_cell_cache(&output.join("cell_cache.rkyv")).unwrap();
+    let cache =
+        rkyv::from_bytes::<converter::shared::CellCache, rkyv::rancor::Error>(&mapping).unwrap();
+    let layers = &cache.cells[0].layers;
+    assert_eq!(layers.len(), 4);
+    assert_eq!(
+        layers
+            .iter()
+            .find(|layer| layer.quadrant == 0 && layer.is_base)
+            .unwrap()
+            .texture_form_id,
+        expected
+    );
+    assert_eq!(
+        layers
+            .iter()
+            .find(|layer| layer.quadrant == 1 && layer.is_base)
+            .unwrap()
+            .texture_form_id,
+        4
+    );
+    let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+    let diffuse: Option<String> = database
+        .query_row(
+            "SELECT diffuse_path FROM terrain_default_texture WHERE id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        diffuse.as_deref(),
+        (expected == 0).then_some("terrain/default-diffuse.ktx2")
+    );
+    let neighbor: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 1);
+    if reader == converter::config::RecordReader::Inhouse {
+        assert!(
+            !report.warnings.is_empty(),
+            "a cleared dangling link must be reported"
+        );
+    }
+}
+
+/// The in-house reader clears a dangling BTXT to null, which selects the configured default.
+#[tokio::test]
+async fn inhouse_dangling_base_uses_configured_default() {
+    dangling_base_publication(converter::config::RecordReader::Inhouse, 0).await;
+}
+
+/// Legacy keeps a dangling nonzero BTXT, so it does not become a configured null base.
+#[tokio::test]
+async fn legacy_dangling_base_retains_unresolved_identity() {
+    dangling_base_publication(converter::config::RecordReader::Legacy, 0x899).await;
+}
+
 /// Verify complete publication, white default metadata, and an intact neighboring record.
 fn assert_white_rebuild(report: &converter::PipelineReport, output: &Path, needed: bool) {
     assert!(report.complete, "{report:?}");
@@ -175,7 +256,7 @@ async fn metadata_rebuild_default_needed_unreadable_loose_falls_back() {
     rebuild_with_unreadable_default(true).await;
 }
 
-/// A changed archive-only default fails retained-source validation locally, not globally.
+/// A damaged archive-only default falls back locally without blocking publication.
 #[tokio::test]
 async fn metadata_rebuild_default_changed_archive_falls_back() {
     let directory = tempfile::tempdir().unwrap();
@@ -204,6 +285,107 @@ async fn metadata_rebuild_default_changed_archive_falls_back() {
         "changed archive default aborted metadata rebuild: {result:?}"
     );
     assert_white_rebuild(&result.unwrap(), &output, true);
+}
+
+/// Regenerated default images use current loose or archive bytes, unlike retained LTEX assets.
+#[tokio::test]
+async fn metadata_rebuild_defaults_use_current_bytes() {
+    use converter::texture::{TextureConverter, TextureEncoding};
+    use dummy_content::{dds, rng::Rng};
+    for archived in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("Data");
+        let source = directory.path().join("source");
+        let output = directory.path().join("rebuilt");
+        generate(&data);
+        convert(&data, &source).await;
+        let manifest_hash = hash_file(&source.join("conversion-manifest.json")).unwrap();
+        let mut expected = Vec::new();
+        let mut replacements = Vec::new();
+        for (name, format, encoding, seed) in [
+            (
+                "dirt02",
+                dds::Format::Bc1Unorm,
+                TextureEncoding::ColorSrgb,
+                281,
+            ),
+            (
+                "dirt02_n",
+                dds::Format::Bc5Unorm,
+                TextureEncoding::NormalLinear,
+                307,
+            ),
+        ] {
+            let relative = format!("textures/landscape/{name}.dds");
+            let bytes =
+                dds::generate(&dds::Spec::new(format, 16, 16), &mut Rng::new(seed)).unwrap();
+            assert_ne!(bytes, fs::read(data.join(&relative)).unwrap());
+            let config = common::cpu_lod_config(&data, &output);
+            expected.push(
+                TextureConverter::convert_with_options(
+                    &bytes,
+                    encoding,
+                    config.texture_fallback_quality,
+                    config.texture_uastc_level,
+                    config.texture_zstd_level,
+                )
+                .unwrap(),
+            );
+            if archived {
+                fs::remove_file(data.join(&relative)).unwrap();
+            } else {
+                fs::write(data.join(&relative), &bytes).unwrap();
+            }
+            replacements.push((relative, bytes));
+        }
+        if archived {
+            let entries: Vec<_> = replacements
+                .iter()
+                .map(|(name, data)| Entry { name, data })
+                .collect();
+            fs::write(
+                data.join("Skyrim - Textures.bsa"),
+                bsa::v105(&entries, bsa::Compression::None).unwrap(),
+            )
+            .unwrap();
+        }
+        let report = rebuild(&data, &source, &output).await.unwrap();
+        assert!(report.complete, "{report:?}");
+        assert!(report.warnings.is_empty(), "{report:?}");
+        for (name, bytes) in ["diffuse", "normal"].into_iter().zip(expected) {
+            assert!(
+                output
+                    .join(format!("terrain/default-{name}.ktx2"))
+                    .is_file(),
+                "regenerated default {name} must use the current source (archived={archived})"
+            );
+            assert_eq!(
+                fs::read(output.join(format!("terrain/default-{name}.ktx2"))).unwrap(),
+                bytes
+            );
+        }
+        let database = Connection::open(output.join("skyrim_world.db")).unwrap();
+        let normal: String = database
+            .query_row(
+                "SELECT normal_path FROM terrain_default_texture WHERE id=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(normal, "terrain/default-normal.ktx2");
+        let neighbor: u32 = database
+            .query_row(
+                "SELECT COUNT(*) FROM \"references\" WHERE id=4660",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(neighbor, 1);
+        assert_eq!(
+            hash_file(&source.join("conversion-manifest.json")).unwrap(),
+            manifest_hash
+        );
+    }
 }
 
 /// A corrupt compressed default entry cannot abort extraction of usable neighboring inputs.

@@ -469,6 +469,83 @@ async fn reads_sources_without_materializing_mo2_inputs() {
     );
 }
 
+/// A winner lost after ingestion must fall back without publishing a lower-priority copy.
+#[tokio::test]
+async fn mo2_no_lod_lost_default_winner_is_advisory() {
+    let (directory, mut config, instance) = fixture();
+    let winner = instance.join("overwrite/textures/landscape/custombase.dds");
+    let bytes = fs::read(config.data_dir.join("textures/landscape/dirt02.dds")).unwrap();
+    write(
+        &instance,
+        "overwrite/textures/landscape/custombase.dds",
+        &bytes,
+    );
+    let ini = directory.path().join("terrain.ini");
+    fs::write(
+        &ini,
+        "[Landscape]\nsDefaultLandDiffuseTexture=Textures\\Landscape\\CustomBase.dds\n",
+    )
+    .unwrap();
+    config.no_lod = true;
+    config.terrain_ini = Some(ini);
+    config.terrain_default_texture = converter::config::TerrainDefaultTexture::SkyrimIni;
+    let output = config.output_dir.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<converter::ProgressEvent>(1);
+    let inspect = tokio::spawn(async move {
+        let mut removed = false;
+        while let Some(event) = rx.recv().await {
+            if !removed && event.stage == converter::ProgressStage::Scripts {
+                let (staging, _) = converter::config::find_resumable_staging(&output).unwrap();
+                write(
+                    &staging.join("vfs"),
+                    "textures/landscape/custombase.dds",
+                    &bytes,
+                );
+                fs::remove_file(&winner).unwrap();
+                removed = true;
+            }
+        }
+        removed
+    });
+    let report = AssetPipeline::run_async(config.clone(), tx).await.unwrap();
+    assert!(
+        inspect.await.unwrap(),
+        "fixture must remove the winner after texture ingestion"
+    );
+    assert!(report.complete, "{report:?}");
+    assert!(report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notices
+            .iter()
+            .any(|notice| notice.contains("default land input omitted")),
+        "{report:?}"
+    );
+    assert!(
+        !config
+            .output_dir
+            .join("terrain/default-diffuse.ktx2")
+            .exists()
+    );
+    let database = Connection::open(config.output_dir.join("skyrim_world.db")).unwrap();
+    let diffuse: Option<String> = database
+        .query_row(
+            "SELECT diffuse_path FROM terrain_default_texture WHERE id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(diffuse, None);
+    let neighbor: u32 = database
+        .query_row(
+            "SELECT COUNT(*) FROM movement_game_settings WHERE editor_id='fJumpHeightMin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(neighbor, 1);
+}
+
 /// Winning loose defaults are converted without LOD, through both record readers.
 #[tokio::test]
 async fn mo2_no_lod_uses_winning_configured_default_images() {
