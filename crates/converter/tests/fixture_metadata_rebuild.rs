@@ -1602,3 +1602,299 @@ async fn v91_metadata_rebuild_rejects_ambiguous_lod_and_lighting_producers() {
         assert!(!output.exists());
     }
 }
+
+/// The settings proof a producer with script ABI `abi` and reader `identity` recorded.
+/// The fixture's default configuration uses the CPU texture encoder.
+fn combined_hash(config: &PipelineConfig, identity: &serde_json::Value, abi: u32) -> String {
+    assert_eq!(config.texture_encoder, converter::TextureEncoder::Cpu);
+    hash_bytes(
+        &serde_json::to_vec(&serde_json::json!({
+            "schema": converter::cache::CONVERTER_SCHEMA_VERSION,
+            "texture_etc1s_quality": config.texture_fallback_quality,
+            "texture_uastc_level": config.texture_uastc_level,
+            "script_abi_version": abi,
+            "record_reader": identity,
+            "texture_zstd_level": config.texture_zstd_level,
+            "texture_encoder": {"mode": "cpu"},
+        }))
+        .unwrap(),
+    )
+}
+
+/// Replace a file without writing through a hard link.
+fn replace_file(path: &Path, bytes: &[u8]) {
+    fs::remove_file(path).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+/// Make `source` look like a pack produced under script ABI `abi`, and optionally decoded
+/// with an earlier base schema. Its scripts become marker bytes that must never survive a
+/// rebuild. Returns the scripts a conversion under the current ABI produced.
+fn age_source(
+    source: &Path,
+    data: &Path,
+    abi: u32,
+    earlier_schema: Option<&str>,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let config = common::cpu_lod_config(data, source.join("unused"));
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    let mut identity: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(
+        combined_hash(&config, &identity, converter::script::SCRIPT_ABI_VERSION),
+        manifest.configuration_hash,
+        "the test must reproduce the converter's combined proof"
+    );
+    if let Some(digest) = earlier_schema {
+        identity["schema_sha256"] = serde_json::json!(digest);
+        replace_file(
+            &source.join("record-reader.json"),
+            &serde_json::to_vec(&identity).unwrap(),
+        );
+        Connection::open(source.join("skyrim_world.db"))
+            .unwrap()
+            .execute(
+                "UPDATE record_overrides SET schema_sha256=?1 WHERE record_type='TES4'",
+                [digest],
+            )
+            .unwrap();
+    }
+    manifest.configuration_hash = combined_hash(&config, &identity, abi);
+    let mut old_abi = config.clone();
+    old_abi.script_abi_version = abi;
+    manifest.asset_configuration_hashes.insert(
+        "pex".into(),
+        converter::cache::asset_configuration_hash_for_schema(
+            &old_abi,
+            converter::cache::CONVERTER_SCHEMA_VERSION,
+            "pex",
+        )
+        .unwrap(),
+    );
+    let marker = format!("-- script ABI {abi} marker\n");
+    let mut originals = std::collections::BTreeMap::new();
+    for entry in manifest
+        .entries
+        .values_mut()
+        .filter(|entry| entry.output.starts_with("scripts/"))
+    {
+        let script = source.join(&entry.output);
+        originals.insert(entry.output.clone(), fs::read(&script).unwrap());
+        replace_file(&script, marker.as_bytes());
+        entry.output_hash = hash_bytes(marker.as_bytes());
+        entry.output_size = marker.len() as u64;
+    }
+    assert!(!originals.is_empty(), "the fixture has scripts");
+    replace_file(
+        &source.join("scripts/papyrus_runtime.luau"),
+        b"-- runtime for an older script ABI\n",
+    );
+    manifest.save(&path).unwrap();
+    originals
+}
+
+fn provenance(output: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(output.join("metadata-rebuild.json")).unwrap()).unwrap()
+}
+
+/// A script ABI bump rebuilds only the scripts. Meshes, textures and every neighbor stay the
+/// source's verified bytes, the source pack is not touched, and the next rebuild from the
+/// result reuses every kind.
+#[tokio::test]
+async fn script_abi_bump_rebuilds_only_scripts_and_reuses_the_rest() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    let again = directory.path().join("again");
+    generate(&data);
+    convert(&data, &source).await;
+    let originals = age_source(&source, &data, 1, None);
+    let aged_manifest = hash_file(&source.join("conversion-manifest.json")).unwrap();
+    let manifest = ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
+    let kept: Vec<_> = manifest
+        .entries
+        .values()
+        .filter(|entry| !entry.output.starts_with("scripts/"))
+        .map(|entry| {
+            (
+                entry.output.clone(),
+                hash_file(&source.join(&entry.output)).unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        kept.iter().any(|(path, _)| path.ends_with(".glb"))
+            && kept.iter().any(|(path, _)| path.ends_with(".ktx2"))
+    );
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(
+        report.converted,
+        originals.len() as u64,
+        "only scripts convert"
+    );
+    for (script, bytes) in &originals {
+        assert_eq!(&fs::read(output.join(script)).unwrap(), bytes, "{script}");
+    }
+    assert_eq!(
+        fs::read(output.join("scripts/papyrus_runtime.luau")).unwrap(),
+        include_bytes!("../../shared/src/papyrus_runtime.luau")
+    );
+    for (relative, hash) in &kept {
+        assert_eq!(
+            &hash_file(&output.join(relative)).unwrap(),
+            hash,
+            "{relative}"
+        );
+    }
+    let rebuilt = ConversionManifest::load(&output.join("conversion-manifest.json")).unwrap();
+    let current_pex = converter::cache::asset_configuration_hash_for_schema(
+        &common::cpu_lod_config(&data, &output),
+        converter::cache::CONVERTER_SCHEMA_VERSION,
+        "pex",
+    )
+    .unwrap();
+    assert_eq!(rebuilt.asset_configuration_hashes["pex"], current_pex);
+    for (script, bytes) in &originals {
+        let entry = rebuilt
+            .entries
+            .values()
+            .find(|entry| &entry.output == script)
+            .unwrap();
+        assert_eq!(entry.output_hash, hash_bytes(bytes));
+    }
+    let record = provenance(&output);
+    assert_eq!(record["source_script_abi"], 1);
+    assert_eq!(record["script_abi"], converter::script::SCRIPT_ABI_VERSION);
+    assert_eq!(record["asset_kinds"]["pex"]["action"], "rebuilt");
+    assert_eq!(record["asset_kinds"]["nif"]["action"], "reused");
+    assert_eq!(record["asset_kinds"]["dds"]["action"], "reused");
+    assert_eq!(
+        record["asset_kinds"]["pex"]["proof"].as_str().unwrap(),
+        current_pex
+    );
+    // The source stays exactly as it was, markers included.
+    assert_eq!(
+        hash_file(&source.join("conversion-manifest.json")).unwrap(),
+        aged_manifest
+    );
+    for script in originals.keys() {
+        assert_eq!(
+            fs::read(source.join(script)).unwrap(),
+            b"-- script ABI 1 marker\n"
+        );
+    }
+
+    // The result is a current pack: the next rebuild reuses every kind, scripts included.
+    let report = rebuild(&data, &output, &again).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, 0);
+    let record = provenance(&again);
+    for kind in ["nif", "dds", "pex"] {
+        assert_eq!(record["asset_kinds"][kind]["action"], "reused", "{kind}");
+    }
+    for (script, bytes) in &originals {
+        assert_eq!(&fs::read(again.join(script)).unwrap(), bytes);
+    }
+}
+
+/// A recorded earlier base schema in the pack's lineage no longer refuses the rebuild; the
+/// database is decoded again with the compiled schema. An unlisted digest still refuses.
+#[tokio::test]
+async fn trusted_earlier_schema_digest_is_accepted_and_unknown_digest_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    let again = directory.path().join("again");
+    generate(&data);
+    convert(&data, &source).await;
+    let earlier = "ee7e85d996711c656abcc427fb76496452c7d0e89c1b383abf64a8acd1392d30";
+    // The ABI changed too, as in the registered packs.
+    let originals = age_source(&source, &data, 1, Some(earlier));
+
+    let report = rebuild(&data, &source, &output).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, originals.len() as u64);
+    let record = provenance(&output);
+    assert_eq!(record["source_schema_lineage"]["sha256"], earlier);
+    assert_eq!(
+        record["source_schema_lineage"]["produced_by"],
+        "b5259d33a73e"
+    );
+    let reader: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("record-reader.json")).unwrap()).unwrap();
+    assert_eq!(
+        reader["schema_sha256"],
+        hash_bytes(converter::records::SCHEMA_BYTES)
+    );
+    // The retained producer keeps its earlier schema, so a second rebuild still accepts it.
+    assert_eq!(
+        record["retained_asset_record_reader"]["schema_sha256"],
+        earlier
+    );
+    let report = rebuild(&data, &output, &again).await.unwrap();
+    assert!(report.complete, "{:?}", report.warnings);
+    assert_eq!(report.converted, 0);
+
+    let unknown = directory.path().join("unknown-source");
+    convert(&data, &unknown).await;
+    age_source(&unknown, &data, 1, Some(&"ab".repeat(32)));
+    let refused = directory.path().join("unknown-output");
+    let error = rebuild(&data, &unknown, &refused).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("diagnostic schema differs from the producing schema"),
+        "{error:?}"
+    );
+    assert!(!refused.exists());
+}
+
+/// A real asset change is never reused or relabeled: a stale mesh proof refuses the rebuild
+/// even when the scripts would also rebuild, and names the kind to regenerate.
+#[tokio::test]
+async fn changed_mesh_proof_still_refuses_alongside_a_script_abi_bump() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    let path = source.join("conversion-manifest.json");
+    let mut manifest = ConversionManifest::load(&path).unwrap();
+    manifest
+        .asset_configuration_hashes
+        .insert("nif".into(), "0".repeat(64));
+    manifest.save(&path).unwrap();
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("mesh output contract"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}
+
+/// Rebuilt scripts must come from the sources the package recorded.
+#[tokio::test]
+async fn script_rebuild_refuses_data_scripts_that_differ_from_the_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("Data");
+    let source = directory.path().join("source");
+    let output = directory.path().join("rebuilt");
+    generate(&data);
+    convert(&data, &source).await;
+    age_source(&source, &data, 1, None);
+    replace_file(
+        &data.join("scripts/generated.pex"),
+        &dummy_content::pex::minimal("Changed").unwrap(),
+    );
+    let error = rebuild(&data, &source, &output).await.unwrap_err();
+    assert!(
+        format!("{error:?}").contains("script sources in Data differ"),
+        "{error:?}"
+    );
+    assert!(!output.exists());
+}

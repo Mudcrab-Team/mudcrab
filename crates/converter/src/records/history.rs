@@ -443,6 +443,17 @@ fn decode_version(
 /// Reopen saved add-on bytes without depending on files from the converter's invocation.
 /// Older packs have no add-on table and retain the embedded-schema compatibility check.
 pub(crate) fn stored_schemas(conn: &Connection) -> Result<RuntimeSchemas> {
+    stored_schemas_with_lineage(conn, None)
+}
+
+/// As [`stored_schemas`], for a metadata rebuild that retains assets from an earlier schema.
+/// `lineage` is the earlier base-schema digest the pack's reader identity records, accepted by
+/// `schema_lineage`. The diagnostic digest may equal it only when the pack has no add-ons. The
+/// returned schemas are always the compiled ones, so the rebuild still decodes with them.
+pub(crate) fn stored_schemas_with_lineage(
+    conn: &Connection,
+    lineage: Option<&str>,
+) -> Result<RuntimeSchemas> {
     let has_addons: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='inhouse_schema_addons')",
         [],
@@ -502,7 +513,10 @@ pub(crate) fn stored_schemas(conn: &Connection) -> Result<RuntimeSchemas> {
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     ensure!(
-        fingerprints.len() == 1 && fingerprints[0] == schemas.schema_sha256(),
+        fingerprints.len() == 1
+            && (fingerprints[0] == schemas.schema_sha256()
+                || (schemas.identities().is_empty()
+                    && lineage.is_some_and(|digest| digest == fingerprints[0]))),
         "diagnostic schema differs from the producing schema"
     );
     Ok(schemas)
