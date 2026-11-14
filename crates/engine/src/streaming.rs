@@ -924,6 +924,7 @@ fn plan_cells(
     mut profiler: ResMut<ProfilingState>,
     mut runtime: Option<ResMut<runtime::StreamingRuntime>>,
 ) {
+    crate::perf_span::perf_span!("streaming/plan_cells");
     let plan_started = Instant::now();
     commit_budget.remaining = runtime
         .as_ref()
@@ -1576,6 +1577,7 @@ fn spawn_cell(
     profiler: &mut ProfilingState,
     colour_srgb: bool,
 ) -> Result<Entity, String> {
+    crate::perf_span::perf_span!("streaming/spawn_cell");
     let spawn_started = Instant::now();
     let reference_count = payload
         .references
@@ -3060,6 +3062,7 @@ fn arm_pending_models(
     mut runtime: Option<ResMut<runtime::StreamingRuntime>>,
 ) {
     use bevy::math::DVec3;
+    crate::perf_span::perf_span!("streaming/arm_models");
     let started = Instant::now();
     let backlog = pending.iter().count();
     let origin = origin.map_or(IVec2::ZERO, |origin| origin.0);
