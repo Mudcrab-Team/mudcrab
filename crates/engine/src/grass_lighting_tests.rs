@@ -209,13 +209,22 @@ fn lighting_fixture_block(
                 }
             }
             Statement::Store { pointer, value } => {
-                let wgpu::naga::Expression::LocalVariable(local) = function.expressions[*pointer]
-                else {
-                    panic!("unsupported lighting store destination");
-                };
-                locals[local.index()] = Some(lighting_fixture_expression(
-                    function, *value, arguments, locals, emitted,
-                ));
+                use wgpu::naga::Expression;
+                let value =
+                    lighting_fixture_expression(function, *value, arguments, locals, emitted);
+                match function.expressions[*pointer] {
+                    Expression::LocalVariable(local) => locals[local.index()] = Some(value),
+                    Expression::AccessIndex { base, index } => {
+                        let Expression::LocalVariable(local) = function.expressions[base] else {
+                            panic!("unsupported lighting component destination");
+                        };
+                        assert_eq!(value.len(), 1);
+                        locals[local.index()]
+                            .as_mut()
+                            .expect("initialized lighting vector")[index as usize] = value[0];
+                    }
+                    _ => panic!("unsupported lighting store destination"),
+                }
             }
             statement => panic!("unsupported lighting statement: {statement:?}"),
         }
@@ -869,7 +878,7 @@ fn grass_tuning_specular_strength_and_f_bypass() {
 }
 
 /// Evaluate the production decoder with a tilted, asymmetric normal and rotated
-/// frame; unlike a flat normal this distinguishes swapped tangent axes/signs.
+/// frame; distinguish swapped axes/signs and RGB versus BC5 Z reconstruction.
 #[test]
 fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     let assert_normal = |actual: Vec<f32>, expected: [f32; 3]| {
@@ -881,12 +890,17 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     let shader = include_str!("shaders/grass.wgsl");
     let source = lighting_fixture_function(shader, "tangent_normal")
         .unwrap()
-        .replace("fn tangent_normal(", "fn fixture(");
+        .replace("fn tangent_normal(", "fn fixture(")
+        // Supply the production uniform lane as a synthetic argument, preserving
+        // the decoder's real conditional and component store for CPU execution.
+        .replace("grass.normal_params.z", "reconstruct_z")
+        .replace("b:vec3<f32>)", "b:vec3<f32>,reconstruct_z:f32)");
     let args = [
         vec![0.8, 0.3, 0.9],
         vec![0.0, 1.0, 0.0],
         vec![0.0, 0.0, -1.0],
         vec![1.0, 0.0, 0.0],
+        vec![0.0],
     ];
     let actual = lighting_fixture_run(&source, &args);
     let length = 1.16_f32.sqrt();
@@ -895,6 +909,20 @@ fn directional_normal_fixture_uses_authored_axes_and_handedness() {
     mirrored[3][0] = -1.0;
     let actual = lighting_fixture_run(&source, &mirrored);
     assert_normal(actual, [0.4 / length, 0.8 / length, -0.6 / length]);
+    // BC5 stores XY only. The positive Z root is sqrt(1-.6^2-.4^2),
+    // independent of the sampled blue channel and the authored bitangent sign.
+    for blue in [0.1, 0.9] {
+        for handedness in [-1.0, 1.0] {
+            let mut bc5 = args.clone();
+            bc5[0][2] = blue;
+            bc5[3][0] = handedness;
+            bc5[4][0] = 1.0;
+            assert_normal(
+                lighting_fixture_run(&source, &bc5),
+                [-0.4 * handedness, 0.48_f32.sqrt(), -0.6],
+            );
+        }
+    }
 }
 
 #[test]
