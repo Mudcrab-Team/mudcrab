@@ -1696,6 +1696,10 @@ mod tests {
         "--force",                   // git worktree remove
         "--show-toplevel",           // git rev-parse
         "--verify",                  // git rev-parse
+        "--git-common-dir",          // git rev-parse
+        "--repo",                    // workspace.py
+        "--isolated",                // workspace.py cargo
+        "--needed-gib",              // workspace.py cargo
         "--rate",                    // samply record
         "--save-only",               // samply record
         "--unstable-presymbolicate", // samply record

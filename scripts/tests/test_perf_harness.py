@@ -407,6 +407,7 @@ class WatchdogTest(unittest.TestCase):
     def test_stale_report_is_not_mistaken_for_a_result(self):
         out = Path(self.tmp.name) / "never"
         out.mkdir()
+        (out / perf.OUTPUT_MARKER).write_text("{}")  # a directory an earlier run of the tool left
         (out / "report.json").write_text(json.dumps({"frame_ms_mean": 1, "fingerprint": {}}))
         run = self.run_mode("never", timeout=1)
         self.assertEqual(run["classification"], "timeout_no_report")
@@ -907,10 +908,26 @@ class BuildTest(unittest.TestCase):
                                   check=True).stdout.strip()
         self.worktrees = root / "worktrees"
         self.bins = root / "bins"
+        # A stand-in for the storage wrapper and the shared target directory it would choose.
+        self.tool = root / "storage" / "bin" / "workspace.py"
+        self.tool.parent.mkdir(parents=True)
+        self.tool.write_text("# fake workspace.py")
+        self.target = root / "storage" / "builds" / "isolated-fake" / "target"
         self.calls = []
+
+    def is_wrapped_cargo(self, command):
+        return len(command) > 1 and str(command[1]) == str(self.tool)
+
+    def cargo_calls(self):
+        return [(c, k) for c, k in self.calls if c[0] == "cargo" or self.is_wrapped_cargo(c)]
 
     def runner(self, command, **kwargs):
         self.calls.append((command, kwargs))
+        if self.is_wrapped_cargo(command):
+            binary = self.target / "release" / "engine"
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("fake engine")
+            return subprocess.CompletedProcess(command, 0, "", f"workspace: lease\nCARGO_TARGET_DIR={self.target}\n")
         if command[0] == "cargo":
             binary = Path(kwargs["cwd"], "target", "release", "engine")
             binary.parent.mkdir(parents=True)
@@ -920,7 +937,7 @@ class BuildTest(unittest.TestCase):
 
     def build(self, **kwargs):
         options = {"repo": self.repo, "worktree_root": self.worktrees, "bin_dir": self.bins, "runner": self.runner,
-                   "free_bytes": 100 * 1024**3}
+                   "free_bytes": 100 * 1024**3, "workspace_tool": self.tool}
         options.update(kwargs)
         return perf.build("HEAD", **options)
 
@@ -929,7 +946,7 @@ class BuildTest(unittest.TestCase):
         (self.bins / f"engine-{self.sha[:8]}").write_text("already built")
         plan = self.build()
         self.assertTrue(plan["reused"])
-        self.assertFalse([c for c, _ in self.calls if c[0] == "cargo"])
+        self.assertFalse(self.cargo_calls())
         self.assertFalse(self.worktrees.exists())
 
     def test_dry_run_builds_nothing(self):
@@ -937,29 +954,77 @@ class BuildTest(unittest.TestCase):
         self.assertFalse(plan["reused"])
         self.assertEqual(plan["sha"], self.sha)
         self.assertFalse(self.worktrees.exists())
-        self.assertFalse(self.calls and any(c[0] == "cargo" for c, _ in self.calls))
+        self.assertFalse(self.cargo_calls())
 
     def test_low_disk_refuses_before_creating_a_worktree(self):
         with self.assertRaises(perf.HarnessError) as caught:
             self.build(free_bytes=10 * 1024**3)
         self.assertEqual(caught.exception.name, "insufficient_disk")
         self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
-        self.assertFalse([c for c, _ in self.calls if c[0] == "cargo"])
+        self.assertFalse(self.cargo_calls())
 
-    def test_build_uses_its_own_target_dir_and_copies_the_binary(self):
+    def test_build_runs_cargo_through_the_workspace_wrapper(self):
+        worktree = self.worktrees / f"perf-{self.sha[:8]}"
         with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared/target"}):
-            plan = self.build(keep_worktree=True)
-        cargo = [(c, k) for c, k in self.calls if c[0] == "cargo"]
-        self.assertEqual(len(cargo), 1)
-        command, kwargs = cargo[0]
-        self.assertEqual(command[:3], ["cargo", "build", "--locked"])
-        self.assertIn("--release", command)
+            plan = self.build(keep_worktree=True, needed_gib=12)
+        calls = self.cargo_calls()
+        self.assertEqual(len(calls), 1)
+        command, kwargs = calls[0]
+        self.assertEqual(command[:2], [sys.executable, str(self.tool)])
+        self.assertEqual(command[2:4], ["--repo", str(worktree)])
+        self.assertEqual(command[4:7], ["cargo", "--isolated", f"perf-{self.sha[:8]}"])
+        self.assertEqual(command[7:9], ["--needed-gib", "12"])
+        self.assertEqual(command[9:12], ["build", "--locked", "--release"])
         self.assertEqual(kwargs["env"]["CARGO_INCREMENTAL"], "0")
         self.assertNotIn("CARGO_TARGET_DIR", kwargs["env"])
-        self.assertEqual(kwargs["cwd"], str(self.worktrees / f"perf-{self.sha[:8]}"))
+        self.assertEqual(kwargs["cwd"], str(worktree))
+        # The binary comes from the shared target directory the wrapper reported; the worktree
+        # holds source only.
         self.assertEqual(plan["binary"].read_text(), "fake engine")
+        self.assertEqual(plan["target_dir"], self.target)
         self.assertTrue(os.access(plan["binary"], os.X_OK))
-        self.assertTrue((self.worktrees / f"perf-{self.sha[:8]}").exists())
+        self.assertTrue(worktree.exists())
+        self.assertFalse((worktree / "target").exists())
+
+    def test_needed_gib_is_left_to_the_wrapper_unless_given(self):
+        self.build()
+        self.assertNotIn("--needed-gib", self.cargo_calls()[0][0])
+
+    def test_no_wrapper_refuses_before_creating_a_worktree(self):
+        with mock.patch.object(perf, "find_workspace_tool", return_value=None):
+            with self.assertRaises(perf.HarnessError) as caught:
+                self.build(workspace_tool=None)
+        self.assertEqual(caught.exception.name, "workspace_tool_missing")
+        self.assertIn("--plain-cargo", str(caught.exception))
+        self.assertFalse(self.worktrees.exists())
+        self.assertFalse(self.cargo_calls())
+
+    def test_plain_cargo_builds_into_the_worktree_when_asked(self):
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared/target"}):
+            plan = self.build(workspace_tool=None, plain_cargo=True, keep_worktree=True)
+        (command, kwargs), = self.cargo_calls()
+        self.assertEqual(command[:3], ["cargo", "build", "--locked"])
+        self.assertNotIn("CARGO_TARGET_DIR", kwargs["env"])
+        self.assertEqual(plan["binary"].read_text(), "fake engine")
+        self.assertTrue((self.worktrees / f"perf-{self.sha[:8]}" / "target" / "release" / "engine").is_file())
+
+    def test_the_wrapper_is_found_in_the_documented_order(self):
+        root = Path(self.tmp.name)
+        env_root = root / "env-root"
+        (env_root / "bin").mkdir(parents=True)
+        (env_root / "bin" / "workspace.py").write_text("")
+        # No candidate exists: the bootstrap copy beside the git directory is not there either.
+        self.assertIsNone(perf.find_workspace_tool(self.repo, {}))
+        bootstrap = self.repo / ".mudcrab-local" / "bin" / "workspace.py"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text("")
+        self.assertEqual(perf.find_workspace_tool(self.repo, {}).resolve(), bootstrap.resolve())
+        in_repo = self.repo / "scripts" / "workspace.py"
+        in_repo.parent.mkdir()
+        in_repo.write_text("")
+        self.assertEqual(perf.find_workspace_tool(self.repo, {}), in_repo)
+        self.assertEqual(perf.find_workspace_tool(self.repo, {"MUDCRAB_WORKSPACE_ROOT": str(env_root)}),
+                         env_root / "bin" / "workspace.py")
 
     def test_worktree_is_removed_by_default(self):
         self.build()
@@ -968,12 +1033,12 @@ class BuildTest(unittest.TestCase):
     def test_unknown_ref_is_a_named_error(self):
         with self.assertRaises(perf.HarnessError) as caught:
             perf.build("no-such-ref", repo=self.repo, worktree_root=self.worktrees, bin_dir=self.bins,
-                       runner=self.runner)
+                       runner=self.runner, workspace_tool=self.tool)
         self.assertEqual(caught.exception.name, "unknown_ref")
 
     def test_failed_build_is_a_named_error(self):
         def failing(command, **kwargs):
-            if command[0] == "cargo":
+            if self.is_wrapped_cargo(command):
                 return subprocess.CompletedProcess(command, 101, "", "error: boom")
             return perf._run(command, **kwargs)
 
@@ -982,38 +1047,166 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(caught.exception.name, "build_failed")
         self.assertFalse((self.bins / f"engine-{self.sha[:8]}").exists())
 
-
-    def failing_cargo(self, code=101):
+    def test_a_failed_build_removes_its_worktree(self):
         def failing(command, **kwargs):
-            if command[0] == "cargo":
-                kwargs_dir = Path(kwargs["cwd"], "target")
-                kwargs_dir.mkdir()
-                (kwargs_dir / "junk").write_text("x")
-                return subprocess.CompletedProcess(command, code, "", "error: boom")
+            if self.is_wrapped_cargo(command):
+                return subprocess.CompletedProcess(command, 101, "", "error: boom")
             return perf._run(command, **kwargs)
-        return failing
 
-    def test_a_failed_build_removes_its_worktree_and_target(self):
         with self.assertRaises(perf.HarnessError) as caught:
-            self.build(runner=self.failing_cargo())
+            self.build(runner=failing)
         self.assertEqual(caught.exception.name, "build_failed")
         self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
 
-    def test_keep_worktree_also_keeps_a_failed_build(self):
+    def test_a_plain_cargo_failure_removes_its_worktree_and_target(self):
+        def failing(command, **kwargs):
+            if command[0] == "cargo":
+                target = Path(kwargs["cwd"], "target")
+                target.mkdir()
+                (target / "junk").write_text("x")
+                return subprocess.CompletedProcess(command, 101, "", "error: boom")
+            return perf._run(command, **kwargs)
+
         with self.assertRaises(perf.HarnessError):
-            self.build(runner=self.failing_cargo(), keep_worktree=True)
+            self.build(runner=failing, workspace_tool=None, plain_cargo=True)
+        self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
+
+    def test_keep_worktree_also_keeps_a_failed_plain_cargo_build(self):
+        def failing(command, **kwargs):
+            if command[0] == "cargo":
+                target = Path(kwargs["cwd"], "target")
+                target.mkdir()
+                (target / "junk").write_text("x")
+                return subprocess.CompletedProcess(command, 101, "", "error: boom")
+            return perf._run(command, **kwargs)
+
+        with self.assertRaises(perf.HarnessError):
+            self.build(runner=failing, workspace_tool=None, plain_cargo=True, keep_worktree=True)
         self.assertTrue((self.worktrees / f"perf-{self.sha[:8]}" / "target" / "junk").exists())
 
     def test_a_missing_binary_after_a_successful_build_still_cleans_up(self):
         def quiet(command, **kwargs):
-            if command[0] == "cargo":
-                return subprocess.CompletedProcess(command, 0, "", "")
+            if self.is_wrapped_cargo(command):
+                return subprocess.CompletedProcess(command, 0, "", f"CARGO_TARGET_DIR={self.target}\n")
             return perf._run(command, **kwargs)
 
         with self.assertRaises(perf.HarnessError) as caught:
             self.build(runner=quiet)
         self.assertEqual(caught.exception.name, "binary_missing")
         self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
+
+    def test_a_wrapper_that_reports_no_target_directory_is_a_named_error(self):
+        def silent(command, **kwargs):
+            if self.is_wrapped_cargo(command):
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return perf._run(command, **kwargs)
+
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.build(runner=silent)
+        self.assertEqual(caught.exception.name, "binary_missing")
+        self.assertFalse((self.worktrees / f"perf-{self.sha[:8]}").exists())
+
+
+class OutputDirTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+
+    def prepare(self, path, **kwargs):
+        kwargs.setdefault("environ", {})
+        return perf.prepare_output_dir(path, **kwargs)
+
+    def test_a_new_directory_is_created_with_the_marker(self):
+        out = self.root / "a" / "b"
+        self.assertEqual(self.prepare(out), out)
+        self.assertTrue((out / perf.OUTPUT_MARKER).is_file())
+
+    def test_an_empty_directory_is_reused(self):
+        out = self.root / "empty"
+        out.mkdir()
+        self.prepare(out)
+        self.assertTrue((out / perf.OUTPUT_MARKER).is_file())
+
+    def test_a_directory_the_tool_made_is_replaced(self):
+        out = self.root / "again"
+        self.prepare(out)
+        (out / "old-report.json").write_text("{}")
+        self.prepare(out)
+        self.assertEqual([p.name for p in out.iterdir()], [perf.OUTPUT_MARKER])
+
+    def test_a_non_empty_directory_without_the_marker_is_refused_and_kept(self):
+        out = self.root / "mine"
+        out.mkdir()
+        (out / "thesis.txt").write_text("keep")
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.prepare(out)
+        self.assertEqual(caught.exception.name, "output_not_owned")
+        self.assertEqual((out / "thesis.txt").read_text(), "keep")
+
+    def test_a_marker_that_is_a_symlink_does_not_count(self):
+        out = self.root / "linked-marker"
+        out.mkdir()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.write_text("x")
+        (out / perf.OUTPUT_MARKER).symlink_to(elsewhere)
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.prepare(out)
+        self.assertEqual(caught.exception.name, "output_not_owned")
+
+    def test_a_symlink_is_refused_and_its_target_kept(self):
+        target = self.root / "target"
+        target.mkdir()
+        (target / "keep").write_text("x")
+        link = self.root / "link"
+        link.symlink_to(target)
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.prepare(link)
+        self.assertEqual(caught.exception.name, "unsafe_output_dir")
+        self.assertTrue((target / "keep").exists())
+
+    def test_a_file_is_refused(self):
+        file = self.root / "file"
+        file.write_text("x")
+        with self.assertRaises(perf.HarnessError) as caught:
+            self.prepare(file)
+        self.assertEqual(caught.exception.name, "unsafe_output_dir")
+
+    def test_the_filesystem_root_home_working_directory_and_repository_are_refused(self):
+        home = self.root / "home"
+        home.mkdir()
+        (self.root / "work").mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(home)}), mock.patch.object(Path, "home", return_value=home):
+            with mock.patch("os.getcwd", return_value=str(self.root / "work")):
+                for path in (Path("/"), home, self.root, self.root / "work", perf.SCRIPTS_DIR.parent):
+                    with self.subTest(path=str(path)):
+                        with self.assertRaises(perf.HarnessError) as caught:
+                            self.prepare(path)
+                        self.assertEqual(caught.exception.name, "unsafe_output_dir")
+
+    def test_a_marked_parent_of_the_working_directory_is_still_refused(self):
+        out = self.root / "marked"
+        self.prepare(out)
+        inner = out / "inner"
+        inner.mkdir()
+        with mock.patch("os.getcwd", return_value=str(inner)):
+            with self.assertRaises(perf.HarnessError) as caught:
+                self.prepare(out)
+        self.assertEqual(caught.exception.name, "unsafe_output_dir")
+        self.assertTrue(inner.is_dir())
+
+    def test_a_path_outside_the_output_root_is_refused_when_one_is_set(self):
+        root = self.root / "outputs"
+        root.mkdir()
+        environ = {perf.OUT_ROOT_ENV: str(root)}
+        self.assertEqual(self.prepare(root / "run-1", environ=environ), root / "run-1")
+        for outside in (self.root / "elsewhere", root, root / ".." / "escape"):
+            with self.subTest(path=str(outside)):
+                with self.assertRaises(perf.HarnessError) as caught:
+                    self.prepare(outside, environ=environ)
+                self.assertEqual(caught.exception.name, "output_outside_root")
+        self.assertFalse((self.root / "elsewhere").exists())
+        self.assertFalse((self.root / "escape").exists())
 
 
 class SummaryTest(unittest.TestCase):

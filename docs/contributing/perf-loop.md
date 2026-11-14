@@ -157,6 +157,19 @@ The comparison refuses a scenario, with a named error in `verdict.json`, when:
 `preflight` refuses the whole run (exit 3) unless `--force`: on battery, a thermal speed limit,
 Low Power Mode, a running `cargo` or `rustc`, another engine process, or under 5 GiB free. On
 other systems the machine checks are skipped. A non-empty `--out` also needs `--force`.
+The `cargo`/`rustc` check also fails while any other build runs on the machine, for example another
+checkout compiling through a shared build slot. That is intended, because a compile skews timings;
+wait for the build, or pass `--force` to `compare` and accept the noise.
+
+### Output directories
+
+`run` and `shots` write into `--out`. A new or empty directory is used as it is, and the tool puts a
+marker file (`.mudcrab-perf-output`) in it. An existing non-empty directory is deleted and
+recreated only when it holds that marker, so a second run into the same `--out` replaces the first.
+A non-empty directory without the marker is refused (`output_not_owned`) and left alone. A
+symlink, `/`, your home directory, the working directory, the repository and any parent of those
+are refused (`unsafe_output_dir`). Set `MUDCRAB_PERF_OUT_ROOT` to a dedicated directory to refuse every
+`--out` outside it (`output_outside_root`).
 
 ### Noise floor
 
@@ -350,11 +363,18 @@ python3 scripts/perf/perf.py build <ref> --worktree-root scratch/worktrees --bin
 ```
 
 Resolves the ref to a SHA and reuses `<bin-dir>/engine-<sha8>` when it exists. Otherwise it makes
-a detached worktree, runs `CARGO_INCREMENTAL=0 cargo build --locked --release -p engine --bin
-engine` there with the worktree's own target directory (any inherited `CARGO_TARGET_DIR` is
-dropped), copies the binary and removes the worktree and its target (`--keep-worktree` keeps
-them). It refuses with under 15 GiB free. `--dry-run` shows what it would do. A build takes a
-while and `target/` is 9 to 20 GiB; check the disk first.
+a detached worktree of the ref, which holds source only, and runs `workspace.py cargo --isolated
+perf-<sha8> build --locked --release -p engine --bin engine` from it. The wrapper leases a build
+slot, checks the storage budget and puts the target directory in shared storage, so no `target/`
+appears in the worktree. `build` copies the binary from the target directory the wrapper reports
+and removes the worktree (`--keep-worktree` keeps it). The isolated build stays in shared storage
+(`workspace.py prune` retires it when idle). It finds the wrapper in `$MUDCRAB_WORKSPACE_ROOT/bin`,
+then `scripts/workspace.py`, then the bootstrap copy beside the git directory, and refuses
+(`workspace_tool_missing`) when there is none. `--plain-cargo` builds with plain cargo into a
+`target/` inside the worktree instead, for a clone with no shared storage; the worktree and that
+target are removed afterwards. `--needed-gib N` gives the wrapper a build size estimate. It
+refuses with under 15 GiB free. `--dry-run` shows what it would do. A release build takes a while
+and 9 to 20 GiB of storage.
 
 ## Caveats
 

@@ -97,6 +97,10 @@ DEFAULT_TRACE_CROP_SECONDS = 1.0
 DEFAULT_SAMPLY_SKIP_SECONDS = 10.0
 
 
+OUTPUT_MARKER = ".mudcrab-perf-output"
+OUT_ROOT_ENV = "MUDCRAB_PERF_OUT_ROOT"
+
+
 class HarnessError(Exception):
     """An error with a stable name, so a verdict or an agent can match on it."""
 
@@ -104,6 +108,47 @@ class HarnessError(Exception):
         super().__init__(f"{name}: {message}")
         self.name = name
         self.message = message
+
+
+def _same_or_inside(path, parent):
+    return path == parent or parent in path.parents
+
+
+def prepare_output_dir(out_dir, *, protected=(), environ=None):
+    """Give a run a fresh output directory, removing an old one only when this tool made it.
+
+    Refused: a symlink, the filesystem root, the home directory, the working directory, the
+    repository, any parent of those (removing a parent would remove them), a path outside
+    $MUDCRAB_PERF_OUT_ROOT when that is set, and a non-empty directory without the marker file
+    this function writes into every directory it creates. An empty directory is reused.
+    """
+    environ = os.environ if environ is None else environ
+    raw = Path(out_dir)
+    if raw.is_symlink():
+        raise HarnessError("unsafe_output_dir", f"{raw} is a symlink; give a real directory")
+    path = raw.resolve()
+    guarded = [Path(path.anchor), Path.home().resolve(), Path.cwd().resolve(), SCRIPTS_DIR.parent.resolve(),
+               *(Path(item).resolve() for item in protected)]
+    for item in guarded:
+        if _same_or_inside(item, path):
+            raise HarnessError("unsafe_output_dir", f"{path} is, or contains, {item}; give a dedicated directory")
+    root = environ.get(OUT_ROOT_ENV)
+    if root:
+        root = Path(root).resolve()
+        if path == root or root not in path.parents:
+            raise HarnessError("output_outside_root", f"{path} is not inside {OUT_ROOT_ENV}={root}")
+    if path.exists():
+        if not path.is_dir():
+            raise HarnessError("unsafe_output_dir", f"{path} exists and is not a directory")
+        marker = path / OUTPUT_MARKER
+        if any(path.iterdir()):
+            if marker.is_symlink() or not marker.is_file():
+                raise HarnessError("output_not_owned", f"{path} is not empty and was not made by this tool "
+                                   f"(no {OUTPUT_MARKER}); remove it yourself or pick a new directory")
+            shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / OUTPUT_MARKER).write_text(json.dumps({"tool": "perf.py", "created": time.time()}), encoding="utf-8")
+    return path
 
 
 # --------------------------------------------------------------------------------------------
@@ -439,9 +484,7 @@ def run_scenario(engine, name, scenario, *, assets, out_dir, duration=None, warm
         return {"command": plan["launch_command"], "env": plan["env"]}
     if profiler == "samply":
         samply = find_samply(samply)
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    prepare_output_dir(out_dir)
     dylib = (dylib_builder or metal_trace_dylib)(out_dir) if profiler == "metal-trace" else None
     plan = plan_profiler(profiler, command, out_dir, samply=samply, trace_start=trace_start, dylib=dylib)
     env = dict(os.environ, **plan["env"]) if plan["env"] else None
@@ -1278,7 +1321,8 @@ def preflight_checks(out_dir=None, *, system=None, command_output=_command_outpu
     else:
         add("low_power_mode", "pass", "Low Power Mode is off")
     busy = processes(["cargo", "rustc"])
-    add("no_builds", "fail" if busy else "pass", f"running: {', '.join(busy)}" if busy else "no cargo or rustc")
+    add("no_builds", "fail" if busy else "pass",
+        f"running: {', '.join(busy)}; wait for them, or pass --force to compare" if busy else "no cargo or rustc")
     engines = [name for name in processes(["engine", "engine-*"]) if name]
     add("no_other_engine", "fail" if engines else "pass",
         "another engine process is running" if engines else "no engine process running")
@@ -1307,9 +1351,7 @@ def capture_shots(engine, shots_file, assets, out_dir, *, worldspace="0x3c", tim
     if window == "hidden" and platform.system() == "Darwin":
         raise HarnessError("hidden_window_black_frames", "shots never use a hidden window on macOS")
     out_dir = Path(out_dir)
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    prepare_output_dir(out_dir)
     names = read_shot_names(shots_file)
     command = [str(engine), "--assets", str(assets), "--allow-incomplete-assets", "--worldspace", worldspace,
                "--shots", str(shots_file), "--shots-out", str(out_dir)]
@@ -1621,12 +1663,49 @@ def plan_build(ref, *, repo, worktree_root, bin_dir, runner=_run):
             "worktree": Path(worktree_root) / f"perf-{short}"}
 
 
+def find_workspace_tool(repo, environ=None, runner=_run):
+    """The Mudcrab storage wrapper (`workspace.py`), or None when this checkout has none.
+
+    In order: `$MUDCRAB_WORKSPACE_ROOT/bin/workspace.py`, `scripts/workspace.py` of the repository,
+    and the bootstrap copy `<git common dir>/../.mudcrab-local/bin/workspace.py` that older
+    branches use.
+    """
+    environ = os.environ if environ is None else environ
+    candidates = []
+    if environ.get("MUDCRAB_WORKSPACE_ROOT"):
+        candidates.append(Path(environ["MUDCRAB_WORKSPACE_ROOT"]) / "bin" / "workspace.py")
+    candidates.append(Path(repo) / "scripts" / "workspace.py")
+    common = runner(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    if common.returncode == 0 and common.stdout.strip():
+        candidates.append(Path(common.stdout.strip()).parent / ".mudcrab-local" / "bin" / "workspace.py")
+    return next((path for path in candidates if path.is_file()), None)
+
+
+TARGET_DIR_LINE = re.compile(r"^CARGO_TARGET_DIR=(.+)$", re.MULTILINE)
+
+
 def build(ref, *, repo, worktree_root, bin_dir, runner=_run, free_bytes=None, keep_worktree=False,
-          min_free_gib=MIN_FREE_BUILD_GIB, dry_run=False, environ=None):
+          min_free_gib=MIN_FREE_BUILD_GIB, dry_run=False, environ=None, workspace_tool=None,
+          plain_cargo=False, needed_gib=None):
+    """Build the engine at `ref` and copy the binary to `bin_dir`.
+
+    The build runs through the Mudcrab storage wrapper (`workspace.py cargo --isolated`), from a
+    detached worktree of the ref that holds source only. The wrapper leases a build slot, checks
+    the storage budget and puts the target directory in shared storage, so no `target/` appears in
+    the worktree. The isolated build stays in shared storage after the copy; the wrapper's `prune`
+    retires it when idle. Without a wrapper the build is refused, unless `plain_cargo` asks for a
+    `target/` inside the worktree (a clone with no shared storage).
+    """
     plan = plan_build(ref, repo=repo, worktree_root=worktree_root, bin_dir=bin_dir, runner=runner)
     plan["reused"] = plan["binary"].is_file()
     if plan["reused"] or dry_run:
         return plan
+    tool = None if plain_cargo else (Path(workspace_tool) if workspace_tool else find_workspace_tool(repo, environ, runner))
+    if tool is None and not plain_cargo:
+        raise HarnessError("workspace_tool_missing",
+                           "no workspace.py found ($MUDCRAB_WORKSPACE_ROOT/bin, scripts/ or the shared "
+                           ".mudcrab-local/bin). Cargo must run through it so the build lands in shared storage; "
+                           "pass --plain-cargo to build into a target/ inside the worktree instead")
     Path(worktree_root).mkdir(parents=True, exist_ok=True)
     Path(bin_dir).mkdir(parents=True, exist_ok=True)
     free = free_bytes if free_bytes is not None else shutil.disk_usage(worktree_root).free
@@ -1644,22 +1723,35 @@ def build(ref, *, repo, worktree_root, bin_dir, runner=_run, free_bytes=None, ke
             raise HarnessError("worktree_failed", added.stderr.strip())
     try:
         env = dict(os.environ if environ is None else environ)
-        # A shared target directory lets cargo reuse another tree's test and build outputs, and it
-        # defeats sccache keys; each build gets the target directory inside its own worktree.
-        env.pop("CARGO_TARGET_DIR", None)
         env["CARGO_INCREMENTAL"] = "0"
-        built = runner(["cargo", "build", "--locked", "--release", "-p", "engine", "--bin", "engine"],
-                       cwd=str(worktree), env=env)
+        env.pop("CARGO_TARGET_DIR", None)  # the wrapper (or the worktree) decides where output goes
+        cargo_args = ["build", "--locked", "--release", "-p", "engine", "--bin", "engine"]
+        if plain_cargo:
+            # No shared storage here: the target directory is inside the worktree, which is removed
+            # below, so a failed build does not leave 9-20 GiB behind.
+            built = runner(["cargo", *cargo_args], cwd=str(worktree), env=env)
+            target = worktree / "target"
+        else:
+            command = [sys.executable, str(tool), "--repo", str(worktree), "cargo", "--isolated",
+                       f"perf-{plan['short']}"]
+            if needed_gib is not None:
+                command += ["--needed-gib", str(needed_gib)]
+            built = runner(command + cargo_args, cwd=str(worktree), env=env)
+            reported = TARGET_DIR_LINE.findall(built.stderr or "")
+            target = Path(reported[-1].strip()) if reported else None
         if built.returncode != 0:
             raise HarnessError("build_failed", (built.stderr or "").strip()[-2000:])
-        produced = worktree / "target" / "release" / "engine"
-        if not produced.is_file():
-            raise HarnessError("binary_missing", f"{produced} was not produced")
+        produced = target / "release" / "engine" if target else None
+        if produced is None or not produced.is_file():
+            raise HarnessError("binary_missing", f"{produced or 'the wrapper reported no target directory'} "
+                                                 "was not produced")
         shutil.copy2(produced, plan["binary"])
         plan["binary"].chmod(0o755)
+        if not plain_cargo:
+            plan["target_dir"] = target
     finally:
-        # A failed build leaves a target directory of 9-20 GiB; only --keep-worktree, which exists
-        # for debugging the build, may keep it.
+        # The worktree holds source only (or, with --plain-cargo, a failed build's target directory);
+        # only --keep-worktree, which exists for debugging the build, may keep it.
         if not keep_worktree:
             runner(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)])
     plan["built"] = True
@@ -2499,9 +2591,13 @@ def cmd_visual(args):
 def cmd_build(args):
     repo = Path(args.repo) if args.repo else git_toplevel(Path.cwd())
     plan = build(args.ref, repo=repo, worktree_root=args.worktree_root, bin_dir=args.bin_dir,
-                 keep_worktree=args.keep_worktree, dry_run=args.dry_run)
+                 keep_worktree=args.keep_worktree, dry_run=args.dry_run, plain_cargo=args.plain_cargo,
+                 needed_gib=args.needed_gib)
     action = "reused" if plan["reused"] else ("would build" if args.dry_run else "built")
     print(f"{action} {plan['binary']} ({plan['sha']})")
+    if plan.get("target_dir"):
+        print(f"the isolated build stays in shared storage at {plan['target_dir'].parent}; "
+              "`workspace.py prune` retires it when idle")
     return 0
 
 
@@ -2646,6 +2742,10 @@ def build_parser():
     p.add_argument("--repo")
     p.add_argument("--keep-worktree", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--plain-cargo", action="store_true",
+                   help="build with plain cargo into a target/ inside the worktree; only for a clone with "
+                        "no workspace.py (shared storage)")
+    p.add_argument("--needed-gib", type=float, help="build size estimate passed to workspace.py (its default if omitted)")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("summarize", help="frame stats, thread budget, bound classification and CPU spans of a run")
