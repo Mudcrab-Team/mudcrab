@@ -701,7 +701,11 @@ impl AssetPipeline {
             .collect();
         let plugins = match mo2_plugins {
             Some(plugins) => {
-                let profile = &config.mo2.as_ref().unwrap().profile;
+                let profile = &config
+                    .mo2
+                    .as_ref()
+                    .ok_or_else(|| eyre!("MO2 profile is missing while MO2 plugins are active"))?
+                    .profile;
                 let mut recovery_notices = Vec::new();
                 let plugins = crate::esm::plugins_txt::recover_with_diagnostics(
                     plugins,
@@ -723,10 +727,7 @@ impl AssetPipeline {
                     "MO2 profile {profile}: no usable active plugins remain"
                 );
                 crate::esm::load_order::LoadOrder::read(&plugins).wrap_err_with(|| {
-                    format!(
-                        "MO2 profile {}: invalid plugin/master order",
-                        config.mo2.as_ref().unwrap().profile
-                    )
+                    format!("MO2 profile {profile}: invalid plugin/master order")
                 })?;
                 plugins
             }
@@ -2328,7 +2329,7 @@ impl ConversionBatch<'_> {
                                 record.is_current(&target, &hash, &worker_configuration)
                             }) || previous_entries.get(&key).is_some_and(|entry| {
                                 entry.source_hash == hash
-                                    && entry.output_hash == hash_file(&target).unwrap_or_default()
+                                    && staged_output_hash_matches(&target, &entry.output_hash)
                             }));
                         let existing_is_valid = staged_is_current
                             && fs::metadata(&target).is_ok_and(|metadata| metadata.len() > 0)
@@ -3593,6 +3594,25 @@ fn input_failure_key(data_root: &Path, path: &Path) -> String {
         }
         None if !relative.is_absolute() => normalized.to_ascii_lowercase(),
         None => normalize_separators(path),
+    }
+}
+
+/// Whether the staged output at `target` still has the hash a previous manifest recorded.
+///
+/// A missing file does not match: a resumed run has not staged it yet. A file that cannot be
+/// read does not match either, but it is reported with its path, because a permission error or
+/// a failing disk is not the same as a changed file and costs a full conversion pass.
+fn staged_output_hash_matches(target: &Path, recorded: &str) -> bool {
+    match crate::cache::hash_file_if_present(target) {
+        Ok(Some(actual)) => actual == recorded,
+        Ok(None) => false,
+        Err(error) => {
+            eprintln!(
+                "warning: cannot verify staged output {}: {error:#}; converting it again",
+                target.display()
+            );
+            false
+        }
     }
 }
 
