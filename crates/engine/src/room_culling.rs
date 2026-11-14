@@ -22,8 +22,8 @@
 //! one room and none of the rooms it belongs to - that one, plus any room its bounds merely overlap
 //! (`contained = 0`) - was reached. Every other object is drawn: one that is in no room, one whose
 //! pivot is in several rooms, anything outside the room graph, and everything when the camera is in
-//! no room, when a reached room has incomplete portal data, when the cell has no rooms, or when the database
-//! has no room tables.
+//! no room, when a reached room has incomplete portal data, when the cell has no rooms, or when
+//! the database has no room tables.
 //!
 //! # How an object is hidden, and why shadows keep it
 //!
@@ -62,11 +62,9 @@
 //! authored with doorways, so the overlap is a thick portal into the neighbour and crossing the
 //! edge narrows the region to `region` intersected with the neighbour's screen rectangle (the box
 //! projected with the doorway clipping; a box holding the camera is the whole screen); the
-//! neighbour is entered only if that is non-empty. Where **either** room of the pair has no portal
-//! at all there is nothing to narrow to, so the edge is walked open, exactly as an `XLRM` link is:
-//! the region passes through unchanged (design-1100 §5). This is what lets BleakFallsBarrow01's
-//! portal-less hall reach the corridor it can see: narrowing at its two overlap edges used to stop
-//! the walk one room short of the corridor's doorways (#188).
+//! neighbour is entered only if that is non-empty. Where either room has no portal, the edge
+//! queues the neighbour without clipping. Reaching that portal-less room then draws the whole
+//! cell, since the graph cannot bound visibility through an open hall.
 //!
 //! Narrowing is what keeps the culling power, so it is kept wherever the data supports it: the
 //! edges are not simply dropped. The source room's rectangle is not applied when an edge does
@@ -383,8 +381,7 @@ pub struct RoomGraph {
     pub links: Vec<(usize, usize)>,
     /// Implicit edges between rooms whose boxes overlap or touch ([`overlap_links`]). Unlike a link,
     /// an overlap is walked thick - narrowed to the neighbour's screen rectangle - between two rooms
-    /// that both have a portal of the cell; where either has none there is no aperture data, so the
-    /// edge is walked open like a link (see the module docs).
+    /// that both have a portal of the cell; reaching a neighbour without one draws the whole cell.
     pub overlaps: Vec<(usize, usize)>,
     /// Membership by placed-reference id. The key is one number under three names: the `FormId`
     /// component of a spawned reference (`streaming::spawn_cell` inserts `FormId(reference.form_id)`),
@@ -552,10 +549,8 @@ impl RoomGraph {
                 overlapping[b].push(a);
             }
         }
-        // The switch the overlap rule reads: a room with a `PortalMarker` of this cell keeps its
-        // overlap edges thick (the portal data is where the aperture is); a room without one has no
-        // aperture data at all, so its overlap edges are walked open, like a link (design-1100 §5).
-        // `doorways` already drops portals whose two sides are not both rooms of this cell.
+        // Only valid two-room portals describe an aperture. Reaching any other room draws the
+        // whole cell, including when an overlap queues it without clipping to its box.
         let has_portal: Vec<bool> = doorways.iter().map(|portals| !portals.is_empty()).collect();
         let mut region: Vec<Option<Rect>> = vec![None; self.rooms.len()];
         let mut widenings = vec![0u8; self.rooms.len()];
@@ -600,14 +595,8 @@ impl RoomGraph {
             for &other in &linked[room] {
                 pending.push((other, seen));
             }
-            // An overlap is a thick portal into the neighbour: the region narrows to the
-            // neighbour's screen rectangle (a box holding the camera is the whole screen). It does
-            // not narrow to this room's rectangle: a ray can reach the neighbour without crossing
-            // this room's box. Only a pair whose two rooms both have a `PortalMarker` narrows:
-            // where either has none there is no record of an aperture, so the edge is open and the
-            // region passes through unchanged, as along a link (design-1100 §5; without this the
-            // walk narrowed twice in BleakFallsBarrow01's portal-less hall and culled the corridor
-            // geometry that is plainly in view).
+            // Clip implicit overlaps to the neighbour's box only when both rooms have portal
+            // data. Queue an open neighbour without clipping so the whole-cell fallback runs.
             for &other in &overlapping[room] {
                 if !has_portal[room] || !has_portal[other] {
                     pending.push((other, seen));
