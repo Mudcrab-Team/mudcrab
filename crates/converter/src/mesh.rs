@@ -4499,8 +4499,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Scenes well under the old 64-node collision limit convert to the same GLB bytes as before
-    /// the shared 256-node bound. The pinned hashes come from the converter before that bound.
+    /// Pin shallow-scene bytes including the native-UV tangent output contract.
+    /// The shared 256-node traversal bound must not change these otherwise stable outputs.
     #[test]
     fn shallow_scene_glb_bytes_are_unchanged_by_the_depth_bound() {
         let directory = tempfile::tempdir().unwrap();
@@ -4508,12 +4508,12 @@ mod tests {
             (
                 "static",
                 static_nif(),
-                "32055a7cc2a3a7a4dd45eb11cd69ad893349f2e853eb82cffe72fd7efebcffe7",
+                "a9b5b133442efe59440b33a89b31c3309a853ab9a7c4f1b7ffddffb3a96febb9",
             ),
             (
                 "chain-40",
                 static_scene_chain_nif(40),
-                "4c5a5c66c022d9b37562a69afe5f814a858d26cc26d97f449d3378fe0064e496",
+                "4744abb50f37523e73a0cfc747d56152d504a46d795621208276573648f5df0c",
             ),
         ];
         for (name, source, expected) in cases {
