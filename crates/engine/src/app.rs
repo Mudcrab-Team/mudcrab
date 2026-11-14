@@ -128,7 +128,13 @@ pub(crate) fn load_optional_grass_cache(
         return None;
     }
     let cache = if !world_active {
-        eprintln!("warning: --grass has no effect without a converted world");
+        if config
+            .settings_overrides
+            .iter()
+            .any(|flag| flag == "--grass")
+        {
+            eprintln!("warning: --grass has no effect without a converted world");
+        }
         None
     } else {
         match crate::world::grass_cache::GrassCache::open(
@@ -154,6 +160,22 @@ pub(crate) fn load_optional_grass_cache(
     cache
 }
 
+/// Resolve the optional pack cache before validating enabled-grass requirements.
+pub(crate) fn prepare_optional_grass_cache(
+    config: &mut EngineConfig,
+    world_active: bool,
+    preferences: Option<&mut (
+        crate::settings::RenderingSettings,
+        crate::settings::SettingsFile,
+    )>,
+) -> Result<Option<crate::world::grass_cache::GrassCache>> {
+    let cache = load_optional_grass_cache(config, world_active, preferences);
+    config
+        .validate_grass()
+        .map_err(|reason| color_eyre::eyre::eyre!(reason))?;
+    Ok(cache)
+}
+
 /// Prepare the selected world or fixture and run the engine with its available optional resources.
 pub fn run(mut config: EngineConfig) -> Result<()> {
     validate_fixture_selection(&config)?;
@@ -168,9 +190,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
     );
     config.image_space_selection()?;
     let start_camera = prepare_start_camera(&mut config)?;
-    config
-        .validate_grass()
-        .map_err(|reason| color_eyre::eyre::eyre!(reason))?;
     for diagnostic in &config.grass_settings_diagnostics {
         eprintln!("grass settings: {diagnostic}");
     }
@@ -347,7 +366,7 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .then(|| MovementTuning::from_world_database(&config.assets_dir.join("skyrim_world.db")))
         .transpose()?;
     let grass_cache =
-        load_optional_grass_cache(&mut config, runtime_data.is_some(), preferences.as_mut());
+        prepare_optional_grass_cache(&mut config, runtime_data.is_some(), preferences.as_mut())?;
     let benchmark_active = config.benchmark_frames.is_some()
         || config.benchmark_duration_secs.is_some()
         || config.streaming_benchmark_route_speed.is_some();
@@ -3422,14 +3441,16 @@ mod tests {
         const PROBE: &str = "MUDCRAB_TEST_GRASS_NO_WORLD";
         const WARNING: &str = "warning: --grass has no effect without a converted world";
         if let Ok(mode) = std::env::var(PROBE) {
-            let mut config = EngineConfig {
-                grass: mode == "on",
-                ..Default::default()
+            let args = match mode.as_str() {
+                "on" => vec!["--grass"],
+                "off" => vec!["--no-grass"],
+                _ => vec![],
             };
+            let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
             assert!(load_optional_grass_cache(&mut config, false, None).is_none());
             return;
         }
-        for (mode, expected) in [("on", 1), ("off", 0)] {
+        for (mode, expected) in [("on", 1), ("off", 0), ("default", 0)] {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -3453,6 +3474,8 @@ mod tests {
             let mut args = vec!["--benchmark-only"];
             if grass {
                 args.push("--grass");
+            } else {
+                args.push("--no-grass");
             }
             let mut config = EngineConfig::run_from_args(args.into_iter().map(str::to_owned));
             assert!(load_optional_grass_cache(&mut config, false, None).is_none());

@@ -282,7 +282,9 @@ pub static SETTING_SPECS: &[SettingSpec] = &[
     )
     .when(|s| s.point_lights && s.point_light_shadows),
     toggle!("Grass (applies on next start)", "Grass", grass),
-    number!(Graphics, "Grass (applies on next start)", "Grass radius", grass_radius; 1.0, 32.0, 1.0),
+    // Keep menu coverage at the default window under G4's per-cell budgets.
+    // Larger deliberate launch radii remain available through the CLI.
+    number!(Graphics, "Grass (applies on next start)", "Grass radius", grass_radius; 1.0, 2.0, 1.0),
     toggle!("Sun and ambient light", "Sun lighting", sun),
     number!(Graphics, "Sun and ambient light", "Sun illuminance (lux)", sun_illuminance; 0.0, 100_000.0, 1000.0)
         .when(|s| s.sun),
@@ -600,7 +602,7 @@ impl RenderingSettings {
 
     /// Copy launch values before optional grass coverage is imposed on the resolved preferences.
     fn take_launch_values(&mut self, config: &EngineConfig) {
-        self.grass = config.grass;
+        self.grass = config.grass || config.grass_disabled_by_terrain;
         self.grass_radius = config.grass_radius;
         self.color_grade = config.color_grade.index();
         self.visual_preset =
@@ -766,7 +768,7 @@ impl SettingsFile {
     pub fn session_only() -> Self {
         Self {
             path: None,
-            status: "Changes apply now, except grass and grass radius (next start). This preview does not save preferences.".into(),
+            status: "Preview only. Grass and radius apply next start.".into(),
             stored: RenderingSettings::default(),
             launch_overrides: Vec::new(),
             grass_coverage: None,
@@ -790,10 +792,7 @@ impl SettingsFile {
     pub fn save(&mut self, settings: &RenderingSettings) {
         self.status = match self.path.as_ref() {
             Some(path) => match save_settings(path, &self.persisted(settings)) {
-                Ok(()) => {
-                    "Settings saved. Grass, grass radius and IO-thread changes apply on next start."
-                        .into()
-                }
+                Ok(()) => "Settings saved. Grass, radius and IO threads apply next start.".into(),
                 Err(error) => format!("Could not save settings: {error}"),
             },
             None => "Saving is unavailable for this session.".into(),
@@ -864,7 +863,7 @@ fn prepare_settings_at(
     settings.take_launch_values(config);
     let mut file = SettingsFile {
         path,
-        status: "Changes apply now, except grass, grass radius and IO threads (next start). Choose Save to keep them.".into(),
+        status: "Save to keep changes. Grass, radius and IO threads apply next start.".into(),
         stored: RenderingSettings::default(),
         launch_overrides: config.settings_overrides.clone(),
         grass_coverage: None,
@@ -876,7 +875,15 @@ fn prepare_settings_at(
             Ok(bytes) => {
                 let saved = serde_json::from_slice::<RenderingSettings>(&bytes)
                     .map_err(|e| e.to_string())
-                    .and_then(|s| s.validate().map(|()| s));
+                    .and_then(|mut s| {
+                        let radius = s.grass_radius.clamp(1, 2);
+                        if s.grass_radius != radius {
+                            file.status = format!("Saved grass radius {} clamped to {radius}; larger radii are CLI-only.", s.grass_radius);
+                            warn!(old = s.grass_radius, radius, "saved grass radius clamped");
+                            s.grass_radius = radius;
+                        }
+                        s.validate().map(|()| s)
+                    });
                 match saved {
                     Ok(saved) => {
                         file.stored = saved.clone();
@@ -909,6 +916,8 @@ fn prepare_settings_at(
     // apply_config deliberately leaves the active grass state and radius alone.
     config.grass = settings.grass;
     config.grass_radius = settings.grass_radius;
+    config.grass_disabled_by_terrain = false;
+    config.disable_grass_outside_explicit_terrain();
     config.discard_inactive_grass_imports();
     config.grass_terrain_radii = None;
     let before_coverage = (settings.stream_radius, settings.unload_radius);

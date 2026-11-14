@@ -364,23 +364,30 @@ fn grass_ini_uses_the_same_reader_as_terrain() {
 }
 
 #[test]
-/// Verify valid Skyrim spacing still respects the generator limit and explicit repair options.
+/// Unsupported imported spacing warns and skips; explicit numeric overrides remain strict.
 fn grass_ini_zero_spacing_reports_the_generator_limit_and_cli_can_override_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = ini(&dir, "spacing.ini", "[Grass]\niMinGrassSize=0\n");
     let imported = parse(&["--grass", "--ini", &path]);
+    assert!(imported.validate_grass().is_ok());
+    assert_eq!(imported.grass_min_spacing, 20.0);
     assert!(
         imported
+            .grass_settings_diagnostics
+            .iter()
+            .any(|message| message.contains("iMinGrassSize") && message.contains("ignored"))
+    );
+    assert!(
+        parse(&["--grass-min-spacing", "0", "--ini", &path])
             .validate_grass()
-            .unwrap_err()
-            .contains("safety minimum 8")
+            .is_err()
     );
     let overridden = parse(&["--grass-min-spacing", "20", "--grass", "--ini", &path]);
     assert!(overridden.validate_grass().is_ok());
 }
 
 #[test]
-/// Verify imported fading controls whether a zero fade range is valid.
+/// Disabled fading accepts zero range; enabled fading skips that unsupported import.
 fn grass_ini_zero_fade_range_is_allowed_only_when_fading_is_disabled() {
     let dir = tempfile::tempdir().unwrap();
     for enabled in [false, true] {
@@ -393,9 +400,21 @@ fn grass_ini_zero_fade_range_is_allowed_only_when_fading_is_disabled() {
             ),
         );
         let config = parse(&["--grass", "--ini", &path]);
-        assert_eq!(config.validate_grass().is_ok(), !enabled);
+        assert!(config.validate_grass().is_ok());
         if !enabled {
             assert_eq!(config.effective_grass_fade(), (0.0, 0.0));
+        } else {
+            assert_eq!(
+                (config.grass_fade_start, config.grass_fade_end),
+                (7000.0, 8000.0)
+            );
+            assert!(
+                config
+                    .grass_settings_diagnostics
+                    .iter()
+                    .any(|message| message.contains("fGrassFadeRange")
+                        && message.contains("ignored"))
+            );
         }
     }
 }

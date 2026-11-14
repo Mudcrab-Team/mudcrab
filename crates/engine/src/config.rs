@@ -134,6 +134,8 @@ pub struct EngineConfig {
     /// Requested grass defaults on; startup requires a valid pack cache before rendering.
     /// Automated baselines should explicitly pin their grass state.
     pub grass: bool,
+    /// Retain the requested preference when an explicit terrain limit disables this session.
+    pub grass_disabled_by_terrain: bool,
     /// Radius in exterior cells, clamped below the terrain stream radius.
     pub grass_radius: i32,
     /// Species batches admitted to the renderer each frame. Zero is unlimited.
@@ -302,6 +304,7 @@ impl Default for EngineConfig {
             // far more new assets than the streaming radius can produce.
             max_upload_mib_per_frame: 16,
             grass: true,
+            grass_disabled_by_terrain: false,
             grass_radius: grass.cell_radius,
             grass_uploads_per_frame: 2,
             grass_density_multiplier: 1.0,
@@ -738,15 +741,6 @@ impl EngineConfig {
     pub fn validate_grass(&self) -> Result<(), String> {
         if let Some(error) = &self.grass_settings_error {
             return Err(error.clone());
-        }
-        if self.grass
-            && self
-                .grass_settings_report
-                .as_ref()
-                .and_then(|report| report.integer("iMaxGrassTypesPerTexure"))
-                .is_some_and(|value| value < 0)
-        {
-            return Err("negative iMaxGrassTypesPerTexure cannot be applied by MudCrab".into());
         }
         let world_grass = self.grass && self.loads_world();
         if world_grass && (self.grass_radius == i32::MAX || self.stream_radius > MAX_STREAM_RADIUS)

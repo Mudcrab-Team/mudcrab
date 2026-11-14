@@ -239,7 +239,8 @@ is capped at `effective_grass_radius * 4096` Creation units; fade start is scale
 by the same ratio. CLI grass runs choose terrain radius three unless explicitly
 overridden, allowing the default grass radius two and fade 7000..8000. With an
 explicit terrain radius two, grass radius falls to one and fade to 3584..4096;
-startup diagnostics report this clamp. A cell can leave this generated ring only after its nearest edge has
+startup diagnostics report this clamp. Explicit terrain radii zero or one disable
+grass for that session with a notice, preserving the next-start preference. A cell can leave this generated ring only after its nearest edge has
 reached zero density, preventing whole-cell disappearance during ordinary cell
 crossings. Radius zero cannot provide this guarantee and is rejected when grass
 is enabled. Acceptance and multi-shot captures wait for desired grass
@@ -257,7 +258,11 @@ at extraction time, as the multi-shot settle gate does before requesting a frame
 Interactive settings include **Grass** and **Grass radius** under
 **Grass (applies on next start)**. Choose Save to persist them. Grass plugins
 and the validated cache are installed at startup, so both controls apply on
-the next start. A cache failure disables rendering for that pack without
+the next start. The menu radius is limited to 1..2, keeping the shipped window
+under the G4 per-cell budgets and below the terrain menu ceiling of 16 minus one.
+Older saved values are clamped on load with a status message; larger radii are
+launch-only. G4 measures per-cell latency, not total radius-two ring startup time.
+A cache failure disables rendering for that pack without
 replacing the saved requested state. Grass-imposed terrain radii are never
 saved as terrain preferences.
 
@@ -282,7 +287,9 @@ The shared reader accepts UTF-8 with an optional BOM, case-insensitive sections
 and keys, and whole-line `;`/`#` comments. The last duplicate assignment wins.
 Unknown keys are ignored. An unreadable selected file prints a warning and is
 skipped; a malformed scalar prints a warning and leaves that setting unchanged.
-The final grass configuration must still pass runtime validation. INI values
+Unsupported imported generator values (spacing below 8, unsupported radii, negative type limits,
+or invalid fade ranges) warn and leave the supported value unchanged. Explicit
+CLI values still must pass runtime validation after optional cache detection. INI values
 update generation settings only when grass is active; the report retains imported
 values while grass is disabled. Explicit numeric options keep their usual validation. INIs are
 read only and selected by explicit path; the engine does not discover or copy
@@ -317,7 +324,8 @@ not a second clamp on the selected start distance. Disabling fade keeps full
 density up to cell unloading, so the zero-density cell-crossing guarantee no
 longer applies. Legacy cache switches and imported wind magnitudes do not
 control MudCrab's cache or wind model. Imported spacing below eight is outside
-the bounded CPU generator's supported range and is rejected. Startup
+the bounded CPU generator's supported range and is ignored with a warning,
+retaining the supported spacing. Explicit CLI spacing remains strict. Startup
 diagnostics report effective grass settings and each key's `--ini` path or
 `default` source, with explicit numeric overrides reported separately.
 
@@ -479,5 +487,6 @@ queued futures are cancelled; already executing synchronous jobs finish on the
 bounded dedicated pool. Zero cache MiB continues to mean unlimited retention.
 
 Automatic grass-driven terrain expansion accepts radii up to 32 cells. Larger
-radii require an explicit `--stream-radius` to control terrain coverage; they
-are rejected before automatic expansion or settings application.
+explicit CLI radii require an explicit `--stream-radius` to control terrain
+coverage; unsupported automatic CLI expansion is rejected before settings apply.
+Unsupported imported coverage warns and is ignored without owning a saved field.
