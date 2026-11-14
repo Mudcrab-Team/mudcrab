@@ -11,6 +11,7 @@ pub mod cell_commands;
 pub mod color_pipeline;
 pub mod config;
 pub mod console;
+mod console_selection;
 pub mod door_crossing;
 pub mod doors;
 pub mod emittance;
@@ -31,7 +32,9 @@ pub mod papyrus_runtime;
 pub mod physics;
 pub mod prepass_vertex_alpha;
 pub mod profiling;
+pub mod raw_texel;
 pub mod render;
+mod render_teardown;
 pub mod render_timing;
 mod renderer_init;
 pub mod route;
@@ -50,6 +53,8 @@ mod streaming_trace;
 pub mod swap_bridge;
 pub mod terrain_merge;
 pub mod terrain_upload;
+#[cfg(test)]
+mod test_support;
 pub mod tone_mapping;
 pub mod visibility_optimization;
 pub mod visual_profile;
@@ -58,3 +63,9 @@ pub mod world;
 pub use app::run;
 
 mod mesh_residency_audit;
+
+#[doc(hidden)]
+pub mod collision_measure;
+
+#[cfg(feature = "collision-measure")]
+mod scene_placement_probe;
