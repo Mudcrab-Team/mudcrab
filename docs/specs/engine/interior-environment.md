@@ -73,7 +73,7 @@ Format definitions inspected on 2026-10-31:
   matching inheritance names and independent Use Sky Lighting guard in cell fog setters. These
   declarations/wrappers establish neither retail light equations nor a native source-selection trace.
 - Existing converter/schema: [environment.rs](../../../crates/converter/src/esm/environment.rs)
-  and [db-schema.md](../converters/db-schema.md). No schema or asset conversion change is required.
+  and [db-schema.md](../converters/db-schema.md). The converter now keeps the authored `xcll_size` of a rejected XCLL block (under 72 bytes) instead of NULL. The schema version and the table shape do not change. A pack converted before this change keeps the old value and must be regenerated from source to recover the distinction.
 
 Read-only inspection of registered `user-testing-main-b5259d33` found both cells 78791/78792 with
 DATA 129 (`0x81`), LTMP 659862 (`FarmLightingTemplate`), inheritance 159 (`0x9f`). Thus ambient,

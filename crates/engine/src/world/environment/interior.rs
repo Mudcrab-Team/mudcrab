@@ -246,8 +246,25 @@ mod tests {
                 Transform::from_rotation(exterior_rotation),
             ))
             .id();
+        // `App::update` clears the world change trackers, so detect writes with a system:
+        // its change ticks survive across updates. The first two updates settle added state.
+        #[derive(Resource, Default)]
+        struct LightWrites(u32);
+        app.init_resource::<LightWrites>().add_systems(
+            PostUpdate,
+            |lights: Query<(Ref<DirectionalLight>, Ref<Transform>, Ref<CascadeShadowConfig>)>,
+             ambient: Res<GlobalAmbientLight>,
+             mut writes: ResMut<LightWrites>| {
+                for (light, transform, cascades) in &lights {
+                    writes.0 += (light.is_changed() || transform.is_changed() || cascades.is_changed())
+                        as u32;
+                }
+                writes.0 += ambient.is_changed() as u32;
+            },
+        );
         app.update();
-        app.world_mut().clear_trackers();
+        app.update();
+        app.world_mut().resource_mut::<LightWrites>().0 = 0;
         // Cell 10 authors non-black ambient and directional colours, a nonzero fade and a
         // rotation, and does not use sky lighting.
         enter(&mut app, Some(10));
@@ -260,22 +277,23 @@ mod tests {
 
         let entity = app.world().entity(sun);
         let light = entity.get_ref::<DirectionalLight>().unwrap();
-        assert!(!light.is_changed());
         assert_eq!(light.color, Color::srgb(0.8, 0.7, 0.6));
         assert_eq!(light.illuminance, 4321.0);
         let transform = entity.get_ref::<Transform>().unwrap();
-        assert!(!transform.is_changed());
         assert_eq!(transform.rotation, exterior_rotation);
         let cascades = entity.get_ref::<CascadeShadowConfig>().unwrap();
-        assert!(!cascades.is_changed());
         assert_eq!(
             format!("{:?}", *cascades),
             format!("{:?}", CascadeShadowConfig::default())
         );
-        assert!(!app.world().is_resource_changed::<GlobalAmbientLight>());
         let ambient = app.world().resource::<GlobalAmbientLight>();
         assert_eq!(ambient.color, Color::srgb(0.1, 0.2, 0.3));
         assert_eq!(ambient.brightness, 123.0);
+        assert_eq!(
+            app.world().resource::<LightWrites>().0,
+            0,
+            "the interior selection wrote a Bevy light"
+        );
     }
 
     #[test]
