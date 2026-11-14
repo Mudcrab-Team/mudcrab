@@ -1286,7 +1286,12 @@ async fn metadata_rebuild_rejects_changed_plugins_and_assets_without_publication
         } else {
             let manifest =
                 ConversionManifest::load(&source.join("conversion-manifest.json")).unwrap();
-            let asset = &manifest.entries.values().next().unwrap().output;
+            let asset = &manifest
+                .entries
+                .values()
+                .find(|entry| entry.output.starts_with("meshes/"))
+                .unwrap()
+                .output;
             fs::write(source.join(asset), b"corrupt asset").unwrap();
         }
         let error = rebuild(&data, &source, &output)
