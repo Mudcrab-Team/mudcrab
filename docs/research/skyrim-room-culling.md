@@ -29,12 +29,22 @@ Research checked on 2026-11-15:
   connects the portal graph entry, compound frustum and a shared-room object map. These community
   declarations support a per-view volume-based visibility model with unbounded-space state.
   They do not reveal how portal paths build those volumes or when individual tests run.
+- Bethesda's [Skyrim optimization tutorial, revision 7673](https://ck.uesp.net/w/index.php?title=Bethesda_Tutorial_Optimization&oldid=7673)
+  was verified from the user-supplied saved HTML, **Bethesda Tutorial Optimization - the CreationKit
+  Wiki.html**. The page identifies itself as the UESP copy of the original Skyrim CK wiki and gives
+  a last-edit date of 2017-01-27. The saved HTML SHA-256 is
+  `cec90f5618ec85e664cb74cd7627be3d0328152cce217a3b7a4df63d53ba7cdc`.
+  It confirms that rooms collect references for visibility, a visible portal exposes its connected
+  rooms, and a working portal must link both rooms. Its advanced tips specify default membership
+  in one room by the reference pivot, joined rooms treated as one irregular room, and the `NONE`
+  multibound override for references that must remain visible across rooms. It warns that gaps and
+  overlaps can cause missing geometry. It does **not** say that overlapping boxes automatically
+  connect rooms.
 - Bethesda's [optimization tutorial for Fallout](https://geckwiki.com/index.php/Bethsoft_Tutorial_Optimization)
-  explains authored rooms and portal visibility, including a separate unbounded space connected
-  through portals. This is related-engine documentation, not proof of Skyrim's exact behavior.
-  The Skyrim [optimization tutorial](https://ck.uesp.net/wiki/Bethesda_Tutorial_Optimization) and
-  [room basics](https://ck.uesp.net/wiki/Room_Bounds_and_Portal_Basics) returned HTTP 403 to automated
-  fetching during this investigation. Their full contents were not verified.
+  describes a separate unbounded space connected through portals. The supplied Skyrim tutorial
+  does not describe that rule. Unbounded-space evidence for Skyrim therefore still comes from the
+  community declarations above, rather than this tutorial. The separate Skyrim
+  [room basics page](https://ck.uesp.net/wiki/Room_Bounds_and_Portal_Basics) remains unverified.
 
 The structural comparison is useful: Skyrim's declared compound frusta can represent unions and
 intersections of plane sets. Our screen rectangles approximate those visible regions and merge
@@ -45,6 +55,25 @@ No reconstruction source was copied into the engine. No original Skyrim runtime 
 performed. The evidence supports using authored apertures and explicit room links; the exact
 handling of overlapping bounds, unbounded-space traversal, dynamic membership, lights and shadows
 still needs controlled Skyrim experiments or reconstructed traversal functions.
+
+## Differences established by the Skyrim tutorial
+
+The tutorial documents authored room grouping and portal connectivity, not the exact clipping
+algorithm. It supports pivot membership and explicit room links, while leaving our screen-space
+clipping and implicit overlap edges as implementation choices.
+
+The converter does not yet preserve the authored `NONE` multibound override. `export_room_graph`
+in `crates/converter/src/esm/rooms.rs` assigns every placed non-marker reference by pivot position;
+its later overlap pass adds bounds intersections. A reference assigned to `NONE` in the editor can
+therefore acquire room membership here and be culled. Drawing references with several containing
+rooms does not implement this override: an explicitly unrestricted reference can still have its
+pivot in exactly one room. The tutorial does not identify the serialized field/value for `NONE`.
+The schema names `XMBR` as a multibound field and also retains `XMBP`, but that alone does not prove
+how the editor encodes the override. Confirm that representation with xEdit definitions or a
+controlled CK edit before implementing it. Existing converted data would need correction too.
+
+The tutorial recommends measuring performance and limiting long chains of visible portals. Its
+3–5-portal guidance is an authoring recommendation, not permission to truncate the renderer's walk.
 
 ## Runtime choices
 
