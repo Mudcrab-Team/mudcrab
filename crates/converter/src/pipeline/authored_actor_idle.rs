@@ -1161,7 +1161,7 @@ mod tests {
         let db_hash = crate::cache::hash_file(&pack.join("skyrim_world.db")).unwrap();
         let connection = Connection::open_with_flags(
             pack.join("skyrim_world.db"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
         let fixture = Connection::open(output.join("skyrim_world.db")).unwrap();
