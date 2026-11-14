@@ -402,7 +402,7 @@ pub struct SettleCounts {
     pub pending_batch_selection: usize,
     pub pending_specializations: Option<usize>,
     pub pending_render_transfers: Option<usize>,
-    /// With `--room-culling`: interior room graphs still being read, and loaded interiors whose
+    /// Interior room graphs still being read, and loaded interiors whose
     /// graph could not be read. Either leaves the view unculled, so it is not the view to photograph.
     #[serde(skip_serializing_if = "is_zero")]
     pub pending_room_graphs: usize,
@@ -410,8 +410,7 @@ pub struct SettleCounts {
     pub failed_room_graphs: usize,
 }
 
-/// Room-graph counts stay out of a receipt that has none, so a run without `--room-culling`
-/// writes the receipts it wrote before.
+/// Omit idle room-graph counters from capture receipts.
 fn is_zero(count: &usize) -> bool {
     *count == 0
 }
@@ -480,7 +479,7 @@ impl SettleCounts {
         }
     }
 
-    /// Adds room culling's graph reads; a run without `--room-culling` has none.
+    /// Adds room culling's graph reads when the world has its startup resources.
     pub fn with_room_graphs(
         self,
         room_culling: Option<&crate::room_culling::RoomCullingState>,

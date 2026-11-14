@@ -389,7 +389,6 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
         .add_plugins(crate::actor_drive::ActorDrivePlugin)
         .add_plugins(crate::actor_head::ActorHeadPlugin)
         .add_plugins(crate::actor_outfit::ActorOutfitPlugin)
-        // Registered for every run; with `--room-culling` off it adds no system.
         .add_plugins(room_culling)
         .add_systems(PostUpdate, keep_windows_hidden)
         .add_plugins(crate::terrain_merge::TerrainMergePlugin::new(

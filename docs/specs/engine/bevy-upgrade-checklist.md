@@ -4,7 +4,7 @@ Engine code that depends on Bevy internals beyond the public plugin API. Before 
 is merged, check every entry against the new version's source and changelog, and run the tests
 named in the entry.
 
-## Room culling (`crates/engine/src/room_culling.rs`, `--room-culling`)
+## Room culling (`crates/engine/src/room_culling.rs`)
 
 - **Hook:** `cull_room_views` runs in `VisibilitySystems::CheckVisibility`, ordered after
   `check_visibility_cpu_culling`, and removes entities from the main camera's `VisibleEntities`
@@ -21,5 +21,5 @@ named in the entry.
 - **Check:** `cargo nextest run -p engine room_culling`. The tests run the plugin in a real Bevy
   app with `VisibilityPlugin` and assert that an unreached room's mesh leaves the main view's list
   while `ViewVisibility` stays set. Then run the measurement poses
-  (`crates/engine/tests/fixtures/room-culling-shots.json`) with `--room-culling`, and compare
+  (`crates/engine/tests/fixtures/room-culling-shots.json`), and compare
   `python3 scripts/room_culling_counts.py <shots-out>` with the previous version's counts.

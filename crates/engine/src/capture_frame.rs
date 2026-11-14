@@ -57,8 +57,7 @@ pub(crate) struct CaptureFrame {
     /// Absent only in harnesses that build a world without the engine's startup resources.
     pub visual_profile: Option<crate::visual_profile::VisualProfile>,
     pub grading: Option<CaptureGrade>,
-    /// The main view's mesh list before and after room culling, present only with
-    /// `--room-culling`.
+    /// The main view's mesh list before and after room culling. Absent in harnesses without it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub room_culling: Option<crate::room_culling::MainViewMeshes>,
 }

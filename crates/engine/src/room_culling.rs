@@ -13,20 +13,16 @@
 //! An `XLRM` link (`room_links`) is an open edge: if one linked room is reached so is the other,
 //! with the region unchanged.
 //!
-//! Whether the walk runs at all is a data fact: the presence of a `PortalMarker`. A camera standing
-//! in a room with no portal of the cell is in one of Skyrim's open halls, whose neighbours are
-//! joined by geometry the room boxes do not describe; walking from there narrows at doorways that
-//! can project off screen and stops short of rooms plainly in view (analysis-1112: at
-//! BleakFallsBarrow01's floor poses the portal-less hall 234060 started a walk that reached 9 of 34
-//! rooms and culled the Nordic backdrop). So when any room containing the camera has no portal, the
-//! whole cell is drawn - the same answer as a camera in no room. A camera whose every start room
-//! carries a portal still walks and culls.
+//! Draw the whole cell if any reached room lacks a valid portal between two rooms of the cell,
+//! or has a portal with an unresolved side. Open halls can expose rooms across unboxed space;
+//! a portal on the starting room does not establish coverage further along the walk. A camera in
+//! no room also draws the whole cell.
 //!
 //! An object is hidden from the view only when it is contained (pivot inside the box) in exactly
 //! one room and none of the rooms it belongs to - that one, plus any room its bounds merely overlap
 //! (`contained = 0`) - was reached. Every other object is drawn: one that is in no room, one whose
 //! pivot is in several rooms, anything outside the room graph, and everything when the camera is in
-//! no room, in a room with no portal of the cell, when the cell has no rooms, or when the database
+//! no room, when a reached room has incomplete portal data, when the cell has no rooms, or when the database
 //! has no room tables.
 //!
 //! # How an object is hidden, and why shadows keep it
@@ -103,16 +99,16 @@
 //!
 //! # Views
 //!
-//! The main camera ([`StreamingCamera`]) is culled when the setting is on. Another camera, such as
+//! The main camera ([`StreamingCamera`]) is culled automatically. Another camera, such as
 //! a portal view elsewhere, opts in by carrying [`RoomCullingView`]; every other camera, and every
 //! shadow view, is left untouched.
 //!
-//! # Not yet covered
+//! # Evidence and limits
 //!
-//! The image-comparison evidence (culling on versus off on real converted interiors, which shows
-//! the culled frame matches the full one) lives in the pull request text, not in the tests. Until
-//! that comparison is part of CI the feature stays behind `--room-culling`. The first frame that
-//! hides anything logs how many meshes it removed, so a run shows that the setting did something.
+//! See `docs/research/skyrim-room-culling.md` for the original-engine evidence and the policies
+//! that deliberately draw extra geometry. Image comparisons need real converted interiors;
+//! synthetic graph tests alone do not prove rendering parity. The first frame that hides anything
+//! logs the removed mesh count.
 //!
 //! # Coordinates
 //!
@@ -518,7 +514,7 @@ impl RoomGraph {
     }
 
     /// The rooms reachable from the rooms around `camera`, through doorways that lie inside the
-    /// view. `None` when the camera is in no room, or in a room with no portal of the cell, which
+    /// view. `None` when the camera is in no room, or reaches a room with no portal of the cell, which
     /// means draw everything. `clip_from_local` maps cell-local space to clip space.
     ///
     /// Every room that contains the camera is a start, which is the deterministic superset of
@@ -529,12 +525,17 @@ impl RoomGraph {
             return None;
         }
         let mut doorways: Vec<Vec<usize>> = vec![Vec::new(); self.rooms.len()];
+        let mut incomplete = vec![false; self.rooms.len()];
         for (index, portal) in self.portals.iter().enumerate() {
             if let [Some(a), Some(b)] = portal.rooms
                 && a != b
             {
                 doorways[a].push(index);
                 doorways[b].push(index);
+            } else {
+                for room in portal.rooms.into_iter().flatten() {
+                    incomplete[room] = true;
+                }
             }
         }
         let mut linked: Vec<Vec<usize>> = vec![Vec::new(); self.rooms.len()];
@@ -556,20 +557,17 @@ impl RoomGraph {
         // aperture data at all, so its overlap edges are walked open, like a link (design-1100 §5).
         // `doorways` already drops portals whose two sides are not both rooms of this cell.
         let has_portal: Vec<bool> = doorways.iter().map(|portals| !portals.is_empty()).collect();
-        // A camera standing in a room with no `PortalMarker` of this cell has no aperture data to
-        // bound what it sees: such rooms are open caves and halls whose neighbours are joined by
-        // geometry the room boxes do not describe, so any walk from there can stop short of rooms
-        // in plain view (analysis-1112: BleakFallsBarrow01's portal-less hall loses whole rooms
-        // through portals whose doorways project off screen). Draw the whole cell instead - the
-        // same answer as a camera in no room. The switch is a data fact, not a distance.
-        if starts.iter().any(|&room| !has_portal[room]) {
-            return None;
-        }
         let mut region: Vec<Option<Rect>> = vec![None; self.rooms.len()];
         let mut widenings = vec![0u8; self.rooms.len()];
         let mut pending: Vec<(usize, Rect)> =
             starts.into_iter().map(|room| (room, Rect::FULL)).collect();
         while let Some((room, arriving)) = pending.pop() {
+            // A reached open hall can expose rooms across space the boxes do not cover. A portal
+            // on the camera's starting room does not make that later gap safe to cull through.
+            // An unresolved portal side may lead into unbounded space; its connectivity is unknown.
+            if !has_portal[room] || incomplete[room] {
+                return None;
+            }
             let seen = match region[room] {
                 None => arriving,
                 Some(old) if old.contains(arriving) => continue,
@@ -807,10 +805,9 @@ pub struct MainViewMeshes {
     pub drawn: usize,
 }
 
-/// The settings, the probe result and the graphs of the interior cells that are loaded.
+/// The probe result and the graphs of the interior cells that are loaded.
 #[derive(Resource)]
 pub struct RoomCullingState {
-    enabled: bool,
     database_path: PathBuf,
     probe: TableProbe,
     graphs: HashMap<u32, LoadedGraph>,
@@ -820,7 +817,7 @@ pub struct RoomCullingState {
     /// Entities removed from the room-culling views in the last frame, for diagnostics.
     pub culled_last_frame: usize,
     /// The streaming camera's `Mesh3d` list in the last frame, before and after room culling.
-    /// `None` while room culling is off. Capture receipts record it, so a shots run measures the
+    /// `None` before a main view is checked. Capture receipts record it, so a shots run measures the
     /// reduction at every pose.
     pub main_view_meshes: Option<MainViewMeshes>,
     /// Whether the first frame that hid anything has been logged.
@@ -828,9 +825,8 @@ pub struct RoomCullingState {
 }
 
 impl RoomCullingState {
-    fn new(enabled: bool, database_path: PathBuf) -> Self {
+    fn new(database_path: PathBuf) -> Self {
         Self {
-            enabled,
             database_path,
             probe: TableProbe::Unknown,
             graphs: HashMap::new(),
@@ -842,9 +838,9 @@ impl RoomCullingState {
         }
     }
 
-    /// Whether the feature is on and the database has the tables (or has not been probed yet).
+    /// Whether the database has the tables (or has not been probed yet).
     pub fn active(&self) -> bool {
-        self.enabled && self.probe != TableProbe::Absent
+        self.probe != TableProbe::Absent
     }
 
     /// Room graphs of loaded interior cells still being read. A shot waits for them: until a
@@ -866,17 +862,14 @@ impl RoomCullingState {
     }
 }
 
-/// Registers room culling. With `enabled` false the plugin adds no system: a run that does not ask
-/// for the feature is exactly as it was.
+/// Registers automatic interior room culling. Missing room tables leave every mesh drawn.
 pub struct RoomCullingPlugin {
-    pub enabled: bool,
     pub database_path: PathBuf,
 }
 
 impl RoomCullingPlugin {
     pub fn from_config(config: &EngineConfig) -> Self {
         Self {
-            enabled: config.room_culling,
             database_path: config.assets_dir.join("skyrim_world.db"),
         }
     }
@@ -884,13 +877,7 @@ impl RoomCullingPlugin {
 
 impl Plugin for RoomCullingPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(RoomCullingState::new(
-            self.enabled,
-            self.database_path.clone(),
-        ));
-        if !self.enabled {
-            return;
-        }
+        app.insert_resource(RoomCullingState::new(self.database_path.clone()));
         app.add_systems(
             Update,
             (
@@ -1039,9 +1026,6 @@ pub fn cull_room_views(
 ) {
     state.culled_last_frame = 0;
     state.main_view_meshes = None;
-    if !state.enabled {
-        return;
-    }
     let mut cells: Vec<u32> = state.graphs.keys().copied().collect();
     cells.sort_unstable();
     let mut culled = 0;
@@ -1438,6 +1422,15 @@ mod tests {
     }
 
     #[test]
+    fn a_reached_room_with_an_unresolved_portal_side_draws_the_whole_cell() {
+        let mut graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
+        let mut unresolved = doorway(12, Vec3::new(0.0, 0.0, -20.0), 3.0, [1, 2]);
+        unresolved.rooms[1] = None;
+        graph.portals.push(unresolved);
+        assert!(graph.reached_rooms(Vec3::ZERO, clip_from_local()).is_none());
+    }
+
+    #[test]
     fn a_camera_in_no_room_culls_nothing() {
         let graph = chain(doorway(11, Vec3::new(0.0, 0.0, -30.0), 3.0, [1, 2]));
         assert!(
@@ -1560,23 +1553,14 @@ mod tests {
 
     /// A camera in room A of a two-room cell whose only doorway points away from it, so room B's
     /// objects are culled. `near` is in A, `far` in B and `loose` has no FormId at all.
-    fn scene(enabled: bool) -> Scene {
-        scene_with(
-            enabled,
-            GlobalTransform::IDENTITY,
-            GlobalTransform::IDENTITY,
-        )
+    fn scene() -> Scene {
+        scene_with(GlobalTransform::IDENTITY, GlobalTransform::IDENTITY)
     }
 
     /// [`scene`] with the cell root at `root_transform` and the camera at `camera_transform`.
-    fn scene_with(
-        enabled: bool,
-        root_transform: GlobalTransform,
-        camera_transform: GlobalTransform,
-    ) -> Scene {
+    fn scene_with(root_transform: GlobalTransform, camera_transform: GlobalTransform) -> Scene {
         let mut app = App::new();
         app.add_plugins(RoomCullingPlugin {
-            enabled,
             database_path: PathBuf::from("does-not-exist.db"),
         });
         let root = app
@@ -1676,7 +1660,7 @@ mod tests {
 
     #[test]
     fn the_main_view_loses_unreached_objects_and_shadows_keep_them() {
-        let mut scene = scene(true);
+        let mut scene = scene();
         run_cull(&mut scene.app);
         assert_eq!(
             mesh_list(&scene.app, scene.camera),
@@ -1706,7 +1690,7 @@ mod tests {
 
     #[test]
     fn a_camera_that_opts_in_is_culled_too() {
-        let mut scene = scene(true);
+        let mut scene = scene();
         scene.app.world_mut().entity_mut(scene.light).insert((
             RoomCullingView,
             GlobalTransform::IDENTITY,
@@ -1731,7 +1715,7 @@ mod tests {
     /// filter its own references, including when the other cell has a lower FormID.
     #[test]
     fn every_resident_interior_is_culled() {
-        let mut scene = scene(true);
+        let mut scene = scene();
         let root = scene
             .app
             .world_mut()
@@ -1786,19 +1770,8 @@ mod tests {
     }
 
     #[test]
-    fn with_the_setting_off_nothing_is_culled() {
-        let mut scene = scene(false);
-        scene.app.update();
-        run_cull(&mut scene.app);
-        assert_eq!(
-            mesh_list(&scene.app, scene.camera),
-            vec![scene.near, scene.far, scene.loose]
-        );
-    }
-
-    #[test]
     fn a_camera_in_no_room_keeps_every_object() {
-        let mut scene = scene(true);
+        let mut scene = scene();
         scene
             .app
             .world_mut()
@@ -1814,7 +1787,7 @@ mod tests {
     #[test]
     fn a_read_of_a_missing_database_fails_once_and_leaves_the_view_alone() {
         AsyncComputeTaskPool::get_or_init(Default::default);
-        let mut scene = scene(true);
+        let mut scene = scene();
         // No graph exists for cell 8; asking for it reads the (missing) database.
         scene.app.world_mut().spawn((StreamedCellRoot, CellRef(8)));
         for _ in 0..500 {
@@ -1971,7 +1944,6 @@ mod tests {
         .init_asset::<Mesh>()
         .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
         .add_plugins(RoomCullingPlugin {
-            enabled: true,
             database_path: PathBuf::from("does-not-exist.db"),
         });
         let root = app
@@ -2068,7 +2040,7 @@ mod tests {
     }
 
     /// A shot does not settle on a view whose room graph is unread: it would photograph and
-    /// measure the cell drawn whole. A run without room culling adds nothing to the gate.
+    /// measure the cell drawn whole. A harness without the resource adds nothing to the gate.
     #[test]
     fn unread_room_graphs_hold_the_shot_settle_gate() {
         let quiet = crate::shots::SettleCounts {
@@ -2078,7 +2050,7 @@ mod tests {
             ..default()
         };
         assert!(quiet.with_room_graphs(None).is_quiet());
-        let mut state = RoomCullingState::new(true, PathBuf::new());
+        let mut state = RoomCullingState::new(PathBuf::new());
         assert!(quiet.with_room_graphs(Some(&state)).is_quiet());
         AsyncComputeTaskPool::get_or_init(Default::default);
         state.pending.insert(
@@ -2125,13 +2097,13 @@ mod tests {
             rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
             ..default()
         });
-        let mut inside = scene_with(true, root, root);
+        let mut inside = scene_with(root, root);
         run_cull(&mut inside.app);
         assert_eq!(
             mesh_list(&inside.app, inside.camera),
             vec![inside.near, inside.loose]
         );
-        let mut outside = scene_with(true, root, GlobalTransform::IDENTITY);
+        let mut outside = scene_with(root, GlobalTransform::IDENTITY);
         run_cull(&mut outside.app);
         assert_eq!(
             mesh_list(&outside.app, outside.camera),
@@ -2161,7 +2133,7 @@ mod tests {
 
     #[test]
     fn actors_doors_and_moving_bodies_are_never_culled_by_their_room() {
-        let mut scene = scene(true);
+        let mut scene = scene();
         let root = scene
             .app
             .world_mut()
@@ -2491,14 +2463,10 @@ mod tests {
         assert_eq!(reached, vec![true, true, true, false]);
     }
 
-    /// The failing shape of BleakFallsBarrow01 (design-1100 §1), in miniature: the camera's hall 0
-    /// carries a portal of its own (parked behind the camera, so the walk runs), but the corridor 1
-    /// it overlaps has none. Both overlap edges into the corridor are therefore walked open: room 2
-    /// arrives with the whole screen and its doorway to the backdrop 3 is taken, where two thick
-    /// narrowings would have shrunk the region past it. The hall's box is the real one's size
-    /// (3,366 x 1,856 x 6,976 units), so no raised `OVERLAP_TOLERANCE` changes this.
+    /// A portal-bearing start reaches an open corridor, then looks across unboxed space at a
+    /// backdrop whose connecting portal is below the view. The incomplete graph must not hide it.
     #[test]
-    fn an_overlap_edge_past_a_portal_less_room_reaches_the_backdrop_behind_its_corridor() {
+    fn a_reached_portal_less_corridor_draws_the_whole_cell() {
         let mut rooms = vec![
             boxed(1, Vec3::ZERO, Vec3::new(1683.0, 928.0, 3488.0)),
             boxed(
@@ -2517,7 +2485,7 @@ mod tests {
                 Vec3::new(800.0, 928.0, 400.0),
             ),
         ];
-        let mut portals = vec![doorway(20, Vec3::new(0.0, 0.0, -4000.0), 150.0, [2, 3])];
+        let mut portals = vec![doorway(20, Vec3::new(0.0, -3000.0, -4000.0), 150.0, [2, 3])];
         park_portals(&mut rooms, &mut portals, &[0]);
         let graph = RoomGraph {
             rooms: rooms.clone(),
@@ -2531,18 +2499,9 @@ mod tests {
             vec![(0, 1), (1, 2)],
             "the hall touches the corridor and the corridor overlaps room 2"
         );
-        // Narrowed twice the walk would keep only x -1.17..-0.44, and the doorway sits at
-        // x -0.065..0.065: the backdrop is culled. Open edges carry the whole screen, so it is
-        // reached.
-        let reached = graph.reached_rooms(Vec3::ZERO, clip_from_local()).unwrap();
-        assert_eq!(
-            &reached[..4],
-            [true, true, true, true],
-            "open edges carry the whole screen, so the backdrop is reached"
-        );
         assert!(
-            !reached[4],
-            "the parked room behind the camera stays culled"
+            graph.reached_rooms(Vec3::ZERO, clip_from_local()).is_none(),
+            "a reached portal-less corridor cannot bound visibility through unboxed space"
         );
     }
 

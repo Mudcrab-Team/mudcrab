@@ -1,7 +1,8 @@
 # Interior room graph: converter design (#188, converter half)
 
 Status: implemented in the converter (2026-10-06); this note is the design it follows. The engine
-reads these tables with `--room-culling`, which is off by default.
+reads these tables automatically. See [the runtime research](skyrim-room-culling.md) for evidence
+and conservative fallbacks.
 
 ## Summary
 
@@ -152,7 +153,7 @@ membership pass (inside, outside, two rooms, rotated room); `plugin_references.r
 
 ## Fallbacks (conservative)
 
-| Case | Converter writes | Engine (`--room-culling`) |
+| Case | Converter writes | Engine |
 |---|---|---|
 | Interior without room markers | no rows | draw everything, as today |
 | Old database, tables absent | n/a | feature off, no error |

@@ -3,11 +3,11 @@
 
 Usage: python3 scripts/room_culling_counts.py <shots-out dir or shots.log>
 
-Run the engine with `--room-culling --shots <file> --shots-out <dir>` first, for example with
+Run the engine with `--shots <file> --shots-out <dir>` first, for example with
 `crates/engine/tests/fixtures/room-culling-shots.json`. Each settled capture receipt in
 `shots.log` carries `room_culling: {listed, drawn}`: the streaming camera's `Mesh3d` list after
-Bevy's frustum check and after room culling, in the frame the image was taken from. A run without
-`--room-culling` has no counts. Timed-out captures are excluded, and the script fails when
+Bevy's frustum check and after room culling, in the frame the image was taken from.
+Timed-out captures are excluded, and the script fails when
 no successful capture carries counts rather than printing an empty table.
 """
 
@@ -47,7 +47,7 @@ def main(argv):
     rows = read_counts(path.read_text(encoding="utf-8"))
     if not rows:
         print(f"{path}: no successful capture carries room-culling counts "
-              "(check --room-culling and capture timeouts)", file=sys.stderr)
+              "(check capture timeouts and engine version)", file=sys.stderr)
         return 1
     width = max(len(pose) for pose, _, _ in rows)
     print(f"{'pose':<{width}}  listed   drawn  hidden")
