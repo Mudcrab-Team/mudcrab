@@ -9,7 +9,7 @@ fn main() -> color_eyre::Result<()> {
         Ok(ConfigAction::Run(config)) => {
             if config.grass_tuning_info {
                 let state =
-                    engine::grass_tuning::GrassTuningState::new(config.grass_tuning.clone());
+                    engine::grass_tuning::GrassTuningState::for_info(config.grass_tuning.clone());
                 let mut receipt = state.receipt();
                 receipt["grass_snow_gate"] =
                     serde_json::json!(engine::grass::generation::MAJORITY_GRASS_SUPPORT);

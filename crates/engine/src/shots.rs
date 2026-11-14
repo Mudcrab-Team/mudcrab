@@ -724,11 +724,23 @@ impl ShotsRun {
     /// removed even when the shot no longer lists probes, so measurements from another run are
     /// never left beside this run's image, whether or not the capture succeeds.
     fn discard_previous_outputs(&self, shot: &Shot) -> Result<(), String> {
-        if self.shot == 0 {
-            discard_previous_shot(&self.output_dir.join("grass-counts.jsonl"))?;
-        }
         discard_previous_shot(&self.shot_path(shot))?;
         discard_previous_shot(&self.stages_path(shot))
+    }
+
+    /// Clear run-wide counts before settlement writes; per-capture cleanup never removes them.
+    fn prepare_output_directory(&mut self) -> Result<(), String> {
+        if !self.directory_made {
+            fs::create_dir_all(&self.output_dir).map_err(|error| {
+                format!(
+                    "could not make the output directory {}: {error}",
+                    self.output_dir.display()
+                )
+            })?;
+            discard_previous_shot(&self.output_dir.join("grass-counts.jsonl"))?;
+            self.directory_made = true;
+        }
+        Ok(())
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -939,6 +951,11 @@ fn run_shots(
         });
         return;
     }
+    if let Err(message) = run.prepare_output_directory() {
+        run.fail(message);
+        run.enter(Phase::Done);
+        return;
+    }
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
         run.frames_without_camera = run.frames_without_camera.saturating_add(1);
         if run.frames_without_camera >= MISSING_CAMERA_FRAMES {
@@ -965,18 +982,6 @@ fn run_shots(
                 run.note(line);
                 run.advance();
                 return;
-            }
-            if !run.directory_made {
-                run.directory_made = true;
-                if let Err(error) = fs::create_dir_all(&run.output_dir) {
-                    let message = format!(
-                        "could not make the output directory {}: {error}",
-                        run.output_dir.display()
-                    );
-                    run.fail(message);
-                    run.enter(Phase::Done);
-                    return;
-                }
             }
             place_camera(
                 shot,
@@ -1631,7 +1636,23 @@ mod tests {
         assert!(run.grass_draws_off());
         let path = dir.path().join("grass-counts.jsonl");
         fs::write(&path, "stale").unwrap();
-        run.discard_previous_outputs(&run.file.shots[0]).unwrap();
+        run.prepare_output_directory().unwrap();
+        assert!(!path.exists());
+        for index in 0..2 {
+            run.shot = index;
+            let mut counts = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"settled\"}}").unwrap();
+            run.discard_previous_outputs(&run.file.shots[0]).unwrap();
+            writeln!(counts, "{{\"shot\":{index},\"phase\":\"captured\"}}").unwrap();
+            run.prepare_output_directory().unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 4);
+        let mut rerun = ShotsRun::new(reference_file(), dir.path().to_owned(), 60);
+        rerun.prepare_output_directory().unwrap();
         assert!(!path.exists());
     }
 

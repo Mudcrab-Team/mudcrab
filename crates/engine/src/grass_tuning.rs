@@ -208,6 +208,14 @@ impl GrassTuningState {
         true
     }
 
+    /// Validate info-mode input with two immediate whole reads, without waiting for app time.
+    /// Changing or invalid files remain unaccepted in the returned receipt.
+    pub fn for_info(path: Option<PathBuf>) -> Self {
+        let mut state = Self::new(path);
+        state.poll_at(Duration::from_secs(1));
+        state
+    }
+
     /// Provenance for the actual accepted bytes, including the last good state after bad edits.
     pub fn receipt(&self) -> serde_json::Value {
         serde_json::json!({
@@ -440,6 +448,22 @@ mod tests {
         assert!(!state.poll_at(Duration::from_secs(3)));
         assert!(state.poll_at(Duration::from_secs(4)));
         assert_eq!(state.effective.brightness, 0.4);
+    }
+
+    /// The windowless info command reports accepted file values and their exact content hash.
+    #[test]
+    fn tuning_info_accepts_nondefault_file_without_app_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("info.toml");
+        let source = b"brightness=0.4";
+        std::fs::write(&path, source).unwrap();
+        let state = GrassTuningState::for_info(Some(path));
+        assert_eq!(state.effective.brightness, 0.4);
+        assert_eq!(state.receipt()["accepted"], true);
+        assert_eq!(
+            state.receipt()["sha256"],
+            format!("{:x}", Sha256::digest(source))
+        );
     }
 
     /// Missing and oversized inputs stay recoverable; polling frequency is bounded.
