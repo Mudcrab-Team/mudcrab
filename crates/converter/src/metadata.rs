@@ -1585,7 +1585,7 @@ mod metadata_schema_controls {
                 ORIGINAL
             );
             assert_eq!(identity["adapter_version"], adapter);
-            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 12);
+            assert_eq!(crate::esm::inhouse::ADAPTER_VERSION, 13);
             assert!(
                 settings_for_source_reader(
                     &config,
@@ -1596,6 +1596,9 @@ mod metadata_schema_controls {
             );
             for (key, value) in [
                 ("adapter_version", serde_json::json!(8)),
+                // Cache migration is not a retained-asset producer proof: this helper
+                // reconstructs only the explicitly supported adapter-10/11 identities.
+                ("adapter_version", serde_json::json!(12)),
                 ("schema_sha256", serde_json::json!("different-schema")),
                 ("schema_addons", serde_json::json!([])),
                 ("language", serde_json::json!("french")),

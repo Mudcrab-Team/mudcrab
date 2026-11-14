@@ -1602,3 +1602,32 @@ omissions. A database without the tables reports none.
 **These tables are optional and did not bump `shared::WORLD_DATABASE_SCHEMA_VERSION`**: they only
 add tables, `create_tables` adds them to an older reused database, and the engine does not read
 them.
+
+### 20. Per-Base Texture Assignments (`base_texture_swaps`)
+
+Optional STAT MODS projection; world schema version is unchanged.
+
+```sql
+CREATE TABLE base_texture_swaps (
+    base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    shape_name TEXT NOT NULL,
+    shape_index INTEGER NOT NULL,
+    texture_set_id INTEGER NOT NULL,
+    diffuse_path TEXT,
+    disposition TEXT NOT NULL,
+    PRIMARY KEY (base_id, position)
+);
+```
+
+IDs use the reader's resolved load-order numbering. `position` preserves the authored MODS
+entry order; shape name/index select within the base model, not a global mesh. TXST paths
+and dispositions resolve from the same winning-record map. Owner updates clear the base's
+rows before inserting replacements; complete exports replace the table transactionally and
+archive-only exports leave it empty. Subset exporters must supply referenced TXST records
+alongside the bases whose appearance they update.
+
+`diffuse_only` is the new runtime slice's supported input; other dispositions preserve explicit
+missing-link, absent-diffuse or unsupported-slot results. All eight existing `texture_sets`
+columns retain their consumers. See [per-record object appearance](../engine/object-materials.md)
+for selection, instance isolation, compatibility, diagnostics and the unimplemented MATO limits.

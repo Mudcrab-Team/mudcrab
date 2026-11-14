@@ -373,6 +373,9 @@ pub fn run(mut config: EngineConfig) -> Result<()> {
             crate::nif_material::EffectPaletteMaterialPlugin,
             crate::nif_material::NifMaterialPlugin,
             crate::emittance::EmittancePlugin,
+            crate::object_materials::ObjectMaterialPlugin,
+        ))
+        .add_plugins((
             crate::actor_skin_tone::ActorSkinTonePlugin,
             crate::actor_body_weight::ActorBodyWeightPlugin,
         ))

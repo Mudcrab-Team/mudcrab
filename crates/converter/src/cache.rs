@@ -438,6 +438,7 @@ pub(crate) const MESH_OUTPUT_CONTRACTS: &[&str] = &[
     "hidden-niavobject-excluded",
     "nif-root-transform-ignored",
     "skin-static-fallback",
+    "single-shape-object-diffuse-v1",
 ];
 
 /// Whether `schema`'s mesh settings proof carries [`MESH_OUTPUT_CONTRACTS`]. Historical
@@ -552,12 +553,12 @@ pub(crate) fn current_configuration_hash_for_schema(
 }
 
 /// Reconstruct the exact adapter-10 reader proof for unchanged retained asset settings.
-/// These compatibility pairs are limited to metadata adapters 11 and 12; a future
+/// These compatibility pairs are limited to metadata adapters 11, 12 and 13; a future
 /// adapter must establish its own retained-byte compatibility instead of inheriting it.
 pub(crate) fn inhouse_adapter10_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11 | 12) {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 11..=13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -568,11 +569,11 @@ pub(crate) fn inhouse_adapter10_reader_identity(
     Some(identity)
 }
 
-/// Adapter 12 corrects metadata identities while retaining adapter-11 asset bytes.
+/// Adapters 12 and 13 retain adapter-11 asset bytes. Old GLBs lack the optional MODS tag.
 pub(crate) fn inhouse_adapter11_reader_identity(
     schemas: &crate::records::addons::RuntimeSchemas,
 ) -> Option<serde_json::Value> {
-    if crate::esm::inhouse::ADAPTER_VERSION != 12 {
+    if !matches!(crate::esm::inhouse::ADAPTER_VERSION, 12 | 13) {
         return None;
     }
     let mut identity = crate::esm::inhouse::reader_identity_with_schemas(
@@ -1249,6 +1250,28 @@ pub(crate) fn retained_configuration_matches_for_reader(
     if identity == &current {
         return Ok(recorded == current_configuration_hash_for_schema(config, schema)?);
     }
+    if config.record_reader == crate::config::RecordReader::Legacy
+        && crate::esm::inhouse::LEGACY_PROJECTION_VERSION == 5
+    {
+        let mut prior = current.clone();
+        prior["projection_version"] = serde_json::json!(4);
+        if identity == &prior {
+            return Ok(
+                recorded == configuration_hash_with_identity(config, schema, Some(identity))?
+            );
+        }
+    }
+    if config.record_reader == crate::config::RecordReader::Inhouse
+        && crate::esm::inhouse::ADAPTER_VERSION == 13
+    {
+        let mut prior = current.clone();
+        prior["adapter_version"] = serde_json::json!(12);
+        if identity == &prior {
+            return Ok(
+                recorded == configuration_hash_with_identity(config, schema, Some(identity))?
+            );
+        }
+    }
     if config.record_reader == crate::config::RecordReader::Inhouse
         && [
             inhouse_adapter10_reader_identity(config.schemas()?.as_ref()),
@@ -1906,7 +1929,7 @@ mod tests {
     fn adapter10_retained_settings_keep_original_identity_and_require_exact_proofs() {
         let mut config = crate::config::PipelineConfig::new("Data", "output");
         config.record_reader = crate::config::RecordReader::Inhouse;
-        for adapter in [10, 11] {
+        for adapter in [10, 11, 12] {
             let mut original = crate::esm::inhouse::reader_identity(config.record_reader);
             original["adapter_version"] = serde_json::json!(adapter);
             let recorded = configuration_hash_with_identity(
@@ -1988,6 +2011,57 @@ mod tests {
                         .unwrap()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn object_diffuse_legacy4_retention_requires_exact_language_and_settings() {
+        for language in ["english", "german"] {
+            let mut config = crate::config::PipelineConfig::new("Data", "output");
+            config.record_reader = crate::config::RecordReader::Legacy;
+            config.language = language.into();
+            let mut identity = serde_json::json!({"mode":"legacy", "projection_version":4,
+                "language":language, "text_encoding":"windows-1252"});
+            if language == "german" {
+                identity["string_table_encoding"] = serde_json::json!("utf-8-or-windows-1252");
+            }
+            let proof = configuration_hash_with_identity(
+                &config,
+                CONVERTER_SCHEMA_VERSION,
+                Some(&identity),
+            )
+            .unwrap();
+            assert!(
+                retained_configuration_matches_for_reader(
+                    &config,
+                    CONVERTER_SCHEMA_VERSION,
+                    &proof,
+                    &identity
+                )
+                .unwrap()
+            );
+            let mut changed = config.clone();
+            changed.language = "french".into();
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &proof,
+                    &identity
+                )
+                .unwrap()
+            );
+            changed = config.clone();
+            changed.texture_uastc_level = 4;
+            assert!(
+                !retained_configuration_matches_for_reader(
+                    &changed,
+                    CONVERTER_SCHEMA_VERSION,
+                    &proof,
+                    &identity
+                )
+                .unwrap()
+            );
         }
     }
 
