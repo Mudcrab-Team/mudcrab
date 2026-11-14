@@ -127,7 +127,7 @@ control opacity: [grass authoring accounts](https://stepmodifications.org/forum/
 identify it as an animation/wind weight, while the
 [NIF definitions](https://github.com/niftools/nifxml/blob/develop/nif.xml)
 describe its storage without prescribing a grass opacity equation. The converted
-alpha attribute remains intact but is unused by the current grass wind model;
+alpha attribute remains intact and linearly weights the current grass wind displacement;
 an exact Skyrim wind equation or ambient-alpha interpretation is not established.
 Opaque primitives retain full coverage
 regardless of texture, material or vertex alpha. Only the main world camera receives
