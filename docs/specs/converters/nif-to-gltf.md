@@ -364,7 +364,9 @@ until normal conversion regenerates it. Texture/script producer identities are u
 The scene-depth bound, the cycle check and the unparsable-skin refusal append no contract name,
 so the `nif` proof is unchanged. Vanilla and Creation Club output is unchanged by them. A GLB
 already published from a third-party NIF deeper than 64 nodes, or with an undecodable skin
-instance, stays in its pack until the next normal rebuild of that asset.
+instance, stays in its pack. A normal conversion with an unchanged source hash and settings
+reuses it from the cache, so it stays until a forced rebuild or a change to the source or
+settings.
 
 Unresolved skeleton resolution also enters the source proof, so adding or removing a partial
 skeleton cannot warm-reuse the opposite self-contained/skinned or unresolved/rigid output.

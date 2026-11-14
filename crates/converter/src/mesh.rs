@@ -1799,8 +1799,9 @@ pub(crate) fn write_glb_atomic(output: &Path, bytes: &[u8]) -> Result<()> {
 /// settings proof is unchanged. Vanilla and Creation Club output is unchanged: 0 of 25,388
 /// shared NIFs nest deeper than 64 scene nodes (the deepest is 26) and 0 of 8,954 skinned NIFs
 /// have an unparsable skin (see the pull request text for #445). The only exposure is an old
-/// GLB of a third-party NIF deeper than 64 or with a bad skin, which stays in its pack until the
-/// next normal rebuild of that asset.
+/// GLB of a third-party NIF deeper than 64 or with a bad skin. A normal conversion with an
+/// unchanged source hash and settings reuses it from the cache, so it stays in its pack until a
+/// forced rebuild or a change to the source or settings.
 pub(crate) const MAX_SCENE_DEPTH: usize = 256;
 
 /// Deepest chain of scene nodes in the NIF's block graph.
