@@ -7,7 +7,7 @@ pub mod diagnostics;
 pub mod history;
 pub mod history_source;
 pub(crate) mod profile;
-mod scanner;
+pub(crate) mod scanner;
 pub mod schema_format;
 pub mod source_identity;
 pub(crate) mod typed_export;
@@ -499,9 +499,12 @@ pub struct RecordSource {
 }
 
 /// Winners, nontrivial override chains and bounded scan/decode diagnostics.
+/// Indices address `load_order`, including when input recovery compacts the caller's order.
 /// Input-path recovery uses the reserved `<input>` diagnostics scope, never a plugin owner.
 #[derive(Debug, Default)]
 pub struct ReadResult {
+    /// Accepted supplier names; every returned plugin/load-order index addresses this list.
+    pub load_order: Vec<String>,
     pub records: HashMap<u32, DecodedRecord>,
     pub headers: Vec<DecodedRecord>,
     pub diagnostics: BTreeMap<String, PluginDiagnostics>,
@@ -526,6 +529,8 @@ pub(crate) use decoder::{
 };
 
 /// Scan in load order using the converter's single slot/master authority.
+/// Input recovery returns the accepted names in `ReadResult::load_order`; use that list
+/// for returned indices rather than the supplied order if paths were omitted.
 pub fn read_plugins(plugin_paths: &[PathBuf], order: &LoadOrder) -> Result<ReadResult> {
     read_plugins_with_validation(plugin_paths, order, |_| Ok(()))
 }
@@ -612,7 +617,7 @@ fn read_plugins_with_prepared(
             observe,
         )?;
         if !input_warnings.is_empty() {
-            // Keep the existing public result shape and expose input loss without
+            // Expose input loss alongside the accepted order without
             // pretending it belongs to an accepted plugin or a counted record.
             let warning = input_warnings.join("\n");
             let diagnostics = result.diagnostics.entry("<input>".into()).or_default();
@@ -651,7 +656,10 @@ fn read_plugins_with_prepared(
     let legacy = identities.legacy_view()?;
     let key_of = |word| legacy.from_legacy_u32(word).ok().flatten();
     let mut winners = HashMap::<shared::form_key::FormKey, DecodedRecord>::new();
-    let mut result = ReadResult::default();
+    let mut result = ReadResult {
+        load_order: order.names.clone(),
+        ..Default::default()
+    };
     // Retain payloads only while an admitted winner still needs catalogue replay.
     let mut deferred_predecessors: HashMap<u32, Vec<DecodedRecord>> = HashMap::new();
     let mut gmst_ids: HashMap<String, u32> = HashMap::new();
@@ -990,6 +998,7 @@ fn read_plugins_with_prepared(
         prepared,
         order,
         &mut deferred_predecessors,
+        &source_ids,
         &mut validate,
     );
     deferred_stage.finish(result.records.len());

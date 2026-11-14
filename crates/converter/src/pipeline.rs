@@ -3606,7 +3606,11 @@ fn plugin_paths_with_diagnostics(
     }
     let discovered: Vec<_> = files
         .iter()
-        .filter(|path| extension(path, &["esm", "esp", "esl"]))
+        .filter(|path| {
+            crate::esm::plugins_txt::plugin_name(
+                &path.file_name().unwrap_or_default().to_string_lossy(),
+            )
+        })
         .collect();
     let mut plugins: Vec<_> = discovered
         .iter()
@@ -13425,3 +13429,7 @@ mod tests {
             .unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+#[path = "pipeline/formkey_recovery_tests.rs"]
+mod formkey_recovery_tests;

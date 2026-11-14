@@ -1072,7 +1072,7 @@ fn cell_fields_resolve_past_master_indices_to_self() {
     );
 }
 
-/// Past-master references use self; wide light links clear without changing adjacent bytes.
+/// Present self targets survive; absent self and wide light links clear beside unchanged bytes.
 #[test]
 fn reference_fields_resolve_self_and_clear_wide_light_ids() {
     for (tag, len, offset) in [
@@ -1082,9 +1082,17 @@ fn reference_fields_resolve_self_and_clear_wide_light_ids() {
         (b"XNDP", 8, 0),
         (b"XAPR", 8, 0),
     ] {
-        for (name, flags, value, record_id, projected) in [
-            ("Patch.esp", 0, 0x0200_0801u32, 0x0200_0800, 0x0200_0801u32),
-            ("Patch.esl", 0x200, 0x0100_1801, 0xFE00_0800, 0),
+        for (name, flags, value, record_id, projected, present) in [
+            (
+                "Patch.esp",
+                0,
+                0x0200_0801u32,
+                0x0200_0800,
+                0x0200_0801u32,
+                true,
+            ),
+            ("Patch.esp", 0, 0x0200_0801u32, 0x0200_0800, 0, false),
+            ("Patch.esl", 0x200, 0x0100_1801, 0xFE00_0800, 0, false),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let base = plugin(dir.path(), "Base.esm", &[], 1, Vec::new());
@@ -1096,6 +1104,16 @@ fn reference_fields_resolve_self_and_clear_wide_light_ids() {
             payload[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             let mut expected = payload.clone();
             expected[offset..offset + 4].copy_from_slice(&projected.to_le_bytes());
+            let target = if present {
+                record(
+                    b"REFR",
+                    0x0100_0801,
+                    0,
+                    sub(b"NAME", &0x42u32.to_le_bytes()),
+                )
+            } else {
+                Vec::new()
+            };
             let patch = plugin(
                 dir.path(),
                 name,
@@ -1109,6 +1127,7 @@ fn reference_fields_resolve_self_and_clear_wide_light_ids() {
                         0,
                         sub(b"XEMI", &0x42u32.to_le_bytes()),
                     ),
+                    target,
                 ]
                 .concat(),
             );
@@ -1373,13 +1392,6 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                             ]
                             .concat(),
                         ),
-                        // Forward self target for the deliberately past-master XESP word.
-                        record(
-                            b"REFR",
-                            0x0200_0802,
-                            0,
-                            sub(b"NAME", &0x0100_0003u32.to_le_bytes()),
-                        ),
                     ]
                     .concat(),
                 ),
@@ -1441,8 +1453,8 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
         config.record_reader = reader;
     }
     let mut expected_asset_rebuilds = 0;
-    // Both readers project a past-master selector to the supplying plugin.
-    let projected_parent = 0x0300_0802u32;
+    // The self-resolved target is absent: both readers clear the link and retain its flags.
+    let projected_parent = 0u32;
     for pass in 0..2 {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1505,11 +1517,11 @@ async fn pipeline_publishes_and_rebuilds_reference_and_cell_links_with_reader(
                 ]
             );
         }
-        // Both readers retain the usable self parent and its flags;
+        // Both readers clear the absent self parent and retain its flags;
         // malformed subrecords still leave SQL NULL.
         for (id, expected) in [
             (0x0300_0800u32, (Some(0xFE00_0802i64), Some(3i64))),
-            (0x0300_0806, (Some(i64::from(projected_parent)), Some(2))),
+            (0x0300_0806, (Some(0), Some(2))),
             (0x0300_0807, (None, None)),
             (0x0300_0808, (Some(0xFE00_0802), Some(0))),
         ] {

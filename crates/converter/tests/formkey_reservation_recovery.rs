@@ -249,6 +249,32 @@ fn typed_invalid_plugin_name_keeps_valid_neighbors() {
     let mut ids: Vec<_> = result.records.keys().copied().collect();
     ids.sort_unstable();
     assert_eq!(ids, [0x811, 0x0100_0833]);
+    assert_eq!(result.load_order, ["before.esp", "after.esp"]);
+    for record in result.records.values() {
+        assert_eq!(
+            result.load_order[record.load_order as usize],
+            if record.form_id == 0x811 {
+                "before.esp"
+            } else {
+                "after.esp"
+            }
+        );
+    }
+    for entry in result
+        .history
+        .iter()
+        .filter(|entry| entry.record_type == *b"STAT")
+    {
+        assert_eq!(
+            result.load_order[entry.plugin_index as usize],
+            if entry.source_form_id == 0x811 {
+                "before.esp"
+            } else {
+                "after.esp"
+            }
+        );
+        assert!(entry.plugin_index < 2);
+    }
 }
 
 /// Admission failure before identity reservation cannot suppress a same-local neighbor.

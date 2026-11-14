@@ -182,11 +182,9 @@ fn navm_onam_projection_preserves_null_after_native_self_resolution() {
     let legacy_order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
     converter::records::read_plugins(&paths, &legacy_order).unwrap();
     let identities = legacy_order.form_key_context().unwrap();
-    assert_eq!(
-        identities.projection_warnings(),
-        [
-            "warning: synthetic.esm: 1 FormID occurrence(s) past the original master list resolved to self (first: 3F00003F)"
-        ]
+    assert!(
+        identities.projection_warnings().is_empty(),
+        "NAVM NULL adaptation is not a self publication"
     );
     assert_eq!(
         identities.legacy_projection_warnings(),
@@ -478,23 +476,33 @@ fn absent_optional_self_target_keeps_old_diagnostic() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(reasons, ["optional FormID 02001234 exceeds master list"]);
-    let bytes: Vec<u8> = conn
-        .query_row("SELECT data FROM records WHERE form_id=2065", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    let record =
-        rkyv::from_bytes::<converter::esm::types::ArchivedRecordData, rkyv::rancor::Error>(&bytes)
+    let paths = [data.join("Base.esm")];
+    let order = converter::esm::load_order::LoadOrder::read(&paths).unwrap();
+    converter::records::read_plugins(&paths, &order).unwrap();
+    let legacy = root.path().join("legacy.db");
+    EsmParser::convert_plugins(&paths, &legacy).unwrap();
+    for db in [legacy, output.join("skyrim_world.db")] {
+        let conn = Connection::open(db).unwrap();
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT data FROM records WHERE form_id=2065", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-    assert_eq!(
-        record
-            .subrecords
-            .iter()
-            .find(|field| field.tag == *b"XCWT")
-            .unwrap()
-            .data,
-        [0; 4]
-    );
+        let record = rkyv::from_bytes::<
+            converter::esm::types::ArchivedRecordData,
+            rkyv::rancor::Error,
+        >(&bytes)
+        .unwrap();
+        assert_eq!(
+            record
+                .subrecords
+                .iter()
+                .find(|field| field.tag == *b"XCWT")
+                .unwrap()
+                .data,
+            [0; 4]
+        );
+    }
 }
 
 /// Group labels project self even without a CELL header; field-target recovery does not apply.

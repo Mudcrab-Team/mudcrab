@@ -261,6 +261,23 @@ impl EsmParser {
         // Keep keys through deletions so a later restoration has the same ID.
         let mut game_settings = GameSettingIdentities::default();
         let warnings = RemapWarnings::default();
+        let mut source_ids = std::collections::HashSet::new();
+        for (priority, path) in plugin_paths.iter().enumerate() {
+            crate::records::scanner::scan_plugin_headers(
+                path,
+                &mut Default::default(),
+                |header| {
+                    if let Some(id) = crate::records::source_identity::header_runtime_id(
+                        &header.record_type,
+                        header.source_form_id,
+                        priority,
+                        order,
+                    ) {
+                        source_ids.insert(id);
+                    }
+                },
+            )?;
+        }
         for (priority, path) in plugin_paths.iter().enumerate() {
             let mut sources = HashMap::<shared::form_key::FormKey, (u32, bool)>::new();
             let (records, parser_summaries) = parse_plugin_file_with_warnings(path)?;
@@ -290,41 +307,62 @@ impl EsmParser {
                     }
                 };
                 let kind = record.record_type;
-                let admission = remap_record_using(
+                let remap_word = |raw: u32, strict: bool| -> Result<u32> {
+                    let key = if !strict && kind == *b"GMST" {
+                        identities.gmst_header_key(priority, raw)?
+                    } else {
+                        identities.resolve(
+                            priority,
+                            raw,
+                            shared::source_form_id::ZeroPolicy::Null,
+                        )?
+                    };
+                    match legacy.to_nullable_legacy_u32(key) {
+                        Ok(value) => Ok(value),
+                        Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
+                            if !strict =>
+                        {
+                            let key = key.expect("non-null wide key");
+                            let owner = &identities
+                                .table
+                                .entry(key.plugin())
+                                .expect("owner")
+                                .normalized_name;
+                            warnings.truncated(owner, raw);
+                            Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
+                                key.plugin(),
+                                key.local() & 0xfff,
+                            )?)?)
+                        }
+                        Err(error) => Err(error.into()),
+                    }
+                };
+                let remap = |raw, strict| {
+                    let value = remap_word(raw, strict)?;
+                    if value != 0 && (raw >> 24) as usize > order.metadata[priority].masters.len() {
+                        warnings.out_of_range(&order.names[priority], raw, kind);
+                    }
+                    Ok(value)
+                };
+                let optional = |raw| {
+                    let value = remap_word(raw, true)?;
+                    if (raw >> 24) as usize > order.metadata[priority].masters.len()
+                        && value >= 0x800
+                        && !source_ids.contains(&value)
+                    {
+                        color_eyre::eyre::bail!("optional FormID {raw:08X} exceeds master list");
+                    }
+                    if value != 0 && (raw >> 24) as usize > order.metadata[priority].masters.len() {
+                        warnings.out_of_range(&order.names[priority], raw, kind);
+                    }
+                    Ok(value)
+                };
+                let admission = remap_record_using_optional(
                     &mut record,
                     &order.names[priority],
                     &warnings,
-                    |raw, strict| {
-                        identities.note_projection(priority, raw);
-                        let key = if !strict && kind == *b"GMST" {
-                            identities.gmst_header_key(priority, raw)?
-                        } else {
-                            identities.resolve(
-                                priority,
-                                raw,
-                                shared::source_form_id::ZeroPolicy::Null,
-                            )?
-                        };
-                        match legacy.to_nullable_legacy_u32(key) {
-                            Ok(value) => Ok(value),
-                            Err(shared::legacy_id_view::LegacyError::LightLocalTooWide(_))
-                                if !strict =>
-                            {
-                                let key = key.expect("non-null wide key");
-                                let owner = &identities
-                                    .table
-                                    .entry(key.plugin())
-                                    .expect("owner")
-                                    .normalized_name;
-                                warnings.truncated(owner, raw);
-                                Ok(legacy.to_legacy_u32(shared::form_key::FormKey::new(
-                                    key.plugin(),
-                                    key.local() & 0xfff,
-                                )?)?)
-                            }
-                            Err(error) => Err(error.into()),
-                        }
-                    },
+                    remap,
+                    optional,
                     matches!(
                         &kind,
                         b"GRAS" | b"LTEX" | b"TXST" | b"LAND" | b"CELL" | b"WRLD"
@@ -457,13 +495,8 @@ impl EsmParser {
                 }
             }
         }
-        let (remap_warnings, mut notices) = warnings.report();
+        let (remap_warnings, notices) = warnings.report();
         summaries.extend(remap_warnings);
-        // A faithful self projection warns about source spelling without claiming data loss.
-        for warning in identities.projection_warnings() {
-            eprintln!("{warning}");
-            notices.push(warning);
-        }
         Ok(RecordConversion {
             records: merged
                 .into_values()
@@ -504,7 +537,6 @@ impl RemapWarnings {
     }
 
     /// Accumulate one permissive supplier-self remap without changing recovery diagnostics.
-    #[cfg(test)]
     fn out_of_range(&self, plugin: &str, form_id: u32, record_type: [u8; 4]) {
         let mut counts = self.out_of_range.borrow_mut();
         let entry = counts
@@ -838,6 +870,25 @@ fn remap_record_using(
     remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
     strict: bool,
 ) -> Result<()> {
+    remap_record_using_optional(
+        record,
+        plugin_name,
+        warnings,
+        &remap_with_validation,
+        |word| remap_with_validation(word, true),
+        strict,
+    )
+}
+
+/// Keep required identities/group labels separate from optional field-target recovery.
+fn remap_record_using_optional(
+    record: &mut RawRecord,
+    plugin_name: &str,
+    warnings: &RemapWarnings,
+    remap_with_validation: impl Fn(u32, bool) -> Result<u32>,
+    remap_optional: impl Fn(u32) -> Result<u32>,
+    strict: bool,
+) -> Result<()> {
     let record_type = record.record_type;
     let remap = |form_id| remap_with_validation(form_id, strict);
     let remap_link = |form_id| remap_with_validation(form_id, true);
@@ -958,7 +1009,7 @@ fn remap_record_using(
                 let value = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
                 // Keep valid payload bytes, but publish null for an invalid FormID rather
                 // than retaining a plugin-local value or guessing its owner.
-                let resolved = match remap_with_validation(value, true) {
+                let resolved = match remap_optional(value) {
                     Ok(resolved) => resolved,
                     Err(error) => {
                         warnings.skipped_optional(

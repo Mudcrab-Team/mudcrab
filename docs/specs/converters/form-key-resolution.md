@@ -26,7 +26,7 @@ contains float-looking ONAM words (for example `3F00003F`);
 so a different layout is unproven. This publication adapter keeps
 official output logically identical pending separate layout work. Native ownership
 remains self. Other optional links resolve self in both readers before their existing
-target checks. The typed reader builds
+target checks. Both readers build
 a source-header catalogue so forward self links survive, while absent optional
 self targets with no observed source header retain NULL and their prior source-context
 diagnostic. Deferred replay and lazy history use the same observed-header authority,
@@ -35,10 +35,15 @@ resolve to self. Source provenance still records unproven original ownership.
 Checked optional packing failures clear locally; required failures reject one candidate.
 
 Malformed mods intentionally change relative to the old writer: past-master CELL
-XOWN/XCWT and required REFR NAME survive as self links; typed enable-parent and
+XOWN/XCWT survive when their targets have source headers, and required REFR NAME
+uses self ownership; typed enable-parent and
 other optional links also keep self when their targets are usable. Signatures and
 stored widths remain stable. Explicit plugin paths with invalid identity names
-are skipped with warnings, together with their dependents; usable neighbours continue.
+are skipped during selection with warnings, together with their dependents, before
+hashes, archive priorities and terrain master tables; usable neighbours continue.
+Direct reader recovery returns the accepted names in `ReadResult::load_order`,
+which every returned supplier index addresses. Immediate absent-target cleanup and
+NAVM adaptations do not count as resolved-to-self projections.
 
 `EsmParser::merge_plugins_form_keys` accepts an already recovered load order
 without full/light slot caps. Its records retain native source words separately

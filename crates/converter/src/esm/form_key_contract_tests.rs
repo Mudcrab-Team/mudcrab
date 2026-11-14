@@ -351,7 +351,7 @@ fn record_oracle_fixture() -> (
 ) {
     let dir = tempfile::tempdir().unwrap();
     let body = [
-        // Strict-header difference, separate from the optional-link difference.
+        // Strict-header difference, separate from the absent optional-link NULL control.
         oracle_record(b"CELL", 0x0200_0810, &[]),
         oracle_record(
             b"CELL",
@@ -438,12 +438,12 @@ fn real_old_record_oracle_names_strict_header_difference() {
 
 /// Compare production publication with the retained old record remapper.
 #[test]
-fn real_old_record_oracle_names_optional_xown_xcwt_difference() {
+fn real_old_record_oracle_absent_optional_links_agree_on_null() {
     let (_dir, paths, old) = record_oracle_fixture();
     let new = super::EsmParser::merge_plugins(&paths).unwrap();
-    for (tag, expected) in [(b"XOWN", 0x0200_0900), (b"XCWT", 0x0200_0901)] {
+    for tag in [b"XOWN", b"XCWT"] {
         assert_eq!(oracle_word(&old[&0x0200_0800], tag), 0);
-        assert_eq!(oracle_word(&new[&0x0200_0800], tag), expected);
+        assert_eq!(oracle_word(&new[&0x0200_0800], tag), 0);
     }
 }
 
@@ -479,7 +479,7 @@ fn real_old_record_oracle_preserves_ordinary_equivalence() {
 
 /// Compare production publication with the retained old record remapper.
 #[test]
-fn real_old_record_oracle_sol3_publication_keeps_links_and_reference() {
+fn real_old_record_oracle_sol3_publication_clears_absent_links_and_keeps_reference() {
     use rusqlite::Connection;
     let (dir, paths, old) = record_oracle_fixture();
     let old_db = Connection::open_in_memory().unwrap();
@@ -498,13 +498,13 @@ fn real_old_record_oracle_sol3_publication_keeps_links_and_reference() {
     };
     let old_cell = published(&old_db, 0x0200_0800);
     let new_cell = published(&new_db, 0x0200_0800);
-    for (tag, expected) in [(b"XOWN", 0x0200_0900u32), (b"XCWT", 0x0200_0901)] {
+    for tag in [b"XOWN", b"XCWT"] {
         let word = |record: &super::types::ArchivedRecordData| {
             let field = record.subrecords.iter().find(|f| &f.tag == tag).unwrap();
             u32::from_le_bytes(field.data.as_slice().try_into().unwrap())
         };
         assert_eq!(word(&old_cell), 0);
-        assert_eq!(word(&new_cell), expected);
+        assert_eq!(word(&new_cell), 0);
     }
     let old_count: u32 = old_db
         .query_row(
@@ -535,6 +535,69 @@ fn handwritten_projection_notice_is_not_duplicated() {
         .filter(|line| line.contains("master list") || line.contains("out-of-range master"))
         .collect();
     assert_eq!(projected.len(), 1, "{projected:?}");
+    assert!(projected[0].starts_with("notice:"), "{projected:?}");
+    assert!(projected[0].contains(" in CELL"), "{projected:?}");
+}
+
+/// Build the absent-target fixture inside the test, retaining a valid neighbouring record.
+fn absent_optional_fixture() -> (tempfile::TempDir, Vec<std::path::PathBuf>) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Base.esm");
+    std::fs::write(
+        &path,
+        [
+            oracle_record(b"TES4", 0, &[]),
+            oracle_record(
+                b"CELL",
+                0x811,
+                &[
+                    oracle_field(b"DATA", &[1, 0]),
+                    oracle_field(b"XCWT", &0x0200_1234u32.to_le_bytes()),
+                ]
+                .concat(),
+            ),
+            oracle_record(b"STAT", 0x812, &oracle_field(b"EDID", b"Neighbor\0")),
+        ]
+        .concat(),
+    )
+    .unwrap();
+    (dir, vec![path])
+}
+
+#[test]
+fn handwritten_absent_self_link_retains_diagnostic_and_neighbor() {
+    let (_dir, paths) = absent_optional_fixture();
+    let order = LoadOrder::read(&paths).unwrap();
+    let result = super::EsmParser::merge_plugins_with_load_order(&paths, &order).unwrap();
+    assert_eq!(oracle_word(&result.records[&0x811], b"XCWT"), 0);
+    assert!(result.records.contains_key(&0x812));
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|line| line.contains("optional FormID 02001234 exceeds master list")),
+        "{result:?}"
+    );
+    assert!(
+        result.notices.is_empty(),
+        "cleared fields have no self notice: {result:?}"
+    );
+}
+
+#[test]
+fn typed_cleared_self_link_does_not_count_as_resolved() {
+    let (_dir, paths) = absent_optional_fixture();
+    let order = LoadOrder::read(&paths).unwrap();
+    let result = crate::records::read_plugins(&paths, &order).unwrap();
+    assert!(result.records.contains_key(&0x812));
+    assert!(
+        order
+            .form_key_context()
+            .unwrap()
+            .projection_warnings()
+            .is_empty(),
+        "a cleared link is not a self publication"
+    );
 }
 
 /// Typed publication also filters explicit filenames before both decode and plugin export.

@@ -346,13 +346,52 @@ fn read_normalized_masters(statement: &mut Statement<'_>, plugin_id: u32) -> Res
     Ok(masters)
 }
 
+/// Reconstruct source-header authority, retaining rejected versions and GMST aliases.
+/// Current packs keep the exact four signature bytes; old layouts retain TEXT fallback.
+fn history_source_ids(
+    conn: &Connection,
+    order: &LoadOrder,
+    raw_signatures: bool,
+) -> Result<std::collections::HashSet<u32>> {
+    let signature = if raw_signatures {
+        "record_signature"
+    } else {
+        "CAST(record_type AS BLOB)"
+    };
+    let mut statement = conn.prepare(&format!(
+        "SELECT {signature},source_form_id,plugin_id FROM record_overrides WHERE source_form_id IS NOT NULL AND {signature} IS NOT NULL AND plugin_id IS NOT NULL"
+    ))?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, usize>(2)?,
+        ))
+    })?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        let (signature, raw, supplier) = row?;
+        if let Ok(signature) = signature.as_slice().try_into()
+            && supplier < order.names.len()
+            && let Some(id) =
+                super::source_identity::header_runtime_id(&signature, raw, supplier, order)
+        {
+            ids.insert(id);
+        }
+    }
+    Ok(ids)
+}
+
 /// Hash a source handle, then read only the requested native record with bounded allocation.
-fn decode_version(
+fn decode_version<'a>(
     path: &Path,
     expected: &[u8],
     entry: &HistoryEntry,
     order: &LoadOrder,
-    catalogues: (&HashMap<u32, [u8; 4]>, &std::collections::HashSet<u32>),
+    catalogues: (
+        &HashMap<u32, [u8; 4]>,
+        &mut impl FnMut() -> Result<&'a std::collections::HashSet<u32>>,
+    ),
     runtime: (&RuntimeSchemas, &decoder::PreparedSchemas),
     diagnostics: &mut PluginDiagnostics,
 ) -> Result<DecodedRecord> {
@@ -427,7 +466,7 @@ fn decode_version(
         order,
         plugin_index: entry.plugin_index as usize,
         localized: order.metadata[entry.plugin_index as usize].flags & 0x80 != 0,
-        source_ids: Some(source_ids),
+        source_ids: Some(source_ids()?),
         winning_types: Some(kinds),
     };
     let mut record =
@@ -530,35 +569,28 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
         .filter_map(|row| row.ok())
         .filter_map(|(id, tag)| tag.as_bytes().try_into().ok().map(|tag| (id, tag)))
         .collect();
-    // Reconstruct the same source-header authority as first-pass decoding, including
-    // rejected/deleted versions and pre-canonical GMST aliases. Winners are a separate catalogue.
-    let mut source_ids = std::collections::HashSet::new();
-    // Older metadata-only TES4 rows can lack a source word and supply no runtime identity.
-    let mut source_statement =
-        conn.prepare("SELECT record_type,source_form_id,plugin_id FROM record_overrides WHERE source_form_id IS NOT NULL AND record_type IS NOT NULL AND plugin_id IS NOT NULL")?;
-    let source_rows = source_statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, u32>(1)?,
-            row.get::<_, usize>(2)?,
-        ))
-    })?;
-    for row in source_rows {
-        let (signature, raw, supplier) = row?;
-        if let Ok(signature) = signature.as_bytes().try_into()
-            && supplier < order.names.len()
-            && let Some(id) =
-                super::source_identity::header_runtime_id(&signature, raw, supplier, &order)
-        {
-            source_ids.insert(id);
-        }
-    }
     // The retained 18-column layout predates authenticated group bounds and raw signatures.
     // Keep its available chain facts visible, but never infer missing replay authority.
     let mut layout = conn.prepare("PRAGMA table_info(record_overrides)")?;
     let columns = layout
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Do not scan all provenance for histories that cannot authenticate a source.
+    // Cache both success and failure once per request, after native frame checks.
+    let source_ids = std::cell::OnceCell::new();
+    let mut load_source_ids = || {
+        source_ids
+            .get_or_init(|| {
+                history_source_ids(
+                    &conn,
+                    &order,
+                    columns.iter().any(|c| c == "record_signature"),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(|error| color_eyre::eyre::eyre!("{error}"))
+    };
     let retained_column = |name: &str| {
         if columns.iter().any(|column| column == name) {
             name.to_owned()
@@ -681,7 +713,7 @@ pub fn read_history(pack: &Path, data: Option<&Path>, form_id: u32) -> Result<Hi
                 checksum,
                 &entry,
                 &order,
-                (&kinds, &source_ids),
+                (&kinds, &mut load_source_ids),
                 (schemas, prepared),
                 &mut version.diagnostics,
             )
@@ -788,6 +820,29 @@ pub fn display(report: &HistoryReport) -> String {
 #[cfg(test)]
 mod normalized_masters_tests {
     use super::*;
+
+    /// Raw signatures remain authoritative even when their display text is lossy.
+    #[test]
+    fn source_catalogue_uses_raw_signature_and_supports_retained_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE record_overrides(record_type TEXT,record_signature BLOB,source_form_id INTEGER,plugin_id INTEGER);
+             INSERT INTO record_overrides VALUES('TES4',X'FF414243',1280,3);
+             INSERT INTO record_overrides VALUES('STAT',X'53544154',16777507,3);
+             INSERT INTO record_overrides VALUES('TES4',X'54455334',0,0);
+             INSERT INTO record_overrides VALUES(NULL,NULL,NULL,NULL);",
+        ).unwrap();
+        let order = fixture_order();
+        let ids = history_source_ids(&conn, &order, true).unwrap();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from([0xfe00_0500, 0x0000_0123])
+        );
+        conn.execute_batch("ALTER TABLE record_overrides DROP COLUMN record_signature;")
+            .unwrap();
+        let ids = history_source_ids(&conn, &order, false).unwrap();
+        assert_eq!(ids, std::collections::HashSet::from([0x0000_0123]));
+    }
 
     /// Use a different native master order from global full/light slot order.
     fn fixture_order() -> LoadOrder {

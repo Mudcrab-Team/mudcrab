@@ -525,9 +525,6 @@ fn remap(
             diagnostics.event_context.field.as_deref(),
             diagnostics.event_context.occurrence,
         );
-        if observed {
-            order.note_projection(context.plugin_index, value);
-        }
         let key = order
             .resolve(
                 context.plugin_index,
@@ -610,6 +607,9 @@ fn remap(
                 format!("optional FormID {value:08X} exceeds master list"),
             );
             return Ok(0);
+        }
+        if observed && projected != 0 {
+            order.note_projection(context.plugin_index, value);
         }
         Ok(projected)
     })();
@@ -2925,6 +2925,7 @@ pub(crate) fn resolve_deferred(
     prepared: &PreparedSchemas,
     order: &LoadOrder,
     predecessors: &mut HashMap<u32, Vec<DecodedRecord>>,
+    source_ids: &std::collections::HashSet<u32>,
     validate: &mut impl FnMut(&DecodedRecord) -> Result<(), String>,
 ) {
     let mut pending = BTreeMap::new();
@@ -2948,7 +2949,6 @@ pub(crate) fn resolve_deferred(
     // History is complete before resolution and only its entries change here, so
     // one key index serves every acceptance and rejection without rescanning it.
     let mut history_index: HashMap<(u32, u64), usize> = HashMap::new();
-    let mut source_ids = std::collections::HashSet::new();
     let source_catalogued = !result.history.is_empty();
     // A conversion with nothing deferred pays neither pass over its records.
     if !pending.is_empty() {
@@ -2959,14 +2959,6 @@ pub(crate) fn resolve_deferred(
                 .map(|(&id, record)| (id, record.record_type)),
         );
         for (index, entry) in result.history.iter().enumerate() {
-            if let Some(id) = super::source_identity::header_runtime_id(
-                &entry.record_type,
-                entry.source_form_id,
-                entry.plugin_index as usize,
-                order,
-            ) {
-                source_ids.insert(id);
-            }
             history_index
                 .entry((entry.plugin_index, entry.source_record_offset))
                 .or_insert(index);
@@ -2996,7 +2988,7 @@ pub(crate) fn resolve_deferred(
                 order,
                 plugin_index: priority,
                 localized: order.metadata[priority].flags & 0x80 != 0,
-                source_ids: source_catalogued.then_some(&source_ids),
+                source_ids: source_catalogued.then_some(source_ids),
                 winning_types: Some(&kinds),
             };
             let mut baseline = PluginDiagnostics::default();

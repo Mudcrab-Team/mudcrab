@@ -691,12 +691,25 @@ fn rv_a_injected_baseline_failure_omits_unresolved_first_definition_fields() {
     ]
     .concat();
     result.records.insert(retained.form_id, retained);
+    let source_ids = result
+        .history
+        .iter()
+        .filter_map(|entry| {
+            super::source_identity::header_runtime_id(
+                &entry.record_type,
+                entry.source_form_id,
+                entry.plugin_index as usize,
+                &order,
+            )
+        })
+        .collect();
     decoder::resolve_deferred(
         &mut result,
         &schema,
         &prepared,
         &order,
         &mut Default::default(),
+        &source_ids,
         &mut |_| Ok(()),
     );
     let recovered = &result.records[&0x0300_1804];

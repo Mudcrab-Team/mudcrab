@@ -17,10 +17,10 @@ use shared::plugin_selection::{
 pub use shared::plugin_selection::{OFFICIAL_MASTERS, read_skyrim_ccc};
 
 /// Recognize plugin filenames directly inside Data, excluding path components.
-fn plugin_name(name: &str) -> bool {
+pub(crate) fn plugin_name(name: &str) -> bool {
     !name.contains(['/', '\\', ':'])
         && matches!(
-            Path::new(name)
+            Path::new(name.trim())
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .map(str::to_ascii_lowercase)
@@ -180,6 +180,13 @@ fn usable_plugins(paths: Vec<PathBuf>, warnings: &mut Warnings) -> Vec<PathBuf> 
     let mut metadata = Vec::with_capacity(paths.len());
     let mut missing = vec![None; paths.len()];
     for (index, path) in paths.iter().enumerate() {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if let Err(error) = shared::form_key::NamedFormKey::new(&name, 1) {
+            warnings.add(format!("skipping {name}: invalid plugin name: {error}"));
+            missing[index] = Some(name.into_owned());
+            metadata.push(None);
+            continue;
+        }
         match parse_plugin_metadata(path) {
             Ok(header) => metadata.push(Some(header)),
             Err(error) => {
