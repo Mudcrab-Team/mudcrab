@@ -1280,6 +1280,12 @@ annotation leaves them alone. `create_tables` adds them to an older reused datab
 them automatically and probes for them first, as it does for `lights` and the
 additive `waters` columns, so a database without them behaves as before.
 
+Placed references carrying the `Multibound` header flag (`0x80000000`) have an authored visibility
+policy, including `NONE`. Both pivot and bounds-overlap export omit their geometric memberships;
+integration also removes stale rows for these references. The engine reads the existing
+`references.header_flags` column and exempts flagged roots even when an older conversion still
+contains geometric room rows. Named overrides are conservatively kept visible too.
+
 | Case | Converter writes | Engine |
 |---|---|---|
 | Interior without room markers | no rows | draw everything, as today |

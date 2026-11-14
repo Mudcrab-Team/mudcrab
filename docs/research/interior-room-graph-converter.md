@@ -51,8 +51,9 @@ Checked against bytes:
 - Default room membership uses the object's pivot. The user-supplied saved HTML of Bethesda's
   [Skyrim optimization tutorial, revision 7673](https://ck.uesp.net/w/index.php?title=Bethesda_Tutorial_Optimization&oldid=7673)
   verifies this rule and says a reference belongs to one room by default. It also documents an
-  authored `NONE` multibound override for cross-room visibility, which this geometric exporter
-  does not yet preserve. See [runtime research](skyrim-room-culling.md) for the source and gap.
+  authored `NONE` multibound override for cross-room visibility. References carrying the Multibound
+  header flag are excluded from geometric membership in both export passes. See
+  [runtime research](skyrim-room-culling.md) for the encoding evidence and conservative policy.
   An earlier byte scan of Skyrim.esm measured geometric membership: in Ansilvund01 and
   KilkreathRuins03, 90.6% and 99.8% of references fall in at least one room, and 13.2% and 1.2%
   in more than one. Those counts do not establish Skyrim's assignment when boxes overlap.
@@ -183,9 +184,9 @@ require them, and would then go in the same change that raises the engine's maxi
 
 ## Open questions
 
-1. The pivot rule is verified in the supplied Skyrim tutorial. The documented `NONE` multibound
-   override remains unimplemented; its serialized representation needs verification before the
-   converter can preserve it. The supplied [Skyrim room-basics page, revision 15028](https://ck.uesp.net/w/index.php?title=Room_Bounds_and_Portal_Basics&oldid=15028)
+1. The pivot rule is verified in the supplied Skyrim tutorial. References carrying the Multibound
+   header flag now bypass geometric membership, preserving `NONE` and conservatively drawing named
+   overrides. Exact named-target culling remains unimplemented. The supplied [Skyrim room-basics page, revision 15028](https://ck.uesp.net/w/index.php?title=Room_Bounds_and_Portal_Basics&oldid=15028)
    also verifies that views from outside room bounds require portals, and warns about pivot-edge,
    dropped-object and room-gap rendering failures. Our outside-room draw-all fallback is therefore
    a deliberately more permissive engine policy.

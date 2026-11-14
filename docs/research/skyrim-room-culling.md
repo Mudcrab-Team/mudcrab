@@ -73,15 +73,32 @@ The tutorial documents authored room grouping and portal connectivity, not the e
 algorithm. It supports pivot membership and explicit room links, while leaving our screen-space
 clipping and implicit overlap edges as implementation choices.
 
-The converter does not yet preserve the authored `NONE` multibound override. `export_room_graph`
-in `crates/converter/src/esm/rooms.rs` assigns every placed non-marker reference by pivot position;
-its later overlap pass adds bounds intersections. A reference assigned to `NONE` in the editor can
-therefore acquire room membership here and be culled. Drawing references with several containing
-rooms does not implement this override: an explicitly unrestricted reference can still have its
-pivot in exactly one room. The tutorial does not identify the serialized field/value for `NONE`.
-The schema names `XMBR` as a multibound field and also retains `XMBP`, but that alone does not prove
-how the editor encodes the override. Confirm that representation with xEdit definitions or a
-controlled CK edit before implementing it. Existing converted data would need correction too.
+The converter and runtime honor the placed-reference `Multibound` header flag (`0x80000000`).
+[xEdit's TES5 definitions at `3ccc9e7`](https://github.com/TES5Edit/TES5Edit/blob/3ccc9e7d733becfcc97940cf0c877fa3d6213c5b/Core/wbDefinitionsTES5.pas)
+name bit 31 as `Multibound`, identify `XMBR` as the multibound reference, and identify `XMBP` as a
+primitive marker. CommonLibSSE-NG independently declares `TESObjectREFR::RecordFlags::kMultibound`
+as bit 31. `NONE` must not be inferred from an absent `XMBR` alone: ordinary automatic references
+also omit that field.
+
+The implementation keeps every flagged reference visible rather than assigning it to geometric
+room boxes. This preserves `NONE` and conservatively draws references with named authored targets
+too; exact named-target culling is not implemented. It does not interpret the unremapped `XMBR`
+FormID. Export omits these references from pivot membership, and overlap integration removes stale
+membership rows and excludes the references when rebuilding overlaps. Integration does this in
+one transaction and can be repeated.
+
+The database loader carries the already-exported header bit through `ReferenceRow` to the spawned
+root's `RoomCullExempt` component. Consequently existing conversions that retained `header_flags`
+are protected even while their `reference_rooms` table still contains old geometric membership.
+Databases predating header-flag export cannot recover information that was never stored and need
+reconversion to recover authored overrides. No world schema bump or enable flag is added.
+
+A read-only scan of the available converted Skyrim data found 220 flagged references: 215 with
+an `XMBR` target and five without one. Three untargeted references are static Katariah floor/mast
+pieces (`000BBF85`, `000BBFA3`, `000C3E42`), each incorrectly assigned one containing room by the old
+converter. The other two are water activators, already protected by the activator exemption.
+The flag/target distribution supports the `NONE` interpretation; it is not a controlled CK edit
+or a reconstruction of Skyrim's assignment code.
 
 The room-basics page establishes that Skyrim restricts views from outside room bounds to portals.
 Our camera-outside-all-rooms fallback instead draws the whole cell. Likewise, drawing references
@@ -101,7 +118,7 @@ The tutorial recommends measuring performance and limiting long chains of visibl
 The camera's containing rooms start a portal walk. Projected doorway rectangles narrow the view
 region along each path. Explicit room links pass the region through unchanged. Static references
 with one containing room are hidden only if none of their containing or overlapping rooms is
-reached. Actors, doors, activators and movable objects keep their existing exemption. Shadows and
+reached. Flagged multibound references, actors, doors, activators and movable objects remain exempt. Shadows and
 lights retain their independent visibility.
 
 Some shipped open halls have room boxes without any valid portal. Their geometry can expose a
